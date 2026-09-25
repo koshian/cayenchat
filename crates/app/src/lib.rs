@@ -250,10 +250,11 @@ impl AppState {
                 self.active_servers.remove(&id);
                 for channel in self
                     .conversations
-                    .iter()
+                    .iter_mut()
                     .filter(|channel| channel.network == id)
                 {
                     self.active_channels.remove(&channel.id);
+                    channel.members.clear();
                 }
             }
             self.statuses.insert(id, status);
@@ -706,6 +707,7 @@ mod tests {
         assert!(state.selected_channel().unwrap().members.is_empty());
         state.joined_channel(NetworkId(1), "#two");
         assert!(state.is_active_channel(ConversationId(2)));
+        state.set_members(NetworkId(1), "#two", vec!["@alice".into()]);
         state.set_status(
             NetworkId(1),
             ConnectionStatus::Disconnected("closed".into()),
@@ -715,6 +717,7 @@ mod tests {
             Some(&ConnectionStatus::Disconnected("closed".into()))
         );
         assert!(state.active_channels.is_empty());
+        assert!(state.selected_channel().unwrap().members.is_empty());
     }
 
     #[test]

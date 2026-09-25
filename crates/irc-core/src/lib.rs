@@ -1,6 +1,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
 use std::{
+    collections::HashMap,
     fmt, thread,
     time::{Duration, Instant},
 };
@@ -13,7 +14,10 @@ use irc::{
         data::user::AccessLevel,
         prelude::{Client, Config},
     },
-    proto::{CapSubCommand, Capability, Command as IrcCommand, Message as IrcMessage, Response},
+    proto::{
+        CapSubCommand, Capability, Command as IrcCommand, Message as IrcMessage, Response,
+        mode::Mode,
+    },
 };
 use tokio::sync::mpsc;
 
@@ -151,6 +155,14 @@ fn valid_channel(value: &str) -> bool {
         && !value
             .chars()
             .any(|ch| ch.is_whitespace() || ch.is_control() || ch == ',')
+}
+
+fn valid_nickname(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with(['#', '&', '~', '@', '%', '+'])
+        && !value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, ',' | ':'))
 }
 
 fn validate_message_text(text: &str) -> Result<(), String> {
@@ -339,6 +351,14 @@ pub enum Event {
         notice: bool,
     },
     Disconnected(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemberCommand {
+    Whois,
+    Invite { channel: String },
+    GiveOp { channel: String },
+    Deop { channel: String },
 }
 
 async fn diagnostic(events: &mpsc::Sender<Event>, started: Instant, message: impl Into<String>) {
@@ -539,6 +559,33 @@ fn checked_command(command: IrcCommand) -> Result<Outgoing, String> {
     Ok(Outgoing::Raw(message))
 }
 
+fn member_outgoing(nickname: &str, action: MemberCommand) -> Result<Outgoing, String> {
+    if !valid_nickname(nickname) {
+        return Err("Invalid nickname.".into());
+    }
+    match action {
+        MemberCommand::Whois => checked_command(IrcCommand::WHOIS(None, nickname.into())),
+        MemberCommand::Invite { channel } => {
+            if !valid_channel(&channel) {
+                return Err("Invalid invite channel.".into());
+            }
+            checked_command(IrcCommand::INVITE(nickname.into(), channel))
+        }
+        MemberCommand::GiveOp { channel } => {
+            if !valid_channel(&channel) {
+                return Err("Invalid mode channel.".into());
+            }
+            checked_raw(&format!("MODE {channel} +o {nickname}"))
+        }
+        MemberCommand::Deop { channel } => {
+            if !valid_channel(&channel) {
+                return Err("Invalid mode channel.".into());
+            }
+            checked_raw(&format!("MODE {channel} -o {nickname}"))
+        }
+    }
+}
+
 fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, String> {
     let body = line
         .strip_prefix('/')
@@ -733,6 +780,31 @@ impl Connection {
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue IRC message: {error}"))
+    }
+
+    pub fn send_private_message(&self, nickname: &str, text: &str) -> Result<(), String> {
+        if !valid_nickname(nickname) {
+            return Err("Invalid message target.".into());
+        }
+        validate_message_text(text)?;
+        let outgoing = Outgoing::Message {
+            target: nickname.to_owned(),
+            text: text.to_owned(),
+            display_text: text.to_owned(),
+            notice: false,
+        };
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue private message: {error}"))
+    }
+
+    pub fn send_member_command(&self, nickname: &str, action: MemberCommand) -> Result<(), String> {
+        let outgoing = member_outgoing(nickname, action)?;
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue member command: {error}"))
     }
 
     pub fn send_command(&self, line: &str, selected_channel: Option<&str>) -> Result<(), String> {
@@ -942,6 +1014,7 @@ async fn run(
     let registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
     let mut registered = false;
     let mut current_nick = registration_nick;
+    let mut roster = RosterTracker::default();
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1041,7 +1114,7 @@ async fn run(
                             sasl = None;
                             diagnostic(&events, started, "Registration completed (001 received).").await;
                         }
-                        for event in translate_message(&client, &current_nick, message) {
+                        for event in translate_message(&client, &mut roster, &current_nick, message) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
                                 _ => {}
@@ -1074,8 +1147,135 @@ async fn run(
     }
 }
 
-fn translate_message(client: &Client, current_nick: &str, message: IrcMessage) -> Vec<Event> {
+fn display_nickname(member: &str) -> &str {
+    member.trim_start_matches(['~', '&', '@', '%', '+'])
+}
+
+#[derive(Default)]
+struct RosterTracker {
+    last: HashMap<String, Vec<String>>,
+    renamed_roles: HashMap<(String, String), char>,
+}
+
+impl RosterTracker {
+    fn rename(&mut self, channels: &[String], old_nick: &str, new_nick: &str) {
+        for channel in channels {
+            let old_key = (channel.clone(), old_nick.to_lowercase());
+            let role = self.renamed_roles.remove(&old_key).or_else(|| {
+                self.last.get(channel).and_then(|members| {
+                    members
+                        .iter()
+                        .find(|member| display_nickname(member).eq_ignore_ascii_case(old_nick))
+                        .and_then(|member| member.chars().next())
+                        .filter(|prefix| "~&@%+".contains(*prefix))
+                })
+            });
+            if let Some(role) = role {
+                self.renamed_roles
+                    .insert((channel.clone(), new_nick.to_lowercase()), role);
+            }
+        }
+    }
+
+    fn clear_mode_targets(&mut self, channel: &str, modes: &[Mode<irc::proto::mode::ChannelMode>]) {
+        for mode in modes {
+            if let Mode::Plus(_, Some(nickname)) | Mode::Minus(_, Some(nickname)) = mode {
+                self.renamed_roles
+                    .remove(&(channel.to_owned(), nickname.to_lowercase()));
+            }
+        }
+    }
+
+    fn forget_channel(&mut self, channel: &str) {
+        self.last.remove(channel);
+        self.renamed_roles
+            .retain(|(known_channel, _), _| known_channel != channel);
+    }
+
+    fn accept_names(&mut self, channel: &str) {
+        self.renamed_roles
+            .retain(|(known_channel, _), _| known_channel != channel);
+    }
+}
+
+fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) -> Event {
+    let mut users: Vec<String> = client
+        .list_users(channel)
+        .unwrap_or_default()
+        .iter()
+        .map(|user| {
+            let prefix = match user.highest_access_level() {
+                AccessLevel::Owner => "~",
+                AccessLevel::Admin => "&",
+                AccessLevel::Oper => "@",
+                AccessLevel::HalfOp => "%",
+                AccessLevel::Voice => "+",
+                AccessLevel::Member => "",
+            };
+            format!("{prefix}{}", user.get_nickname())
+        })
+        .collect();
+    for user in &mut users {
+        let nickname = display_nickname(user).to_owned();
+        if let Some(prefix) = roster
+            .renamed_roles
+            .get(&(channel.to_owned(), nickname.to_lowercase()))
+        {
+            *user = format!("{prefix}{nickname}");
+        }
+    }
+    roster.renamed_roles.retain(|(known_channel, nickname), _| {
+        known_channel != channel
+            || users
+                .iter()
+                .any(|user| display_nickname(user).eq_ignore_ascii_case(nickname))
+    });
+    roster.last.insert(channel.to_owned(), users.clone());
+    Event::Names {
+        channel: channel.to_owned(),
+        users,
+    }
+}
+
+fn translate_message(
+    client: &Client,
+    roster: &mut RosterTracker,
+    current_nick: &str,
+    message: IrcMessage,
+) -> Vec<Event> {
+    let changed_channels = match &message.command {
+        IrcCommand::JOIN(channel, _, _) | IrcCommand::ChannelMODE(channel, _) => {
+            vec![channel.clone()]
+        }
+        IrcCommand::PART(channel, _) if message.source_nickname() != Some(current_nick) => {
+            vec![channel.clone()]
+        }
+        IrcCommand::KICK(channel, nickname, _) if nickname != current_nick => {
+            vec![channel.clone()]
+        }
+        IrcCommand::QUIT(_) | IrcCommand::NICK(_) => client.list_channels().unwrap_or_default(),
+        _ => Vec::new(),
+    };
     match &message.command {
+        IrcCommand::NICK(new_nick) => {
+            let channels = client.list_channels().unwrap_or_default();
+            roster.rename(&channels, message.source_nickname().unwrap_or(""), new_nick);
+        }
+        IrcCommand::ChannelMODE(channel, modes) => roster.clear_mode_targets(channel, modes),
+        IrcCommand::PART(channel, _) if message.source_nickname() == Some(current_nick) => {
+            roster.forget_channel(channel);
+        }
+        IrcCommand::KICK(channel, nickname, _) if nickname == current_nick => {
+            roster.forget_channel(channel);
+        }
+        IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
+            if let Some(channel) = args.iter().find(|arg| valid_channel(arg)) {
+                roster.accept_names(channel);
+            }
+        }
+        _ => {}
+    }
+    let mut translated = match &message.command {
         IrcCommand::Response(Response::RPL_WELCOME, args) => vec![Event::Registered {
             nickname: args
                 .first()
@@ -1088,6 +1288,11 @@ fn translate_message(client: &Client, current_nick: &str, message: IrcMessage) -
             }]
         }
         IrcCommand::PART(channel, _) if message.source_nickname() == Some(current_nick) => {
+            vec![Event::Parted {
+                channel: channel.clone(),
+            }]
+        }
+        IrcCommand::KICK(channel, nickname, _) if nickname == current_nick => {
             vec![Event::Parted {
                 channel: channel.clone(),
             }]
@@ -1111,29 +1316,16 @@ fn translate_message(client: &Client, current_nick: &str, message: IrcMessage) -
             let Some(channel) = args.iter().find(|arg| valid_channel(arg)) else {
                 return Vec::new();
             };
-            let users = client
-                .list_users(channel)
-                .unwrap_or_default()
-                .iter()
-                .map(|user| {
-                    let prefix = match user.highest_access_level() {
-                        AccessLevel::Owner => "~",
-                        AccessLevel::Admin => "&",
-                        AccessLevel::Oper => "@",
-                        AccessLevel::HalfOp => "%",
-                        AccessLevel::Voice => "+",
-                        AccessLevel::Member => "",
-                    };
-                    format!("{prefix}{}", user.get_nickname())
-                })
-                .collect();
-            vec![Event::Names {
-                channel: channel.clone(),
-                users,
-            }]
+            vec![names_snapshot(client, roster, channel)]
         }
         _ => vec![Event::ServerLine(message.to_string().trim_end().to_owned())],
-    }
+    };
+    translated.extend(
+        changed_channels
+            .iter()
+            .map(|channel| names_snapshot(client, roster, channel)),
+    );
+    translated
 }
 
 #[cfg(test)]
@@ -1144,6 +1336,35 @@ mod tests {
         net::TcpListener,
         time::Instant,
     };
+
+    #[test]
+    fn member_commands_validate_targets_and_build_expected_irc_lines() {
+        let wire = |action| match member_outgoing("Alice", action).unwrap() {
+            Outgoing::Raw(message) => message.to_string().trim_end().to_owned(),
+            other => panic!("expected raw command: {other:?}"),
+        };
+        assert_eq!(wire(MemberCommand::Whois), "WHOIS Alice");
+        assert_eq!(
+            wire(MemberCommand::Invite {
+                channel: "#test".into()
+            }),
+            "INVITE Alice #test"
+        );
+        assert_eq!(
+            wire(MemberCommand::GiveOp {
+                channel: "#test".into()
+            }),
+            "MODE #test +o Alice"
+        );
+        assert_eq!(
+            wire(MemberCommand::Deop {
+                channel: "#test".into()
+            }),
+            "MODE #test -o Alice"
+        );
+        assert!(member_outgoing("bad nick", MemberCommand::Whois).is_err());
+        assert!(member_outgoing("Alice,Bob", MemberCommand::Whois).is_err());
+    }
 
     #[test]
     fn tls_provider_is_explicit_when_both_backends_are_enabled() {
@@ -1422,13 +1643,18 @@ mod tests {
                 }
             }
             socket.write_all(
-                b":alice!u@h JOIN #test\r\n:alice!u@h PRIVMSG #test :hello\r\n:server 353 alice = #test :@alice bob\r\n:server 366 alice #test :End of NAMES\r\n"
+                b":alice!u@h JOIN #test\r\n:alice!u@h PRIVMSG #test :hello\r\n:server 353 alice = #test :@alice bob\r\n:server 366 alice #test :End of NAMES\r\n:charlie!u@h JOIN #test\r\n:alice!u@h MODE #test +o charlie\r\n:bob!u@h PART #test\r\n:charlie!u@h NICK dave\r\n:dave!u@h QUIT :bye\r\n"
             ).unwrap();
             let mut outgoing = Vec::new();
-            while outgoing.len() < 2 {
+            while outgoing.len() < 7 {
                 line.clear();
                 lines.read_line(&mut line).unwrap();
-                if line.starts_with("PRIVMSG ") || line.starts_with("NOTICE ") {
+                if line.starts_with("PRIVMSG ")
+                    || line.starts_with("NOTICE ")
+                    || line.starts_with("WHOIS ")
+                    || line.starts_with("INVITE ")
+                    || line.starts_with("MODE ")
+                {
                     outgoing.push(line.trim_end().to_owned());
                 }
             }
@@ -1445,9 +1671,19 @@ mod tests {
         let mut seen_joined = false;
         let mut seen_message = false;
         let mut seen_names = false;
+        let mut seen_roster_updated = false;
+        let mut seen_nick_update = false;
+        let mut seen_quit_update = false;
+        let mut rosters = Vec::new();
         let mut transcript = Vec::new();
         while Instant::now() < deadline
-            && !(seen_registered && seen_joined && seen_message && seen_names)
+            && !(seen_registered
+                && seen_joined
+                && seen_message
+                && seen_names
+                && seen_roster_updated
+                && seen_nick_update
+                && seen_quit_update)
         {
             if let Some(event) = connection.try_recv() {
                 match event {
@@ -1462,9 +1698,18 @@ mod tests {
                         seen_message = channel == "#test" && sender == "alice" && text == "hello";
                     }
                     Event::Names { channel, users } => {
-                        seen_names = channel == "#test"
+                        rosters.push(users.clone());
+                        seen_names |= channel == "#test"
                             && users.contains(&"@alice".to_owned())
                             && users.contains(&"bob".to_owned());
+                        seen_roster_updated |= channel == "#test"
+                            && users.contains(&"@alice".to_owned())
+                            && users.contains(&"@charlie".to_owned())
+                            && !users.contains(&"bob".to_owned());
+                        seen_nick_update |= channel == "#test"
+                            && users.contains(&"@dave".to_owned())
+                            && !users.contains(&"@charlie".to_owned());
+                        seen_quit_update |= channel == "#test" && users == ["@alice"];
                     }
                     Event::Wire {
                         direction, line, ..
@@ -1476,10 +1721,59 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
         }
-        assert!(seen_registered && seen_joined && seen_message && seen_names);
+        assert!(
+            seen_registered
+                && seen_joined
+                && seen_message
+                && seen_names
+                && seen_roster_updated
+                && seen_nick_update
+                && seen_quit_update,
+            "rosters: {rosters:?}"
+        );
         connection.send_message("#test", "outgoing", false).unwrap();
         connection.send_message("#test", "notice", true).unwrap();
+        connection.send_private_message("charlie", "hello").unwrap();
+        connection
+            .send_member_command("charlie", MemberCommand::Whois)
+            .unwrap();
+        connection
+            .send_member_command(
+                "charlie",
+                MemberCommand::Invite {
+                    channel: "#other".into(),
+                },
+            )
+            .unwrap();
+        connection
+            .send_member_command(
+                "charlie",
+                MemberCommand::GiveOp {
+                    channel: "#test".into(),
+                },
+            )
+            .unwrap();
+        connection
+            .send_member_command(
+                "charlie",
+                MemberCommand::Deop {
+                    channel: "#test".into(),
+                },
+            )
+            .unwrap();
         let outgoing = server.join().unwrap();
+        for expected in [
+            "PRIVMSG charlie hello",
+            "WHOIS charlie",
+            "INVITE charlie #other",
+            "MODE #test +o charlie",
+            "MODE #test -o charlie",
+        ] {
+            assert!(
+                outgoing.iter().any(|line| line == expected),
+                "missing {expected}: {outgoing:?}"
+            );
+        }
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline
             && !transcript.iter().any(|(direction, line)| {
