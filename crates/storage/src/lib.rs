@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 5;
+const SETTINGS_VERSION: u32 = 6;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -144,6 +144,7 @@ pub struct Settings {
     pub channels: String,
     pub sasl_enabled: bool,
     pub sasl_username: String,
+    pub connect_on_startup: bool,
     pub appearance: Appearance,
 }
 
@@ -160,6 +161,7 @@ impl Default for Settings {
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
+            connect_on_startup: false,
             appearance: Appearance::default(),
         }
     }
@@ -360,7 +362,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=5) => serde_json::from_value::<Settings>(value)
+        Some(2..=6) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -433,7 +435,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 5);
+        assert_eq!(settings.version, 6);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -455,7 +457,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 5);
+        assert_eq!(settings.version, 6);
         assert!(
             settings
                 .servers
@@ -484,7 +486,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 5);
+        assert_eq!(settings.version, 6);
         assert!(
             settings
                 .servers
@@ -502,7 +504,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 5);
+        assert_eq!(settings.version, 6);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -512,6 +514,23 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings));
         assert_eq!(color_value("#123ABC"), Some(0x123abc));
         assert!(color_value("#123ABZ").is_none());
+    }
+
+    #[test]
+    fn startup_connection_is_opt_in_after_version_five_migration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 5.into();
+        old.as_object_mut().unwrap().remove("connect_on_startup");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, 6);
+        assert!(!settings.connect_on_startup);
+        settings.connect_on_startup = true;
+        save_to(&path, &settings).unwrap();
+        assert!(load_from(&path).unwrap().unwrap().connect_on_startup);
     }
 
     #[test]

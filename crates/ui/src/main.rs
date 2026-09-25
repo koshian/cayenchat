@@ -195,29 +195,53 @@ impl SettingsForm {
     }
 
     fn connection_config(&self, settings: &Settings, cx: &App) -> Result<ConnectionConfig, String> {
-        let profile = settings.selected_profile();
-        let mut config = ConnectionConfig::tls(
-            profile.host.clone(),
-            settings.nickname.clone(),
-            settings.channels(),
-        );
-        config.port = profile.port;
-        config.use_tls = profile.use_tls;
-        config.verify_tls_certificates = profile.verify_tls_certificates;
-        config.encoding = profile.encoding.label().into();
         let server_password = self.server_password.read(cx).text();
-        if !server_password.is_empty() {
-            config.server_password = Some(server_password.to_owned());
-        }
-        if settings.sasl_enabled {
-            config.sasl = Some(SaslCredentials {
-                username: settings.sasl_username.clone(),
-                password: self.sasl_password.read(cx).text().to_owned(),
-            });
-        }
-        config.validate()?;
-        Ok(config)
+        let sasl_password = self.sasl_password.read(cx).text();
+        connection_config(settings, server_password, sasl_password)
     }
+}
+
+fn connection_config(
+    settings: &Settings,
+    server_password: &str,
+    sasl_password: &str,
+) -> Result<ConnectionConfig, String> {
+    let profile = settings.selected_profile();
+    let mut config = ConnectionConfig::tls(
+        profile.host.clone(),
+        settings.nickname.clone(),
+        settings.channels(),
+    );
+    config.port = profile.port;
+    config.use_tls = profile.use_tls;
+    config.verify_tls_certificates = profile.verify_tls_certificates;
+    config.encoding = profile.encoding.label().into();
+    if !server_password.is_empty() {
+        config.server_password = Some(server_password.to_owned());
+    }
+    if settings.sasl_enabled {
+        config.sasl = Some(SaslCredentials {
+            username: settings.sasl_username.clone(),
+            password: sasl_password.to_owned(),
+        });
+    }
+    config.validate()?;
+    Ok(config)
+}
+
+fn startup_connection_config(settings: &Settings) -> Option<Result<ConnectionConfig, String>> {
+    settings.connect_on_startup.then(|| {
+        let profile = settings.selected_profile();
+        let (server_password, sasl_password) = if profile.remember_passwords {
+            (
+                profile.server_password.as_deref().unwrap_or(""),
+                profile.sasl_password.as_deref().unwrap_or(""),
+            )
+        } else {
+            ("", "")
+        };
+        connection_config(settings, server_password, sasl_password)
+    })
 }
 
 struct ChatWindow {
@@ -228,6 +252,7 @@ struct ChatWindow {
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
     irc: Option<Connection>,
+    startup_connection: Option<Result<ConnectionConfig, String>>,
     own_nickname: Option<String>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     diagnostics: Vec<String>,
@@ -333,6 +358,7 @@ impl ChatWindow {
             Ok(saved) => (saved.unwrap_or_default(), None),
             Err(error) => (Settings::default(), Some(error)),
         };
+        let startup_connection = startup_connection_config(&saved);
         let state = AppState::configured(saved.selected_profile().host.clone(), saved.channels());
         let mut inputs: HashMap<_, _> = state
             .networks()
@@ -353,6 +379,7 @@ impl ChatWindow {
             inputs,
             feedback,
             irc: None,
+            startup_connection,
             own_nickname: None,
             settings_window: None,
             diagnostics: Vec::new(),
@@ -1297,6 +1324,26 @@ impl SettingsWindow {
                 "自動参加チャンネル",
                 self.settings.channels.clone(),
             ))
+            .child(
+                div()
+                    .id("connect-on-startup")
+                    .ml(px(158.))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(if self.settings.values.connect_on_startup {
+                        "☑"
+                    } else {
+                        "☐"
+                    })
+                    .child("アプリ起動時に自動接続する")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settings.values.connect_on_startup =
+                            !this.settings.values.connect_on_startup;
+                        cx.notify();
+                    })),
+            )
             .child(settings_field(
                 "サーバーパスワード",
                 self.settings.server_password.clone(),
@@ -2405,11 +2452,26 @@ fn main() {
             )
             .expect("could not open CayenChat window");
         cx.activate(true);
-        chat_window
+        let needs_settings = chat_window
             .update(cx, |chat, window, cx| {
-                chat.open_settings(&OpenSettings, window, cx)
+                match chat.startup_connection.take() {
+                    Some(Ok(config)) => chat.apply_connection(config, window, cx).is_err(),
+                    Some(Err(error)) => {
+                        chat.feedback = Some(format!("自動接続の設定を確認してください: {error}"));
+                        cx.notify();
+                        true
+                    }
+                    None => true,
+                }
             })
-            .expect("could not open the initial settings window");
+            .expect("could not initialize the chat window");
+        if needs_settings {
+            chat_window
+                .update(cx, |chat, window, cx| {
+                    chat.open_settings(&OpenSettings, window, cx)
+                })
+                .expect("could not open the initial settings window");
+        }
     });
 }
 
@@ -2440,5 +2502,33 @@ mod log_tests {
         assert_eq!(selection.range(1, 5), Some(0..5));
         assert_eq!(selection.range(2, 5), Some(0..3));
         assert_eq!(selection.range(3, 5), None);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::startup_connection_config;
+    use cayenchat_storage::Settings;
+
+    #[test]
+    fn startup_uses_only_saved_credentials_when_enabled() {
+        let mut settings = Settings {
+            nickname: "alice".into(),
+            ..Settings::default()
+        };
+        assert!(startup_connection_config(&settings).is_none());
+
+        settings.connect_on_startup = true;
+        settings.sasl_enabled = true;
+        settings.sasl_username = "account".into();
+        settings.selected_profile_mut().use_tls = true;
+        assert!(startup_connection_config(&settings).unwrap().is_err());
+
+        settings.selected_profile_mut().sasl_password = Some("secret".into());
+        assert!(startup_connection_config(&settings).unwrap().is_err());
+        settings.selected_profile_mut().remember_passwords = true;
+        let config = startup_connection_config(&settings).unwrap().unwrap();
+        assert_eq!(config.host, "irc.ircnet.ne.jp");
+        assert_eq!(config.sasl.unwrap().password, "secret");
     }
 }

@@ -6,7 +6,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 
 ## Current scope
 
-The app opens a separate settings window from the four-pane chat window and connects to one configured IRC server.
+The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
 History, reconnect and notifications remain TODO.
 
 - DONE — native GPUI application shell and app-owned selection
@@ -106,6 +106,7 @@ History, reconnect and notifications remain TODO.
 - DONE — persisted nickname and optional SASL account name; per-server server/SASL password persistence only after a plaintext-warning confirmation, with immediate deletion when disabled
 - DONE — settings open in a separate window; closing it leaves the chat window running
 - DONE — persisted channel auto-join list
+- DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window, and there is no automatic reconnect
 - TODO — notification preferences
 - PARTIAL — separate Appearance tab persists background colors, alternating message rows, and font families for logs, users, tree, input and monospace time
 - TODO — keyboard shortcut preferences where practical

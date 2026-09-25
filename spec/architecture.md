@@ -130,9 +130,13 @@ Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.
 The UI loads versioned preferences from the platform user configuration directory.
-Version 5 adds appearance colors, alternating log rows, and per-pane font choices
-while loading older settings with defaults. The four-pane chat window stays open
-while a separate settings window offers Connection and Appearance tabs. The macOS
+Version 5 adds appearance colors, alternating log rows, and per-pane font choices;
+version 6 adds an opt-in startup connection flag. Older settings load with that
+flag disabled. The four-pane chat window stays open while a separate settings
+window offers Connection and Appearance tabs. With startup connection enabled,
+the UI validates the saved selected profile and connects without opening settings;
+invalid saved connection details open settings with feedback. Only explicitly
+saved credentials are available at startup. The macOS
 application menu and Command+, open that window;
 Windows/Linux use Ctrl+, while GPUI's native menu rendering remains unavailable
 there. Passwords persist per server only after explicit plaintext confirmation;
