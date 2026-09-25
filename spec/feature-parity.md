@@ -57,6 +57,7 @@ History and notifications remain TODO.
 - PARTIAL — nick changes update the roster through the IRC client's channel list
 - PARTIAL — join/part/quit synchronize the roster through the IRC client's channel list
 - DONE — member context menu offers Whois, private-message composition, channel invite and +o/-o commands
+- DONE — WHOIS replies requested by this client open a raised per-nick WHOIS window with join, private message and update actions; replies requested by other bouncer clients stay in the server log
 
 ## Navigation
 

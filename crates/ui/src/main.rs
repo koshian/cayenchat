@@ -1,10 +1,11 @@
 mod input;
 mod localization;
+mod whois;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
-    WireDirection,
+    WhoisInfo, WireDirection,
 };
 use cayenchat_model::{ConversationId, NetworkId};
 use cayenchat_storage::{Appearance, Language, Settings, TextEncoding, color_value};
@@ -12,9 +13,10 @@ use gpui::{prelude::*, *};
 use input::TextInput;
 use localization::Localizer;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
+use whois::WhoisWindow;
 
 const DIAGNOSTIC_LIMIT: usize = 1000;
 const RETRY_DELAYS: [Duration; 5] = [
@@ -346,6 +348,12 @@ struct ChatWindow {
     startup_connection: Option<Result<ConnectionConfig, String>>,
     own_nickname: Option<String>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
+    window_handle: Option<WindowHandle<ChatWindow>>,
+    // Lowercase nicknames this client asked WHOIS for; replies requested by
+    // other clients sharing a bouncer only reach the server log.
+    pending_whois: HashSet<String>,
+    whois_windows: HashMap<String, WindowHandle<WhoisWindow>>,
+    whois_replies: Vec<(WhoisInfo, bool)>,
     diagnostics: Vec<String>,
     debug_enabled: bool,
     connection_started: Option<Instant>,
@@ -461,6 +469,10 @@ impl ChatWindow {
             input.update(cx, |input, cx| input.set_placeholder(&placeholder, cx));
         }
         cx.set_menus(app_menus(self.debug_enabled, &self.i18n));
+        for handle in self.whois_windows.values() {
+            let i18n = self.i18n.clone();
+            let _ = handle.update(cx, |view, _, cx| view.set_localizer(i18n, cx));
+        }
         cx.notify();
         window.refresh();
     }
@@ -532,6 +544,10 @@ impl ChatWindow {
             startup_connection,
             own_nickname: None,
             settings_window: None,
+            window_handle: window.window_handle().downcast::<ChatWindow>(),
+            pending_whois: HashSet::new(),
+            whois_windows: HashMap::new(),
+            whois_replies: Vec::new(),
             diagnostics: Vec::new(),
             debug_enabled: false,
             connection_started: None,
@@ -729,6 +745,7 @@ impl ChatWindow {
     fn record_disconnect(&mut self, reason: String) {
         self.connection_started = None;
         self.push_diagnostic(format!("Disconnected: {reason}"));
+        self.pending_whois.clear();
         self.state
             .set_status(NetworkId(1), ConnectionStatus::Disconnected(reason.clone()));
         let message = self
@@ -743,6 +760,11 @@ impl ChatWindow {
         let Some(menu) = self.member_menu.take() else {
             return;
         };
+        if command == MemberCommand::Whois {
+            self.feedback = self.request_whois(&menu.nickname, cx).err();
+            cx.notify();
+            return;
+        }
         self.feedback = match self.irc.as_ref() {
             Some(connection)
                 if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
@@ -756,6 +778,91 @@ impl ChatWindow {
         cx.notify();
     }
 
+    fn registered_connection(&self) -> Result<&Connection, String> {
+        match self.irc.as_ref() {
+            Some(connection)
+                if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
+            {
+                Ok(connection)
+            }
+            _ => Err(self.i18n.text("not_connected")),
+        }
+    }
+
+    fn request_whois(&mut self, nickname: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        self.registered_connection()?
+            .send_member_command(nickname, MemberCommand::Whois)?;
+        self.pending_whois.insert(nickname.to_lowercase());
+        cx.notify();
+        Ok(())
+    }
+
+    fn is_joined(&self, channel: &str) -> bool {
+        self.state.conversations().iter().any(|conversation| {
+            conversation.name.eq_ignore_ascii_case(channel)
+                && self.state.is_active_channel(conversation.id)
+        })
+    }
+
+    fn join_channel(&mut self, channel: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        self.registered_connection()?
+            .send_command(&format!("/join {channel}"), None)?;
+        cx.notify();
+        Ok(())
+    }
+
+    fn show_whois(&mut self, info: WhoisInfo, requested: bool, cx: &mut Context<Self>) {
+        let key = info.nickname.to_lowercase();
+        if let Some(handle) = self.whois_windows.get(&key).copied() {
+            let shown = handle.update(cx, |view, window, cx| {
+                view.set_info(info.clone(), window, cx);
+                window.activate_window();
+            });
+            if shown.is_ok() {
+                cx.activate(true);
+                return;
+            }
+            self.whois_windows.remove(&key);
+        }
+        if !requested || !info.found() {
+            return;
+        }
+        let Some(owner) = self.window_handle else {
+            return;
+        };
+        match WhoisWindow::open(owner, info, self.i18n.clone(), cx) {
+            Ok(handle) => {
+                self.whois_windows.insert(key, handle);
+                cx.activate(true);
+            }
+            Err(error) => {
+                self.feedback = Some(self.i18n.format("whois_open_failed", &[("error", &error)]))
+            }
+        }
+    }
+
+    fn show_private_message_prompt(
+        &mut self,
+        nickname: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let viewport = window.viewport_size();
+        let position = point(
+            ((viewport.width - px(300.)) / 2.).max(px(0.)),
+            ((viewport.height - px(140.)) / 2.).max(px(0.)),
+        );
+        self.member_menu = None;
+        self.server_menu = None;
+        self.show_member_prompt(
+            nickname,
+            MemberPromptKind::PrivateMessage,
+            position,
+            window,
+            cx,
+        );
+    }
+
     fn open_member_prompt(
         &mut self,
         kind: MemberPromptKind,
@@ -765,6 +872,17 @@ impl ChatWindow {
         let Some(menu) = self.member_menu.take() else {
             return;
         };
+        self.show_member_prompt(menu.nickname, kind, menu.position, window, cx);
+    }
+
+    fn show_member_prompt(
+        &mut self,
+        nickname: String,
+        kind: MemberPromptKind,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let placeholder = self.i18n.text(match kind {
             MemberPromptKind::PrivateMessage => "member_message_placeholder",
             MemberPromptKind::Invite => "member_channel_placeholder",
@@ -774,12 +892,10 @@ impl ChatWindow {
         self.feedback = None;
         self.member_prompt = Some(MemberPrompt {
             position: point(
-                menu.position.x.min((viewport.width - px(300.)).max(px(0.))),
-                menu.position
-                    .y
-                    .min((viewport.height - px(140.)).max(px(0.))),
+                position.x.min((viewport.width - px(300.)).max(px(0.))),
+                position.y.min((viewport.height - px(140.)).max(px(0.))),
             ),
-            nickname: menu.nickname,
+            nickname,
             kind,
             input: input.clone(),
         });
@@ -1014,6 +1130,9 @@ impl ChatWindow {
             }
             self.handle_event(event);
         }
+        for (info, requested) in std::mem::take(&mut self.whois_replies) {
+            self.show_whois(info, requested, cx);
+        }
         if let Some(started) = self.connection_started
             && self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Connecting)
         {
@@ -1133,6 +1252,20 @@ impl ChatWindow {
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::Whois(info) => {
+                let info = *info;
+                let key = info.nickname.to_lowercase();
+                let requested = self.pending_whois.remove(&key);
+                if requested && !info.found() && !self.whois_windows.contains_key(&key) {
+                    self.feedback = Some(
+                        self.i18n
+                            .format("whois_not_found", &[("nickname", &info.nickname)]),
+                    );
+                }
+                if requested || self.whois_windows.contains_key(&key) {
+                    self.whois_replies.push((info, requested));
+                }
+            }
             Event::OutgoingAccepted {
                 channel,
                 text,

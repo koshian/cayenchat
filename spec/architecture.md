@@ -169,6 +169,14 @@ PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
 group. The member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
+The core merges WHOIS numerics (311–319, 330, 301 while pending, and other
+WHOIS-only lines) per nickname and emits one `Whois` event at end-of-WHOIS (318);
+the raw lines still reach the server log. The UI opens a separate WHOIS window
+only for nicknames this client requested, because a bouncer such as Tiarra relays
+replies to every attached client; an open window for the same nick is updated and
+raised instead. The window offers private message, join for listed channels,
+update (re-sends WHOIS) and close/Escape. A 318 without 311 reports that the nick
+is offline.
 The core preserves displayed rank across nick changes because the current IRC
 library drops user access levels on rename; a later MODE or completed NAMES
 snapshot replaces that carried rank.

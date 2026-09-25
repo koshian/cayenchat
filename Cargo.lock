@@ -811,6 +811,7 @@ dependencies = [
  "cayenchat-irc-core",
  "cayenchat-model",
  "cayenchat-storage",
+ "chrono",
  "embed-resource",
  "gpui",
  "serde_json",

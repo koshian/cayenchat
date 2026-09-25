@@ -185,6 +185,9 @@ choose Custom, set its host and port, and leave TLS off; do not enter credential
    `/raw WHOIS bob`; verify the server receives the expected commands and the
    selected channel is inserted where required. Confirm a malformed command leaves
    the draft with an error.
+   Choose Whois from a member's context menu and reply with 311/319/312/317/318;
+   verify a raised WHOIS window shows the merged details, Update re-sends WHOIS,
+   and an unrequested WHOIS reply only reaches the server log.
 5. Disconnect the peer; verify the status becomes disconnected and an unsent draft
    is retained. Reconnect manually from the settings screen.
 6. With a local ISO-2022-JP fixture, join `#がが` and exchange Japanese text.
