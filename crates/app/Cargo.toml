@@ -1,0 +1,10 @@
+[package]
+name = "cayenchat-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+cayenchat-model.workspace = true
+chrono.workspace = true
