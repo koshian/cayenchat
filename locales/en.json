@@ -42,7 +42,7 @@
   "system_default": "System default",
   "appearance": "Appearance",
   "appearance_intro": "Use #RRGGBB colors. Type in a font field to filter choices; leave it empty for the default.",
-  "window_background": "Window background",
+  "member_list_background": "Member list background",
   "channel_log": "Channel log",
   "channel_log_alternate": "Channel log alternate",
   "combined_log": "Combined log",

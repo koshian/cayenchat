@@ -72,7 +72,7 @@ struct SettingsForm {
     server_password: Entity<TextInput>,
     sasl_username: Entity<TextInput>,
     sasl_password: Entity<TextInput>,
-    background: Entity<TextInput>,
+    member_list_background: Entity<TextInput>,
     main_log_background: Entity<TextInput>,
     main_log_alternate: Entity<TextInput>,
     sub_log_background: Entity<TextInput>,
@@ -132,7 +132,12 @@ impl SettingsForm {
                 true,
                 cx,
             ),
-            background: field("#ECECEC", &values.appearance.background, false, cx),
+            member_list_background: field(
+                "#FFFFFF",
+                &values.appearance.member_list_background,
+                false,
+                cx,
+            ),
             main_log_background: field(
                 "#FFFFFF",
                 &values.appearance.main_log_background,
@@ -214,7 +219,7 @@ impl SettingsForm {
         settings.sasl_username = self.sasl_username.read(cx).text().trim().to_owned();
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         settings.appearance = Appearance {
-            background: value(&self.background),
+            member_list_background: value(&self.member_list_background),
             main_log_background: value(&self.main_log_background),
             main_log_alternate: value(&self.main_log_alternate),
             sub_log_background: value(&self.sub_log_background),
@@ -1761,8 +1766,8 @@ impl SettingsWindow {
                     .child(self.i18n.text("appearance_intro")),
             )
             .child(color_field(
-                &self.i18n.text("window_background"),
-                self.settings.background.clone(),
+                &self.i18n.text("member_list_background"),
+                self.settings.member_list_background.clone(),
                 cx,
             ))
             .child(color_field(
@@ -2399,7 +2404,9 @@ impl Render for ChatWindow {
             .min_h_0()
             .w_full()
             .overflow_y_scroll()
-            .bg(rgb(color_value(&appearance.background).unwrap_or(0xffffff)))
+            .bg(rgb(
+                color_value(&appearance.member_list_background).unwrap_or(0xffffff)
+            ))
             .when(!appearance.member_font.is_empty(), |d| {
                 d.font_family(appearance.member_font.clone())
             })
@@ -2428,7 +2435,7 @@ impl Render for ChatWindow {
             .border_t_1()
             .border_b_1()
             .border_color(border)
-            .bg(rgb(color_value(&appearance.background).unwrap_or(0xffffff)))
+            .bg(rgb(0xffffff))
             .when(!appearance.input_font.is_empty(), |d| {
                 d.font_family(appearance.input_font.clone())
             })
@@ -2468,7 +2475,7 @@ impl Render for ChatWindow {
             .text_size(px(13.))
             .line_height(px(20.))
             .text_color(rgb(0x20262d))
-            .bg(rgb(color_value(&appearance.background).unwrap_or(0xececec)))
+            .bg(rgb(0xffffff))
             .on_action(cx.listener(Self::navigate))
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))

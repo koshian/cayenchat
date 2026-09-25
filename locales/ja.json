@@ -42,7 +42,7 @@
   "system_default": "システム標準",
   "appearance": "外観",
   "appearance_intro": "色は #RRGGBB 形式。フォント欄を入力して候補を絞れます。空欄は既定値です。",
-  "window_background": "画面の背景",
+  "member_list_background": "メンバーリストの背景",
   "channel_log": "チャンネルログ",
   "channel_log_alternate": "チャンネルログ交互",
   "combined_log": "全体ログ",

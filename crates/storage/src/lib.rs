@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 7;
+const SETTINGS_VERSION: u32 = 8;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -51,7 +51,8 @@ impl TextEncoding {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
-    pub background: String,
+    #[serde(alias = "background")]
+    pub member_list_background: String,
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub sub_log_background: String,
@@ -68,7 +69,7 @@ pub struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
-            background: "#ECECEC".into(),
+            member_list_background: "#FFFFFF".into(),
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
             sub_log_background: "#F9FAFB".into(),
@@ -87,7 +88,7 @@ impl Default for Appearance {
 impl Appearance {
     pub fn validate(&self) -> Result<(), String> {
         for (label, value) in [
-            ("Background", &self.background),
+            ("Member list", &self.member_list_background),
             ("Main log", &self.main_log_background),
             ("Main alternate", &self.main_log_alternate),
             ("Sub log", &self.sub_log_background),
@@ -245,6 +246,14 @@ impl Settings {
     }
 
     fn normalize(mut self) -> Self {
+        if self.version <= 7
+            && self
+                .appearance
+                .member_list_background
+                .eq_ignore_ascii_case("#ECECEC")
+        {
+            self.appearance.member_list_background = "#FFFFFF".into();
+        }
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
         self.servers
@@ -373,7 +382,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=7) => serde_json::from_value::<Settings>(value)
+        Some(2..=8) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -446,7 +455,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 7);
+        assert_eq!(settings.version, 8);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -468,7 +477,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 7);
+        assert_eq!(settings.version, 8);
         assert!(
             settings
                 .servers
@@ -497,7 +506,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 7);
+        assert_eq!(settings.version, 8);
         assert!(
             settings
                 .servers
@@ -515,7 +524,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 7);
+        assert_eq!(settings.version, 8);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -537,7 +546,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 7);
+        assert_eq!(settings.version, 8);
         assert!(!settings.connect_on_startup);
         settings.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
@@ -554,7 +563,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 7);
+        assert_eq!(settings.version, 8);
         assert_eq!(settings.language, Language::System);
         settings.language = Language::English;
         save_to(&path, &settings).unwrap();
@@ -562,6 +571,31 @@ mod tests {
             load_from(&path).unwrap().unwrap().language,
             Language::English
         );
+    }
+
+    #[test]
+    fn migrates_legacy_background_to_member_list_color() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 7.into();
+        old["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("member_list_background");
+        old["appearance"]["background"] = "#ECECEC".into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.appearance.member_list_background, "#FFFFFF");
+
+        old["appearance"]["background"] = "#123ABC".into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.appearance.member_list_background, "#123ABC");
+        save_to(&path, &settings).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["appearance"]["member_list_background"], "#123ABC");
+        assert!(saved["appearance"].get("background").is_none());
     }
 
     #[test]

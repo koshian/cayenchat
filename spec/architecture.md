@@ -132,7 +132,10 @@ rustls cannot infer a provider from crate features alone.
 The UI loads versioned preferences from the platform user configuration directory.
 Version 5 adds appearance colors, alternating log rows, and per-pane font choices;
 version 6 adds an opt-in startup connection flag, and version 7 adds a language
-preference. Missing startup-connection values default to disabled, and older
+preference. Version 8 renames the appearance background to member-list background
+and changes its default to white; the old default gray migrates to white while
+custom saved colors remain. The member-list color no longer affects the input bar
+or the window root. Missing startup-connection values default to disabled, and older
 settings default to System language; existing saved choices remain intact. The UI resolves the system language with `sys-locale` (Japanese or
 English fallback), loads `locales/ja.json` or `locales/en.json` beside the app or
 from its resource directory, and falls back to bundled catalog content. Saving a
