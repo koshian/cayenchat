@@ -104,6 +104,7 @@ struct SettingsForm {
     member_list_background: Entity<TextInput>,
     main_log_background: Entity<TextInput>,
     main_log_alternate: Entity<TextInput>,
+    channel_event_color: Entity<TextInput>,
     sub_log_background: Entity<TextInput>,
     sub_log_alternate: Entity<TextInput>,
     main_log_font: Entity<TextInput>,
@@ -174,6 +175,12 @@ impl SettingsForm {
                 cx,
             ),
             main_log_alternate: field("#F2F5FF", &values.appearance.main_log_alternate, false, cx),
+            channel_event_color: field(
+                "#3B7655",
+                &values.appearance.channel_event_color,
+                false,
+                cx,
+            ),
             sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
             sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
             main_log_font: field(
@@ -251,6 +258,7 @@ impl SettingsForm {
             member_list_background: value(&self.member_list_background),
             main_log_background: value(&self.main_log_background),
             main_log_alternate: value(&self.main_log_alternate),
+            channel_event_color: value(&self.channel_event_color),
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
@@ -2078,6 +2086,11 @@ impl SettingsWindow {
                 cx,
             ))
             .child(color_field(
+                &self.i18n.text("channel_event_color"),
+                self.settings.channel_event_color.clone(),
+                cx,
+            ))
+            .child(color_field(
                 &self.i18n.text("combined_log"),
                 self.settings.sub_log_background.clone(),
                 cx,
@@ -2354,6 +2367,7 @@ impl Render for ChatWindow {
         let appearance = &self.appearance;
         let main_bg = rgb(color_value(&appearance.main_log_background).unwrap_or(0xffffff));
         let main_alt = rgb(color_value(&appearance.main_log_alternate).unwrap_or(0xf2f5ff));
+        let event_color = rgb(color_value(&appearance.channel_event_color).unwrap_or(0x3b7655));
         let sub_bg = rgb(color_value(&appearance.sub_log_background).unwrap_or(0xf9fafb));
         let sub_alt = rgb(color_value(&appearance.sub_log_alternate).unwrap_or(0xf2f5ff));
         let time_font = selected_font(&appearance.time_font, default_time_font()).to_owned();
@@ -2560,6 +2574,7 @@ impl Render for ChatWindow {
                                 .id(("message-text", index))
                                 .flex_1()
                                 .min_w_0()
+                                .when(message.activity, |d| d.text_color(event_color))
                                 .cursor(CursorStyle::IBeam)
                                 .child(styled)
                                 .on_mouse_down(
@@ -2739,11 +2754,17 @@ impl Render for ChatWindow {
                                         )),
                                 ),
                         )
-                        .child(div().flex_1().min_w_0().child(if message.activity {
-                            message.text.clone()
-                        } else {
-                            format!("{}: {}", message.sender, message.text)
-                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .when(message.activity, |d| d.text_color(event_color))
+                                .child(if message.activity {
+                                    message.text.clone()
+                                } else {
+                                    format!("{}: {}", message.sender, message.text)
+                                }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.dispatch(Command::SelectChannel(id), window, cx);
                         }))

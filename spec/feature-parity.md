@@ -109,7 +109,7 @@ History and notifications remain TODO.
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - TODO — notification preferences
-- PARTIAL — separate Appearance tab persists member-list and log background colors, alternating message rows, and font families for logs, users, tree, input and monospace time
+- PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - TODO — keyboard shortcut preferences where practical
 
 ## IRCv3

@@ -109,7 +109,8 @@ the actual latest line last even when several channels receive messages within
 the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
 a nickname column regardless of the UI language, and does not mark the channel
-unread. The main log keeps separate scroll positions for each
+unread. Its text uses a configurable muted green by default in both the main log
+and combined subwindow. The main log keeps separate scroll positions for each
 server or channel, and both left logs
 follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts. Channel

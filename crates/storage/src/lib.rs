@@ -55,6 +55,7 @@ pub struct Appearance {
     pub member_list_background: String,
     pub main_log_background: String,
     pub main_log_alternate: String,
+    pub channel_event_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
     pub alternate_rows: bool,
@@ -72,6 +73,7 @@ impl Default for Appearance {
             member_list_background: "#FFFFFF".into(),
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
+            channel_event_color: "#3B7655".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
@@ -91,6 +93,7 @@ impl Appearance {
             ("Member list", &self.member_list_background),
             ("Main log", &self.main_log_background),
             ("Main alternate", &self.main_log_alternate),
+            ("Channel event", &self.channel_event_color),
             ("Sub log", &self.sub_log_background),
             ("Sub alternate", &self.sub_log_alternate),
         ] {
@@ -534,6 +537,28 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings));
         assert_eq!(color_value("#123ABC"), Some(0x123abc));
         assert!(color_value("#123ABZ").is_none());
+    }
+
+    #[test]
+    fn channel_event_color_defaults_for_existing_settings_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut existing = serde_json::to_value(Settings::default()).unwrap();
+        existing["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("channel_event_color");
+        fs::write(&path, serde_json::to_vec(&existing).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.appearance.channel_event_color, "#3B7655");
+        settings.appearance.channel_event_color = "#246843".into();
+        settings.appearance.validate().unwrap();
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+
+        settings.appearance.channel_event_color = "green".into();
+        assert!(settings.appearance.validate().is_err());
     }
 
     #[test]
