@@ -162,7 +162,7 @@ impl AppState {
                         }
                     })
                     .collect(),
-                members: members.into_iter().map(str::to_owned).collect(),
+                members: sorted_members(members.into_iter().map(str::to_owned).collect()),
             },
         )
         .collect();
@@ -336,7 +336,7 @@ impl AppState {
                 .iter_mut()
                 .find(|channel| channel.id == id)
         {
-            channel.members = members;
+            channel.members = sorted_members(members);
         }
     }
 
@@ -553,6 +553,19 @@ impl AppState {
     }
 }
 
+fn sorted_members(mut members: Vec<String>) -> Vec<String> {
+    members.sort_by(|a, b| {
+        let a_nick = a.trim_start_matches(['~', '&', '@', '%', '+']);
+        let b_nick = b.trim_start_matches(['~', '&', '@', '%', '+']);
+        let a_op = a.starts_with(['~', '&', '@', '%']);
+        let b_op = b.starts_with(['~', '&', '@', '%']);
+        b_op.cmp(&a_op)
+            .then_with(|| a_nick.to_lowercase().cmp(&b_nick.to_lowercase()))
+            .then_with(|| a_nick.cmp(b_nick))
+    });
+    members
+}
+
 fn local_time() -> String {
     chrono::Local::now().format("%H:%M").to_string()
 }
@@ -567,6 +580,34 @@ fn push_bounded(messages: &mut Vec<Message>, message: Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sorts_roster_after_every_update_with_operators_first() {
+        let mut state = AppState::live("irc.example.org".into(), vec!["#test".into()]);
+        state.set_members(
+            NetworkId(1),
+            "#test",
+            vec![
+                "zoe".into(),
+                "+bob".into(),
+                "@Alice".into(),
+                "%carol".into(),
+            ],
+        );
+        assert_eq!(
+            state.selected_channel().unwrap().members,
+            ["@Alice", "%carol", "+bob", "zoe"]
+        );
+        state.set_members(
+            NetworkId(1),
+            "#test",
+            vec!["zoe".into(), "@bob".into(), "alice".into()],
+        );
+        assert_eq!(
+            state.selected_channel().unwrap().members,
+            ["@bob", "alice", "zoe"]
+        );
+    }
 
     #[test]
     fn same_named_channels_keep_networks_and_logs_separate() {
