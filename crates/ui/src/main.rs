@@ -1482,9 +1482,10 @@ impl SettingsWindow {
         div()
             .w(px(680.))
             .p_4()
-            .my_4()
+            .mb_4()
             .bg(rgb(0xffffff))
             .border_1()
+            .border_t_0()
             .border_color(rgb(0xb7bdc4))
             .flex()
             .flex_col()
@@ -1866,9 +1867,10 @@ impl SettingsWindow {
         div()
             .w(px(680.))
             .p_4()
-            .my_4()
+            .mb_4()
             .bg(rgb(0xffffff))
             .border_1()
+            .border_t_0()
             .border_color(rgb(0xb7bdc4))
             .flex()
             .flex_col()
@@ -1950,16 +1952,28 @@ impl SettingsWindow {
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = rgb(0xb7bdc4);
         let tabs = div()
             .flex()
-            .gap_2()
+            .w_full()
+            .border_b_1()
+            .border_color(border)
             .child(
                 div()
                     .id("connection-tab")
-                    .px_3()
+                    .px_4()
                     .py_2()
+                    .border_1()
+                    .border_color(border)
                     .cursor_pointer()
-                    .when(self.tab == SettingsTab::Connection, |d| d.bg(rgb(0xcbdbea)))
+                    .when(self.tab == SettingsTab::Connection, |d| {
+                        d.bg(rgb(0xffffff))
+                            .border_b_0()
+                            .font_weight(FontWeight::BOLD)
+                    })
+                    .when(self.tab != SettingsTab::Connection, |d| {
+                        d.bg(rgb(0xe8ebef)).hover(|d| d.bg(rgb(0xf5f6f8)))
+                    })
                     .child(self.i18n.text("connection"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = SettingsTab::Connection;
@@ -1970,10 +1984,20 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("appearance-tab")
-                    .px_3()
+                    .px_4()
                     .py_2()
+                    .border_1()
+                    .border_l_0()
+                    .border_color(border)
                     .cursor_pointer()
-                    .when(self.tab == SettingsTab::Appearance, |d| d.bg(rgb(0xcbdbea)))
+                    .when(self.tab == SettingsTab::Appearance, |d| {
+                        d.bg(rgb(0xffffff))
+                            .border_b_0()
+                            .font_weight(FontWeight::BOLD)
+                    })
+                    .when(self.tab != SettingsTab::Appearance, |d| {
+                        d.bg(rgb(0xe8ebef)).hover(|d| d.bg(rgb(0xf5f6f8)))
+                    })
                     .child(self.i18n.text("appearance"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = SettingsTab::Appearance;
@@ -1994,8 +2018,17 @@ impl SettingsWindow {
             .bg(rgb(0xf5f6f8))
             .text_size(px(13.))
             .text_color(rgb(0x20262d))
-            .child(div().w_full().flex().justify_center().child(tabs))
-            .child(div().w_full().flex().justify_center().child(panel))
+            .child(
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .w(px(680.))
+                        .mt_4()
+                        .flex()
+                        .flex_col()
+                        .child(tabs)
+                        .child(panel),
+                ),
+            )
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::disconnect_action))
             .on_action(cx.listener(Self::reconnect_action))
