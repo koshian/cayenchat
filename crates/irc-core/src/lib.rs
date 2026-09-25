@@ -340,6 +340,11 @@ pub enum Event {
         text: String,
         notice: bool,
     },
+    ChannelActivity {
+        channel: String,
+        actor: String,
+        kind: ChannelActivityKind,
+    },
     Names {
         channel: String,
         users: Vec<String>,
@@ -351,6 +356,14 @@ pub enum Event {
         notice: bool,
     },
     Disconnected(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChannelActivityKind {
+    Joined { mask: Option<String> },
+    Left { reason: Option<String> },
+    Quit { reason: Option<String> },
+    ModeChanged { modes: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1243,6 +1256,43 @@ fn translate_message(
     current_nick: &str,
     message: IrcMessage,
 ) -> Vec<Event> {
+    let actor = message.source_nickname().map(str::to_owned);
+    let activity = match &message.command {
+        IrcCommand::JOIN(channel, _, _) => actor.as_ref().map(|actor| {
+            let mask = message.prefix.as_ref().and_then(|prefix| {
+                let prefix = prefix.to_string();
+                prefix
+                    .strip_prefix(actor)
+                    .and_then(|suffix| suffix.strip_prefix('!'))
+                    .filter(|mask| !mask.is_empty())
+                    .map(str::to_owned)
+            });
+            Event::ChannelActivity {
+                channel: channel.clone(),
+                actor: actor.clone(),
+                kind: ChannelActivityKind::Joined { mask },
+            }
+        }),
+        IrcCommand::PART(channel, reason) => actor.as_ref().map(|actor| Event::ChannelActivity {
+            channel: channel.clone(),
+            actor: actor.clone(),
+            kind: ChannelActivityKind::Left {
+                reason: reason.clone(),
+            },
+        }),
+        IrcCommand::ChannelMODE(channel, modes) => Some(Event::ChannelActivity {
+            channel: channel.clone(),
+            actor: actor.clone().unwrap_or_else(|| "server".into()),
+            kind: ChannelActivityKind::ModeChanged {
+                modes: modes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            },
+        }),
+        _ => None,
+    };
     let changed_channels = match &message.command {
         IrcCommand::JOIN(channel, _, _) | IrcCommand::ChannelMODE(channel, _) => {
             vec![channel.clone()]
@@ -1320,6 +1370,24 @@ fn translate_message(
         }
         _ => vec![Event::ServerLine(message.to_string().trim_end().to_owned())],
     };
+    if let Some(activity) = activity {
+        translated.push(activity);
+    }
+    if let IrcCommand::QUIT(reason) = &message.command
+        && let Some(actor) = actor
+    {
+        translated.extend(
+            changed_channels
+                .iter()
+                .map(|channel| Event::ChannelActivity {
+                    channel: channel.clone(),
+                    actor: actor.clone(),
+                    kind: ChannelActivityKind::Quit {
+                        reason: reason.clone(),
+                    },
+                }),
+        );
+    }
     translated.extend(
         changed_channels
             .iter()
@@ -1674,6 +1742,7 @@ mod tests {
         let mut seen_roster_updated = false;
         let mut seen_nick_update = false;
         let mut seen_quit_update = false;
+        let mut activities = Vec::new();
         let mut rosters = Vec::new();
         let mut transcript = Vec::new();
         while Instant::now() < deadline
@@ -1711,6 +1780,11 @@ mod tests {
                             && !users.contains(&"@charlie".to_owned());
                         seen_quit_update |= channel == "#test" && users == ["@alice"];
                     }
+                    Event::ChannelActivity {
+                        channel,
+                        actor,
+                        kind,
+                    } if channel == "#test" => activities.push((actor, kind)),
                     Event::Wire {
                         direction, line, ..
                     } => transcript.push((direction, line)),
@@ -1731,6 +1805,40 @@ mod tests {
                 && seen_quit_update,
             "rosters: {rosters:?}"
         );
+        for expected in [
+            (
+                "alice",
+                ChannelActivityKind::Joined {
+                    mask: Some("u@h".into()),
+                },
+            ),
+            (
+                "charlie",
+                ChannelActivityKind::Joined {
+                    mask: Some("u@h".into()),
+                },
+            ),
+            (
+                "alice",
+                ChannelActivityKind::ModeChanged {
+                    modes: "+o charlie".into(),
+                },
+            ),
+            ("bob", ChannelActivityKind::Left { reason: None }),
+            (
+                "dave",
+                ChannelActivityKind::Quit {
+                    reason: Some("bye".into()),
+                },
+            ),
+        ] {
+            assert!(
+                activities
+                    .iter()
+                    .any(|(actor, kind)| actor == expected.0 && kind == &expected.1),
+                "missing {expected:?}: {activities:?}"
+            );
+        }
         connection.send_message("#test", "outgoing", false).unwrap();
         connection.send_message("#test", "notice", true).unwrap();
         connection.send_private_message("charlie", "hello").unwrap();

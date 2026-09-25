@@ -159,6 +159,7 @@ impl AppState {
                             sequence: next_message_sequence,
                             sender: sender.into(),
                             text: text.into(),
+                            activity: false,
                         }
                     })
                     .collect(),
@@ -274,6 +275,7 @@ impl AppState {
                 sequence: self.next_message_sequence,
                 sender: "server".into(),
                 text,
+                activity: false,
             },
         );
     }
@@ -367,10 +369,33 @@ impl AppState {
                         } else {
                             text.into()
                         },
+                        activity: false,
                     },
                 );
             }
             self.mark_unread(id);
+        }
+    }
+
+    pub fn append_channel_activity(&mut self, network: NetworkId, name: &str, text: String) {
+        if let Some(id) = self.ensure_channel(network, name) {
+            self.next_message_sequence += 1;
+            if let Some(channel) = self
+                .conversations
+                .iter_mut()
+                .find(|channel| channel.id == id)
+            {
+                push_bounded(
+                    &mut channel.messages,
+                    Message {
+                        time: local_time(),
+                        sequence: self.next_message_sequence,
+                        sender: String::new(),
+                        text,
+                        activity: true,
+                    },
+                );
+            }
         }
     }
 
@@ -740,5 +765,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["first", "latest"]
         );
+    }
+
+    #[test]
+    fn channel_activity_is_ordered_without_marking_unread() {
+        let mut state =
+            AppState::live("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
+        state.append_channel_activity(NetworkId(1), "#two", "alice has joined (u@h)".into());
+        assert!(!state.is_unread(ConversationId(2)));
+        state.append_channel_message(NetworkId(1), "#two", "alice", "hello", false);
+        assert!(state.is_unread(ConversationId(2)));
+        let channel = &state.conversations()[1];
+        assert!(channel.messages[0].activity);
+        assert!(channel.messages[0].sequence < channel.messages[1].sequence);
+        assert_eq!(channel.messages[0].text, "alice has joined (u@h)");
+        assert!(!channel.messages[1].activity);
     }
 }

@@ -3,7 +3,8 @@ mod localization;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
 use cayenchat_irc_core::{
-    Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials, WireDirection,
+    ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
+    WireDirection,
 };
 use cayenchat_model::{ConversationId, NetworkId};
 use cayenchat_storage::{Appearance, Language, Settings, TextEncoding, color_value};
@@ -1095,6 +1096,42 @@ impl ChatWindow {
             } => {
                 self.state
                     .append_channel_message(network, &channel, &sender, &text, notice);
+            }
+            Event::ChannelActivity {
+                channel,
+                actor,
+                kind,
+            } => {
+                let text = match kind {
+                    ChannelActivityKind::Joined { mask } => {
+                        let text = self
+                            .i18n
+                            .format("event_channel_joined", &[("actor", &actor)]);
+                        match mask {
+                            Some(mask) => format!("{text} ({mask})"),
+                            None => text,
+                        }
+                    }
+                    ChannelActivityKind::Left { reason } => {
+                        let text = self.i18n.format("event_channel_left", &[("actor", &actor)]);
+                        match reason.filter(|reason| !reason.is_empty()) {
+                            Some(reason) => format!("{text} ({reason})"),
+                            None => text,
+                        }
+                    }
+                    ChannelActivityKind::Quit { reason } => {
+                        let text = self.i18n.format("event_channel_quit", &[("actor", &actor)]);
+                        match reason.filter(|reason| !reason.is_empty()) {
+                            Some(reason) => format!("{text} ({reason})"),
+                            None => text,
+                        }
+                    }
+                    ChannelActivityKind::ModeChanged { modes } => self.i18n.format(
+                        "event_channel_mode_changed",
+                        &[("actor", &actor), ("modes", &modes)],
+                    ),
+                };
+                self.state.append_channel_activity(network, &channel, text);
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
@@ -2508,24 +2545,26 @@ impl Render for ChatWindow {
                                 .text_color(rgb(0x747b82))
                                 .child(message.time.clone()),
                         )
-                        .child(
-                            div()
-                                .w(px(84.))
-                                .flex_shrink_0()
-                                .flex()
-                                .justify_end()
-                                .text_right()
-                                .text_color(rgb(0x315b83))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(message.sender.clone()),
-                                )
-                                .child(":"),
-                        )
+                        .when(!message.activity, |row| {
+                            row.child(
+                                div()
+                                    .w(px(84.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_end()
+                                    .text_right()
+                                    .text_color(rgb(0x315b83))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(message.sender.clone()),
+                                    )
+                                    .child(":"),
+                            )
+                        })
                         .child(
                             div()
                                 .id(("message-text", index))
@@ -2710,12 +2749,11 @@ impl Render for ChatWindow {
                                         )),
                                 ),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(format!("{}: {}", message.sender, message.text)),
-                        )
+                        .child(div().flex_1().min_w_0().child(if message.activity {
+                            message.text.clone()
+                        } else {
+                            format!("{}: {}", message.sender, message.text)
+                        }))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.dispatch(Command::SelectChannel(id), window, cx);
                         }))

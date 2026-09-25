@@ -45,7 +45,7 @@ History and notifications remain TODO.
 - PARTIAL — `/me` sends CTCP ACTION; received ACTION is not specially rendered
 - PARTIAL — local receive/send timestamps; no server-time tags
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
-- PARTIAL — own joins/parts update active channels; other join/part/quit events remain pending
+- PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT and channel MODE activity, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log still switches channels
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable

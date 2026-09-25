@@ -31,4 +31,5 @@ pub struct Message {
     pub sequence: u64,
     pub sender: String,
     pub text: String,
+    pub activity: bool,
 }
