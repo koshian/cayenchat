@@ -797,11 +797,13 @@ impl ChatWindow {
         Ok(())
     }
 
-    fn is_joined(&self, channel: &str) -> bool {
-        self.state.conversations().iter().any(|conversation| {
-            conversation.name.eq_ignore_ascii_case(channel)
-                && self.state.is_active_channel(conversation.id)
-        })
+    fn joined_channels(&self) -> HashSet<String> {
+        self.state
+            .conversations()
+            .iter()
+            .filter(|conversation| self.state.is_active_channel(conversation.id))
+            .map(|conversation| conversation.name.to_lowercase())
+            .collect()
     }
 
     fn join_channel(&mut self, channel: &str, cx: &mut Context<Self>) -> Result<(), String> {
@@ -830,7 +832,7 @@ impl ChatWindow {
         let Some(owner) = self.window_handle else {
             return;
         };
-        match WhoisWindow::open(owner, info, self.i18n.clone(), cx) {
+        match WhoisWindow::open(owner, info, self.joined_channels(), self.i18n.clone(), cx) {
             Ok(handle) => {
                 self.whois_windows.insert(key, handle);
                 cx.activate(true);
@@ -1151,6 +1153,12 @@ impl ChatWindow {
             }
         }
         if changed {
+            let joined = self.joined_channels();
+            self.whois_windows.retain(|_, handle| {
+                handle
+                    .update(cx, |view, _, cx| view.set_joined(joined.clone(), cx))
+                    .is_ok()
+            });
             let placeholder = self.i18n.text("draft_placeholder");
             for channel in self.state.conversations() {
                 let key = Selection::Channel(channel.id);

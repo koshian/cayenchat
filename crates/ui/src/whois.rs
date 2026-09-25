@@ -1,6 +1,7 @@
 use crate::{ChatWindow, localization::Localizer};
 use cayenchat_irc_core::WhoisInfo;
 use gpui::{prelude::*, *};
+use std::collections::HashSet;
 
 const BORDER: u32 = 0xb7bdc4;
 const MUTED: u32 = 0x6b737c;
@@ -8,6 +9,9 @@ const MUTED: u32 = 0x6b737c;
 pub struct WhoisWindow {
     owner: WindowHandle<ChatWindow>,
     info: WhoisInfo,
+    // Lowercase joined channel names pushed by the owner; reading the owner
+    // while rendering would re-enter it during its own update.
+    joined: HashSet<String>,
     status: Option<String>,
     i18n: Localizer,
     focus: FocusHandle,
@@ -17,6 +21,7 @@ impl WhoisWindow {
     pub fn open(
         owner: WindowHandle<ChatWindow>,
         info: WhoisInfo,
+        joined: HashSet<String>,
         i18n: Localizer,
         cx: &mut App,
     ) -> Result<WindowHandle<Self>, String> {
@@ -39,6 +44,7 @@ impl WhoisWindow {
                     Self {
                         owner,
                         info,
+                        joined,
                         status: None,
                         i18n,
                         focus,
@@ -62,6 +68,13 @@ impl WhoisWindow {
             );
         }
         cx.notify();
+    }
+
+    pub fn set_joined(&mut self, joined: HashSet<String>, cx: &mut Context<Self>) {
+        if self.joined != joined {
+            self.joined = joined;
+            cx.notify();
+        }
     }
 
     pub fn set_localizer(&mut self, i18n: Localizer, cx: &mut Context<Self>) {
@@ -120,18 +133,10 @@ impl WhoisWindow {
     }
 
     fn channel_list(&self, cx: &mut Context<Self>) -> Div {
-        let joined: Vec<bool> = {
-            let chat = self.owner.read(cx).ok();
-            self.info
-                .channels
-                .iter()
-                .map(|entry| chat.is_some_and(|chat| chat.is_joined(channel_name(entry))))
-                .collect()
-        };
         let mut list = div().flex().flex_col().gap_1();
         for (index, entry) in self.info.channels.iter().enumerate() {
             let channel = channel_name(entry).to_owned();
-            let action = if joined[index] {
+            let action = if self.joined.contains(&channel.to_lowercase()) {
                 div()
                     .text_color(rgb(MUTED))
                     .child(self.i18n.text("whois_joined"))

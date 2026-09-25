@@ -176,7 +176,10 @@ only for nicknames this client requested, because a bouncer such as Tiarra relay
 replies to every attached client; an open window for the same nick is updated and
 raised instead. The window offers private message, join for listed channels,
 update (re-sends WHOIS) and close/Escape. A 318 without 311 reports that the nick
-is offline.
+is offline. The chat window pushes its joined-channel set into WHOIS windows;
+they must not read the chat window while rendering, because opening a window
+renders synchronously inside the chat window's update and re-entry aborts on
+macOS.
 The core preserves displayed rank across nick changes because the current IRC
 library drops user access levels on rename; a later MODE or completed NAMES
 snapshot replaces that carried rank.
