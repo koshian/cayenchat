@@ -2624,6 +2624,7 @@ impl Render for ChatWindow {
                         .cursor_pointer()
                         .when(selection == Selection::Channel(id), |d| d.bg(rgb(0xcbdbea)))
                         .when(unread, |d| d.font_weight(FontWeight::BOLD))
+                        .when(!joined, |d| d.text_color(rgb(0x8a9097)))
                         .hover(|d| d.bg(rgb(0xdce5ee)))
                         .child(format!(
                             "{}{}",
