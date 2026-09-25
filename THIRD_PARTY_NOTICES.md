@@ -1,7 +1,9 @@
 # Third-party notices
 
-The application depends on [GPUI 0.2.2](https://docs.rs/crate/gpui/0.2.2),
-Copyright Zed Industries, licensed under Apache License 2.0. In addition,
+The application uses a local copy of [GPUI 0.2.2](https://docs.rs/crate/gpui/0.2.2)
+in `vendor/gpui`, Copyright Zed Industries, licensed under Apache License 2.0.
+The Windows keyboard-message handling in this copy is patched as described in
+`vendor/gpui/PATCHES.md`. In addition,
 `crates/ui/src/input.rs` adapts its
 [text input example](https://docs.rs/crate/gpui/0.2.2/source/examples/input.rs)
 and remains under Apache License 2.0. The license is retained in

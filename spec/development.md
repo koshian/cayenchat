@@ -349,8 +349,24 @@ confirm with Enter/Tab in both draft and settings fields, and test surrogate-pai
 characters. The app guards Send and completion while GPUI reports a marked
 composition. GPUI 0.2.2 predates the merged upstream
 [Windows IME keyboard fix](https://github.com/zed-industries/zed/pull/41259),
-so mode-switching failures may remain until a newer GPUI can be adopted.
-Windows runtime was not available for this check.
+so the unpatched dependency could still fail to switch modes. The later
+language-key audit and focused local patch are recorded below. Windows runtime
+was not available for this check.
+
+### Windows language-key handling audit (2026-09-25)
+
+The app's Windows key bindings do not register Half-width/Full-width, Kanji, or
+other IME mode keys. The published GPUI 0.2.2 Windows backend instead discards
+keydown messages when `parse_normal_key` cannot name a key, skipping
+`TranslateMessage`; it also unwraps `VK_PROCESSKEY` into a shortcut candidate.
+The [upstream IME fix](https://github.com/zed-industries/zed/pull/41259)
+identifies these paths as causes of Japanese/Korean language-key failures,
+including the MS-IME Half-width/Full-width toggle. `vendor/gpui` is a local
+GPUI 0.2.2 copy with a targeted patch to these paths. A macOS build can check
+dependency integration but not compile or verify the Windows event path here.
+On Windows 11, test the toggle in both the draft and settings text fields,
+followed by composition, conversion, cancellation, Enter, Tab, and Alt+Space.
+Compare against the same MS-IME and layout in a native Windows text editor.
 
 ### Japanese and English localization (2026-09-25)
 

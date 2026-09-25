@@ -119,6 +119,6 @@ Messages arriving in other channels mark them unread; opening one clears its mar
 
 Ordinary text sends only after the selected channel has been joined; slash commands can also be entered from the server view after registration. Successful local queueing clears the draft. Sending while disconnected or joining displays feedback and retains the draft. The input implements common platform editing bindings, selection, paste, undo/redo, and IME text input; GPUI 0.2.2 does not yet honor user-defined macOS `DefaultKeyBinding.dict` mappings. The app shortcuts above take precedence where they overlap input editing keys.
 
-On Windows, Send and nickname completion are suppressed while the text input has an active IME composition. GPUI 0.2.2 predates an [upstream fix for Japanese and other IME switching keys](https://github.com/zed-industries/zed/pull/41259); the mode-switching issue still needs verification on a Windows machine.
+On Windows, Send and nickname completion are suppressed while the text input has an active IME composition. The included GPUI 0.2.2 copy patches its handling of unrecognized language keys and IME-processed keys, following the relevant parts of an [upstream fix](https://github.com/zed-industries/zed/pull/41259). MS-IME switching with the Half-width/Full-width key still needs verification on a Windows 11 machine.
 
 The specifications under [`spec/`](spec/) are authoritative; see [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md) for implementation scope.

@@ -105,7 +105,9 @@ Primary sources inspected:
 
 **Status:** Accepted for bootstrap; framework choice remains provisional (D002).
 
-Pin the published `gpui` crate to 0.2.2 and retain Cargo.lock. Use Rust edition 2024
+Pin `gpui` to 0.2.2 and retain Cargo.lock. The project now uses a local copy of
+that published crate in `vendor/gpui` to patch Windows IME key-message handling;
+see `vendor/gpui/PATCHES.md`. Use Rust edition 2024
 and resolver 3. Enable `font-kit` for macOS glyph rendering and `runtime_shaders` for
 Metal shader compilation at application startup. Keep unused default features off;
 enable Wayland and X11 on Linux and the window manifest on Windows. This avoids
@@ -226,8 +228,11 @@ URLs open, on double-click; log selection copies message-body text.
 
 GPUI 0.2.2's Windows input handling predates upstream's merged November 2025
 Japanese/Korean keyboard and IME corrections. Guard Send and nickname completion
-while this app's text input has marked composition, but treat Windows IME mode
-switching as an upstream platform issue until a GPUI release with the fix can be
-adopted and tested on Windows. Do not claim Windows IME is fixed from a macOS build.
+while this app's text input has marked composition. The local GPUI copy now
+translates unrecognized keydown messages, including language keys, and does not
+unwrap `VK_PROCESSKEY` into app shortcuts. This targets the reported MS-IME
+half-width/full-width toggle failure without changing app bindings. The upstream
+fix is broader, so Windows hardware validation remains required. Do not claim
+Windows IME is fixed from a macOS build.
 
 Source: [upstream Windows input/IME fix](https://github.com/zed-industries/zed/pull/41259).

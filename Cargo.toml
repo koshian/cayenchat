@@ -25,5 +25,9 @@ serde_json = "1"
 dirs = "5"
 base64 = "0.22"
 
+[patch.crates-io]
+# GPUI 0.2.2 predates upstream's Windows language-key/IME message handling fix.
+gpui = { path = "vendor/gpui" }
+
 [profile.dev]
 debug = 1
