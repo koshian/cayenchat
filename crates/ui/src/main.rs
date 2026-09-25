@@ -50,6 +50,24 @@ fn reaches_log_bottom(
     next <= -max + SCROLL_BOTTOM_TOLERANCE
 }
 
+fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
+    fn with_detail(actor: &str, action: &str, detail: Option<String>) -> String {
+        match detail.filter(|detail| !detail.is_empty()) {
+            Some(detail) => format!("{actor} {action} ({detail})"),
+            None => format!("{actor} {action}"),
+        }
+    }
+
+    match kind {
+        ChannelActivityKind::Joined { mask } => with_detail(actor, "has joined", mask),
+        ChannelActivityKind::Left { reason } => with_detail(actor, "has left", reason),
+        ChannelActivityKind::Quit { reason } => with_detail(actor, "has quit", reason),
+        ChannelActivityKind::ModeChanged { modes } => {
+            format!("{actor} has changed mode: {modes}")
+        }
+    }
+}
+
 actions!(
     cayenchat,
     [
@@ -1102,35 +1120,7 @@ impl ChatWindow {
                 actor,
                 kind,
             } => {
-                let text = match kind {
-                    ChannelActivityKind::Joined { mask } => {
-                        let text = self
-                            .i18n
-                            .format("event_channel_joined", &[("actor", &actor)]);
-                        match mask {
-                            Some(mask) => format!("{text} ({mask})"),
-                            None => text,
-                        }
-                    }
-                    ChannelActivityKind::Left { reason } => {
-                        let text = self.i18n.format("event_channel_left", &[("actor", &actor)]);
-                        match reason.filter(|reason| !reason.is_empty()) {
-                            Some(reason) => format!("{text} ({reason})"),
-                            None => text,
-                        }
-                    }
-                    ChannelActivityKind::Quit { reason } => {
-                        let text = self.i18n.format("event_channel_quit", &[("actor", &actor)]);
-                        match reason.filter(|reason| !reason.is_empty()) {
-                            Some(reason) => format!("{text} ({reason})"),
-                            None => text,
-                        }
-                    }
-                    ChannelActivityKind::ModeChanged { modes } => self.i18n.format(
-                        "event_channel_mode_changed",
-                        &[("actor", &actor), ("modes", &modes)],
-                    ),
-                };
+                let text = channel_activity_text(&actor, kind);
                 self.state.append_channel_activity(network, &channel, text);
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
@@ -3279,7 +3269,8 @@ fn main() {
 
 #[cfg(test)]
 mod log_tests {
-    use super::{LogPosition, LogSelection, log_urls};
+    use super::{LogPosition, LogSelection, channel_activity_text, log_urls};
+    use cayenchat_irc_core::ChannelActivityKind;
     use cayenchat_model::ConversationId;
 
     #[test]
@@ -3291,6 +3282,41 @@ mod log_tests {
         assert_eq!(urls[0].1, "https://example.org/a?q=1");
         assert_eq!(urls[1].1, "http://example.jp/path");
         assert_eq!(&text[urls[0].0.clone()], urls[0].1);
+    }
+
+    #[test]
+    fn channel_activity_uses_english_phrases_with_optional_details() {
+        assert_eq!(
+            channel_activity_text(
+                "kaeru",
+                ChannelActivityKind::Joined {
+                    mask: Some("~kaeru@host".into()),
+                },
+            ),
+            "kaeru has joined (~kaeru@host)"
+        );
+        assert_eq!(
+            channel_activity_text("kaeru", ChannelActivityKind::Left { reason: None }),
+            "kaeru has left"
+        );
+        assert_eq!(
+            channel_activity_text(
+                "kaeru",
+                ChannelActivityKind::Quit {
+                    reason: Some("bye".into()),
+                },
+            ),
+            "kaeru has quit (bye)"
+        );
+        assert_eq!(
+            channel_activity_text(
+                "tepeu",
+                ChannelActivityKind::ModeChanged {
+                    modes: "+o kaeru".into(),
+                },
+            ),
+            "tepeu has changed mode: +o kaeru"
+        );
     }
 
     #[test]

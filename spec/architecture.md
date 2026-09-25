@@ -106,9 +106,10 @@ other than the selected one, with a direct jump to the source conversation. Its
 channel/server labels are single-line and ellipsize within their column. Channel
 messages have an application arrival sequence so the combined subwindow shows
 the actual latest line last even when several channels receive messages within
-the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares the channel
-arrival sequence, renders as a timestamped line without a nickname column, and
-does not mark the channel unread. The main log keeps separate scroll positions for each
+the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares
+the channel arrival sequence, renders in English as a timestamped line without
+a nickname column regardless of the UI language, and does not mark the channel
+unread. The main log keeps separate scroll positions for each
 server or channel, and both left logs
 follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts. Channel
