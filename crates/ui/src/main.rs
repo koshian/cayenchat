@@ -2,7 +2,9 @@ mod input;
 mod localization;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
-use cayenchat_irc_core::{Connection, ConnectionConfig, Event, SaslCredentials, WireDirection};
+use cayenchat_irc_core::{
+    Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials, WireDirection,
+};
 use cayenchat_model::{ConversationId, NetworkId};
 use cayenchat_storage::{Appearance, Language, Settings, TextEncoding, color_value};
 use gpui::{prelude::*, *};
@@ -312,6 +314,8 @@ struct ChatWindow {
     retry_attempt: usize,
     retry_token: u64,
     server_menu: Option<Point<Pixels>>,
+    member_menu: Option<MemberMenu>,
+    member_prompt: Option<MemberPrompt>,
     startup_connection: Option<Result<ConnectionConfig, String>>,
     own_nickname: Option<String>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
@@ -325,6 +329,34 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+}
+
+struct MemberMenu {
+    position: Point<Pixels>,
+    nickname: String,
+    channel: String,
+}
+
+#[derive(Clone, Copy)]
+enum MemberPromptKind {
+    PrivateMessage,
+    Invite,
+}
+
+#[derive(Clone, Copy)]
+enum MemberMenuChoice {
+    Whois,
+    PrivateMessage,
+    Invite,
+    GiveOp,
+    Deop,
+}
+
+struct MemberPrompt {
+    position: Point<Pixels>,
+    nickname: String,
+    kind: MemberPromptKind,
+    input: Entity<TextInput>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -468,6 +500,8 @@ impl ChatWindow {
             retry_attempt: 0,
             retry_token: 0,
             server_menu: None,
+            member_menu: None,
+            member_prompt: None,
             startup_connection,
             own_nickname: None,
             settings_window: None,
@@ -520,6 +554,8 @@ impl ChatWindow {
         self.retry_pending = false;
         self.retry_attempt = 0;
         self.retry_token += 1;
+        self.member_menu = None;
+        self.member_prompt = None;
         if let Some(connection) = self.irc.take() {
             let _ = connection.disconnect();
         }
@@ -676,6 +712,94 @@ impl ChatWindow {
         self.feedback = Some(message);
     }
 
+    fn member_command(&mut self, command: MemberCommand, cx: &mut Context<Self>) {
+        let Some(menu) = self.member_menu.take() else {
+            return;
+        };
+        self.feedback = match self.irc.as_ref() {
+            Some(connection)
+                if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
+            {
+                connection
+                    .send_member_command(&menu.nickname, command)
+                    .err()
+            }
+            _ => Some(self.i18n.text("not_connected")),
+        };
+        cx.notify();
+    }
+
+    fn open_member_prompt(
+        &mut self,
+        kind: MemberPromptKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.member_menu.take() else {
+            return;
+        };
+        let placeholder = self.i18n.text(match kind {
+            MemberPromptKind::PrivateMessage => "member_message_placeholder",
+            MemberPromptKind::Invite => "member_channel_placeholder",
+        });
+        let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
+        let viewport = window.viewport_size();
+        self.feedback = None;
+        self.member_prompt = Some(MemberPrompt {
+            position: point(
+                menu.position.x.min((viewport.width - px(300.)).max(px(0.))),
+                menu.position
+                    .y
+                    .min((viewport.height - px(140.)).max(px(0.))),
+            ),
+            nickname: menu.nickname,
+            kind,
+            input: input.clone(),
+        });
+        window.focus(&input.focus_handle(cx));
+        cx.notify();
+    }
+
+    fn submit_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.member_prompt.as_ref() else {
+            return;
+        };
+        if prompt.input.read(cx).is_composing() {
+            return;
+        }
+        let value = prompt.input.read(cx).text().to_owned();
+        let result = match self.irc.as_ref() {
+            Some(connection)
+                if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
+            {
+                match prompt.kind {
+                    MemberPromptKind::PrivateMessage if value.trim().is_empty() => {
+                        Err(self.i18n.text("member_message_required"))
+                    }
+                    MemberPromptKind::PrivateMessage => {
+                        connection.send_private_message(&prompt.nickname, &value)
+                    }
+                    MemberPromptKind::Invite => connection.send_member_command(
+                        &prompt.nickname,
+                        MemberCommand::Invite {
+                            channel: value.trim().to_owned(),
+                        },
+                    ),
+                }
+            }
+            _ => Err(self.i18n.text("not_connected")),
+        };
+        match result {
+            Ok(()) => {
+                self.member_prompt = None;
+                self.feedback = None;
+                window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+            }
+            Err(error) => self.feedback = Some(error),
+        }
+        cx.notify();
+    }
+
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(handle) = self.settings_window
             && handle
@@ -807,6 +931,8 @@ impl ChatWindow {
     }
 
     fn dispatch(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        self.server_menu = None;
+        self.member_menu = None;
         self.state.dispatch(command);
         self.log_selection = None;
         self.feedback = None;
@@ -827,6 +953,13 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .member_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            return;
+        }
         let Some(channel) = self.state.selected_channel() else {
             return;
         };
@@ -1028,11 +1161,27 @@ impl ChatWindow {
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
-        self.send_draft(false, window, cx);
+        if self
+            .member_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            self.submit_member_prompt(window, cx);
+        } else {
+            self.send_draft(false, window, cx);
+        }
     }
 
     fn notice(&mut self, _: &Notice, window: &mut Window, cx: &mut Context<Self>) {
-        self.send_draft(true, window, cx);
+        if self
+            .member_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            self.submit_member_prompt(window, cx);
+        } else {
+            self.send_draft(true, window, cx);
+        }
     }
 }
 
@@ -2230,6 +2379,8 @@ impl Render for ChatWindow {
                                     .y
                                     .min((viewport.height - px(76.)).max(px(0.))),
                             ));
+                            this.member_menu = None;
+                            this.member_prompt = None;
                             cx.stop_propagation();
                             cx.notify();
                         }),
@@ -2571,6 +2722,15 @@ impl Render for ChatWindow {
                 },
             ));
 
+        let member_rows: Vec<_> = selected
+            .into_iter()
+            .flat_map(|channel| {
+                channel
+                    .members
+                    .iter()
+                    .map(|member| (channel.name.clone(), member.clone()))
+            })
+            .collect();
         let members = div()
             .id("members")
             .flex_1()
@@ -2584,10 +2744,44 @@ impl Render for ChatWindow {
                 d.font_family(appearance.member_font.clone())
             })
             .children(
-                selected
+                member_rows
                     .into_iter()
-                    .flat_map(|channel| channel.members.iter())
-                    .map(|nick| div().px_2().py(px(1.)).child(nick.clone())),
+                    .enumerate()
+                    .map(|(index, (channel, member))| {
+                        let nickname = member
+                            .trim_start_matches(['~', '&', '@', '%', '+'])
+                            .to_owned();
+                        div()
+                            .id(("member", index))
+                            .px_2()
+                            .py(px(1.))
+                            .hover(|d| d.bg(rgb(0xe8eff6)))
+                            .child(member)
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    let viewport = window.viewport_size();
+                                    this.server_menu = None;
+                                    this.member_prompt = None;
+                                    this.member_menu = Some(MemberMenu {
+                                        position: point(
+                                            event
+                                                .position
+                                                .x
+                                                .min((viewport.width - px(210.)).max(px(0.))),
+                                            event
+                                                .position
+                                                .y
+                                                .min((viewport.height - px(190.)).max(px(0.))),
+                                        ),
+                                        nickname: nickname.clone(),
+                                        channel: channel.clone(),
+                                    });
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            )
+                    }),
             );
 
         let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
@@ -2683,19 +2877,152 @@ impl Render for ChatWindow {
                         .when(!connected, |d| d.text_color(rgb(0x8a9097))),
                 )
         });
+        let member_menu = self.member_menu.as_ref().map(|menu| {
+            let mut popup = div()
+                .id("member-context-menu")
+                .absolute()
+                .left(menu.position.x)
+                .top(menu.position.y)
+                .w(px(210.))
+                .p_1()
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(border)
+                .shadow_md();
+            let enabled =
+                connected && self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered);
+            for (index, (choice, key)) in [
+                (MemberMenuChoice::Whois, "member_whois"),
+                (MemberMenuChoice::PrivateMessage, "member_private_message"),
+                (MemberMenuChoice::Invite, "member_invite"),
+                (MemberMenuChoice::GiveOp, "member_give_op"),
+                (MemberMenuChoice::Deop, "member_deop"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if index == 3 {
+                    popup = popup.child(div().my_1().border_t_1().border_color(rgb(0xd8dde3)));
+                }
+                let channel = menu.channel.clone();
+                popup = popup.child(
+                    div()
+                        .id(("member-menu-action", index))
+                        .px_2()
+                        .py_1()
+                        .child(self.i18n.text(key))
+                        .when(enabled, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .on_click(cx.listener(move |this, _, window, cx| match choice {
+                                    MemberMenuChoice::Whois => {
+                                        this.member_command(MemberCommand::Whois, cx)
+                                    }
+                                    MemberMenuChoice::PrivateMessage => this.open_member_prompt(
+                                        MemberPromptKind::PrivateMessage,
+                                        window,
+                                        cx,
+                                    ),
+                                    MemberMenuChoice::Invite => this.open_member_prompt(
+                                        MemberPromptKind::Invite,
+                                        window,
+                                        cx,
+                                    ),
+                                    MemberMenuChoice::GiveOp => this.member_command(
+                                        MemberCommand::GiveOp {
+                                            channel: channel.clone(),
+                                        },
+                                        cx,
+                                    ),
+                                    MemberMenuChoice::Deop => this.member_command(
+                                        MemberCommand::Deop {
+                                            channel: channel.clone(),
+                                        },
+                                        cx,
+                                    ),
+                                }))
+                        })
+                        .when(!enabled, |d| d.text_color(rgb(0x8a9097))),
+                );
+            }
+            popup
+        });
+        let member_prompt = self.member_prompt.as_ref().map(|prompt| {
+            let title = self.i18n.format(
+                match prompt.kind {
+                    MemberPromptKind::PrivateMessage => "member_message_title",
+                    MemberPromptKind::Invite => "member_invite_title",
+                },
+                &[("nickname", &prompt.nickname)],
+            );
+            div()
+                .id("member-prompt")
+                .absolute()
+                .left(prompt.position.x)
+                .top(prompt.position.y)
+                .w(px(300.))
+                .p_2()
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(border)
+                .shadow_md()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().font_weight(FontWeight::BOLD).child(title))
+                .child(prompt.input.clone())
+                .when_some(self.feedback.clone(), |d, feedback| {
+                    d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("member-prompt-submit")
+                                .px_2()
+                                .py_1()
+                                .bg(rgb(0xcbdbea))
+                                .cursor_pointer()
+                                .child(self.i18n.text("member_submit"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.submit_member_prompt(window, cx)
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("member-prompt-cancel")
+                                .px_2()
+                                .py_1()
+                                .border_1()
+                                .border_color(border)
+                                .cursor_pointer()
+                                .child(self.i18n.text("cancel"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.member_prompt = None;
+                                    this.feedback = None;
+                                    window.focus(
+                                        &this.inputs[&this.state.selection()].focus_handle(cx),
+                                    );
+                                    cx.notify();
+                                })),
+                        ),
+                )
+        });
         div()
             .id("chat-window")
             .key_context("ChatWindow")
             .relative()
             .on_click(cx.listener(|this, _, _, cx| {
-                if this.server_menu.take().is_some() {
+                if this.server_menu.take().is_some() || this.member_menu.take().is_some() {
                     cx.notify();
                 }
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, _, _, cx| {
-                    if this.server_menu.take().is_some() {
+                    if this.server_menu.take().is_some() || this.member_menu.take().is_some() {
                         cx.notify();
                     }
                 }),
@@ -2718,6 +3045,8 @@ impl Render for ChatWindow {
             .child(left)
             .child(right)
             .when_some(server_menu, |d, menu| d.child(menu))
+            .when_some(member_menu, |d, menu| d.child(menu))
+            .when_some(member_prompt, |d, prompt| d.child(prompt))
             .into_any_element()
     }
 }

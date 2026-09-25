@@ -26,7 +26,7 @@ History and notifications remain TODO.
 
 ## Channels
 
-- PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, but full membership updates are pending
+- PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
 - PARTIAL — mock topic kept in application state; display/editing not implemented
 - TODO — channel modes relevant to normal use
@@ -35,7 +35,7 @@ History and notifications remain TODO.
 ## Private messages
 
 - TODO — open private conversation
-- TODO — receive/send private messages
+- PARTIAL — send private messages from the member context menu; incoming private messages still appear in the server log
 - TODO — conversation persistence during a session
 
 ## Messages
@@ -52,10 +52,11 @@ History and notifications remain TODO.
 
 ## Member list
 
-- PARTIAL — selected channel's NAMES roster in the upper-right pane; live changes after the snapshot are not synchronized
-- TODO — operator/voice state
-- TODO — nick updates
-- TODO — join/part/quit synchronization
+- PARTIAL — selected channel's NAMES roster in the upper-right pane, refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE; operators appear first, then names sort alphabetically within each group
+- PARTIAL — operator/voice prefixes track NAMES and channel MODE changes; the member menu can request +o/-o
+- PARTIAL — nick changes update the roster through the IRC client's channel list
+- PARTIAL — join/part/quit synchronize the roster through the IRC client's channel list
+- DONE — member context menu offers Whois, private-message composition, channel invite and +o/-o commands
 
 ## Navigation
 

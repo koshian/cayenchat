@@ -158,6 +158,14 @@ retries unexpected disconnections after 3, 6, 12, 24, then 30 seconds (capped).
 A successful registration resets the delay; an explicit disconnect cancels pending
 retries. Reconnection preserves the in-memory conversation logs and drafts. A
 complete membership event reducer remains future work.
+The core emits fresh member snapshots after NAMES completion and incoming JOIN,
+PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
+snapshot with operators first and case-insensitive nickname order within each
+group. The member context menu routes Whois, invite and +o/-o through validated
+IRC commands; private-message composition sends directly to the selected nick.
+The core preserves displayed rank across nick changes because the current IRC
+library drops user access levels on rename; a later MODE or completed NAMES
+snapshot replaces that carried rank.
 
 The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
