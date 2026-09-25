@@ -161,7 +161,9 @@ and interaction must be verified on Linux.
    On a failed connection, confirm the copied transcript includes the final
    disconnect reason shown in the window.
 
-The message log is not yet selectable. Long-draft horizontal scrolling,
+The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
+its HTTP(S) links open on a double-click. The lower combined log still uses clicks
+for channel switching. Long-draft horizontal scrolling,
 native/custom text bindings, general tab traversal, and exhaustive IME/accessibility
 behavior remain future work. Chat history does not survive application exit.
 
@@ -334,3 +336,18 @@ displayed minute. Workspace formatting, strict Clippy, and tests passed,
 including a cross-channel arrival-order test. The macOS development bundle was
 rebuilt and launched to its disconnected view. A live initial Tiarra history
 burst and manual scroll pause/resume still need visual confirmation.
+
+### Appearance and Windows IME investigation (2026-09-25)
+
+Settings version 5 adds Connection and Appearance tabs. Appearance saves colors,
+alternating message rows, and per-pane font families. The channel log uses a
+roughly 12-character nickname column and a platform-specific monospaced time
+font. Unit tests cover version 4 migration, color validation, URL detection, and
+cross-message selection ranges. On Windows, verify Japanese IME toggling with
+Microsoft IME, ATOK, and Google Japanese Input; compose, convert, cancel, and
+confirm with Enter/Tab in both draft and settings fields, and test surrogate-pair
+characters. The app guards Send and completion while GPUI reports a marked
+composition. GPUI 0.2.2 predates the merged upstream
+[Windows IME keyboard fix](https://github.com/zed-industries/zed/pull/41259),
+so mode-switching failures may remain until a newer GPUI can be adopted.
+Windows runtime was not available for this check.

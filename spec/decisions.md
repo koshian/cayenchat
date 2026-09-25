@@ -210,3 +210,24 @@ generated `.icns`, and Windows embeds an `.ico` derived from the same `icon.png`
 Sources: [Apache Software Foundation compatibility guidance](https://www.apache.org/licenses/GPL-compatibility.html),
 [GPLv3 text](https://www.gnu.org/licenses/gpl-3.0.txt), and
 [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/).
+
+## D012 — Appearance, selectable channel log, and Windows IME scope
+
+**Status:** Accepted
+
+Keep connection and appearance preferences in one versioned settings file, but
+present them in separate tabs. Version 5 adds colors for the app and both logs,
+optional alternating message-row colors, and font families for the two logs,
+member list, channel tree, input, and timestamp. Timestamp defaults to a
+platform-specific monospaced face. Load version 4 without altering connection
+settings. Limit URL opening and drag text selection to the upper channel log so
+the lower combined log keeps its one-click channel navigation. Only HTTP(S)
+URLs open, on double-click; log selection copies message-body text.
+
+GPUI 0.2.2's Windows input handling predates upstream's merged November 2025
+Japanese/Korean keyboard and IME corrections. Guard Send and nickname completion
+while this app's text input has marked composition, but treat Windows IME mode
+switching as an upstream platform issue until a GPUI release with the fix can be
+adopted and tested on Windows. Do not claim Windows IME is fixed from a macOS build.
+
+Source: [upstream Windows input/IME fix](https://github.com/zed-industries/zed/pull/41259).
