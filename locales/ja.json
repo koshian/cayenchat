@@ -48,6 +48,8 @@
   "member_message_required": "メッセージを入力してください。",
   "member_channel_placeholder": "#チャンネル",
   "member_submit": "送信",
+  "channel_join": "参加",
+  "channel_part": "退出",
   "whois_nickname": "ニックネーム",
   "whois_user_host": "ユーザー@ホスト",
   "whois_real_name": "本名",

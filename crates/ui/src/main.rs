@@ -344,6 +344,7 @@ struct ChatWindow {
     retry_token: u64,
     server_menu: Option<Point<Pixels>>,
     member_menu: Option<MemberMenu>,
+    channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
     startup_connection: Option<Result<ConnectionConfig, String>>,
     own_nickname: Option<String>,
@@ -364,6 +365,12 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+}
+
+struct ChannelMenu {
+    position: Point<Pixels>,
+    channel: String,
+    joined: bool,
 }
 
 struct MemberMenu {
@@ -540,6 +547,7 @@ impl ChatWindow {
             retry_token: 0,
             server_menu: None,
             member_menu: None,
+            channel_menu: None,
             member_prompt: None,
             startup_connection,
             own_nickname: None,
@@ -598,6 +606,7 @@ impl ChatWindow {
         self.retry_attempt = 0;
         self.retry_token += 1;
         self.member_menu = None;
+        self.channel_menu = None;
         self.member_prompt = None;
         if let Some(connection) = self.irc.take() {
             let _ = connection.disconnect();
@@ -804,6 +813,29 @@ impl ChatWindow {
             .filter(|conversation| self.state.is_active_channel(conversation.id))
             .map(|conversation| conversation.name.to_lowercase())
             .collect()
+    }
+
+    fn dismiss_menus(&mut self) -> bool {
+        let server = self.server_menu.take().is_some();
+        let member = self.member_menu.take().is_some();
+        let channel = self.channel_menu.take().is_some();
+        server || member || channel
+    }
+
+    fn channel_menu_command(&mut self, join: bool, cx: &mut Context<Self>) {
+        let Some(menu) = self.channel_menu.take() else {
+            return;
+        };
+        self.feedback = if join {
+            self.join_channel(&menu.channel, cx).err()
+        } else {
+            self.registered_connection()
+                .and_then(|connection| {
+                    connection.send_command(&format!("/part {}", menu.channel), None)
+                })
+                .err()
+        };
+        cx.notify();
     }
 
     fn join_channel(&mut self, channel: &str, cx: &mut Context<Self>) -> Result<(), String> {
@@ -1078,6 +1110,7 @@ impl ChatWindow {
     fn dispatch(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         self.server_menu = None;
         self.member_menu = None;
+        self.channel_menu = None;
         self.state.dispatch(command);
         self.log_selection = None;
         self.feedback = None;
@@ -2562,6 +2595,7 @@ impl Render for ChatWindow {
                                     .min((viewport.height - px(76.)).max(px(0.))),
                             ));
                             this.member_menu = None;
+                            this.channel_menu = None;
                             this.member_prompt = None;
                             cx.stop_propagation();
                             cx.notify();
@@ -2579,6 +2613,8 @@ impl Render for ChatWindow {
             {
                 let id = conversation.id;
                 let unread = self.state.is_unread(id);
+                let name = conversation.name.clone();
+                let joined = self.state.is_active_channel(id);
                 channels = channels.child(
                     div()
                         .id(("channel", id.0))
@@ -2594,6 +2630,31 @@ impl Render for ChatWindow {
                             if unread { "● " } else { "" },
                             conversation.name
                         ))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                let viewport = window.viewport_size();
+                                this.channel_menu = Some(ChannelMenu {
+                                    position: point(
+                                        event
+                                            .position
+                                            .x
+                                            .min((viewport.width - px(176.)).max(px(0.))),
+                                        event
+                                            .position
+                                            .y
+                                            .min((viewport.height - px(76.)).max(px(0.))),
+                                    ),
+                                    channel: name.clone(),
+                                    joined,
+                                });
+                                this.server_menu = None;
+                                this.member_menu = None;
+                                this.member_prompt = None;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.dispatch(Command::SelectChannel(id), window, cx);
                         })),
@@ -2952,6 +3013,7 @@ impl Render for ChatWindow {
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                                     let viewport = window.viewport_size();
                                     this.server_menu = None;
+                                    this.channel_menu = None;
                                     this.member_prompt = None;
                                     this.member_menu = Some(MemberMenu {
                                         position: point(
@@ -3066,6 +3128,44 @@ impl Render for ChatWindow {
                         })
                         .when(!connected, |d| d.text_color(rgb(0x8a9097))),
                 )
+        });
+        let registered =
+            connected && self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered);
+        let channel_menu = self.channel_menu.as_ref().map(|menu| {
+            let mut popup = div()
+                .id("channel-context-menu")
+                .absolute()
+                .left(menu.position.x)
+                .top(menu.position.y)
+                .w(px(176.))
+                .p_1()
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(border)
+                .shadow_md();
+            for (join, key) in [(true, "channel_join"), (false, "channel_part")] {
+                let enabled = registered && menu.joined != join;
+                popup = popup.child(
+                    div()
+                        .id(if join {
+                            "channel-menu-join"
+                        } else {
+                            "channel-menu-part"
+                        })
+                        .px_2()
+                        .py_1()
+                        .child(self.i18n.text(key))
+                        .when(enabled, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.channel_menu_command(join, cx)
+                                }))
+                        })
+                        .when(!enabled, |d| d.text_color(rgb(0x8a9097))),
+                );
+            }
+            popup
         });
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
@@ -3205,14 +3305,14 @@ impl Render for ChatWindow {
             .key_context("ChatWindow")
             .relative()
             .on_click(cx.listener(|this, _, _, cx| {
-                if this.server_menu.take().is_some() || this.member_menu.take().is_some() {
+                if this.dismiss_menus() {
                     cx.notify();
                 }
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, _, _, cx| {
-                    if this.server_menu.take().is_some() || this.member_menu.take().is_some() {
+                    if this.dismiss_menus() {
                         cx.notify();
                     }
                 }),
@@ -3236,6 +3336,7 @@ impl Render for ChatWindow {
             .child(right)
             .when_some(server_menu, |d, menu| d.child(menu))
             .when_some(member_menu, |d, menu| d.child(menu))
+            .when_some(channel_menu, |d, menu| d.child(menu))
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .into_any_element()
     }

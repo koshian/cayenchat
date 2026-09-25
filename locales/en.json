@@ -48,6 +48,8 @@
   "member_message_required": "Enter a message.",
   "member_channel_placeholder": "#channel",
   "member_submit": "Send",
+  "channel_join": "Join",
+  "channel_part": "Part",
   "whois_nickname": "Nickname",
   "whois_user_host": "User@host",
   "whois_real_name": "Real name",

@@ -62,6 +62,7 @@ History and notifications remain TODO.
 ## Navigation
 
 - DONE — network/channel tree in the lower-right pane for application state
+- DONE — channel tree context menu joins a parted channel or parts a joined one
 - PARTIAL — reference shortcut set for unread/previous/active/all/indexed channel and
   server navigation; live message/join status drives these sets, no quick switcher
 - DONE — cyclic next/previous channel and server commands
