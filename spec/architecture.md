@@ -153,8 +153,11 @@ defaults to on per server and can be disabled for a specific connection. The cor
 requires TLS before sending either server PASS or SASL PLAIN credentials. The core supports one connection, auto-join, channel
 messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands. Its SASL state
 machine negotiates CAP, sends PLAIN credentials, and waits for success before
-ending CAP negotiation. Reconnect and a complete membership event reducer are
-future work.
+ending CAP negotiation. The UI retains the active connection configuration and
+retries unexpected disconnections after 3, 6, 12, 24, then 30 seconds (capped).
+A successful registration resets the delay; an explicit disconnect cancels pending
+retries. Reconnection preserves the in-memory conversation logs and drafts. A
+complete membership event reducer remains future work.
 
 The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a

@@ -14,6 +14,13 @@ use std::{
 };
 
 const DIAGNOSTIC_LIMIT: usize = 1000;
+const RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_secs(3),
+    Duration::from_secs(6),
+    Duration::from_secs(12),
+    Duration::from_secs(24),
+    Duration::from_secs(30),
+];
 const SCROLL_BOTTOM_TOLERANCE: Pixels = px(2.);
 
 struct LogScroll {
@@ -48,6 +55,7 @@ actions!(
         Notice,
         OpenSettings,
         Disconnect,
+        Reconnect,
         ToggleDebug,
         CopyDiagnostics,
         CopyLogSelection,
@@ -298,6 +306,12 @@ struct ChatWindow {
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
     irc: Option<Connection>,
+    active_config: Option<ConnectionConfig>,
+    manual_disconnect: bool,
+    retry_pending: bool,
+    retry_attempt: usize,
+    retry_token: u64,
+    server_menu: Option<Point<Pixels>>,
     startup_connection: Option<Result<ConnectionConfig, String>>,
     own_nickname: Option<String>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
@@ -448,6 +462,12 @@ impl ChatWindow {
             inputs,
             feedback,
             irc: None,
+            active_config: None,
+            manual_disconnect: false,
+            retry_pending: false,
+            retry_attempt: 0,
+            retry_token: 0,
+            server_menu: None,
             startup_connection,
             own_nickname: None,
             settings_window: None,
@@ -495,6 +515,11 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.active_config = Some(config.clone());
+        self.manual_disconnect = false;
+        self.retry_pending = false;
+        self.retry_attempt = 0;
+        self.retry_token += 1;
         if let Some(connection) = self.irc.take() {
             let _ = connection.disconnect();
         }
@@ -535,9 +560,8 @@ impl ChatWindow {
                 Ok(())
             }
             Err(error) => {
-                self.state
-                    .set_status(NetworkId(1), ConnectionStatus::Disconnected(error.clone()));
-                self.feedback = Some(error.clone());
+                self.record_disconnect(error.clone());
+                self.schedule_retry(cx);
                 Err(error)
             }
         };
@@ -548,14 +572,108 @@ impl ChatWindow {
     }
 
     fn disconnect(&mut self, cx: &mut Context<Self>) {
+        let cancelled_retry = self.retry_pending;
+        self.manual_disconnect = true;
+        self.retry_pending = false;
+        self.retry_token += 1;
+        self.server_menu = None;
         if let Some(connection) = &self.irc {
             self.feedback = connection.disconnect().err();
-            cx.notify();
+        } else if cancelled_retry {
+            let message = self.i18n.text("event_retry_cancelled");
+            self.state.append_server_message(NetworkId(1), message);
         }
+        cx.notify();
     }
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
         self.disconnect(cx);
+    }
+
+    fn reconnect_action(&mut self, _: &Reconnect, window: &mut Window, cx: &mut Context<Self>) {
+        self.reconnect(window, cx);
+    }
+
+    fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.server_menu = None;
+        self.manual_disconnect = false;
+        self.retry_pending = false;
+        self.retry_attempt = 0;
+        self.retry_token += 1;
+        if self.active_config.is_none() {
+            self.open_settings(&OpenSettings, window, cx);
+            return;
+        }
+        self.start_reconnect(cx);
+    }
+
+    fn start_reconnect(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.active_config.clone() else {
+            return;
+        };
+        self.retry_pending = false;
+        if let Some(connection) = self.irc.take() {
+            let _ = connection.disconnect();
+        }
+        self.connection_generation += 1;
+        self.connection_started = Some(Instant::now());
+        self.watchdog_stage = 0;
+        self.state
+            .set_status(NetworkId(1), ConnectionStatus::Connecting);
+        self.state
+            .append_server_message(NetworkId(1), self.i18n.text("event_reconnecting"));
+        self.feedback = None;
+        match Connection::connect(config) {
+            Ok(connection) => {
+                self.irc = Some(connection);
+                self.spawn_poll(cx);
+            }
+            Err(error) => {
+                self.record_disconnect(error);
+                self.schedule_retry(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn schedule_retry(&mut self, cx: &mut Context<Self>) {
+        if self.manual_disconnect || self.active_config.is_none() {
+            return;
+        }
+        let delay = RETRY_DELAYS[self.retry_attempt.min(RETRY_DELAYS.len() - 1)];
+        self.retry_pending = true;
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
+        self.retry_token += 1;
+        let token = self.retry_token;
+        let seconds = delay.as_secs().to_string();
+        self.state.append_server_message(
+            NetworkId(1),
+            self.i18n
+                .format("event_retry_scheduled", &[("seconds", &seconds)]),
+        );
+        cx.spawn(async move |this, cx| {
+            Timer::after(delay).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.retry_token == token && !this.manual_disconnect && this.irc.is_none() {
+                    this.start_reconnect(cx);
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn record_disconnect(&mut self, reason: String) {
+        self.connection_started = None;
+        self.push_diagnostic(format!("Disconnected: {reason}"));
+        self.state
+            .set_status(NetworkId(1), ConnectionStatus::Disconnected(reason.clone()));
+        let message = self
+            .i18n
+            .format("status_disconnected", &[("reason", &reason)]);
+        self.state
+            .append_server_message(NetworkId(1), message.clone());
+        self.feedback = Some(message);
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
@@ -773,6 +891,7 @@ impl ChatWindow {
         }
         if disconnected || worker_closed {
             self.irc = None;
+            self.schedule_retry(cx);
             return false;
         }
         true
@@ -804,6 +923,7 @@ impl ChatWindow {
             }
             Event::Registered { nickname } => {
                 self.connection_started = None;
+                self.retry_attempt = 0;
                 self.own_nickname = Some(nickname.clone());
                 self.state.set_status(network, ConnectionStatus::Registered);
                 self.state.append_server_message(
@@ -863,15 +983,7 @@ impl ChatWindow {
                 }
             }
             Event::Disconnected(reason) => {
-                self.connection_started = None;
-                self.push_diagnostic(format!("Disconnected: {reason}"));
-                self.state
-                    .set_status(network, ConnectionStatus::Disconnected(reason.clone()));
-                let message = self
-                    .i18n
-                    .format("status_disconnected", &[("reason", &reason)]);
-                self.state.append_server_message(network, message.clone());
-                self.feedback = Some(message);
+                self.record_disconnect(reason);
             }
         }
     }
@@ -1047,6 +1159,13 @@ impl SettingsWindow {
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |owner, _, cx| owner.disconnect(cx));
+        cx.notify();
+    }
+
+    fn reconnect_action(&mut self, _: &Reconnect, _: &mut Window, cx: &mut Context<Self>) {
+        let _ = self
+            .owner
+            .update(cx, |owner, window, cx| owner.reconnect(window, cx));
         cx.notify();
     }
 
@@ -1879,6 +1998,7 @@ impl SettingsWindow {
             .child(div().w_full().flex().justify_center().child(panel))
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::disconnect_action))
+            .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
             .on_action(cx.listener(Self::copy_diagnostics_action))
     }
@@ -2063,6 +2183,24 @@ impl Render for ChatWindow {
                     })
                     .hover(|d| d.bg(rgb(0xdce5ee)))
                     .child(format!("{}{}", network.name, status_mark))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            let viewport = window.viewport_size();
+                            this.server_menu = Some(point(
+                                event
+                                    .position
+                                    .x
+                                    .min((viewport.width - px(176.)).max(px(0.))),
+                                event
+                                    .position
+                                    .y
+                                    .min((viewport.height - px(76.)).max(px(0.))),
+                            ));
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.dispatch(Command::SelectServer(server_id), window, cx);
                     })),
@@ -2468,8 +2606,58 @@ impl Render for ChatWindow {
             .child(members)
             .child(channels);
 
+        let server_menu = self.server_menu.map(|position| {
+            div()
+                .id("server-context-menu")
+                .absolute()
+                .left(position.x)
+                .top(position.y)
+                .w(px(176.))
+                .p_1()
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(border)
+                .shadow_md()
+                .child(
+                    div()
+                        .id("server-menu-reconnect")
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(rgb(0xdce5ee)))
+                        .child(self.i18n.text("reconnect"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.reconnect(window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("server-menu-disconnect")
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(rgb(0xdce5ee)))
+                        .child(self.i18n.text("disconnect"))
+                        .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+                )
+        });
         div()
+            .id("chat-window")
             .key_context("ChatWindow")
+            .relative()
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.server_menu.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    if this.server_menu.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .size_full()
             .flex()
             .text_size(px(13.))
@@ -2482,10 +2670,12 @@ impl Render for ChatWindow {
             .on_action(cx.listener(Self::notice))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::disconnect_action))
+            .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
             .child(left)
             .child(right)
+            .when_some(server_menu, |d, menu| d.child(menu))
             .into_any_element()
     }
 }
@@ -2515,6 +2705,7 @@ fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
             items: vec![
                 MenuItem::action(i18n.text("menu_settings"), OpenSettings),
                 MenuItem::action(i18n.text("disconnect"), Disconnect),
+                MenuItem::action(i18n.text("reconnect"), Reconnect),
             ],
         },
         Menu {

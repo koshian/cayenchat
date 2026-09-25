@@ -7,7 +7,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 ## Current scope
 
 The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
-History, reconnect and notifications remain TODO.
+History and notifications remain TODO.
 
 - DONE — native GPUI application shell and app-owned selection
 - DONE — mock conversation switching with distinct message logs
@@ -18,8 +18,7 @@ History, reconnect and notifications remain TODO.
 - DONE — one live server selected from persisted profiles, with user-added servers first and IRCnet presets afterward
 - DONE — per-server UTF-8, ISO-2022-JP, Shift_JIS, or EUC-JP line encoding, including channel names; local ISO-2022-JP wire round trip tested
 - PARTIAL — rustls connection with certificate verification on by default and a per-server opt-out for self-signed or otherwise invalid certificates; public-server interoperability unverified
-- PARTIAL — initial connect, manual disconnect and manual reconnect via settings; no automatic reconnect
-- TODO — reconnect
+- DONE — initial connect, manual disconnect and manual reconnect via settings, native menu or server context menu; unexpected disconnections retry with capped backoff, while explicit disconnect cancels retries
 - PARTIAL — one live network; a two-network mock remains in application tests
 - PARTIAL — connecting, registered, disconnected status and errors shown in the UI; directional IRC transcript appears automatically during connection/failure, with a menu toggle after registration and clipboard copy (parsed lines, not a complete socket capture)
 - DONE — optional server PASS over TLS
@@ -106,7 +105,7 @@ History, reconnect and notifications remain TODO.
 - DONE — persisted nickname and optional SASL account name; per-server server/SASL password persistence only after a plaintext-warning confirmation, with immediate deletion when disabled
 - DONE — settings open in a separate window; closing it leaves the chat window running
 - DONE — persisted channel auto-join list
-- DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window, and there is no automatic reconnect
+- DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - TODO — notification preferences
 - PARTIAL — separate Appearance tab persists member-list and log background colors, alternating message rows, and font families for logs, users, tree, input and monospace time
