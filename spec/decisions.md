@@ -206,8 +206,9 @@ License the project's original source and user-provided `icon.png` under
 GPL-3.0-only. Keep the adapted GPUI input source under Apache-2.0, and preserve
 GPUI's Apache-2.0 and `irc`'s MPL-2.0 notices and license texts. GPLv2 was
 requested initially but is incompatible with the Apache-2.0 code in this app;
-the project owner chose GPLv3 instead. The macOS development bundle includes a
-generated `.icns`, and Windows embeds an `.ico` derived from the same `icon.png`.
+the project owner chose GPLv3 instead. The macOS development and beta release
+bundles include a generated `.icns`, and Windows embeds an `.ico` derived from
+the same `icon.png`.
 
 Sources: [Apache Software Foundation compatibility guidance](https://www.apache.org/licenses/GPL-compatibility.html),
 [GPLv3 text](https://www.gnu.org/licenses/gpl-3.0.txt), and

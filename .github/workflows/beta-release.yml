@@ -157,6 +157,7 @@ jobs:
 
           mkdir -p CayenChat.app/Contents/MacOS CayenChat.app/Contents/Resources/locales
           cp target/release/cayenchat CayenChat.app/Contents/MacOS/CayenChat
+          cp crates/ui/resources/macos/CayenChat.icns CayenChat.app/Contents/Resources/CayenChat.icns
           cp locales/*.json CayenChat.app/Contents/Resources/locales/
           chmod +x CayenChat.app/Contents/MacOS/CayenChat
 
@@ -172,6 +173,8 @@ jobs:
             <key>CFBundleIdentifier</key>
             <string>com.cayenchat.app</string>
             <key>CFBundleExecutable</key>
+            <string>CayenChat</string>
+            <key>CFBundleIconFile</key>
             <string>CayenChat</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
