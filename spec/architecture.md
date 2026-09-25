@@ -109,7 +109,7 @@ the actual latest line last even when several channels receive messages within
 the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
 a nickname column regardless of the UI language, and does not mark the channel
-unread. Its text uses a configurable muted green by default in both the main log
+unread. Its text uses configurable green (`#007D00`) by default in both the main log
 and combined subwindow. The main log keeps separate scroll positions for each
 server or channel, and both left logs
 follow incoming messages while at the bottom. User scrolling pauses follow mode
@@ -138,7 +138,9 @@ Version 5 adds appearance colors, alternating log rows, and per-pane font choice
 version 6 adds an opt-in startup connection flag, and version 7 adds a language
 preference. Version 8 renames the appearance background to member-list background
 and changes its default to white; the old default gray migrates to white while
-custom saved colors remain. The member-list color no longer affects the input bar
+custom saved colors remain. Version 9 changes the default channel event text color
+to `#007D00`; the previous default migrates while custom colors remain. The
+member-list color no longer affects the input bar
 or the window root. Missing startup-connection values default to disabled, and older
 settings default to System language; existing saved choices remain intact. The UI resolves the system language with `sys-locale` (Japanese or
 English fallback), loads `locales/ja.json` or `locales/en.json` beside the app or

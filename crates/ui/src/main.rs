@@ -176,7 +176,7 @@ impl SettingsForm {
             ),
             main_log_alternate: field("#F2F5FF", &values.appearance.main_log_alternate, false, cx),
             channel_event_color: field(
-                "#3B7655",
+                "#007D00",
                 &values.appearance.channel_event_color,
                 false,
                 cx,
@@ -2367,7 +2367,7 @@ impl Render for ChatWindow {
         let appearance = &self.appearance;
         let main_bg = rgb(color_value(&appearance.main_log_background).unwrap_or(0xffffff));
         let main_alt = rgb(color_value(&appearance.main_log_alternate).unwrap_or(0xf2f5ff));
-        let event_color = rgb(color_value(&appearance.channel_event_color).unwrap_or(0x3b7655));
+        let event_color = rgb(color_value(&appearance.channel_event_color).unwrap_or(0x007d00));
         let sub_bg = rgb(color_value(&appearance.sub_log_background).unwrap_or(0xf9fafb));
         let sub_alt = rgb(color_value(&appearance.sub_log_alternate).unwrap_or(0xf2f5ff));
         let time_font = selected_font(&appearance.time_font, default_time_font()).to_owned();

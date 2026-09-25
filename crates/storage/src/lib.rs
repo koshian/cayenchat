@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 8;
+const SETTINGS_VERSION: u32 = 9;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -73,7 +73,7 @@ impl Default for Appearance {
             member_list_background: "#FFFFFF".into(),
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
-            channel_event_color: "#3B7655".into(),
+            channel_event_color: "#007D00".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
@@ -257,6 +257,14 @@ impl Settings {
         {
             self.appearance.member_list_background = "#FFFFFF".into();
         }
+        if self.version <= 8
+            && self
+                .appearance
+                .channel_event_color
+                .eq_ignore_ascii_case("#3B7655")
+        {
+            self.appearance.channel_event_color = "#007D00".into();
+        }
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
         self.servers
@@ -385,7 +393,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=8) => serde_json::from_value::<Settings>(value)
+        Some(2..=9) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -458,7 +466,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 8);
+        assert_eq!(settings.version, 9);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -480,7 +488,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 8);
+        assert_eq!(settings.version, 9);
         assert!(
             settings
                 .servers
@@ -509,7 +517,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 8);
+        assert_eq!(settings.version, 9);
         assert!(
             settings
                 .servers
@@ -527,7 +535,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 8);
+        assert_eq!(settings.version, 9);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -551,7 +559,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&existing).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.appearance.channel_event_color, "#3B7655");
+        assert_eq!(settings.appearance.channel_event_color, "#007D00");
         settings.appearance.channel_event_color = "#246843".into();
         settings.appearance.validate().unwrap();
         save_to(&path, &settings).unwrap();
@@ -559,6 +567,28 @@ mod tests {
 
         settings.appearance.channel_event_color = "green".into();
         assert!(settings.appearance.validate().is_err());
+    }
+
+    #[test]
+    fn migrates_previous_channel_event_default_without_changing_custom_color() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 8.into();
+        old["appearance"]["channel_event_color"] = "#3B7655".into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, 9);
+        assert_eq!(settings.appearance.channel_event_color, "#007D00");
+
+        old["appearance"]["channel_event_color"] = "#246843".into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.appearance.channel_event_color, "#246843");
+
+        settings.appearance.channel_event_color = "#3B7655".into();
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
 
     #[test]
@@ -571,7 +601,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 8);
+        assert_eq!(settings.version, 9);
         assert!(!settings.connect_on_startup);
         settings.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
@@ -588,7 +618,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 8);
+        assert_eq!(settings.version, 9);
         assert_eq!(settings.language, Language::System);
         settings.language = Language::English;
         save_to(&path, &settings).unwrap();
