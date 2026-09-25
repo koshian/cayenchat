@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 4;
+const SETTINGS_VERSION: u32 = 5;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -37,6 +37,66 @@ impl TextEncoding {
             Self::EucJp => "EUC-JP",
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Appearance {
+    pub background: String,
+    pub main_log_background: String,
+    pub main_log_alternate: String,
+    pub sub_log_background: String,
+    pub sub_log_alternate: String,
+    pub alternate_rows: bool,
+    pub main_log_font: String,
+    pub sub_log_font: String,
+    pub member_font: String,
+    pub channel_font: String,
+    pub input_font: String,
+    pub time_font: String,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            background: "#ECECEC".into(),
+            main_log_background: "#FFFFFF".into(),
+            main_log_alternate: "#F2F5FF".into(),
+            sub_log_background: "#F9FAFB".into(),
+            sub_log_alternate: "#F2F5FF".into(),
+            alternate_rows: false,
+            main_log_font: String::new(),
+            sub_log_font: String::new(),
+            member_font: String::new(),
+            channel_font: String::new(),
+            input_font: String::new(),
+            time_font: String::new(),
+        }
+    }
+}
+
+impl Appearance {
+    pub fn validate(&self) -> Result<(), String> {
+        for (label, value) in [
+            ("Background", &self.background),
+            ("Main log", &self.main_log_background),
+            ("Main alternate", &self.main_log_alternate),
+            ("Sub log", &self.sub_log_background),
+            ("Sub alternate", &self.sub_log_alternate),
+        ] {
+            if color_value(value).is_none() {
+                return Err(format!("{label} color must be #RRGGBB."));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn color_value(value: &str) -> Option<u32> {
+    let hex = value.strip_prefix('#')?;
+    (hex.len() == 6)
+        .then(|| u32::from_str_radix(hex, 16).ok())
+        .flatten()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +144,7 @@ pub struct Settings {
     pub channels: String,
     pub sasl_enabled: bool,
     pub sasl_username: String,
+    pub appearance: Appearance,
 }
 
 impl Default for Settings {
@@ -99,6 +160,7 @@ impl Default for Settings {
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
+            appearance: Appearance::default(),
         }
     }
 }
@@ -298,7 +360,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=4) => serde_json::from_value::<Settings>(value)
+        Some(2..=5) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -371,7 +433,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 4);
+        assert_eq!(settings.version, 5);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -393,7 +455,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 4);
+        assert_eq!(settings.version, 5);
         assert!(
             settings
                 .servers
@@ -422,13 +484,34 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 4);
+        assert_eq!(settings.version, 5);
         assert!(
             settings
                 .servers
                 .iter()
                 .all(|server| server.verify_tls_certificates)
         );
+    }
+
+    #[test]
+    fn migrates_version_four_and_persists_appearance() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 4.into();
+        old.as_object_mut().unwrap().remove("appearance");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, 5);
+        assert_eq!(settings.appearance, Appearance::default());
+        settings.appearance.alternate_rows = true;
+        settings.appearance.main_log_background = "#123ABC".into();
+        settings.appearance.main_log_font = "Menlo".into();
+        settings.appearance.validate().unwrap();
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+        assert_eq!(color_value("#123ABC"), Some(0x123abc));
+        assert!(color_value("#123ABZ").is_none());
     }
 
     #[test]

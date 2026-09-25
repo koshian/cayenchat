@@ -48,8 +48,8 @@ History, reconnect and notifications remain TODO.
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
 - PARTIAL — own joins/parts update active channels; other join/part/quit events remain pending
 - PARTIAL — server responses and errors in the selected server log
-- TODO — URLs
-- TODO — copy/select text
+- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log still switches channels
+- PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
 
@@ -107,7 +107,7 @@ History, reconnect and notifications remain TODO.
 - DONE — settings open in a separate window; closing it leaves the chat window running
 - DONE — persisted channel auto-join list
 - TODO — notification preferences
-- TODO — appearance preferences
+- PARTIAL — separate Appearance tab persists background colors, alternating message rows, and font families for logs, users, tree, input and monospace time
 - TODO — keyboard shortcut preferences where practical
 
 ## IRCv3
@@ -126,7 +126,7 @@ History, reconnect and notifications remain TODO.
 - DONE — compact default layout
 - DONE — plain timestamp/nickname/text rows with scrolling and follow-to-bottom unless the user scrolls away
 - TODO — light/dark appearance
-- PARTIAL — GPUI system font; macOS verified, Windows pending
+- PARTIAL — selectable installed font families per pane; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending
 - TODO — restrained theming
 
 ## Platform integration

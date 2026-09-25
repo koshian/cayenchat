@@ -2,8 +2,8 @@ mod input;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
 use cayenchat_irc_core::{Connection, ConnectionConfig, Event, SaslCredentials, WireDirection};
-use cayenchat_model::NetworkId;
-use cayenchat_storage::{Settings, TextEncoding};
+use cayenchat_model::{ConversationId, NetworkId};
+use cayenchat_storage::{Appearance, Settings, TextEncoding, color_value};
 use gpui::{prelude::*, *};
 use input::TextInput;
 use std::{
@@ -48,6 +48,7 @@ actions!(
         Disconnect,
         ToggleDebug,
         CopyDiagnostics,
+        CopyLogSelection,
         Quit
     ]
 );
@@ -69,6 +70,17 @@ struct SettingsForm {
     server_password: Entity<TextInput>,
     sasl_username: Entity<TextInput>,
     sasl_password: Entity<TextInput>,
+    background: Entity<TextInput>,
+    main_log_background: Entity<TextInput>,
+    main_log_alternate: Entity<TextInput>,
+    sub_log_background: Entity<TextInput>,
+    sub_log_alternate: Entity<TextInput>,
+    main_log_font: Entity<TextInput>,
+    sub_log_font: Entity<TextInput>,
+    member_font: Entity<TextInput>,
+    channel_font: Entity<TextInput>,
+    input_font: Entity<TextInput>,
+    time_font: Entity<TextInput>,
 }
 
 impl SettingsForm {
@@ -113,6 +125,22 @@ impl SettingsForm {
                 true,
                 cx,
             ),
+            background: field("#ECECEC", &values.appearance.background, false, cx),
+            main_log_background: field(
+                "#FFFFFF",
+                &values.appearance.main_log_background,
+                false,
+                cx,
+            ),
+            main_log_alternate: field("#F2F5FF", &values.appearance.main_log_alternate, false, cx),
+            sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
+            sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
+            main_log_font: field("System", &values.appearance.main_log_font, false, cx),
+            sub_log_font: field("System", &values.appearance.sub_log_font, false, cx),
+            member_font: field("System", &values.appearance.member_font, false, cx),
+            channel_font: field("System", &values.appearance.channel_font, false, cx),
+            input_font: field("System", &values.appearance.input_font, false, cx),
+            time_font: field("Monospace", &values.appearance.time_font, false, cx),
             server_list_open: false,
             encoding_list_open: false,
             values,
@@ -147,6 +175,22 @@ impl SettingsForm {
         settings.nickname = self.nickname.read(cx).text().trim().to_owned();
         settings.channels = self.channels.read(cx).text().trim().to_owned();
         settings.sasl_username = self.sasl_username.read(cx).text().trim().to_owned();
+        let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
+        settings.appearance = Appearance {
+            background: value(&self.background),
+            main_log_background: value(&self.main_log_background),
+            main_log_alternate: value(&self.main_log_alternate),
+            sub_log_background: value(&self.sub_log_background),
+            sub_log_alternate: value(&self.sub_log_alternate),
+            alternate_rows: self.values.appearance.alternate_rows,
+            main_log_font: value(&self.main_log_font),
+            sub_log_font: value(&self.sub_log_font),
+            member_font: value(&self.member_font),
+            channel_font: value(&self.channel_font),
+            input_font: value(&self.input_font),
+            time_font: value(&self.time_font),
+        };
+        settings.appearance.validate()?;
         Ok(settings)
     }
 
@@ -191,12 +235,76 @@ struct ChatWindow {
     connection_started: Option<Instant>,
     watchdog_stage: u8,
     connection_generation: u64,
+    appearance: Appearance,
+    log_focus: FocusHandle,
+    log_selection: Option<LogSelection>,
+    log_dragging: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LogPosition {
+    row: usize,
+    byte: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LogSelection {
+    channel: ConversationId,
+    anchor: LogPosition,
+    cursor: LogPosition,
+}
+
+impl LogSelection {
+    fn bounds(self) -> (LogPosition, LogPosition) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
+    fn range(self, row: usize, len: usize) -> Option<std::ops::Range<usize>> {
+        let (start, end) = self.bounds();
+        if row < start.row || row > end.row {
+            return None;
+        }
+        let from = if row == start.row {
+            start.byte.min(len)
+        } else {
+            0
+        };
+        let to = if row == end.row {
+            end.byte.min(len)
+        } else {
+            len
+        };
+        (from < to).then_some(from..to)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    Connection,
+    Appearance,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FontTarget {
+    MainLog,
+    SubLog,
+    Members,
+    Channels,
+    Input,
+    Time,
 }
 
 struct SettingsWindow {
     owner: WindowHandle<ChatWindow>,
     settings: SettingsForm,
     feedback: Option<String>,
+    tab: SettingsTab,
+    font_picker: Option<FontTarget>,
+    fonts: Vec<String>,
 }
 
 impl ChatWindow {
@@ -252,6 +360,10 @@ impl ChatWindow {
             connection_started: None,
             watchdog_stage: 0,
             connection_generation: 0,
+            appearance: saved.appearance,
+            log_focus: cx.focus_handle(),
+            log_selection: None,
+            log_dragging: false,
         };
         this.update_title(window);
         this
@@ -296,6 +408,7 @@ impl ChatWindow {
         self.state = AppState::live(config.host.clone(), config.channels.clone());
         self.main_scroll.clear();
         self.sub_scroll = LogScroll::default();
+        self.log_selection = None;
         self.inputs = self
             .state
             .networks()
@@ -364,7 +477,7 @@ impl ChatWindow {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(620.), px(540.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("CayenChat — 接続設定".into()),
+                    title: Some("CayenChat — 設定".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -387,6 +500,78 @@ impl ChatWindow {
         cx.write_to_clipboard(ClipboardItem::new_string(self.diagnostics.join("\n")));
     }
 
+    fn start_log_selection(
+        &mut self,
+        channel: ConversationId,
+        row: usize,
+        byte: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let position = LogPosition { row, byte };
+        self.log_selection = Some(LogSelection {
+            channel,
+            anchor: position,
+            cursor: position,
+        });
+        self.log_dragging = true;
+        window.focus(&self.log_focus);
+        cx.notify();
+    }
+
+    fn extend_log_selection(
+        &mut self,
+        channel: ConversationId,
+        row: usize,
+        byte: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.log_dragging
+            && let Some(selection) = self.log_selection.as_mut()
+            && selection.channel == channel
+        {
+            selection.cursor = LogPosition { row, byte };
+            cx.notify();
+        }
+    }
+
+    fn finish_log_selection(&mut self) {
+        self.log_dragging = false;
+    }
+
+    fn copy_selected_log(&mut self, cx: &mut Context<Self>) {
+        let (Some(selection), Some(channel)) = (self.log_selection, self.state.selected_channel())
+        else {
+            return;
+        };
+        if selection.channel != channel.id {
+            return;
+        }
+        let (start, end) = selection.bounds();
+        if start == end {
+            return;
+        }
+        let pieces: Vec<_> = (start.row..=end.row)
+            .filter_map(|row| {
+                channel.messages.get(row).map(|message| {
+                    let range = selection.range(row, message.text.len()).unwrap_or(0..0);
+                    message.text[range].to_owned()
+                })
+            })
+            .collect();
+        if !pieces.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
+        }
+    }
+
+    fn copy_log_selection(&mut self, _: &CopyLogSelection, _: &mut Window, cx: &mut Context<Self>) {
+        self.copy_selected_log(cx);
+    }
+
+    fn copy_log_selection_menu(&mut self, _: &input::Copy, _: &mut Window, cx: &mut Context<Self>) {
+        self.copy_selected_log(cx);
+    }
+
     fn push_diagnostic(&mut self, line: String) {
         self.diagnostics.push(line);
         if self.diagnostics.len() > DIAGNOSTIC_LIMIT {
@@ -396,6 +581,7 @@ impl ChatWindow {
 
     fn dispatch(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         self.state.dispatch(command);
+        self.log_selection = None;
         self.feedback = None;
         self.update_title(window);
         window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
@@ -616,10 +802,16 @@ impl SettingsWindow {
     ) -> Self {
         let settings = SettingsForm::new(values, cx);
         window.focus(&settings.nickname.focus_handle(cx));
+        let mut fonts = window.text_system().all_font_names();
+        fonts.sort_unstable();
+        fonts.dedup();
         Self {
             owner,
             settings,
             feedback: None,
+            tab: SettingsTab::Connection,
+            font_picker: None,
+            fonts,
         }
     }
 
@@ -631,10 +823,11 @@ impl SettingsWindow {
                 .servers
                 .retain(|server| !server.custom || !server.host.is_empty());
             cayenchat_storage::save(&settings)?;
-            Ok::<_, String>(config)
+            Ok::<_, String>((config, settings.appearance.clone()))
         })();
         self.feedback = match result {
-            Ok(config) => match self.owner.update(cx, |owner, chat_window, cx| {
+            Ok((config, appearance)) => match self.owner.update(cx, |owner, chat_window, cx| {
+                owner.appearance = appearance;
                 owner.apply_connection(config, chat_window, cx)
             }) {
                 Ok(Ok(())) => {
@@ -659,6 +852,12 @@ impl SettingsWindow {
                 .retain(|server| !server.custom || !server.host.is_empty());
             cayenchat_storage::save(&settings)?;
             self.settings.values = settings;
+            let appearance = self.settings.values.appearance.clone();
+            let _ = self.owner.update(cx, |owner, window, cx| {
+                owner.appearance = appearance;
+                cx.notify();
+                window.refresh();
+            });
             Ok(())
         }) {
             Ok(()) => Some("設定を保存しました。".into()),
@@ -847,7 +1046,7 @@ impl SettingsWindow {
         self.show_selected_server(cx);
     }
 
-    fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let profile = self.settings.values.selected_profile().clone();
         let tls = profile.use_tls;
         let sasl = self.settings.values.sasl_enabled;
@@ -974,7 +1173,7 @@ impl SettingsWindow {
             }
             encoding_selector = encoding_selector.child(menu);
         }
-        let panel = div()
+        div()
             .w(px(680.))
             .p_4()
             .my_4()
@@ -988,7 +1187,7 @@ impl SettingsWindow {
                 div()
                     .text_size(px(20.))
                     .font_weight(FontWeight::BOLD)
-                    .child("接続設定"),
+                    .child("接続"),
             )
             .child(
                 div()
@@ -1200,18 +1399,238 @@ impl SettingsWindow {
                                 cx.notify();
                             })),
                     ),
+            )
+    }
+
+    fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
+        match target {
+            FontTarget::MainLog => self.settings.main_log_font.clone(),
+            FontTarget::SubLog => self.settings.sub_log_font.clone(),
+            FontTarget::Members => self.settings.member_font.clone(),
+            FontTarget::Channels => self.settings.channel_font.clone(),
+            FontTarget::Input => self.settings.input_font.clone(),
+            FontTarget::Time => self.settings.time_font.clone(),
+        }
+    }
+
+    fn font_field(&self, target: FontTarget, label: &'static str, cx: &mut Context<Self>) -> Div {
+        let input = self.font_input(target);
+        let mut field = div().flex().flex_col().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().w(px(150.)).flex_shrink_0().child(label))
+                .child(div().flex_1().min_w_0().child(input.clone()))
+                .child(
+                    div()
+                        .id(("font-picker", target as u32))
+                        .px_2()
+                        .py_1()
+                        .border_1()
+                        .border_color(rgb(0xb7bdc4))
+                        .cursor_pointer()
+                        .child("選択 ▾")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.font_picker = if this.font_picker == Some(target) {
+                                None
+                            } else {
+                                Some(target)
+                            };
+                            cx.notify();
+                        })),
+                ),
+        );
+        if self.font_picker == Some(target) {
+            let query = input.read(cx).text().trim().to_lowercase();
+            let mut choices = div()
+                .id(("font-choices", target as u32))
+                .ml(px(158.))
+                .max_h(px(170.))
+                .overflow_y_scroll()
+                .border_1()
+                .border_color(rgb(0xb7bdc4))
+                .bg(rgb(0xffffff));
+            choices = choices.child(
+                div()
+                    .id(("font-system", target as u32))
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .child(if target == FontTarget::Time {
+                        "既定の等幅フォント"
+                    } else {
+                        "システム標準"
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.font_input(target)
+                            .update(cx, |field, cx| field.set_text("", cx));
+                        this.font_picker = None;
+                        cx.notify();
+                    })),
             );
+            for (index, name) in self
+                .fonts
+                .iter()
+                .filter(|name| name.to_lowercase().contains(&query))
+                .enumerate()
+            {
+                let name = name.clone();
+                choices = choices.child(
+                    div()
+                        .id(("font-choice", index))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(rgb(0xe8eff6)))
+                        .child(name.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.font_input(target)
+                                .update(cx, |field, cx| field.set_text(&name, cx));
+                            this.font_picker = None;
+                            cx.notify();
+                        })),
+                );
+            }
+            field = field.child(choices);
+        }
+        field
+    }
+
+    fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        div()
+            .w(px(680.))
+            .p_4()
+            .my_4()
+            .bg(rgb(0xffffff))
+            .border_1()
+            .border_color(rgb(0xb7bdc4))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("外観"),
+            )
+            .child(
+                div().text_color(rgb(0x52606c)).child(
+                    "色は #RRGGBB 形式。フォント欄を入力して候補を絞れます。空欄は既定値です。",
+                ),
+            )
+            .child(color_field(
+                "画面の背景",
+                self.settings.background.clone(),
+                cx,
+            ))
+            .child(color_field(
+                "チャンネルログ",
+                self.settings.main_log_background.clone(),
+                cx,
+            ))
+            .child(color_field(
+                "チャンネルログ交互",
+                self.settings.main_log_alternate.clone(),
+                cx,
+            ))
+            .child(color_field(
+                "全体ログ",
+                self.settings.sub_log_background.clone(),
+                cx,
+            ))
+            .child(color_field(
+                "全体ログ交互",
+                self.settings.sub_log_alternate.clone(),
+                cx,
+            ))
+            .child(
+                div()
+                    .id("alternate-rows")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(if self.settings.values.appearance.alternate_rows {
+                        "☑"
+                    } else {
+                        "☐"
+                    })
+                    .child("ログを１行ごとに交互色にする")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.alternate_rows;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(self.font_field(FontTarget::MainLog, "チャンネルログ", cx))
+            .child(self.font_field(FontTarget::SubLog, "全体ログ", cx))
+            .child(self.font_field(FontTarget::Members, "ユーザー一覧", cx))
+            .child(self.font_field(FontTarget::Channels, "チャンネル一覧", cx))
+            .child(self.font_field(FontTarget::Input, "入力欄", cx))
+            .child(self.font_field(FontTarget::Time, "時刻（等幅）", cx))
+            .when_some(self.feedback.clone(), |d, feedback| {
+                d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
+            })
+            .child(
+                div()
+                    .id("save-appearance")
+                    .px_3()
+                    .py_1()
+                    .bg(rgb(0xcbdbea))
+                    .cursor_pointer()
+                    .child("保存して適用")
+                    .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
+            )
+    }
+
+    fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tabs = div()
+            .flex()
+            .gap_2()
+            .child(
+                div()
+                    .id("connection-tab")
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .when(self.tab == SettingsTab::Connection, |d| d.bg(rgb(0xcbdbea)))
+                    .child("接続")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab = SettingsTab::Connection;
+                        this.font_picker = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("appearance-tab")
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .when(self.tab == SettingsTab::Appearance, |d| d.bg(rgb(0xcbdbea)))
+                    .child("外観")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab = SettingsTab::Appearance;
+                        cx.notify();
+                    })),
+            );
+        let panel = match self.tab {
+            SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
+            SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
+        };
         div()
             .id("settings-screen")
             .key_context("SettingsWindow")
             .size_full()
             .flex()
-            .justify_center()
+            .flex_col()
             .overflow_y_scroll()
             .bg(rgb(0xf5f6f8))
             .text_size(px(13.))
             .text_color(rgb(0x20262d))
-            .child(panel)
+            .child(div().w_full().flex().justify_center().child(tabs))
+            .child(div().w_full().flex().justify_center().child(panel))
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::disconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
@@ -1226,6 +1645,111 @@ fn settings_field(label: &'static str, input: Entity<TextInput>) -> Div {
         .gap_2()
         .child(div().w(px(150.)).flex_shrink_0().child(label))
         .child(div().flex_1().min_w_0().child(input))
+}
+
+fn color_field(label: &'static str, input: Entity<TextInput>, cx: &App) -> Div {
+    let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
+    settings_field(label, input).child(
+        div()
+            .w(px(24.))
+            .h(px(24.))
+            .flex_shrink_0()
+            .border_1()
+            .border_color(rgb(0xb7bdc4))
+            .bg(rgb(swatch)),
+    )
+}
+
+fn selected_font<'a>(name: &'a str, fallback: &'a str) -> &'a str {
+    if name.is_empty() { fallback } else { name }
+}
+
+fn default_time_font() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Menlo"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Consolas"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "DejaVu Sans Mono"
+    }
+}
+
+fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut found = Vec::new();
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let next = ["https://", "http://"]
+            .into_iter()
+            .filter_map(|scheme| text[cursor..].find(scheme).map(|offset| cursor + offset))
+            .min();
+        let Some(start) = next else { break };
+        let mut end = text[start..]
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace() || "<>\"'。、".contains(*ch))
+            .map(|(offset, _)| start + offset)
+            .unwrap_or(text.len());
+        while end > start
+            && text[..end]
+                .chars()
+                .last()
+                .is_some_and(|ch| ".,;:!?)]}」』".contains(ch))
+        {
+            end -= text[..end].chars().last().unwrap().len_utf8();
+        }
+        let candidate = &text[start..end];
+        if let Ok(url) = url::Url::parse(candidate)
+            && matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+        {
+            found.push((start..end, url.into()));
+        }
+        cursor = end.max(start + 1);
+    }
+    found
+}
+
+fn styled_log_text(
+    text: &str,
+    urls: &[(std::ops::Range<usize>, String)],
+    selected: Option<std::ops::Range<usize>>,
+) -> StyledText {
+    let mut boundaries = vec![0, text.len()];
+    for (range, _) in urls {
+        boundaries.extend([range.start, range.end]);
+    }
+    if let Some(range) = &selected {
+        boundaries.extend([range.start, range.end]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let highlights = boundaries.windows(2).filter_map(|pair| {
+        let range = pair[0]..pair[1];
+        let is_url = urls
+            .iter()
+            .any(|(url, _)| url.start <= range.start && range.end <= url.end);
+        let is_selected = selected
+            .as_ref()
+            .is_some_and(|selection| selection.start <= range.start && range.end <= selection.end);
+        (is_url || is_selected).then_some((
+            range,
+            HighlightStyle {
+                color: is_url.then_some(rgb(0x0645ad).into()),
+                underline: is_url.then_some(UnderlineStyle {
+                    color: Some(rgb(0x0645ad).into()),
+                    thickness: px(1.),
+                    wavy: false,
+                }),
+                background_color: is_selected.then_some(rgb(0xcbdbea).into()),
+                ..Default::default()
+            },
+        ))
+    });
+    StyledText::new(text.to_owned()).with_highlights(highlights)
 }
 
 impl Render for SettingsWindow {
@@ -1252,6 +1776,12 @@ impl Render for ChatWindow {
             Selection::Server(id) => u32::MAX - id.0,
         };
         let border = rgb(0xb7bdc4);
+        let appearance = &self.appearance;
+        let main_bg = rgb(color_value(&appearance.main_log_background).unwrap_or(0xffffff));
+        let main_alt = rgb(color_value(&appearance.main_log_alternate).unwrap_or(0xf2f5ff));
+        let sub_bg = rgb(color_value(&appearance.sub_log_background).unwrap_or(0xf9fafb));
+        let sub_alt = rgb(color_value(&appearance.sub_log_alternate).unwrap_or(0xf2f5ff));
+        let time_font = selected_font(&appearance.time_font, default_time_font()).to_owned();
 
         // The reference layout has logs on the left and users/channels on the right.
         let mut channels = div()
@@ -1261,6 +1791,9 @@ impl Render for ChatWindow {
             .w_full()
             .overflow_y_scroll()
             .bg(rgb(0xeaf3ff))
+            .when(!appearance.channel_font.is_empty(), |d| {
+                d.font_family(appearance.channel_font.clone())
+            })
             .border_t_1()
             .border_color(border);
         for network in self.state.networks() {
@@ -1320,6 +1853,18 @@ impl Render for ChatWindow {
 
         let mut main_log = div()
             .id(("log", log_id))
+            .key_context("MainLog")
+            .track_focus(&self.log_focus)
+            .on_action(cx.listener(Self::copy_log_selection))
+            .on_action(cx.listener(Self::copy_log_selection_menu))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.finish_log_selection()),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.finish_log_selection()),
+            )
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -1332,7 +1877,10 @@ impl Render for ChatWindow {
             }))
             .px_2()
             .py_1()
-            .bg(rgb(0xffffff));
+            .bg(main_bg)
+            .when(!appearance.main_log_font.is_empty(), |d| {
+                d.font_family(appearance.main_log_font.clone())
+            });
         let registration_incomplete = self.state.status(self.state.selected_network().id)
             != Some(&ConnectionStatus::Registered);
         if selected.is_some() && registration_incomplete {
@@ -1359,39 +1907,104 @@ impl Render for ChatWindow {
             main_log = main_log.child(div().text_color(rgb(0x52606c)).child(line.clone()));
         }
         if let Some(channel) = selected {
-            main_log = main_log.children(channel.messages.iter().map(|message| {
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .py(px(1.))
-                    .child(
-                        div()
-                            .w(px(40.))
-                            .flex_shrink_0()
-                            .text_color(rgb(0x747b82))
-                            .child(message.time.clone()),
-                    )
-                    .child(
-                        div()
-                            .w(px(100.))
-                            .flex_shrink_0()
-                            .flex()
-                            .justify_end()
-                            .text_right()
-                            .text_color(rgb(0x315b83))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(message.sender.clone()),
-                            )
-                            .child(":"),
-                    )
-                    .child(div().flex_1().min_w_0().child(message.text.clone()))
-            }));
+            let selected_channel = channel.id;
+            let log_selection = self
+                .log_selection
+                .filter(|selection| selection.channel == selected_channel);
+            main_log =
+                main_log.children(channel.messages.iter().enumerate().map(|(index, message)| {
+                    let urls = log_urls(&message.text);
+                    let selected_range = log_selection
+                        .and_then(|selection| selection.range(index, message.text.len()));
+                    let styled = styled_log_text(&message.text, &urls, selected_range);
+                    let layout = styled.layout().clone();
+                    let down_layout = layout.clone();
+                    let move_layout = layout.clone();
+                    let click_layout = layout;
+                    let text_len = message.text.len();
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap_1()
+                        .py(px(1.))
+                        .when(appearance.alternate_rows && index % 2 == 1, |d| {
+                            d.bg(main_alt)
+                        })
+                        .child(
+                            div()
+                                .w(px(42.))
+                                .flex_shrink_0()
+                                .font_family(time_font.clone())
+                                .text_color(rgb(0x747b82))
+                                .child(message.time.clone()),
+                        )
+                        .child(
+                            div()
+                                .w(px(84.))
+                                .flex_shrink_0()
+                                .flex()
+                                .text_color(rgb(0x315b83))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .child(message.sender.clone()),
+                                )
+                                .child(":"),
+                        )
+                        .child(
+                            div()
+                                .id(("message-text", index))
+                                .flex_1()
+                                .min_w_0()
+                                .cursor(CursorStyle::IBeam)
+                                .child(styled)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                        let byte = down_layout
+                                            .index_for_position(event.position)
+                                            .unwrap_or_else(|index| index)
+                                            .min(text_len);
+                                        this.start_log_selection(
+                                            selected_channel,
+                                            index,
+                                            byte,
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                )
+                                .on_mouse_move(cx.listener(
+                                    move |this, event: &MouseMoveEvent, _, cx| {
+                                        let byte = move_layout
+                                            .index_for_position(event.position)
+                                            .unwrap_or_else(|index| index)
+                                            .min(text_len);
+                                        this.extend_log_selection(
+                                            selected_channel,
+                                            index,
+                                            byte,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                                .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                                    if event.click_count() == 2 {
+                                        let byte = click_layout
+                                            .index_for_position(event.position())
+                                            .unwrap_or_else(|index| index);
+                                        if let Some((_, url)) =
+                                            urls.iter().find(|(range, _)| range.contains(&byte))
+                                        {
+                                            cx.open_url(url);
+                                        }
+                                    }
+                                })),
+                        )
+                }));
         } else {
             let network = self.state.selected_network();
             main_log = main_log.child(Self::status_text(self.state.status(network.id)));
@@ -1408,22 +2021,30 @@ impl Render for ChatWindow {
                         .map(|line| div().text_color(rgb(0x52606c)).child(line.clone())),
                 );
             }
-            main_log = main_log.children(self.state.server_messages(network.id).iter().map(
-                |message| {
-                    div()
-                        .flex()
-                        .gap_2()
-                        .py(px(1.))
-                        .child(
-                            div()
-                                .w(px(40.))
-                                .flex_shrink_0()
-                                .text_color(rgb(0x747b82))
-                                .child(message.time.clone()),
-                        )
-                        .child(div().flex_1().min_w_0().child(message.text.clone()))
-                },
-            ));
+            main_log = main_log.children(
+                self.state
+                    .server_messages(network.id)
+                    .iter()
+                    .enumerate()
+                    .map(|(index, message)| {
+                        div()
+                            .flex()
+                            .gap_1()
+                            .py(px(1.))
+                            .when(appearance.alternate_rows && index % 2 == 1, |d| {
+                                d.bg(main_alt)
+                            })
+                            .child(
+                                div()
+                                    .w(px(42.))
+                                    .flex_shrink_0()
+                                    .font_family(time_font.clone())
+                                    .text_color(rgb(0x747b82))
+                                    .child(message.time.clone()),
+                            )
+                            .child(div().flex_1().min_w_0().child(message.text.clone()))
+                    }),
+            );
         }
 
         let mut other_messages: Vec<_> = self
@@ -1455,7 +2076,10 @@ impl Render for ChatWindow {
             }))
             .px_2()
             .py_1()
-            .bg(rgb(0xf9fafb))
+            .bg(sub_bg)
+            .when(!appearance.sub_log_font.is_empty(), |d| {
+                d.font_family(appearance.sub_log_font.clone())
+            })
             .children(other_messages.into_iter().enumerate().map(
                 |(index, (id, network_id, channel, message))| {
                     let network = self
@@ -1469,12 +2093,16 @@ impl Render for ChatWindow {
                         .flex()
                         .gap_2()
                         .py(px(1.))
+                        .when(appearance.alternate_rows && index % 2 == 1, |d| {
+                            d.bg(sub_alt)
+                        })
                         .cursor_pointer()
                         .hover(|d| d.bg(rgb(0xe8eff6)))
                         .child(
                             div()
-                                .w(px(40.))
+                                .w(px(42.))
                                 .flex_shrink_0()
+                                .font_family(time_font.clone())
                                 .text_color(rgb(0x747b82))
                                 .child(message.time.clone()),
                         )
@@ -1528,7 +2156,10 @@ impl Render for ChatWindow {
             .min_h_0()
             .w_full()
             .overflow_y_scroll()
-            .bg(rgb(0xffffff))
+            .bg(rgb(color_value(&appearance.background).unwrap_or(0xffffff)))
+            .when(!appearance.member_font.is_empty(), |d| {
+                d.font_family(appearance.member_font.clone())
+            })
             .children(
                 selected
                     .into_iter()
@@ -1554,7 +2185,10 @@ impl Render for ChatWindow {
             .border_t_1()
             .border_b_1()
             .border_color(border)
-            .bg(rgb(0xffffff))
+            .bg(rgb(color_value(&appearance.background).unwrap_or(0xffffff)))
+            .when(!appearance.input_font.is_empty(), |d| {
+                d.font_family(appearance.input_font.clone())
+            })
             .child(
                 div()
                     .flex_1()
@@ -1591,7 +2225,7 @@ impl Render for ChatWindow {
             .text_size(px(13.))
             .line_height(px(20.))
             .text_color(rgb(0x20262d))
-            .bg(rgb(0xececec))
+            .bg(rgb(color_value(&appearance.background).unwrap_or(0xececec)))
             .on_action(cx.listener(Self::navigate))
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
@@ -1671,6 +2305,7 @@ fn shortcut_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-shift-d", ToggleDebug, None),
         KeyBinding::new("secondary-shift-l", CopyDiagnostics, None),
+        KeyBinding::new("secondary-c", CopyLogSelection, Some("MainLog")),
         navigation_binding("ctrl-tab", Command::NextUnreadChannel),
         navigation_binding("ctrl-shift-tab", Command::PreviousUnreadChannel),
         KeyBinding::new("secondary-q", Quit, None),
@@ -1770,4 +2405,34 @@ fn main() {
             })
             .expect("could not open the initial settings window");
     });
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::{LogPosition, LogSelection, log_urls};
+    use cayenchat_model::ConversationId;
+
+    #[test]
+    fn finds_only_web_urls_without_sentence_punctuation() {
+        let text =
+            "see https://example.org/a?q=1, and http://example.jp/path。 ftp://example.org/x";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].1, "https://example.org/a?q=1");
+        assert_eq!(urls[1].1, "http://example.jp/path");
+        assert_eq!(&text[urls[0].0.clone()], urls[0].1);
+    }
+
+    #[test]
+    fn log_selection_spans_partial_messages() {
+        let selection = LogSelection {
+            channel: ConversationId(1),
+            anchor: LogPosition { row: 2, byte: 3 },
+            cursor: LogPosition { row: 0, byte: 2 },
+        };
+        assert_eq!(selection.range(0, 5), Some(2..5));
+        assert_eq!(selection.range(1, 5), Some(0..5));
+        assert_eq!(selection.range(2, 5), Some(0..3));
+        assert_eq!(selection.range(3, 5), None);
+    }
 }

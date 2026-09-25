@@ -129,9 +129,11 @@ at 50 ms intervals while connected, applies events to `app::AppState`, and redra
 Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.
-The UI loads versioned connection preferences from the platform user configuration
-directory. The four-pane chat window stays open while a separate settings window
-edits server profiles. The macOS application menu and Command+, open that window;
+The UI loads versioned preferences from the platform user configuration directory.
+Version 5 adds appearance colors, alternating log rows, and per-pane font choices
+while loading older settings with defaults. The four-pane chat window stays open
+while a separate settings window offers Connection and Appearance tabs. The macOS
+application menu and Command+, open that window;
 Windows/Linux use Ctrl+, while GPUI's native menu rendering remains unavailable
 there. Passwords persist per server only after explicit plaintext confirmation;
 turning saving off immediately removes stored values. TLS certificate verification
@@ -142,10 +144,14 @@ machine negotiates CAP, sends PLAIN credentials, and waits for success before
 ending CAP negotiation. Reconnect and a complete membership event reducer are
 future work.
 
+The upper channel log shapes each message body as selectable text, maps mouse
+positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
+double-click. The lower combined log retains click-to-channel navigation.
+
 Version 4 settings keep several server profiles, ordered with user-added entries
 before built-in presets. Host/port/TLS/certificate verification/encoding are per
 profile; the single live connection and nickname/channel list remain application-wide. Versions 1–3
-are migrated on load. `irc-core` passes the profile's encoding to the `irc` line
+are migrated on load, as are version 4 settings. `irc-core` passes the profile's encoding to the `irc` line
 codec so protocol parameters, including channel names, and message text use the
 same wire charset. It strictly validates outgoing encoding and wire length before
 queueing, avoiding silent replacement and preserving a draft on rejection. A
