@@ -220,6 +220,14 @@ jobs:
           git tag -f beta "$SHA"
           git push origin refs/tags/beta --force
 
+      - name: Set release metadata
+        shell: bash
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%d')" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${SHA::7}" >> "$GITHUB_ENV"
+
       - name: Create or update beta release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -227,14 +235,14 @@ jobs:
         run: |
           if gh release view beta >/dev/null 2>&1; then
             gh release edit beta \
-              --title "CayenChat Beta" \
+              --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
               --target "$SHA" \
               --prerelease \
               --latest=false \
               --notes "Rolling beta build from master (${SHA})."
           else
             gh release create beta \
-              --title "CayenChat Beta" \
+              --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
               --target "$SHA" \
               --prerelease \
               --latest=false \
