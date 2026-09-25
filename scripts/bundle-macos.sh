@@ -9,8 +9,10 @@ fi
 cargo build --locked -p cayenchat-ui
 bundle=target/CayenChat.app
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+mkdir -p "$bundle/Contents/Resources/locales"
 cp target/debug/cayenchat "$bundle/Contents/MacOS/cayenchat"
 cp crates/ui/resources/macos/CayenChat.icns "$bundle/Contents/Resources/CayenChat.icns"
+cp locales/*.json "$bundle/Contents/Resources/locales/"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -127,6 +127,11 @@ impl TextInput {
         &self.content
     }
 
+    pub fn set_placeholder(&mut self, placeholder: &str, cx: &mut Context<Self>) {
+        self.placeholder = placeholder.to_owned().into();
+        cx.notify();
+    }
+
     pub fn clear_after_send(&mut self, cx: &mut Context<Self>) {
         self.content = "".into();
         self.selected_range = 0..0;
@@ -933,9 +938,9 @@ impl TextInput {
         }
     }
 
-    pub fn new_live(cx: &mut Context<Self>) -> Self {
+    pub fn new_live(placeholder: &str, cx: &mut Context<Self>) -> Self {
         let mut input = Self::new(cx);
-        input.placeholder = "Message draft — Enter sends, / starts a command".into();
+        input.placeholder = placeholder.to_owned().into();
         input
     }
 

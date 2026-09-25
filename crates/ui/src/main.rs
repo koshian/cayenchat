@@ -1,11 +1,13 @@
 mod input;
+mod localization;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
 use cayenchat_irc_core::{Connection, ConnectionConfig, Event, SaslCredentials, WireDirection};
 use cayenchat_model::{ConversationId, NetworkId};
-use cayenchat_storage::{Appearance, Settings, TextEncoding, color_value};
+use cayenchat_storage::{Appearance, Language, Settings, TextEncoding, color_value};
 use gpui::{prelude::*, *};
 use input::TextInput;
+use localization::Localizer;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -84,14 +86,14 @@ struct SettingsForm {
 }
 
 impl SettingsForm {
-    fn new(values: Settings, cx: &mut Context<SettingsWindow>) -> Self {
+    fn new(values: Settings, i18n: &Localizer, cx: &mut Context<SettingsWindow>) -> Self {
         let field =
             |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
                 cx.new(|cx| TextInput::new_field(placeholder, value, secret, cx))
             };
         Self {
             custom_host: field(
-                "server.example.net",
+                &i18n.text("server_host_placeholder"),
                 &values.selected_profile().host,
                 false,
                 cx,
@@ -102,10 +104,10 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            nickname: field("Nickname", &values.nickname, false, cx),
+            nickname: field(&i18n.text("nickname"), &values.nickname, false, cx),
             channels: field("#first,#second", &values.channels, false, cx),
             server_password: field(
-                "Optional server password",
+                &i18n.text("server_password_placeholder"),
                 values
                     .selected_profile()
                     .server_password
@@ -114,9 +116,14 @@ impl SettingsForm {
                 true,
                 cx,
             ),
-            sasl_username: field("Account name", &values.sasl_username, false, cx),
+            sasl_username: field(
+                &i18n.text("sasl_account_placeholder"),
+                &values.sasl_username,
+                false,
+                cx,
+            ),
             sasl_password: field(
-                "SASL password",
+                &i18n.text("sasl_password"),
                 values
                     .selected_profile()
                     .sasl_password
@@ -135,12 +142,42 @@ impl SettingsForm {
             main_log_alternate: field("#F2F5FF", &values.appearance.main_log_alternate, false, cx),
             sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
             sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
-            main_log_font: field("System", &values.appearance.main_log_font, false, cx),
-            sub_log_font: field("System", &values.appearance.sub_log_font, false, cx),
-            member_font: field("System", &values.appearance.member_font, false, cx),
-            channel_font: field("System", &values.appearance.channel_font, false, cx),
-            input_font: field("System", &values.appearance.input_font, false, cx),
-            time_font: field("Monospace", &values.appearance.time_font, false, cx),
+            main_log_font: field(
+                &i18n.text("font_system_placeholder"),
+                &values.appearance.main_log_font,
+                false,
+                cx,
+            ),
+            sub_log_font: field(
+                &i18n.text("font_system_placeholder"),
+                &values.appearance.sub_log_font,
+                false,
+                cx,
+            ),
+            member_font: field(
+                &i18n.text("font_system_placeholder"),
+                &values.appearance.member_font,
+                false,
+                cx,
+            ),
+            channel_font: field(
+                &i18n.text("font_system_placeholder"),
+                &values.appearance.channel_font,
+                false,
+                cx,
+            ),
+            input_font: field(
+                &i18n.text("font_system_placeholder"),
+                &values.appearance.input_font,
+                false,
+                cx,
+            ),
+            time_font: field(
+                &i18n.text("font_monospace_placeholder"),
+                &values.appearance.time_font,
+                false,
+                cx,
+            ),
             server_list_open: false,
             encoding_list_open: false,
             values,
@@ -156,9 +193,9 @@ impl SettingsForm {
             .text()
             .trim()
             .parse()
-            .map_err(|_| "Port must be a number from 1 to 65535.".to_owned())?;
+            .map_err(|_| i18n_error(settings.language, "port_invalid"))?;
         if port == 0 {
-            return Err("Port must be a number from 1 to 65535.".into());
+            return Err(i18n_error(settings.language, "port_invalid"));
         }
         let profile = settings.selected_profile_mut();
         if profile.custom {
@@ -244,6 +281,10 @@ fn startup_connection_config(settings: &Settings) -> Option<Result<ConnectionCon
     })
 }
 
+fn i18n_error(language: Language, key: &str) -> String {
+    Localizer::new(language).text(key)
+}
+
 struct ChatWindow {
     state: AppState,
     main_scroll: HashMap<Selection, LogScroll>,
@@ -261,6 +302,7 @@ struct ChatWindow {
     watchdog_stage: u8,
     connection_generation: u64,
     appearance: Appearance,
+    i18n: Localizer,
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
@@ -330,17 +372,31 @@ struct SettingsWindow {
     tab: SettingsTab,
     font_picker: Option<FontTarget>,
     fonts: Vec<String>,
+    i18n: Localizer,
 }
 
 impl ChatWindow {
-    fn status_text(status: Option<&ConnectionStatus>) -> String {
+    fn apply_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
+        self.i18n = Localizer::new(language);
+        let placeholder = self.i18n.text("draft_placeholder");
+        for input in self.inputs.values() {
+            input.update(cx, |input, cx| input.set_placeholder(&placeholder, cx));
+        }
+        cx.set_menus(app_menus(self.debug_enabled, &self.i18n));
+        cx.notify();
+        window.refresh();
+    }
+
+    fn status_text(&self, status: Option<&ConnectionStatus>) -> String {
         match status {
-            Some(ConnectionStatus::OfflineMock) => "Offline mock".into(),
-            Some(ConnectionStatus::Connecting) => "Connecting…".into(),
-            Some(ConnectionStatus::TransportConnected) => "Connected; registering…".into(),
-            Some(ConnectionStatus::Registered) => "Connected".into(),
-            Some(ConnectionStatus::Disconnected(reason)) => format!("Disconnected: {reason}"),
-            None => "Unknown connection state".into(),
+            Some(ConnectionStatus::OfflineMock) => self.i18n.text("status_offline"),
+            Some(ConnectionStatus::Connecting) => self.i18n.text("status_connecting"),
+            Some(ConnectionStatus::TransportConnected) => self.i18n.text("status_registering"),
+            Some(ConnectionStatus::Registered) => self.i18n.text("status_connected"),
+            Some(ConnectionStatus::Disconnected(reason)) => self
+                .i18n
+                .format("status_disconnected", &[("reason", reason)]),
+            None => self.i18n.text("status_unknown"),
         }
     }
 
@@ -358,19 +414,27 @@ impl ChatWindow {
             Ok(saved) => (saved.unwrap_or_default(), None),
             Err(error) => (Settings::default(), Some(error)),
         };
+        let i18n = Localizer::new(saved.language);
         let startup_connection = startup_connection_config(&saved);
         let state = AppState::configured(saved.selected_profile().host.clone(), saved.channels());
         let mut inputs: HashMap<_, _> = state
             .networks()
             .iter()
-            .map(|server| (Selection::Server(server.id), cx.new(TextInput::new_live)))
+            .map(|server| {
+                let placeholder = i18n.text("draft_placeholder");
+                (
+                    Selection::Server(server.id),
+                    cx.new(|cx| TextInput::new_live(&placeholder, cx)),
+                )
+            })
             .collect();
-        inputs.extend(
-            state
-                .conversations()
-                .iter()
-                .map(|channel| (Selection::Channel(channel.id), cx.new(TextInput::new_live))),
-        );
+        inputs.extend(state.conversations().iter().map(|channel| {
+            let placeholder = i18n.text("draft_placeholder");
+            (
+                Selection::Channel(channel.id),
+                cx.new(|cx| TextInput::new_live(&placeholder, cx)),
+            )
+        }));
         window.focus(&inputs[&state.selection()].focus_handle(cx));
         let this = Self {
             state,
@@ -388,6 +452,7 @@ impl ChatWindow {
             watchdog_stage: 0,
             connection_generation: 0,
             appearance: saved.appearance,
+            i18n,
             log_focus: cx.focus_handle(),
             log_selection: None,
             log_dragging: false,
@@ -436,18 +501,25 @@ impl ChatWindow {
         self.main_scroll.clear();
         self.sub_scroll = LogScroll::default();
         self.log_selection = None;
+        let placeholder = self.i18n.text("draft_placeholder");
         self.inputs = self
             .state
             .networks()
             .iter()
-            .map(|server| (Selection::Server(server.id), cx.new(TextInput::new_live)))
+            .map(|server| {
+                (
+                    Selection::Server(server.id),
+                    cx.new(|cx| TextInput::new_live(&placeholder, cx)),
+                )
+            })
             .collect();
-        self.inputs.extend(
-            self.state
-                .conversations()
-                .iter()
-                .map(|channel| (Selection::Channel(channel.id), cx.new(TextInput::new_live))),
-        );
+        self.inputs
+            .extend(self.state.conversations().iter().map(|channel| {
+                (
+                    Selection::Channel(channel.id),
+                    cx.new(|cx| TextInput::new_live(&placeholder, cx)),
+                )
+            }));
         self.own_nickname = Some(config.nickname.clone());
         let outcome = match Connection::connect(config) {
             Ok(connection) => {
@@ -504,7 +576,7 @@ impl ChatWindow {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(620.), px(540.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("CayenChat — 設定".into()),
+                    title: Some(self.i18n.text("settings_title").into()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -512,14 +584,19 @@ impl ChatWindow {
             move |window, cx| cx.new(|cx| SettingsWindow::new(owner, settings, window, cx)),
         ) {
             Ok(handle) => self.settings_window = Some(handle),
-            Err(error) => self.feedback = Some(format!("設定ウィンドウを開けません: {error}")),
+            Err(error) => {
+                self.feedback = Some(
+                    self.i18n
+                        .format("settings_open_failed", &[("error", &error.to_string())]),
+                )
+            }
         }
         cx.notify();
     }
 
     fn toggle_debug(&mut self, _: &ToggleDebug, _: &mut Window, cx: &mut Context<Self>) {
         self.debug_enabled = !self.debug_enabled;
-        cx.set_menus(app_menus(self.debug_enabled));
+        cx.set_menus(app_menus(self.debug_enabled, &self.i18n));
         cx.notify();
     }
 
@@ -672,11 +749,12 @@ impl ChatWindow {
             }
         }
         if changed {
+            let placeholder = self.i18n.text("draft_placeholder");
             for channel in self.state.conversations() {
                 let key = Selection::Channel(channel.id);
                 self.inputs
                     .entry(key)
-                    .or_insert_with(|| cx.new(TextInput::new_live));
+                    .or_insert_with(|| cx.new(|cx| TextInput::new_live(&placeholder, cx)));
             }
             cx.notify();
         }
@@ -717,29 +795,39 @@ impl ChatWindow {
                 self.state
                     .set_status(network, ConnectionStatus::TransportConnected);
                 self.state
-                    .append_server_message(network, "Connection established; registering.".into());
+                    .append_server_message(network, self.i18n.text("event_transport_connected"));
             }
             Event::Registered { nickname } => {
                 self.connection_started = None;
                 self.own_nickname = Some(nickname.clone());
                 self.state.set_status(network, ConnectionStatus::Registered);
-                self.state
-                    .append_server_message(network, format!("Registered as {nickname}."));
+                self.state.append_server_message(
+                    network,
+                    self.i18n
+                        .format("event_registered", &[("nickname", &nickname)]),
+                );
             }
             Event::Joined { channel } => {
                 self.state.joined_channel(network, &channel);
-                self.state
-                    .append_server_message(network, format!("Joined {channel}."));
+                self.state.append_server_message(
+                    network,
+                    self.i18n.format("event_joined", &[("channel", &channel)]),
+                );
             }
             Event::Parted { channel } => {
                 self.state.parted_channel(network, &channel);
-                self.state
-                    .append_server_message(network, format!("Left {channel}."));
+                self.state.append_server_message(
+                    network,
+                    self.i18n.format("event_parted", &[("channel", &channel)]),
+                );
             }
             Event::NickChanged { nickname } => {
                 self.own_nickname = Some(nickname.clone());
-                self.state
-                    .append_server_message(network, format!("Nickname changed to {nickname}."));
+                self.state.append_server_message(
+                    network,
+                    self.i18n
+                        .format("event_nick_changed", &[("nickname", &nickname)]),
+                );
             }
             Event::ChannelMessage {
                 channel,
@@ -762,8 +850,11 @@ impl ChatWindow {
                     self.state
                         .append_channel_message(network, &channel, nickname, &text, notice);
                 } else {
-                    self.state
-                        .append_server_message(network, format!("Message queued to {channel}."));
+                    self.state.append_server_message(
+                        network,
+                        self.i18n
+                            .format("event_message_queued", &[("channel", &channel)]),
+                    );
                 }
             }
             Event::Disconnected(reason) => {
@@ -771,9 +862,11 @@ impl ChatWindow {
                 self.push_diagnostic(format!("Disconnected: {reason}"));
                 self.state
                     .set_status(network, ConnectionStatus::Disconnected(reason.clone()));
-                self.state
-                    .append_server_message(network, format!("Disconnected: {reason}"));
-                self.feedback = Some(format!("Disconnected: {reason}"));
+                let message = self
+                    .i18n
+                    .format("status_disconnected", &[("reason", &reason)]);
+                self.state.append_server_message(network, message.clone());
+                self.feedback = Some(message);
             }
         }
     }
@@ -791,20 +884,20 @@ impl ChatWindow {
         let selected = self.state.selected_channel();
         let result = if let Some(connection) = &self.irc {
             if self.state.status(NetworkId(1)) != Some(&ConnectionStatus::Registered) {
-                Err("Wait until registration completes.".into())
+                Err(self.i18n.text("wait_registration"))
             } else if text.starts_with('/') {
                 connection.send_command(&text, selected.map(|channel| channel.name.as_str()))
             } else if let Some(channel) = selected {
                 if !self.state.is_active_channel(channel.id) {
-                    Err("Wait until the channel is joined before sending.".into())
+                    Err(self.i18n.text("wait_join"))
                 } else {
                     connection.send_message(&channel.name, &text, notice)
                 }
             } else {
-                Err("Select a channel before sending a message.".into())
+                Err(self.i18n.text("select_channel"))
             }
         } else {
-            Err("Disconnected; open Connection Settings to connect.".into())
+            Err(self.i18n.text("not_connected"))
         };
         self.feedback = match result {
             Ok(()) => {
@@ -827,13 +920,41 @@ impl ChatWindow {
 }
 
 impl SettingsWindow {
+    fn select_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.values.language = language;
+        self.i18n = Localizer::new(language);
+        window.set_window_title(&self.i18n.text("settings_title"));
+        for (field, key) in [
+            (&self.settings.custom_host, "server_host_placeholder"),
+            (&self.settings.nickname, "nickname"),
+            (
+                &self.settings.server_password,
+                "server_password_placeholder",
+            ),
+            (&self.settings.sasl_username, "sasl_account_placeholder"),
+            (&self.settings.sasl_password, "sasl_password"),
+            (&self.settings.main_log_font, "font_system_placeholder"),
+            (&self.settings.sub_log_font, "font_system_placeholder"),
+            (&self.settings.member_font, "font_system_placeholder"),
+            (&self.settings.channel_font, "font_system_placeholder"),
+            (&self.settings.input_font, "font_system_placeholder"),
+            (&self.settings.time_font, "font_monospace_placeholder"),
+        ] {
+            let placeholder = self.i18n.text(key);
+            field.update(cx, |field, cx| field.set_placeholder(&placeholder, cx));
+        }
+        self.feedback = None;
+        cx.notify();
+    }
+
     fn new(
         owner: WindowHandle<ChatWindow>,
         values: Settings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let settings = SettingsForm::new(values, cx);
+        let i18n = Localizer::new(values.language);
+        let settings = SettingsForm::new(values, &i18n, cx);
         window.focus(&settings.nickname.focus_handle(cx));
         let mut fonts = window.text_system().all_font_names();
         fonts.sort_unstable();
@@ -845,6 +966,7 @@ impl SettingsWindow {
             tab: SettingsTab::Connection,
             font_picker: None,
             fonts,
+            i18n,
         }
     }
 
@@ -856,20 +978,26 @@ impl SettingsWindow {
                 .servers
                 .retain(|server| !server.custom || !server.host.is_empty());
             cayenchat_storage::save(&settings)?;
-            Ok::<_, String>((config, settings.appearance.clone()))
+            Ok::<_, String>((config, settings.appearance.clone(), settings.language))
         })();
         self.feedback = match result {
-            Ok((config, appearance)) => match self.owner.update(cx, |owner, chat_window, cx| {
-                owner.appearance = appearance;
-                owner.apply_connection(config, chat_window, cx)
-            }) {
-                Ok(Ok(())) => {
-                    window.remove_window();
-                    return;
+            Ok((config, appearance, language)) => {
+                match self.owner.update(cx, |owner, chat_window, cx| {
+                    owner.appearance = appearance;
+                    owner.apply_language(language, chat_window, cx);
+                    owner.apply_connection(config, chat_window, cx)
+                }) {
+                    Ok(Ok(())) => {
+                        window.remove_window();
+                        return;
+                    }
+                    Ok(Err(error)) => Some(error),
+                    Err(error) => Some(
+                        self.i18n
+                            .format("chat_closed", &[("error", &error.to_string())]),
+                    ),
                 }
-                Ok(Err(error)) => Some(error),
-                Err(error) => Some(format!("チャットウィンドウが閉じられました: {error}")),
-            },
+            }
             Err(error) => Some(error),
         };
         cx.notify();
@@ -878,7 +1006,7 @@ impl SettingsWindow {
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         self.feedback = match self.settings.snapshot(cx).and_then(|mut settings| {
             if settings.selected_profile().host.is_empty() {
-                return Err("サーバー名を入力してください。".into());
+                return Err(self.i18n.text("server_required"));
             }
             settings
                 .servers
@@ -886,14 +1014,14 @@ impl SettingsWindow {
             cayenchat_storage::save(&settings)?;
             self.settings.values = settings;
             let appearance = self.settings.values.appearance.clone();
+            let language = self.settings.values.language;
             let _ = self.owner.update(cx, |owner, window, cx| {
                 owner.appearance = appearance;
-                cx.notify();
-                window.refresh();
+                owner.apply_language(language, window, cx);
             });
             Ok(())
         }) {
-            Ok(()) => Some("設定を保存しました。".into()),
+            Ok(()) => Some(self.i18n.text("settings_saved")),
             Err(error) => Some(error),
         };
         cx.notify();
@@ -949,7 +1077,7 @@ impl SettingsWindow {
                     self.settings
                         .sasl_password
                         .update(cx, |field, cx| field.set_text("", cx));
-                    self.feedback = Some("保存済みパスワードを削除しました。".into());
+                    self.feedback = Some(self.i18n.text("passwords_removed"));
                 }
                 Err(error) => self.feedback = Some(error),
             }
@@ -958,13 +1086,11 @@ impl SettingsWindow {
         }
         let answer = window.prompt(
             PromptLevel::Warning,
-            "パスワードは平文で保存されますが、よろしいですか？",
-            Some(
-                "このサーバーのサーバーパスワードと SASL パスワードが設定ファイルに保存されます。",
-            ),
+            &self.i18n.text("password_warning_title"),
+            Some(&self.i18n.text("password_warning_detail")),
             &[
-                PromptButton::ok("保存する"),
-                PromptButton::cancel("キャンセル"),
+                PromptButton::ok(self.i18n.text("save_passwords")),
+                PromptButton::cancel(self.i18n.text("cancel")),
             ],
             cx,
         );
@@ -985,7 +1111,7 @@ impl SettingsWindow {
 
     fn toggle_tls(&mut self, cx: &mut Context<Self>) {
         if self.settings.values.selected_profile().use_tls && self.settings.values.sasl_enabled {
-            self.feedback = Some("SASL をオフにしてから TLS を無効にしてください。".into());
+            self.feedback = Some(self.i18n.text("disable_sasl_first"));
             cx.notify();
             return;
         }
@@ -1083,6 +1209,28 @@ impl SettingsWindow {
         let profile = self.settings.values.selected_profile().clone();
         let tls = profile.use_tls;
         let sasl = self.settings.values.sasl_enabled;
+        let mut language_selector = div().flex().gap_1();
+        for (index, language) in [Language::System, Language::Japanese, Language::English]
+            .into_iter()
+            .enumerate()
+        {
+            language_selector = language_selector.child(
+                div()
+                    .id(("language-option", index))
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(rgb(0xb7bdc4))
+                    .cursor_pointer()
+                    .when(self.settings.values.language == language, |d| {
+                        d.bg(rgb(0xcbdbea))
+                    })
+                    .child(self.i18n.preference_label(language))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_language(language, window, cx)
+                    })),
+            );
+        }
         let current_host = if profile.custom {
             self.settings.custom_host.read(cx).text().trim().to_owned()
         } else {
@@ -1090,7 +1238,7 @@ impl SettingsWindow {
         };
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
         let selected_label = if current_host.is_empty() {
-            "新しいサーバー（未設定）".to_owned()
+            self.i18n.text("new_server")
         } else {
             format!("{current_host}:{current_port}")
         };
@@ -1122,8 +1270,13 @@ impl SettingsWindow {
                     (server.host.as_str(), "")
                 };
                 let label = if host.is_empty() {
-                    "新しいサーバー（未設定）".to_owned()
+                    self.i18n.text("new_server")
                 } else {
+                    let kind = self.i18n.text(if server.custom {
+                        "custom_server"
+                    } else {
+                        "preset_server"
+                    });
                     format!(
                         "{}:{}{}",
                         host,
@@ -1132,11 +1285,7 @@ impl SettingsWindow {
                         } else {
                             port.to_owned()
                         },
-                        if server.custom {
-                            "  ·  追加済み"
-                        } else {
-                            "  ·  標準"
-                        }
+                        kind
                     )
                 };
                 menu = menu.child(
@@ -1162,7 +1311,7 @@ impl SettingsWindow {
                     .border_color(rgb(0xb7bdc4))
                     .cursor_pointer()
                     .hover(|d| d.bg(rgb(0xe8eff6)))
-                    .child("＋ サーバーを追加…")
+                    .child(self.i18n.text("add_server"))
                     .on_click(cx.listener(|this, _, _, cx| this.add_server(cx))),
             );
             server_selector = server_selector.child(menu);
@@ -1220,24 +1369,48 @@ impl SettingsWindow {
                 div()
                     .text_size(px(20.))
                     .font_weight(FontWeight::BOLD)
-                    .child("接続"),
+                    .child(self.i18n.text("connection")),
             )
             .child(
                 div()
                     .text_color(rgb(0x52606c))
-                    .child("接続先を選び、ニックネームを入力してください。"),
+                    .child(self.i18n.text("connection_intro")),
             )
             .child(
                 div()
                     .flex()
                     .items_start()
                     .gap_2()
-                    .child(div().w(px(150.)).flex_shrink_0().child("接続先"))
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .child(self.i18n.text("language")),
+                    )
+                    .child(language_selector),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(rgb(0x52606c))
+                    .child(self.i18n.text("language_hint")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .child(self.i18n.text("destination")),
+                    )
                     .child(server_selector.flex_1().min_w_0()),
             )
             .when(profile.custom, |d| {
                 d.child(settings_field(
-                    "サーバー",
+                    &self.i18n.text("host"),
                     self.settings.custom_host.clone(),
                 ))
                 .child(
@@ -1248,24 +1421,32 @@ impl SettingsWindow {
                         .py_1()
                         .cursor_pointer()
                         .text_color(rgb(0x9a4b28))
-                        .child("このサーバーを削除")
+                        .child(self.i18n.text("remove_server"))
                         .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
                 )
             })
-            .child(settings_field("ポート", self.settings.port.clone()))
+            .child(settings_field(
+                &self.i18n.text("port"),
+                self.settings.port.clone(),
+            ))
             .child(
                 div()
                     .flex()
                     .items_start()
                     .gap_2()
-                    .child(div().w(px(150.)).flex_shrink_0().child("文字コード"))
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .child(self.i18n.text("encoding")),
+                    )
                     .child(encoding_selector.flex_1().min_w_0()),
             )
             .child(
                 div()
                     .ml(px(158.))
                     .text_color(rgb(0x52606c))
-                    .child("本文とチャンネル名を、この接続先の文字コードで送受信します。"),
+                    .child(self.i18n.text("encoding_hint")),
             )
             .child(
                 div()
@@ -1281,7 +1462,7 @@ impl SettingsWindow {
                             .border_1()
                             .border_color(rgb(0xb7bdc4))
                             .cursor_pointer()
-                            .child(if tls { "オン" } else { "オフ" })
+                            .child(self.i18n.text(if tls { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
                     ),
             )
@@ -1291,7 +1472,11 @@ impl SettingsWindow {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(div().w(px(150.)).child("証明書の検証"))
+                        .child(
+                            div()
+                                .w(px(150.))
+                                .child(self.i18n.text("verify_certificates")),
+                        )
                         .child(
                             div()
                                 .id("certificate-verification-toggle")
@@ -1300,28 +1485,31 @@ impl SettingsWindow {
                                 .border_1()
                                 .border_color(rgb(0xb7bdc4))
                                 .cursor_pointer()
-                                .child(if profile.verify_tls_certificates {
-                                    "オン"
+                                .child(self.i18n.text(if profile.verify_tls_certificates {
+                                    "on"
                                 } else {
-                                    "オフ"
-                                })
+                                    "off"
+                                }))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.toggle_certificate_verification(cx)
                                 })),
                         ),
                 )
                 .when(!profile.verify_tls_certificates, |d| {
-                    d.child(div().ml(px(158.)).text_color(rgb(0x9a4b28)).child(
-                        "証明書を検証しない接続では、サーバーのなりすましを検知できません。",
-                    ))
+                    d.child(
+                        div()
+                            .ml(px(158.))
+                            .text_color(rgb(0x9a4b28))
+                            .child(self.i18n.text("certificate_warning")),
+                    )
                 })
             })
             .child(settings_field(
-                "ニックネーム",
+                &self.i18n.text("nickname"),
                 self.settings.nickname.clone(),
             ))
             .child(settings_field(
-                "自動参加チャンネル",
+                &self.i18n.text("auto_join_channels"),
                 self.settings.channels.clone(),
             ))
             .child(
@@ -1337,7 +1525,7 @@ impl SettingsWindow {
                     } else {
                         "☐"
                     })
-                    .child("アプリ起動時に自動接続する")
+                    .child(self.i18n.text("connect_on_startup"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.settings.values.connect_on_startup =
                             !this.settings.values.connect_on_startup;
@@ -1345,7 +1533,7 @@ impl SettingsWindow {
                     })),
             )
             .child(settings_field(
-                "サーバーパスワード",
+                &self.i18n.text("server_password"),
                 self.settings.server_password.clone(),
             ))
             .child(
@@ -1361,7 +1549,7 @@ impl SettingsWindow {
                     } else {
                         "☐"
                     })
-                    .child("パスワードを保存する")
+                    .child(self.i18n.text("remember_passwords"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_remember_passwords(window, cx)
                     })),
@@ -1380,17 +1568,17 @@ impl SettingsWindow {
                             .border_1()
                             .border_color(rgb(0xb7bdc4))
                             .cursor_pointer()
-                            .child(if sasl { "オン" } else { "オフ" })
+                            .child(self.i18n.text(if sasl { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
                     ),
             )
             .when(sasl, |d| {
                 d.child(settings_field(
-                    "SASL アカウント",
+                    &self.i18n.text("sasl_account"),
                     self.settings.sasl_username.clone(),
                 ))
                 .child(settings_field(
-                    "SASL パスワード",
+                    &self.i18n.text("sasl_password"),
                     self.settings.sasl_password.clone(),
                 ))
             })
@@ -1409,7 +1597,7 @@ impl SettingsWindow {
                             .py_1()
                             .bg(rgb(0xcbdbea))
                             .cursor_pointer()
-                            .child("保存して接続")
+                            .child(self.i18n.text("save_and_connect"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.connect_from_settings(window, cx)
                             })),
@@ -1422,7 +1610,7 @@ impl SettingsWindow {
                             .border_1()
                             .border_color(rgb(0xb7bdc4))
                             .cursor_pointer()
-                            .child("保存")
+                            .child(self.i18n.text("save"))
                             .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
                     )
                     .child(
@@ -1433,7 +1621,7 @@ impl SettingsWindow {
                             .border_1()
                             .border_color(rgb(0xb7bdc4))
                             .cursor_pointer()
-                            .child("戻る")
+                            .child(self.i18n.text("back"))
                             .on_click(
                                 cx.listener(|this, _, window, _| this.close_settings(window)),
                             ),
@@ -1446,7 +1634,7 @@ impl SettingsWindow {
                             .border_1()
                             .border_color(rgb(0xb7bdc4))
                             .cursor_pointer()
-                            .child("切断")
+                            .child(self.i18n.text("disconnect"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let _ = this.owner.update(cx, |owner, _, cx| owner.disconnect(cx));
                                 cx.notify();
@@ -1466,14 +1654,14 @@ impl SettingsWindow {
         }
     }
 
-    fn font_field(&self, target: FontTarget, label: &'static str, cx: &mut Context<Self>) -> Div {
+    fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let input = self.font_input(target);
         let mut field = div().flex().flex_col().child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().w(px(150.)).flex_shrink_0().child(label))
+                .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
                 .child(div().flex_1().min_w_0().child(input.clone()))
                 .child(
                     div()
@@ -1483,7 +1671,7 @@ impl SettingsWindow {
                         .border_1()
                         .border_color(rgb(0xb7bdc4))
                         .cursor_pointer()
-                        .child("選択 ▾")
+                        .child(self.i18n.text("choose_font"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.font_picker = if this.font_picker == Some(target) {
                                 None
@@ -1510,11 +1698,11 @@ impl SettingsWindow {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .child(if target == FontTarget::Time {
-                        "既定の等幅フォント"
+                    .child(self.i18n.text(if target == FontTarget::Time {
+                        "default_monospace"
                     } else {
-                        "システム標準"
-                    })
+                        "system_default"
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.font_input(target)
                             .update(cx, |field, cx| field.set_text("", cx));
@@ -1565,35 +1753,35 @@ impl SettingsWindow {
                 div()
                     .text_size(px(20.))
                     .font_weight(FontWeight::BOLD)
-                    .child("外観"),
+                    .child(self.i18n.text("appearance")),
             )
             .child(
-                div().text_color(rgb(0x52606c)).child(
-                    "色は #RRGGBB 形式。フォント欄を入力して候補を絞れます。空欄は既定値です。",
-                ),
+                div()
+                    .text_color(rgb(0x52606c))
+                    .child(self.i18n.text("appearance_intro")),
             )
             .child(color_field(
-                "画面の背景",
+                &self.i18n.text("window_background"),
                 self.settings.background.clone(),
                 cx,
             ))
             .child(color_field(
-                "チャンネルログ",
+                &self.i18n.text("channel_log"),
                 self.settings.main_log_background.clone(),
                 cx,
             ))
             .child(color_field(
-                "チャンネルログ交互",
+                &self.i18n.text("channel_log_alternate"),
                 self.settings.main_log_alternate.clone(),
                 cx,
             ))
             .child(color_field(
-                "全体ログ",
+                &self.i18n.text("combined_log"),
                 self.settings.sub_log_background.clone(),
                 cx,
             ))
             .child(color_field(
-                "全体ログ交互",
+                &self.i18n.text("combined_log_alternate"),
                 self.settings.sub_log_alternate.clone(),
                 cx,
             ))
@@ -1609,19 +1797,19 @@ impl SettingsWindow {
                     } else {
                         "☐"
                     })
-                    .child("ログを１行ごとに交互色にする")
+                    .child(self.i18n.text("alternate_rows"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         let value = &mut this.settings.values.appearance.alternate_rows;
                         *value = !*value;
                         cx.notify();
                     })),
             )
-            .child(self.font_field(FontTarget::MainLog, "チャンネルログ", cx))
-            .child(self.font_field(FontTarget::SubLog, "全体ログ", cx))
-            .child(self.font_field(FontTarget::Members, "ユーザー一覧", cx))
-            .child(self.font_field(FontTarget::Channels, "チャンネル一覧", cx))
-            .child(self.font_field(FontTarget::Input, "入力欄", cx))
-            .child(self.font_field(FontTarget::Time, "時刻（等幅）", cx))
+            .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
+            .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
+            .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
+            .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
+            .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
+            .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
             .when_some(self.feedback.clone(), |d, feedback| {
                 d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
             })
@@ -1632,7 +1820,7 @@ impl SettingsWindow {
                     .py_1()
                     .bg(rgb(0xcbdbea))
                     .cursor_pointer()
-                    .child("保存して適用")
+                    .child(self.i18n.text("save_and_apply"))
                     .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
             )
     }
@@ -1648,7 +1836,7 @@ impl SettingsWindow {
                     .py_2()
                     .cursor_pointer()
                     .when(self.tab == SettingsTab::Connection, |d| d.bg(rgb(0xcbdbea)))
-                    .child("接続")
+                    .child(self.i18n.text("connection"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = SettingsTab::Connection;
                         this.font_picker = None;
@@ -1662,7 +1850,7 @@ impl SettingsWindow {
                     .py_2()
                     .cursor_pointer()
                     .when(self.tab == SettingsTab::Appearance, |d| d.bg(rgb(0xcbdbea)))
-                    .child("外観")
+                    .child(self.i18n.text("appearance"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab = SettingsTab::Appearance;
                         cx.notify();
@@ -1691,16 +1879,16 @@ impl SettingsWindow {
     }
 }
 
-fn settings_field(label: &'static str, input: Entity<TextInput>) -> Div {
+fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
     div()
         .flex()
         .items_center()
         .gap_2()
-        .child(div().w(px(150.)).flex_shrink_0().child(label))
+        .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
         .child(div().flex_1().min_w_0().child(input))
 }
 
-fn color_field(label: &'static str, input: Entity<TextInput>, cx: &App) -> Div {
+fn color_field(label: &str, input: Entity<TextInput>, cx: &App) -> Div {
     let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
     settings_field(label, input).child(
         div()
@@ -1937,16 +2125,18 @@ impl Render for ChatWindow {
         let registration_incomplete = self.state.status(self.state.selected_network().id)
             != Some(&ConnectionStatus::Registered);
         if selected.is_some() && registration_incomplete {
-            main_log = main_log.child(div().text_color(rgb(0x9a4b28)).child(Self::status_text(
-                self.state.status(self.state.selected_network().id),
-            )));
+            main_log = main_log.child(
+                div()
+                    .text_color(rgb(0x9a4b28))
+                    .child(self.status_text(self.state.status(self.state.selected_network().id))),
+            );
         }
         if selected.is_some() && registration_incomplete && !self.diagnostics.is_empty() {
             main_log = main_log.child(
                 div()
                     .py_1()
                     .font_weight(FontWeight::BOLD)
-                    .child("接続診断（→ 送信 / ← 受信、発言本文を含みます）"),
+                    .child(self.i18n.text("diagnostics_heading")),
             );
             main_log = main_log.children(
                 self.diagnostics
@@ -2060,13 +2250,13 @@ impl Render for ChatWindow {
                 }));
         } else {
             let network = self.state.selected_network();
-            main_log = main_log.child(Self::status_text(self.state.status(network.id)));
+            main_log = main_log.child(self.status_text(self.state.status(network.id)));
             if (self.debug_enabled || registration_incomplete) && !self.diagnostics.is_empty() {
                 main_log = main_log.child(
                     div()
                         .py_1()
                         .font_weight(FontWeight::BOLD)
-                        .child("接続診断（→ 送信 / ← 受信、発言本文を含みます）"),
+                        .child(self.i18n.text("diagnostics_heading")),
                 );
                 main_log = main_log.children(
                     self.diagnostics
@@ -2297,55 +2487,58 @@ fn navigation_binding(key: &str, command: Command) -> KeyBinding {
     KeyBinding::new(key, Navigate { command }, Some("ChatWindow"))
 }
 
-fn app_menus(debug_enabled: bool) -> Vec<Menu> {
+fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
     let mut app_items = vec![
-        MenuItem::action("接続設定…", OpenSettings),
+        MenuItem::action(i18n.text("menu_settings"), OpenSettings),
         MenuItem::separator(),
     ];
     #[cfg(target_os = "macos")]
-    app_items.push(MenuItem::os_submenu("サービス", SystemMenuType::Services));
-    app_items.push(MenuItem::action("CayenChat を終了", Quit));
+    app_items.push(MenuItem::os_submenu(
+        i18n.text("menu_services"),
+        SystemMenuType::Services,
+    ));
+    app_items.push(MenuItem::action(i18n.text("menu_quit"), Quit));
     vec![
         Menu {
             name: "CayenChat".into(),
             items: app_items,
         },
         Menu {
-            name: "接続".into(),
+            name: i18n.text("menu_connection").into(),
             items: vec![
-                MenuItem::action("接続設定…", OpenSettings),
-                MenuItem::action("切断", Disconnect),
+                MenuItem::action(i18n.text("menu_settings"), OpenSettings),
+                MenuItem::action(i18n.text("disconnect"), Disconnect),
             ],
         },
         Menu {
-            name: "編集".into(),
+            name: i18n.text("menu_edit").into(),
             items: vec![
-                MenuItem::action("取り消す", input::Undo),
-                MenuItem::action("やり直す", input::Redo),
+                MenuItem::action(i18n.text("menu_undo"), input::Undo),
+                MenuItem::action(i18n.text("menu_redo"), input::Redo),
                 MenuItem::separator(),
-                MenuItem::action("切り取り", input::Cut),
-                MenuItem::action("コピー", input::Copy),
-                MenuItem::action("ペースト", input::Paste),
-                MenuItem::action("すべて選択", input::SelectAll),
+                MenuItem::action(i18n.text("menu_cut"), input::Cut),
+                MenuItem::action(i18n.text("menu_copy"), input::Copy),
+                MenuItem::action(i18n.text("menu_paste"), input::Paste),
+                MenuItem::action(i18n.text("menu_select_all"), input::SelectAll),
             ],
         },
         Menu {
-            name: "表示".into(),
+            name: i18n.text("menu_view").into(),
             items: vec![
                 MenuItem::action(
                     if debug_enabled {
-                        "接続診断を隠す"
+                        i18n.text("menu_hide_diagnostics")
                     } else {
-                        "接続診断を表示"
+                        i18n.text("menu_show_diagnostics")
                     },
                     ToggleDebug,
                 ),
-                MenuItem::action("接続診断をコピー", CopyDiagnostics),
+                MenuItem::action(i18n.text("menu_copy_diagnostics"), CopyDiagnostics),
             ],
         },
         Menu {
-            name: "Window".into(),
-            items: vec![MenuItem::action("接続設定…", OpenSettings)],
+            name: i18n.text("menu_window").into(),
+            items: vec![MenuItem::action(i18n.text("menu_settings"), OpenSettings)],
         },
     ]
 }
@@ -2428,7 +2621,7 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         input::bind_keys(cx);
         cx.bind_keys(shortcut_bindings());
-        cx.set_menus(app_menus(false));
+        cx.set_menus(app_menus(false, &Localizer::new(Language::System)));
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -2454,10 +2647,12 @@ fn main() {
         cx.activate(true);
         let needs_settings = chat_window
             .update(cx, |chat, window, cx| {
+                cx.set_menus(app_menus(false, &chat.i18n));
                 match chat.startup_connection.take() {
                     Some(Ok(config)) => chat.apply_connection(config, window, cx).is_err(),
                     Some(Err(error)) => {
-                        chat.feedback = Some(format!("自動接続の設定を確認してください: {error}"));
+                        chat.feedback =
+                            Some(chat.i18n.format("startup_invalid", &[("error", &error)]));
                         cx.notify();
                         true
                     }

@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 6;
+const SETTINGS_VERSION: u32 = 7;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -24,6 +24,15 @@ pub enum TextEncoding {
     Iso2022Jp,
     ShiftJis,
     EucJp,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    System,
+    Japanese,
+    English,
 }
 
 impl TextEncoding {
@@ -145,6 +154,7 @@ pub struct Settings {
     pub sasl_enabled: bool,
     pub sasl_username: String,
     pub connect_on_startup: bool,
+    pub language: Language,
     pub appearance: Appearance,
 }
 
@@ -162,6 +172,7 @@ impl Default for Settings {
             sasl_enabled: false,
             sasl_username: String::new(),
             connect_on_startup: false,
+            language: Language::System,
             appearance: Appearance::default(),
         }
     }
@@ -362,7 +373,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=6) => serde_json::from_value::<Settings>(value)
+        Some(2..=7) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -435,7 +446,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 6);
+        assert_eq!(settings.version, 7);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -457,7 +468,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 6);
+        assert_eq!(settings.version, 7);
         assert!(
             settings
                 .servers
@@ -486,7 +497,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 6);
+        assert_eq!(settings.version, 7);
         assert!(
             settings
                 .servers
@@ -504,7 +515,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 6);
+        assert_eq!(settings.version, 7);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -526,11 +537,31 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 6);
+        assert_eq!(settings.version, 7);
         assert!(!settings.connect_on_startup);
         settings.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
         assert!(load_from(&path).unwrap().unwrap().connect_on_startup);
+    }
+
+    #[test]
+    fn migrates_version_six_to_system_language_and_persists_choice() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 6.into();
+        old.as_object_mut().unwrap().remove("language");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, 7);
+        assert_eq!(settings.language, Language::System);
+        settings.language = Language::English;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().unwrap().language,
+            Language::English
+        );
     }
 
     #[test]

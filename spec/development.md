@@ -351,3 +351,13 @@ composition. GPUI 0.2.2 predates the merged upstream
 [Windows IME keyboard fix](https://github.com/zed-industries/zed/pull/41259),
 so mode-switching failures may remain until a newer GPUI can be adopted.
 Windows runtime was not available for this check.
+
+### Japanese and English localization (2026-09-25)
+
+Settings version 7 stores System, Japanese, or English. System resolves the OS
+locale through `sys-locale`; Japanese uses `ja`, and all other or unavailable
+languages use English. UI catalogs live in `locales/`; the executable reads
+packaged JSON files at runtime and uses embedded copies when the files are
+missing. Check that macOS, Windows, and Debian packages include both JSON files.
+For UI verification, switch each language in Connection settings, save, reopen
+settings, and inspect the chat window and native menus without reconnecting.

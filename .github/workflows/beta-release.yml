@@ -79,8 +79,11 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path package\locales
+          Copy-Item target\release\cayenchat.exe package\
+          Copy-Item locales\*.json package\locales\
           Compress-Archive `
-            -Path target\release\cayenchat.exe `
+            -Path package\* `
             -DestinationPath cayenchat-windows-x86_64.zip
 
       - name: Upload package
@@ -112,8 +115,11 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path package\locales
+          Copy-Item target\release\cayenchat.exe package\
+          Copy-Item locales\*.json package\locales\
           Compress-Archive `
-            -Path target\release\cayenchat.exe `
+            -Path package\* `
             -DestinationPath cayenchat-windows-arm64.zip
 
       - name: Upload package
@@ -149,8 +155,9 @@ jobs:
 
           VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 
-          mkdir -p CayenChat.app/Contents/MacOS
+          mkdir -p CayenChat.app/Contents/MacOS CayenChat.app/Contents/Resources/locales
           cp target/release/cayenchat CayenChat.app/Contents/MacOS/CayenChat
+          cp locales/*.json CayenChat.app/Contents/Resources/locales/
           chmod +x CayenChat.app/Contents/MacOS/CayenChat
 
           cat > CayenChat.app/Contents/Info.plist <<EOF_PLIST

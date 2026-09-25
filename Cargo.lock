@@ -813,6 +813,8 @@ dependencies = [
  "cayenchat-storage",
  "embed-resource",
  "gpui",
+ "serde_json",
+ "sys-locale",
  "unicode-segmentation",
  "url",
 ]
