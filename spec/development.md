@@ -105,6 +105,9 @@ The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
 `crates/ui/resources/windows/cayenchat.ico`. Both are derived from `icon.png` and
 checked in so normal builds need no image tools. When changing the artwork, run
 `python3 scripts/generate-icons.py` with Pillow installed, then rebuild the app.
+The macOS beta workflow signs the completed bundle ad hoc and verifies its
+resource seal before archiving. This is sufficient to validate bundle integrity
+but does not provide Developer ID signing or notarization for Gatekeeper.
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
 

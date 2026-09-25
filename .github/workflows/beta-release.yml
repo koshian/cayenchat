@@ -186,6 +186,10 @@ jobs:
           </plist>
           EOF_PLIST
 
+          # Seal the completed app bundle.
+          codesign --force --sign - CayenChat.app
+          codesign --verify --deep --strict --verbose=2 CayenChat.app
+
           ditto -c -k --sequesterRsrc --keepParent \
             CayenChat.app cayenchat-macos-arm64.zip
 
