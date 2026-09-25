@@ -75,6 +75,10 @@ pub struct TextInput {
 }
 
 impl TextInput {
+    pub fn is_composing(&self) -> bool {
+        self.marked_range.is_some()
+    }
+
     pub fn complete_nickname(
         &mut self,
         members: &[String],

@@ -605,6 +605,9 @@ impl ChatWindow {
         };
         let members = channel.members.clone();
         let input = self.inputs[&self.state.selection()].clone();
+        if input.read(cx).is_composing() {
+            return;
+        }
         input.update(cx, |input, cx| {
             input.complete_nickname(&members, window, cx)
         });
@@ -751,6 +754,9 @@ impl ChatWindow {
     fn send_draft(&mut self, notice: bool, window: &mut Window, cx: &mut Context<Self>) {
         let selection = self.state.selection();
         let input = self.inputs[&selection].clone();
+        if input.read(cx).is_composing() {
+            return;
+        }
         let text = input.read(cx).text().to_owned();
         if text.trim().is_empty() {
             return;
