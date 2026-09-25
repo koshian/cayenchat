@@ -2641,6 +2641,7 @@ impl Render for ChatWindow {
             .child(members)
             .child(channels);
 
+        let connected = self.irc.is_some();
         let server_menu = self.server_menu.map(|position| {
             div()
                 .id("server-context-menu")
@@ -2658,22 +2659,28 @@ impl Render for ChatWindow {
                         .id("server-menu-reconnect")
                         .px_2()
                         .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(rgb(0xdce5ee)))
                         .child(self.i18n.text("reconnect"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.reconnect(window, cx);
-                        })),
+                        .when(!connected, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reconnect(window, cx);
+                                }))
+                        })
+                        .when(connected, |d| d.text_color(rgb(0x8a9097))),
                 )
                 .child(
                     div()
                         .id("server-menu-disconnect")
                         .px_2()
                         .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(rgb(0xdce5ee)))
                         .child(self.i18n.text("disconnect"))
-                        .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
+                        .when(connected, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx)))
+                        })
+                        .when(!connected, |d| d.text_color(rgb(0x8a9097))),
                 )
         });
         div()

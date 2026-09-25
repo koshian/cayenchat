@@ -18,7 +18,7 @@ History and notifications remain TODO.
 - DONE — one live server selected from persisted profiles, with user-added servers first and IRCnet presets afterward
 - DONE — per-server UTF-8, ISO-2022-JP, Shift_JIS, or EUC-JP line encoding, including channel names; local ISO-2022-JP wire round trip tested
 - PARTIAL — rustls connection with certificate verification on by default and a per-server opt-out for self-signed or otherwise invalid certificates; public-server interoperability unverified
-- DONE — initial connect, manual disconnect and manual reconnect via settings, native menu or server context menu; unexpected disconnections retry with capped backoff, while explicit disconnect cancels retries
+- DONE — initial connect, manual disconnect and manual reconnect via settings, native menu or server context menu; the server context menu disables reconnect while a connection is active and disconnect while none is active; unexpected disconnections retry with capped backoff, while explicit disconnect cancels retries
 - PARTIAL — one live network; a two-network mock remains in application tests
 - PARTIAL — connecting, registered, disconnected status and errors shown in the UI; directional IRC transcript appears automatically during connection/failure, with a menu toggle after registration and clipboard copy (parsed lines, not a complete socket capture)
 - DONE — optional server PASS over TLS
