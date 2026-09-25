@@ -174,7 +174,8 @@ WHOIS-only lines) per nickname and emits one `Whois` event at end-of-WHOIS (318)
 the raw lines still reach the server log. The UI opens a separate WHOIS window
 only for nicknames this client requested, because a bouncer such as Tiarra relays
 replies to every attached client; an open window for the same nick is updated and
-raised instead. The window offers private message, join for listed channels,
+raised instead. The window offers private message, a channel dropdown with join for the selected
+channel,
 update (re-sends WHOIS) and close/Escape. A 318 without 311 reports that the nick
 is offline. The chat window pushes its joined-channel set into WHOIS windows;
 they must not read the chat window while rendering, because opening a window

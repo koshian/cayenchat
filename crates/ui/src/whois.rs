@@ -12,6 +12,8 @@ pub struct WhoisWindow {
     // Lowercase joined channel names pushed by the owner; reading the owner
     // while rendering would re-enter it during its own update.
     joined: HashSet<String>,
+    selected_channel: usize,
+    channel_menu_open: bool,
     status: Option<String>,
     i18n: Localizer,
     focus: FocusHandle,
@@ -45,6 +47,8 @@ impl WhoisWindow {
                         owner,
                         info,
                         joined,
+                        selected_channel: 0,
+                        channel_menu_open: false,
                         status: None,
                         i18n,
                         focus,
@@ -59,6 +63,11 @@ impl WhoisWindow {
     pub fn set_info(&mut self, info: WhoisInfo, window: &mut Window, cx: &mut Context<Self>) {
         if info.found() {
             window.set_window_title(&info.nickname);
+            let selected = self.info.channels.get(self.selected_channel).cloned();
+            self.selected_channel = selected
+                .and_then(|entry| info.channels.iter().position(|other| *other == entry))
+                .unwrap_or(0);
+            self.channel_menu_open = false;
             self.info = info;
             self.status = None;
         } else {
@@ -132,31 +141,94 @@ impl WhoisWindow {
             .map(|value| self.row(key, value))
     }
 
-    fn channel_list(&self, cx: &mut Context<Self>) -> Div {
-        let mut list = div().flex().flex_col().gap_1();
-        for (index, entry) in self.info.channels.iter().enumerate() {
-            let channel = channel_name(entry).to_owned();
-            let action = if self.joined.contains(&channel.to_lowercase()) {
-                div()
-                    .text_color(rgb(MUTED))
-                    .child(self.i18n.text("whois_joined"))
-                    .into_any_element()
-            } else {
-                button(("whois-join", index), self.i18n.text("whois_join"), false)
-                    .on_click(cx.listener(move |this, _, _, cx| this.join(channel.clone(), cx)))
-                    .into_any_element()
-            };
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(div().min_w_0().truncate().child(entry.clone()))
-                    .child(action),
-            );
+    fn channel_selector(&self, cx: &mut Context<Self>) -> Div {
+        let index = self.selected_channel.min(self.info.channels.len() - 1);
+        let entry = self.info.channels[index].clone();
+        let channel = channel_name(&entry).to_owned();
+        let action = if self.joined.contains(&channel.to_lowercase()) {
+            div()
+                .flex_shrink_0()
+                .text_color(rgb(MUTED))
+                .child(self.i18n.text("whois_joined"))
+                .into_any_element()
+        } else {
+            button("whois-join", self.i18n.text("whois_join"), false)
+                .on_click(cx.listener(move |this, _, _, cx| this.join(channel.clone(), cx)))
+                .into_any_element()
+        };
+        let count = self.info.channels.len();
+        let mut selector = div().flex().flex_col().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .id("whois-channel-select")
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .bg(rgb(0xffffff))
+                        .border_1()
+                        .border_color(rgb(BORDER))
+                        .cursor_pointer()
+                        .child(div().flex_1().min_w_0().truncate().child(entry))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(rgb(MUTED))
+                                .child(format!("{}/{count}  ▾", index + 1)),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.channel_menu_open = !this.channel_menu_open;
+                            cx.notify();
+                        })),
+                )
+                .child(action),
+        );
+        if self.channel_menu_open {
+            let mut menu = div()
+                .id("whois-channel-menu")
+                .max_h(px(180.))
+                .overflow_y_scroll()
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_t_0()
+                .border_color(rgb(BORDER));
+            for (option, entry) in self.info.channels.iter().enumerate() {
+                let joined = self.joined.contains(&channel_name(entry).to_lowercase());
+                menu = menu.child(
+                    div()
+                        .id(("whois-channel-option", option))
+                        .flex()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .when(option == index, |d| d.bg(rgb(0xcbdbea)))
+                        .hover(|d| d.bg(rgb(0xdce5ee)))
+                        .child(div().flex_1().min_w_0().truncate().child(entry.clone()))
+                        .when(joined, |d| {
+                            d.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_color(rgb(MUTED))
+                                    .child(self.i18n.text("whois_joined")),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected_channel = option;
+                            this.channel_menu_open = false;
+                            cx.notify();
+                        })),
+                );
+            }
+            selector = selector.child(menu);
         }
-        list
+        selector
     }
 }
 
@@ -227,7 +299,7 @@ impl Render for WhoisWindow {
             .children(self.text_row("whois_real_name", info.realname.clone()))
             .children(self.text_row("whois_account", info.account.clone()));
         if !info.channels.is_empty() {
-            details = details.child(self.row("whois_channels", self.channel_list(cx)));
+            details = details.child(self.row("whois_channels", self.channel_selector(cx)));
         }
         details = details
             .children(self.text_row("whois_server", info.server.clone()))
@@ -259,8 +331,14 @@ impl Render for WhoisWindow {
             .bg(rgb(0xf5f6f8))
             .text_size(px(13.))
             .text_color(rgb(0x20262d))
-            .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
-                if event.keystroke.key == "escape" {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                if this.channel_menu_open {
+                    this.channel_menu_open = false;
+                    cx.notify();
+                } else {
                     window.remove_window();
                 }
             }))
