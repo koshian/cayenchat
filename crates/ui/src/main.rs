@@ -2362,6 +2362,8 @@ impl Render for ChatWindow {
                                 .w(px(84.))
                                 .flex_shrink_0()
                                 .flex()
+                                .justify_end()
+                                .text_right()
                                 .text_color(rgb(0x315b83))
                                 .child(
                                     div()
