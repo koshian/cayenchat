@@ -350,6 +350,8 @@ pub enum Event {
         users: Vec<String>,
     },
     ServerLine(String),
+    /// A completed WHOIS reply, emitted at end-of-WHOIS (318).
+    Whois(Box<WhoisInfo>),
     OutgoingAccepted {
         channel: String,
         text: String,
@@ -364,6 +366,32 @@ pub enum ChannelActivityKind {
     Left { reason: Option<String> },
     Quit { reason: Option<String> },
     ModeChanged { modes: String },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WhoisInfo {
+    pub nickname: String,
+    pub username: Option<String>,
+    pub host: Option<String>,
+    pub realname: Option<String>,
+    pub channels: Vec<String>,
+    pub server: Option<String>,
+    pub server_info: Option<String>,
+    pub away: Option<String>,
+    pub idle_seconds: Option<u64>,
+    /// Sign-on time as Unix seconds.
+    pub signon: Option<i64>,
+    pub account: Option<String>,
+    pub operator: Option<String>,
+    /// Other WHOIS numerics (certificate, secure connection, real host...).
+    pub extra: Vec<String>,
+}
+
+impl WhoisInfo {
+    /// False when the server ended WHOIS without a 311 user reply.
+    pub fn found(&self) -> bool {
+        self.username.is_some()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1028,6 +1056,7 @@ async fn run(
     let mut registered = false;
     let mut current_nick = registration_nick;
     let mut roster = RosterTracker::default();
+    let mut whois = WhoisCollector::default();
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1127,7 +1156,8 @@ async fn run(
                             sasl = None;
                             diagnostic(&events, started, "Registration completed (001 received).").await;
                         }
-                        for event in translate_message(&client, &mut roster, &current_nick, message) {
+                        let whois_reply = whois.observe(&message);
+                        for event in translate_message(&client, &mut roster, &current_nick, message).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
                                 _ => {}
@@ -1208,6 +1238,78 @@ impl RosterTracker {
     fn accept_names(&mut self, channel: &str) {
         self.renamed_roles
             .retain(|(known_channel, _), _| known_channel != channel);
+    }
+}
+
+/// Collects WHOIS numerics per nickname until end-of-WHOIS.
+#[derive(Default)]
+struct WhoisCollector {
+    pending: HashMap<String, WhoisInfo>,
+}
+
+impl WhoisCollector {
+    fn observe(&mut self, message: &IrcMessage) -> Option<WhoisInfo> {
+        let (code, args) = match &message.command {
+            IrcCommand::Response(response, args) => (*response as u16, args),
+            IrcCommand::Raw(command, args) => (command.parse::<u16>().ok()?, args),
+            _ => return None,
+        };
+        let nickname = args.get(1)?;
+        let key = nickname.to_lowercase();
+        let arg = |index: usize| args.get(index).filter(|value| !value.is_empty()).cloned();
+        if code == 318 {
+            return Some(self.pending.remove(&key).unwrap_or_else(|| WhoisInfo {
+                nickname: nickname.clone(),
+                ..Default::default()
+            }));
+        }
+        // RPL_AWAY also answers PRIVMSG, so it only joins a WHOIS in progress.
+        if code == 301 {
+            if let Some(info) = self.pending.get_mut(&key) {
+                info.away = args.last().cloned();
+            }
+            return None;
+        }
+        if !matches!(
+            code,
+            276 | 307 | 311..=313 | 317 | 319 | 320 | 330 | 335 | 338 | 378 | 379 | 671
+        ) {
+            return None;
+        }
+        let info = self.pending.entry(key).or_insert_with(|| WhoisInfo {
+            nickname: nickname.clone(),
+            ..Default::default()
+        });
+        match code {
+            311 => {
+                info.nickname = nickname.clone();
+                info.username = arg(2);
+                info.host = arg(3);
+                info.realname = if args.len() > 5 {
+                    args.last().cloned()
+                } else {
+                    None
+                };
+            }
+            312 => {
+                info.server = arg(2);
+                info.server_info = arg(3);
+            }
+            313 => info.operator = args.last().cloned(),
+            317 => {
+                info.idle_seconds = args.get(2).and_then(|value| value.parse().ok());
+                info.signon = args.get(3).and_then(|value| value.parse().ok());
+            }
+            319 => {
+                if let Some(list) = args.last() {
+                    info.channels
+                        .extend(list.split_whitespace().map(str::to_owned));
+                }
+            }
+            330 => info.account = arg(2),
+            _ => info.extra.push(args[2..].join(" ")),
+        }
+        None
     }
 }
 
@@ -1432,6 +1534,53 @@ mod tests {
         );
         assert!(member_outgoing("bad nick", MemberCommand::Whois).is_err());
         assert!(member_outgoing("Alice,Bob", MemberCommand::Whois).is_err());
+    }
+
+    #[test]
+    fn whois_collector_merges_replies_until_end_of_whois() {
+        let mut collector = WhoisCollector::default();
+        let mut feed = |line: &str| collector.observe(&line.parse::<IrcMessage>().unwrap());
+        assert_eq!(feed(":srv 301 me Alice :before whois"), None);
+        assert_eq!(
+            feed(":srv 311 me Alice ~alice example.org * :Alice Liddell"),
+            None
+        );
+        assert_eq!(feed(":srv 319 me Alice :@#one +#two"), None);
+        assert_eq!(feed(":srv 319 me Alice :#three"), None);
+        assert_eq!(
+            feed(":srv 312 me Alice irc.example.org :Example server"),
+            None
+        );
+        assert_eq!(feed(":srv 301 me Alice :gone fishing"), None);
+        assert_eq!(feed(":srv 330 me Alice alice :is logged in as"), None);
+        assert_eq!(
+            feed(":srv 671 me Alice :is using a secure connection"),
+            None
+        );
+        assert_eq!(
+            feed(":srv 317 me Alice 665 1788066240 :seconds idle, signon time"),
+            None
+        );
+        let info = feed(":srv 318 me Alice :End of WHOIS list.").unwrap();
+        assert!(info.found());
+        assert_eq!(info.nickname, "Alice");
+        assert_eq!(info.username.as_deref(), Some("~alice"));
+        assert_eq!(info.host.as_deref(), Some("example.org"));
+        assert_eq!(info.realname.as_deref(), Some("Alice Liddell"));
+        assert_eq!(info.channels, ["@#one", "+#two", "#three"]);
+        assert_eq!(info.server.as_deref(), Some("irc.example.org"));
+        assert_eq!(info.server_info.as_deref(), Some("Example server"));
+        assert_eq!(info.away.as_deref(), Some("gone fishing"));
+        assert_eq!(info.account.as_deref(), Some("alice"));
+        assert_eq!(info.idle_seconds, Some(665));
+        assert_eq!(info.signon, Some(1788066240));
+        assert_eq!(info.extra, ["is using a secure connection"]);
+        assert_eq!(feed(":srv 301 me Alice :after whois"), None);
+
+        assert_eq!(feed(":srv 401 me Nobody :No such nick/channel"), None);
+        let missing = feed(":srv 318 me Nobody :End of WHOIS list.").unwrap();
+        assert_eq!(missing.nickname, "Nobody");
+        assert!(!missing.found());
     }
 
     #[test]
