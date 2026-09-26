@@ -231,7 +231,7 @@
   "upload_failed_network": "Could not reach {provider} ({error}). The draft was not changed.",
   "upload_failed_rejected": "{provider} rejected the image ({error}). The draft was not changed.",
   "upload_failed_too_large": "The image is larger than the {limit} upload limit.",
-  "upload_not_image": "Only PNG, JPEG, GIF, WebP, BMP or TIFF images can be uploaded.",
+  "upload_not_image": "Only PNG, JPEG, GIF, WebP, BMP, TIFF, HEIC/HEIF or AVIF images can be uploaded.",
   "upload_one_file": "Drop one image at a time.",
   "upload_read_failed": "Could not read the file ({error}).",
   "upload_drop_hint": "Drop an image to upload it"

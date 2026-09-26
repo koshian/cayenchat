@@ -24,6 +24,12 @@ pub enum ImageFormat {
     Webp,
     Bmp,
     Tiff,
+    /// HEIF with HEVC images, the default photo format on iPhone and in
+    /// macOS Photos libraries.
+    Heic,
+    /// HEIF without a more specific brand.
+    Heif,
+    Avif,
 }
 
 impl ImageFormat {
@@ -35,6 +41,9 @@ impl ImageFormat {
             Self::Webp => "image/webp",
             Self::Bmp => "image/bmp",
             Self::Tiff => "image/tiff",
+            Self::Heic => "image/heic",
+            Self::Heif => "image/heif",
+            Self::Avif => "image/avif",
         }
     }
 
@@ -46,6 +55,9 @@ impl ImageFormat {
             Self::Webp => "webp",
             Self::Bmp => "bmp",
             Self::Tiff => "tiff",
+            Self::Heic => "heic",
+            Self::Heif => "heif",
+            Self::Avif => "avif",
         }
     }
 
@@ -65,8 +77,32 @@ impl ImageFormat {
         } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
             Some(Self::Tiff)
         } else {
-            None
+            Self::sniff_heif(bytes)
         }
+    }
+
+    /// Reads the brands of an ISO base media `ftyp` box (ISO/IEC 23008-12
+    /// for HEIF, AV1 Image File Format for AVIF). Video brands are ignored.
+    fn sniff_heif(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 || &bytes[4..8] != b"ftyp" {
+            return None;
+        }
+        let size = u32::from_be_bytes(bytes[..4].try_into().ok()?) as usize;
+        let end = size.clamp(16, bytes.len().min(256));
+        // The major brand, then compatible brands after the minor version.
+        let brands = std::iter::once(&bytes[8..12]).chain(bytes[16..end].chunks_exact(4));
+        let mut heif = false;
+        for brand in brands {
+            match brand {
+                b"avif" | b"avis" => return Some(Self::Avif),
+                b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"hevm" | b"hevs" => {
+                    return Some(Self::Heic);
+                }
+                b"mif1" | b"msf1" => heif = true,
+                _ => {}
+            }
+        }
+        heif.then_some(Self::Heif)
     }
 }
 
@@ -167,6 +203,43 @@ mod tests {
             ImageFormat::sniff(b"\xff\xd8\xff\xe0"),
             Some(ImageFormat::Jpeg)
         );
+    }
+
+    fn ftyp(major: &[u8; 4], compatible: &[&[u8; 4]]) -> Vec<u8> {
+        let size = 16 + 4 * compatible.len();
+        let mut bytes = (size as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(b"ftyp");
+        bytes.extend_from_slice(major);
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        for brand in compatible {
+            bytes.extend_from_slice(*brand);
+        }
+        bytes.extend_from_slice(b"\0\0\0\x08meta");
+        bytes
+    }
+
+    #[test]
+    fn heif_family_is_recognized_by_brand() {
+        // An iPhone photo: major brand heic, compatible mif1/heic.
+        let heic = ftyp(b"heic", &[b"mif1", b"heic"]);
+        assert_eq!(ImageFormat::sniff(&heic), Some(ImageFormat::Heic));
+        let photo = Attachment::image(Some("IMG_0001.HEIC"), heic, AttachmentSource::Drop).unwrap();
+        assert_eq!(photo.format.media_type(), "image/heic");
+        assert_eq!(
+            ImageFormat::sniff(&ftyp(b"mif1", &[b"mif1", b"heic"])),
+            Some(ImageFormat::Heic)
+        );
+        assert_eq!(
+            ImageFormat::sniff(&ftyp(b"avif", &[b"mif1", b"miaf"])),
+            Some(ImageFormat::Avif)
+        );
+        assert_eq!(
+            ImageFormat::sniff(&ftyp(b"mif1", &[b"mif1"])),
+            Some(ImageFormat::Heif)
+        );
+        // MP4 and QuickTime videos share the box format but are not images.
+        assert_eq!(ImageFormat::sniff(&ftyp(b"isom", &[b"mp41"])), None);
+        assert_eq!(ImageFormat::sniff(&ftyp(b"qt  ", &[b"qt  "])), None);
     }
 
     #[test]

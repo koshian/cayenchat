@@ -231,7 +231,7 @@
   "upload_failed_network": "{provider} に接続できませんでした（{error}）。入力欄は変更していません。",
   "upload_failed_rejected": "{provider} が画像を受け付けませんでした（{error}）。入力欄は変更していません。",
   "upload_failed_too_large": "画像がアップロード上限の {limit} を超えています。",
-  "upload_not_image": "アップロードできるのは PNG、JPEG、GIF、WebP、BMP、TIFF 画像だけです。",
+  "upload_not_image": "アップロードできるのは PNG、JPEG、GIF、WebP、BMP、TIFF、HEIC/HEIF、AVIF 画像だけです。",
   "upload_one_file": "画像は 1 つずつドロップしてください。",
   "upload_read_failed": "ファイルを読めませんでした（{error}）。",
   "upload_drop_hint": "画像をドロップしてアップロード"
