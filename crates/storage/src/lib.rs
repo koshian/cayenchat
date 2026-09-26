@@ -1,4 +1,5 @@
-//! Versioned connection preferences. Credentials are optional plaintext values.
+//! Versioned preferences. Secrets are not part of the preferences file; they
+//! live in the [`credentials`] store.
 
 use std::{
     collections::HashSet,
@@ -8,7 +9,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 10;
+pub mod credentials;
+
+pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
+
+const SETTINGS_VERSION: u32 = 11;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -199,12 +204,15 @@ pub struct ServerProfile {
     pub verify_tls_certificates: bool,
     pub encoding: TextEncoding,
     pub custom: bool,
+    /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub server_password: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sasl_password: Option<String>,
+    /// Plaintext passwords saved by version 10 and earlier. Read only for
+    /// migration into the credential store; never written back.
+    #[serde(rename = "server_password", default, skip_serializing)]
+    legacy_server_password: Option<Secret>,
+    #[serde(rename = "sasl_password", default, skip_serializing)]
+    legacy_sasl_password: Option<Secret>,
 }
 
 impl ServerProfile {
@@ -218,10 +226,26 @@ impl ServerProfile {
             encoding: TextEncoding::Utf8,
             custom: false,
             remember_passwords: false,
-            server_password: None,
-            sasl_password: None,
+            legacy_server_password: None,
+            legacy_sasl_password: None,
         }
     }
+
+    pub fn server_password_key(&self) -> SecretKey {
+        SecretKey::server_password(&self.id)
+    }
+
+    pub fn sasl_password_key(&self) -> SecretKey {
+        SecretKey::sasl_password(&self.id)
+    }
+}
+
+/// External image hosting for IRC. Disabled until the user picks a provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageUpload {
+    /// Provider ID from the uploader registry, or `None` when disabled.
+    pub provider: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,8 +255,11 @@ pub struct Settings {
     pub selected_server: String,
     pub servers: Vec<ServerProfile>,
     pub nickname: String,
+    /// IRC `USER` username (ident); independent of the nickname.
+    pub username: String,
     pub channels: String,
     pub sasl_enabled: bool,
+    /// SASL account name; independent of both nickname and username.
     pub sasl_username: String,
     pub connect_on_startup: bool,
     pub language: Language,
@@ -241,6 +268,8 @@ pub struct Settings {
     pub channel_number_modifier: ChannelNumberModifier,
     pub text_key_theme: TextKeyTheme,
     pub appearance: Appearance,
+    pub credential_backend: CredentialBackendKind,
+    pub image_upload: ImageUpload,
 }
 
 impl Default for Settings {
@@ -253,6 +282,7 @@ impl Default for Settings {
                 ServerProfile::preset(IRCNET_IPV6_ID, "irc6.ircnet.ne.jp"),
             ],
             nickname: String::new(),
+            username: String::new(),
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
@@ -263,11 +293,45 @@ impl Default for Settings {
             channel_number_modifier: ChannelNumberModifier::Ctrl,
             text_key_theme: TextKeyTheme::Auto,
             appearance: Appearance::default(),
+            credential_backend: CredentialBackendKind::System,
+            image_upload: ImageUpload::default(),
         }
     }
 }
 
 impl Settings {
+    /// Every connection secret key this configuration may have stored.
+    pub fn connection_secret_keys(&self) -> Vec<SecretKey> {
+        self.servers
+            .iter()
+            .flat_map(|server| [server.server_password_key(), server.sasl_password_key()])
+            .collect()
+    }
+
+    /// Takes plaintext passwords loaded from an older settings file.
+    pub fn take_legacy_secrets(&mut self) -> Vec<(SecretKey, Secret)> {
+        let mut secrets = Vec::new();
+        for server in &mut self.servers {
+            if let Some(value) = server.legacy_server_password.take()
+                && !value.is_empty()
+            {
+                secrets.push((server.server_password_key(), value));
+            }
+            if let Some(value) = server.legacy_sasl_password.take()
+                && !value.is_empty()
+            {
+                secrets.push((server.sasl_password_key(), value));
+            }
+        }
+        secrets
+    }
+
+    pub fn has_legacy_secrets(&self) -> bool {
+        self.servers.iter().any(|server| {
+            server.legacy_server_password.is_some() || server.legacy_sasl_password.is_some()
+        })
+    }
+
     pub fn selected_profile(&self) -> &ServerProfile {
         self.servers
             .iter()
@@ -308,8 +372,8 @@ impl Settings {
             encoding: TextEncoding::Utf8,
             custom: true,
             remember_passwords: false,
-            server_password: None,
-            sasl_password: None,
+            legacy_server_password: None,
+            legacy_sasl_password: None,
         });
     }
 
@@ -350,6 +414,11 @@ impl Settings {
         {
             self.appearance.channel_event_color = "#007D00".into();
         }
+        if self.version <= 10 && self.username.is_empty() {
+            // Earlier versions sent the nickname as the USER username; keep
+            // that as the initial value so existing connections do not change.
+            self.username = self.nickname.clone();
+        }
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
         self.servers
@@ -373,8 +442,8 @@ impl Settings {
                 server.verify_tls_certificates = true;
             }
             if !server.remember_passwords {
-                server.server_password = None;
-                server.sasl_password = None;
+                server.legacy_server_password = None;
+                server.legacy_sasl_password = None;
             }
         }
         if !self.servers.iter().any(|s| s.id == self.selected_server) {
@@ -443,9 +512,62 @@ pub fn save(settings: &Settings) -> Result<(), String> {
     save_to(&settings_path()?, settings)
 }
 
+/// Turns off password saving for a profile in the saved file. The caller
+/// deletes the secrets from the credential store.
 pub fn clear_saved_passwords(server_id: &str) -> Result<(), String> {
     let path = settings_path()?;
     clear_saved_passwords_from(&path, server_id)
+}
+
+/// Outcome of moving pre-version-11 plaintext passwords out of settings.json.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LegacyMigration {
+    pub moved: usize,
+    /// The system store was unavailable, so the passwords, which the user had
+    /// already agreed to keep as plaintext, went to the local credential file.
+    pub used_local_file: bool,
+}
+
+/// Moves plaintext passwords from older settings into the credential store and
+/// rewrites settings.json without them. `open` supplies the backends.
+pub fn migrate_legacy_secrets(
+    settings: &mut Settings,
+    open: &dyn Fn(CredentialBackendKind) -> CredentialStore,
+) -> Result<Option<LegacyMigration>, String> {
+    migrate_legacy_secrets_at(&settings_path()?, settings, open)
+}
+
+fn migrate_legacy_secrets_at(
+    path: &Path,
+    settings: &mut Settings,
+    open: &dyn Fn(CredentialBackendKind) -> CredentialStore,
+) -> Result<Option<LegacyMigration>, String> {
+    if !settings.has_legacy_secrets() {
+        return Ok(None);
+    }
+    let secrets = settings.take_legacy_secrets();
+    let store_all = |store: &CredentialStore| {
+        secrets
+            .iter()
+            .try_for_each(|(key, value)| store.set(key, value))
+    };
+    let mut used_local_file = false;
+    match store_all(&open(settings.credential_backend)) {
+        Ok(()) => {}
+        Err(CredentialError::Unavailable(_))
+            if settings.credential_backend == CredentialBackendKind::System =>
+        {
+            store_all(&open(CredentialBackendKind::LocalFile)).map_err(|e| e.to_string())?;
+            settings.credential_backend = CredentialBackendKind::LocalFile;
+            used_local_file = true;
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    save_to(path, settings)?;
+    Ok(Some(LegacyMigration {
+        moved: secrets.len(),
+        used_local_file,
+    }))
 }
 
 fn clear_saved_passwords_from(path: &Path, server_id: &str) -> Result<(), String> {
@@ -458,8 +580,6 @@ fn clear_saved_passwords_from(path: &Path, server_id: &str) -> Result<(), String
         .find(|server| server.id == server_id)
     {
         server.remember_passwords = false;
-        server.server_password = None;
-        server.sasl_password = None;
         save_to(path, &settings)?;
     }
     Ok(())
@@ -478,7 +598,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=10) => serde_json::from_value::<Settings>(value)
+        Some(2..=11) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -551,7 +671,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -573,7 +693,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert!(
             settings
                 .servers
@@ -602,7 +722,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert!(
             settings
                 .servers
@@ -620,7 +740,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -663,7 +783,7 @@ mod tests {
         old["appearance"]["channel_event_color"] = "#3B7655".into();
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert_eq!(settings.appearance.channel_event_color, "#007D00");
 
         old["appearance"]["channel_event_color"] = "#246843".into();
@@ -686,7 +806,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert!(!settings.connect_on_startup);
         settings.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
@@ -703,7 +823,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert_eq!(settings.language, Language::System);
         settings.language = Language::English;
         save_to(&path, &settings).unwrap();
@@ -738,29 +858,65 @@ mod tests {
         assert!(saved["appearance"].get("background").is_none());
     }
 
+    fn version_ten_with_passwords(remember: bool) -> serde_json::Value {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 10.into();
+        old["nickname"] = "alice".into();
+        old.as_object_mut().unwrap().remove("username");
+        old.as_object_mut().unwrap().remove("credential_backend");
+        let server = &mut old["servers"][0];
+        server["remember_passwords"] = remember.into();
+        server["server_password"] = "server-secret".into();
+        server["sasl_password"] = "sasl-secret".into();
+        old
+    }
+
+    fn memory_stores() -> (
+        CredentialStore,
+        CredentialStore,
+        impl Fn(CredentialBackendKind) -> CredentialStore,
+    ) {
+        use credentials::MemoryBackend;
+        use std::sync::Arc;
+        let system = CredentialStore::with_backend(Arc::new(MemoryBackend::new(
+            CredentialBackendKind::System,
+        )));
+        let local = CredentialStore::with_backend(Arc::new(MemoryBackend::new(
+            CredentialBackendKind::LocalFile,
+        )));
+        let (s, l) = (system.clone(), local.clone());
+        (system, local, move |kind| match kind {
+            CredentialBackendKind::System => s.clone(),
+            CredentialBackendKind::LocalFile => l.clone(),
+        })
+    }
+
     #[test]
-    fn saved_passwords_are_opt_in_and_cleared_immediately() {
+    fn secrets_never_enter_the_settings_file() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut settings = Settings::default();
-        let server = settings.selected_profile_mut();
-        server.server_password = Some("server-secret".into());
-        server.sasl_password = Some("sasl-secret".into());
-        save_to(&path, &settings).unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("server-secret"));
-        assert!(!text.contains("sasl-secret"));
-
         settings.selected_profile_mut().remember_passwords = true;
         save_to(&path, &settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("server-secret"));
-        assert!(text.contains("sasl-secret"));
+        assert!(!text.contains("server_password"));
+        assert!(!text.contains("sasl_password"));
 
-        clear_saved_passwords_from(&path, IRCNET_ID).unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec(&version_ten_with_passwords(true)).unwrap(),
+        )
+        .unwrap();
+        let mut loaded = load_from(&path).unwrap().unwrap();
+        assert!(!format!("{loaded:?}").contains("server-secret"));
+        save_to(&path, &loaded).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("server-secret"));
         assert!(!text.contains("sasl-secret"));
+        assert!(loaded.has_legacy_secrets());
+        assert_eq!(loaded.take_legacy_secrets().len(), 2);
+
+        clear_saved_passwords_from(&path, IRCNET_ID).unwrap();
         assert!(
             !load_from(&path)
                 .unwrap()
@@ -768,6 +924,99 @@ mod tests {
                 .selected_profile()
                 .remember_passwords
         );
+    }
+
+    #[test]
+    fn legacy_plaintext_passwords_move_to_the_credential_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&version_ten_with_passwords(true)).unwrap(),
+        )
+        .unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.username, "alice", "USER keeps the old nickname");
+        let (system, local, open) = memory_stores();
+        let report = migrate_legacy_secrets_at(&path, &mut settings, &open)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.moved, 2);
+        assert!(!report.used_local_file);
+        let key = SecretKey::sasl_password(IRCNET_ID);
+        assert_eq!(system.get(&key).unwrap().unwrap().expose(), "sasl-secret");
+        assert!(local.get(&key).unwrap().is_none());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("secret"), "{text}");
+        let mut reloaded = load_from(&path).unwrap().unwrap();
+        assert!(
+            migrate_legacy_secrets_at(&path, &mut reloaded, &open)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn legacy_passwords_use_local_file_when_system_store_is_unavailable() {
+        use credentials::MemoryBackend;
+        use std::sync::Arc;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&version_ten_with_passwords(true)).unwrap(),
+        )
+        .unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        let (_, local, _) = memory_stores();
+        let local_clone = local.clone();
+        let open = move |kind| match kind {
+            CredentialBackendKind::System => CredentialStore::with_backend(Arc::new(
+                MemoryBackend::unavailable(CredentialBackendKind::System),
+            )),
+            CredentialBackendKind::LocalFile => local_clone.clone(),
+        };
+        let report = migrate_legacy_secrets_at(&path, &mut settings, &open)
+            .unwrap()
+            .unwrap();
+        assert!(report.used_local_file);
+        assert_eq!(
+            settings.credential_backend,
+            CredentialBackendKind::LocalFile
+        );
+        assert_eq!(
+            load_from(&path).unwrap().unwrap().credential_backend,
+            CredentialBackendKind::LocalFile
+        );
+        assert_eq!(
+            local
+                .get(&SecretKey::server_password(IRCNET_ID))
+                .unwrap()
+                .unwrap()
+                .expose(),
+            "server-secret"
+        );
+    }
+
+    #[test]
+    fn unsaved_legacy_passwords_are_dropped_and_username_is_independent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&version_ten_with_passwords(false)).unwrap(),
+        )
+        .unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.has_legacy_secrets());
+        settings.username = "ident".into();
+        settings.nickname = "bob".into();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.username, "ident");
+        assert_eq!(loaded.nickname, "bob");
+        assert_eq!(loaded.image_upload.provider, None);
+        assert_eq!(loaded.credential_backend, CredentialBackendKind::System);
     }
 
     #[test]
@@ -780,7 +1029,7 @@ mod tests {
         )
         .unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 10);
+        assert_eq!(settings.version, 11);
         assert_eq!(settings.theme, ThemeMode::System);
         assert_eq!(settings.linux_display, LinuxDisplay::Wayland);
         assert_eq!(settings.appearance.main_log_background, "#FAFAFA");
