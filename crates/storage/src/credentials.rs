@@ -687,6 +687,28 @@ mod tests {
         assert!(!format!("{error:?}").contains("leak-me"));
     }
 
+    /// Touches the real OS store, so it only runs on request:
+    /// `cargo test -p cayenchat-storage -- --ignored`. Without a Secret
+    /// Service (for example in a container without D-Bus) the probe must
+    /// report the store as unavailable instead of failing another way.
+    #[test]
+    #[ignore]
+    fn system_store_probe_reports_availability() {
+        match SystemBackend::probe() {
+            Ok(()) => {}
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error,
+                        CredentialError::Unavailable(_) | CredentialError::Access(_)
+                    ),
+                    "{error:?}"
+                );
+                eprintln!("system store unavailable: {error}");
+            }
+        }
+    }
+
     #[test]
     fn xdg_config_home_is_respected() {
         assert_eq!(
