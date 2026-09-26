@@ -185,6 +185,9 @@ messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands. Its SASL state
 machine negotiates CAP, sends PLAIN credentials, and waits for success before
 ending CAP negotiation. The UI retains the active connection configuration and
 retries unexpected disconnections after 3, 6, 12, 24, then 30 seconds (capped).
+The core allows 15 seconds for TCP/TLS and 90 seconds for registration (001):
+IRCnet holds registration about 30 seconds when a client's ident port 113
+silently drops packets, which a 30-second limit turned into a reconnect loop.
 A successful registration resets the delay; an explicit disconnect cancels pending
 retries. The core reports a terminal `Refused` event instead of `Disconnected`
 for SASL failures, a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,

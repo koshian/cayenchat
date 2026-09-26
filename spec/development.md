@@ -168,6 +168,14 @@ clients now release the borrow before notifying windows. Linux Clippy passes;
 the fix still needs confirmation on the tester's Wayland desktop, including a
 light/dark switch while the app is running.
 
+With the window up, the tester's Debian machine kept reconnecting to IRCnet.
+A Linux-container probe of `irc-core` against `irc.ircnet.ne.jp:6667` received
+`020 Please wait` and then nothing until the 30-second registration timeout;
+with a longer limit the 001 welcome and MOTD arrived after about 32 seconds
+(the server waiting out its ident lookup). The registration timeout is now 90
+seconds. Dropped (not rejected) inbound port 113 on the client network causes
+this delay.
+
 ### Manual settings and UI checks
 
 1. Launch and confirm the separate settings window opens over the four-pane

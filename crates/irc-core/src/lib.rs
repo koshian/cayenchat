@@ -24,7 +24,10 @@ use tokio::sync::mpsc;
 const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 512;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Servers may hold registration until their ident (RFC 1413) and DNS lookups
+/// finish. IRCnet waits about 30 seconds when the client's port 113 silently
+/// drops packets, so the limit must comfortably exceed that.
+const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
 /// Limits on WHOIS replies that have not reached end-of-WHOIS (318), so a
 /// hostile server cannot grow memory by never finishing them.
 const MAX_PENDING_WHOIS: usize = 32;
