@@ -3,9 +3,6 @@ use cayenchat_irc_core::WhoisInfo;
 use gpui::{prelude::*, *};
 use std::collections::HashSet;
 
-const BORDER: u32 = 0xb7bdc4;
-const MUTED: u32 = 0x6b737c;
-
 pub struct WhoisWindow {
     owner: WindowHandle<ChatWindow>,
     info: WhoisInfo,
@@ -17,6 +14,8 @@ pub struct WhoisWindow {
     status: Option<String>,
     i18n: Localizer,
     focus: FocusHandle,
+    // Refreshed at the start of each render for row helpers.
+    theme: crate::theme::Theme,
 }
 
 impl WhoisWindow {
@@ -52,6 +51,7 @@ impl WhoisWindow {
                         status: None,
                         i18n,
                         focus,
+                        theme: crate::theme::current(cx),
                     }
                 })
             },
@@ -129,7 +129,7 @@ impl WhoisWindow {
                 div()
                     .w(px(110.))
                     .flex_shrink_0()
-                    .text_color(rgb(MUTED))
+                    .text_color(self.theme.text_secondary)
                     .child(self.i18n.text(key)),
             )
             .child(div().flex_1().min_w_0().child(value))
@@ -142,17 +142,18 @@ impl WhoisWindow {
     }
 
     fn channel_selector(&self, cx: &mut Context<Self>) -> Div {
+        let theme = crate::theme::current(cx);
         let index = self.selected_channel.min(self.info.channels.len() - 1);
         let entry = self.info.channels[index].clone();
         let channel = channel_name(&entry).to_owned();
         let action = if self.joined.contains(&channel.to_lowercase()) {
             div()
                 .flex_shrink_0()
-                .text_color(rgb(MUTED))
+                .text_color(theme.text_secondary)
                 .child(self.i18n.text("whois_joined"))
                 .into_any_element()
         } else {
-            button("whois-join", self.i18n.text("whois_join"), false)
+            button("whois-join", self.i18n.text("whois_join"), false, theme)
                 .on_click(cx.listener(move |this, _, _, cx| this.join(channel.clone(), cx)))
                 .into_any_element()
         };
@@ -171,15 +172,15 @@ impl WhoisWindow {
                         .gap_2()
                         .px_2()
                         .py_1()
-                        .bg(rgb(0xffffff))
+                        .bg(theme.surface)
                         .border_1()
-                        .border_color(rgb(BORDER))
+                        .border_color(theme.border)
                         .cursor_pointer()
                         .child(div().flex_1().min_w_0().truncate().child(entry))
                         .child(
                             div()
                                 .flex_shrink_0()
-                                .text_color(rgb(MUTED))
+                                .text_color(theme.text_secondary)
                                 .child(format!("{}/{count}  ▾", index + 1)),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -194,10 +195,10 @@ impl WhoisWindow {
                 .id("whois-channel-menu")
                 .max_h(px(180.))
                 .overflow_y_scroll()
-                .bg(rgb(0xffffff))
+                .bg(theme.surface)
                 .border_1()
                 .border_t_0()
-                .border_color(rgb(BORDER));
+                .border_color(theme.border);
             for (option, entry) in self.info.channels.iter().enumerate() {
                 let joined = self.joined.contains(&channel_name(entry).to_lowercase());
                 menu = menu.child(
@@ -208,14 +209,14 @@ impl WhoisWindow {
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .when(option == index, |d| d.bg(rgb(0xcbdbea)))
-                        .hover(|d| d.bg(rgb(0xdce5ee)))
+                        .when(option == index, |d| d.bg(theme.selected))
+                        .hover(|d| d.bg(theme.hover_strong))
                         .child(div().flex_1().min_w_0().truncate().child(entry.clone()))
                         .when(joined, |d| {
                             d.child(
                                 div()
                                     .flex_shrink_0()
-                                    .text_color(rgb(MUTED))
+                                    .text_color(theme.text_secondary)
                                     .child(self.i18n.text("whois_joined")),
                             )
                         })
@@ -263,23 +264,36 @@ fn signon_text(timestamp: i64) -> Option<String> {
         .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
-fn button(id: impl Into<ElementId>, label: String, primary: bool) -> Stateful<Div> {
+fn button(
+    id: impl Into<ElementId>,
+    label: String,
+    primary: bool,
+    theme: crate::theme::Theme,
+) -> Stateful<Div> {
     div()
         .id(id)
         .px_3()
         .py_1()
         .flex_shrink_0()
         .border_1()
-        .border_color(rgb(BORDER))
+        .border_color(theme.border)
         .cursor_pointer()
-        .when(primary, |d| d.bg(rgb(0xcbdbea)))
-        .when(!primary, |d| d.bg(rgb(0xffffff)))
-        .hover(|d| d.bg(rgb(0xdce5ee)))
+        .when(primary, |d| d.bg(theme.selected))
+        .when(!primary, |d| d.bg(theme.surface))
+        .hover(|d| d.bg(theme.hover_strong))
         .child(label)
 }
 
 impl Render for WhoisWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_content(cx)
+    }
+}
+
+impl WhoisWindow {
+    fn render_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = crate::theme::current(cx);
+        self.theme = theme;
         let info = self.info.clone();
         let user_host = match (&info.username, &info.host) {
             (Some(user), Some(host)) => Some(format!("{user}@{host}")),
@@ -290,9 +304,9 @@ impl Render for WhoisWindow {
             .flex_col()
             .gap_2()
             .p_4()
-            .bg(rgb(0xffffff))
+            .bg(theme.surface)
             .border_1()
-            .border_color(rgb(BORDER));
+            .border_color(theme.border);
         details = details
             .children(self.text_row("whois_nickname", Some(info.nickname.clone())))
             .children(self.text_row("whois_user_host", user_host))
@@ -328,9 +342,9 @@ impl Render for WhoisWindow {
             .flex_col()
             .gap_3()
             .p_4()
-            .bg(rgb(0xf5f6f8))
+            .bg(theme.window)
             .text_size(px(13.))
-            .text_color(rgb(0x20262d))
+            .text_color(theme.text)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key != "escape" {
                     return;
@@ -359,7 +373,7 @@ impl Render for WhoisWindow {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_color(rgb(0x9a4b28))
+                            .text_color(theme.warning)
                             .children(self.status.clone()),
                     )
                     .child(
@@ -367,18 +381,20 @@ impl Render for WhoisWindow {
                             "whois-private-message",
                             self.i18n.text("member_private_message"),
                             false,
+                            theme,
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.private_message(cx))),
                     )
                     .child(
-                        button("whois-update", self.i18n.text("whois_update"), false)
+                        button("whois-update", self.i18n.text("whois_update"), false, theme)
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     )
                     .child(
-                        button("whois-close", self.i18n.text("whois_close"), true)
+                        button("whois-close", self.i18n.text("whois_close"), true, theme)
                             .on_click(|_, window, _| window.remove_window()),
                     ),
             )
+            .into_any_element()
     }
 }
 

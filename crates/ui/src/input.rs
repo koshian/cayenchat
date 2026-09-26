@@ -7,8 +7,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla,
-    point, prelude::*, px, relative, rgb, rgba, size, white,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
+    point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::*;
 
@@ -740,7 +740,10 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0., 0., 0., 0.2))
+            (
+                input.placeholder.clone(),
+                crate::theme::current(cx).placeholder,
+            )
         } else if input.secret {
             // Keep the display byte length aligned with the UTF-8 editing offsets.
             ("*".repeat(content.len()).into(), style.color)
@@ -813,7 +816,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba(0x3311ff30),
+                    crate::theme::current(cx).text_selection,
                 )),
                 None,
             )
@@ -863,6 +866,7 @@ impl Element for TextElement {
 
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
         div()
             .flex()
             .key_context("TextInput")
@@ -897,7 +901,7 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(rgb(0xeeeeee))
+            .bg(theme.window)
             .w_full()
             .overflow_hidden()
             .line_height(px(20.))
@@ -907,7 +911,7 @@ impl Render for TextInput {
                     .h(px(28.))
                     .w_full()
                     .p(px(4.))
-                    .bg(white())
+                    .bg(theme.surface)
                     .child(TextElement { input: cx.entity() }),
             )
     }

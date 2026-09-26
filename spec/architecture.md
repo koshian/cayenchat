@@ -144,7 +144,18 @@ version 6 adds an opt-in startup connection flag, and version 7 adds a language
 preference. Version 8 renames the appearance background to member-list background
 and changes its default to white; the old default gray migrates to white while
 custom saved colors remain. Version 9 changes the default channel event text color
-to `#007D00`; the previous default migrates while custom colors remain. The
+to `#007D00`; the previous default migrates while custom colors remain. Version 10
+adds a theme preference (System, Light or Dark), a dark-theme set of the six pane
+colors beside the existing light ones, and a Linux display server choice; older
+settings default to System, the dark defaults and Wayland. The UI keeps the
+effective colors in a GPUI global `Theme`: System follows the appearance GPUI
+reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
+Linux) and switches live when it changes. Native title bars on macOS and Windows
+follow the operating system, so they can differ from an explicitly chosen app
+theme. On Linux the display choice is applied at startup before GPUI picks a
+backend: X11 removes `WAYLAND_DISPLAY` when an X display exists, so GNOME draws a
+themed title bar through XWayland at the cost of XIM input and blurrier
+fractional scaling. `CAYENCHAT_DISPLAY=x11|wayland` overrides the setting. The
 member-list color no longer affects the input bar
 or the window root. Missing startup-connection values default to disabled, and older
 settings default to System language; existing saved choices remain intact. The UI resolves the system language with `sys-locale` (Japanese or

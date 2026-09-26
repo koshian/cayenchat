@@ -1,6 +1,7 @@
 mod input;
 mod localization;
 mod log_list;
+mod theme;
 mod whois;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
@@ -9,7 +10,9 @@ use cayenchat_irc_core::{
     WhoisInfo, WireDirection,
 };
 use cayenchat_model::{ConversationId, NetworkId};
-use cayenchat_storage::{Appearance, Language, Settings, TextEncoding, color_value};
+use cayenchat_storage::{
+    Appearance, DarkColors, Language, LinuxDisplay, Settings, TextEncoding, ThemeMode, color_value,
+};
 use gpui::{prelude::*, *};
 use input::TextInput;
 use localization::Localizer;
@@ -18,6 +21,7 @@ use std::{
     collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
+use theme::Theme;
 use whois::WhoisWindow;
 
 const DIAGNOSTIC_LIMIT: usize = 1000;
@@ -88,6 +92,12 @@ struct SettingsForm {
     channel_event_color: Entity<TextInput>,
     sub_log_background: Entity<TextInput>,
     sub_log_alternate: Entity<TextInput>,
+    dark_member_list_background: Entity<TextInput>,
+    dark_main_log_background: Entity<TextInput>,
+    dark_main_log_alternate: Entity<TextInput>,
+    dark_channel_event_color: Entity<TextInput>,
+    dark_sub_log_background: Entity<TextInput>,
+    dark_sub_log_alternate: Entity<TextInput>,
     main_log_font: Entity<TextInput>,
     sub_log_font: Entity<TextInput>,
     member_font: Entity<TextInput>,
@@ -164,6 +174,42 @@ impl SettingsForm {
             ),
             sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
             sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
+            dark_member_list_background: field(
+                "#1F2124",
+                &values.appearance.dark.member_list_background,
+                false,
+                cx,
+            ),
+            dark_main_log_background: field(
+                "#1F2124",
+                &values.appearance.dark.main_log_background,
+                false,
+                cx,
+            ),
+            dark_main_log_alternate: field(
+                "#272B31",
+                &values.appearance.dark.main_log_alternate,
+                false,
+                cx,
+            ),
+            dark_channel_event_color: field(
+                "#6CC46C",
+                &values.appearance.dark.channel_event_color,
+                false,
+                cx,
+            ),
+            dark_sub_log_background: field(
+                "#24272B",
+                &values.appearance.dark.sub_log_background,
+                false,
+                cx,
+            ),
+            dark_sub_log_alternate: field(
+                "#2C3036",
+                &values.appearance.dark.sub_log_alternate,
+                false,
+                cx,
+            ),
             main_log_font: field(
                 &i18n.text("font_system_placeholder"),
                 &values.appearance.main_log_font,
@@ -249,7 +295,14 @@ impl SettingsForm {
             channel_font: value(&self.channel_font),
             input_font: value(&self.input_font),
             time_font: value(&self.time_font),
-            dark: self.values.appearance.dark.clone(),
+            dark: DarkColors {
+                member_list_background: value(&self.dark_member_list_background),
+                main_log_background: value(&self.dark_main_log_background),
+                main_log_alternate: value(&self.dark_main_log_alternate),
+                channel_event_color: value(&self.dark_channel_event_color),
+                sub_log_background: value(&self.dark_sub_log_background),
+                sub_log_alternate: value(&self.dark_sub_log_alternate),
+            },
         };
         settings.appearance.validate()?;
         Ok(settings)
@@ -344,6 +397,7 @@ struct ChatWindow {
     watchdog_stage: u8,
     connection_generation: u64,
     appearance: Appearance,
+    theme_mode: ThemeMode,
     i18n: Localizer,
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
@@ -550,13 +604,26 @@ impl ChatWindow {
             watchdog_stage: 0,
             connection_generation: 0,
             appearance: saved.appearance,
+            theme_mode: saved.theme,
             i18n,
             log_focus: cx.focus_handle(),
             log_selection: None,
             log_dragging: false,
         };
         this.update_title(window);
+        // GPUI reports the macOS/Windows appearance and, on Linux, the XDG
+        // desktop portal color scheme.
+        cx.observe_window_appearance(window, |this, _, cx| {
+            theme::apply(this.theme_mode, &this.appearance, cx);
+        })
+        .detach();
         this
+    }
+
+    fn apply_appearance(&mut self, appearance: Appearance, mode: ThemeMode, cx: &mut App) {
+        theme::apply(mode, &appearance, cx);
+        self.appearance = appearance;
+        self.theme_mode = mode;
     }
 
     fn spawn_poll(&self, cx: &mut Context<Self>) {
@@ -1396,6 +1463,48 @@ impl ChatWindow {
 }
 
 impl SettingsWindow {
+    /// A labelled row of mutually exclusive choices stored in the settings.
+    fn option_row<T: Copy + PartialEq + 'static, const N: usize>(
+        &self,
+        label_key: &'static str,
+        options: [(T, &'static str); N],
+        current: T,
+        set: fn(&mut Settings, T),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = theme::current(cx);
+        let mut choices = div().flex().gap_1();
+        for (index, (value, key)) in options.into_iter().enumerate() {
+            choices = choices.child(
+                div()
+                    .id((label_key, index))
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .when(current == value, |d| d.bg(theme.selected))
+                    .child(self.i18n.text(key))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        set(&mut this.settings.values, value);
+                        this.feedback = None;
+                        cx.notify();
+                    })),
+            );
+        }
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(150.))
+                    .flex_shrink_0()
+                    .child(self.i18n.text(label_key)),
+            )
+            .child(choices)
+    }
+
     fn select_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.values.language = language;
         self.i18n = Localizer::new(language);
@@ -1454,12 +1563,17 @@ impl SettingsWindow {
                 .servers
                 .retain(|server| !server.custom || !server.host.is_empty());
             cayenchat_storage::save(&settings)?;
-            Ok::<_, String>((config, settings.appearance.clone(), settings.language))
+            Ok::<_, String>((
+                config,
+                settings.appearance.clone(),
+                settings.theme,
+                settings.language,
+            ))
         })();
         self.feedback = match result {
-            Ok((config, appearance, language)) => {
+            Ok((config, appearance, mode, language)) => {
                 match self.owner.update(cx, |owner, chat_window, cx| {
-                    owner.appearance = appearance;
+                    owner.apply_appearance(appearance, mode, cx);
                     owner.apply_language(language, chat_window, cx);
                     owner.apply_connection(config, chat_window, cx)
                 }) {
@@ -1490,9 +1604,10 @@ impl SettingsWindow {
             cayenchat_storage::save(&settings)?;
             self.settings.values = settings;
             let appearance = self.settings.values.appearance.clone();
+            let mode = self.settings.values.theme;
             let language = self.settings.values.language;
             let _ = self.owner.update(cx, |owner, window, cx| {
-                owner.appearance = appearance;
+                owner.apply_appearance(appearance, mode, cx);
                 owner.apply_language(language, window, cx);
             });
             Ok(())
@@ -1689,6 +1804,7 @@ impl SettingsWindow {
     }
 
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
         let profile = self.settings.values.selected_profile().clone();
         let tls = profile.use_tls;
         let sasl = self.settings.values.sasl_enabled;
@@ -1703,10 +1819,10 @@ impl SettingsWindow {
                     .px_2()
                     .py_1()
                     .border_1()
-                    .border_color(rgb(0xb7bdc4))
+                    .border_color(theme.border)
                     .cursor_pointer()
                     .when(self.settings.values.language == language, |d| {
-                        d.bg(rgb(0xcbdbea))
+                        d.bg(theme.selected)
                     })
                     .child(self.i18n.preference_label(language))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1731,7 +1847,7 @@ impl SettingsWindow {
                 .px_2()
                 .py_1()
                 .border_1()
-                .border_color(rgb(0xb7bdc4))
+                .border_color(theme.border)
                 .cursor_pointer()
                 .child(format!("{selected_label}  ▾"))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1743,8 +1859,8 @@ impl SettingsWindow {
         if self.settings.server_list_open {
             let mut menu = div()
                 .border_1()
-                .border_color(rgb(0xb7bdc4))
-                .bg(rgb(0xffffff));
+                .border_color(theme.border)
+                .bg(theme.surface);
             for (index, server) in self.settings.values.ordered_servers().enumerate() {
                 let id = server.id.clone();
                 let (host, port) = if id == profile.id {
@@ -1777,8 +1893,8 @@ impl SettingsWindow {
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .hover(|d| d.bg(rgb(0xe8eff6)))
-                        .when(profile.id == id, |d| d.bg(rgb(0xcbdbea)))
+                        .hover(|d| d.bg(theme.hover))
+                        .when(profile.id == id, |d| d.bg(theme.selected))
                         .child(label)
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.select_server(id.clone(), cx)),
@@ -1791,9 +1907,9 @@ impl SettingsWindow {
                     .px_2()
                     .py_1()
                     .border_t_1()
-                    .border_color(rgb(0xb7bdc4))
+                    .border_color(theme.border)
                     .cursor_pointer()
-                    .hover(|d| d.bg(rgb(0xe8eff6)))
+                    .hover(|d| d.bg(theme.hover))
                     .child(self.i18n.text("add_server"))
                     .on_click(cx.listener(|this, _, _, cx| this.add_server(cx))),
             );
@@ -1805,7 +1921,7 @@ impl SettingsWindow {
                 .px_2()
                 .py_1()
                 .border_1()
-                .border_color(rgb(0xb7bdc4))
+                .border_color(theme.border)
                 .cursor_pointer()
                 .child(format!("{}  ▾", profile.encoding.label()))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1817,8 +1933,8 @@ impl SettingsWindow {
         if self.settings.encoding_list_open {
             let mut menu = div()
                 .border_1()
-                .border_color(rgb(0xb7bdc4))
-                .bg(rgb(0xffffff));
+                .border_color(theme.border)
+                .bg(theme.surface);
             for (index, encoding) in TextEncoding::ALL.into_iter().enumerate() {
                 menu = menu.child(
                     div()
@@ -1826,8 +1942,8 @@ impl SettingsWindow {
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .hover(|d| d.bg(rgb(0xe8eff6)))
-                        .when(profile.encoding == encoding, |d| d.bg(rgb(0xcbdbea)))
+                        .hover(|d| d.bg(theme.hover))
+                        .when(profile.encoding == encoding, |d| d.bg(theme.selected))
                         .child(encoding.label())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.settings.values.selected_profile_mut().encoding = encoding;
@@ -1842,10 +1958,10 @@ impl SettingsWindow {
             .w(px(680.))
             .p_4()
             .mb_4()
-            .bg(rgb(0xffffff))
+            .bg(theme.surface)
             .border_1()
             .border_t_0()
-            .border_color(rgb(0xb7bdc4))
+            .border_color(theme.border)
             .flex()
             .flex_col()
             .gap_2()
@@ -1857,7 +1973,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .text_color(rgb(0x52606c))
+                    .text_color(theme.text_secondary)
                     .child(self.i18n.text("connection_intro")),
             )
             .child(
@@ -1876,7 +1992,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .ml(px(158.))
-                    .text_color(rgb(0x52606c))
+                    .text_color(theme.text_secondary)
                     .child(self.i18n.text("language_hint")),
             )
             .child(
@@ -1904,7 +2020,7 @@ impl SettingsWindow {
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .text_color(rgb(0x9a4b28))
+                        .text_color(theme.warning)
                         .child(self.i18n.text("remove_server"))
                         .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
                 )
@@ -1929,7 +2045,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .ml(px(158.))
-                    .text_color(rgb(0x52606c))
+                    .text_color(theme.text_secondary)
                     .child(self.i18n.text("encoding_hint")),
             )
             .child(
@@ -1944,7 +2060,7 @@ impl SettingsWindow {
                             .px_2()
                             .py_1()
                             .border_1()
-                            .border_color(rgb(0xb7bdc4))
+                            .border_color(theme.border)
                             .cursor_pointer()
                             .child(self.i18n.text(if tls { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
@@ -1967,7 +2083,7 @@ impl SettingsWindow {
                                 .px_2()
                                 .py_1()
                                 .border_1()
-                                .border_color(rgb(0xb7bdc4))
+                                .border_color(theme.border)
                                 .cursor_pointer()
                                 .child(self.i18n.text(if profile.verify_tls_certificates {
                                     "on"
@@ -1983,7 +2099,7 @@ impl SettingsWindow {
                     d.child(
                         div()
                             .ml(px(158.))
-                            .text_color(rgb(0x9a4b28))
+                            .text_color(theme.warning)
                             .child(self.i18n.text("certificate_warning")),
                     )
                 })
@@ -2050,7 +2166,7 @@ impl SettingsWindow {
                             .px_2()
                             .py_1()
                             .border_1()
-                            .border_color(rgb(0xb7bdc4))
+                            .border_color(theme.border)
                             .cursor_pointer()
                             .child(self.i18n.text(if sasl { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
@@ -2067,7 +2183,7 @@ impl SettingsWindow {
                 ))
             })
             .when_some(self.feedback.clone(), |d, feedback| {
-                d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
+                d.child(div().text_color(theme.warning).child(feedback))
             })
             .child(
                 div()
@@ -2079,7 +2195,7 @@ impl SettingsWindow {
                             .id("connect-button")
                             .px_3()
                             .py_1()
-                            .bg(rgb(0xcbdbea))
+                            .bg(theme.selected)
                             .cursor_pointer()
                             .child(self.i18n.text("save_and_connect"))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -2092,7 +2208,7 @@ impl SettingsWindow {
                             .px_3()
                             .py_1()
                             .border_1()
-                            .border_color(rgb(0xb7bdc4))
+                            .border_color(theme.border)
                             .cursor_pointer()
                             .child(self.i18n.text("save"))
                             .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
@@ -2103,7 +2219,7 @@ impl SettingsWindow {
                             .px_3()
                             .py_1()
                             .border_1()
-                            .border_color(rgb(0xb7bdc4))
+                            .border_color(theme.border)
                             .cursor_pointer()
                             .child(self.i18n.text("back"))
                             .on_click(
@@ -2116,7 +2232,7 @@ impl SettingsWindow {
                             .px_3()
                             .py_1()
                             .border_1()
-                            .border_color(rgb(0xb7bdc4))
+                            .border_color(theme.border)
                             .cursor_pointer()
                             .child(self.i18n.text("disconnect"))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -2139,6 +2255,7 @@ impl SettingsWindow {
     }
 
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
         let input = self.font_input(target);
         let mut field = div().flex().flex_col().child(
             div()
@@ -2153,7 +2270,7 @@ impl SettingsWindow {
                         .px_2()
                         .py_1()
                         .border_1()
-                        .border_color(rgb(0xb7bdc4))
+                        .border_color(theme.border)
                         .cursor_pointer()
                         .child(self.i18n.text("choose_font"))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -2174,8 +2291,8 @@ impl SettingsWindow {
                 .max_h(px(170.))
                 .overflow_y_scroll()
                 .border_1()
-                .border_color(rgb(0xb7bdc4))
-                .bg(rgb(0xffffff));
+                .border_color(theme.border)
+                .bg(theme.surface);
             choices = choices.child(
                 div()
                     .id(("font-system", target as u32))
@@ -2207,7 +2324,7 @@ impl SettingsWindow {
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .hover(|d| d.bg(rgb(0xe8eff6)))
+                        .hover(|d| d.bg(theme.hover))
                         .child(name.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.font_input(target)
@@ -2223,14 +2340,15 @@ impl SettingsWindow {
     }
 
     fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
         div()
             .w(px(680.))
             .p_4()
             .mb_4()
-            .bg(rgb(0xffffff))
+            .bg(theme.surface)
             .border_1()
             .border_t_0()
-            .border_color(rgb(0xb7bdc4))
+            .border_color(theme.border)
             .flex()
             .flex_col()
             .gap_2()
@@ -2242,37 +2360,62 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .text_color(rgb(0x52606c))
+                    .text_color(theme.text_secondary)
                     .child(self.i18n.text("appearance_intro")),
             )
-            .child(color_field(
+            .child(self.option_row(
+                "theme",
+                [
+                    (ThemeMode::System, "theme_system"),
+                    (ThemeMode::Light, "theme_light"),
+                    (ThemeMode::Dark, "theme_dark"),
+                ],
+                self.settings.values.theme,
+                |settings, mode| settings.theme = mode,
+                cx,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(div().w(px(150.)).flex_shrink_0())
+                    .child(div().flex_1().child(self.i18n.text("colors_light")))
+                    .child(div().flex_1().child(self.i18n.text("colors_dark"))),
+            )
+            .child(color_pair(
                 &self.i18n.text("member_list_background"),
-                self.settings.member_list_background.clone(),
+                &self.settings.member_list_background,
+                &self.settings.dark_member_list_background,
                 cx,
             ))
-            .child(color_field(
+            .child(color_pair(
                 &self.i18n.text("channel_log"),
-                self.settings.main_log_background.clone(),
+                &self.settings.main_log_background,
+                &self.settings.dark_main_log_background,
                 cx,
             ))
-            .child(color_field(
+            .child(color_pair(
                 &self.i18n.text("channel_log_alternate"),
-                self.settings.main_log_alternate.clone(),
+                &self.settings.main_log_alternate,
+                &self.settings.dark_main_log_alternate,
                 cx,
             ))
-            .child(color_field(
+            .child(color_pair(
                 &self.i18n.text("channel_event_color"),
-                self.settings.channel_event_color.clone(),
+                &self.settings.channel_event_color,
+                &self.settings.dark_channel_event_color,
                 cx,
             ))
-            .child(color_field(
+            .child(color_pair(
                 &self.i18n.text("combined_log"),
-                self.settings.sub_log_background.clone(),
+                &self.settings.sub_log_background,
+                &self.settings.dark_sub_log_background,
                 cx,
             ))
-            .child(color_field(
+            .child(color_pair(
                 &self.i18n.text("combined_log_alternate"),
-                self.settings.sub_log_alternate.clone(),
+                &self.settings.sub_log_alternate,
+                &self.settings.dark_sub_log_alternate,
                 cx,
             ))
             .child(
@@ -2300,15 +2443,33 @@ impl SettingsWindow {
             .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
             .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
+            .when(cfg!(target_os = "linux"), |d| {
+                d.child(self.option_row(
+                    "linux_display",
+                    [
+                        (LinuxDisplay::Wayland, "linux_display_wayland"),
+                        (LinuxDisplay::X11, "linux_display_x11"),
+                    ],
+                    self.settings.values.linux_display,
+                    |settings, display| settings.linux_display = display,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .ml(px(158.))
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("linux_display_hint")),
+                )
+            })
             .when_some(self.feedback.clone(), |d, feedback| {
-                d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
+                d.child(div().text_color(theme.warning).child(feedback))
             })
             .child(
                 div()
                     .id("save-appearance")
                     .px_3()
                     .py_1()
-                    .bg(rgb(0xcbdbea))
+                    .bg(theme.selected)
                     .cursor_pointer()
                     .child(self.i18n.text("save_and_apply"))
                     .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
@@ -2316,7 +2477,8 @@ impl SettingsWindow {
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let border = rgb(0xb7bdc4);
+        let theme = theme::current(cx);
+        let border = theme.border;
         let tabs = div()
             .flex()
             .w_full()
@@ -2331,12 +2493,12 @@ impl SettingsWindow {
                     .border_color(border)
                     .cursor_pointer()
                     .when(self.tab == SettingsTab::Connection, |d| {
-                        d.bg(rgb(0xffffff))
+                        d.bg(theme.surface)
                             .border_b_0()
                             .font_weight(FontWeight::BOLD)
                     })
                     .when(self.tab != SettingsTab::Connection, |d| {
-                        d.bg(rgb(0xe8ebef)).hover(|d| d.bg(rgb(0xf5f6f8)))
+                        d.bg(theme.tab_inactive).hover(|d| d.bg(theme.window))
                     })
                     .child(self.i18n.text("connection"))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -2355,12 +2517,12 @@ impl SettingsWindow {
                     .border_color(border)
                     .cursor_pointer()
                     .when(self.tab == SettingsTab::Appearance, |d| {
-                        d.bg(rgb(0xffffff))
+                        d.bg(theme.surface)
                             .border_b_0()
                             .font_weight(FontWeight::BOLD)
                     })
                     .when(self.tab != SettingsTab::Appearance, |d| {
-                        d.bg(rgb(0xe8ebef)).hover(|d| d.bg(rgb(0xf5f6f8)))
+                        d.bg(theme.tab_inactive).hover(|d| d.bg(theme.window))
                     })
                     .child(self.i18n.text("appearance"))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -2379,9 +2541,9 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .overflow_y_scroll()
-            .bg(rgb(0xf5f6f8))
+            .bg(theme.window)
             .text_size(px(13.))
-            .text_color(rgb(0x20262d))
+            .text_color(theme.text)
             .child(
                 div().w_full().flex().justify_center().child(
                     div()
@@ -2410,17 +2572,36 @@ fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
         .child(div().flex_1().min_w_0().child(input))
 }
 
-fn color_field(label: &str, input: Entity<TextInput>, cx: &App) -> Div {
+fn color_input(input: &Entity<TextInput>, cx: &App) -> Div {
+    let theme = theme::current(cx);
     let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
-    settings_field(label, input).child(
-        div()
-            .w(px(24.))
-            .h(px(24.))
-            .flex_shrink_0()
-            .border_1()
-            .border_color(rgb(0xb7bdc4))
-            .bg(rgb(swatch)),
-    )
+    div()
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .items_center()
+        .gap_2()
+        .child(div().flex_1().min_w_0().child(input.clone()))
+        .child(
+            div()
+                .w(px(24.))
+                .h(px(24.))
+                .flex_shrink_0()
+                .border_1()
+                .border_color(theme.border)
+                .bg(rgb(swatch)),
+        )
+}
+
+/// A color setting with its light-theme and dark-theme values side by side.
+fn color_pair(label: &str, light: &Entity<TextInput>, dark: &Entity<TextInput>, cx: &App) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
+        .child(color_input(light, cx))
+        .child(color_input(dark, cx))
 }
 
 fn selected_font<'a>(name: &'a str, fallback: &'a str) -> &'a str {
@@ -2480,6 +2661,7 @@ fn styled_log_text(
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
     selected: Option<std::ops::Range<usize>>,
+    theme: &Theme,
 ) -> StyledText {
     let mut boundaries = vec![0, text.len()];
     for (range, _) in urls {
@@ -2501,13 +2683,13 @@ fn styled_log_text(
         (is_url || is_selected).then_some((
             range,
             HighlightStyle {
-                color: is_url.then_some(rgb(0x0645ad).into()),
+                color: is_url.then_some(theme.link.into()),
                 underline: is_url.then_some(UnderlineStyle {
-                    color: Some(rgb(0x0645ad).into()),
+                    color: Some(theme.link.into()),
                     thickness: px(1.),
                     wavy: false,
                 }),
-                background_color: is_selected.then_some(rgb(0xcbdbea).into()),
+                background_color: is_selected.then_some(theme.selected.into()),
                 ..Default::default()
             },
         ))
@@ -2529,16 +2711,17 @@ impl Render for ChatWindow {
 
 impl ChatWindow {
     fn render_chat(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
         self.sync_log_lists();
         let selection = self.state.selection();
         let log_id = match selection {
             Selection::Channel(id) => id.0,
             Selection::Server(id) => u32::MAX - id.0,
         };
-        let border = rgb(0xb7bdc4);
+        let border = theme.border;
         let appearance = &self.appearance;
-        let main_bg = rgb(color_value(&appearance.main_log_background).unwrap_or(0xffffff));
-        let sub_bg = rgb(color_value(&appearance.sub_log_background).unwrap_or(0xf9fafb));
+        let main_bg = theme.panes.main_log;
+        let sub_bg = theme.panes.sub_log;
 
         // The reference layout has logs on the left and users/channels on the right.
         let mut channels = div()
@@ -2547,7 +2730,7 @@ impl ChatWindow {
             .min_h_0()
             .w_full()
             .overflow_y_scroll()
-            .bg(rgb(0xeaf3ff))
+            .bg(theme.channel_tree)
             .when(!appearance.channel_font.is_empty(), |d| {
                 d.font_family(appearance.channel_font.clone())
             })
@@ -2570,9 +2753,9 @@ impl ChatWindow {
                     .font_weight(FontWeight::BOLD)
                     .cursor_pointer()
                     .when(selection == Selection::Server(server_id), |d| {
-                        d.bg(rgb(0xcbdbea))
+                        d.bg(theme.selected)
                     })
-                    .hover(|d| d.bg(rgb(0xdce5ee)))
+                    .hover(|d| d.bg(theme.hover_strong))
                     .child(format!("{}{}", network.name, status_mark))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -2616,10 +2799,12 @@ impl ChatWindow {
                         .pr_2()
                         .py(px(2.))
                         .cursor_pointer()
-                        .when(selection == Selection::Channel(id), |d| d.bg(rgb(0xcbdbea)))
+                        .when(selection == Selection::Channel(id), |d| {
+                            d.bg(theme.selected)
+                        })
                         .when(unread, |d| d.font_weight(FontWeight::BOLD))
-                        .when(!joined, |d| d.text_color(rgb(0x8a9097)))
-                        .hover(|d| d.bg(rgb(0xdce5ee)))
+                        .when(!joined, |d| d.text_color(theme.text_muted))
+                        .hover(|d| d.bg(theme.hover_strong))
                         .child(format!(
                             "{}{}",
                             if unread { "● " } else { "" },
@@ -2719,9 +2904,7 @@ impl ChatWindow {
             .flex_1()
             .min_h_0()
             .w_full()
-            .bg(rgb(
-                color_value(&appearance.member_list_background).unwrap_or(0xffffff)
-            ))
+            .bg(theme.panes.member_list)
             .when(!appearance.member_font.is_empty(), |d| {
                 d.font_family(appearance.member_font.clone())
             })
@@ -2753,7 +2936,7 @@ impl ChatWindow {
             .border_t_1()
             .border_b_1()
             .border_color(border)
-            .bg(rgb(0xffffff))
+            .bg(theme.surface)
             .when(!appearance.input_font.is_empty(), |d| {
                 d.font_family(appearance.input_font.clone())
             })
@@ -2764,7 +2947,7 @@ impl ChatWindow {
                     .child(self.inputs[&selection].clone()),
             )
             .when_some(self.feedback.clone(), |d, feedback| {
-                d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
+                d.child(div().text_color(theme.warning).child(feedback))
             });
         let left = div()
             .flex()
@@ -2795,7 +2978,7 @@ impl ChatWindow {
                 .top(position.y)
                 .w(px(176.))
                 .p_1()
-                .bg(rgb(0xffffff))
+                .bg(theme.surface)
                 .border_1()
                 .border_color(border)
                 .shadow_md()
@@ -2807,12 +2990,12 @@ impl ChatWindow {
                         .child(self.i18n.text("reconnect"))
                         .when(!connected, |d| {
                             d.cursor_pointer()
-                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .hover(|d| d.bg(theme.hover_strong))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.reconnect(window, cx);
                                 }))
                         })
-                        .when(connected, |d| d.text_color(rgb(0x8a9097))),
+                        .when(connected, |d| d.text_color(theme.text_muted)),
                 )
                 .child(
                     div()
@@ -2822,10 +3005,10 @@ impl ChatWindow {
                         .child(self.i18n.text("disconnect"))
                         .when(connected, |d| {
                             d.cursor_pointer()
-                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .hover(|d| d.bg(theme.hover_strong))
                                 .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx)))
                         })
-                        .when(!connected, |d| d.text_color(rgb(0x8a9097))),
+                        .when(!connected, |d| d.text_color(theme.text_muted)),
                 )
         });
         let registered =
@@ -2838,7 +3021,7 @@ impl ChatWindow {
                 .top(menu.position.y)
                 .w(px(176.))
                 .p_1()
-                .bg(rgb(0xffffff))
+                .bg(theme.surface)
                 .border_1()
                 .border_color(border)
                 .shadow_md();
@@ -2856,12 +3039,12 @@ impl ChatWindow {
                         .child(self.i18n.text(key))
                         .when(enabled, |d| {
                             d.cursor_pointer()
-                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .hover(|d| d.bg(theme.hover_strong))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.channel_menu_command(join, cx)
                                 }))
                         })
-                        .when(!enabled, |d| d.text_color(rgb(0x8a9097))),
+                        .when(!enabled, |d| d.text_color(theme.text_muted)),
                 );
             }
             popup
@@ -2874,7 +3057,7 @@ impl ChatWindow {
                 .top(menu.position.y)
                 .w(px(210.))
                 .p_1()
-                .bg(rgb(0xffffff))
+                .bg(theme.surface)
                 .border_1()
                 .border_color(border)
                 .shadow_md();
@@ -2891,7 +3074,7 @@ impl ChatWindow {
             .enumerate()
             {
                 if index == 3 {
-                    popup = popup.child(div().my_1().border_t_1().border_color(rgb(0xd8dde3)));
+                    popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
                 }
                 let channel = menu.channel.clone();
                 popup = popup.child(
@@ -2902,7 +3085,7 @@ impl ChatWindow {
                         .child(self.i18n.text(key))
                         .when(enabled, |d| {
                             d.cursor_pointer()
-                                .hover(|d| d.bg(rgb(0xdce5ee)))
+                                .hover(|d| d.bg(theme.hover_strong))
                                 .on_click(cx.listener(move |this, _, window, cx| match choice {
                                     MemberMenuChoice::Whois => {
                                         this.member_command(MemberCommand::Whois, cx)
@@ -2931,7 +3114,7 @@ impl ChatWindow {
                                     ),
                                 }))
                         })
-                        .when(!enabled, |d| d.text_color(rgb(0x8a9097))),
+                        .when(!enabled, |d| d.text_color(theme.text_muted)),
                 );
             }
             popup
@@ -2951,7 +3134,7 @@ impl ChatWindow {
                 .top(prompt.position.y)
                 .w(px(300.))
                 .p_2()
-                .bg(rgb(0xffffff))
+                .bg(theme.surface)
                 .border_1()
                 .border_color(border)
                 .shadow_md()
@@ -2961,7 +3144,7 @@ impl ChatWindow {
                 .child(div().font_weight(FontWeight::BOLD).child(title))
                 .child(prompt.input.clone())
                 .when_some(self.feedback.clone(), |d, feedback| {
-                    d.child(div().text_color(rgb(0x9a4b28)).child(feedback))
+                    d.child(div().text_color(theme.warning).child(feedback))
                 })
                 .child(
                     div()
@@ -2972,7 +3155,7 @@ impl ChatWindow {
                                 .id("member-prompt-submit")
                                 .px_2()
                                 .py_1()
-                                .bg(rgb(0xcbdbea))
+                                .bg(theme.selected)
                                 .cursor_pointer()
                                 .child(self.i18n.text("member_submit"))
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -3020,8 +3203,8 @@ impl ChatWindow {
             .flex()
             .text_size(px(13.))
             .line_height(px(20.))
-            .text_color(rgb(0x20262d))
-            .bg(rgb(0xffffff))
+            .text_color(theme.text)
+            .bg(theme.surface)
             .on_action(cx.listener(Self::navigate))
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
@@ -3043,6 +3226,7 @@ impl ChatWindow {
 
 /// Colors and fonts shared by log rows, derived from the appearance settings.
 struct LogStyle {
+    theme: Theme,
     main_alt: Rgba,
     event_color: Rgba,
     sub_alt: Rgba,
@@ -3051,11 +3235,12 @@ struct LogStyle {
 }
 
 impl LogStyle {
-    fn new(appearance: &Appearance) -> Self {
+    fn new(appearance: &Appearance, theme: Theme) -> Self {
         Self {
-            main_alt: rgb(color_value(&appearance.main_log_alternate).unwrap_or(0xf2f5ff)),
-            event_color: rgb(color_value(&appearance.channel_event_color).unwrap_or(0x007d00)),
-            sub_alt: rgb(color_value(&appearance.sub_log_alternate).unwrap_or(0xf2f5ff)),
+            theme,
+            main_alt: theme.panes.main_alternate,
+            event_color: theme.panes.channel_event,
+            sub_alt: theme.panes.sub_alternate,
             time_font: selected_font(&appearance.time_font, default_time_font()).to_owned(),
             alternate_rows: appearance.alternate_rows,
         }
@@ -3066,7 +3251,7 @@ impl LogStyle {
             .w(px(42.))
             .flex_shrink_0()
             .font_family(self.time_font.clone())
-            .text_color(rgb(0x747b82))
+            .text_color(self.theme.time)
             .child(time.to_owned())
     }
 }
@@ -3196,24 +3381,28 @@ impl ChatWindow {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let style = LogStyle::new(&self.appearance);
+        let theme = theme::current(cx);
+        let style = LogStyle::new(&self.appearance, theme::current(cx));
         match self.main_layout().row(row) {
             MainRow::Status => {
                 let text = self.status_text(self.state.status(self.state.selected_network().id));
                 div()
+                    .w_full()
                     .when(self.state.selected_channel().is_some(), |d| {
-                        d.text_color(rgb(0x9a4b28))
+                        d.text_color(theme.warning)
                     })
                     .child(text)
                     .into_any_element()
             }
             MainRow::DiagnosticsHeading => div()
+                .w_full()
                 .py_1()
                 .font_weight(FontWeight::BOLD)
                 .child(self.i18n.text("diagnostics_heading"))
                 .into_any_element(),
             MainRow::Diagnostic(index) => div()
-                .text_color(rgb(0x52606c))
+                .w_full()
+                .text_color(theme.text_secondary)
                 .child(self.diagnostics.get(index).cloned().unwrap_or_default())
                 .into_any_element(),
             MainRow::Message(index) => match self.state.selected_channel() {
@@ -3224,6 +3413,7 @@ impl ChatWindow {
                         return div().into_any_element();
                     };
                     div()
+                        .w_full()
                         .flex()
                         .gap_1()
                         .py(px(1.))
@@ -3245,6 +3435,7 @@ impl ChatWindow {
         style: &LogStyle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = theme::current(cx);
         let Some(message) = self
             .state
             .selected_channel()
@@ -3257,13 +3448,14 @@ impl ChatWindow {
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
             .and_then(|selection| selection.range(index, message.text.len()));
-        let styled = styled_log_text(&message.text, &urls, selected_range);
+        let styled = styled_log_text(&message.text, &urls, selected_range, &style.theme);
         let layout = styled.layout().clone();
         let down_layout = layout.clone();
         let move_layout = layout.clone();
         let click_layout = layout;
         let text_len = message.text.len();
         div()
+            .w_full()
             .flex()
             .items_start()
             .gap_1()
@@ -3280,7 +3472,7 @@ impl ChatWindow {
                         .flex()
                         .justify_end()
                         .text_right()
-                        .text_color(rgb(0x315b83))
+                        .text_color(theme.nickname)
                         .child(
                             div()
                                 .min_w_0()
@@ -3334,7 +3526,8 @@ impl ChatWindow {
     }
 
     fn render_sub_row(&mut self, row: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let style = LogStyle::new(&self.appearance);
+        let theme = theme::current(cx);
+        let style = LogStyle::new(&self.appearance, theme::current(cx));
         let Some(&(id, index)) = self.sub_rows.get(row) else {
             return div().into_any_element();
         };
@@ -3353,6 +3546,7 @@ impl ChatWindow {
             .unwrap_or("");
         div()
             .id(("sub-message", row))
+            .w_full()
             .flex()
             .gap_2()
             .py(px(1.))
@@ -3360,7 +3554,7 @@ impl ChatWindow {
                 d.bg(style.sub_alt)
             })
             .cursor_pointer()
-            .hover(|d| d.bg(rgb(0xe8eff6)))
+            .hover(|d| d.bg(theme.hover))
             .child(style.time(&message.time))
             .child(
                 div()
@@ -3370,7 +3564,7 @@ impl ChatWindow {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_color(rgb(0x315b83))
+                    .text_color(theme.nickname)
                     .child(
                         div()
                             .flex_1()
@@ -3414,6 +3608,7 @@ impl ChatWindow {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let theme = theme::current(cx);
         let Some(channel) = self.state.selected_channel() else {
             return Vec::new();
         };
@@ -3430,7 +3625,7 @@ impl ChatWindow {
                     .id(("member", index))
                     .px_2()
                     .py(px(1.))
-                    .hover(|d| d.bg(rgb(0xe8eff6)))
+                    .hover(|d| d.bg(theme.hover))
                     .child(member)
                     .on_mouse_down(
                         MouseButton::Right,
@@ -3598,8 +3793,32 @@ fn shortcut_bindings() -> Vec<KeyBinding> {
     bindings
 }
 
+/// Chooses the Linux display server before GPUI picks one from the
+/// environment. `CAYENCHAT_DISPLAY=x11|wayland` overrides the saved choice.
+#[cfg(target_os = "linux")]
+fn select_linux_display(saved: LinuxDisplay) {
+    let choice = match std::env::var("CAYENCHAT_DISPLAY")
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Ok("x11") => LinuxDisplay::X11,
+        Ok("wayland") => LinuxDisplay::Wayland,
+        _ => saved,
+    };
+    let has_x11 = std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty());
+    if choice == LinuxDisplay::X11 && has_x11 {
+        // SAFETY: called at the start of main, before GPUI or any other thread
+        // exists, so nothing reads the environment concurrently.
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
+}
+
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    let saved = cayenchat_storage::load().ok().flatten().unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    select_linux_display(saved.linux_display);
+    Application::new().run(move |cx: &mut App| {
+        theme::apply(saved.theme, &saved.appearance, cx);
         input::bind_keys(cx);
         cx.bind_keys(shortcut_bindings());
         cx.set_menus(app_menus(false, &Localizer::new(Language::System)));
