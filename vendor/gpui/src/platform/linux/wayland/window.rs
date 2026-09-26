@@ -1070,7 +1070,7 @@ impl PlatformWindow for WaylandWindow {
 
     fn request_decorations(&self, decorations: WindowDecorations) {
         let mut state = self.borrow_mut();
-        if let Some(decoration) = state.decoration.as_ref() {
+        if let Some(decoration) = state.decoration.clone() {
             state.decorations = decorations;
             decoration.set_mode(decorations.to_xdg());
             update_window(state);
