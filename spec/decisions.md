@@ -158,9 +158,9 @@ Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
 platform user configuration directory. Default to `irc.ircnet.ne.jp:6667`
 without TLS, offer `irc6.ircnet.ne.jp`, and allow custom host/port and TLS.
-Password saving is per server and off by default. Before enabling it, display a
-confirmation that server and SASL passwords are stored as plaintext; switching
-it off immediately removes those stored values. Require TLS whenever sending
+Password saving is per server and off by default; switching it off
+immediately removes those stored values. (Where passwords are stored is now
+D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. Support SASL PLAIN through IRCv3
 CAP negotiation in `irc-core`. The initial implementation covers one network
@@ -264,3 +264,83 @@ clipboard, not an Emacs kill ring. Alt chords do not reveal the in-window menu
 bar, which only reacts to Alt pressed alone.
 
 Source: [GTK 3 Emacs key theme](https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gtk/gtk-keys.css.emacs).
+
+## D014 — Credential storage
+
+**Status:** Accepted
+
+All secrets (IRC `PASS`, SASL passwords, image uploader tokens and future
+credentials) go through one `storage::credentials::CredentialStore`. UI, IRC
+and provider code never store secrets themselves, and the preferences file
+never contains them.
+
+Backends: the OS store through `keyring` 4.2 (`v1` feature: Keychain on macOS,
+Credential Manager on Windows, freedesktop Secret Service via the pure-Rust
+zbus client on Linux/BSD, reusing the zbus already in GPUI's tree; it resolves
+under Rust 1.88), and an explicit local file. `keyring` is maintained and
+covers all three targets; no separate crate was needed.
+
+The local file (`$XDG_CONFIG_HOME/cayenchat/credentials.json`, falling back to
+`~/.config/cayenchat/`, on Linux; the CayenChat config directory elsewhere) is
+unencrypted. Encrypting it with a key kept on the same disk would give no real
+protection, and a user passphrase would add an unlock step for little gain for
+an IRC client; the UI states the trade-off instead. It is `0600` in a `0700`
+directory, written via a fresh `0600` temporary file and rename, and its
+permissions are tightened before reading if found looser. It exists because
+Linux desktops without a Secret Service must keep working.
+
+Rules: the backend is an explicit setting (default System); nothing falls back
+silently; choosing the local file needs confirmation; switching migrates known
+secrets. The one automatic move is migrating version ≤10 plaintext passwords
+out of `settings.json`: into the chosen store, or into the local file only if
+the system store is unavailable, since those passwords were already plaintext
+with the user's consent. Keys use stable internal IDs, never nicknames,
+hostnames or display names. `Secret`, `ConnectionConfig` and `SaslCredentials`
+redact their `Debug` output; credential errors carry sanitized text only.
+
+Sources: [keyring 4.2 crate](https://crates.io/crates/keyring),
+[keyring-rs wiki](https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring),
+[XDG Base Directory specification](https://specifications.freedesktop.org/basedir-spec/latest/),
+[freedesktop Secret Service API](https://specifications.freedesktop.org/secret-service-spec/latest/).
+
+## D015 — IRC image sharing through an external uploader
+
+**Status:** Accepted
+
+IRC carries only text, so images are uploaded to a hosting account the user
+owns and the link is inserted into the draft; the user sends it. Uploading is
+disabled until a provider is chosen and an account connected, always asks
+before an image leaves the computer, and never sends the IRC message.
+Anonymous public upload services are not offered.
+
+Boundaries: `model::Attachment` is protocol-neutral; `app::attachments` is the
+GPUI-free flow shared by paste and drop; `upload::ExternalUploader` is the IRC
+transport only. The UI refers to providers by registry ID. A future Matrix
+client must upload through Matrix's native media API and emit image events; it
+must not implement `ExternalUploader` or route through `upload`. There is no
+universal "uploader" abstraction.
+
+First provider: **Gyazo**. Its upload API (`POST
+https://upload.gyazo.com/api/upload`, multipart `access_token` + `imagedata`
+with a filename, JSON reply with `url`) is documented, and its access tokens do
+not expire. Its OAuth flow exchanges the code with `client_secret`, which an
+open-source desktop client cannot keep private, but the developer dashboard
+lets each user create an application and generate their own access token.
+CayenChat therefore asks the user to paste that token (a genuine
+provider requirement, explained in the UI), ships no client ID or secret, and
+sends the token in the multipart body rather than a header or URL. Uploads use
+Gyazo's default `access_policy=anyone` (anyone with the link can view), which
+IRC recipients need; the UI says links are viewable outside the channel.
+Imgur was not chosen: authenticated uploads need a registered client, access
+tokens expire after about an hour, and refreshing them requires the client
+secret. HTTP uses `ureq` 3 (blocking, rustls/ring, no redirects for uploads,
+64 KiB reply limit) on GPUI's background executor.
+
+The Gyazo site was under maintenance during this work; the API pages were
+read from the Internet Archive copies dated 2025–2026.
+
+Sources: [Gyazo API overview](https://gyazo.com/api/docs),
+[Gyazo image/upload API](https://gyazo.com/api/docs/image),
+[Gyazo authentication](https://gyazo.com/api/docs/auth),
+[Gyazo errors](https://gyazo.com/api/docs/errors),
+[Imgur OAuth 2 (imgurpython README)](https://github.com/Imgur/imgurpython/blob/master/README.md).

@@ -199,9 +199,14 @@ this delay.
    Toggle SASL and verify account/password fields appear. Type a dummy password and verify the
    screen masks it. Switch servers and confirm the values follow only their server.
 4. Save with **パスワードを保存する** off and inspect the settings file: neither
-   password should be present. Turn it on, confirm the plaintext warning, save,
-   restart and verify both values reload. Turn it off and verify the saved values
-   disappear immediately, before pressing Save. Versions 1 and 2 should migrate.
+   password should be present. Turn it on (no prompt with system storage), save,
+   and verify the fields become empty with the "saved" placeholder, the settings
+   file still has no password, and Keychain Access (macOS), Credential Manager
+   (Windows) or Seahorse/`secret-tool search service CayenChat` (Linux) shows
+   `connection/<id>/…` entries. Restart with startup connection on and verify
+   they are used. Turn saving off and verify the entries disappear immediately.
+   A version 10 settings file with saved passwords should lose them from the
+   file on the next start and gain the store entries.
 5. Close settings with its window close button and verify CayenChat stays open.
    Reopen settings from the menu and shortcut. Verify text editing, draft retention,
    and channel navigation in the chat window.
@@ -213,6 +218,20 @@ this delay.
    credentials must be masked even though normal message bodies are included.
    On a failed connection, confirm the copied transcript includes the final
    disconnect reason shown in the window.
+
+7. In **資格情報の保存先**, verify the system-store status line. Choose the local
+   file, confirm, and verify `credentials.json` (mode `0600` on Unix) holds the
+   saved entries while the system store no longer does; switch back. On a Linux
+   session without a Secret Service, the status must say it is unavailable and
+   the local file must still work.
+8. In **画像アップロード**, select Gyazo, connect with a test account's token, and
+   paste a screenshot into a channel draft: the confirmation must name Gyazo,
+   Cancel must leave the draft unchanged, and Upload must show progress and then
+   insert an `https://i.gyazo.com/…` link without sending. Drop a PNG on the
+   draft row for the same flow; drop a text file and two files for the refusals.
+   Paste plain text to confirm ordinary paste. Disconnect the account and paste
+   again for the reconnect guidance; select None for the configure guidance.
+   Use a revoked token for the authentication-failure prompt.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log still uses clicks
@@ -464,3 +483,25 @@ fired for a window GPUI had already removed. The vendored GPUI now checks
 `IsWindow` first and drops the removed-window callback errors quietly (see
 `vendor/gpui/PATCHES.md`). macOS `cargo check`, Clippy and tests pass; the
 Windows build and runtime were not verified.
+
+### Credential storage and image upload (2026-09-26)
+
+On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace Clippy
+and workspace tests passed. Automated coverage: credential store get/set/delete,
+backend migration, unavailable backend without fallback, local file round trip
+with `0600`/`0700` permissions and re-tightening, sanitized errors, XDG path
+rules, redacted `Debug` output, settings version 11 migration (username from
+nickname, plaintext passwords moved to the store or to the local file when the
+system store is unavailable, never re-serialized), USER/NICK/PASS/SASL on the
+wire in local `irc-core` fixtures, Gyazo multipart construction and reply
+mapping, the attachment state machine, and GPUI tests for text paste, image
+paste, drop, confirmation/cancel, configure/reconnect guidance, failed upload
+and link insertion without sending, using a fake uploader and an in-memory
+credential store. An ignored test (`-- --ignored`) probes the real system store:
+available on macOS; in a Debian bookworm container without D-Bus it reported
+"no system credential store was found" (Unavailable). In that container
+(aarch64, rustc 1.98.1) the non-GUI crate tests and the 30 UI tests passed, and
+workspace Clippy was
+clean apart from the existing `proc-macro-error2` future-incompatibility note.
+No real Gyazo upload, Windows build, Secret Service desktop (GNOME Keyring or
+KWallet) or GUI interaction was exercised.
