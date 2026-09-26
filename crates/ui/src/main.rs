@@ -1,5 +1,6 @@
 mod decorations;
 mod desktop;
+mod diagnostics;
 mod input;
 mod localization;
 mod log_list;
@@ -3820,6 +3821,7 @@ fn select_linux_display(saved: LinuxDisplay) {
 }
 
 fn main() {
+    diagnostics::init();
     let saved = cayenchat_storage::load().ok().flatten().unwrap_or_default();
     #[cfg(target_os = "linux")]
     select_linux_display(saved.linux_display);

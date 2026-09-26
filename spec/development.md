@@ -136,6 +136,24 @@ Neither a Linux toolchain nor a Linux desktop runtime was available here; Cargo
 feature resolution was inspected for `x86_64-unknown-linux-gnu`, but compilation
 and interaction must be verified on Linux.
 
+GPUI reports renderer, display-server and font failures through the `log` crate.
+The app installs a small stderr logger (`crates/ui/src/diagnostics.rs`) that
+prints warnings and errors by default; run with `RUST_LOG=info` (or `debug`) from
+a terminal to collect details when the window does not appear.
+
+### Linux container check (2026-09-26)
+
+A tester reported many warnings and a failure to start on Linux. In a Podman
+`rust:1-bookworm` container (aarch64, rustc 1.98.1) the build emitted the
+`float_literal_f32_fallback` future-incompatibility warning from GPUI's
+`taffy.rs`; the vendored copy now types those literals as `f32`. The remaining
+note concerns `proc-macro-error2`, pulled in by GPUI's `stacksafe` dependency.
+Workspace Clippy passed for Linux. Under Xvfb with Mesa lavapipe (plus openbox),
+GPUI initialized Vulkan and X11 and both windows were created and managed, but the
+root-window capture showed black window contents, so rendering is still
+unconfirmed. The reported start failure was not reproduced; Wayland, real GPUs
+and interaction still need a Linux desktop.
+
 ### Manual settings and UI checks
 
 1. Launch and confirm the separate settings window opens over the four-pane

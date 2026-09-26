@@ -26,6 +26,7 @@ url = "2.5.8"
 serde_json.workspace = true
 chrono.workspace = true
 sys-locale = "0.3.2"
+log = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui = { workspace = true, features = ["wayland", "x11"] }

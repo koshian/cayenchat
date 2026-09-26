@@ -816,6 +816,7 @@ dependencies = [
  "embed-resource",
  "futures-util",
  "gpui",
+ "log",
  "serde_json",
  "sys-locale",
  "unicode-segmentation",
