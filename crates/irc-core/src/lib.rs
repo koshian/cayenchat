@@ -759,9 +759,30 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
     }
 }
 
+/// Events from the IRC worker. A UI can move this out of its [`Connection`]
+/// and await it, instead of polling the connection on a timer.
+pub struct Events(mpsc::Receiver<Event>);
+
+impl Events {
+    /// Waits for the next event. `None` means the worker has ended and every
+    /// event it sent has been received. Works on any async executor.
+    pub async fn recv(&mut self) -> Option<Event> {
+        self.0.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> Option<Event> {
+        self.0.try_recv().ok()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.0.is_closed() && self.0.is_empty()
+    }
+}
+
 pub struct Connection {
     commands: mpsc::Sender<Outgoing>,
-    events: mpsc::Receiver<Event>,
+    /// `None` after [`Connection::take_events`].
+    events: Option<Events>,
     encoding: String,
 }
 
@@ -804,17 +825,23 @@ impl Connection {
             .map_err(|error| format!("Could not start IRC worker: {error}"))?;
         Ok(Self {
             commands,
-            events,
+            events: Some(Events(events)),
             encoding,
         })
     }
 
+    /// Moves the event stream out; afterwards `try_recv` returns `None` and
+    /// `is_closed` reports `false` here.
+    pub fn take_events(&mut self) -> Option<Events> {
+        self.events.take()
+    }
+
     pub fn try_recv(&mut self) -> Option<Event> {
-        self.events.try_recv().ok()
+        self.events.as_mut()?.try_recv()
     }
 
     pub fn is_closed(&self) -> bool {
-        self.events.is_closed() && self.events.is_empty()
+        self.events.as_ref().is_some_and(Events::is_closed)
     }
 
     pub fn send_message(&self, channel: &str, text: &str, notice: bool) -> Result<(), String> {
@@ -1695,7 +1722,7 @@ mod tests {
         drop(event_tx);
         let mut connection = Connection {
             commands,
-            events,
+            events: Some(Events(events)),
             encoding: "UTF-8".into(),
         };
         assert!(!connection.is_closed());
@@ -1704,6 +1731,33 @@ mod tests {
             Some(Event::Diagnostic { .. })
         ));
         assert!(connection.is_closed());
+    }
+
+    #[test]
+    fn taken_events_can_be_awaited_until_the_worker_ends() {
+        let (commands, _) = mpsc::channel(1);
+        let (event_tx, events) = mpsc::channel(1);
+        let mut connection = Connection {
+            commands,
+            events: Some(Events(events)),
+            encoding: "UTF-8".into(),
+        };
+        let mut events = connection.take_events().unwrap();
+        assert!(connection.take_events().is_none());
+        assert!(connection.try_recv().is_none());
+        event_tx.try_send(Event::TransportConnected).unwrap();
+        drop(event_tx);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            assert!(matches!(
+                events.recv().await,
+                Some(Event::TransportConnected)
+            ));
+            assert!(events.recv().await.is_none());
+        });
+        assert!(events.is_closed());
     }
 
     #[test]
