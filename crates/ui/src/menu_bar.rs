@@ -1,7 +1,17 @@
-//! Alt-revealed menus for platforms without GPUI native menu rendering.
+//! Alt/F10/hover-revealed menus for platforms without GPUI native menu rendering.
 use gpui::{prelude::*, *};
+use std::time::Duration;
 
 const HEIGHT: f32 = 28.;
+/// Invisible strip at the top of the content that reveals the bar on hover.
+/// Alt alone is often an IME toggle, so it cannot be the only way in.
+const HOT_ZONE: f32 = 6.;
+const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(400);
+/// How often a hover-revealed bar checks whether the pointer has left it.
+const HOVER_POLL: Duration = Duration::from_millis(150);
+/// Extra distance below the bar the pointer may drift before it hides.
+const HOVER_SLACK: f32 = 12.;
+const REVEAL_ANIMATION: Duration = Duration::from_millis(140);
 
 #[derive(Default)]
 pub struct MenuBar {
@@ -11,6 +21,12 @@ pub struct MenuBar {
     selected: Option<usize>,
     alt_down: bool,
     alt_candidate: bool,
+    /// Shown by hovering, so leaving the bar hides it again.
+    hover_reveal: bool,
+    /// Invalidates pending hover timers when the pointer moves on.
+    hover_generation: u64,
+    /// Restarts the slide-in animation for each reveal.
+    reveals: usize,
     _keys: Option<Subscription>,
 }
 
@@ -23,6 +39,14 @@ impl MenuBar {
         if cfg!(target_os = "macos") {
             return Self::default();
         }
+        Self::new_in_window(window, cx, access)
+    }
+
+    fn new_in_window<V: 'static>(
+        window: &Window,
+        cx: &mut Context<V>,
+        access: fn(&mut V) -> &mut MenuBar,
+    ) -> Self {
         let handle = window.window_handle();
         let owner = cx.weak_entity();
         // GPUI dispatches key bindings before element key listeners. Intercept
@@ -35,6 +59,17 @@ impl MenuBar {
             let _ = owner.update(cx, |this, cx| {
                 let state = access(this);
                 state.alt_candidate = false;
+                let key = &event.keystroke;
+                if key.key == "f10" && !key.modifiers.modified() {
+                    if state.visible {
+                        state.close();
+                    } else {
+                        state.reveal(false);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if !state.visible {
                     return;
                 }
@@ -103,6 +138,17 @@ impl MenuBar {
         self.open = false;
         self.selected = None;
         self.alt_candidate = false;
+        self.hover_reveal = false;
+        self.hover_generation += 1;
+    }
+
+    fn reveal(&mut self, by_hover: bool) {
+        self.visible = true;
+        self.hover_reveal = by_hover;
+        self.active = 0;
+        self.open = false;
+        self.selected = None;
+        self.reveals += 1;
     }
 
     fn modifiers_changed(&mut self, modifiers: Modifiers) {
@@ -118,8 +164,7 @@ impl MenuBar {
             if self.visible {
                 self.close();
             } else {
-                self.visible = true;
-                self.active = 0;
+                self.reveal(false);
             }
         }
         self.alt_down = modifiers.alt;
@@ -197,9 +242,11 @@ fn wrap_in_window<V: 'static>(
 ) -> AnyElement {
     let theme = crate::theme::current(cx);
     let mut bar = div()
+        .id("window-menu-bar")
         .flex()
         .h(px(HEIGHT))
         .flex_shrink_0()
+        .overflow_hidden()
         .bg(theme.surface)
         .border_b_1()
         .border_color(theme.border);
@@ -222,6 +269,7 @@ fn wrap_in_window<V: 'static>(
                     cx.listener(move |this, _, _, cx| {
                         let state = access(this);
                         state.alt_candidate = false;
+                        state.hover_reveal = false;
                         state.open = state.active != index || !state.open;
                         state.active = index;
                         state.selected = None;
@@ -283,8 +331,28 @@ fn wrap_in_window<V: 'static>(
             bar = bar.child(label);
         }
     }
+    let hot_zone = div()
+        .id("window-menu-hot-zone")
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(HOT_ZONE))
+        .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+            let state = access(this);
+            state.hover_generation += 1;
+            if *hovered {
+                reveal_on_hover(state.hover_generation, access, window, cx);
+            }
+        }));
+    let bar = bar.with_animation(
+        ("window-menu-reveal", state.reveals),
+        Animation::new(REVEAL_ANIMATION).with_easing(ease_out_quint()),
+        |bar, delta| bar.h(px(HEIGHT * delta)),
+    );
     div()
         .id("window-menu-root")
+        .relative()
         .size_full()
         .flex()
         .flex_col()
@@ -316,27 +384,83 @@ fn wrap_in_window<V: 'static>(
                     }
                 })),
         )
+        .when(!state.visible, |d| d.child(hot_zone))
         .into_any_element()
+}
+
+/// Pointer height relative to the top of the menu area.
+fn pointer_depth(window: &Window) -> Pixels {
+    window.mouse_position().y - crate::decorations::content_origin(window).y
+}
+
+/// Reveals the bar if the pointer is still resting in the hot zone after the
+/// delay, then hides it again once the pointer moves away from the bar.
+fn reveal_on_hover<V: 'static>(
+    generation: u64,
+    access: fn(&mut V) -> &mut MenuBar,
+    window: &Window,
+    cx: &mut Context<V>,
+) {
+    cx.spawn_in(window, async move |this, cx| {
+        cx.background_executor().timer(HOVER_REVEAL_DELAY).await;
+        let revealed = this.update_in(cx, |this, window, cx| {
+            let state = access(this);
+            if state.hover_generation != generation
+                || state.visible
+                || pointer_depth(window) >= px(HOT_ZONE)
+            {
+                return false;
+            }
+            state.reveal(true);
+            cx.notify();
+            true
+        });
+        if !revealed.unwrap_or(false) {
+            return;
+        }
+        loop {
+            cx.background_executor().timer(HOVER_POLL).await;
+            let keep = this.update_in(cx, |this, window, cx| {
+                let state = access(this);
+                if !state.visible || !state.hover_reveal {
+                    return false;
+                }
+                if state.open || pointer_depth(window) <= px(HEIGHT + HOVER_SLACK) {
+                    return true;
+                }
+                state.close();
+                cx.notify();
+                false
+            });
+            if !keep.unwrap_or(false) {
+                return;
+            }
+        }
+    })
+    .detach();
 }
 
 #[cfg(test)]
 mod tests {
     use super::{MenuBar, Modifiers};
+    use gpui::px;
 
     #[gpui::test]
     fn first_render_and_alt_reveal_use_a_ready_dispatch_tree(cx: &mut gpui::TestAppContext) {
         use gpui::{
-            Context, FocusHandle, IntoElement, Menu, MenuItem, Render, Window, div, prelude::*,
+            Context, Entity, Focusable, IntoElement, Menu, MenuItem, Render, Window, div,
+            prelude::*,
         };
 
         struct TestView {
             menu: MenuBar,
-            focus: FocusHandle,
+            input: Entity<crate::input::TextInput>,
         }
         impl Render for TestView {
             fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let content = div()
-                    .track_focus(&self.focus)
+                    .key_context("ChatWindow")
+                    .child(self.input.clone())
                     .on_action(|_: &crate::CopyDiagnostics, _, _| {})
                     .into_any_element();
                 super::wrap_in_window(
@@ -360,6 +484,8 @@ mod tests {
         }
 
         cx.update(|cx| {
+            crate::input::bind_keys(cx);
+            cx.bind_keys(crate::shortcut_bindings());
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -369,11 +495,11 @@ mod tests {
         // add_window_view performs the initial render before a dispatch tree
         // exists. Querying action availability here used to panic on startup.
         let (view, cx) = cx.add_window_view(|window, cx| {
-            let focus = cx.focus_handle();
-            window.focus(&focus);
+            let input = cx.new(|cx| crate::input::TextInput::new_live("Draft", cx));
+            window.focus(&input.focus_handle(cx));
             TestView {
-                menu: MenuBar::default(),
-                focus,
+                menu: MenuBar::new_in_window(window, cx, |this: &mut TestView| &mut this.menu),
+                input,
             }
         });
         assert!(!view.read_with(cx, |view, _| view.menu.visible));
@@ -389,6 +515,36 @@ mod tests {
         });
         cx.simulate_modifiers_change(alt);
         cx.simulate_modifiers_change(Modifiers::default());
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
+
+        // F10 works when Alt alone is taken by an IME toggle.
+        cx.simulate_keystrokes("f10");
+        assert!(view.read_with(cx, |view, _| view.menu.visible));
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.input.read(cx).text().to_owned()),
+            ""
+        );
+        cx.simulate_keystrokes("f10");
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
+
+        // Resting in the hot zone reveals it; moving away hides it again.
+        cx.simulate_mouse_move(gpui::point(px(40.), px(80.)), None, Modifiers::default());
+        cx.simulate_mouse_move(gpui::point(px(40.), px(2.)), None, Modifiers::default());
+        cx.executor().advance_clock(super::HOVER_REVEAL_DELAY / 2);
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
+        cx.executor().advance_clock(super::HOVER_REVEAL_DELAY);
+        assert!(view.read_with(cx, |view, _| view.menu.visible));
+        cx.simulate_mouse_move(gpui::point(px(40.), px(20.)), None, Modifiers::default());
+        cx.executor().advance_clock(super::HOVER_POLL * 2);
+        assert!(view.read_with(cx, |view, _| view.menu.visible));
+        cx.simulate_mouse_move(gpui::point(px(40.), px(200.)), None, Modifiers::default());
+        cx.executor().advance_clock(super::HOVER_POLL * 2);
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
+
+        // Passing through the hot zone without resting does not reveal it.
+        cx.simulate_mouse_move(gpui::point(px(40.), px(2.)), None, Modifiers::default());
+        cx.simulate_mouse_move(gpui::point(px(40.), px(80.)), None, Modifiers::default());
+        cx.executor().advance_clock(super::HOVER_REVEAL_DELAY * 2);
         assert!(!view.read_with(cx, |view, _| view.menu.visible));
     }
 
