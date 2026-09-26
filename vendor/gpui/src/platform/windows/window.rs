@@ -506,6 +506,12 @@ impl Drop for WindowsWindow {
             .executor
             .spawn(async move {
                 let handle = this.hwnd;
+                // Closing from the title bar or Alt+F4 lets `DefWindowProcW`
+                // destroy the window before GPUI drops it, so the handle is
+                // already invalid here.
+                if !unsafe { IsWindow(Some(handle)) }.as_bool() {
+                    return;
+                }
                 unsafe {
                     RevokeDragDrop(handle).log_err();
                     DestroyWindow(handle).log_err();
