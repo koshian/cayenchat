@@ -92,7 +92,7 @@ Drag across message bodies in the upper channel log and use `Cmd+C` / `Ctrl+C` t
 
 The main log is above the other-channel subwindow on the left. The draft input sits between them. The selected channel's members are above the server/channel tree on the right. Selecting a server shows its connection status and server messages, with an empty member list. Clicking a subwindow message opens its source channel. Long channel and server names in the subwindow are shortened with an ellipsis to keep each label on one line. The subwindow orders messages by arrival, even when different channels receive lines during the same displayed minute. The main and subwindow logs follow new messages to the bottom, including a burst of channel history during initial connection. Scrolling up pauses following for that log; scrolling back to the bottom resumes it. Each server or channel keeps a separate in-memory draft until exit.
 
-Messages arriving in other channels mark them unread; opening one clears its mark. Active navigation follows registered/joined state. When no unread channel remains, the unread shortcuts leave the selection unchanged. Channel number shortcuts use the visible channel order across the server tree; `1` selects the first and `0` the tenth. A number beyond the available channels leaves the selection unchanged.
+Messages arriving in other channels mark them unread; opening one clears its mark. Active navigation follows registered/joined state. When no unread channel remains, the unread shortcuts leave the selection unchanged. Channel number shortcuts use the visible channel order across the server tree; `1` selects the first and `0` the tenth. A number beyond the available channels leaves the selection unchanged. On Windows/Linux, **Settings → Appearance → Channel number keys** switches the channel number modifier to Alt or Super for desktops that use Ctrl+number for workspaces; server numbers stay `Ctrl+Alt`.
 
 ## Keyboard shortcuts
 
@@ -108,7 +108,7 @@ Messages arriving in other channels mark them unread; opening one clears its mar
 | Previous / next channel | `Ctrl+Up/Down` | `Alt+Up/Down` |
 | Previous / next active server | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
 | Previous / next server | `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
-| First through tenth channel | `Cmd+1..9, 0` | `Ctrl+1..9, 0` |
+| First through tenth channel | `Cmd+1..9, 0` | `Ctrl+1..9, 0` (configurable) |
 | First through tenth server | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | Send a channel message (`PRIVMSG`) | `Enter` | `Enter` |
 | Send as IRC `NOTICE` | `Ctrl+Enter` | `Ctrl+Enter` |

@@ -47,6 +47,17 @@ pub enum LinuxDisplay {
     X11,
 }
 
+/// Modifier for the numbered channel shortcuts on Windows and Linux. Many
+/// Linux desktops reserve Ctrl+digit for workspace switching.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelNumberModifier {
+    #[default]
+    Ctrl,
+    Alt,
+    Super,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -216,6 +227,7 @@ pub struct Settings {
     pub language: Language,
     pub theme: ThemeMode,
     pub linux_display: LinuxDisplay,
+    pub channel_number_modifier: ChannelNumberModifier,
     pub appearance: Appearance,
 }
 
@@ -236,6 +248,7 @@ impl Default for Settings {
             language: Language::System,
             theme: ThemeMode::System,
             linux_display: LinuxDisplay::Wayland,
+            channel_number_modifier: ChannelNumberModifier::Ctrl,
             appearance: Appearance::default(),
         }
     }
@@ -768,5 +781,25 @@ mod tests {
 
         settings.appearance.dark.sub_log_alternate = "gray".into();
         assert!(settings.appearance.validate().is_err());
+    }
+
+    #[test]
+    fn channel_number_modifier_defaults_to_ctrl_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{"version":10,"selected_server":"ircnet","servers":[]}"#,
+        )
+        .unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            settings.channel_number_modifier,
+            ChannelNumberModifier::Ctrl
+        );
+
+        settings.channel_number_modifier = ChannelNumberModifier::Super;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
 }

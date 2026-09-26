@@ -15,7 +15,8 @@ use cayenchat_irc_core::{
 };
 use cayenchat_model::{ConversationId, NetworkId};
 use cayenchat_storage::{
-    Appearance, DarkColors, Language, LinuxDisplay, Settings, TextEncoding, ThemeMode, color_value,
+    Appearance, ChannelNumberModifier, DarkColors, Language, LinuxDisplay, Settings, TextEncoding,
+    ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -1632,7 +1633,9 @@ impl SettingsWindow {
             let appearance = self.settings.values.appearance.clone();
             let mode = self.settings.values.theme;
             let language = self.settings.values.language;
+            let channel_modifier = self.settings.values.channel_number_modifier;
             let _ = self.owner.update(cx, |owner, window, cx| {
+                apply_shortcuts(channel_modifier, cx);
                 owner.apply_appearance(appearance, mode, cx);
                 owner.apply_language(language, window, cx);
             });
@@ -2469,6 +2472,28 @@ impl SettingsWindow {
             .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
             .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
+            .when(!cfg!(target_os = "macos"), |d| {
+                d.child(self.option_row(
+                    "channel_number_modifier",
+                    [
+                        (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
+                        (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
+                        (
+                            ChannelNumberModifier::Super,
+                            "channel_number_modifier_super",
+                        ),
+                    ],
+                    self.settings.values.channel_number_modifier,
+                    |settings, modifier| settings.channel_number_modifier = modifier,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .ml(px(158.))
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("channel_number_modifier_hint")),
+                )
+            })
             .when(cfg!(target_os = "linux"), |d| {
                 d.child(self.option_row(
                     "linux_display",
@@ -3769,7 +3794,16 @@ fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
     ]
 }
 
-fn shortcut_bindings() -> Vec<KeyBinding> {
+/// Replaces every key binding, so a changed channel-number modifier applies
+/// without restarting.
+fn apply_shortcuts(channel_modifier: ChannelNumberModifier, cx: &mut App) {
+    cx.clear_key_bindings();
+    input::bind_keys(cx);
+    cx.bind_keys(shortcut_bindings(channel_modifier));
+}
+
+#[cfg_attr(target_os = "macos", allow(unused_variables))]
+fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
     let mut bindings = vec![
         KeyBinding::new("tab", CompleteNickname, Some("TextInput")),
         KeyBinding::new("enter", SendMessage, Some("TextInput")),
@@ -3830,8 +3864,13 @@ fn shortcut_bindings() -> Vec<KeyBinding> {
         }
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
+            let modifier = match channel_modifier {
+                ChannelNumberModifier::Ctrl => "ctrl",
+                ChannelNumberModifier::Alt => "alt",
+                ChannelNumberModifier::Super => "super",
+            };
             bindings.push(navigation_binding(
-                &format!("ctrl-{digit}"),
+                &format!("{modifier}-{digit}"),
                 Command::SelectChannelAt(index),
             ));
             bindings.push(navigation_binding(
@@ -3871,8 +3910,7 @@ fn main() {
     Application::new().run(move |cx: &mut App| {
         theme::apply(saved.theme, &saved.appearance, cx);
         desktop::watch(cx);
-        input::bind_keys(cx);
-        cx.bind_keys(shortcut_bindings());
+        apply_shortcuts(saved.channel_number_modifier, cx);
         cx.set_menus(app_menus(false, &Localizer::new(Language::System)));
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {

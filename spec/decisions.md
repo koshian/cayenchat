@@ -143,7 +143,9 @@ Keep channel/server navigation semantics in `app::Command` and bind keys only in
 Ctrl+Tab for unread channels and substitute non-system-reserved key combinations
 for Option+Tab/Space and macOS Command navigation; preserve Ctrl+Left/Right for
 draft word movement. Numbered channel shortcuts follow visible tree order across
-servers, with `0` as the tenth item. Live messages and join/registration state drive
+servers, with `0` as the tenth item. Because Linux desktops commonly reserve
+Ctrl+digit for workspaces, a Windows/Linux preference selects Ctrl, Alt or Super
+for channel numbers (default Ctrl); server numbers remain Ctrl+Alt. Live messages and join/registration state drive
 the unread and active sets; the offline mock retains deterministic fixture state.
 An offline mock must not claim to have sent a message or NOTICE.
 

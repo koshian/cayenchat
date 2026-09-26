@@ -112,7 +112,7 @@ History and notifications remain TODO.
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - TODO — notification preferences
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
-- TODO — keyboard shortcut preferences where practical
+- PARTIAL — Windows/Linux channel-number modifier (Ctrl/Alt/Super); other shortcuts are fixed
 
 ## IRCv3
 

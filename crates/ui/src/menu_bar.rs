@@ -484,8 +484,7 @@ mod tests {
         }
 
         cx.update(|cx| {
-            crate::input::bind_keys(cx);
-            cx.bind_keys(crate::shortcut_bindings());
+            crate::apply_shortcuts(cayenchat_storage::ChannelNumberModifier::default(), cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
