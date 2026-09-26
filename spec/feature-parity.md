@@ -130,7 +130,7 @@ History and notifications remain TODO.
 - DONE — compact default layout
 - DONE — plain timestamp/right-aligned nickname/text rows with scrolling and follow-to-bottom unless the user scrolls away
 - TODO — light/dark appearance
-- PARTIAL — selectable installed font families per pane; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending
+- PARTIAL — selectable installed font families per pane; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending; on Linux, unset pane fonts fall back through cosmic-text, whose exact locale match treats `ja-JP` as non-Japanese and renders Han characters with Simplified Chinese glyphs (Noto Sans CJK SC) — choosing a Japanese font explicitly avoids this
 - TODO — restrained theming
 
 ## Platform integration
