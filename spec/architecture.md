@@ -118,7 +118,12 @@ until the bottom is reached again, including during initial IRC history bursts.
 Both logs and the user list are virtualized (GPUI `list` / `uniform_list`), so
 each redraw lays out only rows near the viewport. GPUI re-renders the whole chat
 window whenever the draft input changes, so rebuilding every retained line made
-typing, IME composition and channel switching slow, most visibly on Linux.
+typing, IME composition and channel switching slow, most visibly on Linux. The
+two logs, the user list and the channel tree are therefore separate views drawn
+with `AnyView::cached`: a keystroke redraws only the window shell and the input,
+while each pane reuses its previous layout and paint until the chat window is
+notified of a state change (or the pane itself scrolls or changes hover state).
+State changes that affect panes must call `cx.notify()` on the chat window.
 GPUI still reshapes rows it did not draw in the previous frame; on Linux the
 vendored GPUI caches cosmic-text shaping per word (bounded) so a switch does not
 pay full shaping cost for every newly visible line (issue #5). The

@@ -389,6 +389,8 @@ struct ChatWindow {
     // Virtualized logs keep a separate scroll position per server or channel.
     main_lists: HashMap<Selection, LogList>,
     sub_list: LogList,
+    // Created on first render, when this window's entity exists.
+    panes: Option<ChatPanes>,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
@@ -426,6 +428,8 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    #[cfg(test)]
+    pane_renders: usize,
 }
 
 struct ChannelMenu {
@@ -576,6 +580,15 @@ impl ChatWindow {
             Ok(saved) => (saved.unwrap_or_default(), None),
             Err(error) => (Settings::default(), Some(error)),
         };
+        Self::with_settings(saved, feedback, window, cx)
+    }
+
+    fn with_settings(
+        saved: Settings,
+        feedback: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let i18n = Localizer::new(saved.language);
         let startup_connection = startup_connection_config(&saved);
         let state = AppState::configured(saved.selected_profile().host.clone(), saved.channels());
@@ -602,6 +615,7 @@ impl ChatWindow {
             state,
             main_lists: HashMap::new(),
             sub_list: LogList::new(),
+            panes: None,
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
@@ -635,6 +649,8 @@ impl ChatWindow {
             log_focus: cx.focus_handle(),
             log_selection: None,
             log_dragging: false,
+            #[cfg(test)]
+            pane_renders: 0,
         };
         this.update_title(window);
         // GPUI reports the macOS/Windows appearance and, on Linux, the XDG
@@ -646,10 +662,17 @@ impl ChatWindow {
         this
     }
 
-    fn apply_appearance(&mut self, appearance: Appearance, mode: ThemeMode, cx: &mut App) {
+    fn apply_appearance(
+        &mut self,
+        appearance: Appearance,
+        mode: ThemeMode,
+        cx: &mut Context<Self>,
+    ) {
         theme::apply(mode, &appearance, cx);
         self.appearance = appearance;
         self.theme_mode = mode;
+        // Fonts and row styles are drawn by the cached panes.
+        cx.notify();
     }
 
     /// Handles worker events as they arrive. The task sleeps while the
@@ -2833,27 +2856,14 @@ impl Render for ChatWindow {
 }
 
 impl ChatWindow {
-    fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
-        self.sync_log_lists();
         let selection = self.state.selection();
-        let mut origin = decorations::content_origin(window);
-        origin.y += self.menu_bar.height();
-        let log_id = match selection {
-            Selection::Channel(id) => id.0,
-            Selection::Server(id) => u32::MAX - id.0,
-        };
         let border = theme.border;
         let appearance = &self.appearance;
-        let main_bg = theme.panes.main_log;
-        let sub_bg = theme.panes.sub_log;
-
-        // The reference layout has logs on the left and users/channels on the right.
         let mut channels = div()
             .id("channels")
-            .flex_1()
-            .min_h_0()
-            .w_full()
+            .size_full()
             .overflow_y_scroll()
             .bg(theme.channel_tree)
             .when(!appearance.channel_font.is_empty(), |d| {
@@ -2967,7 +2977,64 @@ impl ChatWindow {
             }
         }
 
-        let main_list = self.main_lists[&selection].state.clone();
+        channels.into_any_element()
+    }
+
+    /// Content of a cached pane; see [`ChatPane`].
+    fn render_pane(&mut self, kind: PaneKind, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(test)]
+        {
+            self.pane_renders += 1;
+        }
+        match kind {
+            PaneKind::MainLog => list(
+                self.main_lists[&self.state.selection()].state.clone(),
+                cx.processor(Self::render_main_row),
+            )
+            .size_full()
+            .into_any_element(),
+            PaneKind::SubLog => list(
+                self.sub_list.state.clone(),
+                cx.processor(Self::render_sub_row),
+            )
+            .size_full()
+            .into_any_element(),
+            PaneKind::Members => {
+                let member_count = self
+                    .state
+                    .selected_channel()
+                    .map_or(0, |channel| channel.members.len());
+                uniform_list(
+                    "members",
+                    member_count,
+                    cx.processor(Self::render_member_rows),
+                )
+                .size_full()
+                .into_any_element()
+            }
+            PaneKind::Channels => self.render_channel_tree(cx),
+        }
+    }
+
+    fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::current(cx);
+        self.sync_log_lists();
+        let selection = self.state.selection();
+        let mut origin = decorations::content_origin(window);
+        origin.y += self.menu_bar.height();
+        let log_id = match selection {
+            Selection::Channel(id) => id.0,
+            Selection::Server(id) => u32::MAX - id.0,
+        };
+        let border = theme.border;
+        let appearance = &self.appearance;
+        let main_bg = theme.panes.main_log;
+        let sub_bg = theme.panes.sub_log;
+
+        // Panes that do not change while the draft is edited are separate cached
+        // views: typing redraws this window, but they reuse their last layout
+        // and paint until the chat state they show is notified.
+        let panes = self.panes.get_or_insert_with(|| ChatPanes::new(cx)).clone();
         let main_log = div()
             .id(("log", log_id))
             .key_context("MainLog")
@@ -2992,11 +3059,7 @@ impl ChatWindow {
             .when(!appearance.main_log_font.is_empty(), |d| {
                 d.font_family(appearance.main_log_font.clone())
             })
-            .child(
-                list(main_list, cx.processor(Self::render_main_row))
-                    .flex_1()
-                    .min_h_0(),
-            );
+            .child(panes.main_log.clone().cached(pane_style()));
 
         let sub_log = div()
             .id("sub-log")
@@ -3010,19 +3073,8 @@ impl ChatWindow {
             .when(!appearance.sub_log_font.is_empty(), |d| {
                 d.font_family(appearance.sub_log_font.clone())
             })
-            .child(
-                list(
-                    self.sub_list.state.clone(),
-                    cx.processor(Self::render_sub_row),
-                )
-                .flex_1()
-                .min_h_0(),
-            );
+            .child(panes.sub_log.clone().cached(pane_style()));
 
-        let member_count = self
-            .state
-            .selected_channel()
-            .map_or(0, |channel| channel.members.len());
         let members = div()
             .flex()
             .flex_col()
@@ -3033,15 +3085,7 @@ impl ChatWindow {
             .when(!appearance.member_font.is_empty(), |d| {
                 d.font_family(appearance.member_font.clone())
             })
-            .child(
-                uniform_list(
-                    "members",
-                    member_count,
-                    cx.processor(Self::render_member_rows),
-                )
-                .flex_1()
-                .min_h_0(),
-            );
+            .child(panes.members.clone().cached(pane_style()));
 
         let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
         let sub_pane = div()
@@ -3092,7 +3136,7 @@ impl ChatWindow {
             .border_l_1()
             .border_color(border)
             .child(members)
-            .child(channels);
+            .child(panes.channels.clone().cached(pane_style().w_full()));
 
         let connected = self.irc.is_some();
         let server_menu = self.server_menu.map(|position| {
@@ -3347,6 +3391,69 @@ impl ChatWindow {
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .into_any_element()
     }
+}
+
+#[derive(Clone, Copy)]
+enum PaneKind {
+    MainLog,
+    SubLog,
+    Members,
+    Channels,
+}
+
+/// A chat window pane rendered as its own view. GPUI redraws the whole window
+/// whenever the draft input changes; used with [`AnyView::cached`], a pane
+/// instead reuses its previous layout and paint unless it was notified. The
+/// pane re-renders whenever the chat window is notified (state changes) and
+/// when its own list scrolls or a row's hover state changes.
+struct ChatPane {
+    chat: WeakEntity<ChatWindow>,
+    kind: PaneKind,
+    _chat_changed: Subscription,
+}
+
+impl Render for ChatPane {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let kind = self.kind;
+        // Rows and their listeners belong to the chat window, so build them in
+        // its context; it is not being updated while panes lay out.
+        self.chat
+            .update(cx, |chat, cx| chat.render_pane(kind, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
+#[derive(Clone)]
+struct ChatPanes {
+    main_log: AnyView,
+    sub_log: AnyView,
+    members: AnyView,
+    channels: AnyView,
+}
+
+impl ChatPanes {
+    fn new(cx: &mut Context<ChatWindow>) -> Self {
+        let chat = cx.entity();
+        let mut pane = |kind| {
+            let chat = chat.clone();
+            AnyView::from(cx.new(|cx| ChatPane {
+                chat: chat.downgrade(),
+                kind,
+                _chat_changed: cx.observe(&chat, |_, _, cx| cx.notify()),
+            }))
+        };
+        Self {
+            main_log: pane(PaneKind::MainLog),
+            sub_log: pane(PaneKind::SubLog),
+            members: pane(PaneKind::Members),
+            channels: pane(PaneKind::Channels),
+        }
+    }
+}
+
+/// Layout of a cached pane inside its column.
+fn pane_style() -> StyleRefinement {
+    StyleRefinement::default().flex_1().min_h_0()
 }
 
 /// Colors and fonts shared by log rows, derived from the appearance settings.
@@ -4113,5 +4220,69 @@ mod startup_tests {
         let config = startup_connection_config(&settings).unwrap().unwrap();
         assert_eq!(config.host, "irc.ircnet.ne.jp");
         assert_eq!(config.sasl.unwrap().password, "secret");
+    }
+}
+
+#[cfg(test)]
+mod pane_tests {
+    use super::{ChatWindow, Selection};
+    use cayenchat_model::NetworkId;
+    use cayenchat_storage::Settings;
+    use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::apply_shortcuts(cayenchat_storage::ChannelNumberModifier::default(), cx);
+            crate::input::bind_keys(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ))
+        });
+        let settings = Settings {
+            channels: "#a,#b".into(),
+            ..Settings::default()
+        };
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        cx.run_until_parked();
+        let (channel, input) = chat.update(cx, |chat, _| {
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            (channel, chat.inputs[&Selection::Channel(channel)].clone())
+        });
+        cx.update(|window, cx| {
+            window.focus(&input.focus_handle(cx));
+            window.refresh();
+        });
+        cx.run_until_parked();
+        let rendered = chat.read_with(cx, |chat, _| chat.pane_renders);
+        assert!(rendered >= 4, "panes rendered {rendered} times");
+
+        cx.simulate_input("hello");
+        cx.run_until_parked();
+        assert_eq!(
+            input.read_with(cx, |input, _| input.text().to_owned()),
+            "hello"
+        );
+        assert_eq!(chat.read_with(cx, |chat, _| chat.pane_renders), rendered);
+
+        chat.update(cx, |chat, cx| {
+            let name = chat.state.conversations()[0].name.clone();
+            chat.state
+                .append_channel_message(NetworkId(1), &name, "bob", "hi", false);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(chat.read_with(cx, |chat, _| chat.pane_renders) > rendered);
+        let rows = chat.read_with(cx, |chat, _| {
+            chat.main_lists[&Selection::Channel(channel)]
+                .state
+                .item_count()
+        });
+        assert!(rows >= 1);
     }
 }
