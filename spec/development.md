@@ -447,3 +447,8 @@ A GPUI test asserts that draft input leaves the panes cached. On the Debian
 machine, channel switching became noticeably faster, and typing plus pane
 updates (messages, switching, selection, scrolling, hover, appearance changes)
 behaved correctly.
+Follow-up: the channel tree is virtualized too, and message times are stored
+as minutes (`TimeOfDay`), shrinking each retained message from 88 to 64 bytes
+plus one fewer heap allocation. Not done: formatting wire diagnostics lazily and
+sending roster deltas instead of full NAMES snapshots on JOIN/PART in large
+channels.
