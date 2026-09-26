@@ -15,6 +15,18 @@ In `src/platform/windows/events.rs`:
 - Translate unhandled system keydown messages as `WM_SYSKEYDOWN` so Win32 can
   produce the appropriate system-character message.
 
+In `src/platform/windows/window.rs`, `WindowsWindow`'s drop skips
+`RevokeDragDrop`/`DestroyWindow` when `IsWindow` reports the handle is gone.
+Closing from the title bar or Alt+F4 lets `DefWindowProcW` destroy the window
+before GPUI drops it, so upstream logged `0x80040102` and `0x80070578`
+("invalid window handle") every time.
+
+In `src/window.rs` and `src/app/async_context.rs`, the platform callbacks
+registered in `Window::new` (frame, resize, activation, hover, input, ...) no
+longer log `window not found` when the window was already removed; Windows
+still delivers activation and vsync redraw messages while a removed window is
+torn down. Other failures are still logged.
+
 In `src/platform/linux/wayland/window.rs`:
 
 - `request_decorations` keeps client-side decorations when the compositor does

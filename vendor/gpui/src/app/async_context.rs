@@ -1,7 +1,7 @@
 use crate::{
     AnyView, AnyWindowHandle, App, AppCell, AppContext, BackgroundExecutor, BorrowAppContext,
     Entity, EventEmitter, Focusable, ForegroundExecutor, Global, PromptButton, PromptLevel, Render,
-    Reservation, Result, Subscription, Task, VisualContext, Window, WindowHandle,
+    Reservation, Result, Subscription, Task, VisualContext, Window, WindowHandle, WindowId,
 };
 use anyhow::{Context as _, anyhow};
 use derive_more::{Deref, DerefMut};
@@ -120,6 +120,17 @@ impl AppContext for AsyncApp {
 }
 
 impl AsyncApp {
+    /// Whether the window has already been removed from the application.
+    /// Returns false while the app is released or borrowed, since the window
+    /// state cannot be confirmed then.
+    pub(crate) fn window_closed(&self, id: WindowId) -> bool {
+        self.app.upgrade().is_some_and(|app| {
+            app.app
+                .try_borrow()
+                .is_ok_and(|app| !app.windows.contains_key(id))
+        })
+    }
+
     /// Schedules all windows in the application to be redrawn.
     pub fn refresh(&self) -> Result<()> {
         let app = self.app.upgrade().context("app was released")?;

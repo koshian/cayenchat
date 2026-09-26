@@ -452,3 +452,15 @@ as minutes (`TimeOfDay`), shrinking each retained message from 88 to 64 bytes
 plus one fewer heap allocation. Not done: formatting wire diagnostics lazily and
 sending roster deltas instead of full NAMES snapshots on JOIN/PART in large
 channels.
+
+### Window close error logs on Windows (2026-09-26)
+
+Closing a window (typically the settings window shown at startup) printed
+`window not found` twice and two "invalid window handle" HRESULTs
+(`0x80040102` from `RevokeDragDrop`, `0x80070578` from `DestroyWindow`). All
+four came from GPUI's Windows teardown, not the app: the deferred drop task ran
+on an HWND that `DefWindowProcW` had already destroyed, and platform callbacks
+fired for a window GPUI had already removed. The vendored GPUI now checks
+`IsWindow` first and drops the removed-window callback errors quietly (see
+`vendor/gpui/PATCHES.md`). macOS `cargo check`, Clippy and tests pass; the
+Windows build and runtime were not verified.
