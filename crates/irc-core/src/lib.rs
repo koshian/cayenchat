@@ -364,6 +364,12 @@ pub enum Event {
         text: String,
         notice: bool,
     },
+    /// The server rejected the registration nickname (432/433). The link
+    /// stays open until the UI supplies another one with
+    /// [`Connection::change_nickname`].
+    NicknameRejected {
+        nickname: String,
+    },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
     /// `Disconnected`, but reconnecting with the same settings would only be
@@ -894,6 +900,17 @@ impl Connection {
             .map_err(|error| format!("Could not queue IRC command: {error}"))
     }
 
+    pub fn change_nickname(&self, nickname: &str) -> Result<(), String> {
+        if !valid_nickname(nickname) {
+            return Err("Invalid nickname.".into());
+        }
+        let outgoing = checked_command(IrcCommand::NICK(nickname.to_owned()))?;
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue nickname change: {error}"))
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         self.commands
             .try_send(Outgoing::Quit)
@@ -1090,8 +1107,10 @@ async fn run(
         }
         wire(&events, started, WireDirection::Sent, line).await;
     }
-    let registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
+    let mut registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
     let mut registered = false;
+    // Registration is paused while the UI asks for another nickname.
+    let mut awaiting_nick = false;
     let mut refusal = None;
     let mut current_nick = registration_nick;
     let mut roster = RosterTracker::default();
@@ -1124,10 +1143,22 @@ async fn run(
                     }
                     Outgoing::Raw(message) => {
                         let line = redacted_wire_line(&message);
+                        let retry_nick = match &message.command {
+                            IrcCommand::NICK(nickname) if !registered => Some(nickname.clone()),
+                            _ => None,
+                        };
                         let result = validate_wire(&message.to_string(), &wire_encoding)
                             .and_then(|_| client.send(message).map_err(|error| error.to_string()));
                         match result {
-                            Ok(()) => wire(&events, started, WireDirection::Sent, line).await,
+                            Ok(()) => {
+                                wire(&events, started, WireDirection::Sent, line).await;
+                                if let Some(nickname) = retry_nick {
+                                    current_nick = nickname;
+                                    awaiting_nick = false;
+                                    refusal = None;
+                                    registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
+                                }
+                            }
                             Err(error) => {
                                 if events.send(Event::ServerLine(format!("Command failed: {error}"))).await.is_err() {
                                     break;
@@ -1207,6 +1238,24 @@ async fn run(
                             if events.send(event).await.is_err() { return; }
                         }
                     }
+                    // irc consumes 432/433 and reports NoUsableNick because no
+                    // alternate nicknames are configured; the link stays usable.
+                    Some(Err(irc::error::Error::NoUsableNick)) if !registered => {
+                        diagnostic(&events, started,
+                            format!("Server rejected nickname {current_nick} (432/433); waiting for another nickname.")).await;
+                        awaiting_nick = true;
+                        refusal = Some(format!("Nickname {current_nick} is unavailable (432/433)."));
+                        if events.send(Event::NicknameRejected { nickname: current_nick.clone() }).await.is_err() {
+                            return;
+                        }
+                    }
+                    Some(Err(irc::error::Error::NoUsableNick)) => {
+                        if events.send(Event::ServerLine(
+                            "Nickname change rejected: the nickname is in use or invalid (432/433).".into()
+                        )).await.is_err() {
+                            return;
+                        }
+                    }
                     Some(Err(error)) => {
                         let detail = stream_error_detail(&error);
                         diagnostic(&events, started, format!("IRC stream failed: {detail}")).await;
@@ -1223,10 +1272,10 @@ async fn run(
                     }
                 }
             }
-            _ = registration_progress.tick(), if !registered => {
+            _ = registration_progress.tick(), if !registered && !awaiting_nick => {
                 diagnostic(&events, started, "Still waiting for IRC registration (001 welcome).").await;
             }
-            _ = tokio::time::sleep_until(registration_deadline), if !registered => {
+            _ = tokio::time::sleep_until(registration_deadline), if !registered && !awaiting_nick => {
                 diagnostic(&events, started, "IRC registration timed out.").await;
                 let _ = events.send(refusal.take().map_or_else(
                     || Event::Disconnected("Registration timed out.".into()),
@@ -2533,6 +2582,74 @@ mod tests {
             failure.as_deref(),
             Some("Server rejected the password (464).")
         );
+        server.join().unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn nickname_in_use_waits_for_another_nickname() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                lines.read_line(&mut line).unwrap();
+                if line.starts_with("USER ") {
+                    break;
+                }
+            }
+            socket
+                .write_all(b":server 433 * alice :Nickname is already in use\r\n")
+                .unwrap();
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            assert_eq!(line.trim_end(), "NICK alice_");
+            socket
+                .write_all(b":server 001 alice_ :Welcome\r\n")
+                .unwrap();
+            line.clear();
+            let _ = lines.read_line(&mut line);
+        });
+
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+        config.port = port;
+        config.use_tls = false; // The private worker is tested without a certificate.
+        let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let worker = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(config, command_rx, event_tx));
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut rejected = None;
+        let mut registered = None;
+        while Instant::now() < deadline && registered.is_none() {
+            match event_rx.try_recv() {
+                Ok(Event::NicknameRejected { nickname }) => {
+                    rejected = Some(nickname);
+                    commands
+                        .try_send(checked_command(IrcCommand::NICK("alice_".into())).unwrap())
+                        .unwrap();
+                }
+                Ok(Event::Registered { nickname }) => registered = Some(nickname),
+                Ok(Event::Disconnected(reason) | Event::Refused(reason)) => {
+                    panic!("disconnected after 433: {reason}")
+                }
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert_eq!(rejected.as_deref(), Some("alice"));
+        assert_eq!(registered.as_deref(), Some("alice_"));
+        commands.try_send(Outgoing::Quit).unwrap();
         server.join().unwrap();
         worker.join().unwrap();
     }
