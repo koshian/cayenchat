@@ -22,6 +22,10 @@ In `src/platform/linux/wayland/window.rs`:
   server-side mode anyway, so `window_decorations()` reported `Server`, nothing
   drew a title bar, and the window could not be moved.
 
+In `src/taffy.rs`, the grid `minmax(length(0.0), fr(1.0))` literals are typed
+as `f32`, fixing the `float_literal_f32_fallback` future-incompatibility warning
+emitted by newer rustc (seen with 1.98).
+
 The existing mixed indentation in `src/platform/mac/shaders.metal` was also
 normalized so the vendored source passes `git diff --check`; shader logic is
 unchanged.
