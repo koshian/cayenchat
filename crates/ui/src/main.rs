@@ -450,6 +450,8 @@ struct MemberMenu {
 enum MemberPromptKind {
     PrivateMessage,
     Invite,
+    /// The server rejected `nickname` during registration.
+    AlternateNick,
 }
 
 #[derive(Clone, Copy)]
@@ -462,10 +464,13 @@ enum MemberMenuChoice {
 }
 
 struct MemberPrompt {
-    position: Point<Pixels>,
+    /// `None` centers the prompt in the window.
+    position: Option<Point<Pixels>>,
     nickname: String,
     kind: MemberPromptKind,
     input: Entity<TextInput>,
+    /// Set when opened without a window; render focuses the input.
+    focus_pending: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1078,20 +1083,87 @@ impl ChatWindow {
         let placeholder = self.i18n.text(match kind {
             MemberPromptKind::PrivateMessage => "member_message_placeholder",
             MemberPromptKind::Invite => "member_channel_placeholder",
+            MemberPromptKind::AlternateNick => "nick_prompt_placeholder",
         });
         let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
         let viewport = window.viewport_size();
         self.feedback = None;
         self.member_prompt = Some(MemberPrompt {
-            position: point(
+            position: Some(point(
                 position.x.min((viewport.width - px(300.)).max(px(0.))),
                 position.y.min((viewport.height - px(140.)).max(px(0.))),
-            ),
+            )),
             nickname,
             kind,
             input: input.clone(),
+            focus_pending: false,
         });
         window.focus(&input.focus_handle(cx));
+        cx.notify();
+    }
+
+    /// Opens a centered prompt for another nickname after the server
+    /// rejected `rejected` during registration.
+    fn show_nick_prompt(&mut self, rejected: String, cx: &mut Context<Self>) {
+        let placeholder = self.i18n.text("nick_prompt_placeholder");
+        let suggestion = format!("{rejected}_");
+        let input = cx.new(|cx| TextInput::new_field(&placeholder, &suggestion, false, cx));
+        self.server_menu = None;
+        self.member_menu = None;
+        self.channel_menu = None;
+        self.feedback = None;
+        self.member_prompt = Some(MemberPrompt {
+            position: None,
+            nickname: rejected,
+            kind: MemberPromptKind::AlternateNick,
+            input,
+            focus_pending: true,
+        });
+    }
+
+    /// Retries registration with the nickname from the prompt. The nickname
+    /// replaces the configured one for this session's reconnects only.
+    fn submit_nick_prompt(
+        &mut self,
+        nickname: String,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let nickname = nickname.trim().to_owned();
+        if nickname.is_empty() {
+            return Err(self.i18n.text("nick_prompt_required"));
+        }
+        if let Some(connection) = &self.irc {
+            connection.change_nickname(&nickname)?;
+        }
+        if let Some(config) = self.active_config.as_mut() {
+            config.nickname = nickname.clone();
+        }
+        self.own_nickname = Some(nickname.clone());
+        self.state.append_server_message(
+            NetworkId(1),
+            self.i18n
+                .format("event_nick_retry", &[("nickname", &nickname)]),
+        );
+        if self.irc.is_none() {
+            // The server closed the link while the prompt was open.
+            self.manual_disconnect = false;
+            self.retry_attempt = 0;
+            self.retry_token += 1;
+            self.start_reconnect(cx);
+        }
+        Ok(())
+    }
+
+    fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let alternate_nick = self
+            .member_prompt
+            .take()
+            .is_some_and(|prompt| matches!(prompt.kind, MemberPromptKind::AlternateNick));
+        self.feedback = None;
+        if alternate_nick && self.irc.is_some() {
+            self.disconnect(cx);
+        }
+        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
         cx.notify();
     }
 
@@ -1103,6 +1175,18 @@ impl ChatWindow {
             return;
         }
         let value = prompt.input.read(cx).text().to_owned();
+        if matches!(prompt.kind, MemberPromptKind::AlternateNick) {
+            match self.submit_nick_prompt(value, cx) {
+                Ok(()) => {
+                    self.member_prompt = None;
+                    self.feedback = None;
+                    window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+                }
+                Err(error) => self.feedback = Some(error),
+            }
+            cx.notify();
+            return;
+        }
         let result = match self.irc.as_ref() {
             Some(connection)
                 if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
@@ -1120,6 +1204,7 @@ impl ChatWindow {
                             channel: value.trim().to_owned(),
                         },
                     ),
+                    MemberPromptKind::AlternateNick => unreachable!("submitted above"),
                 }
             }
             _ => Err(self.i18n.text("not_connected")),
@@ -1346,11 +1431,19 @@ impl ChatWindow {
         let mut disconnected = false;
         let mut refused = false;
         for event in batch {
-            match event {
+            match &event {
                 Event::Disconnected(_) => disconnected = true,
                 Event::Refused(_) => {
                     disconnected = true;
                     refused = true;
+                }
+                Event::NicknameRejected { nickname } => self.show_nick_prompt(nickname.clone(), cx),
+                Event::Registered { .. }
+                    if self.member_prompt.as_ref().is_some_and(|prompt| {
+                        matches!(prompt.kind, MemberPromptKind::AlternateNick)
+                    }) =>
+                {
+                    self.member_prompt = None;
                 }
                 _ => {}
             }
@@ -1502,6 +1595,13 @@ impl ChatWindow {
                             .format("event_message_queued", &[("channel", &channel)]),
                     );
                 }
+            }
+            Event::NicknameRejected { nickname } => {
+                self.state.append_server_message(
+                    network,
+                    self.i18n
+                        .format("event_nick_rejected", &[("nickname", &nickname)]),
+                );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
                 self.record_disconnect(reason);
@@ -3378,19 +3478,37 @@ impl ChatWindow {
             }
             popup
         });
+        if let Some(prompt) = self.member_prompt.as_mut()
+            && prompt.focus_pending
+        {
+            prompt.focus_pending = false;
+            window.focus(&prompt.input.focus_handle(cx));
+        }
+        let viewport = window.viewport_size();
         let member_prompt = self.member_prompt.as_ref().map(|prompt| {
             let title = self.i18n.format(
                 match prompt.kind {
                     MemberPromptKind::PrivateMessage => "member_message_title",
                     MemberPromptKind::Invite => "member_invite_title",
+                    MemberPromptKind::AlternateNick => "nick_prompt_title",
                 },
                 &[("nickname", &prompt.nickname)],
             );
+            let position = prompt.position.unwrap_or_else(|| {
+                point(
+                    ((viewport.width - px(300.)) / 2.).max(px(0.)),
+                    ((viewport.height - px(140.)) / 2.).max(px(0.)),
+                )
+            });
+            let submit = self.i18n.text(match prompt.kind {
+                MemberPromptKind::AlternateNick => "nick_prompt_submit",
+                _ => "member_submit",
+            });
             div()
                 .id("member-prompt")
                 .absolute()
-                .left(prompt.position.x - origin.x)
-                .top(prompt.position.y - origin.y)
+                .left(position.x - origin.x)
+                .top(position.y - origin.y)
                 .w(px(300.))
                 .p_2()
                 .bg(theme.surface)
@@ -3416,7 +3534,7 @@ impl ChatWindow {
                                 .py_1()
                                 .bg(theme.selected)
                                 .cursor_pointer()
-                                .child(self.i18n.text("member_submit"))
+                                .child(submit)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.submit_member_prompt(window, cx)
                                 })),
@@ -3431,12 +3549,7 @@ impl ChatWindow {
                                 .cursor_pointer()
                                 .child(self.i18n.text("cancel"))
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.member_prompt = None;
-                                    this.feedback = None;
-                                    window.focus(
-                                        &this.inputs[&this.state.selection()].focus_handle(cx),
-                                    );
-                                    cx.notify();
+                                    this.cancel_member_prompt(window, cx)
                                 })),
                         ),
                 )

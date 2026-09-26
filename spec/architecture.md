@@ -222,7 +222,17 @@ A successful registration resets the delay; an explicit disconnect cancels pendi
 retries. The core reports a terminal `Refused` event instead of `Disconnected`
 for SASL failures, a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,
 and 464/465 during registration; the UI does not retry those automatically,
-because repeating rejected credentials risks account lockout or a server ban. Reconnection preserves the in-memory conversation logs and drafts. A
+because repeating rejected credentials risks account lockout or a server ban.
+The `irc` library consumes 432/433 and reports `NoUsableNick` because no
+alternate nicknames are configured; the stream stays usable afterwards. Before
+registration the core turns it into `NicknameRejected`, pauses its registration
+timeout and keeps the link open. The UI opens a centered prompt prefilled with
+the rejected nick plus `_`; submitting sends NICK (or reconnects if the server
+closed the link, which the core reports as `Refused` so it is not retried with
+the same nick) and replaces the nickname for this session's reconnects without
+changing saved settings. Cancel disconnects. After registration a rejected
+`/nick` only produces a server line instead of dropping the connection.
+Reconnection preserves the in-memory conversation logs and drafts. A
 complete membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
