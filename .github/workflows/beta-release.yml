@@ -6,8 +6,9 @@ on:
     branches: [master]
     types: [completed]
 
+# Build jobs run third-party build scripts, so only the publish job can write.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: beta-release
@@ -26,12 +27,15 @@ jobs:
 
     steps:
       - name: Check out tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Install Linux dependencies
         run: |
@@ -51,7 +55,7 @@ jobs:
         run: cargo deb --no-build
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-x86_64
           path: target/debian/*.deb
@@ -66,12 +70,15 @@ jobs:
 
     steps:
       - name: Check out tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -87,7 +94,7 @@ jobs:
             -DestinationPath cayenchat-windows-x86_64.zip
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-x86_64
           path: cayenchat-windows-x86_64.zip
@@ -102,12 +109,15 @@ jobs:
 
     steps:
       - name: Check out tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -123,7 +133,7 @@ jobs:
             -DestinationPath cayenchat-windows-arm64.zip
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-arm64
           path: cayenchat-windows-arm64.zip
@@ -138,12 +148,15 @@ jobs:
 
     steps:
       - name: Check out tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
       - name: Build release binary
         run: cargo build --release --locked
@@ -194,7 +207,7 @@ jobs:
             CayenChat.app cayenchat-macos-arm64.zip
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-arm64
           path: cayenchat-macos-arm64.zip
@@ -211,16 +224,18 @@ jobs:
       - windows-arm64
       - macos-arm64
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Check out tested commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
