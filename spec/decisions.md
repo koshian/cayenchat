@@ -106,8 +106,9 @@ Primary sources inspected:
 **Status:** Accepted for bootstrap; framework choice remains provisional (D002).
 
 Pin `gpui` to 0.2.2 and retain Cargo.lock. The project now uses a local copy of
-that published crate in `vendor/gpui` to patch Windows IME key-message handling;
-see `vendor/gpui/PATCHES.md`. Use Rust edition 2024
+that published crate in `vendor/gpui` to patch Windows IME key-message handling
+and Linux issues, including enabling cosmic-text's bounded per-word shaping
+cache for faster channel switching; see `vendor/gpui/PATCHES.md`. Use Rust edition 2024
 and resolver 3. Enable `font-kit` for macOS glyph rendering and `runtime_shaders` for
 Metal shader compilation at application startup. Keep unused default features off;
 enable Wayland and X11 on Linux and the window manifest on Windows. This avoids

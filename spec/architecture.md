@@ -118,7 +118,10 @@ until the bottom is reached again, including during initial IRC history bursts.
 Both logs and the user list are virtualized (GPUI `list` / `uniform_list`), so
 each redraw lays out only rows near the viewport. GPUI re-renders the whole chat
 window whenever the draft input changes, so rebuilding every retained line made
-typing, IME composition and channel switching slow, most visibly on Linux. The
+typing, IME composition and channel switching slow, most visibly on Linux.
+GPUI still reshapes rows it did not draw in the previous frame; on Linux the
+vendored GPUI caches cosmic-text shaping per word (bounded) so a switch does not
+pay full shaping cost for every newly visible line (issue #5). The
 combined subwindow shows the newest 1,000 lines across other channels. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains

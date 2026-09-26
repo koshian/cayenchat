@@ -485,6 +485,7 @@ optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.cosmic-text]
 version = "0.14.0"
+features = ["shape-run-cache"]
 optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.filedescriptor]

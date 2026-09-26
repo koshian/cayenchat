@@ -30,6 +30,16 @@ In `src/platform/linux/{wayland,x11}/client.rs`:
   borrowed" when the desktop color scheme was reported (seen on Wayland at
   startup).
 
+In `Cargo.toml` and `src/platform/linux/text_system.rs`:
+
+- cosmic-text's `shape-run-cache` feature is enabled, so Linux shaping reuses
+  per-word results. GPUI's own line layout cache keeps only the previous
+  frame, so every channel switch reshaped all newly visible log lines, taking
+  roughly 0.1–0.3 ms per line (about 10–20 ms per switch). The cache is swept
+  every 128 shaped lines, dropping words unused for four sweeps; cosmic-text
+  never evicts on its own. Measured in a Debian container: 60 new mixed lines
+  ~10 ms → ~2 ms, 60 lines shown again ~10 ms → ~0.8 ms, at most ~8 MB extra.
+
 In `src/taffy.rs`, the grid `minmax(length(0.0), fr(1.0))` literals are typed
 as `f32`, fixing the `float_literal_f32_fallback` future-incompatibility warning
 emitted by newer rustc (seen with 1.98).

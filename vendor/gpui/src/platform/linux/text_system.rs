@@ -21,6 +21,13 @@ use std::{borrow::Cow, sync::Arc};
 
 pub(crate) struct CosmicTextSystem(RwLock<CosmicTextSystemState>);
 
+/// Lines shaped between sweeps of cosmic-text's word shaping cache.
+const SHAPE_RUN_CACHE_TRIM_INTERVAL: usize = 128;
+/// Sweeps a cached word survives without being used again. Together with the
+/// interval this keeps words from roughly the last 500–640 shaped lines, about
+/// 8 MB at most for varied mixed Japanese/English text.
+const SHAPE_RUN_CACHE_KEEP_AGES: u64 = 4;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FontKey {
     family: SharedString,
@@ -42,6 +49,8 @@ struct CosmicTextSystemState {
     /// Caches the `FontId`s associated with a specific family to avoid iterating the font database
     /// for every font face in a family.
     font_ids_by_family_cache: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+    /// Lines shaped since the word shaping cache was last swept.
+    lines_since_trim: usize,
 }
 
 struct LoadedFont {
@@ -61,6 +70,7 @@ impl CosmicTextSystem {
             scratch: ShapeBuffer::default(),
             loaded_fonts: Vec::new(),
             font_ids_by_family_cache: HashMap::default(),
+            lines_since_trim: 0,
         }))
     }
 }
@@ -392,6 +402,17 @@ impl CosmicTextSystemState {
             offs += run.len;
         }
 
+        // Shaping is cached per word (the `shape-run-cache` feature), so lines
+        // that GPUI's frame-to-frame layout cache has dropped, such as those of
+        // a log pane shown again after switching channels, reuse earlier work.
+        // cosmic-text never evicts on its own; sweep unused words periodically.
+        self.lines_since_trim += 1;
+        if self.lines_since_trim >= SHAPE_RUN_CACHE_TRIM_INTERVAL {
+            self.lines_since_trim = 0;
+            self.font_system
+                .shape_run_cache
+                .trim(SHAPE_RUN_CACHE_KEEP_AGES);
+        }
         let line = ShapeLine::new(
             &mut self.font_system,
             text,
