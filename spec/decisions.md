@@ -240,3 +240,27 @@ fix is broader, so Windows hardware validation remains required. Do not claim
 Windows IME is fixed from a macOS build.
 
 Source: [upstream Windows input/IME fix](https://github.com/zed-industries/zed/pull/41259).
+
+## D013 — Keyboard settings tab and GTK Emacs key theme
+
+**Status:** Accepted
+
+GPUI draws its own text input, so GTK's `gtk-key-theme=Emacs` never reaches the
+draft on Linux. Key preferences move to a separate Keyboard settings tab, shown
+on Windows and Linux only because macOS has no choices there: the channel-number
+modifier (D009) and, on Linux, draft editing keys with Follow GTK (default),
+Standard and Emacs. Follow GTK reads `gtk-key-theme` from the XDG desktop
+portal's `org.gnome.desktop.interface` namespace and rebinds live when it
+changes; where the portal lacks the key (for example non-GNOME backends) it
+falls back to `gtk-key-theme-name` in `$XDG_CONFIG_HOME/gtk-3.0/settings.ini`.
+GTK 4 dropped key themes, so only the GTK 3 setting is consulted.
+
+Emacs mode mirrors GTK 3's `gtk-keys.css.emacs` for GtkEntry: Ctrl+B/F/A/E
+(with Shift to select), Alt+B/F (with Shift), Ctrl+D/H, Alt+D, Ctrl+K, Ctrl+U
+(whole line), Ctrl+W cut, Ctrl+Y paste, Alt+\\ delete surrounding whitespace
+and Alt+Space collapse it to one space. As in GTK, Select All moves to Ctrl+/
+and Ctrl+Y no longer redoes (Ctrl+Shift+Z still does). Ctrl+W/Y use the system
+clipboard, not an Emacs kill ring. Alt chords do not reveal the in-window menu
+bar, which only reacts to Alt pressed alone.
+
+Source: [GTK 3 Emacs key theme](https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gtk/gtk-keys.css.emacs).
