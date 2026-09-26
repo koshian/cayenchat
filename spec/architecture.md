@@ -46,7 +46,7 @@ Secrets never enter the preferences file.
 ### upload
 
 IRC's external image hosting: the `ExternalUploader` trait, provider
-registry, provider implementations (Gyazo) and a fake for tests. It is not
+registry, provider implementations (ImgBB) and a fake for tests. It is not
 part of the IRC wire implementation and must not depend on GPUI or `irc`.
 Protocols with native media must not route through it.
 

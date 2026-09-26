@@ -224,14 +224,18 @@ this delay.
    saved entries while the system store no longer does; switch back. On a Linux
    session without a Secret Service, the status must say it is unavailable and
    the local file must still work.
-8. In **画像アップロード**, select Gyazo, connect with a test account's token, and
-   paste a screenshot into a channel draft: the confirmation must name Gyazo,
+8. In **画像アップロード**, select ImgBB, connect with a test account's API key,
+   and paste a screenshot (`Cmd+Ctrl+Shift+4`) into a channel draft: the
+   confirmation must name ImgBB,
    Cancel must leave the draft unchanged, and Upload must show progress and then
-   insert an `https://i.gyazo.com/…` link without sending. Drop a PNG on the
+   insert an `https://i.ibb.co/…` link without sending. Drop a PNG on the
    draft row for the same flow; drop a text file and two files for the refusals.
    Paste plain text to confirm ordinary paste. Disconnect the account and paste
    again for the reconnect guidance; select None for the configure guidance.
-   Use a revoked token for the authentication-failure prompt.
+   Use a wrong key for the authentication-failure prompt. On macOS, drag a
+   HEIC photo from Photos and a screenshot thumbnail onto the draft row; both
+   must reach the confirmation, and `$TMPDIR/gpui-file-promises/` must be
+   empty afterwards.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log still uses clicks
@@ -493,7 +497,7 @@ with `0600`/`0700` permissions and re-tightening, sanitized errors, XDG path
 rules, redacted `Debug` output, settings version 11 migration (username from
 nickname, plaintext passwords moved to the store or to the local file when the
 system store is unavailable, never re-serialized), USER/NICK/PASS/SASL on the
-wire in local `irc-core` fixtures, Gyazo multipart construction and reply
+wire in local `irc-core` fixtures, multipart construction, ImgBB reply
 mapping, the attachment state machine, and GPUI tests for text paste, image
 paste, drop, confirmation/cancel, configure/reconnect guidance, failed upload
 and link insertion without sending, using a fake uploader and an in-memory
@@ -503,5 +507,5 @@ available on macOS; in a Debian bookworm container without D-Bus it reported
 (aarch64, rustc 1.98.1) the non-GUI crate tests and the 30 UI tests passed, and
 workspace Clippy was
 clean apart from the existing `proc-macro-error2` future-incompatibility note.
-No real Gyazo upload, Windows build, Secret Service desktop (GNOME Keyring or
+No real ImgBB upload, Photos drag, Windows build, Secret Service desktop (GNOME Keyring or
 KWallet) or GUI interaction was exercised.

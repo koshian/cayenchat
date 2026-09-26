@@ -320,27 +320,42 @@ client must upload through Matrix's native media API and emit image events; it
 must not implement `ExternalUploader` or route through `upload`. There is no
 universal "uploader" abstraction.
 
-First provider: **Gyazo**. Its upload API (`POST
-https://upload.gyazo.com/api/upload`, multipart `access_token` + `imagedata`
-with a filename, JSON reply with `url`) is documented, and its access tokens do
-not expire. Its OAuth flow exchanges the code with `client_secret`, which an
-open-source desktop client cannot keep private, but the developer dashboard
-lets each user create an application and generate their own access token.
-CayenChat therefore asks the user to paste that token (a genuine
-provider requirement, explained in the UI), ships no client ID or secret, and
-sends the token in the multipart body rather than a header or URL. Uploads use
-Gyazo's default `access_policy=anyone` (anyone with the link can view), which
-IRC recipients need; the UI says links are viewable outside the channel.
-Imgur was not chosen: authenticated uploads need a registered client, access
-tokens expire after about an hour, and refreshing them requires the client
-secret. HTTP uses `ureq` 3 (blocking, rustls/ring, no redirects for uploads,
-64 KiB reply limit) on GPUI's background executor.
+First provider: **ImgBB** (2026-09-26). `POST https://api.imgbb.com/1/upload`
+takes `key` (the account's API key, shown after signing in at
+api.imgbb.com) and `image` (up to 32 MB; imgbb.com's configuration states
+32,000,000 bytes and lists HEIC/HEIF/AVIF/WebP among accepted types). The JSON
+reply carries `data.url`, the direct image link. An invalid key is answered
+with HTTP 400 and error code 100 (observed with a dummy key), mapped to the
+reconnect prompt. The key is a per-account credential the user pastes; no
+application registration or client secret exists, and none is shipped. The
+docs show the key in the query string; CayenChat sends it in the multipart
+body so it never appears in URLs. The optional `expiration` is not set.
+Whether a real key is accepted in the body was not verified with a real
+account (only the invalid-key response); if it is not, move it to the query.
 
-The Gyazo site was under maintenance during this work; the API pages were
-read from the Internet Archive copies dated 2025–2026.
+Rejected first providers:
 
-Sources: [Gyazo API overview](https://gyazo.com/api/docs),
-[Gyazo image/upload API](https://gyazo.com/api/docs/image),
-[Gyazo authentication](https://gyazo.com/api/docs/auth),
-[Gyazo errors](https://gyazo.com/api/docs/errors),
-[Imgur OAuth 2 (imgurpython README)](https://github.com/Imgur/imgurpython/blob/master/README.md).
+- Gyazo (implemented first, then replaced): its documented upload API uses a
+  per-user access token, but gyazo.com and upload.gyazo.com were in
+  maintenance (HTTP 502) throughout this work.
+- Imgur: authenticated uploads need a registered client (`client_id` and
+  `client_secret`); `api.imgur.com/oauth2/addclient` now redirects to the home
+  page (new registrations have been unavailable since about December 2025),
+  access tokens expire after a month and refreshing needs the client secret.
+
+Adding a provider: a module in `crates/upload` using the shared `http`
+helpers, an entry in `providers()` (ID, name, setup URL, size limit) and
+`connect()`, and an `image_setup_<id>` locale string. HTTP uses `ureq` 3
+(blocking, rustls/ring, no redirects, 64 KiB reply limit) on GPUI's background
+executor.
+
+Attachments are recognized by content (PNG, JPEG, GIF, WebP, BMP, TIFF, and
+HEIC/HEIF/AVIF via ISO base media `ftyp` brands). On macOS the vendored GPUI
+accepts file-promise drags (Photos, Mail, screenshot thumbnail), which
+upstream refused; see `vendor/gpui/PATCHES.md`.
+
+Sources: [ImgBB API](https://api.imgbb.com/),
+[Gyazo API overview](https://gyazo.com/api/docs),
+[Imgur API documentation](https://apidocs.imgur.com/),
+[Tautulli issue on Imgur registration](https://github.com/Tautulli/Tautulli/issues/2620),
+[NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver).

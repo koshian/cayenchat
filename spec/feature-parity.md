@@ -91,9 +91,9 @@ History and notifications remain TODO.
 
 ## Attachments
 
-- DONE — paste an image-only clipboard or drop one image file on the draft row; both share one flow
+- DONE — paste an image-only clipboard (including screenshots) or drop one image file on the draft row; both share one flow. HEIC/HEIF/AVIF are recognized, and on macOS Photos/Mail/screenshot-thumbnail file-promise drags are accepted
 - DONE — confirmation before upload naming the provider and the public-link consequence; guidance to settings when no provider or account is configured, and to reconnect after an authentication failure
-- DONE — Gyazo external upload with progress, cancel (abandons the wait), network/auth/rejection handling; the link is inserted into the originating draft and never sent automatically
+- DONE — ImgBB external upload with progress, cancel (abandons the wait), network/auth/rejection handling; the link is inserted into the originating draft and never sent automatically
 - TODO — inline display of image links in the chat log (with a remote-loading preference and fetch limits)
 - TODO — clipboard file references (copied files) as attachments; they paste as text today
 - OUT OF SCOPE (for now) — video/audio attachments, a transfer manager, Matrix native media
@@ -116,7 +116,7 @@ History and notifications remain TODO.
 - DONE — single-network connection settings with a server drop-down, multiple saved custom profiles, per-profile host/port/TLS/certificate verification/encoding and optional server password
 - DONE — persisted nickname, independent IRC `USER` username and optional SASL account name; per-server server/SASL password persistence in the credential store (system store, or an explicitly chosen local file after a plaintext warning), with immediate deletion when disabled
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
-- DONE — Image Upload tab: provider None/Gyazo, connect/reconnect/disconnect account (personal access token)
+- DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
 - DONE — settings open in a separate window; closing it leaves the chat window running
 - DONE — persisted channel auto-join list
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
