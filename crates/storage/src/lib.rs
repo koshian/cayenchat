@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-const SETTINGS_VERSION: u32 = 9;
+const SETTINGS_VERSION: u32 = 10;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -24,6 +24,27 @@ pub enum TextEncoding {
     Iso2022Jp,
     ShiftJis,
     EucJp,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// Display server for Linux builds, applied at startup. Wayland keeps native
+/// input methods and fractional scaling; X11 (XWayland on Wayland desktops)
+/// lets the window manager draw a themed title bar where the compositor does
+/// not offer server-side decorations, such as GNOME.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinuxDisplay {
+    #[default]
+    Wayland,
+    X11,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +86,33 @@ pub struct Appearance {
     pub channel_font: String,
     pub input_font: String,
     pub time_font: String,
+    /// Pane colors used while the dark theme is active; the flat fields above
+    /// are the light theme's.
+    pub dark: DarkColors,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DarkColors {
+    pub member_list_background: String,
+    pub main_log_background: String,
+    pub main_log_alternate: String,
+    pub channel_event_color: String,
+    pub sub_log_background: String,
+    pub sub_log_alternate: String,
+}
+
+impl Default for DarkColors {
+    fn default() -> Self {
+        Self {
+            member_list_background: "#1F2124".into(),
+            main_log_background: "#1F2124".into(),
+            main_log_alternate: "#272B31".into(),
+            channel_event_color: "#6CC46C".into(),
+            sub_log_background: "#24272B".into(),
+            sub_log_alternate: "#2C3036".into(),
+        }
+    }
 }
 
 impl Default for Appearance {
@@ -83,6 +131,7 @@ impl Default for Appearance {
             channel_font: String::new(),
             input_font: String::new(),
             time_font: String::new(),
+            dark: DarkColors::default(),
         }
     }
 }
@@ -96,6 +145,12 @@ impl Appearance {
             ("Channel event", &self.channel_event_color),
             ("Sub log", &self.sub_log_background),
             ("Sub alternate", &self.sub_log_alternate),
+            ("Dark member list", &self.dark.member_list_background),
+            ("Dark main log", &self.dark.main_log_background),
+            ("Dark main alternate", &self.dark.main_log_alternate),
+            ("Dark channel event", &self.dark.channel_event_color),
+            ("Dark sub log", &self.dark.sub_log_background),
+            ("Dark sub alternate", &self.dark.sub_log_alternate),
         ] {
             if color_value(value).is_none() {
                 return Err(format!("{label} color must be #RRGGBB."));
@@ -159,6 +214,8 @@ pub struct Settings {
     pub sasl_username: String,
     pub connect_on_startup: bool,
     pub language: Language,
+    pub theme: ThemeMode,
+    pub linux_display: LinuxDisplay,
     pub appearance: Appearance,
 }
 
@@ -177,6 +234,8 @@ impl Default for Settings {
             sasl_username: String::new(),
             connect_on_startup: false,
             language: Language::System,
+            theme: ThemeMode::System,
+            linux_display: LinuxDisplay::Wayland,
             appearance: Appearance::default(),
         }
     }
@@ -393,7 +452,7 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=9) => serde_json::from_value::<Settings>(value)
+        Some(2..=10) => serde_json::from_value::<Settings>(value)
             .map(Settings::normalize)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
         _ => return Err(format!("Unsupported settings version: {version:?}")),
@@ -466,7 +525,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -488,7 +547,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert!(
             settings
                 .servers
@@ -517,7 +576,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert!(
             settings
                 .servers
@@ -535,7 +594,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -578,7 +637,7 @@ mod tests {
         old["appearance"]["channel_event_color"] = "#3B7655".into();
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert_eq!(settings.appearance.channel_event_color, "#007D00");
 
         old["appearance"]["channel_event_color"] = "#246843".into();
@@ -601,7 +660,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert!(!settings.connect_on_startup);
         settings.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
@@ -618,7 +677,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 9);
+        assert_eq!(settings.version, 10);
         assert_eq!(settings.language, Language::System);
         settings.language = Language::English;
         save_to(&path, &settings).unwrap();
@@ -683,5 +742,31 @@ mod tests {
                 .selected_profile()
                 .remember_passwords
         );
+    }
+
+    #[test]
+    fn version_nine_gains_theme_dark_colors_and_display_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(
+            &path,
+            r##"{"version":9,"selected_server":"ircnet","servers":[],"appearance":{"main_log_background":"#FAFAFA"}}"##,
+        )
+        .unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, 10);
+        assert_eq!(settings.theme, ThemeMode::System);
+        assert_eq!(settings.linux_display, LinuxDisplay::Wayland);
+        assert_eq!(settings.appearance.main_log_background, "#FAFAFA");
+        assert_eq!(settings.appearance.dark, DarkColors::default());
+
+        settings.theme = ThemeMode::Dark;
+        settings.linux_display = LinuxDisplay::X11;
+        settings.appearance.dark.main_log_background = "#101010".into();
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+
+        settings.appearance.dark.sub_log_alternate = "gray".into();
+        assert!(settings.appearance.validate().is_err());
     }
 }

@@ -249,6 +249,7 @@ impl SettingsForm {
             channel_font: value(&self.channel_font),
             input_font: value(&self.input_font),
             time_font: value(&self.time_font),
+            dark: self.values.appearance.dark.clone(),
         };
         settings.appearance.validate()?;
         Ok(settings)
