@@ -242,7 +242,7 @@ mod tests {
 
     fn ready() -> UploaderReadiness {
         UploaderReadiness::Ready {
-            provider: "Gyazo".into(),
+            provider: "ImgBB".into(),
         }
     }
 
@@ -260,11 +260,11 @@ mod tests {
                 image(),
                 TARGET,
                 UploaderReadiness::NeedsAccount {
-                    provider: "Gyazo".into()
+                    provider: "ImgBB".into()
                 }
             ),
             Offer::Reconnect {
-                provider: "Gyazo".into()
+                provider: "ImgBB".into()
             }
         );
         assert!(matches!(flow.phase(), Phase::Idle));
@@ -290,7 +290,7 @@ mod tests {
         let job = flow.confirm().unwrap();
         assert_eq!(job.attachment.name, "shot.png");
         assert!(flow.confirm().is_none(), "one upload per offer");
-        assert_eq!(flow.uploading(), Some("Gyazo"));
+        assert_eq!(flow.uploading(), Some("ImgBB"));
         // A second paste during the upload does not start another one.
         assert_eq!(flow.offer(image(), TARGET, ready()), Offer::Busy);
         assert_eq!(
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(
             flow.finish(job.id, Err(UploadFailure::Authentication)),
             Completion::Failed {
-                provider: "Gyazo".into(),
+                provider: "ImgBB".into(),
                 failure: UploadFailure::Authentication
             }
         );

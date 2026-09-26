@@ -576,8 +576,8 @@ mod tests {
             "connection/ircnet/sasl-password"
         );
         assert_eq!(
-            SecretKey::uploader_token("gyazo").name(),
-            "uploader/gyazo/default/credential"
+            SecretKey::uploader_token("imgbb").name(),
+            "uploader/imgbb/default/credential"
         );
     }
 
@@ -612,7 +612,7 @@ mod tests {
         let keys = [
             SecretKey::server_password("ircnet"),
             SecretKey::sasl_password("ircnet"),
-            SecretKey::uploader_token("gyazo"),
+            SecretKey::uploader_token("imgbb"),
         ];
         system.set(&keys[0], &Secret::new("pass")).unwrap();
         system.set(&keys[2], &Secret::new("token")).unwrap();

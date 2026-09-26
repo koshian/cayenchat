@@ -124,6 +124,17 @@ impl ChatWindow {
                 return;
             }
         };
+        if let Some(uploader) = &uploader
+            && attachment.bytes.len() > uploader.provider().max_bytes
+        {
+            let limit = format_size(uploader.provider().max_bytes);
+            self.feedback = Some(
+                self.i18n
+                    .format("upload_failed_too_large", &[("limit", &limit)]),
+            );
+            cx.notify();
+            return;
+        }
         let target = self.state.selection();
         match self.attachments.offer(attachment, target, readiness) {
             Offer::Confirm {
@@ -499,26 +510,44 @@ mod tests {
 
     #[gpui::test]
     fn provider_without_account_guides_to_reconnect(cx: &mut TestAppContext) {
-        let (chat, _, store, cx) = open_chat(cx, None, Some("gyazo"));
+        let (chat, _, store, cx) = open_chat(cx, None, Some("imgbb"));
         cx.write_to_clipboard(image_clipboard());
         cx.dispatch_action(crate::input::Paste);
         cx.run_until_parked();
         let (title, _) = cx.pending_prompt().expect("account guidance");
-        assert!(title.contains("Gyazo"), "{title}");
+        assert!(title.contains("ImgBB"), "{title}");
         cx.simulate_prompt_answer("Cancel");
         cx.run_until_parked();
         // With a saved token the same paste asks for upload confirmation.
         store
-            .set(&SecretKey::uploader_token("gyazo"), &Secret::new("token"))
+            .set(&SecretKey::uploader_token("imgbb"), &Secret::new("token"))
             .unwrap();
         cx.dispatch_action(crate::input::Paste);
         cx.run_until_parked();
         let (title, detail) = cx.pending_prompt().expect("confirmation");
-        assert!(title.starts_with("Upload this image to Gyazo"), "{title}");
+        assert!(title.starts_with("Upload this image to ImgBB"), "{title}");
         assert!(detail.contains("outside this channel"));
         cx.simulate_prompt_answer("Cancel");
         cx.run_until_parked();
         assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_none()));
+    }
+
+    #[gpui::test]
+    fn images_over_the_provider_limit_are_refused_before_confirmation(cx: &mut TestAppContext) {
+        let fake = Arc::new(FakeUploader::succeeding(URL));
+        let (chat, _, _, cx) = open_chat(cx, Some(fake.clone()), None);
+        let mut big = PNG.to_vec();
+        big.resize(100, 0);
+        cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
+            ImageFormat::Png,
+            big,
+        )));
+        cx.dispatch_action(crate::input::Paste);
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(fake.calls(), 0);
+        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone()).unwrap();
+        assert!(feedback.contains("64 B"), "{feedback}");
     }
 
     #[gpui::test]

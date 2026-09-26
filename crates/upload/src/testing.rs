@@ -13,6 +13,7 @@ pub const FAKE_PROVIDER: ProviderInfo = ProviderInfo {
     id: "fake",
     name: "Fake Host",
     setup_url: "https://example.invalid/setup",
+    max_bytes: 64,
 };
 
 /// Returns `result` for every upload and counts the calls.

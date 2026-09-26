@@ -7,14 +7,18 @@
 //! must not route through it.
 //!
 //! Providers implement [`ExternalUploader`]; the UI selects them by the
-//! string IDs in [`providers`] and never sees provider-specific types.
+//! string IDs in [`providers`] and never sees provider-specific types. To add
+//! a provider, add a module using the `http` helpers, list its [`ProviderInfo`]
+//! in [`providers`], construct it in [`connect`], and add its setup text
+//! (`image_setup_<id>`) to the locale catalogs.
 
 use std::{fmt, sync::Arc};
 
 use cayenchat_model::attachment::Attachment;
 use cayenchat_storage::Secret;
 
-mod gyazo;
+mod http;
+mod imgbb;
 pub mod testing;
 
 /// Static description of a hosting provider.
@@ -26,11 +30,13 @@ pub struct ProviderInfo {
     pub name: &'static str,
     /// Page where the user creates the credential CayenChat needs.
     pub setup_url: &'static str,
+    /// Largest upload the provider accepts, in bytes.
+    pub max_bytes: usize,
 }
 
 /// Providers available for selection.
 pub fn providers() -> &'static [ProviderInfo] {
-    &[gyazo::INFO]
+    &[imgbb::INFO]
 }
 
 pub fn provider(id: &str) -> Option<&'static ProviderInfo> {
@@ -40,7 +46,7 @@ pub fn provider(id: &str) -> Option<&'static ProviderInfo> {
 /// An uploader for `provider` authenticated with `credential`.
 pub fn connect(provider: &str, credential: Secret) -> Option<Arc<dyn ExternalUploader>> {
     match provider {
-        gyazo::ID => Some(Arc::new(gyazo::Gyazo::new(credential))),
+        imgbb::ID => Some(Arc::new(imgbb::ImgBb::new(credential))),
         _ => None,
     }
 }
@@ -96,20 +102,20 @@ mod tests {
 
     #[test]
     fn registry_resolves_known_providers_only() {
-        assert_eq!(provider("gyazo").unwrap().name, "Gyazo");
-        assert!(provider("imgur").is_none());
-        assert!(connect("gyazo", Secret::new("token")).is_some());
+        assert_eq!(provider("imgbb").unwrap().name, "ImgBB");
+        assert!(provider("gyazo").is_none());
+        assert!(connect("imgbb", Secret::new("key")).is_some());
         assert!(connect("unknown", Secret::new("token")).is_none());
     }
 
     #[test]
     fn inserted_links_must_be_plain_https() {
         assert_eq!(
-            checked_url("https://i.gyazo.com/a.png").as_deref(),
-            Some("https://i.gyazo.com/a.png")
+            checked_url("https://i.ibb.co/a.png").as_deref(),
+            Some("https://i.ibb.co/a.png")
         );
         for bad in [
-            "http://i.gyazo.com/a.png",
+            "http://i.ibb.co/a.png",
             "file:///etc/passwd",
             "https://",
             "https://a b",
