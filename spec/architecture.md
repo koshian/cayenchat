@@ -13,6 +13,7 @@ crates/
   model/
   irc-core/
   storage/
+  upload/
   app/
   ui/
 ```
@@ -38,6 +39,16 @@ Must not depend on GPUI.
 Persistent configuration, preferences, and history/log storage.
 
 Persistent formats should be explicit and versionable.
+
+Also owns the application's only credential store (`storage::credentials`).
+Secrets never enter the preferences file.
+
+### upload
+
+IRC's external image hosting: the `ExternalUploader` trait, provider
+registry, provider implementations (ImgBB) and a fake for tests. It is not
+part of the IRC wire implementation and must not depend on GPUI or `irc`.
+Protocols with native media must not route through it.
 
 ### app
 
@@ -140,8 +151,9 @@ The visual treatment should follow `spec/project.md`: compact, direct, and Choco
 
 ## Current implementation
 
-The five workspace members use the `cayenchat-` package prefix. Dependencies include
-`ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, and `irc-core -> irc/Tokio`.
+The six workspace members use the `cayenchat-` package prefix. Dependencies include
+`ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> upload ->
+storage/model`, `storage -> keyring`, `upload -> ureq` and `irc-core -> irc/Tokio`.
 There are no dependency cycles and GPUI occurs only in `ui`.
 
 `irc-core::Connection` owns a dedicated current-thread Tokio runtime. It translates
@@ -165,7 +177,10 @@ custom saved colors remain. Version 9 changes the default channel event text col
 to `#007D00`; the previous default migrates while custom colors remain. Version 10
 adds a theme preference (System, Light or Dark), a dark-theme set of the six pane
 colors beside the existing light ones, and a Linux display server choice; older
-settings default to System, the dark defaults and Wayland. The UI keeps the
+settings default to System, the dark defaults and Wayland. Version 11 adds the
+`USER` username (migrated from the old nickname, which earlier versions sent as
+USER), the credential backend choice and the image upload provider, and stops
+reading passwords from the file except to migrate them. The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -207,10 +222,13 @@ selecting an action or clicking outside dismisses it. Action availability is
 queried only after the menu is revealed: GPUI has no rendered dispatch tree
 during the first frame, so querying it while the initially hidden menu renders
 would panic on startup. macOS retains native menus.
-Passwords persist per server only after explicit plaintext confirmation;
-turning saving off immediately removes stored values. TLS certificate verification
+Passwords persist per server only when password saving is on for that server,
+and only through the credential store (see Credentials below); turning saving
+off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
-requires TLS before sending either server PASS or SASL PLAIN credentials. The core supports one connection, auto-join, channel
+requires TLS before sending either server PASS or SASL PLAIN credentials. The nickname (`NICK`), the `USER` username and the SASL account are separate
+settings; `ConnectionConfig` carries the username explicitly and its `Debug`
+output redacts both passwords. The core supports one connection, auto-join, channel
 messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands. Its SASL state
 machine negotiates CAP, sends PLAIN credentials, and waits for success before
 ending CAP negotiation. The UI retains the active connection configuration and
@@ -297,3 +315,82 @@ mock for tests. `ui::ChatWindow` maps GPUI key actions to
 navigation and send commands. GPUI entities retain separate server/channel draft
 editing, selection, nickname completion and IME state. No `irc` library types enter
 application state or rendering components.
+
+## Credentials
+
+```text
+settings / IRC connect / image upload UI
+        |
+        v
+ui::secrets (GPUI global holding the one CredentialStore)
+        |
+        v
+storage::credentials::CredentialStore
+        |
+        +-- SystemBackend: keyring crate -> Keychain / Credential Manager /
+        |                  freedesktop Secret Service (zbus, pure Rust)
+        +-- LocalFileBackend: credentials.json, 0600, atomic replace
+        +-- MemoryBackend: tests
+```
+
+Secrets are addressed by `SecretKey`, whose names come from stable internal
+IDs: `connection/<profile-id>/server-password`,
+`connection/<profile-id>/sasl-password` and
+`uploader/<provider-id>/<account>/credential`. Profile IDs are the existing
+`ircnet`, `ircnet-ipv6` and `custom-N`; saving settings deletes the secrets of
+removed profiles so a reused `custom-N` cannot inherit them. `Secret` redacts
+its `Debug` output and zeroes its buffer on drop (best effort). Credential
+errors are mapped to sanitized text; keyring payloads, which may contain secret
+bytes, are dropped. The settings file records only the backend choice
+(`credential_backend`) and per-profile `remember_passwords`.
+
+The backend is chosen explicitly (settings version 11, default System). Opening
+never falls back to another backend. The Credential Storage tab probes the
+system store on a background task (D-Bus may be slow) and offers the local file
+when it is unavailable; switching requires confirmation for the local file and
+moves known secrets (`migrate` copies all, then deletes the originals). On
+startup, plaintext passwords read from version 10 and earlier move into the
+store before any window opens; only if the system store is unavailable do they
+go to the local file, because the user had already accepted plaintext storage
+for them. The settings form never shows saved passwords: fields start empty,
+typing replaces the saved value, and a typed value wins for the connection.
+
+The UI's stderr logger keeps `ureq`, `rustls` and keyring crates at warning
+level even under `RUST_LOG=debug`. There are no crash diagnostics; the copied
+connection transcript masks credential commands as before.
+
+## Attachments and image sharing
+
+```text
+image paste (draft TextInput propagates image-only Paste)   file drop on draft row
+                         \                                   /
+                          v                                 v
+                 ui::image_upload -> model::Attachment (sniffed, 32 MiB guard)
+                          |
+                          v
+           app::attachments::AttachmentFlow  (GPUI-free state machine)
+             offer -> Configure | Reconnect | Confirm | Busy
+             confirm -> UploadJob (once) ; finish -> InsertLink | Failed | Ignored
+                          |
+                          v   (IRC only)
+           upload::ExternalUploader (background executor, blocking HTTPS)
+                          |
+                          v
+           link inserted at the originating draft's cursor; never sent
+```
+
+Text on the clipboard always pastes as text; only an image-only clipboard in a
+draft reaches the flow. Paste and drop share the flow and the prompts
+(confirmation naming the provider and the public-link consequences, setup
+guidance, reconnect guidance after an authentication failure). The flow allows
+one upload at a time; cancelling abandons the wait but cannot recall a request
+already sent. The UI knows providers only by registry ID and display name.
+
+Matrix support, if added, keeps the shared parts (`model::Attachment`, the
+selection-to-attachment UI actions and the confirmation/progress presentation)
+but replaces the transport step with the Matrix client's native media upload
+producing an `m.image` event. It must not implement or call
+`ExternalUploader`, and `upload` must not grow Matrix types. Inline display of
+image links is not implemented; it should consume URLs (IRC) or media events
+(Matrix) through a separate display layer, with a remote-loading preference,
+HTTP(S)-only fetching, size and redirect limits, and decoding off the UI thread.

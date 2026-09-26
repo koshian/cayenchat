@@ -158,9 +158,9 @@ Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
 platform user configuration directory. Default to `irc.ircnet.ne.jp:6667`
 without TLS, offer `irc6.ircnet.ne.jp`, and allow custom host/port and TLS.
-Password saving is per server and off by default. Before enabling it, display a
-confirmation that server and SASL passwords are stored as plaintext; switching
-it off immediately removes those stored values. Require TLS whenever sending
+Password saving is per server and off by default; switching it off
+immediately removes those stored values. (Where passwords are stored is now
+D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. Support SASL PLAIN through IRCv3
 CAP negotiation in `irc-core`. The initial implementation covers one network
@@ -264,3 +264,98 @@ clipboard, not an Emacs kill ring. Alt chords do not reveal the in-window menu
 bar, which only reacts to Alt pressed alone.
 
 Source: [GTK 3 Emacs key theme](https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gtk/gtk-keys.css.emacs).
+
+## D014 — Credential storage
+
+**Status:** Accepted
+
+All secrets (IRC `PASS`, SASL passwords, image uploader tokens and future
+credentials) go through one `storage::credentials::CredentialStore`. UI, IRC
+and provider code never store secrets themselves, and the preferences file
+never contains them.
+
+Backends: the OS store through `keyring` 4.2 (`v1` feature: Keychain on macOS,
+Credential Manager on Windows, freedesktop Secret Service via the pure-Rust
+zbus client on Linux/BSD, reusing the zbus already in GPUI's tree; it resolves
+under Rust 1.88), and an explicit local file. `keyring` is maintained and
+covers all three targets; no separate crate was needed.
+
+The local file (`$XDG_CONFIG_HOME/cayenchat/credentials.json`, falling back to
+`~/.config/cayenchat/`, on Linux; the CayenChat config directory elsewhere) is
+unencrypted. Encrypting it with a key kept on the same disk would give no real
+protection, and a user passphrase would add an unlock step for little gain for
+an IRC client; the UI states the trade-off instead. It is `0600` in a `0700`
+directory, written via a fresh `0600` temporary file and rename, and its
+permissions are tightened before reading if found looser. It exists because
+Linux desktops without a Secret Service must keep working.
+
+Rules: the backend is an explicit setting (default System); nothing falls back
+silently; choosing the local file needs confirmation; switching migrates known
+secrets. The one automatic move is migrating version ≤10 plaintext passwords
+out of `settings.json`: into the chosen store, or into the local file only if
+the system store is unavailable, since those passwords were already plaintext
+with the user's consent. Keys use stable internal IDs, never nicknames,
+hostnames or display names. `Secret`, `ConnectionConfig` and `SaslCredentials`
+redact their `Debug` output; credential errors carry sanitized text only.
+
+Sources: [keyring 4.2 crate](https://crates.io/crates/keyring),
+[keyring-rs wiki](https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring),
+[XDG Base Directory specification](https://specifications.freedesktop.org/basedir-spec/latest/),
+[freedesktop Secret Service API](https://specifications.freedesktop.org/secret-service-spec/latest/).
+
+## D015 — IRC image sharing through an external uploader
+
+**Status:** Accepted
+
+IRC carries only text, so images are uploaded to a hosting account the user
+owns and the link is inserted into the draft; the user sends it. Uploading is
+disabled until a provider is chosen and an account connected, always asks
+before an image leaves the computer, and never sends the IRC message.
+Anonymous public upload services are not offered.
+
+Boundaries: `model::Attachment` is protocol-neutral; `app::attachments` is the
+GPUI-free flow shared by paste and drop; `upload::ExternalUploader` is the IRC
+transport only. The UI refers to providers by registry ID. A future Matrix
+client must upload through Matrix's native media API and emit image events; it
+must not implement `ExternalUploader` or route through `upload`. There is no
+universal "uploader" abstraction.
+
+First provider: **ImgBB** (2026-09-26). `POST https://api.imgbb.com/1/upload`
+takes `key` (the account's API key, shown after signing in at
+api.imgbb.com) and `image` (up to 32 MB; imgbb.com's configuration states
+32,000,000 bytes and lists HEIC/HEIF/AVIF/WebP among accepted types). The JSON
+reply carries `data.url`, the direct image link. An invalid key is answered
+with HTTP 400 and error code 100 (observed with a dummy key), mapped to the
+reconnect prompt. The key is a per-account credential the user pastes; no
+application registration or client secret exists, and none is shipped. The
+docs show the key in the query string; CayenChat sends it in the multipart
+body so it never appears in URLs. The optional `expiration` is not set.
+Whether a real key is accepted in the body was not verified with a real
+account (only the invalid-key response); if it is not, move it to the query.
+
+Rejected first providers:
+
+- Gyazo (implemented first, then replaced): its documented upload API uses a
+  per-user access token, but gyazo.com and upload.gyazo.com were in
+  maintenance (HTTP 502) throughout this work.
+- Imgur: authenticated uploads need a registered client (`client_id` and
+  `client_secret`); `api.imgur.com/oauth2/addclient` now redirects to the home
+  page (new registrations have been unavailable since about December 2025),
+  access tokens expire after a month and refreshing needs the client secret.
+
+Adding a provider: a module in `crates/upload` using the shared `http`
+helpers, an entry in `providers()` (ID, name, setup URL, size limit) and
+`connect()`, and an `image_setup_<id>` locale string. HTTP uses `ureq` 3
+(blocking, rustls/ring, no redirects, 64 KiB reply limit) on GPUI's background
+executor.
+
+Attachments are recognized by content (PNG, JPEG, GIF, WebP, BMP, TIFF, and
+HEIC/HEIF/AVIF via ISO base media `ftyp` brands). On macOS the vendored GPUI
+accepts file-promise drags (Photos, Mail, screenshot thumbnail), which
+upstream refused; see `vendor/gpui/PATCHES.md`.
+
+Sources: [ImgBB API](https://api.imgbb.com/),
+[Gyazo API overview](https://gyazo.com/api/docs),
+[Imgur API documentation](https://apidocs.imgur.com/),
+[Tautulli issue on Imgur registration](https://github.com/Tautulli/Tautulli/issues/2620),
+[NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver).

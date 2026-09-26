@@ -1,4 +1,6 @@
 //! Application state and commands, independent of any rendering framework.
+pub mod attachments;
+
 use std::collections::{HashMap, HashSet};
 
 use cayenchat_model::{Conversation, ConversationId, Message, Network, NetworkId, TimeOfDay};

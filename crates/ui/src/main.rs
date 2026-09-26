@@ -1,22 +1,26 @@
+mod account_settings;
 mod decorations;
 mod desktop;
 mod diagnostics;
+mod image_upload;
 mod input;
 mod localization;
 mod log_list;
 mod menu_bar;
+mod secrets;
 mod theme;
 mod whois;
 
-use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
+use cayenchat_app::{AppState, Command, ConnectionStatus, Selection, attachments::AttachmentFlow};
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
     WhoisInfo, WireDirection,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
-    Appearance, ChannelNumberModifier, DarkColors, Language, LinuxDisplay, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore, DarkColors,
+    Language, LinuxDisplay, Secret, SecretKey, Settings, TextEncoding, TextKeyTheme, ThemeMode,
+    color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -24,6 +28,7 @@ use localization::Localizer;
 use log_list::LogList;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
@@ -89,10 +94,14 @@ struct SettingsForm {
     custom_host: Entity<TextInput>,
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
+    username: Entity<TextInput>,
     channels: Entity<TextInput>,
+    /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
     sasl_username: Entity<TextInput>,
     sasl_password: Entity<TextInput>,
+    saved_server_password: bool,
+    saved_sasl_password: bool,
     member_list_background: Entity<TextInput>,
     main_log_background: Entity<TextInput>,
     main_log_alternate: Entity<TextInput>,
@@ -114,7 +123,13 @@ struct SettingsForm {
 }
 
 impl SettingsForm {
-    fn new(values: Settings, i18n: &Localizer, cx: &mut Context<SettingsWindow>) -> Self {
+    fn new(
+        values: Settings,
+        i18n: &Localizer,
+        store: &CredentialStore,
+        cx: &mut Context<SettingsWindow>,
+    ) -> Self {
+        let (saved_server_password, saved_sasl_password) = saved_passwords(&values, store);
         let field =
             |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
                 cx.new(|cx| TextInput::new_field(placeholder, value, secret, cx))
@@ -133,14 +148,20 @@ impl SettingsForm {
                 cx,
             ),
             nickname: field(&i18n.text("nickname"), &values.nickname, false, cx),
+            username: field(
+                &i18n.text("username_placeholder"),
+                &values.username,
+                false,
+                cx,
+            ),
             channels: field("#first,#second", &values.channels, false, cx),
             server_password: field(
-                &i18n.text("server_password_placeholder"),
-                values
-                    .selected_profile()
-                    .server_password
-                    .as_deref()
-                    .unwrap_or(""),
+                &i18n.text(if saved_server_password {
+                    "password_saved_placeholder"
+                } else {
+                    "server_password_placeholder"
+                }),
+                "",
                 true,
                 cx,
             ),
@@ -151,15 +172,17 @@ impl SettingsForm {
                 cx,
             ),
             sasl_password: field(
-                &i18n.text("sasl_password"),
-                values
-                    .selected_profile()
-                    .sasl_password
-                    .as_deref()
-                    .unwrap_or(""),
+                &i18n.text(if saved_sasl_password {
+                    "password_saved_placeholder"
+                } else {
+                    "sasl_password"
+                }),
+                "",
                 true,
                 cx,
             ),
+            saved_server_password,
+            saved_sasl_password,
             member_list_background: field(
                 "#FFFFFF",
                 &values.appearance.member_list_background,
@@ -277,14 +300,8 @@ impl SettingsForm {
             profile.host = host;
         }
         profile.port = port;
-        if profile.remember_passwords {
-            profile.server_password = Some(self.server_password.read(cx).text().to_owned());
-            profile.sasl_password = Some(self.sasl_password.read(cx).text().to_owned());
-        } else {
-            profile.server_password = None;
-            profile.sasl_password = None;
-        }
         settings.nickname = self.nickname.read(cx).text().trim().to_owned();
+        settings.username = self.username.read(cx).text().trim().to_owned();
         settings.channels = self.channels.read(cx).text().trim().to_owned();
         settings.sasl_username = self.sasl_username.read(cx).text().trim().to_owned();
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
@@ -315,17 +332,109 @@ impl SettingsForm {
         Ok(settings)
     }
 
-    fn connection_config(&self, settings: &Settings, cx: &App) -> Result<ConnectionConfig, String> {
-        let server_password = self.server_password.read(cx).text();
-        let sasl_password = self.sasl_password.read(cx).text();
-        connection_config(settings, server_password, sasl_password)
+    /// Typed passwords win; otherwise saved ones are used when saving is on.
+    fn connection_config(
+        &self,
+        settings: &Settings,
+        store: &CredentialStore,
+        i18n: &Localizer,
+        cx: &App,
+    ) -> Result<ConnectionConfig, String> {
+        let typed = |field: &Entity<TextInput>| {
+            let text = field.read(cx).text();
+            (!text.is_empty()).then(|| Secret::new(text))
+        };
+        let (saved_server, saved_sasl) = saved_connection_secrets(settings, store, i18n)?;
+        connection_config(
+            settings,
+            typed(&self.server_password).or(saved_server),
+            typed(&self.sasl_password).or(saved_sasl),
+        )
     }
+
+    /// Stores typed passwords when saving is on, then empties the fields so
+    /// plaintext does not stay in the form.
+    fn persist_passwords(
+        &mut self,
+        store: &CredentialStore,
+        i18n: &Localizer,
+        cx: &mut Context<SettingsWindow>,
+    ) -> Result<(), String> {
+        let profile = self.values.selected_profile().clone();
+        if !profile.remember_passwords {
+            return Ok(());
+        }
+        for (field, key, saved) in [
+            (
+                self.server_password.clone(),
+                profile.server_password_key(),
+                &mut self.saved_server_password,
+            ),
+            (
+                self.sasl_password.clone(),
+                profile.sasl_password_key(),
+                &mut self.saved_sasl_password,
+            ),
+        ] {
+            let text = field.read(cx).text().to_owned();
+            if text.is_empty() {
+                continue;
+            }
+            store
+                .set(&key, &Secret::new(text))
+                .map_err(|error| secrets::error_text(i18n, &error))?;
+            *saved = true;
+            let hint = i18n.text("password_saved_placeholder");
+            field.update(cx, |field, cx| {
+                field.set_text("", cx);
+                field.set_placeholder(&hint, cx);
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Whether the selected profile has saved server and SASL passwords.
+fn saved_passwords(settings: &Settings, store: &CredentialStore) -> (bool, bool) {
+    let profile = settings.selected_profile();
+    if !profile.remember_passwords {
+        return (false, false);
+    }
+    let has = |key: SecretKey| store.contains(&key).unwrap_or(false);
+    (
+        has(profile.server_password_key()),
+        has(profile.sasl_password_key()),
+    )
+}
+
+/// Saved passwords for the selected profile, when password saving is on.
+fn saved_connection_secrets(
+    settings: &Settings,
+    store: &CredentialStore,
+    i18n: &Localizer,
+) -> Result<(Option<Secret>, Option<Secret>), String> {
+    let profile = settings.selected_profile();
+    if !profile.remember_passwords {
+        return Ok((None, None));
+    }
+    let get = |key: SecretKey| {
+        store
+            .get(&key)
+            .map_err(|error| secrets::error_text(i18n, &error))
+    };
+    let server = get(profile.server_password_key())?;
+    let sasl = if settings.sasl_enabled {
+        get(profile.sasl_password_key())?
+    } else {
+        None
+    };
+    Ok((server, sasl))
 }
 
 fn connection_config(
     settings: &Settings,
-    server_password: &str,
-    sasl_password: &str,
+    server_password: Option<Secret>,
+    sasl_password: Option<Secret>,
 ) -> Result<ConnectionConfig, String> {
     let profile = settings.selected_profile();
     let mut config = ConnectionConfig::tls(
@@ -333,36 +442,50 @@ fn connection_config(
         settings.nickname.clone(),
         settings.channels(),
     );
+    if settings.username.is_empty() {
+        return Err(i18n_error(settings.language, "username_required"));
+    }
+    config.username = settings.username.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
     config.encoding = profile.encoding.label().into();
-    if !server_password.is_empty() {
-        config.server_password = Some(server_password.to_owned());
+    if let Some(password) = server_password.filter(|value| !value.is_empty()) {
+        config.server_password = Some(password.expose().to_owned());
     }
     if settings.sasl_enabled {
         config.sasl = Some(SaslCredentials {
             username: settings.sasl_username.clone(),
-            password: sasl_password.to_owned(),
+            password: sasl_password
+                .map(|value| value.expose().to_owned())
+                .unwrap_or_default(),
         });
     }
     config.validate()?;
     Ok(config)
 }
 
-fn startup_connection_config(settings: &Settings) -> Option<Result<ConnectionConfig, String>> {
+/// The startup connection uses only passwords saved in the credential store.
+fn startup_connection_config(
+    settings: &Settings,
+    store: &CredentialStore,
+) -> Option<Result<ConnectionConfig, String>> {
     settings.connect_on_startup.then(|| {
-        let profile = settings.selected_profile();
-        let (server_password, sasl_password) = if profile.remember_passwords {
-            (
-                profile.server_password.as_deref().unwrap_or(""),
-                profile.sasl_password.as_deref().unwrap_or(""),
-            )
-        } else {
-            ("", "")
-        };
+        let i18n = Localizer::new(settings.language);
+        let (server_password, sasl_password) = saved_connection_secrets(settings, store, &i18n)?;
         connection_config(settings, server_password, sasl_password)
     })
+}
+
+/// Deletes the saved passwords of profiles that no longer exist, so a later
+/// profile reusing an ID cannot inherit them.
+fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &CredentialStore) {
+    for server in &previous.servers {
+        if !next.servers.iter().any(|kept| kept.id == server.id) {
+            let _ = store.delete(&server.server_password_key());
+            let _ = store.delete(&server.sasl_password_key());
+        }
+    }
 }
 
 /// Returns to the executor once, so other queued work runs before continuing.
@@ -430,6 +553,12 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// Pasted or dropped images on their way to the external uploader.
+    attachments: AttachmentFlow,
+    /// Configured image hosting provider ID (IRC external uploads).
+    image_provider: Option<String>,
+    /// Replaces the configured uploader; tests use a fake one.
+    uploader_override: Option<Arc<dyn cayenchat_upload::ExternalUploader>>,
     #[cfg(test)]
     pane_renders: usize,
 }
@@ -519,6 +648,8 @@ enum SettingsTab {
     Connection,
     Appearance,
     Keyboard,
+    ImageUpload,
+    Credentials,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -540,6 +671,12 @@ struct SettingsWindow {
     font_picker: Option<FontTarget>,
     fonts: Vec<String>,
     i18n: Localizer,
+    /// Result of probing the system credential store; `None` while checking.
+    system_store: Option<Result<(), String>>,
+    /// Access token being entered to connect an image hosting account.
+    upload_token: Entity<TextInput>,
+    upload_connected: bool,
+    upload_token_open: bool,
 }
 
 impl ChatWindow {
@@ -583,14 +720,6 @@ impl ChatWindow {
         window.set_window_title(&self.window_title());
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (saved, feedback) = match cayenchat_storage::load() {
-            Ok(saved) => (saved.unwrap_or_default(), None),
-            Err(error) => (Settings::default(), Some(error)),
-        };
-        Self::with_settings(saved, feedback, window, cx)
-    }
-
     fn with_settings(
         saved: Settings,
         feedback: Option<String>,
@@ -598,7 +727,7 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let i18n = Localizer::new(saved.language);
-        let startup_connection = startup_connection_config(&saved);
+        let startup_connection = startup_connection_config(&saved, &secrets::store(cx));
         let state = AppState::configured(saved.selected_profile().host.clone(), saved.channels());
         let mut inputs: HashMap<_, _> = state
             .networks()
@@ -659,6 +788,9 @@ impl ChatWindow {
             log_focus: cx.focus_handle(),
             log_selection: None,
             log_dragging: false,
+            attachments: AttachmentFlow::default(),
+            image_provider: saved.image_upload.provider.clone(),
+            uploader_override: None,
             #[cfg(test)]
             pane_renders: 0,
         };
@@ -1221,9 +1353,21 @@ impl ChatWindow {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings_tab(SettingsTab::Connection, window, cx);
+    }
+
+    /// Opens (or raises) the settings window. `tab` is selected when the
+    /// window is new or when it is not the Connection tab.
+    fn open_settings_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(handle) = self.settings_window
             && handle
-                .update(cx, |_, window, _| window.activate_window())
+                .update(cx, |settings, window, cx| {
+                    if tab != SettingsTab::Connection {
+                        settings.tab = tab;
+                        cx.notify();
+                    }
+                    window.activate_window()
+                })
                 .is_ok()
         {
             return;
@@ -1248,7 +1392,13 @@ impl ChatWindow {
                 }),
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| SettingsWindow::new(owner, settings, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| {
+                    let mut view = SettingsWindow::new(owner, settings, window, cx);
+                    view.tab = tab;
+                    view
+                })
+            },
         ) {
             Ok(handle) => self.settings_window = Some(handle),
             Err(error) => {
@@ -1723,12 +1873,24 @@ impl SettingsWindow {
         for (field, key) in [
             (&self.settings.custom_host, "server_host_placeholder"),
             (&self.settings.nickname, "nickname"),
+            (&self.settings.username, "username_placeholder"),
             (
                 &self.settings.server_password,
-                "server_password_placeholder",
+                if self.settings.saved_server_password {
+                    "password_saved_placeholder"
+                } else {
+                    "server_password_placeholder"
+                },
             ),
             (&self.settings.sasl_username, "sasl_account_placeholder"),
-            (&self.settings.sasl_password, "sasl_password"),
+            (
+                &self.settings.sasl_password,
+                if self.settings.saved_sasl_password {
+                    "password_saved_placeholder"
+                } else {
+                    "sasl_password"
+                },
+            ),
             (&self.settings.main_log_font, "font_system_placeholder"),
             (&self.settings.sub_log_font, "font_system_placeholder"),
             (&self.settings.member_font, "font_system_placeholder"),
@@ -1750,12 +1912,14 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let i18n = Localizer::new(values.language);
-        let settings = SettingsForm::new(values, &i18n, cx);
+        let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
         let mut fonts = window.text_system().all_font_names();
         fonts.sort_unstable();
         fonts.dedup();
-        Self {
+        let upload_token =
+            cx.new(|cx| TextInput::new_field(&i18n.text("image_token_placeholder"), "", true, cx));
+        let mut this = Self {
             menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             owner,
             settings,
@@ -1764,17 +1928,43 @@ impl SettingsWindow {
             font_picker: None,
             fonts,
             i18n,
+            system_store: None,
+            upload_token,
+            upload_connected: false,
+            upload_token_open: false,
+        };
+        this.probe_system_store(cx);
+        this.refresh_upload_account(cx);
+        this
+    }
+
+    /// Saves typed passwords to the credential store, forgets removed
+    /// profiles' passwords, and writes the settings file.
+    fn commit_settings(
+        &mut self,
+        mut settings: Settings,
+        cx: &mut Context<Self>,
+    ) -> Result<Settings, String> {
+        let store = secrets::store(cx);
+        settings
+            .servers
+            .retain(|server| !server.custom || !server.host.is_empty());
+        self.settings.persist_passwords(&store, &self.i18n, cx)?;
+        if let Ok(Some(previous)) = cayenchat_storage::load() {
+            forget_removed_profiles(&previous, &settings, &store);
         }
+        cayenchat_storage::save(&settings)?;
+        Ok(settings)
     }
 
     fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| {
-            let mut settings = self.settings.snapshot(cx)?;
-            let config = self.settings.connection_config(&settings, cx)?;
-            settings
-                .servers
-                .retain(|server| !server.custom || !server.host.is_empty());
-            cayenchat_storage::save(&settings)?;
+            let settings = self.settings.snapshot(cx)?;
+            let config =
+                self.settings
+                    .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
+            let settings = self.commit_settings(settings, cx)?;
+            self.settings.values = settings.clone();
             Ok::<_, String>((
                 config,
                 settings.appearance.clone(),
@@ -1806,20 +1996,19 @@ impl SettingsWindow {
     }
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
-        self.feedback = match self.settings.snapshot(cx).and_then(|mut settings| {
+        self.feedback = match self.settings.snapshot(cx).and_then(|settings| {
             if settings.selected_profile().host.is_empty() {
                 return Err(self.i18n.text("server_required"));
             }
-            settings
-                .servers
-                .retain(|server| !server.custom || !server.host.is_empty());
-            cayenchat_storage::save(&settings)?;
+            let settings = self.commit_settings(settings, cx)?;
             self.settings.values = settings;
             let appearance = self.settings.values.appearance.clone();
             let mode = self.settings.values.theme;
             let language = self.settings.values.language;
             let shortcuts = ShortcutPrefs::from(&self.settings.values);
+            let provider = self.settings.values.image_upload.provider.clone();
             let _ = self.owner.update(cx, |owner, window, cx| {
+                owner.image_provider = provider;
                 apply_shortcuts(shortcuts, cx);
                 owner.apply_appearance(appearance, mode, cx);
                 owner.apply_language(language, window, cx);
@@ -1875,20 +2064,21 @@ impl SettingsWindow {
     }
 
     fn toggle_remember_passwords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let store = secrets::store(cx);
         if self.settings.values.selected_profile().remember_passwords {
-            let id = self.settings.values.selected_server.clone();
-            match cayenchat_storage::clear_saved_passwords(&id) {
+            let profile = self.settings.values.selected_profile().clone();
+            let result = store
+                .delete(&profile.server_password_key())
+                .and_then(|()| store.delete(&profile.sasl_password_key()))
+                .map_err(|error| secrets::error_text(&self.i18n, &error))
+                .and_then(|()| cayenchat_storage::clear_saved_passwords(&profile.id));
+            match result {
                 Ok(()) => {
-                    let profile = self.settings.values.selected_profile_mut();
-                    profile.remember_passwords = false;
-                    profile.server_password = None;
-                    profile.sasl_password = None;
                     self.settings
-                        .server_password
-                        .update(cx, |field, cx| field.set_text("", cx));
-                    self.settings
-                        .sasl_password
-                        .update(cx, |field, cx| field.set_text("", cx));
+                        .values
+                        .selected_profile_mut()
+                        .remember_passwords = false;
+                    self.show_selected_server(cx);
                     self.feedback = Some(self.i18n.text("passwords_removed"));
                 }
                 Err(error) => self.feedback = Some(error),
@@ -1896,10 +2086,28 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
+        if store.kind() == CredentialBackendKind::System {
+            // Secure storage needs no plaintext warning, but it must work.
+            match cayenchat_storage::credentials::SystemBackend::probe() {
+                Ok(()) => {
+                    self.settings
+                        .values
+                        .selected_profile_mut()
+                        .remember_passwords = true;
+                    self.feedback = None;
+                }
+                Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
+            }
+            cx.notify();
+            return;
+        }
         let answer = window.prompt(
             PromptLevel::Warning,
             &self.i18n.text("password_warning_title"),
-            Some(&self.i18n.text("password_warning_detail")),
+            Some(&self.i18n.format(
+                "password_warning_detail",
+                &[("path", &secrets::local_path_text())],
+            )),
             &[
                 PromptButton::ok(self.i18n.text("save_passwords")),
                 PromptButton::cancel(self.i18n.text("cancel")),
@@ -1972,12 +2180,28 @@ impl SettingsWindow {
         self.settings.port.update(cx, |field, cx| {
             field.set_text(&profile.port.to_string(), cx)
         });
-        self.settings.server_password.update(cx, |field, cx| {
-            field.set_text(profile.server_password.as_deref().unwrap_or(""), cx)
-        });
-        self.settings.sasl_password.update(cx, |field, cx| {
-            field.set_text(profile.sasl_password.as_deref().unwrap_or(""), cx)
-        });
+        let (saved_server, saved_sasl) =
+            saved_passwords(&self.settings.values, &secrets::store(cx));
+        self.settings.saved_server_password = saved_server;
+        self.settings.saved_sasl_password = saved_sasl;
+        for (field, saved, key) in [
+            (
+                &self.settings.server_password,
+                saved_server,
+                "server_password_placeholder",
+            ),
+            (&self.settings.sasl_password, saved_sasl, "sasl_password"),
+        ] {
+            let placeholder = self.i18n.text(if saved {
+                "password_saved_placeholder"
+            } else {
+                key
+            });
+            field.update(cx, |field, cx| {
+                field.set_text("", cx);
+                field.set_placeholder(&placeholder, cx);
+            });
+        }
         self.settings.server_list_open = false;
         self.settings.encoding_list_open = false;
         self.feedback = None;
@@ -2323,6 +2547,16 @@ impl SettingsWindow {
                 self.settings.nickname.clone(),
             ))
             .child(settings_field(
+                &self.i18n.text("username"),
+                self.settings.username.clone(),
+            ))
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("username_hint")),
+            )
+            .child(settings_field(
                 &self.i18n.text("auto_join_channels"),
                 self.settings.channels.clone(),
             ))
@@ -2346,10 +2580,22 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(
+                div()
+                    .pt_2()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("server_auth_heading")),
+            )
             .child(settings_field(
                 &self.i18n.text("server_password"),
                 self.settings.server_password.clone(),
             ))
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("server_password_hint")),
+            )
             .child(
                 div()
                     .id("remember-passwords")
@@ -2367,6 +2613,12 @@ impl SettingsWindow {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_remember_passwords(window, cx)
                     })),
+            )
+            .child(
+                div()
+                    .pt_2()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("sasl_heading")),
             )
             .child(
                 div()
@@ -2805,11 +3057,25 @@ impl SettingsWindow {
             .child(self.settings_tab(SettingsTab::Appearance, "appearance-tab", "appearance", cx))
             .when(!cfg!(target_os = "macos"), |d| {
                 d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
-            });
+            })
+            .child(self.settings_tab(
+                SettingsTab::ImageUpload,
+                "image-upload-tab",
+                "image_upload_tab",
+                cx,
+            ))
+            .child(self.settings_tab(
+                SettingsTab::Credentials,
+                "credentials-tab",
+                "credentials_tab",
+                cx,
+            ));
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
+            SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
+            SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
         };
         div()
             .id("settings-screen")
@@ -3299,12 +3565,38 @@ impl ChatWindow {
             .when(!appearance.input_font.is_empty(), |d| {
                 d.font_family(appearance.input_font.clone())
             })
+            .id("draft-row")
+            // Dropped image files join the same attachment flow as pasted ones.
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.drop_paths(paths.paths(), window, cx)
+            }))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .child(self.inputs[&selection].clone()),
             )
+            .when_some(self.upload_status(), |d, status| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .px_1()
+                        .text_color(theme.text_secondary)
+                        .child(status)
+                        .child(
+                            div()
+                                .id("cancel-upload")
+                                .px_1()
+                                .border_1()
+                                .border_color(border)
+                                .cursor_pointer()
+                                .child(self.i18n.text("upload_cancel"))
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_upload(cx))),
+                        ),
+                )
+            })
             .when_some(self.feedback.clone(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             });
@@ -3586,6 +3878,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
+            .on_action(cx.listener(Self::paste_image))
             .child(left)
             .child(right)
             .when_some(server_menu, |d, menu| d.child(menu))
@@ -4314,12 +4607,31 @@ fn select_linux_display(saved: LinuxDisplay) {
     }
 }
 
+/// Loads settings and moves plaintext passwords saved by older versions into
+/// the credential store. Returns a notice for the chat window.
+fn load_settings_at_startup() -> (Settings, Option<String>) {
+    let mut saved = match cayenchat_storage::load() {
+        Ok(saved) => saved.unwrap_or_default(),
+        Err(error) => return (Settings::default(), Some(error)),
+    };
+    let i18n = Localizer::new(saved.language);
+    let notice = match cayenchat_storage::migrate_legacy_secrets(&mut saved, &CredentialStore::open)
+    {
+        Ok(None) => None,
+        Ok(Some(report)) if report.used_local_file => Some(i18n.text("legacy_migrated_local")),
+        Ok(Some(_)) => Some(i18n.text("legacy_migrated")),
+        Err(error) => Some(i18n.format("credential_error", &[("error", &error)])),
+    };
+    (saved, notice)
+}
+
 fn main() {
     diagnostics::init();
-    let saved = cayenchat_storage::load().ok().flatten().unwrap_or_default();
+    let (saved, notice) = load_settings_at_startup();
     #[cfg(target_os = "linux")]
     select_linux_display(saved.linux_display);
     Application::new().run(move |cx: &mut App| {
+        secrets::install(saved.credential_backend, cx);
         theme::apply(saved.theme, &saved.appearance, cx);
         desktop::watch(cx);
         apply_shortcuts(ShortcutPrefs::from(&saved), cx);
@@ -4343,7 +4655,7 @@ fn main() {
                     }),
                     ..Default::default()
                 },
-                move |window, cx| cx.new(|cx| ChatWindow::new(window, cx)),
+                move |window, cx| cx.new(|cx| ChatWindow::with_settings(saved, notice, window, cx)),
             )
             .expect("could not open CayenChat window");
         cx.activate(true);
@@ -4440,29 +4752,99 @@ mod log_tests {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::startup_connection_config;
-    use cayenchat_storage::Settings;
+    use super::{connection_config, forget_removed_profiles, startup_connection_config};
+    use cayenchat_storage::{
+        CredentialBackendKind, CredentialStore, Secret, SecretKey, Settings,
+        credentials::MemoryBackend,
+    };
+    use std::sync::Arc;
+
+    fn memory_store() -> CredentialStore {
+        CredentialStore::with_backend(Arc::new(MemoryBackend::new(CredentialBackendKind::System)))
+    }
 
     #[test]
     fn startup_uses_only_saved_credentials_when_enabled() {
+        let store = memory_store();
         let mut settings = Settings {
             nickname: "alice".into(),
+            username: "ident".into(),
             ..Settings::default()
         };
-        assert!(startup_connection_config(&settings).is_none());
+        assert!(startup_connection_config(&settings, &store).is_none());
 
         settings.connect_on_startup = true;
         settings.sasl_enabled = true;
         settings.sasl_username = "account".into();
         settings.selected_profile_mut().use_tls = true;
-        assert!(startup_connection_config(&settings).unwrap().is_err());
+        assert!(
+            startup_connection_config(&settings, &store)
+                .unwrap()
+                .is_err()
+        );
 
-        settings.selected_profile_mut().sasl_password = Some("secret".into());
-        assert!(startup_connection_config(&settings).unwrap().is_err());
+        let profile = settings.selected_profile().clone();
+        store
+            .set(&profile.sasl_password_key(), &Secret::new("secret"))
+            .unwrap();
+        store
+            .set(
+                &profile.server_password_key(),
+                &Secret::new("server-secret"),
+            )
+            .unwrap();
+        // Saved secrets are ignored until password saving is on.
+        assert!(
+            startup_connection_config(&settings, &store)
+                .unwrap()
+                .is_err()
+        );
         settings.selected_profile_mut().remember_passwords = true;
-        let config = startup_connection_config(&settings).unwrap().unwrap();
+        let config = startup_connection_config(&settings, &store)
+            .unwrap()
+            .unwrap();
         assert_eq!(config.host, "irc.ircnet.ne.jp");
-        assert_eq!(config.sasl.unwrap().password, "secret");
+        assert_eq!(config.nickname, "alice");
+        assert_eq!(config.username, "ident");
+        assert_eq!(config.server_password.as_deref(), Some("server-secret"));
+        let sasl = config.sasl.unwrap();
+        assert_eq!(sasl.username, "account");
+        assert_eq!(sasl.password, "secret");
+    }
+
+    #[test]
+    fn nickname_and_username_stay_independent_without_credentials() {
+        let mut settings = Settings {
+            nickname: "alice".into(),
+            username: "someone".into(),
+            ..Settings::default()
+        };
+        let config = connection_config(&settings, None, None).unwrap();
+        assert_eq!(config.nickname, "alice");
+        assert_eq!(config.username, "someone");
+        assert!(config.server_password.is_none());
+        assert!(config.sasl.is_none());
+        settings.username.clear();
+        assert!(connection_config(&settings, None, None).is_err());
+    }
+
+    #[test]
+    fn removed_profiles_lose_their_saved_passwords() {
+        let store = memory_store();
+        let mut previous = Settings::default();
+        previous.add_custom_server();
+        previous.selected_profile_mut().host = "irc.example.org".into();
+        let removed = previous.selected_profile().clone();
+        let kept = SecretKey::server_password(cayenchat_storage::IRCNET_ID);
+        store
+            .set(&removed.server_password_key(), &Secret::new("x"))
+            .unwrap();
+        store.set(&kept, &Secret::new("y")).unwrap();
+        let mut next = previous.clone();
+        next.remove_selected_custom_server();
+        forget_removed_profiles(&previous, &next, &store);
+        assert!(store.get(&removed.server_password_key()).unwrap().is_none());
+        assert!(store.get(&kept).unwrap().is_some());
     }
 }
 

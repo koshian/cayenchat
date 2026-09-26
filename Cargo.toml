@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/model", "crates/irc-core", "crates/storage", "crates/app", "crates/ui"]
+members = [
+  "crates/model",
+  "crates/irc-core",
+  "crates/storage",
+  "crates/upload",
+  "crates/app",
+  "crates/ui",
+]
 default-members = ["crates/ui"]
 resolver = "3"
 
@@ -14,6 +21,7 @@ license = "GPL-3.0-only"
 cayenchat-model = { path = "crates/model" }
 cayenchat-app = { path = "crates/app" }
 cayenchat-irc-core = { path = "crates/irc-core" }
+cayenchat-upload = { path = "crates/upload" }
 gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders", "font-kit"] }
 irc = { version = "=1.1.0", default-features = false, features = ["tls-rust", "channel-lists", "encoding"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

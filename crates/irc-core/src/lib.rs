@@ -47,17 +47,29 @@ fn ensure_tls_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SaslCredentials {
     pub username: String,
     pub password: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Credentials never appear in debug output.
+impl fmt::Debug for SaslCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SaslCredentials")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConnectionConfig {
     pub host: String,
     pub port: u16,
     pub nickname: String,
+    /// The `USER` command's username (ident), independent of the nickname.
+    pub username: String,
     pub channels: Vec<String>,
     pub use_tls: bool,
     pub verify_tls_certificates: bool,
@@ -66,11 +78,34 @@ pub struct ConnectionConfig {
     pub sasl: Option<SaslCredentials>,
 }
 
+impl fmt::Debug for ConnectionConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectionConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("nickname", &self.nickname)
+            .field("username", &self.username)
+            .field("channels", &self.channels)
+            .field("use_tls", &self.use_tls)
+            .field("verify_tls_certificates", &self.verify_tls_certificates)
+            .field("encoding", &self.encoding)
+            .field(
+                "server_password",
+                &self.server_password.as_ref().map(|_| "[redacted]"),
+            )
+            .field("sasl", &self.sasl)
+            .finish()
+    }
+}
+
 impl ConnectionConfig {
+    /// A TLS configuration whose `USER` username starts equal to `nickname`;
+    /// callers set [`ConnectionConfig::username`] from their own settings.
     pub fn tls(host: String, nickname: String, channels: Vec<String>) -> Self {
         Self {
             host,
             port: 6697,
+            username: nickname.clone(),
             nickname,
             channels,
             use_tls: true,
@@ -99,6 +134,14 @@ impl ConnectionConfig {
         {
             return Err("Nickname must not be empty or contain spaces or controls.".into());
         }
+        if self.username.is_empty()
+            || self
+                .username
+                .chars()
+                .any(|ch| ch.is_whitespace() || ch.is_control() || ch == '@')
+        {
+            return Err("Username must not be empty or contain spaces, controls or @.".into());
+        }
         for channel in &self.channels {
             if !valid_channel(channel) {
                 return Err(format!("Invalid channel name: {channel}"));
@@ -106,6 +149,10 @@ impl ConnectionConfig {
             validate_wire(&format!("JOIN {channel}\r\n"), &self.encoding)?;
         }
         validate_wire(&format!("NICK {}\r\n", self.nickname), &self.encoding)?;
+        validate_wire(
+            &format!("USER {} 0 * :CayenChat\r\n", self.username),
+            &self.encoding,
+        )?;
         if let Some(password) = &self.server_password {
             if password.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
                 return Err("Server password contains a protocol control character.".into());
@@ -923,7 +970,7 @@ fn library_config(config: &ConnectionConfig) -> Config {
         server: Some(config.host.clone()),
         port: Some(config.port),
         nickname: Some(config.nickname.clone()),
-        username: Some(config.nickname.clone()),
+        username: Some(config.username.clone()),
         realname: Some("CayenChat".into()),
         password: config.server_password.clone(),
         channels: config.channels.clone(),
@@ -988,6 +1035,7 @@ async fn run(
     let wire_encoding = config.encoding.clone();
     let server_password = config.server_password.clone();
     let registration_nick = config.nickname.clone();
+    let registration_user = config.username.clone();
     let auto_join_channels = config.channels.clone();
     let irc_config = library_config(&config);
     let mut sasl = config.sasl.map(SaslHandshake::new);
@@ -1087,7 +1135,7 @@ async fn run(
     }
     registration.push(IrcCommand::NICK(registration_nick.clone()));
     registration.push(IrcCommand::USER(
-        registration_nick.clone(),
+        registration_user,
         "0".into(),
         "CayenChat".into(),
     ));
@@ -1872,6 +1920,31 @@ mod tests {
     }
 
     #[test]
+    fn debug_output_redacts_credentials_and_username_is_validated() {
+        let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+        config.server_password = Some("server-secret".into());
+        config.sasl = Some(SaslCredentials {
+            username: "account".into(),
+            password: "sasl-secret".into(),
+        });
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("server-secret"), "{debug}");
+        assert!(!debug.contains("sasl-secret"), "{debug}");
+        assert!(debug.contains("account"));
+
+        assert_eq!(config.username, "alice");
+        config.username = "ident".into();
+        config.validate().unwrap();
+        assert_eq!(config.nickname, "alice");
+        assert_eq!(library_config(&config).username.as_deref(), Some("ident"));
+        assert_eq!(library_config(&config).nickname.as_deref(), Some("alice"));
+        for bad in ["", "two words", "a@b", "bad\r\nQUIT"] {
+            config.username = bad.into();
+            assert!(config.validate().is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn config_and_outgoing_reject_protocol_control_characters() {
         let mut config = ConnectionConfig::tls(
             "irc.example.org".into(),
@@ -2028,13 +2101,23 @@ mod tests {
                 .unwrap();
             let mut lines = BufReader::new(socket.try_clone().unwrap());
             let mut line = String::new();
+            let mut registration = Vec::new();
             loop {
                 line.clear();
                 lines.read_line(&mut line).unwrap();
+                registration.push(line.trim_end().to_owned());
                 if line.starts_with("USER ") {
                     break;
                 }
             }
+            // Without credentials there is no PASS, and USER carries the
+            // configured username rather than the nickname.
+            assert!(!registration.iter().any(|line| line.starts_with("PASS")));
+            assert!(registration.contains(&"NICK alice".to_owned()));
+            assert!(
+                registration.last().unwrap().starts_with("USER ident1 0 * "),
+                "{registration:?}"
+            );
             socket
                 .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
                 .unwrap();
@@ -2078,6 +2161,7 @@ mod tests {
             "alice".into(),
             vec!["#test".into(), "#other".into()],
         );
+        config.username = "ident1".into();
         config.port = port;
         config.use_tls = false;
         let mut connection = Connection::connect(config).unwrap();

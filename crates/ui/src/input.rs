@@ -75,6 +75,9 @@ pub struct TextInput {
     redo: Vec<EditSnapshot>,
     completion: Option<NickCompletion>,
     secret: bool,
+    /// Draft inputs let an image-only paste bubble up to the chat window's
+    /// attachment flow instead of ignoring it.
+    attachments: bool,
 }
 
 impl TextInput {
@@ -143,6 +146,24 @@ impl TextInput {
         self.completion = None;
         self.undo.clear();
         self.redo.clear();
+        cx.notify();
+    }
+
+    /// Inserts `link` at the cursor, replacing any selection and keeping one
+    /// space between it and neighbouring text. Undo restores the previous text.
+    pub fn insert_link(&mut self, link: &str, cx: &mut Context<Self>) {
+        self.record_edit();
+        let range = self.selected_range.clone();
+        let before = self.content[..range.start].chars().next_back();
+        let after = self.content[range.end..].chars().next();
+        let text = cayenchat_app::attachments::link_insertion(before, after, link);
+        self.content =
+            (self.content[..range.start].to_owned() + &text + &self.content[range.end..]).into();
+        let cursor = range.start + text.len();
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.completion = None;
         cx.notify();
     }
 
@@ -397,9 +418,17 @@ impl TextInput {
         window.show_character_palette();
     }
 
+    /// Text wins when the clipboard holds both text and an image, matching
+    /// what text fields elsewhere paste. An image-only clipboard in a draft
+    /// propagates the action to the chat window's attachment flow.
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        if let Some(text) = item.text() {
             self.replace_text_in_range(None, &text.replace(['\r', '\n'], " "), window, cx);
+        } else if self.attachments && clipboard_image(&item).is_some() {
+            cx.propagate();
         }
     }
 
@@ -518,6 +547,14 @@ impl TextInput {
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
     }
+}
+
+/// The first image in a clipboard item, if any.
+pub fn clipboard_image(item: &ClipboardItem) -> Option<&gpui::Image> {
+    item.entries().iter().find_map(|entry| match entry {
+        gpui::ClipboardEntry::Image(image) => Some(image),
+        _ => None,
+    })
 }
 
 fn word_boundary_left(text: &str, offset: usize) -> usize {
@@ -987,12 +1024,15 @@ impl TextInput {
             redo: Vec::new(),
             completion: None,
             secret: false,
+            attachments: false,
         }
     }
 
+    /// A message draft, which also accepts pasted images.
     pub fn new_live(placeholder: &str, cx: &mut Context<Self>) -> Self {
         let mut input = Self::new(cx);
         input.placeholder = placeholder.to_owned().into();
+        input.attachments = true;
         input
     }
 
