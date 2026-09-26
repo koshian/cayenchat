@@ -1,5 +1,6 @@
 mod input;
 mod localization;
+mod log_list;
 mod whois;
 
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
@@ -12,6 +13,7 @@ use cayenchat_storage::{Appearance, Language, Settings, TextEncoding, color_valu
 use gpui::{prelude::*, *};
 use input::TextInput;
 use localization::Localizer;
+use log_list::LogList;
 use std::{
     collections::{HashMap, HashSet},
     time::{Duration, Instant},
@@ -26,31 +28,8 @@ const RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(24),
     Duration::from_secs(30),
 ];
-const SCROLL_BOTTOM_TOLERANCE: Pixels = px(2.);
-
-struct LogScroll {
-    handle: ScrollHandle,
-    follow_latest: bool,
-}
-
-impl Default for LogScroll {
-    fn default() -> Self {
-        Self {
-            handle: ScrollHandle::new(),
-            follow_latest: true,
-        }
-    }
-}
-
-fn reaches_log_bottom(
-    handle: &ScrollHandle,
-    event: &ScrollWheelEvent,
-    line_height: Pixels,
-) -> bool {
-    let max = handle.max_offset().height;
-    let next = (handle.offset().y + event.delta.pixel_delta(line_height).y).clamp(-max, px(0.));
-    next <= -max + SCROLL_BOTTOM_TOLERANCE
-}
+/// Most lines the combined other-channel log keeps on screen.
+const SUB_LOG_LIMIT: usize = 1_000;
 
 fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
     fn with_detail(actor: &str, action: &str, detail: Option<String>) -> String {
@@ -331,8 +310,11 @@ fn i18n_error(language: Language, key: &str) -> String {
 
 struct ChatWindow {
     state: AppState,
-    main_scroll: HashMap<Selection, LogScroll>,
-    sub_scroll: LogScroll,
+    // Virtualized logs keep a separate scroll position per server or channel.
+    main_lists: HashMap<Selection, LogList>,
+    sub_list: LogList,
+    sub_owner: Option<ConversationId>,
+    sub_rows: Vec<(ConversationId, usize)>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
@@ -497,13 +479,16 @@ impl ChatWindow {
         }
     }
 
-    fn update_title(&self, window: &mut Window) {
+    fn window_title(&self) -> String {
         let network = self.state.selected_network();
-        let title = match self.state.selected_channel() {
+        match self.state.selected_channel() {
             Some(channel) => format!("{} @ {} — CayenChat", channel.name, network.name),
             None => format!("{} — CayenChat", network.name),
-        };
-        window.set_window_title(&title);
+        }
+    }
+
+    fn update_title(&self, window: &mut Window) {
+        window.set_window_title(&self.window_title());
     }
 
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -535,8 +520,10 @@ impl ChatWindow {
         window.focus(&inputs[&state.selection()].focus_handle(cx));
         let this = Self {
             state,
-            main_scroll: HashMap::new(),
-            sub_scroll: LogScroll::default(),
+            main_lists: HashMap::new(),
+            sub_list: LogList::new(),
+            sub_owner: None,
+            sub_rows: Vec::new(),
             inputs,
             feedback,
             irc: None,
@@ -616,8 +603,9 @@ impl ChatWindow {
         self.connection_started = Some(Instant::now());
         self.watchdog_stage = 0;
         self.state = AppState::live(config.host.clone(), config.channels.clone());
-        self.main_scroll.clear();
-        self.sub_scroll = LogScroll::default();
+        self.main_lists.clear();
+        self.sub_list.clear();
+        self.sub_rows.clear();
         self.log_selection = None;
         let placeholder = self.i18n.text("draft_placeholder");
         self.inputs = self
@@ -2533,18 +2521,15 @@ impl Render for SettingsWindow {
 }
 
 impl Render for ChatWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_chat(window, cx)
+    }
+}
+
+impl ChatWindow {
+    fn render_chat(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.sync_log_lists();
         let selection = self.state.selection();
-        let main_scroll = self.main_scroll.entry(selection).or_default();
-        let main_scroll_handle = main_scroll.handle.clone();
-        if main_scroll.follow_latest {
-            main_scroll_handle.scroll_to_bottom();
-        }
-        let sub_scroll_handle = self.sub_scroll.handle.clone();
-        if self.sub_scroll.follow_latest {
-            sub_scroll_handle.scroll_to_bottom();
-        }
-        let selected = self.state.selected_channel();
         let log_id = match selection {
             Selection::Channel(id) => id.0,
             Selection::Server(id) => u32::MAX - id.0,
@@ -2552,11 +2537,7 @@ impl Render for ChatWindow {
         let border = rgb(0xb7bdc4);
         let appearance = &self.appearance;
         let main_bg = rgb(color_value(&appearance.main_log_background).unwrap_or(0xffffff));
-        let main_alt = rgb(color_value(&appearance.main_log_alternate).unwrap_or(0xf2f5ff));
-        let event_color = rgb(color_value(&appearance.channel_event_color).unwrap_or(0x007d00));
         let sub_bg = rgb(color_value(&appearance.sub_log_background).unwrap_or(0xf9fafb));
-        let sub_alt = rgb(color_value(&appearance.sub_log_alternate).unwrap_or(0xf2f5ff));
-        let time_font = selected_font(&appearance.time_font, default_time_font()).to_owned();
 
         // The reference layout has logs on the left and users/channels on the right.
         let mut channels = div()
@@ -2675,7 +2656,8 @@ impl Render for ChatWindow {
             }
         }
 
-        let mut main_log = div()
+        let main_list = self.main_lists[&selection].state.clone();
+        let main_log = div()
             .id(("log", log_id))
             .key_context("MainLog")
             .track_focus(&self.log_focus)
@@ -2689,364 +2671,67 @@ impl Render for ChatWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.finish_log_selection()),
             )
+            .flex()
+            .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&main_scroll_handle)
-            .on_scroll_wheel(cx.listener(move |this, event, window, _| {
-                if let Some(scroll) = this.main_scroll.get_mut(&selection) {
-                    scroll.follow_latest =
-                        reaches_log_bottom(&scroll.handle, event, window.line_height());
-                }
-            }))
             .px_2()
             .py_1()
             .bg(main_bg)
             .when(!appearance.main_log_font.is_empty(), |d| {
                 d.font_family(appearance.main_log_font.clone())
-            });
-        let registration_incomplete = self.state.status(self.state.selected_network().id)
-            != Some(&ConnectionStatus::Registered);
-        if selected.is_some() && registration_incomplete {
-            main_log = main_log.child(
-                div()
-                    .text_color(rgb(0x9a4b28))
-                    .child(self.status_text(self.state.status(self.state.selected_network().id))),
-            );
-        }
-        if selected.is_some() && registration_incomplete && !self.diagnostics.is_empty() {
-            main_log = main_log.child(
-                div()
-                    .py_1()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("diagnostics_heading")),
-            );
-            main_log = main_log.children(
-                self.diagnostics
-                    .iter()
-                    .map(|line| div().text_color(rgb(0x52606c)).child(line.clone())),
-            );
-        } else if self.debug_enabled
-            && selected.is_some()
-            && let Some(line) = self.diagnostics.last()
-        {
-            main_log = main_log.child(div().text_color(rgb(0x52606c)).child(line.clone()));
-        }
-        if let Some(channel) = selected {
-            let selected_channel = channel.id;
-            let log_selection = self
-                .log_selection
-                .filter(|selection| selection.channel == selected_channel);
-            main_log =
-                main_log.children(channel.messages.iter().enumerate().map(|(index, message)| {
-                    let urls = log_urls(&message.text);
-                    let selected_range = log_selection
-                        .and_then(|selection| selection.range(index, message.text.len()));
-                    let styled = styled_log_text(&message.text, &urls, selected_range);
-                    let layout = styled.layout().clone();
-                    let down_layout = layout.clone();
-                    let move_layout = layout.clone();
-                    let click_layout = layout;
-                    let text_len = message.text.len();
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap_1()
-                        .py(px(1.))
-                        .when(appearance.alternate_rows && index % 2 == 1, |d| {
-                            d.bg(main_alt)
-                        })
-                        .child(
-                            div()
-                                .w(px(42.))
-                                .flex_shrink_0()
-                                .font_family(time_font.clone())
-                                .text_color(rgb(0x747b82))
-                                .child(message.time.clone()),
-                        )
-                        .when(!message.activity, |row| {
-                            row.child(
-                                div()
-                                    .w(px(84.))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .justify_end()
-                                    .text_right()
-                                    .text_color(rgb(0x315b83))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_ellipsis()
-                                            .child(message.sender.clone()),
-                                    )
-                                    .child(":"),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id(("message-text", index))
-                                .flex_1()
-                                .min_w_0()
-                                .when(message.activity, |d| d.text_color(event_color))
-                                .cursor(CursorStyle::IBeam)
-                                .child(styled)
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                        let byte = down_layout
-                                            .index_for_position(event.position)
-                                            .unwrap_or_else(|index| index)
-                                            .min(text_len);
-                                        this.start_log_selection(
-                                            selected_channel,
-                                            index,
-                                            byte,
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                                )
-                                .on_mouse_move(cx.listener(
-                                    move |this, event: &MouseMoveEvent, _, cx| {
-                                        let byte = move_layout
-                                            .index_for_position(event.position)
-                                            .unwrap_or_else(|index| index)
-                                            .min(text_len);
-                                        this.extend_log_selection(
-                                            selected_channel,
-                                            index,
-                                            byte,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                                .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                                    if event.click_count() == 2 {
-                                        let byte = click_layout
-                                            .index_for_position(event.position())
-                                            .unwrap_or_else(|index| index);
-                                        if let Some((_, url)) =
-                                            urls.iter().find(|(range, _)| range.contains(&byte))
-                                        {
-                                            cx.open_url(url);
-                                        }
-                                    }
-                                })),
-                        )
-                }));
-        } else {
-            let network = self.state.selected_network();
-            main_log = main_log.child(self.status_text(self.state.status(network.id)));
-            if (self.debug_enabled || registration_incomplete) && !self.diagnostics.is_empty() {
-                main_log = main_log.child(
-                    div()
-                        .py_1()
-                        .font_weight(FontWeight::BOLD)
-                        .child(self.i18n.text("diagnostics_heading")),
-                );
-                main_log = main_log.children(
-                    self.diagnostics
-                        .iter()
-                        .map(|line| div().text_color(rgb(0x52606c)).child(line.clone())),
-                );
-            }
-            main_log = main_log.children(
-                self.state
-                    .server_messages(network.id)
-                    .iter()
-                    .enumerate()
-                    .map(|(index, message)| {
-                        div()
-                            .flex()
-                            .gap_1()
-                            .py(px(1.))
-                            .when(appearance.alternate_rows && index % 2 == 1, |d| {
-                                d.bg(main_alt)
-                            })
-                            .child(
-                                div()
-                                    .w(px(42.))
-                                    .flex_shrink_0()
-                                    .font_family(time_font.clone())
-                                    .text_color(rgb(0x747b82))
-                                    .child(message.time.clone()),
-                            )
-                            .child(div().flex_1().min_w_0().child(message.text.clone()))
-                    }),
-            );
-        }
-
-        let mut other_messages: Vec<_> = self
-            .state
-            .conversations()
-            .iter()
-            .filter(|conversation| Some(conversation.id) != selected.map(|c| c.id))
-            .flat_map(|conversation| {
-                conversation.messages.iter().map(move |message| {
-                    (
-                        conversation.id,
-                        conversation.network,
-                        conversation.name.as_str(),
-                        message,
-                    )
-                })
             })
-            .collect();
-        other_messages.sort_by_key(|(_, _, _, message)| message.sequence);
+            .child(
+                list(main_list, cx.processor(Self::render_main_row))
+                    .flex_1()
+                    .min_h_0(),
+            );
+
         let sub_log = div()
             .id("sub-log")
+            .flex()
+            .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&sub_scroll_handle)
-            .on_scroll_wheel(cx.listener(|this, event, window, _| {
-                this.sub_scroll.follow_latest =
-                    reaches_log_bottom(&this.sub_scroll.handle, event, window.line_height());
-            }))
             .px_2()
             .py_1()
             .bg(sub_bg)
             .when(!appearance.sub_log_font.is_empty(), |d| {
                 d.font_family(appearance.sub_log_font.clone())
             })
-            .children(other_messages.into_iter().enumerate().map(
-                |(index, (id, network_id, channel, message))| {
-                    let network = self
-                        .state
-                        .networks()
-                        .iter()
-                        .find(|n| n.id == network_id)
-                        .unwrap();
-                    div()
-                        .id(("sub-message", index))
-                        .flex()
-                        .gap_2()
-                        .py(px(1.))
-                        .when(appearance.alternate_rows && index % 2 == 1, |d| {
-                            d.bg(sub_alt)
-                        })
-                        .cursor_pointer()
-                        .hover(|d| d.bg(rgb(0xe8eff6)))
-                        .child(
-                            div()
-                                .w(px(42.))
-                                .flex_shrink_0()
-                                .font_family(time_font.clone())
-                                .text_color(rgb(0x747b82))
-                                .child(message.time.clone()),
-                        )
-                        .child(
-                            div()
-                                .w(px(162.))
-                                .flex_shrink_0()
-                                .flex()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_color(rgb(0x315b83))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(channel.to_owned()),
-                                )
-                                .child(
-                                    div()
-                                        .max_w(px(90.))
-                                        .min_w_0()
-                                        .flex_shrink_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(format!(
-                                            " [{}]",
-                                            network.name.split_whitespace().next().unwrap_or("")
-                                        )),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .when(message.activity, |d| d.text_color(event_color))
-                                .child(if message.activity {
-                                    message.text.clone()
-                                } else {
-                                    format!("{}: {}", message.sender, message.text)
-                                }),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.dispatch(Command::SelectChannel(id), window, cx);
-                        }))
-                },
-            ));
+            .child(
+                list(
+                    self.sub_list.state.clone(),
+                    cx.processor(Self::render_sub_row),
+                )
+                .flex_1()
+                .min_h_0(),
+            );
 
-        let member_rows: Vec<_> = selected
-            .into_iter()
-            .flat_map(|channel| {
-                channel
-                    .members
-                    .iter()
-                    .map(|member| (channel.name.clone(), member.clone()))
-            })
-            .collect();
+        let member_count = self
+            .state
+            .selected_channel()
+            .map_or(0, |channel| channel.members.len());
         let members = div()
-            .id("members")
+            .flex()
+            .flex_col()
             .flex_1()
             .min_h_0()
             .w_full()
-            .overflow_y_scroll()
             .bg(rgb(
                 color_value(&appearance.member_list_background).unwrap_or(0xffffff)
             ))
             .when(!appearance.member_font.is_empty(), |d| {
                 d.font_family(appearance.member_font.clone())
             })
-            .children(
-                member_rows
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (channel, member))| {
-                        let nickname = member
-                            .trim_start_matches(['~', '&', '@', '%', '+'])
-                            .to_owned();
-                        div()
-                            .id(("member", index))
-                            .px_2()
-                            .py(px(1.))
-                            .hover(|d| d.bg(rgb(0xe8eff6)))
-                            .child(member)
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    let viewport = window.viewport_size();
-                                    this.server_menu = None;
-                                    this.channel_menu = None;
-                                    this.member_prompt = None;
-                                    this.member_menu = Some(MemberMenu {
-                                        position: point(
-                                            event
-                                                .position
-                                                .x
-                                                .min((viewport.width - px(210.)).max(px(0.))),
-                                            event
-                                                .position
-                                                .y
-                                                .min((viewport.height - px(190.)).max(px(0.))),
-                                        ),
-                                        nickname: nickname.clone(),
-                                        channel: channel.clone(),
-                                    });
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }),
-                            )
-                    }),
+            .child(
+                uniform_list(
+                    "members",
+                    member_count,
+                    cx.processor(Self::render_member_rows),
+                )
+                .flex_1()
+                .min_h_0(),
             );
 
         let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
@@ -3352,6 +3037,428 @@ impl Render for ChatWindow {
             .when_some(channel_menu, |d, menu| d.child(menu))
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .into_any_element()
+    }
+}
+
+/// Colors and fonts shared by log rows, derived from the appearance settings.
+struct LogStyle {
+    main_alt: Rgba,
+    event_color: Rgba,
+    sub_alt: Rgba,
+    time_font: String,
+    alternate_rows: bool,
+}
+
+impl LogStyle {
+    fn new(appearance: &Appearance) -> Self {
+        Self {
+            main_alt: rgb(color_value(&appearance.main_log_alternate).unwrap_or(0xf2f5ff)),
+            event_color: rgb(color_value(&appearance.channel_event_color).unwrap_or(0x007d00)),
+            sub_alt: rgb(color_value(&appearance.sub_log_alternate).unwrap_or(0xf2f5ff)),
+            time_font: selected_font(&appearance.time_font, default_time_font()).to_owned(),
+            alternate_rows: appearance.alternate_rows,
+        }
+    }
+
+    fn time(&self, time: &str) -> Div {
+        div()
+            .w(px(42.))
+            .flex_shrink_0()
+            .font_family(self.time_font.clone())
+            .text_color(rgb(0x747b82))
+            .child(time.to_owned())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MainRow {
+    Status,
+    DiagnosticsHeading,
+    Diagnostic(usize),
+    Message(usize),
+}
+
+/// Fixed rows shown above the selected log's messages.
+struct MainLayout {
+    status: bool,
+    heading: bool,
+    diagnostics: std::ops::Range<usize>,
+}
+
+impl MainLayout {
+    fn prefix(&self) -> usize {
+        usize::from(self.status) + usize::from(self.heading) + self.diagnostics.len()
+    }
+
+    fn row(&self, mut index: usize) -> MainRow {
+        if self.status {
+            if index == 0 {
+                return MainRow::Status;
+            }
+            index -= 1;
+        }
+        if self.heading {
+            if index == 0 {
+                return MainRow::DiagnosticsHeading;
+            }
+            index -= 1;
+        }
+        if index < self.diagnostics.len() {
+            return MainRow::Diagnostic(self.diagnostics.start + index);
+        }
+        MainRow::Message(index - self.diagnostics.len())
+    }
+}
+
+impl ChatWindow {
+    fn main_layout(&self) -> MainLayout {
+        let count = self.diagnostics.len();
+        let registration_incomplete = self.state.status(self.state.selected_network().id)
+            != Some(&ConnectionStatus::Registered);
+        if self.state.selected_channel().is_some() {
+            if registration_incomplete && count > 0 {
+                MainLayout {
+                    status: true,
+                    heading: true,
+                    diagnostics: 0..count,
+                }
+            } else {
+                MainLayout {
+                    status: registration_incomplete,
+                    heading: false,
+                    diagnostics: if self.debug_enabled && count > 0 {
+                        count - 1..count
+                    } else {
+                        0..0
+                    },
+                }
+            }
+        } else {
+            let diagnostics = (self.debug_enabled || registration_incomplete) && count > 0;
+            MainLayout {
+                status: true,
+                heading: diagnostics,
+                diagnostics: if diagnostics { 0..count } else { 0..0 },
+            }
+        }
+    }
+
+    /// Updates the virtualized log lists to match application state before
+    /// they lay out their visible rows.
+    fn sync_log_lists(&mut self) {
+        let prefix = self.main_layout().prefix();
+        let sequences: Vec<u64> = match self.state.selected_channel() {
+            Some(channel) => channel.messages.iter().map(|m| m.sequence).collect(),
+            None => self
+                .state
+                .server_messages(self.state.selected_network().id)
+                .iter()
+                .map(|m| m.sequence)
+                .collect(),
+        };
+        self.main_lists
+            .entry(self.state.selection())
+            .or_insert_with(LogList::new)
+            .sync(prefix, &sequences);
+
+        // The combined log shows the newest lines from every other channel. Only
+        // the tail of each channel can reach the combined tail.
+        let selected = self.state.selected_channel().map(|channel| channel.id);
+        let mut rows: Vec<(u64, ConversationId, usize)> =
+            self.state
+                .conversations()
+                .iter()
+                .filter(|conversation| Some(conversation.id) != selected)
+                .flat_map(|conversation| {
+                    let start = conversation.messages.len().saturating_sub(SUB_LOG_LIMIT);
+                    conversation.messages[start..].iter().enumerate().map(
+                        move |(offset, message)| {
+                            (message.sequence, conversation.id, start + offset)
+                        },
+                    )
+                })
+                .collect();
+        rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
+        rows.drain(..rows.len().saturating_sub(SUB_LOG_LIMIT));
+        if self.sub_owner != selected {
+            self.sub_list.clear();
+            self.sub_owner = selected;
+        }
+        let sequences: Vec<u64> = rows.iter().map(|(sequence, _, _)| *sequence).collect();
+        self.sub_list.sync(0, &sequences);
+        self.sub_rows = rows.into_iter().map(|(_, id, index)| (id, index)).collect();
+    }
+
+    fn render_main_row(
+        &mut self,
+        row: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let style = LogStyle::new(&self.appearance);
+        match self.main_layout().row(row) {
+            MainRow::Status => {
+                let text = self.status_text(self.state.status(self.state.selected_network().id));
+                div()
+                    .when(self.state.selected_channel().is_some(), |d| {
+                        d.text_color(rgb(0x9a4b28))
+                    })
+                    .child(text)
+                    .into_any_element()
+            }
+            MainRow::DiagnosticsHeading => div()
+                .py_1()
+                .font_weight(FontWeight::BOLD)
+                .child(self.i18n.text("diagnostics_heading"))
+                .into_any_element(),
+            MainRow::Diagnostic(index) => div()
+                .text_color(rgb(0x52606c))
+                .child(self.diagnostics.get(index).cloned().unwrap_or_default())
+                .into_any_element(),
+            MainRow::Message(index) => match self.state.selected_channel() {
+                Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
+                None => {
+                    let network = self.state.selected_network().id;
+                    let Some(message) = self.state.server_messages(network).get(index) else {
+                        return div().into_any_element();
+                    };
+                    div()
+                        .flex()
+                        .gap_1()
+                        .py(px(1.))
+                        .when(style.alternate_rows && index % 2 == 1, |d| {
+                            d.bg(style.main_alt)
+                        })
+                        .child(style.time(&message.time))
+                        .child(div().flex_1().min_w_0().child(message.text.clone()))
+                        .into_any_element()
+                }
+            },
+        }
+    }
+
+    fn render_channel_message(
+        &self,
+        selected_channel: ConversationId,
+        index: usize,
+        style: &LogStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(message) = self
+            .state
+            .selected_channel()
+            .and_then(|channel| channel.messages.get(index))
+        else {
+            return div().into_any_element();
+        };
+        let urls = log_urls(&message.text);
+        let selected_range = self
+            .log_selection
+            .filter(|selection| selection.channel == selected_channel)
+            .and_then(|selection| selection.range(index, message.text.len()));
+        let styled = styled_log_text(&message.text, &urls, selected_range);
+        let layout = styled.layout().clone();
+        let down_layout = layout.clone();
+        let move_layout = layout.clone();
+        let click_layout = layout;
+        let text_len = message.text.len();
+        div()
+            .flex()
+            .items_start()
+            .gap_1()
+            .py(px(1.))
+            .when(style.alternate_rows && index % 2 == 1, |d| {
+                d.bg(style.main_alt)
+            })
+            .child(style.time(&message.time))
+            .when(!message.activity, |row| {
+                row.child(
+                    div()
+                        .w(px(84.))
+                        .flex_shrink_0()
+                        .flex()
+                        .justify_end()
+                        .text_right()
+                        .text_color(rgb(0x315b83))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(message.sender.clone()),
+                        )
+                        .child(":"),
+                )
+            })
+            .child(
+                div()
+                    .id(("message-text", index))
+                    .flex_1()
+                    .min_w_0()
+                    .when(message.activity, |d| d.text_color(style.event_color))
+                    .cursor(CursorStyle::IBeam)
+                    .child(styled)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            let byte = down_layout
+                                .index_for_position(event.position)
+                                .unwrap_or_else(|index| index)
+                                .min(text_len);
+                            this.start_log_selection(selected_channel, index, byte, window, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                        let byte = move_layout
+                            .index_for_position(event.position)
+                            .unwrap_or_else(|index| index)
+                            .min(text_len);
+                        this.extend_log_selection(selected_channel, index, byte, cx);
+                    }))
+                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                        if event.click_count() == 2 {
+                            let byte = click_layout
+                                .index_for_position(event.position())
+                                .unwrap_or_else(|index| index);
+                            if let Some((_, url)) =
+                                urls.iter().find(|(range, _)| range.contains(&byte))
+                            {
+                                cx.open_url(url);
+                            }
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_sub_row(&mut self, row: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let style = LogStyle::new(&self.appearance);
+        let Some(&(id, index)) = self.sub_rows.get(row) else {
+            return div().into_any_element();
+        };
+        let Some(conversation) = self.state.conversations().iter().find(|c| c.id == id) else {
+            return div().into_any_element();
+        };
+        let Some(message) = conversation.messages.get(index) else {
+            return div().into_any_element();
+        };
+        let network = self
+            .state
+            .networks()
+            .iter()
+            .find(|network| network.id == conversation.network)
+            .map(|network| network.name.split_whitespace().next().unwrap_or(""))
+            .unwrap_or("");
+        div()
+            .id(("sub-message", row))
+            .flex()
+            .gap_2()
+            .py(px(1.))
+            .when(style.alternate_rows && row % 2 == 1, |d| {
+                d.bg(style.sub_alt)
+            })
+            .cursor_pointer()
+            .hover(|d| d.bg(rgb(0xe8eff6)))
+            .child(style.time(&message.time))
+            .child(
+                div()
+                    .w(px(162.))
+                    .flex_shrink_0()
+                    .flex()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_color(rgb(0x315b83))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(conversation.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(90.))
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(format!(" [{network}]")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when(message.activity, |d| d.text_color(style.event_color))
+                    .child(if message.activity {
+                        message.text.clone()
+                    } else {
+                        format!("{}: {}", message.sender, message.text)
+                    }),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.dispatch(Command::SelectChannel(id), window, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_member_rows(
+        &mut self,
+        range: std::ops::Range<usize>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some(channel) = self.state.selected_channel() else {
+            return Vec::new();
+        };
+        let end = range.end.min(channel.members.len());
+        let start = range.start.min(end);
+        (start..end)
+            .map(|index| {
+                let member = channel.members[index].clone();
+                let channel = channel.name.clone();
+                let nickname = member
+                    .trim_start_matches(['~', '&', '@', '%', '+'])
+                    .to_owned();
+                div()
+                    .id(("member", index))
+                    .px_2()
+                    .py(px(1.))
+                    .hover(|d| d.bg(rgb(0xe8eff6)))
+                    .child(member)
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            let viewport = window.viewport_size();
+                            this.server_menu = None;
+                            this.channel_menu = None;
+                            this.member_prompt = None;
+                            this.member_menu = Some(MemberMenu {
+                                position: point(
+                                    event
+                                        .position
+                                        .x
+                                        .min((viewport.width - px(210.)).max(px(0.))),
+                                    event
+                                        .position
+                                        .y
+                                        .min((viewport.height - px(190.)).max(px(0.))),
+                                ),
+                                nickname: nickname.clone(),
+                                channel: channel.clone(),
+                            });
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element()
+            })
+            .collect()
     }
 }
 
