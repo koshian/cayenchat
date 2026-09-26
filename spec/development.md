@@ -433,3 +433,17 @@ packaged JSON files at runtime and uses embedded copies when the files are
 missing. Check that macOS, Windows, and Debian packages include both JSON files.
 For UI verification, switch each language in Connection settings, save, reopen
 settings, and inspect the chat window and native menus without reconnecting.
+
+### Linux performance tuning (2026-09-26, issue #5)
+
+Channel switching and typing were sluggish on Debian (Radeon, Wayland). Measured
+in a Debian container, cosmic-text shaping cost 0.1–0.3 ms per new line, so a
+switch reshaped about 50 visible lines. The vendored GPUI now caches shaping per
+word (bounded), log lists splice only changed rows, the combined log rebuilds
+only on new messages or selection changes, IRC events are awaited instead of
+polled every 50 ms, QUIT/NICK republish only affected rosters, and the log
+panes, user list and channel tree are cached views that typing does not redraw.
+A GPUI test asserts that draft input leaves the panes cached. On the Debian
+machine, channel switching became noticeably faster, and typing plus pane
+updates (messages, switching, selection, scrolling, hover, appearance changes)
+behaved correctly.
