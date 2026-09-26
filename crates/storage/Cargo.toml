@@ -12,6 +12,7 @@ serde_json.workspace = true
 dirs.workspace = true
 # OS credential stores: Keychain, Credential Manager, freedesktop Secret Service.
 keyring = "4.2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

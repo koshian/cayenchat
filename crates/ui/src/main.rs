@@ -477,8 +477,8 @@ fn startup_connection_config(
     })
 }
 
-/// Deletes the saved passwords of profiles that no longer exist, so a later
-/// profile reusing an ID cannot inherit them.
+/// Deletes the saved passwords of profiles that no longer exist. New profiles
+/// have fresh IDs even if cleanup fails or a removal has not been saved yet.
 fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &CredentialStore) {
     for server in &previous.servers {
         if !next.servers.iter().any(|kept| kept.id == server.id) {
@@ -4826,6 +4826,44 @@ mod startup_tests {
         assert!(config.sasl.is_none());
         settings.username.clear();
         assert!(connection_config(&settings, None, None).is_err());
+    }
+
+    #[test]
+    fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
+        // Cover both legacy sequential IDs and IDs assigned to new profiles.
+        for legacy in [true, false] {
+            let store = memory_store();
+            let mut previous = Settings::default();
+            previous.add_custom_server();
+            previous.selected_profile_mut().host = "old.example.org".into();
+            previous.selected_profile_mut().remember_passwords = true;
+            if legacy {
+                previous.selected_profile_mut().id = "custom-1".into();
+                previous.selected_server = "custom-1".into();
+            }
+            let removed = previous.selected_profile().clone();
+            for key in [removed.server_password_key(), removed.sasl_password_key()] {
+                store.set(&key, &Secret::new("old-password")).unwrap();
+            }
+
+            let mut next = previous.clone();
+            next.remove_selected_custom_server();
+            next.add_custom_server();
+            next.selected_profile_mut().host = "new.example.org".into();
+            next.selected_profile_mut().remember_passwords = true;
+            next.sasl_enabled = true;
+
+            // Connecting reads saved credentials before committing settings.
+            let i18n = super::Localizer::new(next.language);
+            let (server, sasl) = super::saved_connection_secrets(&next, &store, &i18n).unwrap();
+            assert!(server.is_none());
+            assert!(sasl.is_none());
+            assert_ne!(next.selected_profile().id, removed.id);
+
+            forget_removed_profiles(&previous, &next, &store);
+            assert!(!store.contains(&removed.server_password_key()).unwrap());
+            assert!(!store.contains(&removed.sasl_password_key()).unwrap());
+        }
     }
 
     #[test]

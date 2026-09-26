@@ -354,14 +354,9 @@ impl Settings {
     }
 
     pub fn add_custom_server(&mut self) {
-        let mut number = 1;
-        let id = loop {
-            let id = format!("custom-{number}");
-            if !self.servers.iter().any(|s| s.id == id) {
-                break id;
-            }
-            number += 1;
-        };
+        // Credentials outlive unsaved form edits and may survive failed deletes.
+        // A new profile must never reuse a removed profile's credential keys.
+        let id = format!("custom-{}", uuid::Uuid::new_v4());
         self.selected_server = id.clone();
         self.servers.push(ServerProfile {
             id,
@@ -663,6 +658,31 @@ mod tests {
         let file_text = fs::read_to_string(path).unwrap();
         assert!(!file_text.contains("server_password"));
         assert!(!file_text.contains("sasl_password"));
+    }
+
+    #[test]
+    fn custom_profile_ids_survive_reload_without_reusing_removed_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_custom_server();
+        settings.selected_profile_mut().host = "legacy.example.org".into();
+        settings.selected_profile_mut().id = "custom-1".into();
+        settings.selected_server = "custom-1".into();
+        settings.add_custom_server();
+        settings.selected_profile_mut().host = "new.example.org".into();
+        let removed = settings.selected_profile().clone();
+        save_to(&path, &settings).unwrap();
+
+        let mut loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.selected_profile().id, removed.id);
+        assert!(loaded.servers.iter().any(|server| server.id == "custom-1"));
+        loaded.remove_selected_custom_server();
+        save_to(&path, &loaded).unwrap();
+        let mut reloaded = load_from(&path).unwrap().unwrap();
+        reloaded.add_custom_server();
+        assert_ne!(reloaded.selected_profile().id, removed.id);
+        assert_ne!(reloaded.selected_profile().id, "custom-1");
     }
 
     #[test]
