@@ -136,7 +136,7 @@ History and notifications remain TODO.
 ## Platform integration
 
 - PARTIAL — macOS native application, connection, edit and diagnostic menus; Command+, opens the separate settings window
-- PARTIAL — Windows/Linux Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics; always-visible buttons above the main log display and copy diagnostics on all platforms, but GPUI 0.2.2 does not render native menus on Windows/Linux
+- PARTIAL — Windows/Linux Alt alone toggles an in-window menu bar in chat and settings windows, with shared app/connection/edit/view/window actions, arrows/Enter navigation and Escape/outside-click dismissal; Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics. Native GPUI menus remain unavailable there; platform runtime verification is pending.
 - TODO — notifications on both platforms
 - PARTIAL — common macOS/Windows editing shortcuts; Windows runtime and custom
   macOS bindings unverified

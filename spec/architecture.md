@@ -176,8 +176,10 @@ the UI validates the saved selected profile and connects without opening setting
 invalid saved connection details open settings with feedback. Only explicitly
 saved credentials are available at startup. The macOS
 application menu and Command+, open that window;
-Windows/Linux use Ctrl+, while GPUI's native menu rendering remains unavailable
-there. Passwords persist per server only after explicit plaintext confirmation;
+Windows/Linux use Ctrl+, or an in-window menu bar revealed by pressing Alt alone.
+The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
+and preserves input focus for editing commands. Alt chords do not toggle it;
+selecting an action or clicking outside dismisses it. macOS retains native menus. Passwords persist per server only after explicit plaintext confirmation;
 turning saving off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
 requires TLS before sending either server PASS or SASL PLAIN credentials. The core supports one connection, auto-join, channel
@@ -239,10 +241,11 @@ while registration is incomplete or after disconnection, including over a select
 channel. A worker panic produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is included
 in the transcript and clipboard export.
-The main log has always-visible diagnostic display and copy buttons on all
-platforms, including Linux/Windows where native menus are unavailable. Displaying
-diagnostics selects the server view, enables the transcript and scrolls to its
-start; copying exports the retained transcript regardless of the selected pane.
+Connection diagnostics are reached through the View menu (Alt reveals the menu
+bar on Linux/Windows) or keyboard shortcuts. There are no permanent diagnostic
+buttons. Displaying diagnostics selects the server view, enables the transcript
+and scrolls to its start; copying exports the retained transcript regardless of
+the selected pane.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels

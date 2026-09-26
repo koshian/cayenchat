@@ -107,8 +107,6 @@
   "language_english": "English",
   "language_hint": "システム設定が日本語以外の場合は英語で表示します。",
   "diagnostics_heading": "接続診断（→ 送信 / ← 受信、発言本文を含みます）",
-  "diagnostics_show": "接続診断",
-  "diagnostics_copy": "診断をコピー",
   "menu_settings": "接続設定…",
   "menu_services": "サービス",
   "menu_quit": "CayenChat を終了",

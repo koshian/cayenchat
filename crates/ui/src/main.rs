@@ -4,6 +4,7 @@ mod diagnostics;
 mod input;
 mod localization;
 mod log_list;
+mod menu_bar;
 mod theme;
 mod whois;
 
@@ -396,6 +397,7 @@ struct ChatWindow {
     whois_replies: Vec<(WhoisInfo, bool)>,
     diagnostics: Vec<String>,
     debug_enabled: bool,
+    menu_bar: menu_bar::MenuBar,
     connection_started: Option<Instant>,
     watchdog_stage: u8,
     connection_generation: u64,
@@ -499,6 +501,7 @@ enum FontTarget {
 }
 
 struct SettingsWindow {
+    menu_bar: menu_bar::MenuBar,
     owner: WindowHandle<ChatWindow>,
     settings: SettingsForm,
     feedback: Option<String>,
@@ -603,6 +606,7 @@ impl ChatWindow {
             whois_replies: Vec::new(),
             diagnostics: Vec::new(),
             debug_enabled: false,
+            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             connection_started: None,
             watchdog_stage: 0,
             connection_generation: 0,
@@ -1077,8 +1081,12 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn toggle_debug(&mut self, _: &ToggleDebug, _: &mut Window, cx: &mut Context<Self>) {
-        self.debug_enabled = !self.debug_enabled;
+    fn toggle_debug(&mut self, _: &ToggleDebug, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.debug_enabled {
+            self.show_diagnostics(window, cx);
+            return;
+        }
+        self.debug_enabled = false;
         cx.set_menus(app_menus(self.debug_enabled, &self.i18n));
         cx.notify();
     }
@@ -1562,6 +1570,7 @@ impl SettingsWindow {
         fonts.sort_unstable();
         fonts.dedup();
         Self {
+            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             owner,
             settings,
             feedback: None,
@@ -2718,6 +2727,14 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
         let content = self.render_settings(cx).into_any_element();
+        let content = menu_bar::wrap(
+            &self.menu_bar,
+            cx.get_menus().unwrap_or_default(),
+            content,
+            |this| &mut this.menu_bar,
+            window,
+            cx,
+        );
         decorations::window_frame(window, cx, title, content)
     }
 }
@@ -2725,6 +2742,14 @@ impl Render for SettingsWindow {
 impl Render for ChatWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.render_chat(window, cx);
+        let content = menu_bar::wrap(
+            &self.menu_bar,
+            cx.get_menus().unwrap_or_default(),
+            content,
+            |this| &mut this.menu_bar,
+            window,
+            cx,
+        );
         decorations::window_frame(window, cx, self.window_title(), content)
     }
 }
@@ -2734,7 +2759,8 @@ impl ChatWindow {
         let theme = theme::current(cx);
         self.sync_log_lists();
         let selection = self.state.selection();
-        let origin = decorations::content_origin(window);
+        let mut origin = decorations::content_origin(window);
+        origin.y += self.menu_bar.height();
         let log_id = match selection {
             Selection::Channel(id) => id.0,
             Selection::Server(id) => u32::MAX - id.0,
@@ -2939,49 +2965,7 @@ impl ChatWindow {
                 .min_h_0(),
             );
 
-        let diagnostic_controls = div()
-            .flex()
-            .flex_wrap()
-            .flex_shrink_0()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(border)
-            .bg(theme.surface)
-            .child(
-                div()
-                    .id("show-diagnostics")
-                    .px_2()
-                    .border_1()
-                    .border_color(border)
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.hover_strong))
-                    .child(self.i18n.text("diagnostics_show"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.show_diagnostics(window, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .id("copy-diagnostics")
-                    .px_2()
-                    .border_1()
-                    .border_color(border)
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.hover_strong))
-                    .child(self.i18n.text("diagnostics_copy"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.copy_diagnostics(&CopyDiagnostics, window, cx);
-                    })),
-            );
-        let main_pane = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .child(diagnostic_controls)
-            .child(main_log);
+        let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
         let sub_pane = div()
             .flex()
             .flex_col()
