@@ -23,7 +23,7 @@ use input::TextInput;
 use localization::Localizer;
 use log_list::LogList;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
 use theme::Theme;
@@ -414,7 +414,7 @@ struct ChatWindow {
     pending_whois: HashSet<String>,
     whois_windows: HashMap<String, WindowHandle<WhoisWindow>>,
     whois_replies: Vec<(WhoisInfo, bool)>,
-    diagnostics: Vec<String>,
+    diagnostics: VecDeque<String>,
     debug_enabled: bool,
     menu_bar: menu_bar::MenuBar,
     connection_started: Option<Instant>,
@@ -623,7 +623,7 @@ impl ChatWindow {
             pending_whois: HashSet::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
-            diagnostics: Vec::new(),
+            diagnostics: VecDeque::new(),
             debug_enabled: false,
             menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             connection_started: None,
@@ -1159,7 +1159,13 @@ impl ChatWindow {
     }
 
     fn copy_diagnostics(&mut self, _: &CopyDiagnostics, _: &mut Window, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(self.diagnostics.join("\n")));
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            self.diagnostics
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
     }
 
     fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1249,9 +1255,10 @@ impl ChatWindow {
     }
 
     fn push_diagnostic(&mut self, line: String) {
-        self.diagnostics.push(line);
+        // Every IRC line is recorded, so drop the oldest without shifting.
+        self.diagnostics.push_back(line);
         if self.diagnostics.len() > DIAGNOSTIC_LIMIT {
-            self.diagnostics.remove(0);
+            self.diagnostics.pop_front();
         }
     }
 
