@@ -73,6 +73,7 @@
   "event_reconnecting": "再接続しています…",
   "event_retry_scheduled": "{seconds} 秒後に再接続します。",
   "event_retry_cancelled": "自動再接続を停止しました。",
+  "event_retry_refused": "サーバーが認証または設定を拒否したため、自動再接続は行いません。設定を確認してから再接続してください。",
   "choose_font": "選択 ▾",
   "default_monospace": "既定の等幅フォント",
   "system_default": "システム標準",

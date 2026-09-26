@@ -162,7 +162,10 @@ machine negotiates CAP, sends PLAIN credentials, and waits for success before
 ending CAP negotiation. The UI retains the active connection configuration and
 retries unexpected disconnections after 3, 6, 12, 24, then 30 seconds (capped).
 A successful registration resets the delay; an explicit disconnect cancels pending
-retries. Reconnection preserves the in-memory conversation logs and drafts. A
+retries. The core reports a terminal `Refused` event instead of `Disconnected`
+for SASL failures, a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,
+and 464/465 during registration; the UI does not retry those automatically,
+because repeating rejected credentials risks account lockout or a server ban. Reconnection preserves the in-memory conversation logs and drafts. A
 complete membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each

@@ -73,6 +73,7 @@
   "event_reconnecting": "Reconnecting…",
   "event_retry_scheduled": "Reconnecting in {seconds} seconds.",
   "event_retry_cancelled": "Automatic reconnection stopped.",
+  "event_retry_refused": "Automatic reconnection is off because the server refused authentication or these settings. Check the settings and reconnect.",
   "choose_font": "Choose ▾",
   "default_monospace": "Default monospace font",
   "system_default": "System default",

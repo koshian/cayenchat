@@ -358,6 +358,10 @@ pub enum Event {
         notice: bool,
     },
     Disconnected(String),
+    /// The server rejected credentials or this configuration. Terminal like
+    /// `Disconnected`, but reconnecting with the same settings would only be
+    /// rejected again, so callers must not retry automatically.
+    Refused(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1054,6 +1058,7 @@ async fn run(
     }
     let registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
     let mut registered = false;
+    let mut refusal = None;
     let mut current_nick = registration_nick;
     let mut roster = RosterTracker::default();
     let mut whois = WhoisCollector::default();
@@ -1135,7 +1140,7 @@ async fn run(
                             }
                         }
                         if !wire_encoding.eq_ignore_ascii_case("UTF-8") && requires_utf8(&message) {
-                            let _ = events.send(Event::Disconnected(
+                            let _ = events.send(Event::Refused(
                                 "Server requires UTF-8 (UTF8ONLY); change this server's character encoding to UTF-8.".into()
                             )).await;
                             return;
@@ -1147,9 +1152,12 @@ async fn run(
                                 wire(&events, started, WireDirection::Sent, line).await;
                             }
                             if let Err(error) = result {
-                                let _ = events.send(Event::Disconnected(error)).await;
+                                let _ = events.send(Event::Refused(error)).await;
                                 return;
                             }
+                        }
+                        if !registered && let Some(reason) = registration_refusal(&message) {
+                            refusal = Some(reason);
                         }
                         if matches!(message.command, IrcCommand::Response(Response::RPL_WELCOME, _)) {
                             registered = true;
@@ -1168,12 +1176,15 @@ async fn run(
                     Some(Err(error)) => {
                         let detail = stream_error_detail(&error);
                         diagnostic(&events, started, format!("IRC stream failed: {detail}")).await;
-                        let _ = events.send(Event::Disconnected(detail)).await;
+                        let _ = events.send(refusal.take().map_or(Event::Disconnected(detail), Event::Refused)).await;
                         break;
                     }
                     None => {
                         diagnostic(&events, started, "Server closed the IRC stream.").await;
-                        let _ = events.send(Event::Disconnected("Server closed the connection.".into())).await;
+                        let _ = events.send(refusal.take().map_or_else(
+                            || Event::Disconnected("Server closed the connection.".into()),
+                            Event::Refused,
+                        )).await;
                         break;
                     }
                 }
@@ -1183,10 +1194,27 @@ async fn run(
             }
             _ = tokio::time::sleep_until(registration_deadline), if !registered => {
                 diagnostic(&events, started, "IRC registration timed out.").await;
-                let _ = events.send(Event::Disconnected("Registration timed out.".into())).await;
+                let _ = events.send(refusal.take().map_or_else(
+                    || Event::Disconnected("Registration timed out.".into()),
+                    Event::Refused,
+                )).await;
                 break;
             }
         }
+    }
+}
+
+/// Registration replies after which the server closes the link and an
+/// identical reconnect would be refused again.
+fn registration_refusal(message: &IrcMessage) -> Option<String> {
+    match &message.command {
+        IrcCommand::Response(Response::ERR_PASSWDMISMATCH, _) => {
+            Some("Server rejected the password (464).".into())
+        }
+        IrcCommand::Response(Response::ERR_YOUREBANNEDCREEP, _) => {
+            Some("Server refused the connection because this client is banned (465).".into())
+        }
+        _ => None,
     }
 }
 
@@ -2306,15 +2334,72 @@ mod tests {
         let mut failure = None;
         while Instant::now() < deadline {
             match event_rx.try_recv() {
-                Ok(Event::Disconnected(reason)) => {
+                Ok(Event::Refused(reason)) => {
                     failure = Some(reason);
                     break;
                 }
+                Ok(Event::Disconnected(reason)) => panic!("retryable SASL failure: {reason}"),
                 Ok(Event::Registered { .. }) => panic!("registered after SASL failure"),
                 _ => thread::sleep(Duration::from_millis(10)),
             }
         }
         assert_eq!(failure.as_deref(), Some("SASL authentication failed."));
+        server.join().unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn password_mismatch_is_refused_instead_of_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                lines.read_line(&mut line).unwrap();
+                if line.starts_with("USER ") {
+                    break;
+                }
+            }
+            socket
+                .write_all(b":server 464 alice :Password incorrect\r\nERROR :Closing link\r\n")
+                .unwrap();
+        });
+
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+        config.port = port;
+        config.use_tls = false; // The private worker is tested without a certificate.
+        config.server_password = Some("wrong".into());
+        let (_commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let worker = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(config, command_rx, event_tx));
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut failure = None;
+        while Instant::now() < deadline {
+            match event_rx.try_recv() {
+                Ok(Event::Refused(reason)) => {
+                    failure = Some(reason);
+                    break;
+                }
+                Ok(Event::Disconnected(reason)) => panic!("retryable 464: {reason}"),
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert_eq!(
+            failure.as_deref(),
+            Some("Server rejected the password (464).")
+        );
         server.join().unwrap();
         worker.join().unwrap();
     }

@@ -1154,14 +1154,20 @@ impl ChatWindow {
     fn poll_events(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
         let mut disconnected = false;
+        let mut refused = false;
         for _ in 0..64 {
             let event = self.irc.as_mut().and_then(Connection::try_recv);
             let Some(event) = event else {
                 break;
             };
             changed = true;
-            if matches!(event, Event::Disconnected(_)) {
-                disconnected = true;
+            match event {
+                Event::Disconnected(_) => disconnected = true,
+                Event::Refused(_) => {
+                    disconnected = true;
+                    refused = true;
+                }
+                _ => {}
             }
             self.handle_event(event);
         }
@@ -1211,7 +1217,13 @@ impl ChatWindow {
         }
         if disconnected || worker_closed {
             self.irc = None;
-            self.schedule_retry(cx);
+            if refused {
+                // Retrying rejected credentials risks account lockout or a ban.
+                self.state
+                    .append_server_message(NetworkId(1), self.i18n.text("event_retry_refused"));
+            } else {
+                self.schedule_retry(cx);
+            }
             return false;
         }
         true
@@ -1324,7 +1336,7 @@ impl ChatWindow {
                     );
                 }
             }
-            Event::Disconnected(reason) => {
+            Event::Disconnected(reason) | Event::Refused(reason) => {
                 self.record_disconnect(reason);
             }
         }
