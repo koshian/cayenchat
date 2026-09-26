@@ -2712,10 +2712,6 @@ fn color_pair(label: &str, light: &Entity<TextInput>, dark: &Entity<TextInput>, 
         .child(color_input(dark, cx))
 }
 
-fn selected_font<'a>(name: &'a str, fallback: &'a str) -> &'a str {
-    if name.is_empty() { fallback } else { name }
-}
-
 fn default_time_font() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -3359,7 +3355,7 @@ struct LogStyle {
     main_alt: Rgba,
     event_color: Rgba,
     sub_alt: Rgba,
-    time_font: String,
+    time_font: SharedString,
     alternate_rows: bool,
 }
 
@@ -3370,7 +3366,13 @@ impl LogStyle {
             main_alt: theme.panes.main_alternate,
             event_color: theme.panes.channel_event,
             sub_alt: theme.panes.sub_alternate,
-            time_font: selected_font(&appearance.time_font, default_time_font()).to_owned(),
+            // Built for every visible row on each redraw; the default font
+            // name needs no allocation.
+            time_font: if appearance.time_font.is_empty() {
+                SharedString::new_static(default_time_font())
+            } else {
+                appearance.time_font.clone().into()
+            },
             alternate_rows: appearance.alternate_rows,
         }
     }
