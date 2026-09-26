@@ -391,6 +391,8 @@ struct ChatWindow {
     sub_list: LogList,
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
+    tree_list: LogList,
+    tree_rows: Vec<TreeRow>,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
@@ -617,6 +619,8 @@ impl ChatWindow {
             main_lists: HashMap::new(),
             sub_list: LogList::new(),
             panes: None,
+            tree_list: LogList::new_top(),
+            tree_rows: Vec::new(),
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
@@ -2900,28 +2904,75 @@ impl Render for ChatWindow {
 impl ChatWindow {
     fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
-        let selection = self.state.selection();
-        let border = theme.border;
+        // The tree is virtualized like the logs: it redraws on every state
+        // change, but builds only the rows near the viewport. Keys ascend in
+        // display order (server position, then conversation id), so adding a
+        // channel keeps the other rows' measured heights and the scroll.
+        self.tree_rows.clear();
+        let mut keys = Vec::new();
+        for (index, network) in self.state.networks().iter().enumerate() {
+            let base = (index as u64) << 32;
+            self.tree_rows.push(TreeRow::Server(network.id));
+            keys.push(base);
+            for conversation in self
+                .state
+                .conversations()
+                .iter()
+                .filter(|c| c.network == network.id)
+            {
+                self.tree_rows.push(TreeRow::Channel(conversation.id));
+                keys.push(base | (u64::from(conversation.id.0) + 1));
+            }
+        }
+        self.tree_list.sync(0, &keys);
         let appearance = &self.appearance;
-        let mut channels = div()
-            .id("channels")
+        div()
             .size_full()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
             .bg(theme.channel_tree)
             .when(!appearance.channel_font.is_empty(), |d| {
                 d.font_family(appearance.channel_font.clone())
             })
             .border_t_1()
-            .border_color(border);
-        for network in self.state.networks() {
-            let server_id = network.id;
-            let status_mark = match self.state.status(server_id) {
-                Some(ConnectionStatus::Registered) => " ●",
-                Some(ConnectionStatus::Connecting | ConnectionStatus::TransportConnected) => " …",
-                Some(ConnectionStatus::Disconnected(_)) => " ×",
-                _ => "",
-            };
-            channels = channels.child(
+            .border_color(theme.border)
+            .child(
+                list(
+                    self.tree_list.state.clone(),
+                    cx.processor(Self::render_tree_row),
+                )
+                .flex_1()
+                .min_h_0(),
+            )
+            .into_any_element()
+    }
+
+    fn render_tree_row(
+        &mut self,
+        row: usize,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::current(cx);
+        let selection = self.state.selection();
+        match self.tree_rows.get(row).copied() {
+            Some(TreeRow::Server(server_id)) => {
+                let Some(network) = self
+                    .state
+                    .networks()
+                    .iter()
+                    .find(|network| network.id == server_id)
+                else {
+                    return div().into_any_element();
+                };
+                let status_mark = match self.state.status(server_id) {
+                    Some(ConnectionStatus::Registered) => " ●",
+                    Some(ConnectionStatus::Connecting | ConnectionStatus::TransportConnected) => {
+                        " …"
+                    }
+                    Some(ConnectionStatus::Disconnected(_)) => " ×",
+                    _ => "",
+                };
                 div()
                     .id(("server", server_id.0))
                     .px_2()
@@ -2957,69 +3008,66 @@ impl ChatWindow {
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.dispatch(Command::SelectServer(server_id), window, cx);
-                    })),
-            );
-            for conversation in self
-                .state
-                .conversations()
-                .iter()
-                .filter(|c| c.network == network.id)
-            {
-                let id = conversation.id;
+                    }))
+                    .into_any_element()
+            }
+            Some(TreeRow::Channel(id)) => {
+                let Some(conversation) = self.state.conversations().iter().find(|c| c.id == id)
+                else {
+                    return div().into_any_element();
+                };
                 let unread = self.state.is_unread(id);
                 let name = conversation.name.clone();
                 let joined = self.state.is_active_channel(id);
-                channels = channels.child(
-                    div()
-                        .id(("channel", id.0))
-                        .pl_4()
-                        .pr_2()
-                        .py(px(2.))
-                        .cursor_pointer()
-                        .when(selection == Selection::Channel(id), |d| {
-                            d.bg(theme.selected)
-                        })
-                        .when(unread, |d| d.font_weight(FontWeight::BOLD))
-                        .when(!joined, |d| d.text_color(theme.text_muted))
-                        .hover(|d| d.bg(theme.hover_strong))
-                        .child(format!(
-                            "{}{}",
-                            if unread { "● " } else { "" },
-                            conversation.name
-                        ))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                let viewport = window.viewport_size();
-                                this.channel_menu = Some(ChannelMenu {
-                                    position: point(
-                                        event
-                                            .position
-                                            .x
-                                            .min((viewport.width - px(176.)).max(px(0.))),
-                                        event
-                                            .position
-                                            .y
-                                            .min((viewport.height - px(76.)).max(px(0.))),
-                                    ),
-                                    channel: name.clone(),
-                                    joined,
-                                });
-                                this.server_menu = None;
-                                this.member_menu = None;
-                                this.member_prompt = None;
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.dispatch(Command::SelectChannel(id), window, cx);
-                        })),
-                );
+                div()
+                    .id(("channel", id.0))
+                    .pl_4()
+                    .pr_2()
+                    .py(px(2.))
+                    .cursor_pointer()
+                    .when(selection == Selection::Channel(id), |d| {
+                        d.bg(theme.selected)
+                    })
+                    .when(unread, |d| d.font_weight(FontWeight::BOLD))
+                    .when(!joined, |d| d.text_color(theme.text_muted))
+                    .hover(|d| d.bg(theme.hover_strong))
+                    .child(format!(
+                        "{}{}",
+                        if unread { "● " } else { "" },
+                        conversation.name
+                    ))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            let viewport = window.viewport_size();
+                            this.channel_menu = Some(ChannelMenu {
+                                position: point(
+                                    event
+                                        .position
+                                        .x
+                                        .min((viewport.width - px(176.)).max(px(0.))),
+                                    event
+                                        .position
+                                        .y
+                                        .min((viewport.height - px(76.)).max(px(0.))),
+                                ),
+                                channel: name.clone(),
+                                joined,
+                            });
+                            this.server_menu = None;
+                            this.member_menu = None;
+                            this.member_prompt = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.dispatch(Command::SelectChannel(id), window, cx);
+                    }))
+                    .into_any_element()
             }
+            None => div().into_any_element(),
         }
-
-        channels.into_any_element()
     }
 
     /// Content of a cached pane; see [`ChatPane`].
@@ -3433,6 +3481,13 @@ impl ChatWindow {
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .into_any_element()
     }
+}
+
+/// A row of the channel tree.
+#[derive(Clone, Copy)]
+enum TreeRow {
+    Server(NetworkId),
+    Channel(ConversationId),
 }
 
 #[derive(Clone, Copy)]
@@ -4335,6 +4390,11 @@ mod pane_tests {
         cx.run_until_parked();
         let rendered = chat.read_with(cx, |chat, _| chat.pane_renders);
         assert!(rendered >= 4, "panes rendered {rendered} times");
+        // One server row and the two configured channels.
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.tree_list.state.item_count()),
+            3
+        );
 
         cx.simulate_input("hello");
         cx.run_until_parked();

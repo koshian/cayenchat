@@ -10,9 +10,10 @@ use gpui::{ListAlignment, ListState, px};
 /// Extra height rendered beyond the viewport so scrolling does not pop in.
 const OVERDRAW: f32 = 400.;
 
-/// A bottom-anchored list of `prefix` fixed rows followed by messages whose
-/// arrival sequences ascend. Bottom alignment keeps the newest line visible
-/// while the user is at the end and preserves the position after scrolling up.
+/// A list of `prefix` fixed rows followed by rows identified by ascending keys
+/// (message arrival sequences for logs). Logs are bottom-anchored, which keeps
+/// the newest line visible while the user is at the end and preserves the
+/// position after scrolling up.
 pub struct LogList {
     pub state: ListState,
     prefix: usize,
@@ -21,8 +22,17 @@ pub struct LogList {
 
 impl LogList {
     pub fn new() -> Self {
+        Self::with_alignment(ListAlignment::Bottom)
+    }
+
+    /// A list anchored at the top, such as the channel tree.
+    pub fn new_top() -> Self {
+        Self::with_alignment(ListAlignment::Top)
+    }
+
+    fn with_alignment(alignment: ListAlignment) -> Self {
         Self {
-            state: ListState::new(0, ListAlignment::Bottom, px(OVERDRAW)),
+            state: ListState::new(0, alignment, px(OVERDRAW)),
             prefix: 0,
             sequences: Vec::new(),
         }

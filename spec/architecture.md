@@ -115,7 +115,8 @@ the quitting nickname. Activity text uses configurable green (`#007D00`) by
 default. The main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.
-Both logs and the user list are virtualized (GPUI `list` / `uniform_list`), so
+Both logs, the user list and the channel tree are virtualized (GPUI `list` /
+`uniform_list`), so
 each redraw lays out only rows near the viewport. GPUI re-renders the whole chat
 window whenever the draft input changes, so rebuilding every retained line made
 typing, IME composition and channel switching slow, most visibly on Linux. The
