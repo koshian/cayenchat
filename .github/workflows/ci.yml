@@ -51,7 +51,14 @@ jobs:
             libxkbcommon-x11-dev
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --workspace --locked --verbose
 
+      # The default member is only the UI crate; test every crate so storage,
+      # upload, irc-core and app also run on each platform.
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --workspace --locked --verbose
+
+      # Probes the real Windows Credential Manager through the keyring crate.
+      - name: Test system credential store
+        if: runner.os == 'Windows'
+        run: cargo test -p cayenchat-storage --locked -- --ignored --nocapture

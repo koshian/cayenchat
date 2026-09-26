@@ -40,6 +40,11 @@ For UI work, also build and run the desktop application on the currently availab
 
 Do not claim cross-platform verification unless both platforms were actually tested.
 
+GitHub Actions CI builds and tests the whole workspace on Linux x86_64, Windows
+x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
+system credential store probe against Credential Manager. CI does not exercise
+GUI interaction, IME, drag and drop or clipboard images.
+
 UI tests enable GPUI's `test-support` through a dev dependency. The menu regression
 test renders the Linux/Windows in-window menu on every test host, including macOS,
 and exercises the first frame and Alt reveal/hide without a display server or
