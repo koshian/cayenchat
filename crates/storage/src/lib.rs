@@ -58,6 +58,17 @@ pub enum ChannelNumberModifier {
     Super,
 }
 
+/// Draft-editing key bindings on Linux. `Auto` follows the desktop's GTK
+/// key theme (`gtk-key-theme`), so Emacs users get Ctrl+A/E/K and friends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextKeyTheme {
+    #[default]
+    Auto,
+    Standard,
+    Emacs,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -228,6 +239,7 @@ pub struct Settings {
     pub theme: ThemeMode,
     pub linux_display: LinuxDisplay,
     pub channel_number_modifier: ChannelNumberModifier,
+    pub text_key_theme: TextKeyTheme,
     pub appearance: Appearance,
 }
 
@@ -249,6 +261,7 @@ impl Default for Settings {
             theme: ThemeMode::System,
             linux_display: LinuxDisplay::Wayland,
             channel_number_modifier: ChannelNumberModifier::Ctrl,
+            text_key_theme: TextKeyTheme::Auto,
             appearance: Appearance::default(),
         }
     }
@@ -798,7 +811,10 @@ mod tests {
             ChannelNumberModifier::Ctrl
         );
 
+        assert_eq!(settings.text_key_theme, TextKeyTheme::Auto);
+
         settings.channel_number_modifier = ChannelNumberModifier::Super;
+        settings.text_key_theme = TextKeyTheme::Emacs;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
