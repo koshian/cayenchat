@@ -29,6 +29,9 @@ sys-locale = "0.3.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui = { workspace = true, features = ["wayland", "x11"] }
+# Same version and backend as GPUI's own portal client, so no new crates.
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+futures-util.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 gpui = { workspace = true, features = ["windows-manifest"] }

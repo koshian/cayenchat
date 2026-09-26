@@ -1,3 +1,5 @@
+mod decorations;
+mod desktop;
 mod input;
 mod localization;
 mod log_list;
@@ -2698,22 +2700,26 @@ fn styled_log_text(
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_settings(cx)
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.i18n.text("settings_title");
+        let content = self.render_settings(cx).into_any_element();
+        decorations::window_frame(window, cx, title, content)
     }
 }
 
 impl Render for ChatWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_chat(window, cx)
+        let content = self.render_chat(window, cx);
+        decorations::window_frame(window, cx, self.window_title(), content)
     }
 }
 
 impl ChatWindow {
-    fn render_chat(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         self.sync_log_lists();
         let selection = self.state.selection();
+        let origin = decorations::content_origin(window);
         let log_id = match selection {
             Selection::Channel(id) => id.0,
             Selection::Server(id) => u32::MAX - id.0,
@@ -2974,8 +2980,8 @@ impl ChatWindow {
             div()
                 .id("server-context-menu")
                 .absolute()
-                .left(position.x)
-                .top(position.y)
+                .left(position.x - origin.x)
+                .top(position.y - origin.y)
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -3017,8 +3023,8 @@ impl ChatWindow {
             let mut popup = div()
                 .id("channel-context-menu")
                 .absolute()
-                .left(menu.position.x)
-                .top(menu.position.y)
+                .left(menu.position.x - origin.x)
+                .top(menu.position.y - origin.y)
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -3053,8 +3059,8 @@ impl ChatWindow {
             let mut popup = div()
                 .id("member-context-menu")
                 .absolute()
-                .left(menu.position.x)
-                .top(menu.position.y)
+                .left(menu.position.x - origin.x)
+                .top(menu.position.y - origin.y)
                 .w(px(210.))
                 .p_1()
                 .bg(theme.surface)
@@ -3130,8 +3136,8 @@ impl ChatWindow {
             div()
                 .id("member-prompt")
                 .absolute()
-                .left(prompt.position.x)
-                .top(prompt.position.y)
+                .left(prompt.position.x - origin.x)
+                .top(prompt.position.y - origin.y)
                 .w(px(300.))
                 .p_2()
                 .bg(theme.surface)
@@ -3819,6 +3825,7 @@ fn main() {
     select_linux_display(saved.linux_display);
     Application::new().run(move |cx: &mut App| {
         theme::apply(saved.theme, &saved.appearance, cx);
+        desktop::watch(cx);
         input::bind_keys(cx);
         cx.bind_keys(shortcut_bindings());
         cx.set_menus(app_menus(false, &Localizer::new(Language::System)));

@@ -285,8 +285,10 @@ fn button(
 }
 
 impl Render for WhoisWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_content(cx)
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.info.nickname.clone();
+        let content = self.render_content(cx);
+        crate::decorations::window_frame(window, cx, title, content)
     }
 }
 

@@ -155,7 +155,15 @@ follow the operating system, so they can differ from an explicitly chosen app
 theme. On Linux the display choice is applied at startup before GPUI picks a
 backend: X11 removes `WAYLAND_DISPLAY` when an X display exists, so GNOME draws a
 themed title bar through XWayland at the cost of XIM input and blurrier
-fractional scaling. `CAYENCHAT_DISPLAY=x11|wayland` overrides the setting. The
+fractional scaling. `CAYENCHAT_DISPLAY=x11|wayland` overrides the setting. When the compositor offers no
+`xdg-decoration` (GNOME), GPUI reports client-side decorations (a local GPUI
+patch; upstream wrongly kept `Server`) and every window draws an Adwaita-like
+frame: centered bold title, round window buttons, rounded top corners, a shadow
+margin with resize handles and a dimmed backdrop state, in the active theme's
+light or dark colors. The XDG desktop portal supplies GNOME's `button-layout`,
+`action-double-click-titlebar` and interface font, and changes apply live.
+Server-decorated windows (macOS, Windows, X11, KDE and other compositors with
+`xdg-decoration`) are unchanged. The
 member-list color no longer affects the input bar
 or the window root. Missing startup-connection values default to disabled, and older
 settings default to System language; existing saved choices remain intact. The UI resolves the system language with `sys-locale` (Japanese or
