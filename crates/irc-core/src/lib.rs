@@ -1381,13 +1381,19 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
             format!("{prefix}{}", user.get_nickname())
         })
         .collect();
-    for user in &mut users {
-        let nickname = display_nickname(user).to_owned();
-        if let Some(prefix) = roster
-            .renamed_roles
-            .get(&(channel.to_owned(), nickname.to_lowercase()))
-        {
-            *user = format!("{prefix}{nickname}");
+    let has_renamed_roles = roster
+        .renamed_roles
+        .keys()
+        .any(|(known_channel, _)| known_channel == channel);
+    if has_renamed_roles {
+        for user in &mut users {
+            let nickname = display_nickname(user).to_owned();
+            if let Some(prefix) = roster
+                .renamed_roles
+                .get(&(channel.to_owned(), nickname.to_lowercase()))
+            {
+                *user = format!("{prefix}{nickname}");
+            }
         }
     }
     roster.renamed_roles.retain(|(known_channel, nickname), _| {
@@ -1460,7 +1466,17 @@ fn translate_message(
         IrcCommand::KICK(channel, nickname, _) if nickname != current_nick => {
             vec![channel.clone()]
         }
-        IrcCommand::QUIT(_) | IrcCommand::NICK(_) => client.list_channels().unwrap_or_default(),
+        // Only rosters that contained the user change; republishing every
+        // joined channel on each QUIT or NICK made netsplits costly.
+        IrcCommand::QUIT(_) | IrcCommand::NICK(_) => {
+            let nickname = message.source_nickname().unwrap_or("");
+            client
+                .list_channels()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|channel| roster.had_member(channel, nickname))
+                .collect()
+        }
         _ => Vec::new(),
     };
     match &message.command {
@@ -1536,7 +1552,6 @@ fn translate_message(
         translated.extend(
             changed_channels
                 .iter()
-                .filter(|channel| roster.had_member(channel, &actor))
                 .map(|channel| Event::ChannelActivity {
                     channel: channel.clone(),
                     actor: actor.clone(),
@@ -1996,6 +2011,13 @@ mod tests {
                         seen_message = channel == "#test" && sender == "alice" && text == "hello";
                     }
                     Event::Names { channel, users } => {
+                        // charlie only ever joins #test, so its NICK and QUIT
+                        // must not republish #other.
+                        assert!(
+                            channel != "#other"
+                                || !activities.iter().any(|(actor, _)| actor == "charlie"),
+                            "#other roster republished for an unrelated user"
+                        );
                         rosters.push(users.clone());
                         seen_names |= channel == "#test"
                             && users.contains(&"@alice".to_owned())
