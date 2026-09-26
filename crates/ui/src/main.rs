@@ -1087,6 +1087,20 @@ impl ChatWindow {
         cx.write_to_clipboard(ClipboardItem::new_string(self.diagnostics.join("\n")));
     }
 
+    fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.debug_enabled = true;
+        cx.set_menus(app_menus(true, &self.i18n));
+        let network = self.state.selected_network().id;
+        self.dispatch(Command::SelectServer(network), window, cx);
+        self.sync_log_lists();
+        self.main_lists[&self.state.selection()]
+            .state
+            .scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+    }
+
     fn start_log_selection(
         &mut self,
         channel: ConversationId,
@@ -2925,7 +2939,49 @@ impl ChatWindow {
                 .min_h_0(),
             );
 
-        let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
+        let diagnostic_controls = div()
+            .flex()
+            .flex_wrap()
+            .flex_shrink_0()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .id("show-diagnostics")
+                    .px_2()
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.hover_strong))
+                    .child(self.i18n.text("diagnostics_show"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_diagnostics(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("copy-diagnostics")
+                    .px_2()
+                    .border_1()
+                    .border_color(border)
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.hover_strong))
+                    .child(self.i18n.text("diagnostics_copy"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.copy_diagnostics(&CopyDiagnostics, window, cx);
+                    })),
+            );
+        let main_pane = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(diagnostic_controls)
+            .child(main_log);
         let sub_pane = div()
             .flex()
             .flex_col()

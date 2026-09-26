@@ -239,6 +239,10 @@ while registration is incomplete or after disconnection, including over a select
 channel. A worker panic produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is included
 in the transcript and clipboard export.
+The main log has always-visible diagnostic display and copy buttons on all
+platforms, including Linux/Windows where native menus are unavailable. Displaying
+diagnostics selects the server view, enables the transcript and scrolls to its
+start; copying exports the retained transcript regardless of the selected pane.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels

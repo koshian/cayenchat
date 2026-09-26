@@ -107,6 +107,8 @@
   "language_english": "English",
   "language_hint": "System language follows your operating system; other languages use English.",
   "diagnostics_heading": "Connection diagnostics (→ sent / ← received; includes message bodies)",
+  "diagnostics_show": "Connection diagnostics",
+  "diagnostics_copy": "Copy diagnostics",
   "menu_settings": "Settings…",
   "menu_services": "Services",
   "menu_quit": "Quit CayenChat",
