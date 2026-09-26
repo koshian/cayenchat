@@ -34,6 +34,9 @@ actions!(
         DeleteWordForward,
         DeleteToBeginning,
         DeleteToEnd,
+        DeleteLine,
+        DeleteWhitespace,
+        CollapseWhitespace,
         Undo,
         Redo,
         ShowCharacterPalette,
@@ -268,6 +271,42 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx);
     }
 
+    fn delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(0, cx);
+        self.select_to(self.content.len(), cx);
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_whitespace(
+        &mut self,
+        _: &DeleteWhitespace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replace_whitespace("", window, cx);
+    }
+
+    fn collapse_whitespace(
+        &mut self,
+        _: &CollapseWhitespace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replace_whitespace(" ", window, cx);
+    }
+
+    /// Replaces the whitespace run around the cursor, like GTK's
+    /// `delete-from-cursor (whitespace)` used by the Emacs key theme.
+    fn replace_whitespace(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let range = whitespace_around(&self.content, self.cursor_offset());
+        if self.content[range.clone()] == *text {
+            return;
+        }
+        self.move_to(range.start, cx);
+        self.select_to(range.end, cx);
+        self.replace_text_in_range(None, text, window, cx);
+    }
+
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(snapshot) = self.undo.pop() {
             self.redo.push(self.snapshot());
@@ -494,6 +533,12 @@ fn word_boundary_right(text: &str, offset: usize) -> usize {
         .find(|(start, word)| start + word.len() > offset)
         .map(|(start, word)| start + word.len())
         .unwrap_or(text.len())
+}
+
+fn whitespace_around(text: &str, offset: usize) -> Range<usize> {
+    let start = text[..offset].trim_end_matches(char::is_whitespace).len();
+    let end = text.len() - text[offset..].trim_start_matches(char::is_whitespace).len();
+    start..end
 }
 
 fn nickname_start(text: &str, cursor: usize) -> usize {
@@ -891,6 +936,9 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::delete_word_forward))
             .on_action(cx.listener(Self::delete_to_beginning))
             .on_action(cx.listener(Self::delete_to_end))
+            .on_action(cx.listener(Self::delete_line))
+            .on_action(cx.listener(Self::delete_whitespace))
+            .on_action(cx.listener(Self::collapse_whitespace))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::show_character_palette))
@@ -958,7 +1006,10 @@ impl TextInput {
     }
 }
 
-pub fn bind_keys(cx: &mut App) {
+/// Binds draft editing keys. `emacs` adds the GTK Emacs key theme on Linux;
+/// macOS always has its Emacs-style Control bindings.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn bind_keys(emacs: bool, cx: &mut App) {
     // GPUI 0.2.2 does not forward macOS text command selectors to this editor.
     // Keep editing bindings local to the focused input and reserve app shortcuts.
     cx.bind_keys([
@@ -1015,6 +1066,36 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-delete", DeleteWordForward, Some("TextInput")),
         KeyBinding::new("ctrl-y", Redo, Some("TextInput")),
     ]);
+    // Mirrors GTK 3's gtk-keys.css.emacs for GtkEntry. Bound last so these
+    // win over Select All (Ctrl+A) and Redo (Ctrl+Y); GTK likewise moves
+    // Select All to Ctrl+/ under this theme.
+    #[cfg(target_os = "linux")]
+    if emacs {
+        cx.bind_keys([
+            KeyBinding::new("ctrl-b", Left, Some("TextInput")),
+            KeyBinding::new("ctrl-shift-b", SelectLeft, Some("TextInput")),
+            KeyBinding::new("ctrl-f", Right, Some("TextInput")),
+            KeyBinding::new("ctrl-shift-f", SelectRight, Some("TextInput")),
+            KeyBinding::new("alt-b", WordLeft, Some("TextInput")),
+            KeyBinding::new("alt-shift-b", SelectWordLeft, Some("TextInput")),
+            KeyBinding::new("alt-f", WordRight, Some("TextInput")),
+            KeyBinding::new("alt-shift-f", SelectWordRight, Some("TextInput")),
+            KeyBinding::new("ctrl-a", Home, Some("TextInput")),
+            KeyBinding::new("ctrl-shift-a", SelectHome, Some("TextInput")),
+            KeyBinding::new("ctrl-e", End, Some("TextInput")),
+            KeyBinding::new("ctrl-shift-e", SelectEnd, Some("TextInput")),
+            KeyBinding::new("ctrl-w", Cut, Some("TextInput")),
+            KeyBinding::new("ctrl-y", Paste, Some("TextInput")),
+            KeyBinding::new("ctrl-d", Delete, Some("TextInput")),
+            KeyBinding::new("alt-d", DeleteWordForward, Some("TextInput")),
+            KeyBinding::new("ctrl-k", DeleteToEnd, Some("TextInput")),
+            KeyBinding::new("ctrl-u", DeleteLine, Some("TextInput")),
+            KeyBinding::new("ctrl-h", Backspace, Some("TextInput")),
+            KeyBinding::new("alt-\\", DeleteWhitespace, Some("TextInput")),
+            KeyBinding::new("alt-space", CollapseWhitespace, Some("TextInput")),
+            KeyBinding::new("ctrl-/", SelectAll, Some("TextInput")),
+        ]);
+    }
 }
 
 #[cfg(test)]
@@ -1037,6 +1118,13 @@ mod tests {
             word_boundary_right(text, "hello".len()),
             text.find('界').unwrap()
         );
+    }
+
+    #[test]
+    fn whitespace_run_spans_both_sides_of_the_cursor() {
+        assert_eq!(whitespace_around("a  \t b", 2), 1..5);
+        assert_eq!(whitespace_around("a b", 0), 0..0);
+        assert_eq!(whitespace_around("  ", 2), 0..2);
     }
 
     #[test]

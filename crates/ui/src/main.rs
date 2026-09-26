@@ -16,7 +16,7 @@ use cayenchat_irc_core::{
 use cayenchat_model::{ConversationId, NetworkId};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, DarkColors, Language, LinuxDisplay, Settings, TextEncoding,
-    ThemeMode, color_value,
+    TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -511,6 +511,7 @@ impl LogSelection {
 enum SettingsTab {
     Connection,
     Appearance,
+    Keyboard,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1713,9 +1714,9 @@ impl SettingsWindow {
             let appearance = self.settings.values.appearance.clone();
             let mode = self.settings.values.theme;
             let language = self.settings.values.language;
-            let channel_modifier = self.settings.values.channel_number_modifier;
+            let shortcuts = ShortcutPrefs::from(&self.settings.values);
             let _ = self.owner.update(cx, |owner, window, cx| {
-                apply_shortcuts(channel_modifier, cx);
+                apply_shortcuts(shortcuts, cx);
                 owner.apply_appearance(appearance, mode, cx);
                 owner.apply_language(language, window, cx);
             });
@@ -2552,28 +2553,6 @@ impl SettingsWindow {
             .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
             .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
-            .when(!cfg!(target_os = "macos"), |d| {
-                d.child(self.option_row(
-                    "channel_number_modifier",
-                    [
-                        (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
-                        (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
-                        (
-                            ChannelNumberModifier::Super,
-                            "channel_number_modifier_super",
-                        ),
-                    ],
-                    self.settings.values.channel_number_modifier,
-                    |settings, modifier| settings.channel_number_modifier = modifier,
-                    cx,
-                ))
-                .child(
-                    div()
-                        .ml(px(158.))
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("channel_number_modifier_hint")),
-                )
-            })
             .when(cfg!(target_os = "linux"), |d| {
                 d.child(self.option_row(
                     "linux_display",
@@ -2607,6 +2586,109 @@ impl SettingsWindow {
             )
     }
 
+    /// Channel-number and draft-editing keys; only Windows and Linux have
+    /// choices here, so macOS hides this tab.
+    fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
+        let hint = |key: &str| {
+            div()
+                .ml(px(158.))
+                .text_color(theme.text_secondary)
+                .child(self.i18n.text(key))
+        };
+        div()
+            .w(px(680.))
+            .p_4()
+            .mb_4()
+            .bg(theme.surface)
+            .border_1()
+            .border_t_0()
+            .border_color(theme.border)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("keyboard")),
+            )
+            .child(self.option_row(
+                "channel_number_modifier",
+                [
+                    (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
+                    (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
+                    (
+                        ChannelNumberModifier::Super,
+                        "channel_number_modifier_super",
+                    ),
+                ],
+                self.settings.values.channel_number_modifier,
+                |settings, modifier| settings.channel_number_modifier = modifier,
+                cx,
+            ))
+            .child(hint("channel_number_modifier_hint"))
+            .when(cfg!(target_os = "linux"), |d| {
+                d.child(self.option_row(
+                    "text_key_theme",
+                    [
+                        (TextKeyTheme::Auto, "text_key_theme_auto"),
+                        (TextKeyTheme::Standard, "text_key_theme_standard"),
+                        (TextKeyTheme::Emacs, "text_key_theme_emacs"),
+                    ],
+                    self.settings.values.text_key_theme,
+                    |settings, keys| settings.text_key_theme = keys,
+                    cx,
+                ))
+                .child(hint("text_key_theme_hint"))
+            })
+            .when_some(self.feedback.clone(), |d, feedback| {
+                d.child(div().text_color(theme.warning).child(feedback))
+            })
+            .child(
+                div()
+                    .id("save-keyboard")
+                    .px_3()
+                    .py_1()
+                    .bg(theme.selected)
+                    .cursor_pointer()
+                    .child(self.i18n.text("save_and_apply"))
+                    .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
+            )
+    }
+
+    fn settings_tab(
+        &self,
+        tab: SettingsTab,
+        id: &'static str,
+        label_key: &str,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = theme::current(cx);
+        div()
+            .id(id)
+            .px_4()
+            .py_2()
+            .border_1()
+            .when(tab != SettingsTab::Connection, |d| d.border_l_0())
+            .border_color(theme.border)
+            .cursor_pointer()
+            .when(self.tab == tab, |d| {
+                d.bg(theme.surface)
+                    .border_b_0()
+                    .font_weight(FontWeight::BOLD)
+            })
+            .when(self.tab != tab, |d| {
+                d.bg(theme.tab_inactive).hover(|d| d.bg(theme.window))
+            })
+            .child(self.i18n.text(label_key))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.tab = tab;
+                this.font_picker = None;
+                cx.notify();
+            }))
+    }
+
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let border = theme.border;
@@ -2615,55 +2697,15 @@ impl SettingsWindow {
             .w_full()
             .border_b_1()
             .border_color(border)
-            .child(
-                div()
-                    .id("connection-tab")
-                    .px_4()
-                    .py_2()
-                    .border_1()
-                    .border_color(border)
-                    .cursor_pointer()
-                    .when(self.tab == SettingsTab::Connection, |d| {
-                        d.bg(theme.surface)
-                            .border_b_0()
-                            .font_weight(FontWeight::BOLD)
-                    })
-                    .when(self.tab != SettingsTab::Connection, |d| {
-                        d.bg(theme.tab_inactive).hover(|d| d.bg(theme.window))
-                    })
-                    .child(self.i18n.text("connection"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = SettingsTab::Connection;
-                        this.font_picker = None;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("appearance-tab")
-                    .px_4()
-                    .py_2()
-                    .border_1()
-                    .border_l_0()
-                    .border_color(border)
-                    .cursor_pointer()
-                    .when(self.tab == SettingsTab::Appearance, |d| {
-                        d.bg(theme.surface)
-                            .border_b_0()
-                            .font_weight(FontWeight::BOLD)
-                    })
-                    .when(self.tab != SettingsTab::Appearance, |d| {
-                        d.bg(theme.tab_inactive).hover(|d| d.bg(theme.window))
-                    })
-                    .child(self.i18n.text("appearance"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = SettingsTab::Appearance;
-                        cx.notify();
-                    })),
-            );
+            .child(self.settings_tab(SettingsTab::Connection, "connection-tab", "connection", cx))
+            .child(self.settings_tab(SettingsTab::Appearance, "appearance-tab", "appearance", cx))
+            .when(!cfg!(target_os = "macos"), |d| {
+                d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
+            });
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
+            SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
         };
         div()
             .id("settings-screen")
@@ -3963,12 +4005,45 @@ fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
     ]
 }
 
-/// Replaces every key binding, so a changed channel-number modifier applies
-/// without restarting.
-fn apply_shortcuts(channel_modifier: ChannelNumberModifier, cx: &mut App) {
+/// Saved key preferences, kept so a desktop key-theme change can rebind
+/// without the settings window.
+#[derive(Clone, Copy, Debug, Default)]
+struct ShortcutPrefs {
+    channel_modifier: ChannelNumberModifier,
+    text_keys: TextKeyTheme,
+}
+
+impl Global for ShortcutPrefs {}
+
+impl From<&Settings> for ShortcutPrefs {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            channel_modifier: settings.channel_number_modifier,
+            text_keys: settings.text_key_theme,
+        }
+    }
+}
+
+/// Replaces every key binding, so changed key preferences apply without
+/// restarting.
+fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
+    cx.set_global(prefs);
+    rebind_shortcuts(cx);
+}
+
+fn rebind_shortcuts(cx: &mut App) {
+    let prefs = cx
+        .try_global::<ShortcutPrefs>()
+        .copied()
+        .unwrap_or_default();
+    let emacs = match prefs.text_keys {
+        TextKeyTheme::Auto => desktop::current(cx).emacs_keys,
+        TextKeyTheme::Standard => false,
+        TextKeyTheme::Emacs => true,
+    };
     cx.clear_key_bindings();
-    input::bind_keys(cx);
-    cx.bind_keys(shortcut_bindings(channel_modifier));
+    input::bind_keys(emacs, cx);
+    cx.bind_keys(shortcut_bindings(prefs.channel_modifier));
 }
 
 #[cfg_attr(target_os = "macos", allow(unused_variables))]
@@ -4079,7 +4154,7 @@ fn main() {
     Application::new().run(move |cx: &mut App| {
         theme::apply(saved.theme, &saved.appearance, cx);
         desktop::watch(cx);
-        apply_shortcuts(saved.channel_number_modifier, cx);
+        apply_shortcuts(ShortcutPrefs::from(&saved), cx);
         cx.set_menus(app_menus(false, &Localizer::new(Language::System)));
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {
@@ -4233,8 +4308,7 @@ mod pane_tests {
     #[gpui::test]
     fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            crate::apply_shortcuts(cayenchat_storage::ChannelNumberModifier::default(), cx);
-            crate::input::bind_keys(cx);
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,

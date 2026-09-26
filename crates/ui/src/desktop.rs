@@ -77,6 +77,8 @@ pub struct DesktopSettings {
     pub double_click: DoubleClick,
     /// Family from the desktop interface font, for the title text.
     pub title_font: Option<String>,
+    /// Whether the GTK key theme is `Emacs`, for draft editing keys.
+    pub emacs_keys: bool,
 }
 
 impl Global for DesktopSettings {}
@@ -112,6 +114,38 @@ pub fn font_family(description: &str) -> Option<String> {
     (!words.is_empty()).then(|| words.join(" "))
 }
 
+/// Reads `gtk-key-theme-name` from GTK 3's `settings.ini`, the fallback for
+/// desktops whose portal does not publish `gtk-key-theme`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn settings_ini_key_theme(contents: &str) -> Option<String> {
+    let mut in_settings = false;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_settings = line == "[Settings]";
+        } else if in_settings
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "gtk-key-theme-name"
+        {
+            return Some(value.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn settings_ini_emacs() -> bool {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config"))
+        });
+    config
+        .and_then(|config| std::fs::read_to_string(config.join("gtk-3.0/settings.ini")).ok())
+        .and_then(|contents| settings_ini_key_theme(&contents))
+        .is_some_and(|theme| theme == "Emacs")
+}
+
 pub fn current(cx: &App) -> DesktopSettings {
     cx.try_global::<DesktopSettings>()
         .cloned()
@@ -120,14 +154,18 @@ pub fn current(cx: &App) -> DesktopSettings {
 
 /// Loads the portal settings and follows later changes.
 pub fn watch(cx: &mut App) {
-    cx.set_global(DesktopSettings::default());
+    cx.set_global(DesktopSettings {
+        #[cfg(target_os = "linux")]
+        emacs_keys: settings_ini_emacs(),
+        ..Default::default()
+    });
     #[cfg(target_os = "linux")]
     portal::watch(cx);
 }
 
 #[cfg(target_os = "linux")]
 mod portal {
-    use super::{ButtonLayout, DesktopSettings, DoubleClick, font_family};
+    use super::{ButtonLayout, DesktopSettings, DoubleClick, font_family, settings_ini_emacs};
     use ashpd::desktop::settings::Settings;
     use futures_util::StreamExt;
     use gpui::App;
@@ -150,6 +188,9 @@ mod portal {
             title_font: string(INTERFACE, "font-name")
                 .await
                 .and_then(|value| font_family(&value)),
+            emacs_keys: string(INTERFACE, "gtk-key-theme")
+                .await
+                .map_or_else(settings_ini_emacs, |theme| theme == "Emacs"),
         }
     }
 
@@ -161,8 +202,14 @@ mod portal {
             };
             let apply = |values: DesktopSettings, cx: &mut gpui::AsyncApp| {
                 cx.update(|cx| {
-                    if cx.try_global::<DesktopSettings>() != Some(&values) {
+                    let previous = cx.try_global::<DesktopSettings>();
+                    if previous != Some(&values) {
+                        let keys_changed =
+                            previous.map(|p| p.emacs_keys) != Some(values.emacs_keys);
                         cx.set_global(values);
+                        if keys_changed {
+                            crate::rebind_shortcuts(cx);
+                        }
                         cx.refresh_windows();
                     }
                 })
@@ -180,7 +227,7 @@ mod portal {
                         change.key(),
                         "button-layout" | "action-double-click-titlebar"
                     ),
-                    INTERFACE => change.key() == "font-name",
+                    INTERFACE => matches!(change.key(), "font-name" | "gtk-key-theme"),
                     _ => false,
                 };
                 if relevant && !apply(read(&settings).await, cx) {
@@ -233,6 +280,17 @@ mod tests {
             Some("Cantarell")
         );
         assert_eq!(font_family("11"), None);
+        assert_eq!(
+            settings_ini_key_theme(
+                "[Settings]\ngtk-theme-name=Adwaita\ngtk-key-theme-name = Emacs\n"
+            )
+            .as_deref(),
+            Some("Emacs")
+        );
+        assert_eq!(
+            settings_ini_key_theme("[Other]\ngtk-key-theme-name=Emacs\n"),
+            None
+        );
         assert_eq!(DoubleClick::parse("minimize"), DoubleClick::Minimize);
         assert_eq!(
             DoubleClick::parse("toggle-maximize"),
