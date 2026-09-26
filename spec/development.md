@@ -40,6 +40,12 @@ For UI work, also build and run the desktop application on the currently availab
 
 Do not claim cross-platform verification unless both platforms were actually tested.
 
+UI tests enable GPUI's `test-support` through a dev dependency. The menu regression
+test renders the Linux/Windows in-window menu on every test host, including macOS,
+and exercises the first frame and Alt reveal/hide without a display server or
+saved user settings. This catches dispatch-tree initialization failures; it does
+not replace validation on an actual Linux/Windows desktop.
+
 ## Documentation
 
 Update only the relevant specification files when behavior or architecture changes:

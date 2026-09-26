@@ -183,8 +183,19 @@ pub fn wrap<V: 'static>(
     if cfg!(target_os = "macos") {
         return content;
     }
+    wrap_in_window(state, menus, content, access, window, cx)
+}
+
+// Kept platform-independent so first-frame rendering is tested on macOS too.
+fn wrap_in_window<V: 'static>(
+    state: &MenuBar,
+    menus: Vec<OwnedMenu>,
+    content: AnyElement,
+    access: fn(&mut V) -> &mut MenuBar,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) -> AnyElement {
     let theme = crate::theme::current(cx);
-    let enabled = enabled_items(&menus, window, cx);
     let mut bar = div()
         .flex()
         .h(px(HEIGHT))
@@ -193,6 +204,9 @@ pub fn wrap<V: 'static>(
         .border_b_1()
         .border_color(theme.border);
     if state.visible {
+        // The initial frame has no rendered dispatch tree. Alt can reveal the
+        // menu only after it has been painted, when availability queries are safe.
+        let enabled = enabled_items(&menus, window, cx);
         for (index, menu) in menus.iter().enumerate() {
             let mut label = div()
                 .id(("menu-heading", index))
@@ -308,6 +322,75 @@ pub fn wrap<V: 'static>(
 #[cfg(test)]
 mod tests {
     use super::{MenuBar, Modifiers};
+
+    #[gpui::test]
+    fn first_render_and_alt_reveal_use_a_ready_dispatch_tree(cx: &mut gpui::TestAppContext) {
+        use gpui::{
+            Context, FocusHandle, IntoElement, Menu, MenuItem, Render, Window, div, prelude::*,
+        };
+
+        struct TestView {
+            menu: MenuBar,
+            focus: FocusHandle,
+        }
+        impl Render for TestView {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let content = div()
+                    .track_focus(&self.focus)
+                    .on_action(|_: &crate::CopyDiagnostics, _, _| {})
+                    .into_any_element();
+                super::wrap_in_window(
+                    &self.menu,
+                    vec![
+                        Menu {
+                            name: "View".into(),
+                            items: vec![MenuItem::action(
+                                "Copy diagnostics",
+                                crate::CopyDiagnostics,
+                            )],
+                        }
+                        .owned(),
+                    ],
+                    content,
+                    |this| &mut this.menu,
+                    window,
+                    cx,
+                )
+            }
+        }
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ))
+        });
+        // add_window_view performs the initial render before a dispatch tree
+        // exists. Querying action availability here used to panic on startup.
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus);
+            TestView {
+                menu: MenuBar::default(),
+                focus,
+            }
+        });
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        cx.simulate_modifiers_change(alt);
+        cx.simulate_modifiers_change(Modifiers::default());
+        assert!(view.read_with(cx, |view, _| view.menu.visible));
+        cx.update(|window, cx| {
+            assert!(window.is_action_available(&crate::CopyDiagnostics, cx));
+        });
+        cx.simulate_modifiers_change(alt);
+        cx.simulate_modifiers_change(Modifiers::default());
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
+    }
 
     #[test]
     fn alt_alone_toggles_but_chords_do_not() {

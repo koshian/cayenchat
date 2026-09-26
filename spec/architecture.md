@@ -179,7 +179,11 @@ application menu and Command+, open that window;
 Windows/Linux use Ctrl+, or an in-window menu bar revealed by pressing Alt alone.
 The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
 and preserves input focus for editing commands. Alt chords do not toggle it;
-selecting an action or clicking outside dismisses it. macOS retains native menus. Passwords persist per server only after explicit plaintext confirmation;
+selecting an action or clicking outside dismisses it. Action availability is
+queried only after the menu is revealed: GPUI has no rendered dispatch tree
+during the first frame, so querying it while the initially hidden menu renders
+would panic on startup. macOS retains native menus.
+Passwords persist per server only after explicit plaintext confirmation;
 turning saving off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
 requires TLS before sending either server PASS or SASL PLAIN credentials. The core supports one connection, auto-join, channel

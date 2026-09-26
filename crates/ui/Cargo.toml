@@ -29,6 +29,9 @@ chrono.workspace = true
 sys-locale = "0.3.2"
 log = "0.4"
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui = { workspace = true, features = ["wayland", "x11"] }
 # Same version and backend as GPUI's own portal client, so no new crates.
