@@ -1,7 +1,7 @@
 //! Application state and commands, independent of any rendering framework.
 use std::collections::{HashMap, HashSet};
 
-use cayenchat_model::{Conversation, ConversationId, Message, Network, NetworkId};
+use cayenchat_model::{Conversation, ConversationId, Message, Network, NetworkId, TimeOfDay};
 
 /// Upper bound on conversations per network, so a hostile server or bouncer
 /// cannot grow memory without limit by announcing endless channel joins.
@@ -159,7 +159,7 @@ impl AppState {
                     .map(|(time, sender, text)| {
                         next_message_sequence += 1;
                         Message {
-                            time: time.into(),
+                            time: mock_time(time),
                             sequence: next_message_sequence,
                             sender: sender.into(),
                             text: text.into(),
@@ -615,8 +615,19 @@ fn sorted_members(mut members: Vec<String>) -> Vec<String> {
     members
 }
 
-fn local_time() -> String {
-    chrono::Local::now().format("%H:%M").to_string()
+fn local_time() -> TimeOfDay {
+    use chrono::Timelike;
+    let now = chrono::Local::now();
+    TimeOfDay::new(now.hour() as u8, now.minute() as u8)
+}
+
+/// Parses the `HH:MM` literals of the offline mock data.
+fn mock_time(time: &str) -> TimeOfDay {
+    let (hour, minute) = time.split_once(':').expect("mock time is HH:MM");
+    TimeOfDay::new(
+        hour.parse().expect("mock hour"),
+        minute.parse().expect("mock minute"),
+    )
 }
 
 fn push_bounded(messages: &mut Vec<Message>, message: Message) {

@@ -13,7 +13,7 @@ use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
     WhoisInfo, WireDirection,
 };
-use cayenchat_model::{ConversationId, NetworkId};
+use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, DarkColors, Language, LinuxDisplay, Settings, TextEncoding,
     TextKeyTheme, ThemeMode, color_value,
@@ -3581,13 +3581,13 @@ impl LogStyle {
         }
     }
 
-    fn time(&self, time: &str) -> Div {
+    fn time(&self, time: TimeOfDay) -> Div {
         div()
             .w(px(42.))
             .flex_shrink_0()
             .font_family(self.time_font.clone())
             .text_color(self.theme.time)
-            .child(time.to_owned())
+            .child(time.to_string())
     }
 }
 
@@ -3761,7 +3761,7 @@ impl ChatWindow {
                         .when(style.alternate_rows && index % 2 == 1, |d| {
                             d.bg(style.main_alt)
                         })
-                        .child(style.time(&message.time))
+                        .child(style.time(message.time))
                         .child(div().flex_1().min_w_0().child(message.text.clone()))
                         .into_any_element()
                 }
@@ -3804,7 +3804,7 @@ impl ChatWindow {
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 d.bg(style.main_alt)
             })
-            .child(style.time(&message.time))
+            .child(style.time(message.time))
             .when(!message.activity, |row| {
                 row.child(
                     div()
@@ -3896,7 +3896,7 @@ impl ChatWindow {
             })
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover))
-            .child(style.time(&message.time))
+            .child(style.time(message.time))
             .child(
                 div()
                     .w(px(162.))
