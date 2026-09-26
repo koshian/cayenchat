@@ -40,7 +40,6 @@ pub fn local_path_text() -> String {
 }
 
 /// Localization key describing this platform's secure store.
-#[allow(dead_code)] // used by the credential storage tab
 pub fn system_store_key() -> &'static str {
     if cfg!(target_os = "macos") {
         "credential_system_macos"

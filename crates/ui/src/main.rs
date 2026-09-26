@@ -1,6 +1,8 @@
+mod account_settings;
 mod decorations;
 mod desktop;
 mod diagnostics;
+mod image_upload;
 mod input;
 mod localization;
 mod log_list;
@@ -9,7 +11,7 @@ mod secrets;
 mod theme;
 mod whois;
 
-use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
+use cayenchat_app::{AppState, Command, ConnectionStatus, Selection, attachments::AttachmentFlow};
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
     WhoisInfo, WireDirection,
@@ -26,6 +28,7 @@ use localization::Localizer;
 use log_list::LogList;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
@@ -550,6 +553,12 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// Pasted or dropped images on their way to the external uploader.
+    attachments: AttachmentFlow,
+    /// Configured image hosting provider ID (IRC external uploads).
+    image_provider: Option<String>,
+    /// Replaces the configured uploader; tests use a fake one.
+    uploader_override: Option<Arc<dyn cayenchat_upload::ExternalUploader>>,
     #[cfg(test)]
     pane_renders: usize,
 }
@@ -639,6 +648,8 @@ enum SettingsTab {
     Connection,
     Appearance,
     Keyboard,
+    ImageUpload,
+    Credentials,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -660,6 +671,12 @@ struct SettingsWindow {
     font_picker: Option<FontTarget>,
     fonts: Vec<String>,
     i18n: Localizer,
+    /// Result of probing the system credential store; `None` while checking.
+    system_store: Option<Result<(), String>>,
+    /// Access token being entered to connect an image hosting account.
+    upload_token: Entity<TextInput>,
+    upload_connected: bool,
+    upload_token_open: bool,
 }
 
 impl ChatWindow {
@@ -771,6 +788,9 @@ impl ChatWindow {
             log_focus: cx.focus_handle(),
             log_selection: None,
             log_dragging: false,
+            attachments: AttachmentFlow::default(),
+            image_provider: saved.image_upload.provider.clone(),
+            uploader_override: None,
             #[cfg(test)]
             pane_renders: 0,
         };
@@ -1333,9 +1353,21 @@ impl ChatWindow {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings_tab(SettingsTab::Connection, window, cx);
+    }
+
+    /// Opens (or raises) the settings window. `tab` is selected when the
+    /// window is new or when it is not the Connection tab.
+    fn open_settings_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(handle) = self.settings_window
             && handle
-                .update(cx, |_, window, _| window.activate_window())
+                .update(cx, |settings, window, cx| {
+                    if tab != SettingsTab::Connection {
+                        settings.tab = tab;
+                        cx.notify();
+                    }
+                    window.activate_window()
+                })
                 .is_ok()
         {
             return;
@@ -1360,7 +1392,13 @@ impl ChatWindow {
                 }),
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| SettingsWindow::new(owner, settings, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| {
+                    let mut view = SettingsWindow::new(owner, settings, window, cx);
+                    view.tab = tab;
+                    view
+                })
+            },
         ) {
             Ok(handle) => self.settings_window = Some(handle),
             Err(error) => {
@@ -1879,7 +1917,9 @@ impl SettingsWindow {
         let mut fonts = window.text_system().all_font_names();
         fonts.sort_unstable();
         fonts.dedup();
-        Self {
+        let upload_token =
+            cx.new(|cx| TextInput::new_field(&i18n.text("image_token_placeholder"), "", true, cx));
+        let mut this = Self {
             menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             owner,
             settings,
@@ -1888,7 +1928,14 @@ impl SettingsWindow {
             font_picker: None,
             fonts,
             i18n,
-        }
+            system_store: None,
+            upload_token,
+            upload_connected: false,
+            upload_token_open: false,
+        };
+        this.probe_system_store(cx);
+        this.refresh_upload_account(cx);
+        this
     }
 
     /// Saves typed passwords to the credential store, forgets removed
@@ -1959,7 +2006,9 @@ impl SettingsWindow {
             let mode = self.settings.values.theme;
             let language = self.settings.values.language;
             let shortcuts = ShortcutPrefs::from(&self.settings.values);
+            let provider = self.settings.values.image_upload.provider.clone();
             let _ = self.owner.update(cx, |owner, window, cx| {
+                owner.image_provider = provider;
                 apply_shortcuts(shortcuts, cx);
                 owner.apply_appearance(appearance, mode, cx);
                 owner.apply_language(language, window, cx);
@@ -3008,11 +3057,25 @@ impl SettingsWindow {
             .child(self.settings_tab(SettingsTab::Appearance, "appearance-tab", "appearance", cx))
             .when(!cfg!(target_os = "macos"), |d| {
                 d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
-            });
+            })
+            .child(self.settings_tab(
+                SettingsTab::ImageUpload,
+                "image-upload-tab",
+                "image_upload_tab",
+                cx,
+            ))
+            .child(self.settings_tab(
+                SettingsTab::Credentials,
+                "credentials-tab",
+                "credentials_tab",
+                cx,
+            ));
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
+            SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
+            SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
         };
         div()
             .id("settings-screen")
@@ -3502,12 +3565,38 @@ impl ChatWindow {
             .when(!appearance.input_font.is_empty(), |d| {
                 d.font_family(appearance.input_font.clone())
             })
+            .id("draft-row")
+            // Dropped image files join the same attachment flow as pasted ones.
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.drop_paths(paths.paths(), window, cx)
+            }))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .child(self.inputs[&selection].clone()),
             )
+            .when_some(self.upload_status(), |d, status| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .px_1()
+                        .text_color(theme.text_secondary)
+                        .child(status)
+                        .child(
+                            div()
+                                .id("cancel-upload")
+                                .px_1()
+                                .border_1()
+                                .border_color(border)
+                                .cursor_pointer()
+                                .child(self.i18n.text("upload_cancel"))
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_upload(cx))),
+                        ),
+                )
+            })
             .when_some(self.feedback.clone(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             });
@@ -3789,6 +3878,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
+            .on_action(cx.listener(Self::paste_image))
             .child(left)
             .child(right)
             .when_some(server_menu, |d, menu| d.child(menu))
