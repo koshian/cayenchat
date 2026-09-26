@@ -596,14 +596,15 @@ impl AppState {
 }
 
 fn sorted_members(mut members: Vec<String>) -> Vec<String> {
-    members.sort_by(|a, b| {
-        let a_nick = a.trim_start_matches(['~', '&', '@', '%', '+']);
-        let b_nick = b.trim_start_matches(['~', '&', '@', '%', '+']);
-        let a_op = a.starts_with(['~', '&', '@', '%']);
-        let b_op = b.starts_with(['~', '&', '@', '%']);
-        b_op.cmp(&a_op)
-            .then_with(|| a_nick.to_lowercase().cmp(&b_nick.to_lowercase()))
-            .then_with(|| a_nick.cmp(b_nick))
+    // Operators first, then case-insensitively by nickname. Keys are computed
+    // once per member; large channels republish their roster on every change.
+    members.sort_by_cached_key(|member| {
+        let nickname = member.trim_start_matches(['~', '&', '@', '%', '+']);
+        (
+            !member.starts_with(['~', '&', '@', '%']),
+            nickname.to_lowercase(),
+            nickname.to_owned(),
+        )
     });
     members
 }
