@@ -709,6 +709,8 @@ mod tests {
         }
     }
 
+    // XDG paths are Unix paths; `/xdg` is not absolute on Windows.
+    #[cfg(unix)]
     #[test]
     fn xdg_config_home_is_respected() {
         assert_eq!(
