@@ -154,6 +154,15 @@ root-window capture showed black window contents, so rendering is still
 unconfirmed. The reported start failure was not reproduced; Wayland, real GPUs
 and interaction still need a Linux desktop.
 
+The tester's log then showed the actual failure on Wayland: when the XDG desktop
+portal reported the color scheme, GPUI's Wayland client called each window's
+appearance callback while holding its own `RefCell` borrow. The app's appearance
+observer calls `App::window_appearance()`, which borrows the same state, so the
+app panicked with "RefCell already borrowed". The vendored Wayland and X11
+clients now release the borrow before notifying windows. Linux Clippy passes;
+the fix still needs confirmation on the tester's Wayland desktop, including a
+light/dark switch while the app is running.
+
 ### Manual settings and UI checks
 
 1. Launch and confirm the separate settings window opens over the four-pane

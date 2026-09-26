@@ -22,6 +22,14 @@ In `src/platform/linux/wayland/window.rs`:
   server-side mode anyway, so `window_decorations()` reported `Server`, nothing
   drew a title bar, and the window could not be moved.
 
+In `src/platform/linux/{wayland,x11}/client.rs`:
+
+- The XDG portal appearance handler releases the client `RefCell` borrow before
+  calling each window's appearance callback. Upstream held it, so an observer
+  that called `App::window_appearance()` panicked with "RefCell already
+  borrowed" when the desktop color scheme was reported (seen on Wayland at
+  startup).
+
 In `src/taffy.rs`, the grid `minmax(length(0.0), fr(1.0))` literals are typed
 as `f32`, fixing the `float_literal_f32_fallback` future-incompatibility warning
 emitted by newer rustc (seen with 1.98).
