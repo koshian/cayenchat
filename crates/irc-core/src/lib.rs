@@ -25,6 +25,10 @@ const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 512;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Limits on WHOIS replies that have not reached end-of-WHOIS (318), so a
+/// hostile server cannot grow memory by never finishing them.
+const MAX_PENDING_WHOIS: usize = 32;
+const MAX_WHOIS_ITEMS: usize = 512;
 
 fn ensure_tls_crypto_provider() -> Result<(), String> {
     use rustls::crypto::CryptoProvider;
@@ -1304,6 +1308,9 @@ impl WhoisCollector {
         ) {
             return None;
         }
+        if !self.pending.contains_key(&key) && self.pending.len() >= MAX_PENDING_WHOIS {
+            return None;
+        }
         let info = self.pending.entry(key).or_insert_with(|| WhoisInfo {
             nickname: nickname.clone(),
             ..Default::default()
@@ -1330,20 +1337,23 @@ impl WhoisCollector {
             }
             319 => {
                 if let Some(list) = args.last() {
+                    let room = MAX_WHOIS_ITEMS.saturating_sub(info.channels.len());
                     info.channels
-                        .extend(list.split_whitespace().map(str::to_owned));
+                        .extend(list.split_whitespace().take(room).map(str::to_owned));
                 }
             }
             330 => info.account = arg(2),
-            _ => info.extra.push(args[2..].join(" ")),
+            _ if info.extra.len() < MAX_WHOIS_ITEMS => info.extra.push(args[2..].join(" ")),
+            _ => {}
         }
         None
     }
 }
 
 fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) -> Event {
-    let mut users: Vec<String> = client
-        .list_users(channel)
+    let tracked = client.list_users(channel);
+    let known = tracked.is_some();
+    let mut users: Vec<String> = tracked
         .unwrap_or_default()
         .iter()
         .map(|user| {
@@ -1373,7 +1383,11 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
                 .iter()
                 .any(|user| display_nickname(user).eq_ignore_ascii_case(nickname))
     });
-    roster.last.insert(channel.to_owned(), users.clone());
+    // Only channels the library tracks as joined are remembered, so arbitrary
+    // end-of-NAMES replies cannot grow the roster cache.
+    if known {
+        roster.last.insert(channel.to_owned(), users.clone());
+    }
     Event::Names {
         channel: channel.to_owned(),
         users,
@@ -1562,6 +1576,27 @@ mod tests {
         );
         assert!(member_outgoing("bad nick", MemberCommand::Whois).is_err());
         assert!(member_outgoing("Alice,Bob", MemberCommand::Whois).is_err());
+    }
+
+    #[test]
+    fn whois_collector_bounds_unfinished_replies() {
+        let mut collector = WhoisCollector::default();
+        for index in 0..MAX_PENDING_WHOIS + 10 {
+            let line = format!(":srv 311 me nick{index} u h * :real");
+            assert_eq!(collector.observe(&line.parse().unwrap()), None);
+        }
+        assert_eq!(collector.pending.len(), MAX_PENDING_WHOIS);
+        for _ in 0..MAX_WHOIS_ITEMS {
+            let line = ":srv 319 me nick0 :#a #b";
+            collector.observe(&line.parse().unwrap());
+            let line = ":srv 671 me nick0 :is using a secure connection";
+            collector.observe(&line.parse().unwrap());
+        }
+        let info = collector
+            .observe(&":srv 318 me nick0 :End".parse().unwrap())
+            .unwrap();
+        assert_eq!(info.channels.len(), MAX_WHOIS_ITEMS);
+        assert_eq!(info.extra.len(), MAX_WHOIS_ITEMS);
     }
 
     #[test]
