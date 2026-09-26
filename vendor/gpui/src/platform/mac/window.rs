@@ -667,10 +667,15 @@ impl MacWindow {
                 target_screen,
             );
             assert!(!native_window.is_null());
+            // Accept both existing files and file promises (Photos, Mail,
+            // screenshot thumbnails), which are written only on drop.
+            let dragged_types: id = msg_send![
+                NSArray::arrayWithObject(nil, NSFilenamesPboardType),
+                arrayByAddingObjectsFromArray: file_promise_types()
+            ];
             let () = msg_send![
                 native_window,
-                registerForDraggedTypes:
-                    NSArray::arrayWithObject(nil, NSFilenamesPboardType)
+                registerForDraggedTypes: dragged_types
             ];
             let () = msg_send![
                 native_window,
@@ -2365,7 +2370,10 @@ fn screen_point_to_gpui_point(this: &Object, position: NSPoint) -> Point<Pixels>
 extern "C" fn dragging_entered(this: &Object, _: Sel, dragging_info: id) -> NSDragOperation {
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
-    let paths = external_paths_from_event(dragging_info);
+    // A promise has no path yet; drop targets see an empty list until it is
+    // fulfilled in `perform_drag_operation`.
+    let paths = external_paths_from_event(dragging_info)
+        .or_else(|| file_promise_receivers(dragging_info).map(|_| ExternalPaths(SmallVec::new())));
     if let Some(event) =
         paths.map(|paths| PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }))
         && send_new_event(&window_state, event)
@@ -2401,6 +2409,12 @@ extern "C" fn dragging_exited(this: &Object, _: Sel, _: id) {
 extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -> BOOL {
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
+    if external_paths_from_event(dragging_info).is_none()
+        && let Some(receivers) = file_promise_receivers(dragging_info)
+    {
+        receive_file_promises(&window_state, receivers, position);
+        return YES;
+    }
     send_new_event(
         &window_state,
         PlatformInput::FileDrop(FileDropEvent::Submit { position }),
@@ -2423,6 +2437,156 @@ fn external_paths_from_event(dragging_info: *mut Object) -> Option<ExternalPaths
         paths.push(PathBuf::from(path))
     }
     Some(ExternalPaths(paths))
+}
+
+/// Pasteboard types that `NSFilePromiseReceiver` can read.
+fn file_promise_types() -> id {
+    unsafe { msg_send![class!(NSFilePromiseReceiver), readableDraggedTypes] }
+}
+
+/// The dragged file promises, if the drag carries any.
+fn file_promise_receivers(dragging_info: id) -> Option<id> {
+    unsafe {
+        let pasteboard: id = msg_send![dragging_info, draggingPasteboard];
+        let receiver_class = class!(NSFilePromiseReceiver) as *const Class as id;
+        let classes = NSArray::arrayWithObject(nil, receiver_class);
+        let options: id = msg_send![class!(NSDictionary), dictionary];
+        let receivers: id = msg_send![pasteboard, readObjectsForClasses: classes options: options];
+        (receivers != nil && NSArray::count(receivers) > 0).then_some(receivers)
+    }
+}
+
+struct PendingPromises {
+    window_state: Weak<Mutex<MacWindowState>>,
+    position: Point<Pixels>,
+    directory: PathBuf,
+    expected: usize,
+    received: usize,
+    paths: SmallVec<[PathBuf; 2]>,
+    delivered: bool,
+}
+
+/// Asks the drag source to write its promised files into a fresh private
+/// temporary directory. Readers run on the main queue after this returns;
+/// once every file has arrived the drop is replayed as an ordinary file drop
+/// (Entered with the paths, Submit, Exited) and the directory is removed, so
+/// drop handlers must read the files synchronously.
+fn receive_file_promises(
+    window_state: &Arc<Mutex<MacWindowState>>,
+    receivers: id,
+    position: Point<Pixels>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    let directory = std::env::temp_dir()
+        .join("gpui-file-promises")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let expected: usize = unsafe {
+        receivers
+            .iter()
+            .map(|receiver| {
+                let types: id = msg_send![receiver, fileTypes];
+                if types == nil {
+                    1
+                } else {
+                    NSArray::count(types).max(1) as usize
+                }
+            })
+            .sum()
+    };
+    let pending = Rc::new(std::cell::RefCell::new(PendingPromises {
+        window_state: Arc::downgrade(window_state),
+        position,
+        directory: directory.clone(),
+        expected,
+        received: 0,
+        paths: SmallVec::new(),
+        delivered: false,
+    }));
+    let Some(directory_text) = directory
+        .to_str()
+        .filter(|_| builder.create(&directory).is_ok())
+    else {
+        log::error!("could not create a directory for dropped file promises");
+        pending.borrow_mut().expected = 0;
+        deliver_file_promises(&pending);
+        return;
+    };
+    unsafe {
+        let destination: id = msg_send![
+            class!(NSURL),
+            fileURLWithPath: ns_string(directory_text)
+            isDirectory: YES
+        ];
+        let options: id = msg_send![class!(NSDictionary), dictionary];
+        let queue: id = msg_send![class!(NSOperationQueue), mainQueue];
+        for receiver in receivers.iter() {
+            let pending = pending.clone();
+            let reader = ConcreteBlock::new(move |url: id, error: id| {
+                {
+                    let mut pending = pending.borrow_mut();
+                    if error == nil && url != nil {
+                        let path: id = msg_send![url, path];
+                        if path != nil {
+                            let path = CStr::from_ptr(path.UTF8String()).to_string_lossy();
+                            pending.paths.push(PathBuf::from(path.into_owned()));
+                        }
+                    } else {
+                        log::warn!("a dropped file promise was not fulfilled");
+                    }
+                    pending.received += 1;
+                }
+                deliver_file_promises(&pending);
+            })
+            .copy();
+            let () = msg_send![
+                receiver,
+                receivePromisedFilesAtDestination: destination
+                options: options
+                operationQueue: queue
+                reader: &*reader
+            ];
+        }
+    }
+}
+
+/// Replays the drop once all promised files have been received.
+fn deliver_file_promises(pending: &Rc<std::cell::RefCell<PendingPromises>>) {
+    let (window_state, position, directory, paths) = {
+        let mut pending = pending.borrow_mut();
+        if pending.delivered || pending.received < pending.expected {
+            return;
+        }
+        pending.delivered = true;
+        (
+            pending.window_state.upgrade(),
+            pending.position,
+            pending.directory.clone(),
+            mem::take(&mut pending.paths),
+        )
+    };
+    if let Some(window_state) = window_state {
+        for event in [
+            FileDropEvent::Exited,
+            FileDropEvent::Entered {
+                position,
+                paths: ExternalPaths(paths),
+            },
+            FileDropEvent::Submit { position },
+            FileDropEvent::Exited,
+        ] {
+            send_new_event(&window_state, PlatformInput::FileDrop(event));
+        }
+    }
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {

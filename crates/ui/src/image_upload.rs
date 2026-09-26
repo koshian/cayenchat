@@ -76,7 +76,13 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         let [path] = paths else {
-            self.feedback = Some(self.i18n.text("upload_one_file"));
+            // No path means a file promise (Photos, Mail) was not fulfilled.
+            self.feedback = Some(if paths.is_empty() {
+                self.i18n
+                    .format("upload_read_failed", &[("error", "no file was received")])
+            } else {
+                self.i18n.text("upload_one_file")
+            });
             cx.notify();
             return;
         };
