@@ -15,6 +15,13 @@ In `src/platform/windows/events.rs`:
 - Translate unhandled system keydown messages as `WM_SYSKEYDOWN` so Win32 can
   produce the appropriate system-character message.
 
+In `src/platform/linux/wayland/window.rs`:
+
+- `request_decorations` keeps client-side decorations when the compositor does
+  not offer `xdg-decoration` (GNOME/mutter). Upstream recorded the requested
+  server-side mode anyway, so `window_decorations()` reported `Server`, nothing
+  drew a title bar, and the window could not be moved.
+
 The existing mixed indentation in `src/platform/mac/shaders.metal` was also
 normalized so the vendored source passes `git diff --check`; shader logic is
 unchanged.
@@ -22,4 +29,5 @@ unchanged.
 This is a focused backport, not the complete upstream message-loop rewrite.
 Check Windows 11 with MS-IME on a Japanese keyboard before treating the
 reported toggle issue as verified. Once a compatible released GPUI version
-contains the full fix, remove this override and this directory.
+contains the full fix and the Wayland decoration fallback, remove this override
+and this directory.

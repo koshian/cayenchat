@@ -1070,10 +1070,14 @@ impl PlatformWindow for WaylandWindow {
 
     fn request_decorations(&self, decorations: WindowDecorations) {
         let mut state = self.borrow_mut();
-        state.decorations = decorations;
         if let Some(decoration) = state.decoration.as_ref() {
+            state.decorations = decorations;
             decoration.set_mode(decorations.to_xdg());
             update_window(state);
+        } else {
+            // Without xdg-decoration (for example on GNOME) the compositor never
+            // draws a frame, so the application must.
+            state.decorations = WindowDecorations::Client;
         }
     }
 
