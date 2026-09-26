@@ -239,8 +239,8 @@ fn channel_name(entry: &str) -> &str {
     loop {
         let mut chars = name.chars();
         match (chars.next(), chars.next()) {
-            (Some('~' | '@' | '%' | '+' | '!'), Some(_)) => name = &name[1..],
-            (Some('&'), Some('#' | '&')) => name = &name[1..],
+            (Some('~' | '@' | '%' | '+'), Some(_)) => name = &name[1..],
+            (Some('&' | '!'), Some('#' | '&' | '!')) => name = &name[1..],
             _ => return name,
         }
     }
@@ -405,7 +405,7 @@ mod tests {
     use super::{channel_name, idle_text};
 
     #[test]
-    fn strips_membership_prefixes_but_keeps_ampersand_channels() {
+    fn strips_membership_prefixes_but_keeps_channel_prefixes() {
         assert_eq!(
             channel_name("@#えふわん721@irc:*.jp"),
             "#えふわん721@irc:*.jp"
@@ -415,6 +415,11 @@ mod tests {
         assert_eq!(channel_name("&local"), "&local");
         assert_eq!(channel_name("@&local"), "&local");
         assert_eq!(channel_name("#plain"), "#plain");
+        assert_eq!(channel_name("!ABCDEtest"), "!ABCDEtest");
+        assert_eq!(channel_name("@!ABCDEtest"), "!ABCDEtest");
+        assert_eq!(channel_name("@+!ABCDE日本語"), "!ABCDE日本語");
+        assert_eq!(channel_name("&!ABCDEtest"), "!ABCDEtest");
+        assert_eq!(channel_name("!#test"), "#test");
     }
 
     #[test]

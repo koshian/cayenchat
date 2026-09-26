@@ -211,9 +211,14 @@ Passwords persist per server only after explicit plaintext confirmation;
 turning saving off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
 requires TLS before sending either server PASS or SASL PLAIN credentials. The core supports one connection, auto-join, channel
-messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands. Its SASL state
-machine negotiates CAP, sends PLAIN credentials, and waits for success before
-ending CAP negotiation. The UI retains the active connection configuration and
+messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands.
+Channel target validation is shared by the core and the UI's outgoing-message
+routing and accepts `#`, `&` and IRCnet `!` channels.
+Safe-channel short names are sent unchanged in JOIN; the server's returned full
+name (including its five-character identifier) is used for the conversation,
+roster, messages and subsequent commands, and is preserved in WHOIS channel links.
+Its SASL state machine negotiates CAP, sends PLAIN credentials, and waits for
+success before ending CAP negotiation. The UI retains the active connection configuration and
 retries unexpected disconnections after 3, 6, 12, 24, then 30 seconds (capped).
 The core allows 15 seconds for TCP/TLS and 90 seconds for registration (001):
 IRCnet holds registration about 30 seconds when a client's ident port 113
