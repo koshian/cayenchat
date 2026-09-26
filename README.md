@@ -10,7 +10,7 @@ CayenChat's original source and `icon.png` are licensed under [GPL version 3 onl
 
 ## Build and run
 
-Use a current stable Rust toolchain with Cargo (Rust 1.95.0 is tested). Run commands from the repository root. Cargo uses the committed lockfile; the first build downloads Rust dependencies unless they are cached.
+Use Rust 1.88 or later with Cargo (1.95.0 on macOS and 1.98.1 on Linux are tested). GPUI uses `let` chains, which older compilers reject. Debian's stock rustc (1.85) is too old; use backports or rustup. Run commands from the repository root. Cargo uses the committed lockfile; the first build downloads Rust dependencies unless they are cached.
 
 ```sh
 cargo build --locked -p cayenchat-ui
@@ -67,7 +67,7 @@ Platform prerequisites:
 | --- | --- | --- |
 | macOS | Full Xcode with its macOS SDK and command-line tools selected via `xcode-select`; a Metal-capable Mac. | Built and run on Apple Silicon/macOS 26.6.2 with Rust 1.95.0 and Xcode 26.6. |
 | Windows | Stable Rust MSVC toolchain, Visual Studio or Build Tools with Desktop development with C++, and a Windows SDK. Run from a Developer shell if required. | Not yet built or run on Windows. |
-| Linux | Stable Rust, a Vulkan-capable GPU/driver, and native development libraries for GPUI's Wayland or X11 backend. See [Zed's Linux build prerequisites](https://zed.dev/docs/development/linux) for a broader upstream dependency reference; this smaller project may need fewer packages. | Wayland and X11 features are enabled; not yet built or run on Linux. |
+| Linux | Rust 1.88+, a C toolchain and `pkg-config`, and a Vulkan-capable GPU/driver. On Debian/Ubuntu: `sudo apt install build-essential pkg-config libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 mesa-vulkan-drivers`. See [Zed's Linux build prerequisites](https://zed.dev/docs/development/linux) for a broader upstream dependency reference; this smaller project may need fewer packages. | Wayland and X11 features are enabled; not yet built or run on Linux. |
 
 On macOS, an optional development `.app` bundle with the `icon.png` artwork can be created with:
 

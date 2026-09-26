@@ -67,8 +67,11 @@ cargo build --locked -p cayenchat-ui
 ```
 
 Commit Cargo.lock when committing the application. No rust-toolchain override is used:
-GPUI's upstream guidance requests current stable Rust; the tested compiler is 1.95.0
-(edition 2024). Older compiler support has not been established. Rustfmt and Clippy
+The minimum is Rust 1.88 (`rust-version` in the workspace manifest): GPUI 0.2.2
+uses `let` chains, stabilized in 1.88, without declaring its own minimum, and
+several locked dependencies (zbus 1.87, image/icu/encoding_rs 1.88) declare it
+too. Debian's stock rustc 1.85 therefore cannot build; use backports or rustup.
+Tested compilers are 1.95.0 (macOS) and 1.98.1 (Linux container). Rustfmt and Clippy
 must be available for the corresponding checks. Rustup itself is optional when a
 working toolchain is already provided by another installation.
 
@@ -132,9 +135,11 @@ with the same Cargo commands above on a machine with a Vulkan-capable GPU/driver
 and the native development libraries required by the chosen window backend.
 [Zed's Linux build guide](https://zed.dev/docs/development/linux) is an upstream
 reference, though its full application needs more packages than this app.
-Neither a Linux toolchain nor a Linux desktop runtime was available here; Cargo
-feature resolution was inspected for `x86_64-unknown-linux-gnu`, but compilation
-and interaction must be verified on Linux.
+On Debian/Ubuntu the link step needs `libxcb1-dev`, `libxkbcommon-dev` and
+`libxkbcommon-x11-dev` (a missing one fails as `cannot find -lxkbcommon-x11`),
+plus `libwayland-dev`, `build-essential` and `pkg-config`; at runtime `libvulkan1`
+and a Vulkan driver such as `mesa-vulkan-drivers`. This set built in the Debian
+bookworm container below.
 
 GPUI reports renderer, display-server and font failures through the `log` crate.
 The app installs a small stderr logger (`crates/ui/src/diagnostics.rs`) that

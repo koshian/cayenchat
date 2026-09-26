@@ -10,7 +10,7 @@ CayenChat の独自ソースコードと `icon.png` は [GPL バージョン 3 �
 
 ## ビルドと起動
 
-Cargo を含む現在の安定版 Rust ツールチェーンを使用してください。Rust 1.95.0 で確認済みです。コマンドはリポジトリのルートで実行します。Cargo はコミット済みのロックファイルを使用し、初回ビルドではキャッシュにない依存ライブラリをダウンロードします。
+Cargo を含む Rust 1.88 以降が必要です（macOS では 1.95.0、Linux では 1.98.1 で確認済み）。GPUI が `let` チェーン構文を使っているため、それより古いコンパイラではビルドできません。Debian 標準の rustc（1.85）は古いので、backports か rustup を使ってください。コマンドはリポジトリのルートで実行します。Cargo はコミット済みのロックファイルを使用し、初回ビルドではキャッシュにない依存ライブラリをダウンロードします。
 
 ```sh
 cargo build --locked -p cayenchat-ui
@@ -67,7 +67,7 @@ cargo run --locked -p cayenchat-ui
 | --- | --- | --- |
 | macOS | macOS SDK とコマンドラインツールを備え、`xcode-select` で選択したフル Xcode。Metal 対応 Mac。 | Apple Silicon / macOS 26.6.2、Rust 1.95.0、Xcode 26.6 でビルド・起動済み。 |
 | Windows | 安定版 Rust MSVC ツールチェーン、Visual Studio または C++ デスクトップ開発を含む Build Tools、Windows SDK。必要なら Developer shell から実行。 | Windows 上でのビルド・起動は未確認。 |
-| Linux | 安定版 Rust、Vulkan 対応 GPU とドライバー、GPUI の Wayland または X11 用のネイティブ開発ライブラリ。[Zed の Linux ビルド要件](https://zed.dev/docs/development/linux)は上流の広い要件を参照できますが、この小さなプロジェクトには不要なものもあります。 | Wayland と X11 の機能は有効。Linux 上でのビルド・起動は未確認。 |
+| Linux | Rust 1.88 以降、C コンパイラと `pkg-config`、Vulkan 対応 GPU とドライバー。Debian/Ubuntu では `sudo apt install build-essential pkg-config libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 mesa-vulkan-drivers`。[Zed の Linux ビルド要件](https://zed.dev/docs/development/linux)は上流の広い要件を参照できますが、この小さなプロジェクトには不要なものもあります。 | Wayland と X11 の機能は有効。Linux 上でのビルド・起動は未確認。 |
 
 macOS では `icon.png` の画像を使った開発用 `.app` バンドルを任意で作れます。
 
