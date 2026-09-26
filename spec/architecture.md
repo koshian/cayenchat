@@ -214,7 +214,12 @@ event channel with no terminal event. A terminal disconnection reason is include
 in the transcript and clipboard export.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
-connection status, selection, unread IDs, and active IDs. Typed `NetworkId` and
+connection status, selection, unread IDs, and active IDs. Only configured channels
+and our own JOINs create conversations (at most 1,000 per network); messages for
+any other channel go to the bounded server log, and member snapshots or activity
+for unknown channels are ignored, so a hostile server cannot grow memory without
+limit. The core likewise caps unfinished WHOIS replies (32 nicknames, 512
+channels or extra lines each) and caches rosters only for joined channels. Typed `NetworkId` and
 `ConversationId` distinguish identity from display names. It also retains an offline
 mock for tests. `ui::ChatWindow` maps GPUI key actions to
 navigation and send commands. GPUI entities retain separate server/channel draft

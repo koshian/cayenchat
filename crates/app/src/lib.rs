@@ -3,6 +3,10 @@ use std::collections::{HashMap, HashSet};
 
 use cayenchat_model::{Conversation, ConversationId, Message, Network, NetworkId};
 
+/// Upper bound on conversations per network, so a hostile server or bouncer
+/// cannot grow memory without limit by announcing endless channel joins.
+const MAX_CONVERSATIONS_PER_NETWORK: usize = 1_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Selection {
     Server(NetworkId),
@@ -291,7 +295,14 @@ impl AppState {
         if let Some(id) = self.channel_id(network, name) {
             return Some(id);
         }
-        if !self.networks.iter().any(|server| server.id == network) {
+        if !self.networks.iter().any(|server| server.id == network)
+            || self
+                .conversations
+                .iter()
+                .filter(|channel| channel.network == network)
+                .count()
+                >= MAX_CONVERSATIONS_PER_NETWORK
+        {
             return None;
         }
         let id = ConversationId(
@@ -333,7 +344,7 @@ impl AppState {
     }
 
     pub fn set_members(&mut self, network: NetworkId, name: &str, members: Vec<String>) {
-        if let Some(id) = self.ensure_channel(network, name)
+        if let Some(id) = self.channel_id(network, name)
             && let Some(channel) = self
                 .conversations
                 .iter_mut()
@@ -351,34 +362,39 @@ impl AppState {
         text: &str,
         notice: bool,
     ) {
-        if let Some(id) = self.ensure_channel(network, name) {
-            self.next_message_sequence += 1;
-            if let Some(channel) = self
-                .conversations
-                .iter_mut()
-                .find(|channel| channel.id == id)
-            {
-                push_bounded(
-                    &mut channel.messages,
-                    Message {
-                        time: local_time(),
-                        sequence: self.next_message_sequence,
-                        sender: sender.into(),
-                        text: if notice {
-                            format!("[NOTICE] {text}")
-                        } else {
-                            text.into()
-                        },
-                        activity: false,
+        // Only joined or configured channels get a conversation; anything else
+        // a server sends lands in the bounded server log instead.
+        let Some(id) = self.channel_id(network, name) else {
+            let prefix = if notice { "[NOTICE] " } else { "" };
+            self.append_server_message(network, format!("{name} <{sender}> {prefix}{text}"));
+            return;
+        };
+        self.next_message_sequence += 1;
+        if let Some(channel) = self
+            .conversations
+            .iter_mut()
+            .find(|channel| channel.id == id)
+        {
+            push_bounded(
+                &mut channel.messages,
+                Message {
+                    time: local_time(),
+                    sequence: self.next_message_sequence,
+                    sender: sender.into(),
+                    text: if notice {
+                        format!("[NOTICE] {text}")
+                    } else {
+                        text.into()
                     },
-                );
-            }
-            self.mark_unread(id);
+                    activity: false,
+                },
+            );
         }
+        self.mark_unread(id);
     }
 
     pub fn append_channel_activity(&mut self, network: NetworkId, name: &str, text: String) {
-        if let Some(id) = self.ensure_channel(network, name) {
+        if let Some(id) = self.channel_id(network, name) {
             self.next_message_sequence += 1;
             if let Some(channel) = self
                 .conversations
@@ -780,5 +796,25 @@ mod tests {
         assert!(channel.messages[0].sequence < channel.messages[1].sequence);
         assert_eq!(channel.messages[0].text, "alice has joined (u@h)");
         assert!(!channel.messages[1].activity);
+    }
+
+    #[test]
+    fn server_traffic_for_unjoined_channels_does_not_create_conversations() {
+        let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+        state.append_channel_message(NetworkId(1), "#stray", "mallory", "hi", false);
+        state.append_channel_activity(NetworkId(1), "#stray", "mallory has joined".into());
+        state.set_members(NetworkId(1), "#stray", vec!["mallory".into()]);
+        assert_eq!(state.conversations().len(), 1);
+        assert!(
+            state
+                .server_messages(NetworkId(1))
+                .iter()
+                .any(|message| message.text == "#stray <mallory> hi")
+        );
+
+        for index in 0..MAX_CONVERSATIONS_PER_NETWORK + 10 {
+            state.joined_channel(NetworkId(1), &format!("#c{index}"));
+        }
+        assert_eq!(state.conversations().len(), MAX_CONVERSATIONS_PER_NETWORK);
     }
 }
