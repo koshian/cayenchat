@@ -1264,6 +1264,16 @@ impl RosterTracker {
         }
     }
 
+    /// Uses the snapshot published before the current message, because the
+    /// library has already removed a quitting user from its own roster.
+    fn had_member(&self, channel: &str, nickname: &str) -> bool {
+        self.last.get(channel).is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| display_nickname(member).eq_ignore_ascii_case(nickname))
+        })
+    }
+
     fn forget_channel(&mut self, channel: &str) {
         self.last.remove(channel);
         self.renamed_roles
@@ -1526,6 +1536,7 @@ fn translate_message(
         translated.extend(
             changed_channels
                 .iter()
+                .filter(|channel| roster.had_member(channel, &actor))
                 .map(|channel| Event::ChannelActivity {
                     channel: channel.clone(),
                     actor: actor.clone(),
@@ -1926,7 +1937,7 @@ mod tests {
                 }
             }
             socket.write_all(
-                b":alice!u@h JOIN #test\r\n:alice!u@h PRIVMSG #test :hello\r\n:server 353 alice = #test :@alice bob\r\n:server 366 alice #test :End of NAMES\r\n:charlie!u@h JOIN #test\r\n:alice!u@h MODE #test +o charlie\r\n:bob!u@h PART #test\r\n:charlie!u@h NICK dave\r\n:dave!u@h QUIT :bye\r\n"
+                b":alice!u@h JOIN #test\r\n:alice!u@h JOIN #other\r\n:server 353 alice = #other :alice\r\n:server 366 alice #other :End of NAMES\r\n:alice!u@h PRIVMSG #test :hello\r\n:server 353 alice = #test :@alice bob\r\n:server 366 alice #test :End of NAMES\r\n:charlie!u@h JOIN #test\r\n:alice!u@h MODE #test +o charlie\r\n:bob!u@h PART #test\r\n:charlie!u@h NICK dave\r\n:dave!u@h QUIT :bye\r\n"
             ).unwrap();
             let mut outgoing = Vec::new();
             while outgoing.len() < 7 {
@@ -1944,8 +1955,11 @@ mod tests {
             outgoing
         });
 
-        let mut config =
-            ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec!["#test".into()]);
+        let mut config = ConnectionConfig::tls(
+            "127.0.0.1".into(),
+            "alice".into(),
+            vec!["#test".into(), "#other".into()],
+        );
         config.port = port;
         config.use_tls = false;
         let mut connection = Connection::connect(config).unwrap();
@@ -1972,7 +1986,7 @@ mod tests {
             if let Some(event) = connection.try_recv() {
                 match event {
                     Event::Registered { nickname } => seen_registered = nickname == "alice",
-                    Event::Joined { channel } => seen_joined = channel == "#test",
+                    Event::Joined { channel } => seen_joined |= channel == "#test",
                     Event::ChannelMessage {
                         channel,
                         sender,
@@ -2000,6 +2014,11 @@ mod tests {
                         actor,
                         kind,
                     } if channel == "#test" => activities.push((actor, kind)),
+                    Event::ChannelActivity {
+                        channel,
+                        actor,
+                        kind: ChannelActivityKind::Quit { .. },
+                    } => panic!("{actor} quit shown in {channel} without being a member"),
                     Event::Wire {
                         direction, line, ..
                     } => transcript.push((direction, line)),

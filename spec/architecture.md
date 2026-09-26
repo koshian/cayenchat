@@ -109,7 +109,8 @@ the actual latest line last even when several channels receive messages within
 the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
 a nickname column regardless of the UI language, and does not mark the channel
-unread. Its text uses configurable green (`#007D00`) by default in both the main log
+unread. QUIT is logged only in channels whose last published roster contained
+the quitting nickname. Its text uses configurable green (`#007D00`) by default in both the main log
 and combined subwindow. The main log keeps separate scroll positions for each
 server or channel, and both left logs
 follow incoming messages while at the bottom. User scrolling pauses follow mode
