@@ -389,7 +389,8 @@ struct ChatWindow {
     // Virtualized logs keep a separate scroll position per server or channel.
     main_lists: HashMap<Selection, LogList>,
     sub_list: LogList,
-    sub_owner: Option<ConversationId>,
+    // Selection and newest message sequence the combined log was built for.
+    sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
@@ -601,7 +602,7 @@ impl ChatWindow {
             state,
             main_lists: HashMap::new(),
             sub_list: LogList::new(),
-            sub_owner: None,
+            sub_source: None,
             sub_rows: Vec::new(),
             inputs,
             feedback,
@@ -745,6 +746,7 @@ impl ChatWindow {
         self.state = AppState::live(config.host.clone(), config.channels.clone());
         self.main_lists.clear();
         self.sub_list.clear();
+        self.sub_source = None;
         self.sub_rows.clear();
         self.log_selection = None;
         let placeholder = self.i18n.text("draft_placeholder");
@@ -3469,8 +3471,15 @@ impl ChatWindow {
 
         // The combined log shows the newest conversation lines from every other
         // channel; JOIN/PART/QUIT/MODE activity stays in its own channel log.
-        // Only the tail of each channel can reach the combined tail.
+        // Only the tail of each channel can reach the combined tail. Rebuild it
+        // only when a message arrives or the selection changes, not on every
+        // redraw (each keystroke redraws the window).
         let selected = self.state.selected_channel().map(|channel| channel.id);
+        let source = (selected, self.state.last_message_sequence());
+        if self.sub_source == Some(source) {
+            return;
+        }
+        self.sub_source = Some(source);
         let mut rows: Vec<(u64, ConversationId, usize)> = self
             .state
             .conversations()
@@ -3489,10 +3498,6 @@ impl ChatWindow {
             .collect();
         rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
         rows.drain(..rows.len().saturating_sub(SUB_LOG_LIMIT));
-        if self.sub_owner != selected {
-            self.sub_list.clear();
-            self.sub_owner = selected;
-        }
         let sequences: Vec<u64> = rows.iter().map(|(sequence, _, _)| *sequence).collect();
         self.sub_list.sync(0, &sequences);
         self.sub_rows = rows.into_iter().map(|(_, id, index)| (id, index)).collect();

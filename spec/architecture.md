@@ -122,7 +122,10 @@ typing, IME composition and channel switching slow, most visibly on Linux.
 GPUI still reshapes rows it did not draw in the previous frame; on Linux the
 vendored GPUI caches cosmic-text shaping per word (bounded) so a switch does not
 pay full shaping cost for every newly visible line (issue #5). The
-combined subwindow shows the newest 1,000 lines across other channels. Channel
+combined subwindow shows the newest 1,000 lines across other channels; it is
+rebuilt only when a message arrives or the selection changes, and log lists
+replace only the rows whose messages appeared or disappeared, so switching
+channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.

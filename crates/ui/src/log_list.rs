@@ -16,8 +16,7 @@ const OVERDRAW: f32 = 400.;
 pub struct LogList {
     pub state: ListState,
     prefix: usize,
-    len: usize,
-    last_sequence: Option<u64>,
+    sequences: Vec<u64>,
 }
 
 impl LogList {
@@ -25,46 +24,51 @@ impl LogList {
         Self {
             state: ListState::new(0, ListAlignment::Bottom, px(OVERDRAW)),
             prefix: 0,
-            len: 0,
-            last_sequence: None,
+            sequences: Vec::new(),
         }
     }
 
     pub fn clear(&mut self) {
         self.state.reset(0);
         self.prefix = 0;
-        self.len = 0;
-        self.last_sequence = None;
+        self.sequences.clear();
     }
 
-    /// Tells the list which rows changed since the previous frame. Bounded logs
-    /// only drop old lines from the front and append new ones at the end, so the
-    /// previous last sequence locates the retained rows.
+    /// Tells the list which rows changed since the previous sync. Only rows
+    /// whose sequence appeared or disappeared are replaced, so the others keep
+    /// their measured heights and the scroll position. This covers appends,
+    /// bounded logs dropping old lines, and the combined log swapping one
+    /// channel's lines for another's when the selection changes.
     pub fn sync(&mut self, prefix: usize, sequences: &[u64]) {
         if prefix != self.prefix {
             self.state.splice(0..self.prefix, prefix);
             self.prefix = prefix;
         }
-        let retained = match self.last_sequence {
-            Some(last) => sequences.binary_search(&last).ok().map(|index| index + 1),
-            None => Some(0),
-        };
-        match retained {
-            Some(retained) if retained <= self.len => {
-                let removed = self.len - retained;
-                if removed > 0 {
-                    self.state.splice(prefix..prefix + removed, 0);
-                }
-                let added = sequences.len() - retained;
-                if added > 0 {
-                    let end = prefix + retained;
-                    self.state.splice(end..end, added);
+        if sequences == self.sequences.as_slice() {
+            return;
+        }
+        // Both lists ascend. Walk from the end so splicing a run of changes
+        // leaves the indices of earlier rows valid.
+        let old = &self.sequences;
+        let (mut i, mut j) = (old.len(), sequences.len());
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 && old[i - 1] == sequences[j - 1] {
+                i -= 1;
+                j -= 1;
+                continue;
+            }
+            let (old_end, new_end) = (i, j);
+            while (i > 0 || j > 0) && !(i > 0 && j > 0 && old[i - 1] == sequences[j - 1]) {
+                if j == 0 || (i > 0 && old[i - 1] > sequences[j - 1]) {
+                    i -= 1;
+                } else {
+                    j -= 1;
                 }
             }
-            _ => self.state.reset(prefix + sequences.len()),
+            self.state.splice(prefix + i..prefix + old_end, new_end - j);
         }
-        self.len = sequences.len();
-        self.last_sequence = sequences.last().copied();
+        self.sequences.clear();
+        self.sequences.extend_from_slice(sequences);
     }
 }
 
@@ -91,9 +95,16 @@ mod tests {
         log.sync(1, &[3, 7, 9, 10, 11]);
         assert_eq!(log.state.item_count(), 6);
 
-        // A replaced log (for example after reconnecting) starts over.
+        // A replaced log (for example after reconnecting).
         log.sync(1, &[1]);
         assert_eq!(log.state.item_count(), 2);
+
+        // The combined log swaps lines in the middle when the selection moves.
+        log.sync(1, &[1, 4, 5, 8]);
+        assert_eq!(log.state.item_count(), 5);
+        log.sync(1, &[1, 5, 6, 7, 8]);
+        assert_eq!(log.state.item_count(), 6);
+        assert_eq!(log.sequences, [1, 5, 6, 7, 8]);
 
         log.clear();
         assert_eq!(log.state.item_count(), 0);

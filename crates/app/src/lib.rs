@@ -415,6 +415,12 @@ impl AppState {
         }
     }
 
+    /// Sequence of the newest message in any log. It changes whenever a
+    /// message is added (and with it, when a bounded log drops old lines).
+    pub fn last_message_sequence(&self) -> u64 {
+        self.next_message_sequence
+    }
+
     pub fn networks(&self) -> &[Network] {
         &self.networks
     }
