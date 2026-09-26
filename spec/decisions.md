@@ -51,7 +51,7 @@ IRC/networking code must not depend on GPUI. Application state mediates between 
 
 **Status:** Accepted for the initial connection layer
 
-Use a dedicated thread with a current-thread Tokio runtime for IRC work. GPUI polls bounded, owned events and sends commands through a bounded queue. This avoids running socket work on the UI thread and keeps the GPUI dependency out of `irc-core`. The integration passed a deterministic local IRC-server test; longer-running and cross-platform behavior still needs validation.
+Use a dedicated thread with a current-thread Tokio runtime for IRC work. GPUI awaits bounded, owned events (no timer polling) and sends commands through a bounded queue. This avoids running socket work on the UI thread and keeps the GPUI dependency out of `irc-core`. The integration passed a deterministic local IRC-server test; longer-running and cross-platform behavior still needs validation.
 
 ## D007 — IRC implementation dependency
 

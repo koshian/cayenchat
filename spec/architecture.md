@@ -137,8 +137,13 @@ There are no dependency cycles and GPUI occurs only in `ui`.
 
 `irc-core::Connection` owns a dedicated current-thread Tokio runtime. It translates
 the `irc` crate's messages into owned application events and accepts bounded outgoing
-commands. TCP/TLS connection and registration do not block GPUI. The current UI polls
-at 50 ms intervals while connected, applies events to `app::AppState`, and redraws.
+commands. TCP/TLS connection and registration do not block GPUI. The UI moves the
+connection's `Events` stream into a GPUI task that sleeps until the worker sends
+something, applies up to 256 events per update to `app::AppState`, redraws, and
+yields between batches of a burst. An earlier 50 ms poll handled at most 64
+events per tick (about 640 incoming lines per second, since each line also
+produces a wire diagnostic), delayed every line and woke 20 times a second while
+idle. QUIT and NICK republish rosters only for channels that contained the user.
 Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.

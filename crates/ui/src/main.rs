@@ -39,6 +39,8 @@ const RETRY_DELAYS: [Duration; 5] = [
 ];
 /// Most lines the combined other-channel log keeps on screen.
 const SUB_LOG_LIMIT: usize = 1_000;
+/// Worker events applied per update before yielding to input and redraws.
+const EVENT_BATCH_LIMIT: usize = 256;
 
 fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
     fn with_detail(actor: &str, action: &str, detail: Option<String>) -> String {
@@ -363,6 +365,21 @@ fn startup_connection_config(settings: &Settings) -> Option<Result<ConnectionCon
     })
 }
 
+/// Returns to the executor once, so other queued work runs before continuing.
+async fn yield_now() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if yielded {
+            std::task::Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    })
+    .await
+}
+
 fn i18n_error(language: Language, key: &str) -> String {
     Localizer::new(language).text(key)
 }
@@ -634,23 +651,70 @@ impl ChatWindow {
         self.theme_mode = mode;
     }
 
-    fn spawn_poll(&self, cx: &mut Context<Self>) {
+    /// Handles worker events as they arrive. The task sleeps while the
+    /// connection is idle instead of waking on a timer, and incoming lines are
+    /// shown without polling delay.
+    fn spawn_event_pump(&mut self, cx: &mut Context<Self>) {
+        let Some(mut events) = self.irc.as_mut().and_then(Connection::take_events) else {
+            return;
+        };
         let generation = self.connection_generation;
         cx.spawn(async move |this, cx| {
             loop {
-                Timer::after(Duration::from_millis(50)).await;
-                let keep_polling = match this.update(cx, |this, cx| {
-                    if this.connection_generation == generation {
-                        this.poll_events(cx)
-                    } else {
-                        false
-                    }
-                }) {
-                    Ok(keep_polling) => keep_polling,
-                    Err(_) => break,
-                };
-                if !keep_polling {
+                let first = events.recv().await;
+                let closed = first.is_none();
+                let mut batch: Vec<Event> = first.into_iter().collect();
+                while batch.len() < EVENT_BATCH_LIMIT
+                    && let Some(event) = events.try_recv()
+                {
+                    batch.push(event);
+                }
+                let keep_going = this
+                    .update(cx, |this, cx| {
+                        this.connection_generation == generation
+                            && this.handle_events(batch, closed, cx)
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
                     break;
+                }
+                // Let input and redraws run between batches of a large burst.
+                yield_now().await;
+            }
+        })
+        .detach();
+        self.spawn_watchdog(generation, cx);
+    }
+
+    /// Reports a slow transport worker while the connection is still opening.
+    fn spawn_watchdog(&self, generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            for (stage, after) in [(1, Duration::from_secs(5)), (2, Duration::from_secs(15))] {
+                let Some(started) = this
+                    .update(cx, |this, _| this.connection_started)
+                    .ok()
+                    .flatten()
+                else {
+                    return;
+                };
+                Timer::after(after.saturating_sub(started.elapsed())).await;
+                let waiting = this
+                    .update(cx, |this, cx| {
+                        let waiting = this.connection_generation == generation
+                            && this.connection_started.is_some()
+                            && this.state.status(NetworkId(1))
+                                == Some(&ConnectionStatus::Connecting);
+                        if waiting && stage > this.watchdog_stage {
+                            this.watchdog_stage = stage;
+                            let elapsed = started.elapsed();
+                            this.push_diagnostic(format!("[{:.1}s] UI is still waiting for the transport worker; inspect the latest diagnostic stage.", elapsed.as_secs_f32()));
+                            cx.notify();
+                        }
+                        waiting
+                    })
+                    .unwrap_or(false);
+                if !waiting {
+                    return;
                 }
             }
         })
@@ -707,7 +771,7 @@ impl ChatWindow {
             Ok(connection) => {
                 self.irc = Some(connection);
                 self.feedback = None;
-                self.spawn_poll(cx);
+                self.spawn_event_pump(cx);
                 window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
                 Ok(())
             }
@@ -778,7 +842,7 @@ impl ChatWindow {
         match Connection::connect(config) {
             Ok(connection) => {
                 self.irc = Some(connection);
-                self.spawn_poll(cx);
+                self.spawn_event_pump(cx);
             }
             Err(error) => {
                 self.record_disconnect(error);
@@ -1233,16 +1297,18 @@ impl ChatWindow {
         });
     }
 
-    fn poll_events(&mut self, cx: &mut Context<Self>) -> bool {
-        let mut changed = false;
+    /// Applies a batch of worker events. `worker_closed` means the worker's
+    /// event stream ended. Returns whether to keep listening.
+    fn handle_events(
+        &mut self,
+        batch: Vec<Event>,
+        worker_closed: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = !batch.is_empty();
         let mut disconnected = false;
         let mut refused = false;
-        for _ in 0..64 {
-            let event = self.irc.as_mut().and_then(Connection::try_recv);
-            let Some(event) = event else {
-                break;
-            };
-            changed = true;
+        for event in batch {
             match event {
                 Event::Disconnected(_) => disconnected = true,
                 Event::Refused(_) => {
@@ -1255,23 +1321,6 @@ impl ChatWindow {
         }
         for (info, requested) in std::mem::take(&mut self.whois_replies) {
             self.show_whois(info, requested, cx);
-        }
-        if let Some(started) = self.connection_started
-            && self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Connecting)
-        {
-            let elapsed = started.elapsed();
-            let stage = if elapsed >= Duration::from_secs(15) {
-                2
-            } else if elapsed >= Duration::from_secs(5) {
-                1
-            } else {
-                0
-            };
-            if stage > self.watchdog_stage {
-                self.watchdog_stage = stage;
-                self.push_diagnostic(format!("[{:.1}s] UI is still waiting for the transport worker; inspect the latest diagnostic stage.", elapsed.as_secs_f32()));
-                changed = true;
-            }
         }
         if changed {
             let joined = self.joined_channels();
@@ -1289,7 +1338,6 @@ impl ChatWindow {
             }
             cx.notify();
         }
-        let worker_closed = self.irc.as_ref().is_some_and(Connection::is_closed);
         if worker_closed && !disconnected {
             self.push_diagnostic("IRC worker ended without a disconnect event.".into());
             self.handle_event(Event::Disconnected(
