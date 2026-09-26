@@ -3394,23 +3394,26 @@ impl ChatWindow {
             .or_insert_with(LogList::new)
             .sync(prefix, &sequences);
 
-        // The combined log shows the newest lines from every other channel. Only
-        // the tail of each channel can reach the combined tail.
+        // The combined log shows the newest conversation lines from every other
+        // channel; JOIN/PART/QUIT/MODE activity stays in its own channel log.
+        // Only the tail of each channel can reach the combined tail.
         let selected = self.state.selected_channel().map(|channel| channel.id);
-        let mut rows: Vec<(u64, ConversationId, usize)> =
-            self.state
-                .conversations()
-                .iter()
-                .filter(|conversation| Some(conversation.id) != selected)
-                .flat_map(|conversation| {
-                    let start = conversation.messages.len().saturating_sub(SUB_LOG_LIMIT);
-                    conversation.messages[start..].iter().enumerate().map(
-                        move |(offset, message)| {
-                            (message.sequence, conversation.id, start + offset)
-                        },
-                    )
-                })
-                .collect();
+        let mut rows: Vec<(u64, ConversationId, usize)> = self
+            .state
+            .conversations()
+            .iter()
+            .filter(|conversation| Some(conversation.id) != selected)
+            .flat_map(|conversation| {
+                conversation
+                    .messages
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, message)| !message.activity)
+                    .take(SUB_LOG_LIMIT)
+                    .map(move |(index, message)| (message.sequence, conversation.id, index))
+            })
+            .collect();
         rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
         rows.drain(..rows.len().saturating_sub(SUB_LOG_LIMIT));
         if self.sub_owner != selected {
