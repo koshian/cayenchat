@@ -7,9 +7,10 @@ use log::{LevelFilter, Log, Metadata, Record};
 struct StderrLogger;
 
 /// Crates that handle credentials or authenticated requests. Their debug
-/// output describes requests and credential entries, so it stays off even
-/// with `RUST_LOG=debug`; warnings and errors still appear.
-const QUIET_TARGETS: [&str; 8] = [
+/// output describes requests, raw IRC commands and credential entries, so it
+/// stays off even with `RUST_LOG=trace`; warnings and errors still appear.
+const QUIET_TARGETS: [&str; 9] = [
+    "irc",
     "ureq",
     "keyring_core",
     "rustls",
@@ -64,5 +65,16 @@ mod tests {
         assert!(quiet("keyring"));
         assert!(!quiet("gpui::window"));
         assert!(!quiet("ureqx"));
+    }
+
+    #[test]
+    fn irc_wire_log_targets_are_quiet() {
+        // irc logs unredacted PASS and AUTHENTICATE here, independently of
+        // the application's redacted connection transcript.
+        assert!(quiet("irc"));
+        assert!(quiet("irc::client"));
+        assert!(quiet("irc::client::transport"));
+        assert!(!quiet("cayenchat_irc_core"));
+        assert!(!quiet("irc_other"));
     }
 }

@@ -357,8 +357,9 @@ go to the local file, because the user had already accepted plaintext storage
 for them. The settings form never shows saved passwords: fields start empty,
 typing replaces the saved value, and a typed value wins for the connection.
 
-The UI's stderr logger keeps `ureq`, `rustls` and keyring crates at warning
-level even under `RUST_LOG=debug`. There are no crash diagnostics; the copied
+The UI's stderr logger keeps `irc`, `ureq`, `rustls` and keyring crates at warning
+level even under `RUST_LOG=trace`, including the IRC library's raw PASS and
+AUTHENTICATE output. There are no crash diagnostics; the copied
 connection transcript masks credential commands as before.
 
 ## Attachments and image sharing
