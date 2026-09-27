@@ -251,5 +251,16 @@
   "notifications_hint_macos": "チャットウィンドウが前面にあり、そのチャンネルを表示中のメッセージは通知しません。macOS ではアプリバンドルからのみ通知でき、システム設定の「通知」で許可が必要です。",
   "notification_channel_title": "{channel} の {sender}",
   "notification_private_title": "{sender}（プライベートメッセージ）",
-  "highlight_color": "ハイライト色"
+  "highlight_color": "ハイライト色",
+  "ircv3_tab": "IRCv3",
+  "ircv3_intro": "IRCv3 の拡張機能をサーバーごとに選択します。どれも有効にするまでオフのままです。",
+  "ircv3_server": "サーバー",
+  "ircv3_configuring": "{server} の設定",
+  "ircv3_no_server": "先に「接続」タブでサーバーを追加してください。",
+  "ircv3_server_time": "サーバーのタイムスタンプ",
+  "ircv3_server_time_hint": "受信したメッセージに、サーバーが記録した時刻 (server-time) をローカル時刻で表示します。メッセージタグなしでも使えます。",
+  "ircv3_message_tags": "メッセージタグ",
+  "ircv3_message_tags_hint": "サーバーからの IRCv3 メッセージタグ (message-tags) を受け付けます。タグだけのメッセージ (TAGMSG) は表示しません。",
+  "ircv3_legacy_encoding": "このサーバーの文字コードは {encoding} です。タグの値は UTF-8 のため、メッセージタグは要求しません。サーバーのタイムスタンプは使えます。",
+  "ircv3_next_connection": "変更は次にこのサーバーへ接続したときに反映されます。接続中のサーバーは再接続しません。"
 }

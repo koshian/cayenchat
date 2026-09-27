@@ -4,6 +4,7 @@ mod desktop;
 mod diagnostics;
 mod image_upload;
 mod input;
+mod ircv3_settings;
 mod localization;
 mod log_list;
 mod menu_bar;
@@ -825,6 +826,7 @@ enum SettingsTab {
     Appearance,
     Keyboard,
     Notifications,
+    Ircv3,
     ImageUpload,
     Credentials,
 }
@@ -4073,6 +4075,7 @@ impl SettingsWindow {
                 "notifications_tab",
                 cx,
             ))
+            .child(self.settings_tab(SettingsTab::Ircv3, "ircv3-tab", "ircv3_tab", cx))
             .child(self.settings_tab(
                 SettingsTab::ImageUpload,
                 "image-upload-tab",
@@ -4090,6 +4093,7 @@ impl SettingsWindow {
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
             SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
+            SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
         };
