@@ -537,3 +537,27 @@ In `SettingsWindow`, Tab/Shift+Tab call GPUI's `focus_next`/`focus_prev`.
 order follows paint order (top to bottom) and wraps, with no manual indices.
 Only text fields are tab stops; buttons, checkboxes and selectors still have
 no keyboard focus (see D019).
+
+## D021 — Settings save as they change
+
+**Status:** Accepted
+
+The settings window has no Save buttons. An edit is written to
+`settings.json` 500 ms after the last change (text fields, choices and
+toggles alike) and applied to the chat window: appearance, language and
+shortcuts only when they changed, the server list only when servers changed.
+Nothing reconnects; **Connect** stays as the one explicit action.
+
+Exceptions keep a half-finished edit from doing damage:
+
+- A typed password is stored when its field loses focus, not while it is
+  being typed, because storing empties the field. Closing the window (close
+  button or Back) and quitting the app store every typed password, focused or
+  not.
+- While the selected server has no host nothing is saved and the window says
+  a host is needed, because saving would drop the server and forget its
+  passwords.
+- Invalid values (a bad port or color) are reported and not saved until fixed.
+- Removing a server that was already saved asks for confirmation, since the
+  removal is saved at once and disconnects it and deletes its passwords.
+

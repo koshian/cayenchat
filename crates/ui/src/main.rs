@@ -385,12 +385,60 @@ impl SettingsForm {
         )
     }
 
+    /// Every text field, so edits to any of them can trigger an autosave.
+    fn text_fields(&self) -> [&Entity<TextInput>; 29] {
+        [
+            &self.custom_host,
+            &self.port,
+            &self.nickname,
+            &self.username,
+            &self.channels,
+            &self.server_password,
+            &self.sasl_username,
+            &self.sasl_password,
+            &self.member_list_background,
+            &self.main_log_background,
+            &self.main_log_alternate,
+            &self.channel_event_color,
+            &self.highlight_color,
+            &self.sub_log_background,
+            &self.sub_log_alternate,
+            &self.dark_member_list_background,
+            &self.dark_main_log_background,
+            &self.dark_main_log_alternate,
+            &self.dark_channel_event_color,
+            &self.dark_highlight_color,
+            &self.dark_sub_log_background,
+            &self.dark_sub_log_alternate,
+            &self.main_log_font,
+            &self.sub_log_font,
+            &self.member_font,
+            &self.channel_font,
+            &self.input_font,
+            &self.time_font,
+            &self.keywords,
+        ]
+    }
+
+    /// Whether a typed password is waiting to be stored. With `window`, a
+    /// field that still has focus is left alone so it is not stored mid-typing.
+    fn pending_passwords(&self, window: Option<&Window>, cx: &App) -> bool {
+        self.values
+            .selected_profile()
+            .is_some_and(|profile| profile.remember_passwords)
+            && [&self.server_password, &self.sasl_password]
+                .into_iter()
+                .any(|field| password_ready(field, window, cx))
+    }
+
     /// Stores typed passwords when saving is on, then empties the fields so
-    /// plaintext does not stay in the form.
+    /// plaintext does not stay in the form. With `window`, a focused field is
+    /// skipped until the user leaves it.
     fn persist_passwords(
         &mut self,
         store: &CredentialStore,
         i18n: &Localizer,
+        window: Option<&Window>,
         cx: &mut Context<SettingsWindow>,
     ) -> Result<(), String> {
         let Some(profile) = self.values.selected_profile().cloned() else {
@@ -411,10 +459,10 @@ impl SettingsForm {
                 &mut self.saved_sasl_password,
             ),
         ] {
-            let text = field.read(cx).text().to_owned();
-            if text.is_empty() {
+            if !password_ready(&field, window, cx) {
                 continue;
             }
+            let text = field.read(cx).text().to_owned();
             store
                 .set(&key, &Secret::new(text))
                 .map_err(|error| secrets::error_text(i18n, &error))?;
@@ -427,6 +475,12 @@ impl SettingsForm {
         }
         Ok(())
     }
+}
+
+/// A password field holds text and, with `window`, is not being typed in.
+fn password_ready(field: &Entity<TextInput>, window: Option<&Window>, cx: &App) -> bool {
+    !field.read(cx).text().is_empty()
+        && window.is_none_or(|window| !field.read(cx).focus_handle(cx).is_focused(window))
 }
 
 /// Whether the profile has saved server and SASL passwords.
@@ -791,7 +845,18 @@ struct SettingsWindow {
     upload_token: Entity<TextInput>,
     upload_connected: bool,
     upload_token_open: bool,
+    /// What the settings file last received from this window; edits that
+    /// differ from it are saved after a short pause.
+    saved: Settings,
+    window: AnyWindowHandle,
+    autosave: Option<Task<()>>,
+    /// Why the latest edits could not be saved, shown until they can be.
+    autosave_error: Option<String>,
+    _subscriptions: Vec<Subscription>,
 }
+
+/// Pause after the last edit before settings are written.
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 
 impl ChatWindow {
     fn apply_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
@@ -2543,6 +2608,29 @@ impl SettingsWindow {
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
+        let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
+        for field in settings.text_fields() {
+            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
+        }
+        // Typed passwords are stored once their field loses focus.
+        for field in [&settings.server_password, &settings.sasl_password] {
+            let handle = field.read(cx).focus_handle(cx);
+            subscriptions.push(
+                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
+            );
+        }
+        // Leaving saves everything, including a password field that still
+        // has focus.
+        let view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = view.update(cx, |this, cx| this.autosave_now(None, cx));
+            true
+        });
+        subscriptions.push(cx.on_app_quit(|this, cx| {
+            this.autosave_now(None, cx);
+            async {}
+        }));
+        let saved = settings.values.clone();
         let mut this = Self {
             menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             owner,
@@ -2556,6 +2644,11 @@ impl SettingsWindow {
             upload_token,
             upload_connected: false,
             upload_token_open: false,
+            saved,
+            window: window.window_handle(),
+            autosave: None,
+            autosave_error: None,
+            _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
         this.refresh_upload_account(cx);
@@ -2567,11 +2660,13 @@ impl SettingsWindow {
     fn commit_settings(
         &mut self,
         mut settings: Settings,
+        window: Option<&Window>,
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
-        self.settings.persist_passwords(&store, &self.i18n, cx)?;
+        self.settings
+            .persist_passwords(&store, &self.i18n, window, cx)?;
         if let Ok(Some(previous)) = cayenchat_storage::load() {
             forget_removed_profiles(&previous, &settings, &store);
         }
@@ -2585,7 +2680,9 @@ impl SettingsWindow {
             let config =
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
-            let settings = self.commit_settings(settings, cx)?;
+            self.autosave = None;
+            self.saved = settings.clone();
+            let settings = self.commit_settings(settings, None, cx)?;
             self.settings.values = settings.clone();
             Ok::<_, String>((config, settings))
         })();
@@ -2619,40 +2716,102 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn save_settings(&mut self, cx: &mut Context<Self>) {
-        self.feedback = match self.settings.snapshot(cx).and_then(|settings| {
-            if settings
-                .selected_profile()
-                .is_some_and(|profile| profile.host.is_empty())
-            {
-                return Err(self.i18n.text("server_required"));
-            }
-            let settings = self.commit_settings(settings, cx)?;
-            self.settings.values = settings;
-            let appearance = self.settings.values.appearance.clone();
-            let mode = self.settings.values.theme;
-            let language = self.settings.values.language;
-            let shortcuts = ShortcutPrefs::from(&self.settings.values);
-            let provider = self.settings.values.image_upload.provider.clone();
-            let saved = self.settings.values.clone();
-            let rules = notification_rules(&self.settings.values.notifications);
-            let _ = self.owner.update(cx, |owner, window, cx| {
-                owner.apply_servers(saved, cx);
-                owner.image_provider = provider;
-                owner.notification_rules = rules;
-                apply_shortcuts(shortcuts, cx);
-                owner.apply_appearance(appearance, mode, cx);
-                owner.apply_language(language, window, cx);
-            });
-            Ok(())
-        }) {
-            Ok(()) => Some(self.i18n.text("settings_saved")),
-            Err(error) => Some(error),
-        };
-        cx.notify();
+    /// The latest action's feedback, or why edits are not being saved.
+    fn status_message(&self) -> Option<String> {
+        self.feedback
+            .clone()
+            .or_else(|| self.autosave_error.clone())
     }
 
-    fn close_settings(&mut self, window: &mut Window) {
+    /// Restarts the pause before edited settings are saved.
+    fn schedule_autosave(&mut self, cx: &mut Context<Self>) {
+        let window = self.window;
+        self.autosave = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DELAY).await;
+            let _ = cx.update_window(window, |_, window, cx| {
+                this.update(cx, |this, cx| this.autosave_now(Some(window), cx))
+            });
+        }));
+    }
+
+    /// Writes the form when it differs from what was last saved and applies
+    /// the changes to the chat window. With `window`, a password still being
+    /// typed waits; without it (closing, quitting) every typed password is
+    /// stored. A server without a host waits; invalid values are reported.
+    fn autosave_now(&mut self, window: Option<&Window>, cx: &mut Context<Self>) {
+        self.autosave = None;
+        let settings = match self.settings.snapshot(cx) {
+            Ok(settings) => settings,
+            Err(error) => {
+                if self.autosave_error.as_ref() != Some(&error) {
+                    self.autosave_error = Some(error);
+                    cx.notify();
+                }
+                return;
+            }
+        };
+        let passwords = self.settings.pending_passwords(window, cx);
+        let waiting = settings
+            .selected_profile()
+            .is_some_and(|profile| profile.host.is_empty());
+        if waiting {
+            // Saving now would drop the server; wait until it has a host.
+            let error = Some(self.i18n.text("server_required"));
+            if self.autosave_error != error {
+                self.autosave_error = error;
+                cx.notify();
+            }
+            return;
+        }
+        if settings == self.saved && !passwords {
+            if self.autosave_error.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        let previous = std::mem::replace(&mut self.saved, settings.clone());
+        let saved = match self.commit_settings(settings, window, cx) {
+            Ok(saved) => saved,
+            Err(error) => {
+                // Try again on the next edit.
+                self.saved = previous;
+                self.autosave_error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        if self.autosave_error.take().is_some() {
+            cx.notify();
+        }
+        let servers_changed = previous.servers != self.saved.servers
+            || previous.selected_server != self.saved.selected_server;
+        let appearance_changed =
+            previous.appearance != saved.appearance || previous.theme != saved.theme;
+        let language_changed = previous.language != saved.language;
+        let shortcuts = ShortcutPrefs::from(&saved);
+        let shortcuts_changed = ShortcutPrefs::from(&previous) != shortcuts;
+        let provider = saved.image_upload.provider.clone();
+        let rules = notification_rules(&saved.notifications);
+        let _ = self.owner.update(cx, |owner, window, cx| {
+            owner.image_provider = provider;
+            owner.notification_rules = rules;
+            if shortcuts_changed {
+                apply_shortcuts(shortcuts, cx);
+            }
+            if appearance_changed {
+                owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
+            }
+            if language_changed {
+                owner.apply_language(saved.language, window, cx);
+            }
+            if servers_changed {
+                owner.apply_servers(saved, cx);
+            }
+        });
+    }
+
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.autosave_now(None, cx);
         window.remove_window();
     }
 
@@ -2891,9 +3050,38 @@ impl SettingsWindow {
         }
     }
 
-    fn remove_server(&mut self, cx: &mut Context<Self>) {
-        self.settings.values.remove_selected_server();
-        self.show_selected_server(cx);
+    /// Removes the selected server. Removal is saved at once, disconnecting
+    /// it and forgetting its passwords, so a saved server asks first.
+    fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let id = self.settings.values.selected_server.clone();
+        let Some(profile) = self.saved.profile(&id).filter(|p| !p.host.is_empty()) else {
+            self.settings.values.remove_selected_server();
+            self.show_selected_server(cx);
+            return;
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &self
+                .i18n
+                .format("remove_server_title", &[("host", &profile.host)]),
+            Some(&self.i18n.text("remove_server_detail")),
+            &[
+                PromptButton::ok(self.i18n.text("remove_server_confirm")),
+                PromptButton::cancel(self.i18n.text("cancel")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| {
+                    if this.settings.values.selected_server == id {
+                        this.settings.values.remove_selected_server();
+                        this.show_selected_server(cx);
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
@@ -3083,7 +3271,7 @@ impl SettingsWindow {
                         .child(self.i18n.text("no_servers_hint")),
                 )
             })
-            .when_some(self.feedback.clone(), |d, feedback| {
+            .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
             .child(
@@ -3094,22 +3282,17 @@ impl SettingsWindow {
                     .when(!no_server, |d| {
                         d.child(
                             settings_theme::button("connect-button", true, cx)
-                                .child(self.i18n.text("save_and_connect"))
+                                .child(self.i18n.text("connect"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.connect_from_settings(window, cx)
                                 })),
                         )
                     })
                     .child(
-                        settings_theme::button("save-button", false, cx)
-                            .child(self.i18n.text("save"))
-                            .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
-                    )
-                    .child(
                         settings_theme::button("back-button", false, cx)
                             .child(self.i18n.text("back"))
                             .on_click(
-                                cx.listener(|this, _, window, _| this.close_settings(window)),
+                                cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
                             ),
                     )
                     .when(!no_server, |d| {
@@ -3194,7 +3377,7 @@ impl SettingsWindow {
                     .cursor_pointer()
                     .text_color(theme.warning)
                     .child(self.i18n.text("remove_server"))
-                    .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.remove_server(window, cx))),
             )
             .child(settings_field(
                 &self.i18n.text("port"),
@@ -3637,14 +3820,9 @@ impl SettingsWindow {
                         .child(self.i18n.text("linux_display_hint")),
                 )
             })
-            .when_some(self.feedback.clone(), |d, feedback| {
+            .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
-            .child(
-                settings_theme::button("save-appearance", true, cx)
-                    .child(self.i18n.text("save_and_apply"))
-                    .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
-            )
     }
 
     /// Channel-number and draft-editing keys; only Windows and Linux have
@@ -3703,14 +3881,9 @@ impl SettingsWindow {
                 ))
                 .child(hint("text_key_theme_hint"))
             })
-            .when_some(self.feedback.clone(), |d, feedback| {
+            .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
-            .child(
-                settings_theme::button("save-keyboard", true, cx)
-                    .child(self.i18n.text("save_and_apply"))
-                    .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
-            )
     }
 
     fn notification_toggle(
@@ -3815,14 +3988,9 @@ impl SettingsWindow {
             } else {
                 "notifications_hint"
             }))
-            .when_some(self.feedback.clone(), |d, feedback| {
+            .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
-            .child(
-                settings_theme::button("save-notifications", true, cx)
-                    .child(self.i18n.text("save_and_apply"))
-                    .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
-            )
     }
 
     fn settings_tab(
@@ -5533,7 +5701,7 @@ fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
 
 /// Saved key preferences, kept so a desktop key-theme change can rebind
 /// without the settings window.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ShortcutPrefs {
     channel_modifier: ChannelNumberModifier,
     text_keys: TextKeyTheme,
