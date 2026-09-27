@@ -14,5 +14,11 @@ dirs.workspace = true
 keyring = "4.2"
 uuid = { version = "1", features = ["v4"] }
 
+[features]
+# Test builds keep settings and the local credential file in a fresh
+# temporary directory per launch and file system-store secrets under a
+# separate service, so they never touch a user's real configuration.
+test-build = []
+
 [dev-dependencies]
 tempfile = "3"

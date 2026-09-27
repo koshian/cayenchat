@@ -120,6 +120,21 @@ sh scripts/bundle-macos.sh
 open target/CayenChat.app
 ```
 
+For testing a branch without touching real settings or saved passwords:
+
+```sh
+sh scripts/bundle-macos.sh --test-build
+open "target/CayenChat Test.app"
+```
+
+This builds an optimized `CayenChat Test.app` with the `test-build` feature
+(`cargo build --release -p cayenchat-ui --features test-build` elsewhere).
+Every launch creates a new, empty settings directory under the system
+temporary directory (printed to stderr, `$TMPDIR/cayenchat-test-*`) for
+`settings.json` and the local credential file, files system-store secrets
+under the service `CayenChat Test Build`, and shows `[test build]` in the
+window title. Settings made in one launch are gone at the next.
+
 The helper only builds and copies into ignored `target/`. It neither installs nor
 signs/notarizes a distributable app. The normal `cargo run` entry point is portable.
 The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds

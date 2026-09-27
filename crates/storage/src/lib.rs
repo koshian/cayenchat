@@ -554,8 +554,43 @@ impl From<OldSettings> for Settings {
 }
 
 pub fn settings_path() -> Result<PathBuf, String> {
-    let directory = dirs::config_dir().ok_or("Could not find the user configuration directory.")?;
-    Ok(directory.join("CayenChat").join("settings.json"))
+    #[cfg(feature = "test-build")]
+    {
+        Ok(test_build_directory()?.join("settings.json"))
+    }
+    #[cfg(not(feature = "test-build"))]
+    {
+        let directory =
+            dirs::config_dir().ok_or("Could not find the user configuration directory.")?;
+        Ok(directory.join("CayenChat").join("settings.json"))
+    }
+}
+
+/// A test build's configuration directory: new and empty for every launch,
+/// under the system temporary directory, readable only by the user.
+#[cfg(feature = "test-build")]
+pub fn test_build_directory() -> Result<PathBuf, String> {
+    static DIRECTORY: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    DIRECTORY
+        .get_or_init(|| {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis())
+                .unwrap_or_default();
+            let directory = std::env::temp_dir()
+                .join(format!("cayenchat-test-{}-{stamp}", std::process::id()));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(&directory)
+                .map(|()| directory)
+                .map_err(|error| format!("Could not create the test settings directory: {error}"))
+        })
+        .clone()
 }
 
 pub fn load() -> Result<Option<Settings>, String> {

@@ -30,6 +30,10 @@ chrono.workspace = true
 sys-locale = "0.3.2"
 log = "0.4"
 
+[features]
+# See cayenchat-storage's `test-build`; also marks the window title.
+test-build = ["cayenchat-storage/test-build"]
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"

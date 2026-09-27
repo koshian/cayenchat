@@ -798,9 +798,14 @@ impl ChatWindow {
 
     fn window_title(&self) -> String {
         let network = self.state.selected_network();
+        let app = if cfg!(feature = "test-build") {
+            "CayenChat [test build]"
+        } else {
+            "CayenChat"
+        };
         match self.state.selected_channel() {
-            Some(channel) => format!("{} @ {} — CayenChat", channel.name, network.name),
-            None => format!("{} — CayenChat", network.name),
+            Some(channel) => format!("{} @ {} — {app}", channel.name, network.name),
+            None => format!("{} — {app}", network.name),
         }
     }
 
@@ -5206,6 +5211,14 @@ fn load_settings_at_startup() -> (Settings, Option<String>) {
 
 fn main() {
     diagnostics::init();
+    #[cfg(feature = "test-build")]
+    match cayenchat_storage::test_build_directory() {
+        Ok(directory) => eprintln!(
+            "CayenChat test build: fresh settings in {}",
+            directory.display()
+        ),
+        Err(error) => eprintln!("CayenChat test build: {error}"),
+    }
     let (saved, notice) = load_settings_at_startup();
     #[cfg(target_os = "linux")]
     select_linux_display(saved.linux_display);
