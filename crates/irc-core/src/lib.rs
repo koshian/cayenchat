@@ -966,6 +966,24 @@ async fn run(
         )
         .await;
     }
+    if config.ircv3.metadata && !wire_encoding.eq_ignore_ascii_case("UTF-8") {
+        diagnostic(
+            &events,
+            started,
+            format!(
+                "Avatar metadata with the {wire_encoding} encoding: only ASCII avatar URLs are used, because metadata values are UTF-8."
+            ),
+        )
+        .await;
+    }
+    if config.ircv3.metadata && !config.ircv3.batch {
+        diagnostic(
+            &events,
+            started,
+            "Avatar metadata needs message batches (batch), which are off for this server; it is not requested.",
+        )
+        .await;
+    }
     diagnostic(
         &events,
         started,
