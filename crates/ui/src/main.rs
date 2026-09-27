@@ -3975,10 +3975,14 @@ impl ChatWindow {
         let server_menu = self.server_menu.as_ref().map(|menu| {
             let network = menu.network;
             let position = menu.position;
-            let connected = self
-                .sessions
-                .get(&network)
-                .is_some_and(|session| session.irc.is_some());
+            let session = self.sessions.get(&network);
+            let connected = session.is_some_and(|session| session.irc.is_some());
+            // A server not connected in this run offers Connect, not Reconnect.
+            let connect_key = if session.is_some_and(ServerSession::used) {
+                "reconnect"
+            } else {
+                "connect"
+            };
             div()
                 .id("server-context-menu")
                 .absolute()
@@ -3995,7 +3999,7 @@ impl ChatWindow {
                         .id("server-menu-reconnect")
                         .px_2()
                         .py_1()
-                        .child(self.i18n.text("reconnect"))
+                        .child(self.i18n.text(connect_key))
                         .when(!connected, |d| {
                             d.cursor_pointer()
                                 .hover(|d| d.bg(theme.hover_strong))
