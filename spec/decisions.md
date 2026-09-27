@@ -359,3 +359,32 @@ Sources: [ImgBB API](https://api.imgbb.com/),
 [Imgur API documentation](https://apidocs.imgur.com/),
 [Tautulli issue on Imgur registration](https://github.com/Tautulli/Tautulli/issues/2620),
 [NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver).
+
+## D016 — OS desktop notifications through notify-rust
+
+**Status:** Accepted
+
+Notifications use the operating system's service, not in-app popups. Linux
+and BSD call `org.freedesktop.Notifications` on the session bus, which every
+major desktop implements; the XDG portal notification API is not used.
+`notify-rust` 4.18 provides this over zbus 5, which GPUI and keyring already
+bring in, and also covers macOS (`mac-notification-sys`, reusing objc2) and
+Windows (`tauri-winrt-notification`, reusing `windows` 0.61), so no
+per-platform code is kept here. The Linux body is escaped because servers with
+`body-markup` parse it.
+
+macOS: `mac-notification-sys` uses the deprecated but working
+`NSUserNotificationCenter`. Without an explicit application it asks
+AppleScript for an app named "use_default" and falls back to Finder, so the UI
+registers the main bundle identifier and disables notifications when there is
+none (`cargo run`); use `scripts/bundle-macos.sh`. notify-rust's
+`UNUserNotificationCenter` backend is still a preview feature.
+
+Windows: toasts need an AppUserModelID. notify-rust defaults to PowerShell's,
+so toasts are attributed to Windows PowerShell until CayenChat registers its
+own ID (a Start menu shortcut or the per-user `AppUserModelId` registry key);
+that is follow-up work, as is activating the conversation on click.
+
+Sources: [Desktop Notifications Specification](https://specifications.freedesktop.org/notification-spec/latest/),
+[notify-rust](https://github.com/hoodie/notify-rust),
+[Windows toast notifications from desktop apps](https://learn.microsoft.com/en-us/windows/apps/design/shell/tiles-and-notifications/send-local-toast-other-apps).

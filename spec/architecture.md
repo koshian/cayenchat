@@ -152,7 +152,7 @@ The visual treatment should follow `spec/project.md`: compact, direct, and Choco
 ## Current implementation
 
 The six workspace members use the `cayenchat-` package prefix. Dependencies include
-`ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> upload ->
+`ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> notify-rust`, `ui -> upload ->
 storage/model`, `storage -> keyring`, `upload -> ureq` and `irc-core -> irc/Tokio`.
 There are no dependency cycles and GPUI occurs only in `ui`.
 
@@ -185,7 +185,9 @@ colors beside the existing light ones, and a Linux display server choice; older
 settings default to System, the dark defaults and Wayland. Version 11 adds the
 `USER` username (migrated from the old nickname, which earlier versions sent as
 USER), the credential backend choice and the image upload provider, and stops
-reading passwords from the file except to migrate them. The UI keeps the
+reading passwords from the file except to migrate them. Version 12 adds
+notification preferences (enabled, highlights, private messages and highlight
+words); older settings enable all three with no words. The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -325,6 +327,36 @@ mock for tests. `ui::ChatWindow` maps GPUI key actions to
 navigation and send commands. GPUI entities retain separate server/channel draft
 editing, selection, nickname completion and IME state. No `irc` library types enter
 application state or rendering components.
+
+## Notifications
+
+```text
+irc-core Event::ChannelMessage / Event::PrivateMessage
+        |
+        v
+app::notifications::NotificationRules::trigger  (GPUI-free: nickname and
+        |                                        highlight-word matching)
+        v
+ui::ChatWindow::notify_message  (skip the visible conversation, burst limit)
+        |
+        v
+ui::notifier worker thread -> notify-rust
+        +-- Linux/BSD: org.freedesktop.Notifications over zbus (body escaped)
+        +-- macOS: NSUserNotificationCenter via mac-notification-sys
+        +-- Windows: WinRT toast via tauri-winrt-notification
+```
+
+`irc-core` reports a PRIVMSG or NOTICE from a user mask to our nickname as
+`PrivateMessage`; server notices and CTCP requests other than ACTION stay
+server lines. Private messages notify only as PRIVMSG, because private NOTICEs
+are usually services or bots. Channel messages notify when they mention our
+nickname as a whole word or contain a highlight word; our own nickname never
+notifies itself (bouncer echoes). Nothing notifies while the chat window is
+focused and the message's conversation (the server view for private messages)
+is selected. At most five notifications are shown per ten seconds so bouncer
+history playback cannot flood the desktop; the log and unread marks are
+unaffected. Showing can block (D-Bus, macOS delivery confirmation), so a
+dedicated thread does it; UI tests record notifications instead.
 
 ## Credentials
 
