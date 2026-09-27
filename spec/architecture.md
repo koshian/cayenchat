@@ -172,6 +172,11 @@ Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.
 The UI loads versioned preferences from the platform user configuration directory.
+The reader accepts versions 1 through the current writer version on every OS.
+A future version is rejected without rewriting the file and reports both the
+version range and path, with guidance to update the app. Missing or invalid
+version fields instead suggest restoring a valid backup. Settings opening stays
+blocked on a read error so defaults cannot overwrite unreadable preferences.
 Version 5 adds appearance colors, alternating log rows, and per-pane font choices;
 version 6 adds an opt-in startup connection flag, and version 7 adds a language
 preference. Version 8 renames the appearance background to member-list background
