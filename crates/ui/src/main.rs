@@ -7,6 +7,8 @@ mod input;
 mod localization;
 mod log_list;
 mod menu_bar;
+#[cfg(test)]
+mod perf_baseline;
 mod secrets;
 mod theme;
 mod whois;
