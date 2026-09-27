@@ -9,6 +9,12 @@
 //! `perf_baseline` uses one server; `perf_baseline_4_servers` connects four
 //! servers with the same channels each, so the difference shows the cost
 //! of more networks (channel switches then also cross servers).
+//! `perf_baseline_previews` turns image previews on: every 20th line carries
+//! one of 120 image links (repeated links, and more than the cache budget
+//! holds), served by an in-memory fetcher with an 800×400 PNG. Loads run
+//! between samples (`run_until_parked`), outside the timed sections; the
+//! test dispatcher runs background work on the test thread, so only the
+//! UI-side cost is timed. All variants also time scrolling the main log.
 //!
 //! GPUI's test platform draws a dirty window synchronously at the end of each
 //! update, so each timing covers the app's state update plus element
@@ -35,6 +41,10 @@ const EVENT_BATCH: usize = 256;
 const TYPING_SAMPLES: usize = 300;
 const SWITCH_SAMPLES: usize = 200;
 const BURST_SAMPLES: usize = 100;
+const SCROLL_SAMPLES: usize = 200;
+/// With previews on, one line in this many carries an image link.
+const IMAGE_EVERY: usize = 20;
+const IMAGE_LINKS: usize = 120;
 
 const TEXTS: [&str; 4] = [
     "a somewhat longer line of ordinary IRC chatter about the build and the release plan",
@@ -47,12 +57,23 @@ fn channel(index: usize) -> String {
     format!("#perf{index:02}")
 }
 
+fn image_link(index: usize) -> String {
+    format!("https://images.load.example/{index:02}.png")
+}
+
 /// One incoming line as the worker reports it: its wire diagnostic, then the
 /// translated message.
-fn incoming(sequence: usize) -> [Event; 2] {
+fn incoming(sequence: usize, images: bool) -> [Event; 2] {
     let channel = channel(sequence % CHANNELS);
     let sender = format!("user{:03}", sequence % MEMBERS);
-    let text = TEXTS[sequence % TEXTS.len()].to_owned();
+    // Lines go round-robin over the channels; count within the channel.
+    let line = sequence / CHANNELS;
+    let text = if images && line.is_multiple_of(IMAGE_EVERY) {
+        let link = (line / IMAGE_EVERY + sequence % CHANNELS * 7) % IMAGE_LINKS;
+        format!("see {}", image_link(link))
+    } else {
+        TEXTS[sequence % TEXTS.len()].to_owned()
+    };
     [
         Event::Wire {
             elapsed: Duration::from_millis(sequence as u64),
@@ -110,13 +131,49 @@ impl Timings {
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline(cx: &mut TestAppContext) {
-    run(cx, 1);
+    run(cx, 1, false);
 }
 
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_4_servers(cx: &mut TestAppContext) {
-    run(cx, 4);
+    run(cx, 4, false);
+}
+
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_previews(cx: &mut TestAppContext) {
+    run(cx, 1, true);
+}
+
+/// Serves one 800×400 PNG for every link and counts requests.
+struct MemoryFetcher {
+    png: Vec<u8>,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl cayenchat_media::Fetcher for MemoryFetcher {
+    fn fetch(
+        &self,
+        _: &cayenchat_media::MediaRef,
+        _: &cayenchat_media::Limits,
+        _: &cayenchat_media::CancelFlag,
+    ) -> Result<Vec<u8>, cayenchat_media::LoadError> {
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(self.png.clone())
+    }
+}
+
+fn memory_fetcher() -> std::sync::Arc<MemoryFetcher> {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(800, 400, image::Rgba([40, 120, 200, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    std::sync::Arc::new(MemoryFetcher {
+        png,
+        requests: Default::default(),
+    })
 }
 
 /// Networks 1..=`servers` are user-added servers, each with the same
@@ -133,7 +190,7 @@ fn settings(servers: usize) -> cayenchat_storage::Settings {
     settings
 }
 
-fn run(cx: &mut TestAppContext, servers: usize) {
+fn run(cx: &mut TestAppContext, servers: usize, images: bool) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
         crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
@@ -143,9 +200,14 @@ fn run(cx: &mut TestAppContext, servers: usize) {
             &cayenchat_storage::Appearance::default(),
         ))
     });
-    let settings = settings(servers);
-    let (chat, cx) =
-        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    let mut settings = settings(servers);
+    settings.appearance.image_previews = images;
+    let fetcher = memory_fetcher();
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        let mut chat = ChatWindow::with_settings(settings, None, window, cx);
+        chat.previews.use_fetcher(fetcher.clone());
+        chat
+    });
 
     // Registered session with rosters and saturated logs and diagnostics.
     let mut setup = vec![Event::Registered {
@@ -171,7 +233,7 @@ fn run(cx: &mut TestAppContext, servers: usize) {
     let history: Vec<Event> = (0..HISTORY * CHANNELS)
         .flat_map(|_| {
             sequence += 1;
-            incoming(sequence)
+            incoming(sequence, images)
         })
         .collect();
     for network in &networks {
@@ -208,7 +270,7 @@ fn run(cx: &mut TestAppContext, servers: usize) {
         )
     });
     println!(
-        "perf_baseline servers={servers} setup channels={CHANNELS} members={MEMBERS} retained_messages={retained} diagnostics={diagnostics}"
+        "perf_baseline servers={servers} previews={images} setup channels={CHANNELS} members={MEMBERS} retained_messages={retained} diagnostics={diagnostics}"
     );
 
     // Typing into the selected channel's draft; panes must stay cached.
@@ -231,8 +293,48 @@ fn run(cx: &mut TestAppContext, servers: usize) {
                 })
             })
         });
+        // Previews requested by the switch load outside the timed section.
+        cx.run_until_parked();
     }
     switching.report();
+
+    // Scrolling the selected main log up through its history, 20 rows (one
+    // image line with previews on) per step, and back down.
+    let selected = chat.read_with(cx, |chat, _| chat.state.selection());
+    let rows = chat.read_with(cx, |chat, _| chat.main_lists[&selected].state.item_count());
+    let mut scrolling = Timings::new(servers, "scroll_20_rows");
+    for index in 0..SCROLL_SAMPLES {
+        let step = if index < SCROLL_SAMPLES / 2 {
+            index + 1
+        } else {
+            SCROLL_SAMPLES - index - 1
+        };
+        let item_ix = rows.saturating_sub(step * IMAGE_EVERY);
+        scrolling.time(|| {
+            cx.update(|window, cx| {
+                chat.update(cx, |chat, _| {
+                    chat.main_lists[&selected]
+                        .state
+                        .scroll_to(gpui::ListOffset {
+                            item_ix,
+                            offset_in_item: gpui::px(0.),
+                        })
+                });
+                window.refresh();
+            })
+        });
+        cx.run_until_parked();
+        if index == SCROLL_SAMPLES / 2 - 1 {
+            let top = chat.read_with(cx, |chat, _| {
+                chat.main_lists[&selected]
+                    .state
+                    .logical_scroll_top()
+                    .item_ix
+            });
+            println!("perf_baseline servers={servers} scrolled_to_row={top} of {rows}");
+        }
+    }
+    scrolling.report();
 
     // A full event batch (128 incoming lines) while a channel is selected.
     let mut burst = Timings::new(servers, "event_batch_256");
@@ -240,7 +342,7 @@ fn run(cx: &mut TestAppContext, servers: usize) {
         let batch: Vec<Event> = (0..EVENT_BATCH / 2)
             .flat_map(|_| {
                 sequence += 1;
-                incoming(sequence)
+                incoming(sequence, images)
             })
             .collect();
         let network = networks[index % networks.len()];
@@ -255,4 +357,21 @@ fn run(cx: &mut TestAppContext, servers: usize) {
         typing_after.time(|| cx.simulate_input("b"));
     }
     typing_after.report();
+
+    chat.read_with(cx, |chat, _| {
+        let cache = chat.previews.cache();
+        let stats = cache.stats();
+        println!(
+            "perf_baseline servers={servers} previews={images} fetches={} jobs={} ready={} evicted={} dropped_from_queue={} records={} ready_bytes={} in_flight={} queued={}",
+            fetcher.requests.load(std::sync::atomic::Ordering::Relaxed),
+            stats.jobs_started,
+            stats.ready,
+            stats.evicted,
+            stats.dropped_from_queue,
+            cache.records(),
+            cache.ready_bytes(),
+            cache.in_flight(),
+            cache.queued(),
+        );
+    });
 }

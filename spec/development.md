@@ -137,6 +137,20 @@ temporary directory (printed to stderr, `$TMPDIR/cayenchat-test-*`) for
 under the service `CayenChat Test Build`, and shows `[test build]` in the
 window title. Settings made in one launch are gone at the next.
 
+Image previews fetch from the network in normal builds. To check them
+without contacting any host, build with the `preview-fixture` feature and
+point it at a directory of images; links to
+`https://images.cayenchat.test/<file>` are then read from that directory and
+every other link fails without a request (D018):
+
+```sh
+cargo build --release --locked -p cayenchat-ui --features preview-fixture
+CAYENCHAT_PREVIEW_FIXTURE_DIR=target/perf/preview-images target/release/cayenchat
+```
+
+`scripts/perf/run_baseline.py --previews` generates such images and sends
+matching links from the load fixture. Never ship a `preview-fixture` build.
+
 The helper only builds and copies into ignored `target/`. It neither installs nor
 signs/notarizes a distributable app. The normal `cargo run` entry point is portable.
 The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
@@ -233,7 +247,10 @@ this delay.
    and verify the fields become empty with the "saved" placeholder, the settings
    file still has no password, and Keychain Access (macOS), Credential Manager
    (Windows) or Seahorse/`secret-tool search service CayenChat` (Linux) shows
-   `connection/<id>/…` entries. Restart with startup connection on and verify
+   `connection/<id>/…` entries (on macOS, one `secrets` item whose data lists
+   those names). On macOS, after rebuilding, connecting should ask for the
+   login password once however many passwords are saved, and opening settings
+   afterwards should not ask again. Restart with startup connection on and verify
    they are used. Turn saving off and verify the entries disappear immediately.
    A version 10 settings file with saved passwords should lose them from the
    file on the next start and gain the store entries.
@@ -267,8 +284,20 @@ this delay.
    must reach the confirmation, and `$TMPDIR/gpui-file-promises/` must be
    empty afterwards.
 
+9. Image previews, with a `preview-fixture` build (above) and a local load
+   fixture started with `--image-every 2`: in **外観**, **画像リンクのプレビューを表示する**
+   is off for new settings. Turn it on and save: image links in the selected
+   channel show a thumbnail below the text (an outlined box while loading),
+   the link text stays, a double-click on the link or the thumbnail opens it,
+   drag selection and copy still cover only the text, and the combined log
+   and server log show no images. Scroll up and down while images load and
+   switch channels; the log must not jump or reset, and at the bottom it must
+   keep following new lines. Turn previews off and save: the thumbnails and
+   their space disappear at once and no further link is read (the fixture
+   directory's access times do not change).
+
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
-its HTTP(S) links open on a double-click. The lower combined log still uses clicks
+its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
 for channel switching. Long-draft horizontal scrolling,
 native/custom text bindings, general tab traversal, and exhaustive IME/accessibility
 behavior remain future work. Chat history does not survive application exit.
@@ -553,7 +582,29 @@ clean apart from the existing `proc-macro-error2` future-incompatibility note.
 No real ImgBB upload, Photos drag, Windows build, Secret Service desktop (GNOME Keyring or
 KWallet) or GUI interaction was exercised.
 
-### Native settings appearance checks (D018)
+### Inline image previews (2026-09-27)
+
+On Apple Silicon macOS 26.6.2 (rustc 1.95.0), `cargo fmt --check`, workspace
+Clippy with all features and workspace tests passed with the lockfile.
+Automated coverage: settings version 14 migration and round trip (off by
+default); candidate recognition, including ImgBB links and refused schemes,
+credentials, ports and local/private addresses; address classification;
+the HTTP loader against a local fixture server (headers sent, non-image and
+SVG responses, error statuses, declared and streamed size limits, redirect
+limit and re-checked targets, the production policy never contacting
+127.0.0.1 or `localhost`, timeout and cancellation); decoding of small and
+large PNG/JPEG/GIF/WebP, malformed and oversized content and the decoder
+allocation cap; the cache (deduplication, bounded queue and in-flight
+loads, byte-budget eviction, bounded records and retries, disabling while
+loading, stale completions, removed rows); and GPUI tests for no loading
+while off, loading once per link when switched on live, local echoes,
+typing reusing the panes, disabling during a load, removed conversations and
+a removed server. The GUI check and measurements are in `performance.md`.
+Selection/copy, link opening by double-click and channel switching with
+previews were not exercised in the real window (no input automation was
+available); Windows and Linux were not run.
+
+### Native settings appearance checks (D019)
 
 The regression tests in `ui::settings_theme` render macOS Sonoma, Windows 11,
 Adwaita and KDE Breeze presets in light/dark modes on GPUI's test platform.
@@ -569,7 +620,7 @@ win. Reopen settings after changing only the OS accent or font. Without a
 working desktop portal the UI must remain interactive and fall back to the
 platform preset or app colors. No data-model or authentication behavior changed.
 
-Tab/Shift+Tab move between settings text fields and wrap (D019); Tab in a
+Tab/Shift+Tab move between settings text fields and wrap (D020); Tab in a
 chat draft still completes nicknames. Known limits: widgets are GPUI drawings,
 not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native

@@ -41,7 +41,7 @@ cargo run --locked -p cayenchat-ui
 
 **資格情報の保存先** タブで、サーバーパスワード、SASL パスワード、画像ホスティングのトークンの保存場所を選びます。
 
-- **システムの安全な保存場所**（初期値）: macOS のキーチェーン、Windows の資格情報マネージャー、Linux などの Unix デスクトップでは freedesktop Secret Service（GNOME Keyring、KWallet など）を [`keyring`](https://crates.io/crates/keyring) クレート経由で使います。項目のサービス名は `CayenChat` で、`connection/<サーバーID>/sasl-password` や `uploader/imgbb/default/credential` のように、ホスト名やニックネームではなく内部 ID から名前を作ります。
+- **システムの安全な保存場所**（初期値）: macOS のキーチェーン、Windows の資格情報マネージャー、Linux などの Unix デスクトップでは freedesktop Secret Service（GNOME Keyring、KWallet など）を [`keyring`](https://crates.io/crates/keyring) クレート経由で使います。項目のサービス名は `CayenChat` で、`connection/<サーバーID>/sasl-password` や `uploader/imgbb/default/credential` のように、ホスト名やニックネームではなく内部 ID から名前を作ります。macOS ではこれらをまとめて `secrets` という 1 つのキーチェーン項目に保存するため、ログインパスワードの確認は資格情報ごとではなく起動ごとに最大 1 回です。以前のバージョンが個別に保存した項目は、最初に使うときにまとめた項目へ移ります。
 - **ローカル設定ファイル**: **暗号化しない** JSON ファイルです。Linux では `$XDG_CONFIG_HOME/cayenchat/credentials.json`（未設定なら `~/.config/cayenchat/credentials.json`）、macOS と Windows ではユーザー設定ディレクトリの `CayenChat/credentials.json` です。Unix では `0700` のディレクトリに `0600` で作成し、アトミックに書き換え、他者が読める権限になっていれば読み込み前に戻します。Windows ではユーザープロファイルの権限を継承します。システムの保存場所より安全性は低く、あなたの権限で動くプログラムやファイルのバックアップからは資格情報を読めます。同じ場所に置いた鍵で暗号化しても状況は変わらないため、暗号化したふりはしません。
 
 Secret Service のない Linux デスクトップ（Enlightenment、軽量ウィンドウマネージャー、リモートセッションなど）でも CayenChat は使えます。タブにはシステムの保存場所を利用できないことが表示され、ローカルファイルを選べます。CayenChat が自動でローカルファイルに切り替えることはなく、選択時には確認します。唯一の例外は、`settings.json` に平文パスワードを保存していた旧バージョンからの移行時にシステムの保存場所を使えない場合で、既に平文だったパスワードをローカルファイルへ移し、チャットウィンドウでそのことを知らせます。保存先を切り替えると、保存済みの資格情報を新しい保存先へ移します。資格情報はログ、接続診断、デバッグ出力に表示されません。

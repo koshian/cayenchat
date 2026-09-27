@@ -74,6 +74,21 @@ impl LogList {
         self.sequences.clear();
         self.sequences.extend_from_slice(sequences);
     }
+
+    /// Forgets the measured height of the row with `sequence`, whose content
+    /// changed size while it may have been off screen (an image preview
+    /// finished). The row at the scroll top is left alone: it is on screen,
+    /// so it is measured again anyway, and replacing it would reset the
+    /// scroll offset within it.
+    pub fn invalidate(&mut self, sequence: u64) {
+        let Ok(index) = self.sequences.binary_search(&sequence) else {
+            return;
+        };
+        let index = self.prefix + index;
+        if self.state.logical_scroll_top().item_ix != index {
+            self.state.splice(index..index + 1, 1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -112,5 +127,15 @@ mod tests {
 
         log.sync(0, &[]);
         assert_eq!(log.state.item_count(), 0);
+    }
+
+    #[test]
+    fn invalidating_a_row_keeps_the_count_and_ignores_unknown_rows() {
+        let mut log = LogList::new();
+        log.sync(1, &[3, 5, 8]);
+        log.invalidate(5);
+        log.invalidate(4);
+        assert_eq!(log.state.item_count(), 4);
+        assert_eq!(log.sequences, [3, 5, 8]);
     }
 }

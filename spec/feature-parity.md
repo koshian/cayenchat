@@ -48,7 +48,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
-- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log still switches channels
+- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log switches channels on double-click
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
@@ -70,7 +70,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — jump to unread channels in mock or live mode; highlights remain TODO
 - DONE — reference four-pane placement: main log over subwindow on the left,
   users over channel tree on the right, draft between left logs
-- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on click; channel/server labels ellipsize on one line
+- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line
 
 ## Unread and highlights
 
@@ -95,7 +95,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — paste an image-only clipboard (including screenshots) or drop one image file on the draft row; both share one flow. HEIC/HEIF/AVIF are recognized, and on macOS Photos/Mail/screenshot-thumbnail file-promise drags are accepted
 - DONE — confirmation before upload naming the provider and the public-link consequence; guidance to settings when no provider or account is configured, and to reconnect after an authentication failure
 - DONE — ImgBB external upload with progress, cancel (abandons the wait), network/auth/rejection handling; the link is inserted into the originating draft and never sent automatically
-- TODO — inline display of image links in the chat log (with a remote-loading preference and fetch limits)
+- PARTIAL — inline previews of direct image links (PNG, JPEG, GIF and WebP, static first frame) in the main channel log, behind an Appearance setting that is off by default; bounded, HTTP(S)-only loading of public hosts. The combined log, server log and activity lines stay text-only; no avatars, video or page previews
 - TODO — clipboard file references (copied files) as attachments; they paste as text today
 - OUT OF SCOPE (for now) — video/audio attachments, a transfer manager, Matrix native media
 
