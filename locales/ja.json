@@ -109,6 +109,8 @@
   "linux_display_x11": "X11",
   "linux_display_hint": "再起動後に反映されます。GNOME では X11（XWayland）にするとデスクトップ標準のタイトルバーになります。Wayland は日本語入力や分数スケーリングでの表示が安定します。環境変数 CAYENCHAT_DISPLAY=x11 / wayland で上書きできます。",
   "alternate_rows": "ログを１行ごとに交互色にする",
+  "image_previews": "画像リンクのプレビューを表示する",
+  "image_previews_hint": "チャンネルログで PNG・JPEG・GIF・WebP への直接リンクを小さく表示します。オンの間は、画面に表示中の行のリンク先サーバーから画像をダウンロードします。リンクの文字はそのまま残ります。",
   "member_list": "ユーザー一覧",
   "channel_list": "チャンネル一覧",
   "draft_input": "入力欄",

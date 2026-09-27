@@ -109,6 +109,8 @@
   "linux_display_x11": "X11",
   "linux_display_hint": "Takes effect after restarting. On GNOME, X11 (XWayland) shows the desktop's own title bar; Wayland keeps native input methods and sharp fractional scaling. CAYENCHAT_DISPLAY=x11 or wayland overrides this.",
   "alternate_rows": "Alternate row colors in logs",
+  "image_previews": "Show previews of image links",
+  "image_previews_hint": "Shows small thumbnails of direct PNG, JPEG, GIF and WebP links in the channel log. While on, CayenChat downloads the linked images for the lines on screen from their servers; the link text stays as it is.",
   "member_list": "Member list",
   "channel_list": "Channel list",
   "draft_input": "Draft input",

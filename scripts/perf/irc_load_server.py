@@ -28,6 +28,11 @@ the time until lines appear on screen.
 
 During a flood the server also sends a PING every second and records the
 PONG round trip for the same reason.
+
+With --image-every N, every Nth message carries one of --image-links links to
+https://images.cayenchat.test/imgNNN.png. Only a client built with the
+`preview-fixture` feature resolves those (from a local directory); nothing
+is fetched from the network.
 """
 
 import argparse
@@ -98,6 +103,7 @@ class Server:
         self.members = [f"user{i:03d}" for i in range(args.members)]
         self.phase_done = asyncio.Event()
         self.phase_done.set()
+        self.sent_messages = 0
 
     # --- wire -----------------------------------------------------------------
 
@@ -119,6 +125,11 @@ class Server:
     def message(self, channel):
         sender = self.rng.choice(self.members)
         text = self.rng.choice(SAMPLE_TEXTS)
+        self.sent_messages += 1
+        every = self.args.image_every
+        if every and self.sent_messages % every == 0:
+            link = self.sent_messages // every % self.args.image_links
+            text = f"see https://images.cayenchat.test/img{link:03d}.png"
         return f":{sender}!{sender}@load.invalid PRIVMSG {channel} :{text}"
 
     # --- client handling ------------------------------------------------------
@@ -358,6 +369,9 @@ async def main():
     parser.add_argument("--expect-channels", type=int, default=1)
     parser.add_argument("--marker-timeout", type=float, default=120.0)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--image-every", type=int, default=0,
+                        help="every Nth message carries an image link (0: none)")
+    parser.add_argument("--image-links", type=int, default=120, help="distinct image links")
     args = parser.parse_args()
     server = Server(args)
     irc = await asyncio.start_server(server.handle_client, "127.0.0.1", args.port)

@@ -2,9 +2,12 @@
 name = "cayenchat-ui"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.94"
 publish.workspace = true
 license = "GPL-3.0-only AND Apache-2.0"
+
+[package.metadata.cargo-machete]
+ignored = ["native-theme-derive"]
 
 [package.metadata.deb]
 assets = [
@@ -20,9 +23,21 @@ path = "src/main.rs"
 cayenchat-app.workspace = true
 cayenchat-irc-core.workspace = true
 cayenchat-upload.workspace = true
+cayenchat-media.workspace = true
 cayenchat-model.workspace = true
 cayenchat-storage = { path = "../storage" }
 gpui.workspace = true
+# Pixel buffers for GPUI's `RenderImage`; the same crate GPUI decodes with.
+image = { version = "0.25", default-features = false }
+# 0.5.8+ uses gpui-pre. Pin the compatible connector AND its core: later
+# native-theme 0.5.x releases changed the API used by this connector.
+# 0.5.7 calls its SVG rasterizer even with the icon bundles disabled.
+native-theme-gpui = { version = "=0.5.7", default-features = false, features = ["svg-rasterize"] }
+native-theme = { version = "=0.5.7", default-features = false }
+# The core's derive dependency is semver-wide; 0.5.9 silently breaks 0.5.7
+# preset resolution, so constrain the transitive macro crate as well.
+native-theme-derive = "=0.5.7"
+gpui-component = { version = "=0.5.1", default-features = false }
 unicode-segmentation = "1.12"
 url = "2.5.8"
 serde_json.workspace = true
@@ -36,9 +51,14 @@ notify-rust = "4.18"
 [features]
 # See cayenchat-storage's `test-build`; also marks the window title.
 test-build = ["cayenchat-storage/test-build"]
+# Measurement and GUI checks only: links to images.cayenchat.test are read
+# from $CAYENCHAT_PREVIEW_FIXTURE_DIR instead of the network, and no other
+# link is fetched. Never enabled in release builds.
+preview-fixture = []
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]

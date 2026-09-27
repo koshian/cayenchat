@@ -53,6 +53,8 @@ Do not build a second mechanism for any of these; extend them instead.
 | Message times stored as minutes (`TimeOfDay`); a retained `Message` is 64 bytes plus its sender and text | `model` | Smaller logs, one fewer allocation per line. |
 | QUIT/NICK republish rosters only for channels that contained the user; roster sort keys computed once per member | `irc-core` `RosterTracker`, `app` `sorted_members` | Large channels. |
 | Linux: bounded per-word shaping cache in the vendored GPUI (swept every 128 lines, entries unused for four sweeps dropped) | `vendor/gpui`, see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
+| Image previews are requested only by main-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Receiving or retaining image links costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
+| A pending preview reserves its full height; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
 
 ## Resource bounds today
 
@@ -68,7 +70,14 @@ Do not build a second mechanism for any of these; extend them instead.
 | WHOIS collection | 32 nicknames × 512 items | per connection | |
 | Rosters | none | per channel | Kept three times: `irc`'s channel lists, `irc-core`'s `RosterTracker`, and `app`'s sorted `members`. |
 | Per-selection UI state | none | per visited server/channel | `main_lists` (one `LogList` with measured heights) and one `TextInput` entity per conversation; cleared only when a connection is applied from settings (automatic reconnects keep them). |
-| Attachment | 32 MiB | one upload at a time | Upload only; nothing is displayed inline. |
+| Attachment | 32 MiB | one upload at a time | Upload only. |
+| Preview loads in flight | 2 | application | Fetch plus decode; jobs started before previews were switched off still count until they return. |
+| Queued preview requests | 16, newest served first, oldest dropped | application | Requests come only from drawn rows; a dropped request is made again when its row is drawn. |
+| Preview records | 256 (ready, failed, queued and loading) | application | Least recently used ready or failed records go first; up to 4 waiting rows each. |
+| Ready thumbnails | 32 MiB charged, least recently used evicted | application | Each thumbnail is charged twice its BGRA bytes (the `RenderImage` copy and its GPU atlas tile); at the largest size (400×200) that is 640,000 bytes, so about 52 thumbnails. Evicted ones are removed from the atlas. |
+| Preview response | 8 MiB, 3 redirects, 5 s connect, 15 s total | per load | At most 16 MiB of response buffers at once (two loads). |
+| Preview decoding | one at a time; ≤ 8192 px a side, ≤ 16.7 MP, decoder allocation ≤ 48 MiB | process | Checked from the header before decoding; the full image is freed once the thumbnail exists. |
+| Preview retries | transient failures (network, 408/429/5xx) once more after 5 min; others never | per record | While the record is retained; redraws never retry. |
 | Linux shaping cache | swept every 128 lines | process | Age-based, not a byte bound. |
 
 ## Measuring
@@ -317,25 +326,107 @@ median, 1.6 ms max: one busy server does not delay another's lines.
 Not measured: four servers in the process run, idle wakeups per added
 connection over a full window, and the real window under multi-server load.
 
-## Comparing image display
+## Image previews (2026-09-27)
 
-When image previews or icons are added, compare against this baseline with
-both settings off (must match the baseline: no fetch, no decode, no extra
-threads or wakeups) and on:
+Inline previews (D018) are off by default. The limits in "Resource bounds
+today" were chosen as follows:
 
-- Footprint after S3 with one image link per 20 lines, and after S5.
-- Decoded-cache bytes and GPU texture bytes against their configured caps,
-  after scrolling the whole retained log.
-- Typing and channel switching in the UI test with previews on: row heights of
-  previews must not force relayout of every line.
-- Main-thread CPU during S4a with image links: fetch and decode must run off
-  the UI thread; `sample` should show no decoding on the main thread.
-- Number of network requests for repeated URLs (cache hits) and for links
-  scrolled out of view.
+- Two loads in flight and one decode at a time keep the worst transient
+  memory near 2 × 8 MiB of responses plus one 48 MiB decode, while a screen
+  of new images still fills within a few seconds.
+- 8 MiB responses and 16.7 MP / 48 MiB decodes cover ImgBB screenshots and
+  12 MP phone photos (4032×3024 JPEG decodes to about 35 MiB); larger
+  images stay text links.
+- A 200×100 logical preview box keeps rows compact; thumbnails are 400×200
+  px at most so they stay sharp on 2× displays (320,000 BGRA bytes).
+- The 32 MiB budget charges each thumbnail twice (CPU copy and GPU atlas
+  tile), so about 52 large thumbnails: several screens of image-heavy log.
+  Scrolling back past evicted images loads them again; there is no disk
+  cache.
+- 16 queued requests and 256 records bound bookkeeping for floods of links;
+  retrying a transient failure once after 5 minutes avoids retry storms from
+  redraws.
+
+The vendored GPUI now frees the atlas space of a dropped image
+(`vendor/gpui/PATCHES.md`); before, evicted thumbnails left dead space in
+the 1024×1024 (4 MiB) atlas textures, which a single remaining tile or emoji
+kept alive.
+
+### Headless UI test (three runs, medians in µs)
+
+Same machine and procedure as the baseline, measured alternately against the
+parent `c214429` in one session. `scroll_20_rows` is new (the parent has no
+such measurement). Previews on: every 20th line of each channel carries one
+of 120 image links, served in memory as an 800×400 PNG; loads complete
+between samples, so the timings are the UI-side cost.
+
+| Build | Typing | Channel switch | 256-event batch | Scroll 20 rows |
+| --- | --- | --- | --- | --- |
+| Parent, 1 server | 422–452 | 1,810–2,114 | 1,959–2,126 | — |
+| Previews off, 1 server | 424–469 | 1,837–2,141 | 1,975–2,046 | 1,514–1,585 |
+| Previews on, 1 server | 375–385 | 1,729–1,752 | 1,828–2,167 | 1,420–1,435 |
+| Parent, 4 servers | 451–453 | 1,840–1,960 | 2,079–2,209 | — |
+| Previews off, 4 servers | 447–453 | 1,632–1,865 | 2,057–2,081 | 1,580–1,638 |
+
+- Off matches the parent within run-to-run noise, and typing still
+  re-renders no pane (asserted by the test, also with previews on).
+- On is not slower: preview rows are taller, so fewer rows are laid out per
+  screen. One on-run had a 18 ms maximum in the batch timing (p95 4.6 ms);
+  the other two stayed below 2.8 ms.
+- Previews-on bookkeeping at the end of the run, identical in all three runs:
+  177 loads for about 1,000 retained image lines (only rows that were shown,
+  including scrolling the whole 2,000-line log up and down and 200 channel
+  switches), 128 requests dropped from the full queue while history arrived
+  (the window drew each batch before any load ran), 125 evictions,
+  52 records and 33,280,000 charged bytes at the end, below the 32 MiB
+  (33,554,432) budget, nothing in flight or queued.
+
+### Process (`run_baseline.py`, three runs each)
+
+Binaries: parent `c214429`, this branch `318d8dd` (release, 13.1 → 16.4 MB:
+the PNG/JPEG/GIF/WebP decoders and resizing are now linked), and the same
+branch with `preview-fixture` for previews on (links every 20th line, 120
+generated PNGs from 800×600 to 4032×3024 read from disk). Footprint is
+`phys_footprint` in MiB, median [range].
+
+| Scenario | Parent | Previews off | Previews on |
+| --- | --- | --- | --- |
+| S1 unconnected | 78 [78–100] | 79 [78–80] | 75 [75–76] |
+| S2 connected, idle | 59 [58–59] | 59 [59–61] | 59 [58–63] |
+| S3 20,000 lines, idle | 70 [69–70] | 70 [64–71] | 69 [51–73] |
+| S5 after saturation | 72 [71–72] | 77 [73–78] | 110 [70–120] |
+| S6 after a second overload | 72 [71–72] | 76 [73–77] | 111 [70–124] |
+
+Idle CPU stayed at 0.2–0.9 % of a core and idle wakeups at about one per
+second or less in all three; previews off added no thread (5–9 threads, as
+before). The window was visible for only one or two parent runs and for
+none of the branch runs (the machine was in use), so load-scenario CPU
+(S4a/S4b) is not comparable and is not reported here; GPUI draws nothing
+while the window is hidden, which also means fewer rows asked for images.
+
+With previews on, footprint after the floods was 33–38 MiB above previews
+off. That is within what the design allows but is process memory, not the
+cache: the cache charges at most 32 MiB (16 MiB of thumbnails plus the same
+again as the GPU atlas estimate), and `vmmap` on a GUI check showed about
+40 MiB of `MALLOC_LARGE (empty)`: freed decode buffers that macOS's
+allocator keeps for reuse. Footprint does not fall right after images are
+freed, and it did not grow between S5 and S6.
+
+A GUI check with the `preview-fixture` build and a visible window showed
+thumbnails at the expected sizes, the outlined box while a 12 MP image
+loaded, unchanged link text, text-only combined log, and the log following
+new lines during a flood of image links.
+
+Not measured: turning previews off in the running process (no UI automation
+was available; the GPUI tests cover release of records, images and atlas
+tiles), GPU memory separately from footprint, real network latency and TLS,
+Windows and Linux.
 
 ## Resource limit candidates (proposal)
 
-These are not agreed. Each needs a decision before it is implemented.
+These are not agreed. Each needs a decision before it is implemented. The
+image fetch and decoded-cache rows were decided for inline previews (D018 and
+the image preview section above); icons are still open.
 
 | Candidate | Proposal | Basis |
 | --- | --- | --- |

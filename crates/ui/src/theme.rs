@@ -150,6 +150,11 @@ pub fn apply(mode: ThemeMode, appearance: &Appearance, cx: &mut App) {
     let theme = Theme::new(mode, cx.window_appearance(), appearance);
     if cx.try_global::<Theme>() != Some(&theme) {
         cx.set_global(theme);
+        // Re-read native settings colors on light/dark changes, after the
+        // app palette is installed so explicit mode overrides stay effective.
+        if crate::settings_theme::current(cx).is_some() {
+            crate::settings_theme::refresh(cx);
+        }
         cx.refresh_windows();
     }
 }
