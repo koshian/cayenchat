@@ -3115,6 +3115,10 @@ mod tests {
                 ("plain".to_owned(), None),
             ]
         );
+        // An old timestamp alone does not make a live line replayed history.
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, replayed: false, server_time: Some(_), .. }
+                if text == "stamped")));
         assert!(events.iter().any(|event| matches!(event,
             Event::ChannelActivity { kind: ChannelActivityKind::Left { .. }, server_time, .. }
                 if *server_time == stamp(1_319_042_453_000))));
