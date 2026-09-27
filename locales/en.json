@@ -246,5 +246,6 @@
   "notifications_hint": "Messages in the selected channel of the focused chat window do not notify.",
   "notifications_hint_macos": "Messages in the selected channel of the focused chat window do not notify. macOS shows notifications only for the app bundle; allow them in System Settings > Notifications.",
   "notification_channel_title": "{sender} in {channel}",
-  "notification_private_title": "{sender} (private message)"
+  "notification_private_title": "{sender} (private message)",
+  "highlight_color": "Highlight text"
 }

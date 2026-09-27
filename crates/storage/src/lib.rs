@@ -104,6 +104,8 @@ pub struct Appearance {
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub channel_event_color: String,
+    /// Mentions and keywords in logs, and channels where they arrived.
+    pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
     pub alternate_rows: bool,
@@ -125,6 +127,7 @@ pub struct DarkColors {
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub channel_event_color: String,
+    pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
 }
@@ -136,6 +139,7 @@ impl Default for DarkColors {
             main_log_background: "#1F2124".into(),
             main_log_alternate: "#272B31".into(),
             channel_event_color: "#6CC46C".into(),
+            highlight_color: "#FF6B6B".into(),
             sub_log_background: "#24272B".into(),
             sub_log_alternate: "#2C3036".into(),
         }
@@ -149,6 +153,7 @@ impl Default for Appearance {
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
             channel_event_color: "#007D00".into(),
+            highlight_color: "#D0021B".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
@@ -170,12 +175,14 @@ impl Appearance {
             ("Main log", &self.main_log_background),
             ("Main alternate", &self.main_log_alternate),
             ("Channel event", &self.channel_event_color),
+            ("Highlight", &self.highlight_color),
             ("Sub log", &self.sub_log_background),
             ("Sub alternate", &self.sub_log_alternate),
             ("Dark member list", &self.dark.member_list_background),
             ("Dark main log", &self.dark.main_log_background),
             ("Dark main alternate", &self.dark.main_log_alternate),
             ("Dark channel event", &self.dark.channel_event_color),
+            ("Dark highlight", &self.dark.highlight_color),
             ("Dark sub log", &self.dark.sub_log_background),
             ("Dark sub alternate", &self.dark.sub_log_alternate),
         ] {

@@ -112,12 +112,14 @@ struct SettingsForm {
     main_log_background: Entity<TextInput>,
     main_log_alternate: Entity<TextInput>,
     channel_event_color: Entity<TextInput>,
+    highlight_color: Entity<TextInput>,
     sub_log_background: Entity<TextInput>,
     sub_log_alternate: Entity<TextInput>,
     dark_member_list_background: Entity<TextInput>,
     dark_main_log_background: Entity<TextInput>,
     dark_main_log_alternate: Entity<TextInput>,
     dark_channel_event_color: Entity<TextInput>,
+    dark_highlight_color: Entity<TextInput>,
     dark_sub_log_background: Entity<TextInput>,
     dark_sub_log_alternate: Entity<TextInput>,
     main_log_font: Entity<TextInput>,
@@ -210,6 +212,7 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            highlight_color: field("#D0021B", &values.appearance.highlight_color, false, cx),
             sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
             sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
             dark_member_list_background: field(
@@ -233,6 +236,12 @@ impl SettingsForm {
             dark_channel_event_color: field(
                 "#6CC46C",
                 &values.appearance.dark.channel_event_color,
+                false,
+                cx,
+            ),
+            dark_highlight_color: field(
+                "#FF6B6B",
+                &values.appearance.dark.highlight_color,
                 false,
                 cx,
             ),
@@ -324,6 +333,7 @@ impl SettingsForm {
             main_log_background: value(&self.main_log_background),
             main_log_alternate: value(&self.main_log_alternate),
             channel_event_color: value(&self.channel_event_color),
+            highlight_color: value(&self.highlight_color),
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
@@ -338,6 +348,7 @@ impl SettingsForm {
                 main_log_background: value(&self.dark_main_log_background),
                 main_log_alternate: value(&self.dark_main_log_alternate),
                 channel_event_color: value(&self.dark_channel_event_color),
+                highlight_color: value(&self.dark_highlight_color),
                 sub_log_background: value(&self.dark_sub_log_background),
                 sub_log_alternate: value(&self.dark_sub_log_alternate),
             },
@@ -835,6 +846,31 @@ impl ChatWindow {
         this
     }
 
+    fn is_own_nickname(&self, nickname: &str) -> bool {
+        self.own_nickname
+            .as_deref()
+            .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
+    }
+
+    /// Byte ranges of mentions of our nickname and of keywords in a channel
+    /// message, drawn in the highlight color. Own lines and activity are
+    /// not highlighted.
+    fn highlight_ranges(&self, message: &cayenchat_model::Message) -> Vec<std::ops::Range<usize>> {
+        if message.activity || self.is_own_nickname(&message.sender) {
+            return Vec::new();
+        }
+        let mut ranges = self
+            .own_nickname
+            .as_deref()
+            .map(|own| cayenchat_irc_core::text::mention_ranges(&message.text, own))
+            .unwrap_or_default();
+        ranges.extend(notifications::keyword_ranges(
+            &message.text,
+            &self.notification_rules.keywords,
+        ));
+        ranges
+    }
+
     /// Shows a desktop notification for an incoming IRC message when the
     /// rules ask for one and the message is not already in front of the user.
     fn notify_message(
@@ -845,7 +881,7 @@ impl ChatWindow {
         notice: bool,
         mentioned: bool,
     ) {
-        use cayenchat_irc_core::text::{action_text, same_nickname, strip_formatting};
+        use cayenchat_irc_core::text::{action_text, strip_formatting};
 
         let plain = match action_text(text) {
             Some(action) => format!("* {sender} {}", strip_formatting(action)),
@@ -855,10 +891,7 @@ impl ChatWindow {
             text: &plain,
             channel: channel.is_some(),
             notice,
-            from_self: self
-                .own_nickname
-                .as_deref()
-                .is_some_and(|own| same_nickname(own, sender)),
+            from_self: self.is_own_nickname(sender),
             mentioned,
         }) else {
             return;
@@ -1787,9 +1820,18 @@ impl ChatWindow {
                 notice,
                 mentioned,
             } => {
+                let highlighted = !self.is_own_nickname(&sender)
+                    && (mentioned
+                        || notifications::contains_keyword(
+                            &cayenchat_irc_core::text::strip_formatting(&text),
+                            &self.notification_rules.keywords,
+                        ));
                 self.notify_message(Some(&channel), &sender, &text, notice, mentioned);
                 self.state
                     .append_channel_message(network, &channel, &sender, &text, notice);
+                if highlighted {
+                    self.state.mark_highlighted(network, &channel);
+                }
             }
             Event::ChannelActivity {
                 channel,
@@ -2976,6 +3018,12 @@ impl SettingsWindow {
                 cx,
             ))
             .child(color_pair(
+                &self.i18n.text("highlight_color"),
+                &self.settings.highlight_color,
+                &self.settings.dark_highlight_color,
+                cx,
+            ))
+            .child(color_pair(
                 &self.i18n.text("combined_log"),
                 &self.settings.sub_log_background,
                 &self.settings.dark_sub_log_background,
@@ -3436,11 +3484,12 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
 fn styled_log_text(
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
+    highlights: &[std::ops::Range<usize>],
     selected: Option<std::ops::Range<usize>>,
     theme: &Theme,
 ) -> StyledText {
     let mut boundaries = vec![0, text.len()];
-    for (range, _) in urls {
+    for range in urls.iter().map(|(range, _)| range).chain(highlights) {
         boundaries.extend([range.start, range.end]);
     }
     if let Some(range) = &selected {
@@ -3456,10 +3505,18 @@ fn styled_log_text(
         let is_selected = selected
             .as_ref()
             .is_some_and(|selection| selection.start <= range.start && range.end <= selection.end);
-        (is_url || is_selected).then_some((
+        let is_highlight = highlights
+            .iter()
+            .any(|word| word.start <= range.start && range.end <= word.end);
+        (is_url || is_selected || is_highlight).then_some((
             range,
             HighlightStyle {
-                color: is_url.then_some(theme.link.into()),
+                color: if is_url {
+                    Some(theme.link.into())
+                } else {
+                    is_highlight.then_some(theme.panes.highlight.into())
+                },
+                font_weight: is_highlight.then_some(FontWeight::BOLD),
                 underline: is_url.then_some(UnderlineStyle {
                     color: Some(theme.link.into()),
                     thickness: px(1.),
@@ -3620,6 +3677,7 @@ impl ChatWindow {
                     return div().into_any_element();
                 };
                 let unread = self.state.is_unread(id);
+                let highlighted = self.state.is_highlighted(id);
                 let name = conversation.name.clone();
                 let joined = self.state.is_active_channel(id);
                 div()
@@ -3633,6 +3691,7 @@ impl ChatWindow {
                     })
                     .when(unread, |d| d.font_weight(FontWeight::BOLD))
                     .when(!joined, |d| d.text_color(theme.text_muted))
+                    .when(highlighted, |d| d.text_color(theme.panes.highlight))
                     .hover(|d| d.bg(theme.hover_strong))
                     .child(format!(
                         "{}{}",
@@ -4432,7 +4491,14 @@ impl ChatWindow {
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
             .and_then(|selection| selection.range(index, message.text.len()));
-        let styled = styled_log_text(&message.text, &urls, selected_range, &style.theme);
+        let highlights = self.highlight_ranges(message);
+        let styled = styled_log_text(
+            &message.text,
+            &urls,
+            &highlights,
+            selected_range,
+            &style.theme,
+        );
         let layout = styled.layout().clone();
         let down_layout = layout.clone();
         let move_layout = layout.clone();
@@ -4575,9 +4641,20 @@ impl ChatWindow {
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
                     .child(if message.activity {
-                        message.text.clone()
+                        StyledText::new(message.text.clone())
                     } else {
-                        format!("{}: {}", message.sender, message.text)
+                        let offset = message.sender.len() + 2;
+                        let highlight = HighlightStyle {
+                            color: Some(theme.panes.highlight.into()),
+                            font_weight: Some(FontWeight::BOLD),
+                            ..Default::default()
+                        };
+                        StyledText::new(format!("{}: {}", message.sender, message.text))
+                            .with_highlights(
+                                self.highlight_ranges(message).into_iter().map(|range| {
+                                    (range.start + offset..range.end + offset, highlight)
+                                }),
+                            )
                     }),
             )
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -5217,6 +5294,15 @@ mod pane_tests {
                     ("bob in #a", "alice: away now"),
                 ]
             );
+            let (a, b) = (
+                &chat.state.conversations()[0],
+                &chat.state.conversations()[1],
+            );
+            assert!(!chat.state.is_highlighted(a.id));
+            assert!(chat.state.is_highlighted(b.id));
+            assert!(chat.highlight_ranges(&b.messages[0]).is_empty());
+            assert_eq!(chat.highlight_ranges(&b.messages[1]), vec![(1..6)]);
+            assert_eq!(chat.highlight_ranges(&b.messages[2]), vec![(0..6)]);
         });
     }
 

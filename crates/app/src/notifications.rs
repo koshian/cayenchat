@@ -200,7 +200,7 @@ mod tests {
             [0..6, 7..16, 17..23]
         );
         let overlapping = ["abc".into(), "bcd".into()];
-        assert_eq!(keyword_ranges("xabcdx", &overlapping), [1..5]);
+        assert_eq!(keyword_ranges("xabcdx", &overlapping), vec![(1..5)]);
     }
 
     #[test]

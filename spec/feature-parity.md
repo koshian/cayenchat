@@ -75,7 +75,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 ## Unread and highlights
 
 - PARTIAL — unread IDs, visual marks and clearing on selection for mock/live channel messages
-- PARTIAL — nickname mentions (whole word including `@nick`, RFC 1459 case mapping) and keywords drive desktop notifications; no visual highlight mark in logs or the tree yet
+- PARTIAL — nickname mentions (whole word including `@nick`, RFC 1459 case mapping) and keywords drive desktop notifications, are drawn bold in the configurable highlight color (light/dark) in both logs, and turn unread channels in the tree to that color until selected
 - DONE — configurable notification keywords (comma-separated, case-insensitive substring), switched separately from mentions
 - TODO — window/application attention indication
 
