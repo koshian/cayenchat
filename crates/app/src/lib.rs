@@ -2,7 +2,10 @@
 pub mod attachments;
 pub mod notifications;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::SystemTime,
+};
 
 use cayenchat_model::{Conversation, ConversationId, Message, Network, NetworkId, TimeOfDay};
 
@@ -456,6 +459,17 @@ impl AppState {
     }
 
     pub fn append_server_message(&mut self, id: NetworkId, text: String) {
+        self.append_server_message_at(id, text, None);
+    }
+
+    /// Like [`AppState::append_server_message`], shown at `received` (a
+    /// server-provided time) when present.
+    pub fn append_server_message_at(
+        &mut self,
+        id: NetworkId,
+        text: String,
+        received: Option<SystemTime>,
+    ) {
         if !self.networks.iter().any(|network| network.id == id) {
             return;
         }
@@ -464,7 +478,7 @@ impl AppState {
         push_bounded(
             messages,
             Message {
-                time: local_time(),
+                time: display_time(received),
                 sequence: self.next_message_sequence,
                 sender: "server".into(),
                 text,
@@ -571,11 +585,29 @@ impl AppState {
         text: &str,
         notice: bool,
     ) {
+        self.append_channel_message_at(network, name, sender, text, notice, None);
+    }
+
+    /// Like [`AppState::append_channel_message`], shown at `received` (a
+    /// server-provided time) when present. Ordering still follows arrival.
+    pub fn append_channel_message_at(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+        sender: &str,
+        text: &str,
+        notice: bool,
+        received: Option<SystemTime>,
+    ) {
         // Only joined or configured channels get a conversation; anything else
         // a server sends lands in the bounded server log instead.
         let Some(id) = self.channel_id(network, name) else {
             let prefix = if notice { "[NOTICE] " } else { "" };
-            self.append_server_message(network, format!("{name} <{sender}> {prefix}{text}"));
+            self.append_server_message_at(
+                network,
+                format!("{name} <{sender}> {prefix}{text}"),
+                received,
+            );
             return;
         };
         self.next_message_sequence += 1;
@@ -587,7 +619,7 @@ impl AppState {
             push_bounded(
                 &mut channel.messages,
                 Message {
-                    time: local_time(),
+                    time: display_time(received),
                     sequence: self.next_message_sequence,
                     sender: sender.into(),
                     text: if notice {
@@ -603,6 +635,16 @@ impl AppState {
     }
 
     pub fn append_channel_activity(&mut self, network: NetworkId, name: &str, text: String) {
+        self.append_channel_activity_at(network, name, text, None);
+    }
+
+    pub fn append_channel_activity_at(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+        text: String,
+        received: Option<SystemTime>,
+    ) {
         if let Some(id) = self.channel_id(network, name) {
             self.next_message_sequence += 1;
             if let Some(channel) = self
@@ -613,7 +655,7 @@ impl AppState {
                 push_bounded(
                     &mut channel.messages,
                     Message {
-                        time: local_time(),
+                        time: display_time(received),
                         sequence: self.next_message_sequence,
                         sender: String::new(),
                         text,
@@ -854,10 +896,12 @@ fn sorted_members(mut members: Vec<String>) -> Vec<String> {
     members
 }
 
-fn local_time() -> TimeOfDay {
+/// Local time of day for a message: the server-provided instant when there
+/// is one, otherwise now (receipt time).
+fn display_time(received: Option<SystemTime>) -> TimeOfDay {
     use chrono::Timelike;
-    let now = chrono::Local::now();
-    TimeOfDay::new(now.hour() as u8, now.minute() as u8)
+    let local = received.map_or_else(chrono::Local::now, chrono::DateTime::<chrono::Local>::from);
+    TimeOfDay::new(local.hour() as u8, local.minute() as u8)
 }
 
 /// Parses the `HH:MM` literals of the offline mock data.
@@ -1238,5 +1282,48 @@ mod tests {
         state.sync_networks(&[]);
         assert_eq!(state.selection(), Selection::None);
         assert!(state.networks().is_empty());
+    }
+
+    #[test]
+    fn server_times_show_as_local_time_without_changing_arrival_order() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let local = |time: SystemTime| {
+            use chrono::Timelike;
+            let local = chrono::DateTime::<chrono::Local>::from(time);
+            TimeOfDay::new(local.hour() as u8, local.minute() as u8)
+        };
+        let mut state = AppState::live("irc.example.org".into(), vec!["#test".into()]);
+        let network = state.networks()[0].id;
+        let later = UNIX_EPOCH + Duration::from_secs(1_319_042_451);
+        let earlier = later - Duration::from_secs(3 * 3600);
+        state.append_channel_message_at(network, "#test", "bob", "first", false, Some(later));
+        state.append_channel_message_at(network, "#test", "bob", "second", false, Some(earlier));
+        state.append_channel_message_at(network, "#test", "bob", "third", false, None);
+        state.append_channel_activity_at(network, "#test", "bob left".into(), Some(earlier));
+        state.append_server_message_at(network, "notice".into(), Some(later));
+        let received_now = display_time(None);
+        let messages = &state
+            .conversations()
+            .iter()
+            .find(|channel| channel.name == "#test")
+            .unwrap()
+            .messages;
+        let texts: Vec<_> = messages
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect();
+        assert_eq!(texts, ["first", "second", "third", "bob left"]);
+        assert!(
+            messages
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        assert_eq!(messages[0].time, local(later));
+        assert_eq!(messages[1].time, local(earlier));
+        // Missing server time falls back to the receipt time (allow a minute tick).
+        let fallback = messages[2].time;
+        assert!(fallback == received_now || fallback == display_time(None));
+        assert_eq!(messages[3].time, local(earlier));
+        assert_eq!(state.server_messages(network)[0].time, local(later));
     }
 }

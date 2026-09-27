@@ -2346,7 +2346,7 @@ impl ChatWindow {
                 text,
                 notice,
                 mentioned,
-                ..
+                server_time,
             } => {
                 let highlighted = !self.is_own_nickname(network, &sender)
                     && (mentioned
@@ -2355,8 +2355,14 @@ impl ChatWindow {
                             &self.notification_rules.keywords,
                         ));
                 self.notify_message(network, Some(&channel), &sender, &text, notice, mentioned);
-                self.state
-                    .append_channel_message(network, &channel, &sender, &text, notice);
+                self.state.append_channel_message_at(
+                    network,
+                    &channel,
+                    &sender,
+                    &text,
+                    notice,
+                    server_time,
+                );
                 if highlighted {
                     self.state.mark_highlighted(network, &channel);
                 }
@@ -2365,16 +2371,17 @@ impl ChatWindow {
                 channel,
                 actor,
                 kind,
-                ..
+                server_time,
             } => {
                 let text = channel_activity_text(&actor, kind);
-                self.state.append_channel_activity(network, &channel, text);
+                self.state
+                    .append_channel_activity_at(network, &channel, text, server_time);
             }
             Event::PrivateMessage {
                 sender,
                 text,
                 notice,
-                ..
+                server_time,
             } => {
                 self.notify_message(network, None, &sender, &text, notice, false);
                 // Private conversations have no pane yet; keep them in the
@@ -2384,7 +2391,8 @@ impl ChatWindow {
                 } else {
                     format!("<{sender}> {text}")
                 };
-                self.state.append_server_message(network, line);
+                self.state
+                    .append_server_message_at(network, line, server_time);
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
@@ -6389,6 +6397,84 @@ mod pane_tests {
             assert_eq!(
                 chat.highlight_ranges(NetworkId(1), &b.messages[2]),
                 vec![(0..6)]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn old_server_times_display_locally_and_still_notify(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let old = UNIX_EPOCH + Duration::from_secs(1_319_042_451);
+        let local = |time: SystemTime| {
+            use chrono::Timelike;
+            let time = chrono::DateTime::<chrono::Local>::from(time);
+            cayenchat_model::TimeOfDay::new(time.hour() as u8, time.minute() as u8)
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            chat.state.dispatch(cayenchat_app::Command::SelectChannel(
+                chat.state.conversations()[0].id,
+            ));
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "now".into(),
+                        notice: false,
+                        mentioned: false,
+                        server_time: None,
+                    },
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "alice: from years ago".into(),
+                        notice: false,
+                        mentioned: true,
+                        server_time: Some(old),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let b = &chat.state.conversations()[1];
+            assert_eq!(b.messages[1].text, "alice: from years ago");
+            assert!(b.messages[0].sequence < b.messages[1].sequence);
+            assert_eq!(b.messages[1].time, local(old));
+            assert!(chat.state.is_unread(b.id));
+            assert_eq!(
+                chat.notifier.shown.len(),
+                1,
+                "an old timestamp does not mute"
             );
         });
     }
