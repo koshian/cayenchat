@@ -203,8 +203,10 @@ fn requires_utf8(message: &IrcMessage) -> bool {
         if args.iter().any(|arg| arg.split_whitespace().any(|token| token == "UTF8ONLY")))
 }
 
-fn valid_channel(value: &str) -> bool {
-    (value.starts_with('#') || value.starts_with('&'))
+/// Whether a name is a supported channel target, including IRCnet safe channels.
+/// Keep the server-assigned identifier in `!` names intact.
+pub fn valid_channel(value: &str) -> bool {
+    value.starts_with(['#', '&', '!'])
         && value.len() > 1
         && !value
             .chars()
@@ -213,7 +215,7 @@ fn valid_channel(value: &str) -> bool {
 
 fn valid_nickname(value: &str) -> bool {
     !value.is_empty()
-        && !value.starts_with(['#', '&', '~', '@', '%', '+'])
+        && !value.starts_with(['#', '&', '!', '~', '@', '%', '+'])
         && !value
             .chars()
             .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, ',' | ':'))
@@ -2088,6 +2090,191 @@ mod tests {
             }
             other => panic!("expected message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn safe_channel_targets_and_commands_keep_the_full_name() {
+        for channel in ["!test", "!ABCDEtest", "!ABCDE日本語"] {
+            let config = ConnectionConfig::tls(
+                "irc.example.org".into(),
+                "alice".into(),
+                vec![channel.into()],
+            );
+            assert!(config.validate().is_ok());
+            assert!(!valid_nickname(channel));
+            for (line, expected) in [
+                (format!("/join {channel}"), format!("JOIN {channel}")),
+                ("/part".into(), format!("PART {channel}")),
+                (
+                    format!("/part {channel} bye"),
+                    format!("PART {channel} bye"),
+                ),
+                (
+                    "/topic new topic".into(),
+                    format!("TOPIC {channel} :new topic"),
+                ),
+                (
+                    format!("/topic {channel} topic"),
+                    format!("TOPIC {channel} topic"),
+                ),
+                ("/mode +o bob".into(), format!("MODE {channel} +o bob")),
+                (
+                    format!("/mode {channel} +o bob"),
+                    format!("MODE {channel} +o bob"),
+                ),
+                ("/kick bob bye".into(), format!("KICK {channel} bob bye")),
+                (
+                    format!("/kick {channel} bob bye"),
+                    format!("KICK {channel} bob bye"),
+                ),
+                ("/invite bob".into(), format!("INVITE bob {channel}")),
+                (
+                    format!("/invite bob {channel}"),
+                    format!("INVITE bob {channel}"),
+                ),
+                ("/names".into(), format!("NAMES {channel}")),
+            ] {
+                let Outgoing::Raw(message) = parse_slash_command(&line, Some(channel)).unwrap()
+                else {
+                    panic!("expected a raw command for {line}");
+                };
+                assert_eq!(message.to_string().trim_end(), expected);
+            }
+            let Outgoing::Message { target, .. } =
+                parse_slash_command("/me waves", Some(channel)).unwrap()
+            else {
+                panic!("expected an action");
+            };
+            assert_eq!(target, channel);
+            for action in [
+                MemberCommand::Invite {
+                    channel: channel.into(),
+                },
+                MemberCommand::GiveOp {
+                    channel: channel.into(),
+                },
+                MemberCommand::Deop {
+                    channel: channel.into(),
+                },
+            ] {
+                assert!(member_outgoing("bob", action).is_ok());
+            }
+        }
+        for invalid in ["!", "!bad name", "!bad,other", "!bad\r\nJOIN", "!bad\0"] {
+            assert!(!valid_channel(invalid));
+        }
+        // Accepting safe channels must not mistake mode flags for channel names.
+        assert!(!valid_channel("+o"));
+    }
+
+    #[test]
+    fn safe_channel_join_names_messages_and_part_round_trip() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+            let read = |lines: &mut std::io::Lines<BufReader<std::net::TcpStream>>| {
+                lines.next().expect("client closed the connection").unwrap()
+            };
+            while !read(&mut lines).starts_with("USER ") {}
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
+                .unwrap();
+            assert_eq!(read(&mut lines), "JOIN !test");
+            // IRCnet resolves the short name to the server-assigned full name.
+            socket.write_all(b":alice!u@h JOIN !ABCDEtest\r\n:server 353 alice = !ABCDEtest :@alice bob\r\n:server 366 alice !ABCDEtest :End of NAMES\r\n:bob!u@h PRIVMSG !ABCDEtest :hello\r\n:bob!u@h NOTICE !ABCDEtest :notice\r\n").unwrap();
+            for expected in [
+                "PRIVMSG !ABCDEtest reply",
+                "NOTICE !ABCDEtest notice",
+                "INVITE bob !ABCDEtest",
+                "MODE !ABCDEtest +o bob",
+                "PART !ABCDEtest",
+            ] {
+                assert_eq!(read(&mut lines), expected);
+            }
+            socket.write_all(b":alice!u@h PART !ABCDEtest\r\n").unwrap();
+        });
+        let mut config =
+            ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec!["!test".into()]);
+        config.port = port;
+        config.use_tls = false;
+        let mut connection = Connection::connect(config).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut joined, mut names, mut message, mut notice, mut parted) =
+            (false, false, false, false, false);
+        let mut sent = false;
+        while Instant::now() < deadline && !parted {
+            match connection.try_recv() {
+                Some(Event::Joined { channel }) => {
+                    assert_eq!(channel, "!ABCDEtest");
+                    joined = true;
+                }
+                Some(Event::Names { channel, users }) if users.len() == 2 => {
+                    assert_eq!(channel, "!ABCDEtest");
+                    assert!(users.contains(&"@alice".into()));
+                    assert!(users.contains(&"bob".into()));
+                    names = true;
+                }
+                Some(Event::ChannelMessage {
+                    channel,
+                    sender,
+                    text,
+                    notice: is_notice,
+                }) => {
+                    assert_eq!(channel, "!ABCDEtest");
+                    assert_eq!(sender, "bob");
+                    assert_eq!(text, if is_notice { "notice" } else { "hello" });
+                    if is_notice {
+                        notice = true;
+                    } else {
+                        message = true;
+                    }
+                }
+                Some(Event::Parted { channel }) => {
+                    assert_eq!(channel, "!ABCDEtest");
+                    parted = true;
+                }
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(5)),
+            }
+            if joined && names && message && notice && !sent {
+                connection
+                    .send_message("!ABCDEtest", "reply", false)
+                    .unwrap();
+                connection
+                    .send_message("!ABCDEtest", "notice", true)
+                    .unwrap();
+                connection
+                    .send_member_command(
+                        "bob",
+                        MemberCommand::Invite {
+                            channel: "!ABCDEtest".into(),
+                        },
+                    )
+                    .unwrap();
+                connection
+                    .send_member_command(
+                        "bob",
+                        MemberCommand::GiveOp {
+                            channel: "!ABCDEtest".into(),
+                        },
+                    )
+                    .unwrap();
+                connection
+                    .send_command("/part", Some("!ABCDEtest"))
+                    .unwrap();
+                sent = true;
+            }
+        }
+        assert!(
+            joined && names && message && notice && parted,
+            "safe channel lifecycle incomplete"
+        );
+        server.join().unwrap();
     }
 
     #[test]
