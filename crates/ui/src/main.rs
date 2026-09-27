@@ -212,7 +212,7 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            highlight_color: field("#D0021B", &values.appearance.highlight_color, false, cx),
+            highlight_color: field("#D46A8E", &values.appearance.highlight_color, false, cx),
             sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
             sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
             dark_member_list_background: field(
@@ -240,7 +240,7 @@ impl SettingsForm {
                 cx,
             ),
             dark_highlight_color: field(
-                "#FF6B6B",
+                "#EFA0BE",
                 &values.appearance.dark.highlight_color,
                 false,
                 cx,

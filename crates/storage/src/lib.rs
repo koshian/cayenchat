@@ -139,7 +139,7 @@ impl Default for DarkColors {
             main_log_background: "#1F2124".into(),
             main_log_alternate: "#272B31".into(),
             channel_event_color: "#6CC46C".into(),
-            highlight_color: "#FF6B6B".into(),
+            highlight_color: "#EFA0BE".into(),
             sub_log_background: "#24272B".into(),
             sub_log_alternate: "#2C3036".into(),
         }
@@ -153,7 +153,7 @@ impl Default for Appearance {
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
             channel_event_color: "#007D00".into(),
-            highlight_color: "#D0021B".into(),
+            highlight_color: "#D46A8E".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
