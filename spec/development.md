@@ -623,6 +623,42 @@ Selection/copy, link opening by double-click and channel switching with
 previews were not exercised in the real window (no input automation was
 available); Windows and Linux were not run.
 
+### User avatars and IRCv3 metadata (2026-09-27)
+
+In the Linux x86_64 cloud container (rustc 1.94.1), `cargo fmt --check`,
+workspace Clippy with all features and workspace tests passed with the
+lockfile. The container lacked `libxkbcommon-dev` and
+`libxkbcommon-x11`; their Ubuntu packages were unpacked into a scratch
+directory and used through `LIBRARY_PATH`/`LD_LIBRARY_PATH` without
+installing anything. Automated coverage: default-off settings, migration of
+files without the fields, per-server independence and the batch-dependency
+warning; CAP ordering (metadata only after batch ACK, never
+`metadata-notify`), NAK, DEL of either capability, NEW, SASL together and
+legacy encodings; a local IRC fixture for SUB after 001 and before JOIN,
+avatar values, updates, removal, the metadata batch, deferred SYNC, NICK,
+PART, QUIT, withdrawal and no server-log lines; bounded syncs and users;
+occupancies across nickname changes, reuse, reconnects and server removal;
+extensionless avatar URLs with the same safety checks, square crop and
+limits; GPUI tests for no lookups or fetches while off, live on/off with
+deduplicated, visible-only loads, unchanged row heights, the shared fetch
+limit with previews, typing reusing the panes and a removed server.
+
+GUI check: the `preview-fixture` release build ran under Xvfb with Mesa's
+llvmpipe Vulkan driver (also unpacked into a scratch directory), an
+isolated `HOME` with a prepared settings file (the `test-build` feature
+always starts from empty settings, so it could not be preseeded) and a
+local IRC fixture offering `batch` and `draft/metadata-2`; `xdotool` drove
+the settings window and `xwd` captured windows (captures only show content
+after an input event triggers a frame). Verified: the IRCv3 row, its hint
+and the batch warning; live on/off from the Appearance tab with autosave;
+avatars in log and member rows at the same row spacing as off; scrolling
+up during a burst and following at the bottom; a renamed user keeping the
+avatar, the old nickname's earlier line keeping the old image and a new
+user of that nickname showing none until their own avatar arrived. Not
+verified: macOS and Windows, a real IRC server, IME, HiDPI sharpness, and
+whether no image file is read while off (the file system's `relatime` made
+access times inconclusive; the GPUI tests cover it).
+
 ### Native settings appearance checks (D019)
 
 The regression tests in `ui::settings_theme` render macOS Sonoma, Windows 11,

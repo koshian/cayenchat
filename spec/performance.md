@@ -461,6 +461,47 @@ most 64 references of at most 64 bytes per connection, stores nothing for
 other batch types and never buffers messages. It runs in the existing
 worker loop with no thread, timer or polling.
 
+## User avatars (2026-09-27)
+
+A short check, not a baseline run, in the Linux cloud container used for
+this change (x86_64, 4 vCPUs shared, rustc 1.94.1; not comparable with the
+macOS numbers above). Headless UI test in release mode, one run each,
+medians in µs, 10 channels × 2,000 lines:
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- | --- |
+| Parent `598d9dc` | 674 | 3,970 | 3,095 | 3,911 | 710 |
+| Avatars branch, avatars off | 674 | 3,947 | 3,089 | 4,111 | 707 |
+| Avatars branch, avatars on (`perf_baseline_avatars`) | 689 | 4,510 | 3,369 | 4,358 | 701 |
+
+- Off matches the parent within run-to-run noise (an earlier off run of
+  the same binary measured 710 / 4,108 / 3,190 / 4,022 / 684), so no
+  further runs were made. Typing re-renders no pane with avatars on or off
+  (asserted by the test).
+- On, every one of the 50 members has an avatar, so each message and
+  member row draws a slot and an image: channel switch and batch cost about
+  10 % more than off, within the provisional targets' 20 %.
+- Avatar bookkeeping at the end of the on run: 50 fetches for 50 distinct
+  URLs (deduplicated across 10 channels, 200 switches and scrolling the
+  whole log), 50 ready, 0 failed or evicted, 50 records, 409,600 charged
+  bytes (50 × 32 × 32 × 4 × 2) of the 2 MiB budget, nothing in flight,
+  nothing waiting for release.
+- `model::Message` stays 64 bytes (`size_of`, printed by the test); avatar
+  references live once per network in `app::avatars`.
+- Metadata handling runs in each connection's existing worker loop. The
+  only new timer is the deferred-sync sleep, armed only while a
+  `RPL_METADATASYNCLATER` retry is pending (at most 16 channels, 3 tries
+  each).
+
+A GUI check with a `preview-fixture` release build under Xvfb (Mesa
+llvmpipe) against a local IRC fixture (120 members, 40 with avatars, a
+300 ms fixture delay per image) showed the avatar column and member icons
+at 16×16 without any change of row spacing, blank slots for users without
+avatars, the log staying put while scrolled up during a burst and
+following again at the bottom, and the column disappearing at once when
+the setting was turned off. The process-level scenarios (`run_baseline.py`)
+were not run.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The

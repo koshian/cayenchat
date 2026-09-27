@@ -269,6 +269,6 @@
   "ircv3_next_connection": "Changes take effect the next time this server connects. A connected server is not reconnected.",
   "ircv3_metadata": "User avatars (experimental)",
   "ircv3_metadata_hint": "Receive the avatar addresses users publish (draft/metadata-2, avatar key only). This downloads no pictures; showing them is \"Show user avatars\" on the Appearance tab. The specification is still a draft, so servers may behave differently.",
-  "ircv3_metadata_needs_batch": "Needs \"Message batches\". Avatars are not requested until that is turned on as well; it is not turned on automatically.",
+  "ircv3_metadata_needs_batch": "Needs \"Message batches\", which is not turned on automatically. Avatars are not requested until it is on as well.",
   "ircv3_metadata_legacy": "With {encoding}, only avatar addresses written in plain ASCII are used."
 }
