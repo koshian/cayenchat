@@ -597,10 +597,21 @@ highlight); that rule was removed when this change merged it, because it
 would hide live lines when the local clock runs ahead and because a
 timestamp alone does not say a line was replayed. History is still
 recognized by the missing user mask and by `chathistory`/`znc.in/playback`
-batches, whose references use the normalized tag reader. Until `batch` is
-negotiated, bouncer backlog without batches can notify like live traffic.
+batches, whose references use the normalized tag reader. Bouncer backlog
+without a history batch can notify like live traffic.
 
-Not included: batch, chathistory, echo-message, labeled-response, account
+The `batch` capability was added later as a third opt-in (same object, no
+settings version change, off when absent). It extends `ReplayTracker`
+instead of adding a second tracker, requests only `batch` (never
+`draft/chathistory`, event-playback or multiline, and no CHATHISTORY
+requests), and keeps the rules above: only the two history types and their
+descendants are history, unknown types never mute, and a timestamp still
+proves nothing. Unsolicited batches on connections with the option off keep
+the handling they had before (history recognized, framing lines shown);
+that is compatibility, not negotiated support. Details and bounds are in
+`architecture.md`.
+
+Not included: chathistory requests, echo-message, labeled-response, account
 tags, avatars, metadata, reactions, typing indicators and Matrix. Later
 features may become default-on or move tabs by changing their preference
 default and settings row only; that migration is not implemented.
@@ -608,5 +619,7 @@ default and settings row only; that migration is not implemented.
 Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-negotiation),
 [message tags](https://ircv3.net/specs/extensions/message-tags),
 [server-time](https://ircv3.net/specs/extensions/server-time),
+[batch](https://ircv3.net/specs/extensions/batch),
+[chathistory batch type](https://ircv3.net/specs/batches/chathistory),
 [SASL 3.1](https://ircv3.net/specs/extensions/sasl-3.1),
 [SASL 3.2](https://ircv3.net/specs/extensions/sasl-3.2).

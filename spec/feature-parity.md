@@ -124,7 +124,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
-- DONE — IRCv3 tab: per-server opt-ins for server timestamps and message tags, naming the configured server; changes apply on the next connection
+- DONE — IRCv3 tab: per-server opt-ins for server timestamps, message tags and message batches, naming the configured server; changes apply on the next connection
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
 
@@ -133,7 +133,8 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — shared CAP negotiation (LS 302 with continuation and values, per-capability REQ, multiline ACK, NAK, NEW/DEL, coordinated CAP END) for SASL PLAIN and opt-in extensions; public-server interoperability unverified
 - PARTIAL — message tags: per-server opt-in (default off), tags parsed and normalized, TAGMSG kept out of the chat; no tag is displayed yet, and it is not requested with legacy encodings
 - DONE — server-time: per-server opt-in (default off), independent of message tags
-- TODO — batch, echo-message and labeled-response
+- PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only, and no CHATHISTORY requests
+- TODO — echo-message and labeled-response
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify

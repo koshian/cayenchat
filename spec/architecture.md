@@ -207,7 +207,8 @@ nickname, username, channels, SASL account and startup connection into each
 server profile (D017). Version 14 adds the image preview appearance setting,
 off for new and migrated settings (D018). Version 15 adds per-server IRCv3
 opt-ins (message tags and server timestamps), off for new and migrated
-settings (D022). The UI keeps the
+settings (D022); the later batch opt-in is a new field of the same object
+without a version change, read as off when absent. The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -404,6 +405,7 @@ irc-core::cap::CapNegotiation (one per connection attempt)
         v
 irc-core::tags (read on the parsed irc message; nothing retained)
         |   server_time() only when server-time was acknowledged
+        |   replay::ReplayTracker reads BATCH and the `batch` tag
         v
 Event::{ChannelMessage, ChannelActivity, PrivateMessage}::server_time
         |
@@ -462,12 +464,50 @@ and connections that did not negotiate server-time, use the receipt time.
 The arrival sequence remains the ordering key; logs are never reordered by
 server time. Local echoes of our own messages keep local time, and an old
 timestamp neither suppresses notifications nor marks anything as history.
-Diagnostic elapsed times are unchanged. Because `batch` is not negotiated,
-bouncer backlog delivered as ordinary tagged lines (ZNC or soju without
-batches) counts as live and can notify, within the notification rate limit;
-recognizing it belongs to later batch/chathistory work. Limitations for later history work:
+Diagnostic elapsed times are unchanged. Bouncer backlog delivered as
+ordinary tagged lines, without a history batch, counts as live and can
+notify, within the notification rate limit. Limitations for later history work:
 the date and seconds are discarded, so a line from a previous day shows only
 its HH:MM, and server log lines (numerics, server notices) keep receipt time.
+
+batch (opt-in per server): when enabled and offered, `batch` is requested
+with its own `CAP REQ`, on legacy encodings too because references and the
+history types are ASCII; it does not turn on `server-time` or
+`message-tags`. `draft/chathistory`, `draft/event-playback` and
+`draft/multiline` are never requested and no CHATHISTORY command is sent:
+this only receives batches that servers and bouncers send by themselves
+(soju's join backlog, ZNC playback). `replay::ReplayTracker`, the tracker
+that already recognized history, follows them:
+
+- It keeps only the references of open history batches: `chathistory`,
+  `znc.in/playback`, and any batch opened inside one (ancestry is settled
+  when a batch opens, from the `batch` tag on its `BATCH +` line). Other
+  batches (netsplit, multiline, unknown vendor types) are not stored, so
+  their messages and messages naming an unknown or ended reference stay
+  live. Concurrent batches are independent, and untagged live lines between
+  history lines stay live. Messages are classified one at a time as they
+  arrive; nothing is buffered until a batch ends.
+- References are compared exactly (they are case-sensitive). irc-proto
+  1.1.0 upper-cases every batch type (`BatchSubCommand::CUSTOM`, and
+  `NETSPLIT`/`NETJOIN` are matched case-insensitively), so the raw type is
+  lost and history types are compared in upper case. Tag lookups use the
+  normalized reader (last duplicate wins, empty is missing).
+- Bounds: at most 64 open history batches (a missing `BATCH -` evicts the
+  oldest when the table is full) and references of at most 64 bytes (longer
+  ones are not followed). A reused open reference replaces its entry, so a
+  stale history batch cannot mute a later live one; an unknown `BATCH -` is
+  ignored.
+- The tracker lives in the connection's worker, so disconnects and
+  reconnects start empty, and CAP DEL (or `ACK -batch`) clears it.
+- With batch negotiated, `BATCH` framing lines produce no event (like
+  TAGMSG) and stay in the diagnostic transcript.
+
+With the option off, nothing about batch is negotiated and behavior is what
+it was before the option existed: a server that sends batches unsolicited
+still has its `chathistory`/`znc.in/playback` batches recognized by the
+same tracker, with the same bounds, and its `BATCH` lines appear in the
+server log as before. That compatibility handling is not a claim of batch
+support.
 
 Preferences live in `Ircv3Preferences`, one field per feature with its own
 serde default; the settings tab renders one `ircv3_settings::Ircv3Feature`
@@ -512,7 +552,8 @@ notify (bouncer echoes), and neither does replayed history: `irc-core`
 user mask (a line from the server or bouncer itself, such as Tiarra's
 Log::Recent replaying channel logs as `:tiarra NOTICE #chan`), that belongs
 to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
-one). A server-time tag alone never marks history, however old (D022).
+one; see batch under IRCv3 capabilities). A server-time tag alone never
+marks history, however old (D022).
 Replayed messages still appear in the log (`model::Message::replayed`) and
 mark their channel unread, but are neither highlighted there nor in the
 channel tree. Nothing notifies while the chat window is

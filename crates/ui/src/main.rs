@@ -559,6 +559,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
     Ircv3Options {
         message_tags: preferences.message_tags,
         server_time: preferences.server_time,
+        batch: preferences.batch,
     }
 }
 
@@ -6359,6 +6360,7 @@ mod pane_tests {
         settings.servers[1].nickname = "me".into();
         settings.servers[1].username = "me".into();
         settings.servers[1].ircv3.server_time = true;
+        settings.servers[1].ircv3.batch = true;
         let config = |settings: &Settings, index: usize| {
             crate::connection_config(
                 &settings.servers[index],
@@ -6374,6 +6376,7 @@ mod pane_tests {
             Ircv3Options {
                 message_tags: false,
                 server_time: true,
+                batch: true,
             }
         );
         let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -6400,8 +6403,9 @@ mod pane_tests {
                 Ircv3Options {
                     message_tags: true,
                     server_time: false,
+                    batch: false,
                 },
-                "reconnects use the new choice"
+                "reconnects use the new choice; batch stays off here"
             );
             assert_eq!(
                 ircv3(second),

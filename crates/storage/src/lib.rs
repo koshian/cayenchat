@@ -325,6 +325,9 @@ pub struct Ircv3Preferences {
     pub message_tags: bool,
     /// Request `server-time` and show server timestamps.
     pub server_time: bool,
+    /// Request `batch`, so history batches are recognized. Added after
+    /// version 15 without a version change: files without it read as off.
+    pub batch: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1228,13 +1231,31 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false})
         );
-        assert_eq!(load_from(&path).unwrap(), Some(settings));
+        assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+
+        // A version 15 file written before batch existed keeps its choices,
+        // and batch reads as off.
+        let mut old = saved.clone();
+        old["servers"][0]["ircv3"]
+            .as_object_mut()
+            .unwrap()
+            .remove("batch");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded, settings);
+        assert!(!loaded.servers[0].ircv3.batch && loaded.servers[0].ircv3.server_time);
+
+        // Batch is per server too.
+        settings.servers[1].ircv3.batch = true;
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(!loaded.servers[0].ircv3.batch && loaded.servers[1].ircv3.batch);
     }
 
     #[test]
