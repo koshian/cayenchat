@@ -40,11 +40,11 @@ Do not build a second mechanism for any of these; extend them instead.
 | --- | --- | --- |
 | One dedicated `cayenchat-irc` thread with a current-thread Tokio runtime per connection | `irc-core::Connection::connect` | Socket, TLS and parsing never run on the UI thread (D006). |
 | Bounded queues: 512 events worker→UI, 128 commands UI→worker | `irc-core` `EVENT_CAPACITY`, `COMMAND_CAPACITY` | A slow UI back-pressures the worker, which stops reading the socket, instead of buffering without limit. |
-| Event pump awaits events; no timer polling. Up to 256 events per update, yielding between batches | `ui` `spawn_event_pump`, `EVENT_BATCH_LIMIT` | An idle connection wakes nothing; input and redraws interleave with bursts. The earlier 50 ms poll capped throughput and woke 20 times a second. |
+| Event pump awaits events; no timer polling. One pump task per connection, up to 256 events per update, yielding between batches | `ui` `spawn_event_pump`, `EVENT_BATCH_LIMIT` | An idle connection wakes nothing; input, redraws and other servers interleave with bursts. The earlier 50 ms poll capped throughput and woke 20 times a second. |
 | No periodic timers while idle | registration progress/timeout timers stop at 001; the watchdog ends once connected; menu-bar hover polling runs only while the bar is hover-revealed | Idle CPU and wakeups stay near zero. The `irc` crate still sends its own PING every 180 s per connection. |
 | Per-channel log cap: 2,000 lines, trimmed to 1,000 when exceeded; server log the same | `app` `push_bounded` | Memory per log is bounded; trimming in chunks amortizes the shift. |
-| Diagnostics transcript: newest 1,000 lines in a `VecDeque` | `ui` `DIAGNOSTIC_LIMIT` | Every IRC line is recorded, so it must be bounded and O(1) to trim. |
-| Combined subwindow: newest 1,000 lines across other channels, rebuilt only when the last message sequence or the selection changes | `ui` `SUB_LOG_LIMIT`, `sync_log_lists` | Keystrokes do not rebuild it. |
+| Diagnostics transcript: newest 1,000 lines per server in a `VecDeque` | `ui::session` `DIAGNOSTIC_LIMIT` | Every IRC line is recorded, so it must be bounded and O(1) to trim. |
+| Combined subwindow: newest 1,000 lines across other channels, rebuilt only when the last message sequence or the selection changes, by merging conversation tails newest-first | `ui` `SUB_LOG_LIMIT`, `sync_log_lists`, `newest_lines` | Keystrokes do not rebuild it, and the rebuild does not grow with every retained line when there are many conversations. |
 | At most 1,000 conversations per network; messages for unknown channels go to the bounded server log | `app` `MAX_CONVERSATIONS_PER_NETWORK` | A hostile server or bouncer cannot grow memory without limit. |
 | WHOIS collection capped (32 pending nicknames, 512 items each); rosters cached only for joined channels | `irc-core` `MAX_PENDING_WHOIS`, `MAX_WHOIS_ITEMS` | Same. |
 | Virtualized panes: both logs, user list and channel tree use GPUI `list`/`uniform_list` with 400 px overdraw | `ui::log_list` | Only rows near the viewport are laid out. |
@@ -61,8 +61,8 @@ Do not build a second mechanism for any of these; extend them instead.
 | Channel log | 2,000 messages, trimmed to 1,000 | per conversation | No application-wide bound: 1,000 conversations × 2,000 lines is allowed. |
 | Server log | 2,000 messages, trimmed to 1,000 | per network | |
 | Conversations | 1,000 | per network | |
-| Diagnostics transcript | 1,000 lines | the one live connection | Formatted eagerly for every IRC line, shown or not. |
-| Combined subwindow | 1,000 rows (indices only) | window | Rebuilt from up to 1,000 lines of every other conversation, then sorted. |
+| Diagnostics transcript | 1,000 lines | per server | Formatted eagerly for every IRC line, shown or not. No application-wide bound. |
+| Combined subwindow | 1,000 rows (indices only) | window | Rebuilt by a heap merge of conversation tails that stops at 1,000 rows. |
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
 | WHOIS collection | 32 nicknames × 512 items | per connection | |
@@ -266,14 +266,56 @@ machine, and add these:
 - UI test extended to 4 servers × 10 channels: typing must still leave the
   panes cached (`pane_renders` unchanged) and switching across servers should
   cost about the same as within one.
-- Combined subwindow rebuild with 40 conversations: every render after new
-  messages scans up to 1,000 lines of every other conversation and sorts
-  them, so its cost grows with the number of conversations. At 10 channels
-  it did not show up in the headless timings (100 versus 2,000 retained
-  lines per channel changed a batch by about 3 %); 40 or more has not been
-  measured.
+- Combined subwindow rebuild with 40 conversations (done in the multi-server
+  change; see below).
 - Diagnostics: per-server transcripts must stay bounded and the app-wide total
   must be bounded too.
+
+## Multi-server comparison (2026-09-27)
+
+Same machine as the baseline, measured in one session against the parent
+commit (`d0e2dd1`, PR #11) built in a separate worktree. The machine was busier
+than during the baseline, so compare within this section only. Measurement
+was kept short on purpose; the four-server process run was not completed.
+
+Headless UI test, three runs each (medians, µs; 10 channels × 2,000 lines per
+server):
+
+| Build | Typing | Channel switch | 256-event batch |
+| --- | --- | --- | --- |
+| Parent, 1 server | 421–424 | 2,096–2,192 | 2,059–2,118 |
+| Multi-server, 1 server | 426–434 | 1,842–1,873 | 1,875–1,947 |
+| Multi-server, 4 servers (80,000 lines) | 447–454 | 1,715–1,875 | 2,026–2,344 |
+| Multi-server before the combined-log merge, 4 servers | 458–469 | 2,971–3,034 | 3,198–3,455 |
+
+Typing still re-renders no pane. The combined subwindow's collect-and-sort
+made switching and batches grow with conversations (+33 % and +43 % at four
+servers); merging tails newest-first removed that and also made one server
+faster than the parent.
+
+Process run, one server, three runs each (`run_baseline.py`; `top` now only at
+window edges):
+
+| Scenario | Parent footprint / CPU | Multi-server footprint / CPU |
+| --- | --- | --- |
+| S2 connected, idle | 58 MiB / 0.99 % | 58 MiB / 0.51 % |
+| S3 20,000 lines, idle | 69 MiB / 0.44 % | 70 MiB / 0.38 % |
+| S4a 200 lines/s | 75 MiB / 20.3 % | 75 MiB / 19.2 % |
+| S6 after saturation | 70 MiB / 0.44 % | 73 MiB / 0.10 % |
+
+Idle wakeups stayed at about one per second or less in both. Window
+visibility again varied between runs (see the visible-runs column of
+`--summarize`), so load CPU is indicative only.
+
+Two servers (one short smoke run, 4 s windows, window visible): both
+connected once and stayed connected; threads rose by two (one worker per
+connection); footprint 65 MiB connected, 69 MiB with 500 lines per channel.
+While the first server was flooded at the maximum rate (its PING round trip
+about 1.2 s), the idle second server's PING round trip stayed at 0.2 ms
+median, 1.6 ms max: one busy server does not delay another's lines.
+
+Not measured: four servers in the process run, idle wakeups per added
+connection over a full window, and the real window under multi-server load.
 
 ## Comparing image display
 
@@ -303,7 +345,6 @@ These are not agreed. Each needs a decision before it is implemented.
 | Event handling fairness | Keep 512 events per connection; drain connections round-robin so one flooded server cannot delay another | Measured: a single overloaded connection builds about 1–2 s of worker-side lag. |
 | Redraw rate under traffic | Coalesce redraws caused by incoming lines (for example at most 30 per second while not interacting) | 200 lines/s costs 16 % of a core when drawn versus 2–3 % when hidden. Needs a decision because it trades latency for CPU. |
 | Rosters | Keep one copy per channel, or bound the extra copies | Rosters are stored three times today; large channels multiply this with every added server. |
-| Combined subwindow | Bound the rebuild work (incremental merge) rather than the row count | Every render after new messages scans up to 1,000 lines of every other conversation; cost grows with conversations (not measured beyond 10). |
 | Image fetch | HTTP(S) only; at most a few concurrent fetches app-wide (for example 4) and per server (for example 2); a bounded queue that drops requests for rows scrolled out of view; body size and redirect limits | Fetching must never grow without bound during floods of links. |
 | Decoded image cache | Budget in decoded bytes (width × height × 4), not in entries (for example 64 MiB), with a per-image pixel limit (for example 4096 × 4096); GPU texture bytes counted against the same or a separate budget | Compressed size says little about memory; the settings window alone costs about 28 MiB of footprint, so GPU-side memory is significant. |
 | Icons | A separate, small decoded-byte budget | Icons are many and small; they must not evict previews or the reverse. |
@@ -335,7 +376,8 @@ Observed while measuring; each is a separate task if pursued:
 - Coalesce redraws triggered by incoming traffic (see the redraw candidate
   above).
 - Format wire diagnostics lazily.
-- Make the combined-subwindow rebuild incremental.
+- Make the combined-subwindow rebuild incremental (the heap merge already
+  bounds it by the rows shown; an incremental update would avoid it too).
 - Send roster deltas instead of full NAMES snapshots on JOIN/PART in large
   channels, and remove duplicate roster copies.
 - Drop per-conversation UI state (`main_lists`, draft inputs without text)
