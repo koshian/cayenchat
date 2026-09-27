@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=CayenChat
+Comment=Modern IRC client with IRCv3 support
+Exec=cayenchat
+Icon=cayenchat
+Terminal=false
+Categories=Network;Chat;IRCClient;
+StartupNotify=true
