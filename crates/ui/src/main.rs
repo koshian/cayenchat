@@ -2567,6 +2567,7 @@ impl ChatWindow {
             Event::Disconnected(reason) | Event::Refused(reason) => {
                 self.record_disconnect(network, reason);
             }
+            Event::UserAvatar { .. } | Event::AvatarMoved { .. } | Event::AvatarsReset => {}
         }
     }
 
