@@ -7,11 +7,16 @@ mod input;
 mod localization;
 mod log_list;
 mod menu_bar;
+mod notifier;
 mod secrets;
 mod theme;
 mod whois;
 
-use cayenchat_app::{AppState, Command, ConnectionStatus, Selection, attachments::AttachmentFlow};
+use cayenchat_app::{
+    AppState, Command, ConnectionStatus, Selection,
+    attachments::AttachmentFlow,
+    notifications::{self, BurstLimiter, NotificationRules, Trigger},
+};
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
     WhoisInfo, WireDirection, valid_channel,
@@ -19,13 +24,14 @@ use cayenchat_irc_core::{
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore, DarkColors,
-    Language, LinuxDisplay, Secret, SecretKey, Settings, TextEncoding, TextKeyTheme, ThemeMode,
-    color_value,
+    Language, LinuxDisplay, Notifications, Secret, SecretKey, Settings, TextEncoding, TextKeyTheme,
+    ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
 use localization::Localizer;
 use log_list::LogList;
+use notifier::{DesktopNotification, Notifier};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
@@ -120,6 +126,8 @@ struct SettingsForm {
     channel_font: Entity<TextInput>,
     input_font: Entity<TextInput>,
     time_font: Entity<TextInput>,
+    /// Comma-separated highlight words.
+    highlight_words: Entity<TextInput>,
 }
 
 impl SettingsForm {
@@ -276,6 +284,12 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            highlight_words: field(
+                &i18n.text("highlight_words_placeholder"),
+                &values.notifications.highlight_words.join(", "),
+                false,
+                cx,
+            ),
             server_list_open: false,
             encoding_list_open: false,
             values,
@@ -329,6 +343,8 @@ impl SettingsForm {
             },
         };
         settings.appearance.validate()?;
+        settings.notifications.highlight_words =
+            notifications::parse_highlight_words(self.highlight_words.read(cx).text());
         Ok(settings)
     }
 
@@ -559,6 +575,12 @@ struct ChatWindow {
     image_provider: Option<String>,
     /// Replaces the configured uploader; tests use a fake one.
     uploader_override: Option<Arc<dyn cayenchat_upload::ExternalUploader>>,
+    notifier: Notifier,
+    notification_rules: NotificationRules,
+    notification_burst: BurstLimiter,
+    /// Whether the chat window has keyboard focus; messages in the selected
+    /// conversation of a focused window are already visible.
+    window_active: bool,
     #[cfg(test)]
     pane_renders: usize,
 }
@@ -648,6 +670,7 @@ enum SettingsTab {
     Connection,
     Appearance,
     Keyboard,
+    Notifications,
     ImageUpload,
     Credentials,
 }
@@ -791,6 +814,10 @@ impl ChatWindow {
             attachments: AttachmentFlow::default(),
             image_provider: saved.image_upload.provider.clone(),
             uploader_override: None,
+            notifier: Notifier::new(),
+            notification_rules: notification_rules(&saved.notifications),
+            notification_burst: BurstLimiter::default(),
+            window_active: window.is_window_active(),
             #[cfg(test)]
             pane_renders: 0,
         };
@@ -801,7 +828,48 @@ impl ChatWindow {
             theme::apply(this.theme_mode, &this.appearance, cx);
         })
         .detach();
+        cx.observe_window_activation(window, |this, window, _| {
+            this.window_active = window.is_window_active();
+        })
+        .detach();
         this
+    }
+
+    /// Shows a desktop notification for an incoming message when the rules
+    /// ask for one and the message is not already in front of the user.
+    fn notify_message(&mut self, channel: Option<&str>, sender: &str, text: &str, notice: bool) {
+        let Some(trigger) = self.notification_rules.trigger(
+            self.own_nickname.as_deref(),
+            sender,
+            text,
+            channel.is_some(),
+            notice,
+        ) else {
+            return;
+        };
+        // Private messages have no pane yet and appear in the server log.
+        let visible = self.window_active
+            && match (channel, self.state.selected_channel()) {
+                (Some(channel), Some(selected)) => selected.name.eq_ignore_ascii_case(channel),
+                (None, None) => true,
+                _ => false,
+            };
+        if visible || !self.notification_burst.allow(Instant::now()) {
+            return;
+        }
+        let summary = match (trigger, channel) {
+            (Trigger::Highlight, Some(channel)) => self.i18n.format(
+                "notification_highlight_title",
+                &[("channel", channel), ("sender", sender)],
+            ),
+            _ => self
+                .i18n
+                .format("notification_private_title", &[("sender", sender)]),
+        };
+        self.notifier.show(DesktopNotification {
+            summary,
+            body: notifications::body_text(sender, text),
+        });
     }
 
     fn apply_appearance(
@@ -1702,6 +1770,7 @@ impl ChatWindow {
                 text,
                 notice,
             } => {
+                self.notify_message(Some(&channel), &sender, &text, notice);
                 self.state
                     .append_channel_message(network, &channel, &sender, &text, notice);
             }
@@ -1718,6 +1787,7 @@ impl ChatWindow {
                 text,
                 notice,
             } => {
+                self.notify_message(None, &sender, &text, notice);
                 // Private conversations have no pane yet; keep them in the
                 // server log as before.
                 let line = if notice {
@@ -2021,8 +2091,10 @@ impl SettingsWindow {
             let language = self.settings.values.language;
             let shortcuts = ShortcutPrefs::from(&self.settings.values);
             let provider = self.settings.values.image_upload.provider.clone();
+            let rules = notification_rules(&self.settings.values.notifications);
             let _ = self.owner.update(cx, |owner, window, cx| {
                 owner.image_provider = provider;
+                owner.notification_rules = rules;
                 apply_shortcuts(shortcuts, cx);
                 owner.apply_appearance(appearance, mode, cx);
                 owner.apply_language(language, window, cx);
@@ -3027,6 +3099,115 @@ impl SettingsWindow {
             )
     }
 
+    fn notification_toggle(
+        &self,
+        id: &'static str,
+        label_key: &str,
+        get: fn(&Notifications) -> bool,
+        toggle: fn(&mut Notifications),
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = theme::current(cx);
+        div()
+            .id(id)
+            .ml(px(158.))
+            .flex()
+            .items_center()
+            .gap_2()
+            .when(!enabled, |d| d.text_color(theme.text_secondary))
+            .when(enabled, |d| d.cursor_pointer())
+            .child(if get(&self.settings.values.notifications) {
+                "☑"
+            } else {
+                "☐"
+            })
+            .child(self.i18n.text(label_key))
+            .when(enabled, |d| {
+                d.on_click(cx.listener(move |this, _, _, cx| {
+                    toggle(&mut this.settings.values.notifications);
+                    cx.notify();
+                }))
+            })
+    }
+
+    /// Desktop notification preferences, shown through the operating
+    /// system's notification service.
+    fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
+        let enabled = self.settings.values.notifications.enabled;
+        let hint = |key: &str| {
+            div()
+                .ml(px(158.))
+                .text_color(theme.text_secondary)
+                .child(self.i18n.text(key))
+        };
+        div()
+            .w(px(680.))
+            .p_4()
+            .mb_4()
+            .bg(theme.surface)
+            .border_1()
+            .border_t_0()
+            .border_color(theme.border)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("notifications_tab")),
+            )
+            .child(self.notification_toggle(
+                "notifications-enabled",
+                "notifications_enabled",
+                |n| n.enabled,
+                |n| n.enabled = !n.enabled,
+                true,
+                cx,
+            ))
+            .child(self.notification_toggle(
+                "notify-highlights",
+                "notify_highlights",
+                |n| n.highlights,
+                |n| n.highlights = !n.highlights,
+                enabled,
+                cx,
+            ))
+            .child(self.notification_toggle(
+                "notify-private-messages",
+                "notify_private_messages",
+                |n| n.private_messages,
+                |n| n.private_messages = !n.private_messages,
+                enabled,
+                cx,
+            ))
+            .child(settings_field(
+                &self.i18n.text("highlight_words"),
+                self.settings.highlight_words.clone(),
+            ))
+            .child(hint("highlight_words_hint"))
+            .child(hint(if cfg!(target_os = "macos") {
+                "notifications_hint_macos"
+            } else {
+                "notifications_hint"
+            }))
+            .when_some(self.feedback.clone(), |d, feedback| {
+                d.child(div().text_color(theme.warning).child(feedback))
+            })
+            .child(
+                div()
+                    .id("save-notifications")
+                    .px_3()
+                    .py_1()
+                    .bg(theme.selected)
+                    .cursor_pointer()
+                    .child(self.i18n.text("save_and_apply"))
+                    .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
+            )
+    }
+
     fn settings_tab(
         &self,
         tab: SettingsTab,
@@ -3073,6 +3254,12 @@ impl SettingsWindow {
                 d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
             })
             .child(self.settings_tab(
+                SettingsTab::Notifications,
+                "notifications-tab",
+                "notifications_tab",
+                cx,
+            ))
+            .child(self.settings_tab(
                 SettingsTab::ImageUpload,
                 "image-upload-tab",
                 "image_upload_tab",
@@ -3088,6 +3275,7 @@ impl SettingsWindow {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
+            SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
         };
@@ -3117,6 +3305,15 @@ impl SettingsWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
             .on_action(cx.listener(Self::copy_diagnostics_action))
+    }
+}
+
+fn notification_rules(settings: &Notifications) -> NotificationRules {
+    NotificationRules {
+        enabled: settings.enabled,
+        highlights: settings.highlights,
+        private_messages: settings.private_messages,
+        highlight_words: settings.highlight_words.clone(),
     }
 }
 
@@ -4906,6 +5103,91 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = Settings {
+            channels: "#a,#b".into(),
+            language: cayenchat_storage::Language::English,
+            ..Settings::default()
+        };
+        settings.notifications.highlight_words = vec!["deploy".into()];
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let message = |channel: &str, text: &str| Event::ChannelMessage {
+            channel: channel.into(),
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            chat.state.dispatch(cayenchat_app::Command::SelectChannel(
+                chat.state.conversations()[0].id,
+            ));
+            chat.window_active = true;
+            chat.handle_events(
+                vec![
+                    message("#a", "alice: visible already"),
+                    message("#b", "hello"),
+                    message("#b", "alice: ping"),
+                    message("#b", "Deploy done"),
+                    Event::PrivateMessage {
+                        sender: "carol".into(),
+                        text: "psst".into(),
+                        notice: false,
+                    },
+                    Event::PrivateMessage {
+                        sender: "NickServ".into(),
+                        text: "notice".into(),
+                        notice: true,
+                    },
+                ],
+                false,
+                cx,
+            );
+            chat.window_active = false;
+            chat.handle_events(vec![message("#a", "alice: away now")], false, cx);
+            let summaries: Vec<_> = chat
+                .notifier
+                .shown
+                .iter()
+                .map(|n| (n.summary.as_str(), n.body.as_str()))
+                .collect();
+            assert_eq!(
+                summaries,
+                [
+                    ("bob in #b", "alice: ping"),
+                    ("bob in #b", "Deploy done"),
+                    ("carol (private message)", "psst"),
+                    ("bob in #a", "alice: away now"),
+                ]
+            );
+        });
+    }
 
     #[gpui::test]
     fn safe_channel_events_keep_messages_and_members_in_the_channel(cx: &mut TestAppContext) {

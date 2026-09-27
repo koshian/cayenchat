@@ -234,5 +234,16 @@
   "upload_not_image": "アップロードできるのは PNG、JPEG、GIF、WebP、BMP、TIFF、HEIC/HEIF、AVIF 画像だけです。",
   "upload_one_file": "画像は 1 つずつドロップしてください。",
   "upload_read_failed": "ファイルを読めませんでした（{error}）。",
-  "upload_drop_hint": "画像をドロップしてアップロード"
+  "upload_drop_hint": "画像をドロップしてアップロード",
+  "notifications_tab": "通知",
+  "notifications_enabled": "デスクトップ通知を表示する",
+  "notify_highlights": "チャンネルで自分のニックネームかハイライト語が含まれたとき",
+  "notify_private_messages": "プライベートメッセージを受け取ったとき",
+  "highlight_words": "ハイライト語",
+  "highlight_words_placeholder": "単語, 別の単語",
+  "highlight_words_hint": "カンマ区切り。大文字小文字を区別せず、メッセージ中のどこに含まれても一致します。",
+  "notifications_hint": "チャットウィンドウが前面にあり、そのチャンネルを表示中のメッセージは通知しません。",
+  "notifications_hint_macos": "チャットウィンドウが前面にあり、そのチャンネルを表示中のメッセージは通知しません。macOS ではアプリバンドルからのみ通知でき、システム設定の「通知」で許可が必要です。",
+  "notification_highlight_title": "{channel} の {sender}",
+  "notification_private_title": "{sender}（プライベートメッセージ）"
 }
