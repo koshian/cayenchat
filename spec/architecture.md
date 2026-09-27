@@ -365,7 +365,16 @@ the server's row and registration closes it. A new row takes focus unless
 another nickname field already has it, and Enter submits the focused row. Menu commands
 (Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server; the
 settings window's Connect and Disconnect act on the server being
-edited. Settings save automatically as they change (D021); saving adds,
+edited. A new server, blank or from a preset, starts with an empty
+nickname, `USER` username, auto-join channels and SASL account, SASL,
+password saving and startup connection off, IRCv3 options off, and the
+transport defaults (port 6667, no TLS, certificate verification on, UTF-8);
+a preset fills only its host. Choosing another server in the Connection or
+IRCv3 tab (`SettingsForm::switch_server`) first keeps the shown server's
+edits in the form's values and stores its typed passwords under its own
+keys, then fills every server field from the chosen profile alone, so a
+pending autosave can only see each server's own values.
+Settings save automatically as they change (D021); saving adds,
 renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
 Connecting a server replaces only that server's conversations with its

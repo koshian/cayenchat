@@ -141,21 +141,15 @@ struct SettingsForm {
 }
 
 impl SettingsForm {
-    fn new(
-        values: Settings,
-        i18n: &Localizer,
-        store: &CredentialStore,
-        cx: &mut Context<SettingsWindow>,
-    ) -> Self {
+    fn new(values: Settings, i18n: &Localizer, store: &CredentialStore, cx: &mut App) -> Self {
         let (saved_server_password, saved_sasl_password) = values
             .selected_profile()
             .map_or((false, false), |profile| saved_passwords(profile, store));
         let empty = ServerProfile::default();
         let profile = values.selected_profile().unwrap_or(&empty);
-        let field =
-            |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
-                cx.new(|cx| TextInput::new_settings_field(placeholder, value, secret, cx))
-            };
+        let field = |placeholder: &str, value: &str, secret: bool, cx: &mut App| {
+            cx.new(|cx| TextInput::new_settings_field(placeholder, value, secret, cx))
+        };
         Self {
             custom_host: field(
                 &i18n.text("server_host_placeholder"),
@@ -440,7 +434,7 @@ impl SettingsForm {
         store: &CredentialStore,
         i18n: &Localizer,
         window: Option<&Window>,
-        cx: &mut Context<SettingsWindow>,
+        cx: &mut App,
     ) -> Result<(), String> {
         let Some(profile) = self.values.selected_profile().cloned() else {
             return Ok(());
@@ -475,6 +469,75 @@ impl SettingsForm {
             });
         }
         Ok(())
+    }
+}
+
+impl SettingsForm {
+    /// Shows another server: `change` selects it (or adds it). The shown
+    /// server's edits are kept in `values` first, and its typed passwords
+    /// are stored under its own keys (switching leaves the field), so
+    /// nothing typed for one server can be saved into the next.
+    fn switch_server(
+        &mut self,
+        change: impl FnOnce(&mut Settings),
+        store: &CredentialStore,
+        i18n: &Localizer,
+        cx: &mut App,
+    ) -> Result<(), String> {
+        let mut settings = self.snapshot(cx)?;
+        // A server without a host is not saved, so neither are its passwords.
+        if settings
+            .selected_profile()
+            .is_some_and(|profile| !profile.host.is_empty())
+        {
+            self.persist_passwords(store, i18n, None, cx)?;
+        }
+        change(&mut settings);
+        self.values = settings;
+        self.show_selected(store, i18n, cx);
+        Ok(())
+    }
+
+    /// Fills the server fields from the selected profile alone; password
+    /// fields are emptied and say whether that server has saved passwords.
+    fn show_selected(&mut self, store: &CredentialStore, i18n: &Localizer, cx: &mut App) {
+        let profile = self.values.selected_profile().cloned().unwrap_or_default();
+        self.custom_host
+            .update(cx, |field, cx| field.set_text(&profile.host, cx));
+        self.port.update(cx, |field, cx| {
+            field.set_text(&profile.port.to_string(), cx)
+        });
+        for (field, value) in [
+            (&self.nickname, &profile.nickname),
+            (&self.username, &profile.username),
+            (&self.channels, &profile.channels),
+            (&self.sasl_username, &profile.sasl_username),
+        ] {
+            field.update(cx, |field, cx| field.set_text(value, cx));
+        }
+        let (saved_server, saved_sasl) = saved_passwords(&profile, store);
+        self.saved_server_password = saved_server;
+        self.saved_sasl_password = saved_sasl;
+        for (field, saved, key) in [
+            (
+                &self.server_password,
+                saved_server,
+                "server_password_placeholder",
+            ),
+            (&self.sasl_password, saved_sasl, "sasl_password"),
+        ] {
+            let placeholder = i18n.text(if saved {
+                "password_saved_placeholder"
+            } else {
+                key
+            });
+            field.update(cx, |field, cx| {
+                field.set_text("", cx);
+                field.set_placeholder(&placeholder, cx);
+            });
+        }
+        self.server_list_open = false;
+        self.encoding_list_open = false;
     }
 }
 
@@ -3043,80 +3106,34 @@ impl SettingsWindow {
     }
 
     fn show_selected_server(&mut self, cx: &mut Context<Self>) {
-        let profile = self
-            .settings
-            .values
-            .selected_profile()
-            .cloned()
-            .unwrap_or_default();
         self.settings
-            .custom_host
-            .update(cx, |field, cx| field.set_text(&profile.host, cx));
-        self.settings.port.update(cx, |field, cx| {
-            field.set_text(&profile.port.to_string(), cx)
-        });
-        for (field, value) in [
-            (&self.settings.nickname, &profile.nickname),
-            (&self.settings.username, &profile.username),
-            (&self.settings.channels, &profile.channels),
-            (&self.settings.sasl_username, &profile.sasl_username),
-        ] {
-            field.update(cx, |field, cx| field.set_text(value, cx));
-        }
-        let (saved_server, saved_sasl) = saved_passwords(&profile, &secrets::store(cx));
-        self.settings.saved_server_password = saved_server;
-        self.settings.saved_sasl_password = saved_sasl;
-        for (field, saved, key) in [
-            (
-                &self.settings.server_password,
-                saved_server,
-                "server_password_placeholder",
-            ),
-            (&self.settings.sasl_password, saved_sasl, "sasl_password"),
-        ] {
-            let placeholder = self.i18n.text(if saved {
-                "password_saved_placeholder"
-            } else {
-                key
-            });
-            field.update(cx, |field, cx| {
-                field.set_text("", cx);
-                field.set_placeholder(&placeholder, cx);
-            });
-        }
-        self.settings.server_list_open = false;
-        self.settings.encoding_list_open = false;
+            .show_selected(&secrets::store(cx), &self.i18n, cx);
         self.feedback = None;
         cx.notify();
     }
 
     fn select_server(&mut self, id: String, cx: &mut Context<Self>) {
-        match self.settings.snapshot(cx) {
-            Ok(mut settings) => {
-                settings.selected_server = id;
-                self.settings.values = settings;
-                self.show_selected_server(cx);
-            }
-            Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
-            }
-        }
+        self.switch_server(move |settings| settings.selected_server = id, cx);
     }
 
     /// Adds a server, blank or filled in from a preset's `host`.
     fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
-        match self.settings.snapshot(cx) {
-            Ok(mut settings) => {
-                settings.add_server(host);
-                self.settings.values = settings;
-                self.show_selected_server(cx);
-            }
-            Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
-            }
+        let host = host.to_owned();
+        self.switch_server(
+            move |settings| {
+                settings.add_server(&host);
+            },
+            cx,
+        );
+    }
+
+    fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        let store = secrets::store(cx);
+        match self.settings.switch_server(change, &store, &self.i18n, cx) {
+            Ok(()) => self.feedback = None,
+            Err(error) => self.feedback = Some(error),
         }
+        cx.notify();
     }
 
     /// Removes the selected server. Removal is saved at once, disconnecting
@@ -6322,6 +6339,333 @@ mod startup_tests {
         forget_removed_profiles(&previous, &next, &store);
         assert!(store.get(&removed.server_password_key()).unwrap().is_none());
         assert!(store.get(&kept).unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod server_settings_tests {
+    use super::{Localizer, SettingsForm, saved_connection_config};
+    use cayenchat_irc_core::Connection;
+    use cayenchat_storage::{
+        CredentialBackendKind, CredentialStore, Ircv3Preferences, Language, Secret, Settings,
+        credentials::MemoryBackend,
+    };
+    use gpui::{Entity, TestAppContext};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::Arc,
+        thread,
+        time::Duration,
+    };
+
+    use crate::input::TextInput;
+
+    fn memory_store() -> CredentialStore {
+        CredentialStore::with_backend(Arc::new(MemoryBackend::new(CredentialBackendKind::System)))
+    }
+
+    /// Server A, fully configured, the only server so far.
+    fn configured_a() -> Settings {
+        let mut settings = Settings::default();
+        settings.language = Language::English;
+        let a = settings.add_server("a.example");
+        a.port = 6697;
+        a.use_tls = true;
+        a.nickname = "alice".into();
+        a.username = "ident-a".into();
+        a.channels = "#a1,#a2".into();
+        a.sasl_enabled = true;
+        a.sasl_username = "account-a".into();
+        a.remember_passwords = true;
+        a.connect_on_startup = true;
+        a.ircv3 = Ircv3Preferences {
+            message_tags: true,
+            server_time: true,
+            batch: true,
+        };
+        settings
+    }
+
+    fn text(field: &Entity<TextInput>, cx: &TestAppContext) -> String {
+        cx.read(|cx| field.read(cx).text().to_owned())
+    }
+
+    fn type_into(field: &Entity<TextInput>, value: &str, cx: &mut TestAppContext) {
+        cx.update(|cx| field.update(cx, |field, cx| field.set_text(value, cx)));
+    }
+
+    fn form(settings: Settings, store: &CredentialStore, cx: &mut TestAppContext) -> SettingsForm {
+        let i18n = Localizer::new(Language::English);
+        cx.update(|cx| SettingsForm::new(settings, &i18n, store, cx))
+    }
+
+    fn switch(
+        form: &mut SettingsForm,
+        store: &CredentialStore,
+        cx: &mut TestAppContext,
+        change: impl FnOnce(&mut Settings),
+    ) {
+        let i18n = Localizer::new(Language::English);
+        cx.update(|cx| form.switch_server(change, store, &i18n, cx))
+            .unwrap();
+    }
+
+    fn server_fields(form: &SettingsForm, cx: &TestAppContext) -> [String; 7] {
+        [
+            text(&form.custom_host, cx),
+            text(&form.port, cx),
+            text(&form.nickname, cx),
+            text(&form.username, cx),
+            text(&form.channels, cx),
+            text(&form.sasl_username, cx),
+            text(&form.server_password, cx) + &text(&form.sasl_password, cx),
+        ]
+    }
+
+    #[gpui::test]
+    fn a_server_added_after_configuring_another_starts_blank(cx: &mut TestAppContext) {
+        let store = memory_store();
+        let settings = configured_a();
+        let a_id = settings.selected_server.clone();
+        store
+            .set(
+                &settings.selected_profile().unwrap().sasl_password_key(),
+                &Secret::new("a-secret"),
+            )
+            .unwrap();
+        let mut form = form(settings, &store, cx);
+        // An edit to A that autosave has not written yet.
+        type_into(&form.channels, "#a1,#a2,#a3", cx);
+
+        switch(&mut form, &store, cx, |settings| {
+            settings.add_server("");
+        });
+        assert_eq!(
+            server_fields(&form, cx),
+            ["", "6667", "", "", "", "", ""].map(str::to_owned)
+        );
+        assert!(!form.saved_server_password && !form.saved_sasl_password);
+        let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
+        let b = settings.selected_profile().unwrap();
+        assert_ne!(b.id, a_id);
+        assert!(b.nickname.is_empty() && b.username.is_empty() && b.channels.is_empty());
+        assert!(b.sasl_username.is_empty() && !b.sasl_enabled);
+        assert!(!b.remember_passwords && !b.connect_on_startup && !b.use_tls);
+        assert!(b.verify_tls_certificates, "transport defaults are kept");
+        assert_eq!(b.ircv3, Ircv3Preferences::default());
+        assert!(store.get(&b.sasl_password_key()).unwrap().is_none());
+        assert_eq!(settings.profile(&a_id).unwrap().channels, "#a1,#a2,#a3");
+
+        // A preset fills only its documented host.
+        let mut form = self::form(configured_a(), &store, cx);
+        switch(&mut form, &store, cx, |settings| {
+            settings.add_server(cayenchat_storage::PRESETS[0].host);
+        });
+        assert_eq!(
+            server_fields(&form, cx),
+            ["irc.ircnet.ne.jp", "6667", "", "", "", "", ""].map(str::to_owned)
+        );
+        let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
+        let preset = settings.selected_profile().unwrap();
+        assert!(preset.nickname.is_empty() && preset.channels.is_empty());
+        assert_eq!(preset.ircv3, Ircv3Preferences::default());
+    }
+
+    #[gpui::test]
+    fn switching_with_autosave_pending_keeps_each_servers_values(cx: &mut TestAppContext) {
+        let store = memory_store();
+        let mut settings = configured_a();
+        let a_id = settings.selected_server.clone();
+        let b = settings.add_server("b.example");
+        b.use_tls = true;
+        b.nickname = "bob".into();
+        b.username = "ident-b".into();
+        b.channels = "#b1".into();
+        b.remember_passwords = true;
+        let b_id = b.id.clone();
+        settings.selected_server = a_id.clone();
+        let (a_key, b_key) = (
+            settings.profile(&a_id).unwrap().server_password_key(),
+            settings.profile(&b_id).unwrap().server_password_key(),
+        );
+        let mut form = form(settings, &store, cx);
+
+        // Edits and a typed password for A, then B is picked before the
+        // delayed autosave runs.
+        type_into(&form.channels, "#a-edited", cx);
+        type_into(&form.server_password, "a-typed", cx);
+        switch(&mut form, &store, cx, |settings| {
+            settings.selected_server = b_id.clone()
+        });
+        assert_eq!(
+            server_fields(&form, cx),
+            ["b.example", "6667", "bob", "ident-b", "#b1", "", ""].map(str::to_owned)
+        );
+        assert_eq!(
+            store.get(&a_key).unwrap().map(|s| s.expose().to_owned()),
+            Some("a-typed".to_owned()),
+            "the password went to the server it was typed for"
+        );
+        assert!(store.get(&b_key).unwrap().is_none());
+        assert!(!form.saved_server_password, "B has no saved password");
+
+        // The pending autosave now snapshots the form showing B.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let pending = cx.read(|cx| form.snapshot(cx)).unwrap();
+        cayenchat_storage::save_to(&path, &pending).unwrap();
+        let reloaded = cayenchat_storage::load_from(&path).unwrap().unwrap();
+        let (a, b) = (
+            reloaded.profile(&a_id).unwrap(),
+            reloaded.profile(&b_id).unwrap(),
+        );
+        assert_eq!(
+            (a.nickname.as_str(), a.channels.as_str()),
+            ("alice", "#a-edited")
+        );
+        assert_eq!((b.nickname.as_str(), b.channels.as_str()), ("bob", "#b1"));
+        assert_eq!(
+            (a.username.as_str(), b.username.as_str()),
+            ("ident-a", "ident-b")
+        );
+        assert_eq!(
+            (a.sasl_username.as_str(), b.sasl_username.as_str()),
+            ("account-a", "")
+        );
+        assert!(a.connect_on_startup && !b.connect_on_startup);
+        assert!(a.ircv3.batch && !b.ircv3.batch);
+
+        // Edit B, switch back: A shows its own values and saved password.
+        type_into(&form.channels, "#b-edited", cx);
+        switch(&mut form, &store, cx, |settings| {
+            settings.selected_server = a_id.clone()
+        });
+        assert_eq!(
+            server_fields(&form, cx),
+            [
+                "a.example",
+                "6697",
+                "alice",
+                "ident-a",
+                "#a-edited",
+                "account-a",
+                ""
+            ]
+            .map(str::to_owned)
+        );
+        assert!(form.saved_server_password);
+        let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
+        assert_eq!(settings.profile(&b_id).unwrap().channels, "#b-edited");
+        assert_eq!(settings.profile(&a_id).unwrap().channels, "#a-edited");
+    }
+
+    /// Accepts one client, registers it and returns every line it sent up
+    /// to and including its JOIN lines.
+    fn fixture(listener: TcpListener, joins: usize) -> thread::JoinHandle<Vec<String>> {
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut lines = Vec::new();
+            let mut read = |lines: &mut Vec<String>| {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                lines.push(line.trim_end().to_owned());
+                lines.last().unwrap().clone()
+            };
+            while !read(&mut lines).starts_with("USER ") {}
+            let nick = lines
+                .iter()
+                .find_map(|line| line.strip_prefix("NICK "))
+                .unwrap()
+                .to_owned();
+            socket
+                .write_all(
+                    format!(":srv 001 {nick} :Welcome\r\n:srv 376 {nick} :End\r\n").as_bytes(),
+                )
+                .unwrap();
+            let mut seen = 0;
+            while seen < joins {
+                if read(&mut lines).starts_with("JOIN ") {
+                    seen += 1;
+                }
+            }
+            lines
+        })
+    }
+
+    #[gpui::test]
+    fn two_servers_connect_with_their_own_identity_and_joins(cx: &mut TestAppContext) {
+        let store = memory_store();
+        let (listener_a, listener_b) = (
+            TcpListener::bind("127.0.0.1:0").unwrap(),
+            TcpListener::bind("127.0.0.1:0").unwrap(),
+        );
+        let (port_a, port_b) = (
+            listener_a.local_addr().unwrap().port(),
+            listener_b.local_addr().unwrap().port(),
+        );
+        // Configure A, add B through the form, fill B, and save.
+        let mut settings = Settings::default();
+        settings.language = Language::English;
+        let a = settings.add_server("127.0.0.1");
+        a.port = port_a;
+        a.nickname = "alice".into();
+        a.username = "ident-a".into();
+        a.channels = "#a1,#a2".into();
+        let a_id = a.id.clone();
+        let mut form = form(settings, &store, cx);
+        switch(&mut form, &store, cx, |settings| {
+            settings.add_server("");
+        });
+        assert_eq!(text(&form.channels, cx), "");
+        type_into(&form.custom_host, "127.0.0.1", cx);
+        type_into(&form.port, &port_b.to_string(), cx);
+        type_into(&form.nickname, "bob", cx);
+        type_into(&form.username, "ident-b", cx);
+        type_into(&form.channels, "#b1", cx);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let saved = cx.read(|cx| form.snapshot(cx)).unwrap();
+        cayenchat_storage::save_to(&path, &saved).unwrap();
+        let reloaded = cayenchat_storage::load_from(&path).unwrap().unwrap();
+        let b_id = saved.selected_server.clone();
+
+        let config = |id: &str| {
+            saved_connection_config(reloaded.profile(id).unwrap(), Language::English, &store)
+                .unwrap()
+        };
+        let (config_a, config_b) = (config(&a_id), config(&b_id));
+        assert_eq!(config_a.channels, ["#a1", "#a2"]);
+        assert_eq!(config_b.channels, ["#b1"]);
+
+        let (server_a, server_b) = (fixture(listener_a, 2), fixture(listener_b, 1));
+        let (connection_a, connection_b) = (
+            Connection::connect(config_a).unwrap(),
+            Connection::connect(config_b).unwrap(),
+        );
+        let (lines_a, lines_b) = (server_a.join().unwrap(), server_b.join().unwrap());
+        let _ = connection_a.disconnect();
+        let _ = connection_b.disconnect();
+        let pick = |lines: &[String], prefix: &str| -> Vec<String> {
+            lines
+                .iter()
+                .filter(|line| line.starts_with(prefix))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(pick(&lines_a, "NICK "), ["NICK alice"]);
+        assert_eq!(pick(&lines_b, "NICK "), ["NICK bob"]);
+        assert!(pick(&lines_a, "USER ")[0].starts_with("USER ident-a "));
+        assert!(pick(&lines_b, "USER ")[0].starts_with("USER ident-b "));
+        assert_eq!(pick(&lines_a, "JOIN "), ["JOIN #a1", "JOIN #a2"]);
+        assert_eq!(pick(&lines_b, "JOIN "), ["JOIN #b1"]);
+        for lines in [&lines_a, &lines_b] {
+            assert!(pick(lines, "PASS").is_empty() && pick(lines, "AUTHENTICATE").is_empty());
+        }
     }
 }
 

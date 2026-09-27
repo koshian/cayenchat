@@ -409,9 +409,21 @@ Every server profile is a network in the channel tree, shown whether or not it
 is connected, and any number of them can be connected at the same time
 (LimeChat's model). Settings version 13 moves the nickname, `USER` username,
 auto-join channels, SASL account and startup connection into each profile, so
-each network has its own identity; versions 1–12 copy their single identity
-into every profile, keep SASL on only for TLS profiles and keep startup
-connection only for the previously selected server.
+each network has its own identity. Versions 1–12 give their single
+identity (nickname, username, channels, SASL account and SASL, startup
+connection) only to the server it was used with: the previously selected
+server, or the only server when the selection is gone. Other servers keep
+their connection details, password-saving choice and stored credentials
+(keyed by profile ID) but start without a nickname, username, channels or
+account, to be entered for them. SASL stays on only with TLS.
+
+2026-09-27: until then migration copied the shared identity into every
+profile, so every server auto-joined the same channels and used the same
+account; that was the reported "shared auto-join channels" (the settings
+window itself kept values per server). Files already migrated (version 13
+and later) are left as they are: identical values on several servers may
+be intended, so they are not cleared or second-guessed. New servers always
+start blank; a preset fills only its host.
 
 The IRCnet servers are not stored by default: they are suggestions offered
 when adding a server (`storage::PRESETS`), because unused built-in servers in
@@ -552,8 +564,9 @@ Exceptions keep a half-finished edit from doing damage:
 
 - A typed password is stored when its field loses focus, not while it is
   being typed, because storing empties the field. Closing the window (close
-  button or Back) and quitting the app store every typed password, focused or
-  not.
+  button or Back), quitting the app and choosing another server store every
+  typed password, focused or not; a server switch stores them under the
+  server they were typed for (not yet for a server without a host).
 - While the selected server has no host nothing is saved and the window says
   a host is needed, because saving would drop the server and forget its
   passwords.
