@@ -134,6 +134,12 @@ pub struct Appearance {
     /// Inline thumbnails of direct image links in the main channel log
     /// (version 14). Off by default, also for settings saved before it existed.
     pub image_previews: bool,
+    /// Small user avatars beside main-log messages and in the member list.
+    /// Independent of `image_previews` and of any protocol option: IRC
+    /// avatars also need the server's experimental metadata opt-in. Added
+    /// after version 15 without a version change; files without it read as
+    /// off.
+    pub user_avatars: bool,
     pub main_log_font: String,
     pub sub_log_font: String,
     pub member_font: String,
@@ -183,6 +189,7 @@ impl Default for Appearance {
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
             image_previews: false,
+            user_avatars: false,
             main_log_font: String::new(),
             sub_log_font: String::new(),
             member_font: String::new(),
@@ -329,6 +336,12 @@ pub struct Ircv3Preferences {
     /// Request `batch`, so history batches are recognized. Added after
     /// version 15 without a version change: files without it read as off.
     pub batch: bool,
+    /// Request the experimental `draft/metadata-2` and subscribe to the
+    /// `avatar` key. Needs `batch`, which is never turned on implicitly.
+    /// Receiving avatar URLs is separate from showing them
+    /// (`Appearance::user_avatars`). Added without a version change like
+    /// `batch`; files without it read as off.
+    pub metadata: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1347,11 +1360,13 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false,
+                "metadata": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false,
+                "metadata": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
@@ -1362,6 +1377,10 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("batch");
+        old["servers"][0]["ircv3"]
+            .as_object_mut()
+            .unwrap()
+            .remove("metadata");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
         assert_eq!(loaded, settings);
@@ -1372,6 +1391,45 @@ mod tests {
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
         assert!(!loaded.servers[0].ircv3.batch && loaded.servers[1].ircv3.batch);
+
+        // Metadata (avatars) is per server and never turns batch on by itself.
+        settings.servers[0].ircv3.metadata = true;
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.servers[0].ircv3.metadata && !loaded.servers[0].ircv3.batch);
+        assert!(!loaded.servers[1].ircv3.metadata && loaded.servers[1].ircv3.batch);
+    }
+
+    #[test]
+    fn user_avatars_default_off_independently_of_previews_and_round_trip() {
+        let defaults = Settings::default();
+        assert!(!defaults.appearance.user_avatars);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // A file written before the field existed keeps its previews choice.
+        let mut old = serde_json::to_value(&defaults).unwrap();
+        old["appearance"]["image_previews"] = true.into();
+        old["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("user_avatars");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(settings.appearance.image_previews && !settings.appearance.user_avatars);
+
+        for (previews, avatars) in [(false, true), (true, true), (false, false)] {
+            settings.appearance.image_previews = previews;
+            settings.appearance.user_avatars = avatars;
+            save_to(&path, &settings).unwrap();
+            let loaded = load_from(&path).unwrap().unwrap();
+            assert_eq!(
+                (
+                    loaded.appearance.image_previews,
+                    loaded.appearance.user_avatars
+                ),
+                (previews, avatars)
+            );
+        }
     }
 
     #[test]

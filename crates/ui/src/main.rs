@@ -334,6 +334,7 @@ impl SettingsForm {
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
+            user_avatars: self.values.appearance.user_avatars,
             main_log_font: value(&self.main_log_font),
             sub_log_font: value(&self.sub_log_font),
             member_font: value(&self.member_font),
@@ -623,6 +624,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         message_tags: preferences.message_tags,
         server_time: preferences.server_time,
         batch: preferences.batch,
+        metadata: preferences.metadata,
     }
 }
 
@@ -3882,6 +3884,31 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("image_previews_hint")),
             )
+            .child(
+                div()
+                    .id("user-avatars")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.user_avatars,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("user_avatars"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.user_avatars;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("user_avatars_hint")),
+            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
@@ -6383,6 +6410,7 @@ mod server_settings_tests {
             message_tags: true,
             server_time: true,
             batch: true,
+            metadata: true,
         };
         settings
     }
@@ -6705,6 +6733,7 @@ mod pane_tests {
         settings.servers[1].username = "me".into();
         settings.servers[1].ircv3.server_time = true;
         settings.servers[1].ircv3.batch = true;
+        settings.servers[1].ircv3.metadata = true;
         let config = |settings: &Settings, index: usize| {
             crate::connection_config(
                 &settings.servers[index],
@@ -6721,6 +6750,7 @@ mod pane_tests {
                 message_tags: false,
                 server_time: true,
                 batch: true,
+                metadata: true,
             }
         );
         let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -6748,6 +6778,7 @@ mod pane_tests {
                     message_tags: true,
                     server_time: false,
                     batch: false,
+                    metadata: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );

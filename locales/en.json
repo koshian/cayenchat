@@ -111,6 +111,8 @@
   "alternate_rows": "Alternate row colors in logs",
   "image_previews": "Show previews of image links",
   "image_previews_hint": "Shows small thumbnails of direct PNG, JPEG, GIF and WebP links in the channel log. While on, CayenChat downloads the linked images for the lines on screen from their servers; the link text stays as it is.",
+  "user_avatars": "Show user avatars",
+  "user_avatars_hint": "Shows a small picture beside nicknames in the channel log and the member list when the network supplies one. While on, CayenChat downloads the pictures of the users on screen from their servers. On IRC, avatars also need \"User avatars (experimental)\" on the server's IRCv3 tab.",
   "member_list": "Member list",
   "channel_list": "Channel list",
   "draft_input": "Draft input",
@@ -264,5 +266,9 @@
   "ircv3_batch": "Message batches",
   "ircv3_batch_hint": "Receive grouped messages (batch), so history a server or bouncer replays (chathistory, znc.in/playback) is recognized and does not notify. Other kinds of batches are shown as usual.",
   "ircv3_legacy_encoding": "This server uses {encoding}. Message tags are not requested because tag values are UTF-8; server timestamps still work.",
-  "ircv3_next_connection": "Changes take effect the next time this server connects. A connected server is not reconnected."
+  "ircv3_next_connection": "Changes take effect the next time this server connects. A connected server is not reconnected.",
+  "ircv3_metadata": "User avatars (experimental)",
+  "ircv3_metadata_hint": "Receive the avatar addresses users publish (draft/metadata-2, avatar key only). This downloads no pictures; showing them is \"Show user avatars\" on the Appearance tab. The specification is still a draft, so servers may behave differently.",
+  "ircv3_metadata_needs_batch": "Needs \"Message batches\". Avatars are not requested until that is turned on as well; it is not turned on automatically.",
+  "ircv3_metadata_legacy": "With {encoding}, only avatar addresses written in plain ASCII are used."
 }
