@@ -187,7 +187,8 @@ settings default to System, the dark defaults and Wayland. Version 11 adds the
 USER), the credential backend choice and the image upload provider, and stops
 reading passwords from the file except to migrate them. Version 12 adds
 notification preferences (enabled, mentions, keyword alerts, keywords and
-private messages); older settings enable them all with no keywords. The UI keeps the
+private messages) and a highlight color to the light and dark pane colors;
+older settings enable them all with no keywords. The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -366,6 +367,14 @@ is selected. At most five notifications are shown per ten seconds so bouncer
 history playback cannot flood the desktop; the log and unread marks are
 unaffected. Showing can block (D-Bus, macOS delivery confirmation), so a
 dedicated thread does it; UI tests record notifications instead.
+
+The same matches are shown in the logs, whether or not notifications are on:
+`irc-core::text::mention_ranges` and `app::notifications::keyword_ranges`
+give byte ranges that the main and sub logs draw bold in the theme's highlight
+color (light `#D46A8E`, dark `#EFA0BE` by default, matching the pastel pane
+colors). A channel that receives a mention or keyword while it is not selected
+is recorded in `AppState::highlighted`, and the channel tree draws its name in
+the highlight color until it is selected.
 
 ## Credentials
 
