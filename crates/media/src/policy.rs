@@ -48,6 +48,31 @@ pub fn image_link(text: &str) -> Option<MediaRef> {
         .then_some(MediaRef::Link(url))
 }
 
+/// The size placeholder of the IRCv3 registry's `avatar` metadata key.
+pub const AVATAR_SIZE_PLACEHOLDER: &str = "{size}";
+
+/// Returns the media reference for an avatar URL a user explicitly
+/// published (for IRC, the `avatar` metadata value), with `{size}` replaced
+/// by `size` pixels, or `None` when it may not be fetched.
+///
+/// Unlike [`image_link`], no file extension is required: avatar endpoints
+/// often have none, and the URL was given as an image rather than found in
+/// chat text. Everything that keeps fetching safe still applies, here and
+/// for every redirect ([`check_request`]), and the response must still be
+/// a PNG, JPEG, GIF or WebP image.
+pub fn avatar_url(template: &str, size: u32) -> Option<MediaRef> {
+    if template.len() > MAX_URL_LEN {
+        return None;
+    }
+    let text = template.replace(AVATAR_SIZE_PLACEHOLDER, &size.to_string());
+    if text.len() > MAX_URL_LEN {
+        return None;
+    }
+    let url = Url::parse(&text).ok()?;
+    check_request(&url, None, Rules::default()).ok()?;
+    Some(MediaRef::Link(url))
+}
+
 /// Checks a URL before it is requested. `previous` is the URL that
 /// redirected here; a redirect may not go from HTTPS to plain HTTP.
 pub(crate) fn check_request(
@@ -251,5 +276,40 @@ mod tests {
             Err(LoadError::Blocked)
         );
         assert!(check_request(&https, Some(&http), Rules::default()).is_ok());
+    }
+    #[test]
+    fn avatar_urls_need_no_extension_but_stay_safe() {
+        let url = |text: &str| avatar_url(text, 32).map(|MediaRef::Link(url)| url.to_string());
+        assert_eq!(
+            url("https://example.com/avatar/{size}/abc").as_deref(),
+            Some("https://example.com/avatar/32/abc")
+        );
+        assert_eq!(
+            url("https://example.com/u/abc?s={size}&v={size}").as_deref(),
+            Some("https://example.com/u/abc?s=32&v=32")
+        );
+        assert_eq!(
+            url("https://i.ibb.co/Zx8Yb3k/me.png").as_deref(),
+            Some("https://i.ibb.co/Zx8Yb3k/me.png")
+        );
+        for unsafe_link in [
+            "http://127.0.0.1/avatar",
+            "http://localhost/avatar",
+            "https://user:pw@example.com/avatar",
+            "https://example.com:8443/avatar",
+            "file:///etc/passwd",
+            "data:image/png;base64,AAAA",
+            "http://[::1]/{size}",
+            "not a url",
+            "",
+        ] {
+            assert_eq!(url(unsafe_link), None, "{unsafe_link}");
+        }
+        assert_eq!(
+            url(&format!("https://example.com/{}", "a".repeat(2100))),
+            None
+        );
+        // Chat links keep their stricter recognition.
+        assert!(image_link("https://example.com/avatar/32/abc").is_none());
     }
 }

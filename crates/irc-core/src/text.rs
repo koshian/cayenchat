@@ -73,6 +73,12 @@ fn is_nick_char(ch: char) -> bool {
     ch.is_alphanumeric() || "-_[]\\`^{}|".contains(ch)
 }
 
+/// A nickname folded for comparison (RFC 1459 case mapping), usable as a
+/// map key.
+pub fn nickname_key(nickname: &str) -> String {
+    irc_lowercase(nickname)
+}
+
 /// RFC 1459 case mapping: `[]\~` are the uppercase forms of `{}|^`. Every
 /// mapping keeps the byte length, so indexes stay valid in the original.
 fn irc_lowercase(value: &str) -> String {

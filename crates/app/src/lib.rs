@@ -1,5 +1,6 @@
 //! Application state and commands, independent of any rendering framework.
 pub mod attachments;
+pub mod avatars;
 pub mod notifications;
 
 use std::{
@@ -72,6 +73,8 @@ pub struct AppState {
     /// Conversation IDs are never reused, so UI state keyed by a removed
     /// conversation cannot attach to a new one.
     next_conversation_id: u32,
+    /// User avatars per network, tied to message sequences.
+    avatars: avatars::AvatarDirectory,
 }
 
 /// A server as configured: its display name and auto-join channels.
@@ -213,6 +216,7 @@ impl AppState {
             server_messages: HashMap::new(),
             next_message_sequence,
             next_conversation_id: 5,
+            avatars: avatars::AvatarDirectory::default(),
         }
     }
 
@@ -251,6 +255,7 @@ impl AppState {
             server_messages: HashMap::new(),
             next_message_sequence: 0,
             next_conversation_id: channel_count + 1,
+            avatars: avatars::AvatarDirectory::default(),
         }
     }
 
@@ -282,6 +287,7 @@ impl AppState {
             server_messages: HashMap::new(),
             next_message_sequence: 0,
             next_conversation_id: 1,
+            avatars: avatars::AvatarDirectory::default(),
         };
         for config in networks {
             state.networks.push(Network {
@@ -324,6 +330,7 @@ impl AppState {
             self.statuses.remove(&id);
             self.server_messages.remove(&id);
             self.active_servers.remove(&id);
+            self.avatars.remove_network(id);
         }
         self.networks = networks
             .iter()
@@ -363,6 +370,8 @@ impl AppState {
         let removed = self.remove_conversations(network);
         self.server_messages.remove(&network);
         self.active_servers.remove(&network);
+        // The logs that could show old avatars are gone.
+        self.avatars.remove_network(network);
         self.statuses.insert(network, ConnectionStatus::Connecting);
         let mut first = None;
         for channel in channels {
@@ -677,6 +686,31 @@ impl AppState {
     /// message is added (and with it, when a bounded log drops old lines).
     pub fn last_message_sequence(&self) -> u64 {
         self.next_message_sequence
+    }
+
+    /// Records a user's avatar (`None` removes it or ends the user's
+    /// occupancy of the name). `key` is the protocol-folded user name. See
+    /// [`avatars`] for the identity policy.
+    pub fn set_avatar(&mut self, network: NetworkId, key: &str, avatar: Option<&str>) {
+        let next = self.next_message_sequence + 1;
+        self.avatars.set(network, key, avatar, next);
+    }
+
+    /// A user changed name; their avatar follows them.
+    pub fn rename_avatar(&mut self, network: NetworkId, from: &str, to: &str) {
+        let next = self.next_message_sequence + 1;
+        self.avatars.rename(network, from, to, next);
+    }
+
+    /// Every avatar of `network` becomes unknown (disconnect, reconnect or
+    /// lost capability); messages already shown keep theirs.
+    pub fn end_avatars(&mut self, network: NetworkId) {
+        let next = self.next_message_sequence + 1;
+        self.avatars.end_all(network, next);
+    }
+
+    pub fn avatars(&self) -> &avatars::AvatarDirectory {
+        &self.avatars
     }
 
     pub fn networks(&self) -> &[Network] {
@@ -1348,5 +1382,46 @@ mod tests {
         assert!(fallback == received_now || fallback == display_time(None));
         assert_eq!(messages[3].time, local(earlier));
         assert_eq!(state.server_messages(network)[0].time, local(later));
+    }
+
+    #[test]
+    fn avatars_follow_message_sequences_and_network_lifetime() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        state.joined_channel(network, "#a");
+        state.append_channel_message(network, "#a", "bob", "before", false, false);
+        state.set_avatar(network, "bob", Some("https://example.com/b.png"));
+        state.append_channel_message(network, "#a", "bob", "after", false, false);
+        let messages = &state.conversations()[0].messages;
+        let avatar = |state: &AppState, index: usize| {
+            let message = &state.conversations()[0].messages[index];
+            state
+                .avatars()
+                .for_message(network, "bob", message.sequence)
+                .map(|avatar| avatar.to_string())
+        };
+        assert_eq!(messages.len(), 2);
+        assert_eq!(avatar(&state, 0), None);
+        assert_eq!(
+            avatar(&state, 1).as_deref(),
+            Some("https://example.com/b.png")
+        );
+
+        // Reconnecting ends the occupancy; the shown message keeps it.
+        state.end_avatars(network);
+        state.append_channel_message(network, "#a", "bob", "reconnected", false, false);
+        assert_eq!(
+            avatar(&state, 1).as_deref(),
+            Some("https://example.com/b.png")
+        );
+        assert_eq!(avatar(&state, 2), None);
+
+        // A fresh session clears the logs and with them every avatar.
+        state.set_avatar(network, "bob", Some("x"));
+        state.reset_network(network, vec!["#a".into()]);
+        assert_eq!(state.avatars().len(network), (0, 0));
+        state.set_avatar(network, "bob", Some("x"));
+        state.sync_networks(&[]);
+        assert!(state.avatars().is_empty(), "removed server");
     }
 }

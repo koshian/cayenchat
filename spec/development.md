@@ -297,6 +297,23 @@ this delay.
    keep following new lines. Turn previews off: the thumbnails and
    their space disappear at once and no further link is read (the fixture
    directory's access times do not change).
+10. User avatars, with a `preview-fixture` build and a local IRC fixture
+   that offers `batch` and `draft/metadata-2` (never a public server): in
+   **外観**, **ユーザーのアバターを表示する** is off for new settings, and in
+   **IRCv3**, **ユーザーのアバター (実験的)** is off and, when turned on
+   without **メッセージのバッチ**, shows that batch is required (batch stays
+   off). With both IRCv3 options on, connect and have the fixture send
+   `METADATA <nick> avatar * :https://images.cayenchat.test/<file>`: nothing
+   is downloaded and the layout is unchanged while the Appearance setting is
+   off. Turn it on: 16×16 images appear before nicknames in the channel log
+   and the member list, rows keep their height and the nickname stays
+   readable while images load or fail; the combined log, server log and
+   activity lines stay text-only. Scroll while images load, switch channels
+   and servers; the log must not jump and must keep following at the
+   bottom. Change a user's nick and reuse the old nick from another client:
+   the old lines keep the old image, the new user's lines show none until
+   their own avatar arrives. Turn the setting off: the column disappears at
+   once and no further image is read.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
@@ -605,6 +622,42 @@ a removed server. The GUI check and measurements are in `performance.md`.
 Selection/copy, link opening by double-click and channel switching with
 previews were not exercised in the real window (no input automation was
 available); Windows and Linux were not run.
+
+### User avatars and IRCv3 metadata (2026-09-27)
+
+In the Linux x86_64 cloud container (rustc 1.94.1), `cargo fmt --check`,
+workspace Clippy with all features and workspace tests passed with the
+lockfile. The container lacked `libxkbcommon-dev` and
+`libxkbcommon-x11`; their Ubuntu packages were unpacked into a scratch
+directory and used through `LIBRARY_PATH`/`LD_LIBRARY_PATH` without
+installing anything. Automated coverage: default-off settings, migration of
+files without the fields, per-server independence and the batch-dependency
+warning; CAP ordering (metadata only after batch ACK, never
+`metadata-notify`), NAK, DEL of either capability, NEW, SASL together and
+legacy encodings; a local IRC fixture for SUB after 001 and before JOIN,
+avatar values, updates, removal, the metadata batch, deferred SYNC, NICK,
+PART, QUIT, withdrawal and no server-log lines; bounded syncs and users;
+occupancies across nickname changes, reuse, reconnects and server removal;
+extensionless avatar URLs with the same safety checks, square crop and
+limits; GPUI tests for no lookups or fetches while off, live on/off with
+deduplicated, visible-only loads, unchanged row heights, the shared fetch
+limit with previews, typing reusing the panes and a removed server.
+
+GUI check: the `preview-fixture` release build ran under Xvfb with Mesa's
+llvmpipe Vulkan driver (also unpacked into a scratch directory), an
+isolated `HOME` with a prepared settings file (the `test-build` feature
+always starts from empty settings, so it could not be preseeded) and a
+local IRC fixture offering `batch` and `draft/metadata-2`; `xdotool` drove
+the settings window and `xwd` captured windows (captures only show content
+after an input event triggers a frame). Verified: the IRCv3 row, its hint
+and the batch warning; live on/off from the Appearance tab with autosave;
+avatars in log and member rows at the same row spacing as off; scrolling
+up during a burst and following at the bottom; a renamed user keeping the
+avatar, the old nickname's earlier line keeping the old image and a new
+user of that nickname showing none until their own avatar arrived. Not
+verified: macOS and Windows, a real IRC server, IME, HiDPI sharpness, and
+whether no image file is read while off (the file system's `relatime` made
+access times inconclusive; the GPUI tests cover it).
 
 ### Native settings appearance checks (D019)
 

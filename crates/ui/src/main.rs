@@ -1,4 +1,5 @@
 mod account_settings;
+mod avatars;
 mod decorations;
 mod desktop;
 mod diagnostics;
@@ -334,6 +335,7 @@ impl SettingsForm {
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
+            user_avatars: self.values.appearance.user_avatars,
             main_log_font: value(&self.main_log_font),
             sub_log_font: value(&self.sub_log_font),
             member_font: value(&self.member_font),
@@ -623,6 +625,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         message_tags: preferences.message_tags,
         server_time: preferences.server_time,
         batch: preferences.batch,
+        metadata: preferences.metadata,
     }
 }
 
@@ -779,6 +782,8 @@ struct ChatWindow {
     notification_burst: BurstLimiter,
     /// Inline image previews in the main channel log (application-wide).
     previews: previews::Previews,
+    /// User avatar images for the main log and member list (application-wide).
+    avatars: avatars::Avatars,
     /// Whether the chat window has keyboard focus; messages in the selected
     /// conversation of a focused window are already visible.
     window_active: bool,
@@ -1077,6 +1082,7 @@ impl ChatWindow {
             image_provider: saved.image_upload.provider.clone(),
             notification_rules: notification_rules(&saved.notifications),
             previews: previews::Previews::new(saved.appearance.image_previews),
+            avatars: avatars::Avatars::new(saved.appearance.user_avatars),
             saved,
             i18n,
             log_focus: cx.focus_handle(),
@@ -1202,6 +1208,8 @@ impl ChatWindow {
         // Off: no more requests, pending loads are cancelled or ignored and
         // decoded images are released on the next draw.
         self.previews.set_enabled(appearance.image_previews);
+        // Independent of previews; off also removes the avatar column.
+        self.avatars.set_enabled(appearance.user_avatars);
         self.appearance = appearance;
         self.theme_mode = mode;
         // Fonts and row styles are drawn by the cached panes.
@@ -2401,6 +2409,8 @@ impl ChatWindow {
                     .append_server_message(network, self.i18n.text("event_transport_connected"));
             }
             Event::Registered { nickname } => {
+                // A new connection: nobody's avatar is known yet.
+                self.state.end_avatars(network);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
                     session.retry_attempt = 0;
@@ -2563,8 +2573,21 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
+                self.state.end_avatars(network);
                 self.record_disconnect(network, reason);
             }
+            // Avatar references are recorded whether or not they are shown;
+            // showing them (and downloading images) is the Appearance setting.
+            Event::UserAvatar { nickname, url } => {
+                let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                self.state.set_avatar(network, &key, url.as_deref());
+            }
+            Event::AvatarMoved { from, to } => {
+                let from = cayenchat_irc_core::text::nickname_key(&from);
+                let to = cayenchat_irc_core::text::nickname_key(&to);
+                self.state.rename_avatar(network, &from, &to);
+            }
+            Event::AvatarsReset => self.state.end_avatars(network),
         }
     }
 
@@ -3882,6 +3905,31 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("image_previews_hint")),
             )
+            .child(
+                div()
+                    .id("user-avatars")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.user_avatars,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("user_avatars"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.user_avatars;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("user_avatars_hint")),
+            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
@@ -5186,6 +5234,18 @@ impl Render for ChatPane {
                 if matches!(kind, PaneKind::MainLog) {
                     chat.previews.release(window);
                 }
+                // Avatars appear in two cached panes; an image is freed only
+                // after both redrew. Redraw both once more if one lags.
+                let avatar_pane = match kind {
+                    PaneKind::MainLog => Some(avatars::Pane::MainLog),
+                    PaneKind::Members => Some(avatars::Pane::Members),
+                    _ => None,
+                };
+                if let Some(pane) = avatar_pane
+                    && chat.avatars.release(pane, window)
+                {
+                    cx.on_next_frame(window, |_, _, cx| cx.notify());
+                }
                 chat.render_pane(kind, cx)
             })
             .unwrap_or_else(|_| div().into_any_element())
@@ -5503,6 +5563,21 @@ impl ChatWindow {
                 d.bg(style.main_alt)
             })
             .child(style.time(message.time))
+            .when(!message.activity && self.avatars.enabled(), |row| {
+                row.child(
+                    self.avatar_slot(
+                        self.state
+                            .avatars()
+                            .for_message(
+                                network,
+                                &cayenchat_irc_core::text::nickname_key(&message.sender),
+                                message.sequence,
+                            )
+                            .cloned(),
+                        cx,
+                    ),
+                )
+            })
             .when(!message.activity, |row| {
                 row.child(
                     div()
@@ -5573,6 +5648,28 @@ impl ChatWindow {
                 }
             })
             .into_any_element()
+    }
+
+    /// The fixed avatar slot of a message or member row: the image when it
+    /// is ready, otherwise blank. It never changes the row's height.
+    fn avatar_slot(&self, avatar: Option<Arc<str>>, cx: &mut Context<Self>) -> Div {
+        let slot = div()
+            .w(px(avatars::SLOT))
+            .h(px(avatars::SLOT))
+            .mt(px(2.))
+            .flex_shrink_0()
+            .overflow_hidden();
+        let Some(avatar) = avatar else {
+            return slot;
+        };
+        match self.avatars.lookup(&avatar) {
+            avatars::Shown::Image(image) => slot.child(img(image).size_full()),
+            avatars::Shown::Pending => {
+                self.pump_avatars(cx);
+                slot
+            }
+            avatars::Shown::None => slot,
+        }
     }
 
     fn render_sub_row(&mut self, row: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -5688,11 +5785,23 @@ impl ChatWindow {
                 let nickname = member
                     .trim_start_matches(['~', '&', '@', '%', '+'])
                     .to_owned();
+                let avatar = self.avatars.enabled().then(|| {
+                    self.state
+                        .avatars()
+                        .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
+                        .cloned()
+                });
                 div()
                     .id(("member", index))
                     .px_2()
                     .py(px(1.))
                     .hover(|d| d.bg(theme.hover))
+                    .when_some(avatar, |row, avatar| {
+                        row.flex()
+                            .items_center()
+                            .gap_1()
+                            .child(self.avatar_slot(avatar, cx))
+                    })
                     .child(member)
                     .on_mouse_down(
                         MouseButton::Right,
@@ -6383,6 +6492,7 @@ mod server_settings_tests {
             message_tags: true,
             server_time: true,
             batch: true,
+            metadata: true,
         };
         settings
     }
@@ -6705,6 +6815,7 @@ mod pane_tests {
         settings.servers[1].username = "me".into();
         settings.servers[1].ircv3.server_time = true;
         settings.servers[1].ircv3.batch = true;
+        settings.servers[1].ircv3.metadata = true;
         let config = |settings: &Settings, index: usize| {
             crate::connection_config(
                 &settings.servers[index],
@@ -6721,6 +6832,7 @@ mod pane_tests {
                 message_tags: false,
                 server_time: true,
                 batch: true,
+                metadata: true,
             }
         );
         let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -6748,6 +6860,7 @@ mod pane_tests {
                     message_tags: true,
                     server_time: false,
                     batch: false,
+                    metadata: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );

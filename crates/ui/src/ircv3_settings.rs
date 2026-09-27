@@ -18,16 +18,21 @@ pub(crate) struct Ircv3Feature {
     pub hint_key: &'static str,
     pub get: fn(&Ircv3Preferences) -> bool,
     pub toggle: fn(&mut Ircv3Preferences),
+    /// A warning shown under the row while it is on but cannot work yet,
+    /// such as a missing prerequisite. Prerequisites are never switched on
+    /// implicitly.
+    pub warning: fn(&Ircv3Preferences) -> Option<&'static str>,
 }
 
 /// Features shown on the IRCv3 tab, in display order.
-pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 3] = [
+pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 4] = [
     Ircv3Feature {
         id: "ircv3-server-time",
         label_key: "ircv3_server_time",
         hint_key: "ircv3_server_time_hint",
         get: |preferences| preferences.server_time,
         toggle: |preferences| preferences.server_time = !preferences.server_time,
+        warning: |_| None,
     },
     Ircv3Feature {
         id: "ircv3-message-tags",
@@ -35,6 +40,7 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 3] = [
         hint_key: "ircv3_message_tags_hint",
         get: |preferences| preferences.message_tags,
         toggle: |preferences| preferences.message_tags = !preferences.message_tags,
+        warning: |_| None,
     },
     Ircv3Feature {
         id: "ircv3-batch",
@@ -42,6 +48,19 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 3] = [
         hint_key: "ircv3_batch_hint",
         get: |preferences| preferences.batch,
         toggle: |preferences| preferences.batch = !preferences.batch,
+        warning: |_| None,
+    },
+    // draft/metadata-2 requires batch (the specification says so); the
+    // dependency is shown, not resolved behind the user's back.
+    Ircv3Feature {
+        id: "ircv3-metadata",
+        label_key: "ircv3_metadata",
+        hint_key: "ircv3_metadata_hint",
+        get: |preferences| preferences.metadata,
+        toggle: |preferences| preferences.metadata = !preferences.metadata,
+        warning: |preferences| {
+            (preferences.metadata && !preferences.batch).then_some("ircv3_metadata_needs_batch")
+        },
     },
 ];
 
@@ -138,13 +157,30 @@ impl SettingsWindow {
                             }
                         })),
                 )
-                .child(hint(feature.hint_key));
+                .child(hint(feature.hint_key))
+                .when_some((feature.warning)(&profile.ircv3), |panel, key| {
+                    panel.child(
+                        div()
+                            .ml(px(26.))
+                            .text_color(theme.warning)
+                            .child(self.i18n.text(key)),
+                    )
+                });
         }
         if profile.encoding != TextEncoding::Utf8 {
-            panel = panel.child(div().text_color(theme.warning).child(self.i18n.format(
-                "ircv3_legacy_encoding",
-                &[("encoding", profile.encoding.label())],
-            )));
+            let encoding = [("encoding", profile.encoding.label())];
+            panel = panel.child(
+                div()
+                    .text_color(theme.warning)
+                    .child(self.i18n.format("ircv3_legacy_encoding", &encoding)),
+            );
+            if profile.ircv3.metadata {
+                panel = panel.child(
+                    div()
+                        .text_color(theme.warning)
+                        .child(self.i18n.format("ircv3_metadata_legacy", &encoding)),
+                );
+            }
         }
         panel
             .child(
@@ -188,10 +224,35 @@ mod tests {
                 }
             }
             for catalog in catalogs {
-                for key in [feature.label_key, feature.hint_key] {
+                let warning = (feature.warning)(&preferences);
+                for key in [feature.label_key, feature.hint_key]
+                    .into_iter()
+                    .chain(warning)
+                {
                     assert!(catalog.contains(&format!("\"{key}\"")), "{key}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn metadata_shows_its_batch_dependency_without_enabling_batch() {
+        let metadata = IRCV3_FEATURES
+            .iter()
+            .find(|feature| feature.id == "ircv3-metadata")
+            .unwrap();
+        let mut preferences = Ircv3Preferences::default();
+        assert_eq!((metadata.warning)(&preferences), None, "off: no warning");
+        (metadata.toggle)(&mut preferences);
+        assert!(preferences.metadata && !preferences.batch);
+        assert_eq!(
+            (metadata.warning)(&preferences),
+            Some("ircv3_metadata_needs_batch")
+        );
+        preferences.batch = true;
+        assert_eq!((metadata.warning)(&preferences), None);
+        // Turning metadata off leaves batch as the user set it.
+        (metadata.toggle)(&mut preferences);
+        assert!(!preferences.metadata && preferences.batch);
     }
 }

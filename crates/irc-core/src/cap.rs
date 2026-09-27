@@ -21,6 +21,9 @@ pub const SASL: &str = "sasl";
 pub const MESSAGE_TAGS: &str = "message-tags";
 pub const SERVER_TIME: &str = "server-time";
 pub const BATCH: &str = "batch";
+/// The experimental metadata draft, used only for user avatars. The legacy
+/// `metadata-notify` is never requested: the draft forbids asking for both.
+pub const METADATA: &str = "draft/metadata-2";
 
 /// Advertised capabilities kept per connection; a hostile server cannot grow
 /// the table beyond this.
@@ -39,6 +42,9 @@ pub struct Ircv3Options {
     /// Receive `BATCH` and the `batch` tag, so history batches are told
     /// apart from live traffic. Independent of the other options.
     pub batch: bool,
+    /// Receive user avatars through the experimental `draft/metadata-2`.
+    /// Requested only together with `batch`, which the draft requires.
+    pub metadata: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +94,14 @@ impl CapNegotiation {
         // Batch references and the history types are ASCII, like server-time.
         if options.batch {
             optional.push(BATCH);
+        }
+        // draft/metadata-2 MUST be used with batch. It is wanted only when
+        // batch is wanted too, and requested only once batch is enabled, so
+        // a server declining batch never ends up with metadata alone. Values
+        // are UTF-8 even on legacy encodings; the worker then accepts only
+        // ASCII avatar URLs (see `metadata`).
+        if options.metadata && options.batch {
+            optional.push(METADATA);
         }
         Self {
             phase: Phase::Inactive,
@@ -191,6 +205,7 @@ impl CapNegotiation {
         } else if let Some(sasl) = self.sasl.as_mut() {
             step.send.extend(sasl.observe(message)?);
         }
+        self.enforce_dependencies(&mut step);
         self.end_if_settled(&mut step);
         Ok(step)
     }
@@ -244,6 +259,7 @@ impl CapNegotiation {
             if self.offered.contains_key(name)
                 && !self.enabled.contains(name)
                 && !self.pending.contains(&name)
+                && (name != METADATA || self.enabled.contains(BATCH))
             {
                 step.send.push(request(name));
                 self.pending.push(name);
@@ -268,7 +284,29 @@ impl CapNegotiation {
                 }
             } else {
                 step.notes.push(format!("Capability {name} enabled."));
+                if name == BATCH {
+                    // Now that batch is on, metadata may follow.
+                    self.request_optional(step);
+                }
             }
+        }
+    }
+
+    /// draft/metadata-2 must not outlive batch (a DEL or `ACK -batch`):
+    /// metadata is dropped at once, so nothing depends on it, and the
+    /// server is asked to disable it too. A metadata request still waiting
+    /// is forgotten; its late ACK is then ignored as unrequested.
+    fn enforce_dependencies(&mut self, step: &mut CapStep) {
+        if self.enabled.contains(BATCH) {
+            return;
+        }
+        let waiting = self.pending.contains(&METADATA);
+        if self.enabled.remove(METADATA) || waiting {
+            self.pending.retain(|cap| *cap != METADATA);
+            step.send.push(request(&format!("-{METADATA}")));
+            step.notes.push(format!(
+                "Capability {BATCH} is gone; disabling {METADATA}, which requires it."
+            ));
         }
     }
 
@@ -401,6 +439,15 @@ mod tests {
             message_tags,
             server_time,
             batch: false,
+            metadata: false,
+        }
+    }
+
+    fn avatars(batch: bool) -> Ircv3Options {
+        Ircv3Options {
+            batch,
+            metadata: true,
+            ..Ircv3Options::default()
         }
     }
 
@@ -643,5 +690,133 @@ mod tests {
             ["CAP REQ server-time"],
             "wanted names survive a full table"
         );
+    }
+
+    #[test]
+    fn metadata_waits_for_batch_and_is_never_requested_without_it() {
+        // Batch off: metadata alone is never requested, even when offered.
+        let mut cap = CapNegotiation::new(avatars(false), None, true);
+        assert_eq!(String::from(&cap.start()), "CAP END");
+
+        // Both on and offered: batch first, metadata after its ACK.
+        let mut cap = CapNegotiation::new(avatars(true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :draft/metadata-2=max-subs=50 metadata-notify batch",
+            ))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
+        let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/metadata-2"]);
+        let step = cap
+            .observe(&line(":s CAP * ACK :draft/metadata-2"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(METADATA) && cap.enabled(BATCH));
+
+        // Batch declined: metadata is not requested and registration ends.
+        let mut cap = CapNegotiation::new(avatars(true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :draft/metadata-2 batch"))
+            .unwrap();
+        let step = cap.observe(&line(":s CAP * NAK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(!cap.enabled(METADATA));
+
+        // Metadata declined: batch keeps working.
+        let mut cap = CapNegotiation::new(avatars(true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :draft/metadata-2 batch"))
+            .unwrap();
+        cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        let step = cap
+            .observe(&line(":s CAP * NAK :draft/metadata-2"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(BATCH) && !cap.enabled(METADATA));
+
+        // Not offered: nothing extra is asked, legacy metadata-notify never.
+        let mut cap = CapNegotiation::new(avatars(true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :metadata-notify batch"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
+        let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+    }
+
+    #[test]
+    fn metadata_with_sasl_and_legacy_encodings() {
+        let mut cap = CapNegotiation::new(avatars(true), Some(credentials()), false);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :sasl batch draft/metadata-2"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ sasl", "CAP REQ batch"]);
+        let step = cap
+            .observe(&line(":s CAP * ACK :draft/metadata-2"))
+            .unwrap();
+        assert!(step.send.is_empty(), "an unrequested ACK changes nothing");
+        assert!(!cap.enabled(METADATA));
+        let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/metadata-2"]);
+        cap.observe(&line(":s CAP * ACK :draft/metadata-2"))
+            .unwrap();
+        let step = cap.observe(&line(":s CAP * ACK :sasl")).unwrap();
+        assert_eq!(sent(&step), ["AUTHENTICATE PLAIN"]);
+        cap.observe(&line("AUTHENTICATE +")).unwrap();
+        let step = cap.observe(&line(":s 903 * :ok")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(METADATA));
+    }
+
+    #[test]
+    fn losing_batch_or_metadata_after_registration_stops_metadata() {
+        let registered = || {
+            let mut cap = CapNegotiation::new(avatars(true), None, true);
+            cap.start();
+            cap.observe(&line(":s CAP * LS :batch draft/metadata-2"))
+                .unwrap();
+            cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+            cap.observe(&line(":s CAP * ACK :draft/metadata-2"))
+                .unwrap();
+            cap.registered();
+            cap
+        };
+        let mut cap = registered();
+        let step = cap.observe(&line(":s CAP me DEL :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ -draft/metadata-2"]);
+        assert!(!cap.enabled(METADATA) && !cap.enabled(BATCH));
+        let step = cap
+            .observe(&line(":s CAP me ACK :-draft/metadata-2"))
+            .unwrap();
+        assert!(step.send.is_empty());
+        // Batch returns: both are requested again, in order.
+        let step = cap.observe(&line(":s CAP me NEW :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
+        let step = cap.observe(&line(":s CAP me ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/metadata-2"]);
+
+        let mut cap = registered();
+        let step = cap
+            .observe(&line(":s CAP me DEL :draft/metadata-2"))
+            .unwrap();
+        assert!(step.send.is_empty());
+        assert!(!cap.enabled(METADATA) && cap.enabled(BATCH));
+        let step = cap
+            .observe(&line(":s CAP me NEW :draft/metadata-2"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/metadata-2"]);
+        cap.observe(&line(":s CAP me ACK :draft/metadata-2"))
+            .unwrap();
+        assert!(cap.enabled(METADATA));
+
+        // An ACK disabling batch counts like DEL.
+        let mut cap = registered();
+        let step = cap.observe(&line(":s CAP me ACK :-batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ -draft/metadata-2"]);
+        assert!(!cap.enabled(METADATA));
     }
 }
