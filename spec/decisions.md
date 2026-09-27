@@ -227,8 +227,10 @@ optional alternating message-row colors, and font families for the two logs,
 member list, channel tree, input, and timestamp. Timestamp defaults to a
 platform-specific monospaced face. Load version 4 without altering connection
 settings. Limit URL opening and drag text selection to the upper channel log so
-the lower combined log keeps its one-click channel navigation. Only HTTP(S)
+the lower combined log keeps its channel navigation. Only HTTP(S)
 URLs open, on double-click; log selection copies message-body text.
+Combined-log channel navigation also requires a double-click, because a single
+click moved channels too easily while reading.
 
 GPUI 0.2.2's Windows input handling predates upstream's merged November 2025
 Japanese/Korean keyboard and IME corrections. Guard Send and nickname completion

@@ -282,7 +282,7 @@ snapshot replaces that carried rank.
 
 The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
-double-click. The lower combined log retains click-to-channel navigation.
+double-click. The lower combined log switches to a line's channel on double-click.
 
 Version 4 settings keep several server profiles, ordered with user-added entries
 before built-in presets. Host/port/TLS/certificate verification/encoding are per
