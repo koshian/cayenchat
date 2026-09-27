@@ -8,7 +8,9 @@ irc_load_server.py on 127.0.0.1 and samples the process in each scenario:
   S1 idle-unconnected   startup, settings window open, no connection
   S2 idle-connected     registered, CHANNELS joined with MEMBERS each, no traffic
   S3 idle-history       after HISTORY lines per channel (the per-channel cap)
-  S4a flood-steady      FLOOD_RATE lines/s across all channels
+  S4a flood-steady      FLOOD_RATE lines/s across the first server's channels;
+                        other servers only answer a PING every second
+  S4c flood-all-servers FLOOD_RATE split over every server (--servers > 1)
   S4b flood-max         as fast as the client reads
   S5 idle-after-cap     idle after the logs and diagnostics were saturated
   S6 idle-after-cap-2   idle after a second maximum flood (plateau check)
@@ -23,6 +25,7 @@ Input and channel switching are not driven here; see the ignored
 
   python3 scripts/perf/run_baseline.py --runs 3 --out target/perf/baseline.json
   python3 scripts/perf/run_baseline.py --load-only   # S2-S4b only
+  python3 scripts/perf/run_baseline.py --servers 4   # four fixture servers
   python3 scripts/perf/run_baseline.py --summarize target/perf/baseline.json
 """
 
@@ -45,36 +48,51 @@ import sample_process  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def settings(port, channels, connect):
-    return {
-        "version": 11,
-        "selected_server": "custom-perf",
-        "servers": [
-            {
-                "id": "custom-perf",
-                "host": "127.0.0.1",
-                "port": port,
-                "use_tls": False,
-                "verify_tls_certificates": True,
-                "encoding": "utf8",
-                "custom": True,
-                "remember_passwords": False,
-            }
-        ],
+def settings(ports, channels, connect):
+    """One server is written as version 11, which builds before and after
+    multi-server support both read; several servers need version 12."""
+    identity = {
         "nickname": "perfclient",
         "username": "perf",
         "channels": ",".join(channels),
         "connect_on_startup": connect,
+    }
+    servers = [
+        {
+            "id": f"custom-perf-{index}",
+            "host": "127.0.0.1",
+            "port": port,
+            "use_tls": False,
+            "verify_tls_certificates": True,
+            "encoding": "utf8",
+            "custom": True,
+            "remember_passwords": False,
+        }
+        for index, port in enumerate(ports)
+    ]
+    common = {
+        "selected_server": "custom-perf-0",
         "language": "english",
         "theme": "light",
         "credential_backend": "local_file",
     }
+    if len(ports) == 1:
+        return {"version": 11, "servers": servers, **identity, **common}
+    for server in servers:
+        server.update(identity)
+    return {"version": 12, "servers": servers, **common}
 
 
-def free_port():
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+def free_ports(count):
+    """Distinct free ports; the probes stay bound until all are chosen."""
+    probes = [socket.socket() for _ in range(count)]
+    try:
+        for probe in probes:
+            probe.bind(("127.0.0.1", 0))
+        return [probe.getsockname()[1] for probe in probes]
+    finally:
+        for probe in probes:
+            probe.close()
 
 
 def config_dir(home):
@@ -159,18 +177,45 @@ def measure(label, pid, seconds, results):
     )
 
 
+def start_fixture(args, port, control_port, seed):
+    return subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("irc_load_server.py")),
+            "--port",
+            str(port),
+            "--control-port",
+            str(control_port),
+            "--members",
+            str(args.members),
+            "--expect-channels",
+            str(args.channels),
+            "--seed",
+            str(seed),
+        ],
+        stderr=subprocess.DEVNULL if not args.verbose else None,
+    )
+
+
+def call_all(controls, command, timeout=600):
+    for control in controls:
+        control.call(command, timeout=timeout)
+
+
 def one_run(args, binary, index):
     results = {}
     phases = {}
     base = Path(tempfile.mkdtemp(prefix="cayenchat-perf-"))
     channels = [f"#perf{i:02d}" for i in range(args.channels)]
+    ports = free_ports(2 * args.servers)
+    ports, control_ports = ports[: args.servers], ports[args.servers :]
     try:
         # S1: no connection. The settings window opens at startup.
         if not args.load_only:
             home = base / "unconnected"
             config_dir(home).mkdir(parents=True)
             (config_dir(home) / "settings.json").write_text(
-                json.dumps(settings(args.port, channels, False))
+                json.dumps(settings(ports, channels, False))
             )
             app = launch(binary, home)
             try:
@@ -182,66 +227,67 @@ def one_run(args, binary, index):
         home = base / "connected"
         config_dir(home).mkdir(parents=True)
         (config_dir(home) / "settings.json").write_text(
-            json.dumps(settings(args.port, channels, True))
+            json.dumps(settings(ports, channels, True))
         )
-        server = subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).with_name("irc_load_server.py")),
-                "--port",
-                str(args.port),
-                "--control-port",
-                str(args.control_port),
-                "--members",
-                str(args.members),
-                "--expect-channels",
-                str(args.channels),
-                "--seed",
-                str(index + 1),
-            ],
-            stderr=subprocess.DEVNULL if not args.verbose else None,
-        )
-        control = Control(args.control_port)
+        fixtures = [
+            start_fixture(args, port, control, index * 16 + number + 1)
+            for number, (port, control) in enumerate(zip(ports, control_ports))
+        ]
+        controls = [Control(port) for port in control_ports]
+        busy, others = controls[0], controls[1:]
         app = launch(binary, home)
         try:
             started = time.monotonic()
-            control.call("joined", timeout=60)
+            call_all(controls, "joined", timeout=60)
             phases["joined_after_launch_s"] = round(time.monotonic() - started, 2)
             time.sleep(args.settle)
             measure("S2_idle_connected", app.pid, args.window, results)
 
-            control.call(f"history {args.history}")
-            control.call("wait")
+            call_all(controls, f"history {args.history}")
+            call_all(controls, "wait")
             time.sleep(args.settle)
             measure("S3_idle_history", app.pid, args.window, results)
 
-            control.call(f"flood {args.flood_rate} {args.flood_seconds}")
+            # One busy server; the others only answer a PING every second,
+            # which shows whether their lines wait behind the busy one.
+            busy.call(f"flood {args.flood_rate} {args.flood_seconds}")
+            call_all(others, f"probe {args.flood_seconds}")
             measure("S4a_flood_steady", app.pid, args.flood_seconds, results)
-            control.call("wait")
+            call_all(controls, "wait")
 
-            control.call(f"flood 0 {args.flood_seconds}")
+            if others:
+                # The same total rate spread over every server.
+                rate = max(1, args.flood_rate // len(controls))
+                call_all(controls, f"flood {rate} {args.flood_seconds}")
+                measure("S4c_flood_all_servers", app.pid, args.flood_seconds, results)
+                call_all(controls, "wait")
+
+            busy.call(f"flood 0 {args.flood_seconds}")
+            call_all(others, f"probe {args.flood_seconds}")
             measure("S4b_flood_max", app.pid, args.flood_seconds, results)
-            control.call("wait")
+            call_all(controls, "wait")
             if not args.load_only:
                 time.sleep(args.settle)
                 measure("S5_idle_after_cap", app.pid, args.window, results)
 
-                control.call(f"flood 0 {args.flood_seconds}")
-                control.call("wait")
+                busy.call(f"flood 0 {args.flood_seconds}")
+                busy.call("wait")
                 time.sleep(args.settle)
                 measure("S6_idle_after_cap_2", app.pid, args.window, results)
-            phases["server"] = json.loads(control.call("stats"))
-            if phases["server"]["connections"] != 1:
+            phases["servers"] = [json.loads(control.call("stats")) for control in controls]
+            if any(server["connections"] != 1 for server in phases["servers"]):
                 print("  WARNING: the client reconnected; this run is not comparable", flush=True)
             if app.poll() is not None:
                 raise RuntimeError("CayenChat exited")
         finally:
             stop(app)
-            try:
-                control.call("quit", timeout=5)
-            except OSError:
-                pass
-            server.wait(timeout=10)
+            for control in controls:
+                try:
+                    control.call("quit", timeout=5)
+                except OSError:
+                    pass
+            for fixture in fixtures:
+                fixture.wait(timeout=10)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     return {"scenarios": results, "fixture": phases}
@@ -272,15 +318,17 @@ def summarize(report):
         )
     for index, run in enumerate(runs):
         fixture = run["fixture"]
-        server = fixture.get("server", {})
+        # Reports before multi-server support had a single "server".
+        servers = fixture.get("servers") or [fixture.get("server", {})]
         print(f"run {index + 1}: joined after {fixture.get('joined_after_launch_s')} s, "
-              f"connections {server.get('connections')}")
-        for phase in server.get("phases", []):
-            rtt = phase.get("ping_rtt_ms", {})
-            print(f"  {phase['phase']:8} lines {phase['lines']:>8} "
-                  f"rate {phase.get('achieved_rate', '-'):>9} lines/s  "
-                  f"drain lag {phase['drain_lag_s']} s  ping rtt median {rtt.get('median', '-')} ms "
-                  f"max {rtt.get('max', '-')} ms")
+              f"connections {[server.get('connections') for server in servers]}")
+        for number, server in enumerate(servers):
+            for phase in server.get("phases", []):
+                rtt = phase.get("ping_rtt_ms", {})
+                print(f"  server {number} {phase['phase']:8} lines {phase.get('lines', '-'):>8} "
+                      f"rate {phase.get('achieved_rate', '-'):>9} lines/s  "
+                      f"drain lag {phase.get('drain_lag_s', '-')} s  "
+                      f"ping rtt median {rtt.get('median', '-')} ms max {rtt.get('max', '-')} ms")
 
 
 def environment(binary):
@@ -319,8 +367,7 @@ def main():
     parser.add_argument("--flood-seconds", type=float, default=30)
     parser.add_argument("--window", type=float, default=30, help="idle sampling seconds")
     parser.add_argument("--settle", type=float, default=10)
-    parser.add_argument("--port", type=int, default=0, help="IRC port (0: pick a free one)")
-    parser.add_argument("--control-port", type=int, default=0)
+    parser.add_argument("--servers", type=int, default=1, help="fixture servers to connect")
     parser.add_argument("--out", default=str(ROOT / "target" / "perf" / "baseline.json"))
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
@@ -332,8 +379,6 @@ def main():
         summarize(json.loads(Path(args.summarize).read_text()))
         return
 
-    args.port = args.port or free_port()
-    args.control_port = args.control_port or free_port()
     binary = Path(args.binary)
     if not binary.exists():
         sys.exit(f"{binary} not found; run: cargo build --release --locked -p cayenchat-ui")
@@ -342,8 +387,8 @@ def main():
         "parameters": {
             key: getattr(args, key)
             for key in [
-                "channels", "members", "history", "flood_rate", "flood_seconds", "window", "settle",
-                "load_only",
+                "servers", "channels", "members", "history", "flood_rate", "flood_seconds",
+                "window", "settle", "load_only",
             ]
         },
         "runs": [],

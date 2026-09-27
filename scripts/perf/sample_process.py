@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Samples memory, CPU time, thread count and idle wakeups of one process.
 
-macOS reads `ps` (RSS, CPU time) and `top` (threads, idle wakeups,
-phys_footprint as `MEM`). Linux reads /proc (RSS, CPU time, threads); idle
+macOS reads `ps` (RSS, CPU time, threads) every sample and `top` (idle
+wakeups, phys_footprint as `MEM`) only at the start and end of a window:
+one `top` call costs about two seconds of system CPU, which would disturb
+the measurement if taken every second. Linux reads /proc (RSS, CPU time, threads); idle
 wakeups are not available there and are reported as null.
 
 Usage as a script prints one JSON object per window:
@@ -47,26 +49,33 @@ def parse_size(text):
     return int(float(match.group(1)) * UNITS[match.group(2)])
 
 
-def sample_mac(pid):
+def sample_mac(pid, full):
+    now = time.monotonic()
     ps = subprocess.run(
         ["ps", "-o", "rss=,time=", "-p", str(pid)], capture_output=True, text=True
     ).stdout.split()
     if len(ps) < 2:
         return None
-    top = subprocess.run(
-        ["top", "-l", "1", "-pid", str(pid), "-stats", "pid,th,idlew,mem"],
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    threads = wakeups = footprint = None
-    for line in top:
-        fields = line.split()
-        if fields and fields[0] == str(pid) and len(fields) >= 4:
-            threads = int(re.match(r"\d+", fields[1]).group())
-            wakeups = int(re.match(r"\d+", fields[2]).group())
-            footprint = parse_size(fields[3])
+    # One line per thread plus a header.
+    threads = len(
+        subprocess.run(["ps", "-M", "-p", str(pid)], capture_output=True, text=True)
+        .stdout.strip()
+        .splitlines()
+    ) - 1
+    wakeups = footprint = None
+    if full:
+        top = subprocess.run(
+            ["top", "-l", "1", "-pid", str(pid), "-stats", "pid,idlew,mem"],
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        for line in top:
+            fields = line.split()
+            if fields and fields[0] == str(pid) and len(fields) >= 3:
+                wakeups = int(re.match(r"\d+", fields[1]).group())
+                footprint = parse_size(fields[2])
     return {
-        "t": time.monotonic(),
+        "t": now,
         "rss": int(ps[0]) * 1024,
         "cpu_s": parse_cpu_time(ps[1]),
         "threads": threads,
@@ -75,7 +84,7 @@ def sample_mac(pid):
     }
 
 
-def sample_linux(pid):
+def sample_linux(pid, full):
     try:
         with open(f"/proc/{pid}/stat") as stat:
             fields = stat.read().rsplit(")", 1)[1].split()
@@ -94,8 +103,8 @@ def sample_linux(pid):
     }
 
 
-def sample(pid):
-    return sample_mac(pid) if MAC else sample_linux(pid)
+def sample(pid, full=True):
+    return sample_mac(pid, full) if MAC else sample_linux(pid, full)
 
 
 def summarize(samples):
@@ -116,6 +125,7 @@ def summarize(samples):
     wakeups = None
     if first["idle_wakeups"] is not None and last["idle_wakeups"] is not None and wall > 0:
         wakeups = round((last["idle_wakeups"] - first["idle_wakeups"]) / wall, 2)
+    # CPU and wakeups cover the same span between the first and last sample.
     visibility = [s["visible"] for s in samples if s.get("visible") is not None]
     drawn = None
     if visibility:
@@ -144,15 +154,16 @@ def window(pid, seconds, interval=1.0, visibility=None):
     samples = []
     deadline = time.monotonic() + seconds
     while True:
-        current = sample(pid)
+        last = time.monotonic() + interval >= deadline and samples
+        current = sample(pid, full=not samples or last)
         if current is None:
             return None
         if visibility is not None:
             current["visible"] = visibility()
         samples.append(current)
-        if current["t"] >= deadline:
+        if last:
             break
-        time.sleep(max(0.0, min(interval, deadline - time.monotonic())))
+        time.sleep(max(0.0, min(interval, deadline - time.monotonic() - interval / 2)))
     return summarize(samples)
 
 

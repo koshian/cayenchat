@@ -11,6 +11,9 @@ Phases (control socket commands, one per line):
   history N            send N PRIVMSG lines to every joined channel at full speed
   flood RATE SECONDS   send PRIVMSG lines round-robin across channels;
                        RATE 0 means as fast as the client consumes them
+  probe SECONDS        send only a PING every second and record the round
+                       trip (how quickly this server's lines are read while
+                       another server is busy)
   joined               reply once the client has joined --expect-channels channels
   wait                 reply once the previous phase has finished
   stats                reply with the JSON summary so far (includes the number
@@ -42,6 +45,19 @@ SAMPLE_TEXTS = [
     "とても長い行: " + "あいうえおかきくけこ" * 8,
     "0123456789 " * 12,
 ]
+
+
+def rtt_summary(rtts, sent):
+    rtts = sorted(rtts)
+    if not rtts:
+        return {"count": 0, "of": sent}
+    return {
+        "count": len(rtts),
+        "of": sent,
+        "median": round(rtts[len(rtts) // 2] * 1000, 1),
+        "p95": round(rtts[min(len(rtts) - 1, int(len(rtts) * 0.95))] * 1000, 1),
+        "max": round(rtts[-1] * 1000, 1),
+    }
 
 
 class Stats:
@@ -255,17 +271,28 @@ class Server:
         for _, ping_sent, future in pending:
             if future.done():
                 rtts.append(future.result() - ping_sent)
-        rtts.sort()
         if rtts:
-            record["ping_rtt_ms"] = {
-                "count": len(rtts),
-                "of": len(pending),
-                "median": round(rtts[len(rtts) // 2] * 1000, 1),
-                "p95": round(rtts[min(len(rtts) - 1, int(len(rtts) * 0.95))] * 1000, 1),
-                "max": round(rtts[-1] * 1000, 1),
-            }
+            record["ping_rtt_ms"] = rtt_summary(rtts, len(pending))
         record["end"] = self.stats.elapsed()
         self.stats.lines_sent += sent
+        return record
+
+    async def probe(self, seconds):
+        record = {"phase": "probe", "seconds": seconds, "start": self.stats.elapsed()}
+        pending = []
+        started = time.monotonic()
+        while time.monotonic() - started < seconds:
+            pending.append(await self.ping())
+            await asyncio.sleep(1.0)
+        rtts = []
+        for _, ping_sent, future in pending:
+            try:
+                received = await asyncio.wait_for(future, timeout=self.args.marker_timeout)
+                rtts.append(received - ping_sent)
+            except asyncio.TimeoutError:
+                pass
+        record["ping_rtt_ms"] = rtt_summary(rtts, len(pending))
+        record["end"] = self.stats.elapsed()
         return record
 
     async def run_phase(self, name, coro):
@@ -298,6 +325,9 @@ class Server:
                     asyncio.create_task(
                         self.run_phase("flood", self.flood(int(words[1]), float(words[2])))
                     )
+                elif words[0] == "probe":
+                    await self.joined.wait()
+                    asyncio.create_task(self.run_phase("probe", self.probe(float(words[1]))))
                 elif words[0] == "wait":
                     await asyncio.sleep(0)
                     await self.phase_done.wait()
