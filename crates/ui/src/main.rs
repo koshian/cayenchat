@@ -521,6 +521,48 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
     }
 }
 
+/// The newest `limit` conversation lines (not channel activity) across every
+/// conversation except `excluded`, oldest first, as (sequence, conversation,
+/// message index). Merges the conversation tails newest-first, so the cost
+/// grows with `limit` and the number of conversations, not with every
+/// retained line (with several servers there are many conversations).
+fn newest_lines(
+    conversations: &[cayenchat_model::Conversation],
+    excluded: Option<ConversationId>,
+    limit: usize,
+) -> Vec<(u64, ConversationId, usize)> {
+    use std::collections::BinaryHeap;
+
+    fn previous_line(messages: &[cayenchat_model::Message], before: usize) -> Option<usize> {
+        messages[..before]
+            .iter()
+            .rposition(|message| !message.activity)
+    }
+
+    // (sequence, conversation position, message index), newest on top.
+    let mut heads: BinaryHeap<(u64, usize, usize)> = conversations
+        .iter()
+        .enumerate()
+        .filter(|(_, conversation)| Some(conversation.id) != excluded)
+        .filter_map(|(position, conversation)| {
+            let index = previous_line(&conversation.messages, conversation.messages.len())?;
+            Some((conversation.messages[index].sequence, position, index))
+        })
+        .collect();
+    let mut rows = Vec::with_capacity(limit.min(1024));
+    while rows.len() < limit
+        && let Some((sequence, position, index)) = heads.pop()
+    {
+        let conversation = &conversations[position];
+        rows.push((sequence, conversation.id, index));
+        if let Some(previous) = previous_line(&conversation.messages, index) {
+            heads.push((conversation.messages[previous].sequence, position, previous));
+        }
+    }
+    rows.reverse();
+    rows
+}
+
 /// Returns to the executor once, so other queued work runs before continuing.
 async fn yield_now() {
     let mut yielded = false;
@@ -4462,24 +4504,7 @@ impl ChatWindow {
             return;
         }
         self.sub_source = Some(source);
-        let mut rows: Vec<(u64, ConversationId, usize)> = self
-            .state
-            .conversations()
-            .iter()
-            .filter(|conversation| Some(conversation.id) != selected)
-            .flat_map(|conversation| {
-                conversation
-                    .messages
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .filter(|(_, message)| !message.activity)
-                    .take(SUB_LOG_LIMIT)
-                    .map(move |(index, message)| (message.sequence, conversation.id, index))
-            })
-            .collect();
-        rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
-        rows.drain(..rows.len().saturating_sub(SUB_LOG_LIMIT));
+        let rows = newest_lines(self.state.conversations(), selected, SUB_LOG_LIMIT);
         let sequences: Vec<u64> = rows.iter().map(|(sequence, _, _)| *sequence).collect();
         self.sub_list.sync(0, &sequences);
         self.sub_rows = rows.into_iter().map(|(_, id, index)| (id, index)).collect();
@@ -5060,6 +5085,71 @@ fn main() {
                 .expect("could not open the initial settings window");
         }
     });
+}
+
+#[cfg(test)]
+mod combined_log_tests {
+    use super::newest_lines;
+    use cayenchat_model::{Conversation, ConversationId, Message, NetworkId, TimeOfDay};
+
+    /// The previous implementation: every tail collected, then sorted.
+    fn collect_and_sort(
+        conversations: &[Conversation],
+        excluded: Option<ConversationId>,
+        limit: usize,
+    ) -> Vec<(u64, ConversationId, usize)> {
+        let mut rows: Vec<_> = conversations
+            .iter()
+            .filter(|c| Some(c.id) != excluded)
+            .flat_map(|c| {
+                c.messages
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, m)| !m.activity)
+                    .take(limit)
+                    .map(move |(index, m)| (m.sequence, c.id, index))
+            })
+            .collect();
+        rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
+        rows.drain(..rows.len().saturating_sub(limit));
+        rows
+    }
+
+    #[test]
+    fn merged_tails_match_collecting_and_sorting() {
+        // Interleaved arrivals across three conversations on two networks,
+        // with activity lines and an empty conversation.
+        let mut conversations: Vec<Conversation> = (0..4)
+            .map(|id| Conversation {
+                id: ConversationId(id + 1),
+                network: NetworkId(id / 2 + 1),
+                name: format!("#c{id}"),
+                topic: String::new(),
+                messages: Vec::new(),
+                members: Vec::new(),
+            })
+            .collect();
+        for sequence in 1..=500u64 {
+            let target = [0, 1, 1, 2, 0, 2, 1][sequence as usize % 7];
+            conversations[target].messages.push(Message {
+                time: TimeOfDay::new(0, 0),
+                sequence,
+                sender: "bob".into(),
+                text: String::new(),
+                activity: sequence % 5 == 0,
+            });
+        }
+        for excluded in [None, Some(ConversationId(2)), Some(ConversationId(4))] {
+            for limit in [0, 1, 7, 100, 1_000] {
+                assert_eq!(
+                    newest_lines(&conversations, excluded, limit),
+                    collect_and_sort(&conversations, excluded, limit),
+                    "excluded {excluded:?}, limit {limit}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
