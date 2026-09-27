@@ -348,8 +348,9 @@ nick plus `_`, and offers Retry or Disconnect; a repeated rejection updates
 the server's row and registration closes it. A new row takes focus unless
 another nickname field already has it, and Enter submits the focused row. Menu commands
 (Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server; the
-settings window's Save and connect and Disconnect act on the server being
-edited. Saving settings adds, renames or removes networks: a removed server is
+settings window's Connect and Disconnect act on the server being
+edited. Settings save automatically as they change (D018); saving adds,
+renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
 Connecting a server replaces only that server's conversations with its
 configured channels; the other servers keep their logs. All servers marked

@@ -226,9 +226,11 @@ this delay.
    turned off. Turn TLS off and on again; verification should reset to on.
    Toggle SASL and verify account/password fields appear. Type a dummy password and verify the
    screen masks it. Switch servers and confirm the values follow only their server.
-4. Save with **パスワードを保存する** off and inspect the settings file: neither
-   password should be present. Turn it on (no prompt with system storage), save,
-   and verify the fields become empty with the "saved" placeholder, the settings
+4. With **パスワードを保存する** off, type passwords, leave the fields and inspect
+   the settings file: neither password should be present. Turn it on (no prompt
+   with system storage). While a password field keeps focus it must stay as
+   typed; leaving it (or closing the window with the field still focused)
+   stores it. Verify the fields become empty with the "saved" placeholder, the settings
    file still has no password, and Keychain Access (macOS), Credential Manager
    (Windows) or Seahorse/`secret-tool search service CayenChat` (Linux) shows
    `connection/<id>/…` entries (on macOS, one `secrets` item whose data lists
@@ -312,8 +314,8 @@ choose Custom, set its host and port, and leave TLS off; do not enter credential
    roster must stay with its server, and the tree must show every saved
    server (servers not used yet without a status mark). Disconnect one from
    its context menu; the other keeps receiving. Remove one in settings and
-   save; it disappears with its channels. Add a server, save without
-   connecting, and connect it from the tree: with a nickname saved it
+   confirm the prompt; it disappears with its channels. Add a server, fill it
+   in without connecting, and connect it from the tree: with a nickname saved it
    connects, otherwise settings open on it.
 
 The deterministic `irc-core` local-server tests cover registration, automatic join,
@@ -497,7 +499,7 @@ locale through `sys-locale`; Japanese uses `ja`, and all other or unavailable
 languages use English. UI catalogs live in `locales/`; the executable reads
 packaged JSON files at runtime and uses embedded copies when the files are
 missing. Check that macOS, Windows, and Debian packages include both JSON files.
-For UI verification, switch each language in Connection settings, save, reopen
+For UI verification, switch each language in Connection settings, reopen
 settings, and inspect the chat window and native menus without reconnecting.
 
 ### Linux performance tuning (2026-09-26, issue #5)
