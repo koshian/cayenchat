@@ -11,7 +11,7 @@ mod whois;
 use cayenchat_app::{AppState, Command, ConnectionStatus, Selection};
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
-    WhoisInfo, WireDirection,
+    WhoisInfo, WireDirection, valid_channel,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
@@ -1584,7 +1584,7 @@ impl ChatWindow {
                 text,
                 notice,
             } => {
-                if channel.starts_with(['#', '&']) {
+                if valid_channel(&channel) {
                     let nickname = self.own_nickname.as_deref().unwrap_or("me");
                     self.state
                         .append_channel_message(network, &channel, nickname, &text, notice);
@@ -4472,6 +4472,92 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn safe_channel_events_keep_messages_and_members_in_the_channel(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = Settings {
+            channels: String::new(),
+            ..Settings::default()
+        };
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let channel = "!ABCDEtest";
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: channel.into(),
+                    },
+                    Event::Names {
+                        channel: channel.into(),
+                        users: vec!["@alice".into(), "bob".into()],
+                    },
+                    Event::ChannelMessage {
+                        channel: channel.into(),
+                        sender: "bob".into(),
+                        text: "hello".into(),
+                        notice: false,
+                    },
+                    Event::OutgoingAccepted {
+                        channel: channel.into(),
+                        text: "reply".into(),
+                        notice: false,
+                    },
+                    Event::OutgoingAccepted {
+                        channel: channel.into(),
+                        text: "notice".into(),
+                        notice: true,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let conversations = chat.state.conversations();
+            assert_eq!(conversations.len(), 1);
+            let conversation = &conversations[0];
+            assert_eq!(conversation.name, channel);
+            assert!(chat.state.is_active_channel(conversation.id));
+            assert_eq!(conversation.members, ["@alice", "bob"]);
+            assert_eq!(conversation.messages.len(), 3);
+            assert_eq!(conversation.messages[0].text, "hello");
+            assert_eq!(conversation.messages[1].text, "reply");
+            assert_eq!(conversation.messages[1].sender, "alice");
+            assert_eq!(conversation.messages[2].text, "[NOTICE] notice");
+            assert!(
+                chat.inputs
+                    .contains_key(&Selection::Channel(conversation.id))
+            );
+            let id = conversation.id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(id));
+            chat.handle_events(
+                vec![Event::Parted {
+                    channel: channel.into(),
+                }],
+                false,
+                cx,
+            );
+            assert!(!chat.state.is_active_channel(id));
+            assert!(chat.state.conversations()[0].members.is_empty());
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.tree_list.state.item_count()),
+            2
+        );
+    }
 
     #[gpui::test]
     fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {

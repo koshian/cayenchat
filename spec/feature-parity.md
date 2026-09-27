@@ -31,6 +31,7 @@ History and notifications remain TODO.
 - PARTIAL — mock topic kept in application state; display/editing not implemented
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
+- DONE — IRCnet `!` safe-channel targets in auto-join, messages, rosters, channel commands and WHOIS links; preserve the full name returned by the server
 
 ## Private messages
 
