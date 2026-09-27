@@ -431,8 +431,11 @@ ui::secrets (GPUI global holding the one CredentialStore)
         v
 storage::credentials::CredentialStore
         |
-        +-- SystemBackend: keyring crate -> Keychain / Credential Manager /
-        |                  freedesktop Secret Service (zbus, pure Rust)
+        +-- SystemBackend::shared() (one per process, cached)
+        |     macOS: VaultBackend, every secret in one Keychain item `secrets`
+        |     else:  EntryBackend, one Credential Manager / Secret Service
+        |            entry per secret
+        |       -> EntryStore -> keyring crate (zbus for Secret Service)
         +-- LocalFileBackend: credentials.json, 0600, atomic replace
         +-- MemoryBackend: tests
 ```
@@ -449,6 +452,20 @@ its `Debug` output and zeroes its buffer on drop (best effort). Credential
 errors are mapped to sanitized text; keyring payloads, which may contain secret
 bytes, are dropped. The settings file records only the backend choice
 (`credential_backend`) and per-profile `remember_passwords`.
+
+The system backend reads each store entry at most once per process and keeps
+the values in memory, so reconnecting or opening settings does not touch the
+store again; unchanged values are not written back, and failed reads are not
+cached so a refused prompt can be retried. On macOS the legacy Keychain asks
+for the login password per item whenever the app's signature is not on the
+item's access list, which for the ad hoc signed builds means after every
+update, so `VaultBackend` keeps all secrets as one JSON map (same layout as the
+local file) in the item `secrets`: one prompt per launch at most. Secrets that
+earlier versions stored as separate items move into it the first time they are
+read (a missing item is looked up without a prompt), and setting or deleting a
+secret also removes its separate item. Other platforms keep one entry per
+secret, because Credential Manager limits entry size and Secret Service
+unlocks a whole collection at once.
 
 The backend is chosen explicitly (settings version 11, default System). Opening
 never falls back to another backend. The Credential Storage tab probes the

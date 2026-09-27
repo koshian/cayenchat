@@ -14,11 +14,11 @@
 //! carried as [`Secret`], whose `Debug` output is redacted.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -29,7 +29,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub const SERVICE: &str = "CayenChat";
 #[cfg(feature = "test-build")]
 pub const SERVICE: &str = "CayenChat Test Build";
-const LOCAL_FILE_VERSION: u32 = 1;
+const SECRETS_FILE_VERSION: u32 = 1;
 /// Account label for uploader tokens; one account per provider for now.
 pub const DEFAULT_UPLOADER_ACCOUNT: &str = "default";
 
@@ -179,7 +179,7 @@ impl CredentialStore {
     /// Opens the chosen backend. Opening never falls back to another backend.
     pub fn open(kind: CredentialBackendKind) -> Self {
         match kind {
-            CredentialBackendKind::System => Self::with_backend(Arc::new(SystemBackend)),
+            CredentialBackendKind::System => Self::with_backend(SystemBackend::shared()),
             CredentialBackendKind::LocalFile => Self::with_backend(Arc::new(
                 LocalFileBackend::new(local_credentials_path().unwrap_or_default()),
             )),
@@ -260,18 +260,77 @@ pub fn migrate(
     })
 }
 
-/// The operating system credential store through the `keyring` crate.
+/// Raw named entries in the operating system store, below the layouts that
+/// [`SystemBackend::shared`] picks, so those layouts can be tested with a fake.
+pub trait EntryStore: Send + Sync {
+    fn read(&self, name: &str) -> Result<Option<String>, CredentialError>;
+    fn write(&self, name: &str, value: &str) -> Result<(), CredentialError>;
+    /// Removes the entry; a missing entry is not an error.
+    fn remove(&self, name: &str) -> Result<(), CredentialError>;
+}
+
+/// Entries under [`SERVICE`] through the `keyring` crate.
+struct KeyringEntries;
+
+impl EntryStore for KeyringEntries {
+    fn read(&self, name: &str) -> Result<Option<String>, CredentialError> {
+        match system_entry(name)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(map_keyring_error(error)),
+        }
+    }
+
+    fn write(&self, name: &str, value: &str) -> Result<(), CredentialError> {
+        system_entry(name)?
+            .set_password(value)
+            .map_err(map_keyring_error)
+    }
+
+    fn remove(&self, name: &str) -> Result<(), CredentialError> {
+        match system_entry(name)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(map_keyring_error(error)),
+        }
+    }
+}
+
+/// The operating system credential store.
 pub struct SystemBackend;
 
 impl SystemBackend {
     /// Checks that the store can be reached, by looking up an entry that never
-    /// exists. On Linux this fails without a Secret Service provider.
+    /// exists. On Linux this fails without a Secret Service provider. Looking
+    /// up a missing entry never asks the user for permission.
     pub fn probe() -> Result<(), CredentialError> {
         let entry = system_entry("availability-probe")?;
         match entry.get_password() {
             Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(map_keyring_error(error)),
         }
+    }
+
+    /// The one system backend of this process. Sharing it keeps its cache
+    /// coherent however many [`CredentialStore`]s are opened.
+    ///
+    /// On macOS every secret lives in one Keychain item ([`VaultBackend`]):
+    /// the legacy Keychain asks for the login password once per item whenever
+    /// the app's signature is not on the item's access list, which is after
+    /// every update of an ad hoc signed build. Elsewhere each secret is its
+    /// own entry ([`EntryBackend`]); Credential Manager limits entry size and
+    /// Secret Service unlocks a whole collection at once.
+    pub fn shared() -> Arc<dyn CredentialBackend> {
+        static SHARED: OnceLock<Arc<dyn CredentialBackend>> = OnceLock::new();
+        SHARED
+            .get_or_init(|| {
+                let entries: Arc<dyn EntryStore> = Arc::new(KeyringEntries);
+                if cfg!(target_os = "macos") {
+                    Arc::new(VaultBackend::new(entries))
+                } else {
+                    Arc::new(EntryBackend::new(entries))
+                }
+            })
+            .clone()
     }
 }
 
@@ -303,30 +362,182 @@ fn map_keyring_error(error: keyring::Error) -> CredentialError {
     }
 }
 
-impl CredentialBackend for SystemBackend {
+/// One entry per secret, each read from the store at most once per process.
+/// Failed reads are not cached, so a refused prompt can be retried.
+pub struct EntryBackend {
+    entries: Arc<dyn EntryStore>,
+    cache: Mutex<BTreeMap<String, Option<String>>>,
+}
+
+impl EntryBackend {
+    pub fn new(entries: Arc<dyn EntryStore>) -> Self {
+        Self {
+            entries,
+            cache: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl CredentialBackend for EntryBackend {
     fn kind(&self) -> CredentialBackendKind {
         CredentialBackendKind::System
     }
 
     fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
-        match system_entry(&key.name())?.get_password() {
-            Ok(value) => Ok(Some(Secret::new(value))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(map_keyring_error(error)),
+        let name = key.name();
+        // Held across the read so concurrent callers share one prompt.
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(value) = cache.get(&name) {
+            return Ok(value.clone().map(Secret::new));
         }
+        let value = self.entries.read(&name)?;
+        cache.insert(name, value.clone());
+        Ok(value.map(Secret::new))
     }
 
     fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError> {
-        system_entry(&key.name())?
-            .set_password(value.expose())
-            .map_err(map_keyring_error)
+        let name = key.name();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.get(&name).and_then(Option::as_deref) == Some(value.expose()) {
+            return Ok(());
+        }
+        self.entries.write(&name, value.expose())?;
+        cache.insert(name, Some(value.expose().to_owned()));
+        Ok(())
     }
 
     fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
-        match system_entry(&key.name())?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(map_keyring_error(error)),
+        let name = key.name();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(cache.get(&name), Some(None)) {
+            return Ok(());
         }
+        self.entries.remove(&name)?;
+        cache.insert(name, None);
+        Ok(())
+    }
+}
+
+/// Name of the entry that holds every secret for [`VaultBackend`].
+pub const VAULT_ENTRY: &str = "secrets";
+
+/// Every secret in one store entry, read at most once per process, so the
+/// store asks for permission once instead of once per secret. Unchanged
+/// values are not written back. Secrets saved as separate entries by earlier
+/// versions move into the vault the first time they are asked for.
+pub struct VaultBackend {
+    entries: Arc<dyn EntryStore>,
+    state: Mutex<VaultState>,
+}
+
+#[derive(Default)]
+struct VaultState {
+    /// `None` until the vault entry has been read.
+    secrets: Option<BTreeMap<String, String>>,
+    /// Names already looked up, or cleared, as separate entries.
+    separate_checked: BTreeSet<String>,
+}
+
+impl VaultBackend {
+    pub fn new(entries: Arc<dyn EntryStore>) -> Self {
+        Self {
+            entries,
+            state: Mutex::new(VaultState::default()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VaultState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn loaded<'a>(
+        &self,
+        state: &'a mut VaultState,
+    ) -> Result<&'a mut BTreeMap<String, String>, CredentialError> {
+        if state.secrets.is_none() {
+            let secrets = match self.entries.read(VAULT_ENTRY)? {
+                Some(text) => SecretsFile::decode(text.as_bytes(), "the stored credentials")?,
+                None => BTreeMap::new(),
+            };
+            state.secrets = Some(secrets);
+        }
+        Ok(state.secrets.as_mut().expect("vault loaded above"))
+    }
+
+    /// Writes `secrets` as the vault; memory changes only after it is stored.
+    fn store(
+        &self,
+        state: &mut VaultState,
+        secrets: BTreeMap<String, String>,
+    ) -> Result<(), CredentialError> {
+        let text = SecretsFile::encode(secrets.clone())?;
+        self.entries.write(VAULT_ENTRY, &text)?;
+        state.secrets = Some(secrets);
+        Ok(())
+    }
+
+    /// Removes a separate entry an earlier version may have left, once.
+    fn clear_separate(&self, state: &mut VaultState, name: &str) {
+        if state.separate_checked.insert(name.to_owned()) {
+            let _ = self.entries.remove(name);
+        }
+    }
+}
+
+impl CredentialBackend for VaultBackend {
+    fn kind(&self) -> CredentialBackendKind {
+        CredentialBackendKind::System
+    }
+
+    fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
+        let name = key.name();
+        let mut state = self.lock();
+        if let Some(value) = self.loaded(&mut state)?.get(&name) {
+            return Ok(Some(Secret::new(value.clone())));
+        }
+        if state.separate_checked.contains(&name) {
+            return Ok(None);
+        }
+        // Looking up a missing entry does not prompt, so this costs nothing
+        // once every old entry has moved.
+        let Some(value) = self.entries.read(&name)? else {
+            state.separate_checked.insert(name);
+            return Ok(None);
+        };
+        let mut secrets = self.loaded(&mut state)?.clone();
+        secrets.insert(name.clone(), value.clone());
+        if self.store(&mut state, secrets).is_ok() {
+            self.clear_separate(&mut state, &name);
+        }
+        Ok(Some(Secret::new(value)))
+    }
+
+    fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError> {
+        let name = key.name();
+        let mut state = self.lock();
+        let secrets = self.loaded(&mut state)?;
+        if secrets.get(&name).map(String::as_str) != Some(value.expose()) {
+            let mut secrets = secrets.clone();
+            secrets.insert(name.clone(), value.expose().to_owned());
+            self.store(&mut state, secrets)?;
+        }
+        self.clear_separate(&mut state, &name);
+        Ok(())
+    }
+
+    fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
+        let name = key.name();
+        let mut state = self.lock();
+        let secrets = self.loaded(&mut state)?;
+        if secrets.contains_key(&name) {
+            let mut secrets = secrets.clone();
+            secrets.remove(&name);
+            self.store(&mut state, secrets)?;
+        }
+        if state.separate_checked.insert(name.clone()) {
+            self.entries.remove(&name)?;
+        }
+        Ok(())
     }
 }
 
@@ -367,10 +578,34 @@ fn xdg_config_home(xdg: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Op
         .or_else(|| home.map(|home| home.join(".config")))
 }
 
+/// The JSON layout shared by the local credential file and the vault entry.
 #[derive(Serialize, Deserialize)]
-struct LocalFile {
+struct SecretsFile {
     version: u32,
     secrets: BTreeMap<String, String>,
+}
+
+impl SecretsFile {
+    /// `what` names the source in errors, which never include its contents.
+    fn decode(bytes: &[u8], what: &str) -> Result<BTreeMap<String, String>, CredentialError> {
+        let file: SecretsFile = serde_json::from_slice(bytes)
+            .map_err(|_| CredentialError::Format(format!("{what} are not valid")))?;
+        if file.version != SECRETS_FILE_VERSION {
+            return Err(CredentialError::Format(format!(
+                "unsupported credential file version {}",
+                file.version
+            )));
+        }
+        Ok(file.secrets)
+    }
+
+    fn encode(secrets: BTreeMap<String, String>) -> Result<String, CredentialError> {
+        serde_json::to_string_pretty(&SecretsFile {
+            version: SECRETS_FILE_VERSION,
+            secrets,
+        })
+        .map_err(|_| CredentialError::Format("could not encode credentials".into()))
+    }
 }
 
 /// Unencrypted secrets in a user-only file. Encrypting them with a key kept
@@ -407,15 +642,7 @@ impl LocalFileBackend {
             }
             Err(error) => return Err(CredentialError::Io(error.kind().to_string())),
         };
-        let file: LocalFile = serde_json::from_slice(&bytes)
-            .map_err(|_| CredentialError::Format("the credential file is not valid".into()))?;
-        if file.version != LOCAL_FILE_VERSION {
-            return Err(CredentialError::Format(format!(
-                "unsupported credential file version {}",
-                file.version
-            )));
-        }
-        Ok(file.secrets)
+        SecretsFile::decode(&bytes, "the credential file contents")
     }
 
     fn write(&self, secrets: BTreeMap<String, String>) -> Result<(), CredentialError> {
@@ -425,11 +652,7 @@ impl LocalFileBackend {
             .parent()
             .ok_or_else(|| CredentialError::Io("the credential path has no directory".into()))?;
         create_private_dir(parent).map_err(io)?;
-        let bytes = serde_json::to_vec_pretty(&LocalFile {
-            version: LOCAL_FILE_VERSION,
-            secrets,
-        })
-        .map_err(|_| CredentialError::Format("could not encode credentials".into()))?;
+        let bytes = SecretsFile::encode(secrets)?.into_bytes();
         // Write a fresh user-only file, then atomically replace the old one, so
         // the secrets are never in a file with broader permissions.
         let temporary = self
@@ -696,6 +919,149 @@ mod tests {
         let error = store.get(&SecretKey::sasl_password("a")).unwrap_err();
         assert!(!error.to_string().contains("leak-me"));
         assert!(!format!("{error:?}").contains("leak-me"));
+    }
+
+    /// OS entries in memory. `prompts` counts reads of existing entries, the
+    /// reads that make macOS ask for the login password.
+    #[derive(Default)]
+    struct FakeEntries {
+        entries: Mutex<BTreeMap<String, String>>,
+        prompts: Mutex<usize>,
+        writes: Mutex<usize>,
+    }
+
+    impl FakeEntries {
+        fn prompts(&self) -> usize {
+            *self.prompts.lock().unwrap()
+        }
+
+        fn writes(&self) -> usize {
+            *self.writes.lock().unwrap()
+        }
+
+        fn names(&self) -> Vec<String> {
+            self.entries.lock().unwrap().keys().cloned().collect()
+        }
+    }
+
+    impl EntryStore for FakeEntries {
+        fn read(&self, name: &str) -> Result<Option<String>, CredentialError> {
+            let value = self.entries.lock().unwrap().get(name).cloned();
+            if value.is_some() {
+                *self.prompts.lock().unwrap() += 1;
+            }
+            Ok(value)
+        }
+
+        fn write(&self, name: &str, value: &str) -> Result<(), CredentialError> {
+            *self.writes.lock().unwrap() += 1;
+            self.entries
+                .lock()
+                .unwrap()
+                .insert(name.to_owned(), value.to_owned());
+            Ok(())
+        }
+
+        fn remove(&self, name: &str) -> Result<(), CredentialError> {
+            self.entries.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    fn vault(entries: &Arc<FakeEntries>) -> CredentialStore {
+        CredentialStore::with_backend(Arc::new(VaultBackend::new(entries.clone())))
+    }
+
+    #[test]
+    fn vault_reads_the_store_once_for_all_secrets() {
+        let entries = Arc::new(FakeEntries::default());
+        let keys = [
+            SecretKey::server_password("ircnet"),
+            SecretKey::sasl_password("ircnet"),
+            SecretKey::uploader_token("imgbb"),
+        ];
+        let first = vault(&entries);
+        for (index, key) in keys.iter().enumerate() {
+            first
+                .set(key, &Secret::new(format!("secret-{index}")))
+                .unwrap();
+        }
+        assert_eq!(entries.names(), [VAULT_ENTRY]);
+
+        // A new process: every lookup, present or not, costs one prompt.
+        let second = vault(&entries);
+        for (index, key) in keys.iter().enumerate() {
+            let value = second.get(key).unwrap().unwrap();
+            assert_eq!(value.expose(), format!("secret-{index}"));
+            assert!(second.contains(key).unwrap());
+        }
+        assert!(!second.contains(&SecretKey::sasl_password("other")).unwrap());
+        assert!(!second.contains(&SecretKey::sasl_password("other")).unwrap());
+        assert_eq!(entries.prompts(), 1);
+    }
+
+    #[test]
+    fn vault_skips_unchanged_writes_and_deletes() {
+        let entries = Arc::new(FakeEntries::default());
+        let store = vault(&entries);
+        let key = SecretKey::sasl_password("ircnet");
+        store.set(&key, &Secret::new("pass")).unwrap();
+        store.set(&key, &Secret::new("pass")).unwrap();
+        store.delete(&SecretKey::server_password("ircnet")).unwrap();
+        assert_eq!(entries.writes(), 1);
+        store.delete(&key).unwrap();
+        assert_eq!(entries.writes(), 2);
+        assert!(vault(&entries).get(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn vault_moves_separate_entries_in_once() {
+        let entries = Arc::new(FakeEntries::default());
+        let old = SecretKey::sasl_password("ircnet");
+        let stale = SecretKey::server_password("ircnet");
+        entries.write(&old.name(), "old-sasl").unwrap();
+        entries.write(&stale.name(), "old-pass").unwrap();
+
+        let store = vault(&entries);
+        assert_eq!(store.get(&old).unwrap().unwrap().expose(), "old-sasl");
+        // Replacing or deleting a secret also drops its old separate entry.
+        store.delete(&stale).unwrap();
+        assert_eq!(entries.names(), [VAULT_ENTRY]);
+        assert!(store.get(&stale).unwrap().is_none());
+
+        let prompts = entries.prompts();
+        let next = vault(&entries);
+        assert_eq!(next.get(&old).unwrap().unwrap().expose(), "old-sasl");
+        assert!(next.get(&stale).unwrap().is_none());
+        assert_eq!(entries.prompts(), prompts + 1);
+    }
+
+    #[test]
+    fn vault_rejects_unreadable_data_without_leaking_it() {
+        let entries = Arc::new(FakeEntries::default());
+        entries
+            .write(VAULT_ENTRY, "{\"secrets\":\"leak-me\"")
+            .unwrap();
+        let error = vault(&entries)
+            .get(&SecretKey::sasl_password("a"))
+            .unwrap_err();
+        assert!(matches!(error, CredentialError::Format(_)));
+        assert!(!format!("{error} {error:?}").contains("leak-me"));
+    }
+
+    #[test]
+    fn entry_backend_reads_each_entry_once() {
+        let entries = Arc::new(FakeEntries::default());
+        let key = SecretKey::sasl_password("ircnet");
+        entries.write(&key.name(), "pass").unwrap();
+        let store = CredentialStore::with_backend(Arc::new(EntryBackend::new(entries.clone())));
+        assert!(store.contains(&key).unwrap());
+        assert_eq!(store.get(&key).unwrap().unwrap().expose(), "pass");
+        store.set(&key, &Secret::new("pass")).unwrap();
+        assert_eq!((entries.prompts(), entries.writes()), (1, 1));
+        store.delete(&key).unwrap();
+        assert!(store.get(&key).unwrap().is_none());
+        assert!(entries.names().is_empty());
     }
 
     /// Touches the real OS store, so it only runs on request:

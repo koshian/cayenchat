@@ -231,7 +231,10 @@ this delay.
    and verify the fields become empty with the "saved" placeholder, the settings
    file still has no password, and Keychain Access (macOS), Credential Manager
    (Windows) or Seahorse/`secret-tool search service CayenChat` (Linux) shows
-   `connection/<id>/…` entries. Restart with startup connection on and verify
+   `connection/<id>/…` entries (on macOS, one `secrets` item whose data lists
+   those names). On macOS, after rebuilding, connecting should ask for the
+   login password once however many passwords are saved, and opening settings
+   afterwards should not ask again. Restart with startup connection on and verify
    they are used. Turn saving off and verify the entries disappear immediately.
    A version 10 settings file with saved passwords should lose them from the
    file on the next start and gain the store entries.
