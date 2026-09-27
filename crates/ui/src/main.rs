@@ -3595,11 +3595,11 @@ impl SettingsWindow {
                     .flex()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if self.settings.values.appearance.image_previews {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.image_previews,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("image_previews"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         let value = &mut this.settings.values.appearance.image_previews;
