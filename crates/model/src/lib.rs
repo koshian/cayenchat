@@ -55,6 +55,8 @@ pub struct Message {
     pub sender: String,
     pub text: String,
     pub activity: bool,
+    /// History replayed by a server or bouncer; never highlighted.
+    pub replayed: bool,
 }
 
 #[cfg(test)]

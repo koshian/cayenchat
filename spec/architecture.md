@@ -393,7 +393,7 @@ irc-core Event::ChannelMessage { mentioned } / Event::PrivateMessage
         |   (irc-core::text: nickname word match, formatting and ACTION)
         v
 ui::ChatWindow::notify_message -> app::notifications::IncomingMessage
-        |   (plain text, channel/private, notice, from_self, mentioned)
+        |   (plain text, channel/private, notice, from_self, mentioned, replayed)
         v
 app::notifications::NotificationRules::trigger  (GPUI- and protocol-free:
         |                          mention / keyword / private message)
@@ -418,7 +418,14 @@ matched inside other words only if the user adds it as a keyword. The rules
 only receive the `mentioned` flag: a Matrix adapter would set it from the
 event's intentional mentions (`m.mentions`) and push rules instead of parsing
 text, so no `@`-specific rule is needed in `app`. Our own messages never
-notify (bouncer echoes). Nothing notifies while the chat window is
+notify (bouncer echoes), and neither does replayed history: `irc-core`
+(`replay::ReplayTracker`) sets `replayed` on a PRIVMSG or NOTICE that has no
+user mask (a line from the server or bouncer itself, such as Tiarra's
+Log::Recent replaying channel logs as `:tiarra NOTICE #chan`), that belongs
+to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
+one), or whose server-time tag is at least five minutes old. Replayed
+messages still appear in the log (`model::Message::replayed`) but are neither
+highlighted there nor mark unread channels. Nothing notifies while the chat window is
 focused and the message's conversation (the server view for private messages)
 is selected. At most five notifications are shown per ten seconds so bouncer
 history playback cannot flood the desktop; the log and unread marks are

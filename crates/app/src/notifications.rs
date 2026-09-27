@@ -39,6 +39,9 @@ pub struct IncomingMessage<'a> {
     /// Our own message echoed back (for example by a bouncer).
     pub from_self: bool,
     pub mentioned: bool,
+    /// History replayed by a bouncer or server, or a line the server or
+    /// bouncer sent itself; it was live, if ever, some time ago.
+    pub replayed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,8 +54,9 @@ pub enum Trigger {
 impl NotificationRules {
     /// NOTICEs are usually automated (bots, services), so private NOTICEs
     /// never notify; channel NOTICEs still notify on mentions and keywords.
+    /// Replayed history never notifies.
     pub fn trigger(&self, message: IncomingMessage) -> Option<Trigger> {
-        if !self.enabled || message.from_self {
+        if !self.enabled || message.from_self || message.replayed {
             None
         } else if !message.channel {
             (self.private_messages && !message.notice).then_some(Trigger::PrivateMessage)
@@ -184,6 +188,7 @@ mod tests {
             notice: false,
             from_self: false,
             mentioned,
+            replayed: false,
         }
     }
 
@@ -245,6 +250,7 @@ mod tests {
             notice,
             from_self: false,
             mentioned: false,
+            replayed: false,
         };
         assert_eq!(rules.trigger(private(false)), Some(Trigger::PrivateMessage));
         assert_eq!(rules.trigger(private(true)), None);
@@ -253,6 +259,13 @@ mod tests {
             ..channel("Deploy me", true)
         };
         assert_eq!(rules.trigger(echo), None);
+        let replayed = |message| IncomingMessage {
+            replayed: true,
+            ..message
+        };
+        assert_eq!(rules.trigger(replayed(channel("me: ping", true))), None);
+        assert_eq!(rules.trigger(replayed(channel("Deploy done", false))), None);
+        assert_eq!(rules.trigger(replayed(private(false))), None);
         let off = NotificationRules {
             enabled: false,
             ..rules.clone()
