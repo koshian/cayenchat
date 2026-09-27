@@ -306,7 +306,7 @@ behavior remain future work. Chat history does not survive application exit.
 
 ### Manual live IRC checks
 
-Use the in-app settings as described in README. For a local plaintext fixture,
+Add the server in the in-app settings. For a local plaintext fixture,
 choose Custom, set its host and port, and leave TLS off; do not enter credentials.
 
 1. Launch and verify the server row changes from connecting to registered, and the
