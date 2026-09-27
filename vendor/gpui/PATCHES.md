@@ -65,3 +65,13 @@ Check Windows 11 with MS-IME on a Japanese keyboard before treating the
 reported toggle issue as verified. Once a compatible released GPUI version
 contains the full fix and the Wayland decoration fallback, remove this override
 and this directory.
+
+In `src/platform/mac/window.rs`, windows also accept file-promise drags
+(`NSFilePromiseReceiver`), which Photos, Mail and the screenshot thumbnail
+use instead of existing file paths. Drop targets see an empty `ExternalPaths`
+while such a drag hovers. On drop, the promised files are written into a new
+`0700` directory under `$TMPDIR/gpui-file-promises/`; the readers run on the
+main queue, and once all files arrive the drop is replayed as Entered (with
+the paths), Submit and Exited, after which the directory is removed. Drop
+handlers must therefore read the files synchronously. Upstream registered only
+`NSFilenamesPboardType`, so these drags were refused.

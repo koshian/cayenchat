@@ -1,5 +1,7 @@
 //! Small, UI-independent domain types. These are not IRC wire types.
 
+pub mod attachment;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NetworkId(pub u32);
 
