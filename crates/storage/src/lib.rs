@@ -577,8 +577,8 @@ pub fn test_build_directory() -> Result<PathBuf, String> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_millis())
                 .unwrap_or_default();
-            let directory = std::env::temp_dir()
-                .join(format!("cayenchat-test-{}-{stamp}", std::process::id()));
+            let directory =
+                std::env::temp_dir().join(format!("cayenchat-test-{}-{stamp}", std::process::id()));
             let mut builder = fs::DirBuilder::new();
             #[cfg(unix)]
             {
