@@ -13,7 +13,7 @@ pub mod credentials;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
-const SETTINGS_VERSION: u32 = 13;
+const SETTINGS_VERSION: u32 = 14;
 /// Profile IDs of the IRCnet servers that versions 1–12 always listed. They
 /// only matter for migration: profiles keep their IDs, so saved passwords stay
 /// attached.
@@ -131,6 +131,9 @@ pub struct Appearance {
     pub sub_log_background: String,
     pub sub_log_alternate: String,
     pub alternate_rows: bool,
+    /// Inline thumbnails of direct image links in the main channel log
+    /// (version 14). Off by default, also for settings saved before it existed.
+    pub image_previews: bool,
     pub main_log_font: String,
     pub sub_log_font: String,
     pub member_font: String,
@@ -179,6 +182,7 @@ impl Default for Appearance {
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
+            image_previews: false,
             main_log_font: String::new(),
             sub_log_font: String::new(),
             member_font: String::new(),
@@ -830,7 +834,8 @@ mod tests {
     fn supported_profile_versions_preserve_connection_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        for version in 2..SETTINGS_VERSION {
+        // Versions 2–12 kept one application-wide identity (see D017).
+        for version in 2..=12 {
             let original = serde_json::json!({
                 "version": version,
                 "selected_server": "custom-1",
@@ -1139,6 +1144,34 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings));
         assert_eq!(color_value("#123ABC"), Some(0x123abc));
         assert!(color_value("#123ABZ").is_none());
+    }
+
+    #[test]
+    fn image_previews_default_off_for_old_and_new_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.image_previews);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["version"] = 13.into();
+        old["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("image_previews");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        assert!(!settings.appearance.image_previews);
+        settings.appearance.image_previews = true;
+        save_to(&path, &settings).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 14);
+        assert_eq!(saved["appearance"]["image_previews"], true);
+        assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+
+        settings.appearance.image_previews = false;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
 
     #[test]

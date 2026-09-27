@@ -334,6 +334,7 @@ impl SettingsForm {
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
+            image_previews: self.values.appearance.image_previews,
             main_log_font: value(&self.main_log_font),
             sub_log_font: value(&self.sub_log_font),
             member_font: value(&self.member_font),
@@ -3589,6 +3590,31 @@ impl SettingsWindow {
                         *value = !*value;
                         cx.notify();
                     })),
+            )
+            .child(
+                div()
+                    .id("image-previews")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(if self.settings.values.appearance.image_previews {
+                        "☑"
+                    } else {
+                        "☐"
+                    })
+                    .child(self.i18n.text("image_previews"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.image_previews;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("image_previews_hint")),
             )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
