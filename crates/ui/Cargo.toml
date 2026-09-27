@@ -13,6 +13,8 @@ ignored = ["native-theme-derive"]
 assets = [
   ["target/release/cayenchat", "usr/bin/", "755"],
   ["../../locales/*.json", "usr/share/cayenchat/locales/", "644"],
+  ["../../assets/linux/cayenchat.desktop", "usr/share/applications/", "644"],
+  ["../../assets/icons/cayenchat.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
 ]
 
 [[bin]]

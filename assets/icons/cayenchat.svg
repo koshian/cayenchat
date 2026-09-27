@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>CayenChat</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#34233A"/>
+      <stop offset="1" stop-color="#150E18"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF3B1F" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#FF3B1F" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pepper" x1="0.2" y1="0.1" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#FF5A2E"/>
+      <stop offset="0.5" stop-color="#F0282A"/>
+      <stop offset="1" stop-color="#C40E2A"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6FD65A"/>
+      <stop offset="1" stop-color="#27A043"/>
+    </linearGradient>
+    <path id="bubble" d="M700 300 C800 290 870 360 870 460 C870 640 720 760 520 770 C450 773 390 768 340 758 C300 800 240 830 170 842 C212 800 234 760 236 714 C172 668 148 608 170 558 C200 482 320 462 430 452 C560 440 610 310 700 300 Z"/>
+    <clipPath id="bubbleClip"><use href="#bubble"/></clipPath>
+  </defs>
+
+  <!-- background -->
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+
+  <!-- heat glow -->
+  <ellipse cx="520" cy="560" rx="440" ry="380" fill="url(#glow)"/>
+
+  <!-- pepper speech bubble -->
+  <use href="#bubble" fill="url(#pepper)"/>
+
+  <!-- gloss -->
+  <path d="M232 566 C280 508 380 494 452 487 C566 476 622 384 690 346" fill="none" stroke="#FFFFFF" stroke-opacity="0.38" stroke-width="30" stroke-linecap="round" clip-path="url(#bubbleClip)"/>
+
+  <!-- typing dots -->
+  <g fill="#FFFFFF">
+    <circle cx="380" cy="620" r="46"/>
+    <circle cx="520" cy="606" r="46"/>
+    <circle cx="660" cy="566" r="46"/>
+  </g>
+
+  <!-- stem -->
+  <path d="M770 300 C774 230 810 176 880 160" fill="none" stroke="#2FA548" stroke-width="48" stroke-linecap="round"/>
+
+  <!-- calyx -->
+  <path d="M606 336 C646 272 760 250 842 280 C904 304 924 372 902 444 C880 420 856 402 826 398 C806 424 774 432 744 420 C724 396 694 382 656 386 C636 372 618 356 606 336 Z" fill="url(#leaf)"/>
+</svg>

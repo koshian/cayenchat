@@ -154,9 +154,10 @@ matching links from the load fixture. Never ship a `preview-fixture` build.
 The helper only builds and copies into ignored `target/`. It neither installs nor
 signs/notarizes a distributable app. The normal `cargo run` entry point is portable.
 The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
-`crates/ui/resources/windows/cayenchat.ico`. Both are derived from `icon.png` and
-checked in so normal builds need no image tools. When changing the artwork, run
-`python3 scripts/generate-icons.py` with Pillow installed, then rebuild the app.
+`crates/ui/resources/windows/cayenchat.ico`. Both are rendered from the canonical
+`assets/icons/cayenchat.svg` and checked in so normal builds need no image tools.
+When changing the artwork, run `python3 scripts/generate-icons.py` with Pillow
+and `rsvg-convert` (librsvg) installed, then rebuild the app.
 The macOS beta workflow signs the completed bundle ad hoc and verifies its
 resource seal before archiving. This is sufficient to validate bundle integrity
 but does not provide Developer ID signing or notarization for Gatekeeper.
@@ -189,6 +190,15 @@ On Debian/Ubuntu the link step needs `libxcb1-dev`, `libxkbcommon-dev` and
 plus `libwayland-dev`, `build-essential` and `pkg-config`; at runtime `libvulkan1`
 and a Vulkan driver such as `mesa-vulkan-drivers`. This set built in the Debian
 bookworm container below.
+
+The Debian package (`cargo deb`, configured in `crates/ui/Cargo.toml`) installs
+`assets/linux/cayenchat.desktop` to `/usr/share/applications/` and the canonical
+SVG `assets/icons/cayenchat.svg` to
+`/usr/share/icons/hicolor/scalable/apps/cayenchat.svg`, so desktop menus list
+CayenChat with `Icon=cayenchat`. dpkg triggers of the desktop and icon-cache
+packages refresh their caches; no maintainer script is needed. Verify with
+`dpkg-deb -c target/debian/*.deb` and
+`desktop-file-validate assets/linux/cayenchat.desktop`.
 
 GPUI reports renderer, display-server and font failures through the `log` crate.
 The app installs a small stderr logger (`crates/ui/src/diagnostics.rs`) that
