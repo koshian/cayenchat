@@ -279,10 +279,7 @@ mod tests {
     }
     #[test]
     fn avatar_urls_need_no_extension_but_stay_safe() {
-        let url = |text: &str| match avatar_url(text, 32) {
-            Some(MediaRef::Link(url)) => Some(url.to_string()),
-            None => None,
-        };
+        let url = |text: &str| avatar_url(text, 32).map(|MediaRef::Link(url)| url.to_string());
         assert_eq!(
             url("https://example.com/avatar/{size}/abc").as_deref(),
             Some("https://example.com/avatar/32/abc")
