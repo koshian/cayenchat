@@ -208,7 +208,7 @@ impl SettingsWindow {
                 ),
                 theme.warning,
             ))
-            .when_some(self.feedback.clone(), |d, feedback| {
+            .when_some(self.status_message(), |d, feedback| {
                 d.child(div().pt_2().text_color(theme.warning).child(feedback))
             })
     }
@@ -454,7 +454,7 @@ impl SettingsWindow {
                     );
             }
         }
-        panel.when_some(self.feedback.clone(), |d, feedback| {
+        panel.when_some(self.status_message(), |d, feedback| {
             d.child(div().pt_2().text_color(theme.warning).child(feedback))
         })
     }
