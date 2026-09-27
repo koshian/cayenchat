@@ -90,6 +90,11 @@ impl Previews {
                 self.fetcher = Some(fetcher.clone());
                 return;
             }
+            #[cfg(feature = "preview-fixture")]
+            if let Some(fetcher) = fixture::DirectoryFetcher::from_env() {
+                self.fetcher = Some(Arc::new(fetcher));
+                return;
+            }
             self.fetcher = Some(Arc::new(HttpFetcher::new(&self.limits)));
         }
     }
@@ -163,6 +168,71 @@ fn to_preview(thumbnail: Thumbnail) -> (Preview, usize) {
         },
         bytes,
     )
+}
+
+/// Local images for measurements and GUI checks (`preview-fixture`
+/// feature): `https://images.cayenchat.test/<name>` is read from
+/// `$CAYENCHAT_PREVIEW_FIXTURE_DIR/<name>`, after an optional
+/// `$CAYENCHAT_PREVIEW_FIXTURE_DELAY_MS` standing in for the network. Every
+/// other link fails without any request. Candidate recognition and decoding
+/// are the production code.
+#[cfg(feature = "preview-fixture")]
+mod fixture {
+    use std::{path::PathBuf, time::Duration};
+
+    use cayenchat_media::{CancelFlag, Fetcher, Limits, LoadError, MediaRef};
+
+    pub struct DirectoryFetcher {
+        directory: PathBuf,
+        delay: Duration,
+    }
+
+    impl DirectoryFetcher {
+        pub fn from_env() -> Option<Self> {
+            let directory = PathBuf::from(std::env::var_os("CAYENCHAT_PREVIEW_FIXTURE_DIR")?);
+            let delay = std::env::var("CAYENCHAT_PREVIEW_FIXTURE_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map(Duration::from_millis)
+                .unwrap_or_default();
+            log::warn!(
+                "image previews read local fixtures from {}",
+                directory.display()
+            );
+            Some(Self { directory, delay })
+        }
+    }
+
+    impl Fetcher for DirectoryFetcher {
+        fn fetch(
+            &self,
+            source: &MediaRef,
+            limits: &Limits,
+            cancel: &CancelFlag,
+        ) -> Result<Vec<u8>, LoadError> {
+            let url = match source {
+                MediaRef::Link(url) if url.host_str() == Some("images.cayenchat.test") => url,
+                _ => return Err(LoadError::Blocked),
+            };
+            let name = url
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .filter(|name| !name.is_empty() && !name.starts_with('.'))
+                .ok_or(LoadError::Status(404))?;
+            std::thread::sleep(self.delay);
+            if cancel.is_cancelled() {
+                return Err(LoadError::Cancelled);
+            }
+            let path = self.directory.join(name);
+            let length = std::fs::metadata(&path)
+                .map_err(|_| LoadError::Status(404))?
+                .len();
+            if length > limits.max_response_bytes as u64 {
+                return Err(LoadError::TooLarge);
+            }
+            std::fs::read(path).map_err(|_| LoadError::Status(404))
+        }
+    }
 }
 
 impl ChatWindow {
