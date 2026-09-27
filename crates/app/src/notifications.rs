@@ -7,6 +7,7 @@
 
 use std::{
     collections::VecDeque,
+    ops::Range,
     time::{Duration, Instant},
 };
 
@@ -68,12 +69,54 @@ impl NotificationRules {
 /// Case-insensitive substring match: keywords are often Japanese, which has
 /// no word boundaries.
 pub fn contains_keyword(text: &str, keywords: &[String]) -> bool {
-    let text = text.to_lowercase();
-    keywords
+    !keyword_ranges(text, keywords).is_empty()
+}
+
+/// Byte ranges in `text` of every keyword occurrence, sorted and merged.
+/// Characters compare by their lowercase forms, so ranges stay on the
+/// original text's character boundaries.
+pub fn keyword_ranges(text: &str, keywords: &[String]) -> Vec<Range<usize>> {
+    let keywords: Vec<Vec<char>> = keywords
         .iter()
         .map(|word| word.trim())
         .filter(|word| !word.is_empty())
-        .any(|word| text.contains(&word.to_lowercase()))
+        .map(|word| word.chars().flat_map(char::to_lowercase).collect())
+        .collect();
+    if keywords.is_empty() {
+        return Vec::new();
+    }
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for (start, _) in text.char_indices() {
+        let end = keywords
+            .iter()
+            .filter_map(|word| match_at(&text[start..], word).map(|len| start + len))
+            .max();
+        if let Some(end) = end {
+            match ranges.last_mut() {
+                Some(last) if last.end >= start => last.end = last.end.max(end),
+                _ => ranges.push(start..end),
+            }
+        }
+    }
+    ranges
+}
+
+/// Length in bytes of the prefix of `text` equal to `word` ignoring case.
+fn match_at(text: &str, word: &[char]) -> Option<usize> {
+    let mut wanted = word.iter();
+    let mut pending = wanted.next()?;
+    for (index, ch) in text.char_indices() {
+        for lower in ch.to_lowercase() {
+            if lower != *pending {
+                return None;
+            }
+            match wanted.next() {
+                Some(next) => pending = next,
+                None => return Some(index + ch.len_utf8()),
+            }
+        }
+    }
+    None
 }
 
 /// Parses the comma-separated keyword field.
@@ -152,6 +195,12 @@ mod tests {
         assert!(!contains_keyword("nothing here", &words));
         assert!(!contains_keyword("x", &[" ".into()]));
         assert_eq!(parse_keywords(" a, ,b ,"), vec!["a", "b"]);
+        assert_eq!(
+            keyword_ranges("Deploy ビルド deploy", &words),
+            [0..6, 7..16, 17..23]
+        );
+        let overlapping = ["abc".into(), "bcd".into()];
+        assert_eq!(keyword_ranges("xabcdx", &overlapping), [1..5]);
     }
 
     #[test]

@@ -43,16 +43,25 @@ pub fn action_text(text: &str) -> Option<&str> {
 /// characters (letters, digits and `-_[]\`^{}|`) make it part of another word,
 /// so `bob` does not match `bobby`, while `@bob` and `bob:` match.
 pub fn mentions_nickname(text: &str, nickname: &str) -> bool {
+    !mention_ranges(text, nickname).is_empty()
+}
+
+/// Byte ranges of the whole-word occurrences of `nickname` in `text`.
+pub fn mention_ranges(text: &str, nickname: &str) -> Vec<std::ops::Range<usize>> {
     if nickname.is_empty() {
-        return false;
+        return Vec::new();
     }
-    let text = irc_lowercase(text);
+    let lower = irc_lowercase(text);
     let nickname = irc_lowercase(nickname);
-    text.match_indices(&nickname).any(|(start, found)| {
-        let before = text[..start].chars().next_back();
-        let after = text[start + found.len()..].chars().next();
-        !before.is_some_and(is_nick_char) && !after.is_some_and(is_nick_char)
-    })
+    lower
+        .match_indices(&nickname)
+        .map(|(start, found)| start..start + found.len())
+        .filter(|range| {
+            let before = lower[..range.start].chars().next_back();
+            let after = lower[range.end..].chars().next();
+            !before.is_some_and(is_nick_char) && !after.is_some_and(is_nick_char)
+        })
+        .collect()
 }
 
 /// Nickname equality under RFC 1459 case mapping.
@@ -93,6 +102,7 @@ mod tests {
         assert!(!mentions_nickname("bob_: hi", "bob"));
         assert!(!mentions_nickname("anything", ""));
         assert!(same_nickname("Nick[a]", "nick{A}"));
+        assert_eq!(mention_ranges("Bob, bobby and @bob", "bob"), [0..3, 16..19]);
     }
 
     #[test]
