@@ -29,6 +29,9 @@ serde_json.workspace = true
 chrono.workspace = true
 sys-locale = "0.3.2"
 log = "0.4"
+# OS notifications: org.freedesktop.Notifications over zbus on Linux/BSD,
+# NSUserNotification on macOS, WinRT toasts on Windows.
+notify-rust = "4.18"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
@@ -45,3 +48,7 @@ gpui = { workspace = true, features = ["windows-manifest"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Reads the bundle identifier for notifications; already in GPUI's tree.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString"] }

@@ -1,5 +1,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
+pub mod text;
+
 use std::{
     collections::HashMap,
     fmt, thread,
@@ -15,7 +17,7 @@ use irc::{
         prelude::{Client, Config},
     },
     proto::{
-        CapSubCommand, Capability, Command as IrcCommand, Message as IrcMessage, Response,
+        CapSubCommand, Capability, Command as IrcCommand, Message as IrcMessage, Prefix, Response,
         mode::Mode,
     },
 };
@@ -395,11 +397,21 @@ pub enum Event {
         sender: String,
         text: String,
         notice: bool,
+        /// Someone else named our nickname as a word (for example `nick:` or
+        /// `@nick`), ignoring formatting codes.
+        mentioned: bool,
     },
     ChannelActivity {
         channel: String,
         actor: String,
         kind: ChannelActivityKind,
+    },
+    /// A PRIVMSG or NOTICE a user sent to our nickname. CTCP requests other
+    /// than ACTION and server notices stay [`Event::ServerLine`].
+    PrivateMessage {
+        sender: String,
+        text: String,
+        notice: bool,
     },
     Names {
         channel: String,
@@ -1539,6 +1551,29 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
     }
 }
 
+/// Translates a user's PRIVMSG or NOTICE addressed to `current_nick`.
+fn private_message(message: &IrcMessage, current_nick: &str) -> Option<Event> {
+    let (target, text, notice) = match &message.command {
+        IrcCommand::PRIVMSG(target, text) => (target, text, false),
+        IrcCommand::NOTICE(target, text) => (target, text, true),
+        _ => return None,
+    };
+    // Servers and services without a user mask (`:irc.example NOTICE me`)
+    // are not conversations.
+    let Some(Prefix::Nickname(sender, _, _)) = &message.prefix else {
+        return None;
+    };
+    let ctcp = text.starts_with('\u{1}');
+    if !target.eq_ignore_ascii_case(current_nick) || (ctcp && !text.starts_with("\u{1}ACTION ")) {
+        return None;
+    }
+    Some(Event::PrivateMessage {
+        sender: sender.clone(),
+        text: text.clone(),
+        notice,
+    })
+}
+
 fn translate_message(
     client: &Client,
     roster: &mut RosterTracker,
@@ -1624,6 +1659,9 @@ fn translate_message(
         }
         _ => {}
     }
+    if let Some(private) = private_message(&message, current_nick) {
+        return vec![private];
+    }
     let mut translated = match &message.command {
         IrcCommand::Response(Response::RPL_WELCOME, args) => vec![Event::Registered {
             nickname: args
@@ -1654,11 +1692,17 @@ fn translate_message(
         IrcCommand::PRIVMSG(target, text) | IrcCommand::NOTICE(target, text)
             if valid_channel(target) =>
         {
+            let sender = message.source_nickname().unwrap_or("server");
             vec![Event::ChannelMessage {
                 channel: target.clone(),
-                sender: message.source_nickname().unwrap_or("server").to_owned(),
+                sender: sender.to_owned(),
                 text: text.clone(),
                 notice: matches!(message.command, IrcCommand::NOTICE(_, _)),
+                mentioned: !crate::text::same_nickname(sender, current_nick)
+                    && crate::text::mentions_nickname(
+                        &crate::text::strip_formatting(text),
+                        current_nick,
+                    ),
             }]
         }
         IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
@@ -1731,6 +1775,35 @@ mod tests {
         );
         assert!(member_outgoing("bad nick", MemberCommand::Whois).is_err());
         assert!(member_outgoing("Alice,Bob", MemberCommand::Whois).is_err());
+    }
+
+    #[test]
+    fn private_messages_come_only_from_users_to_our_nickname() {
+        let translate = |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me");
+        assert_eq!(
+            translate(":alice!u@h PRIVMSG me :hello"),
+            Some(Event::PrivateMessage {
+                sender: "alice".into(),
+                text: "hello".into(),
+                notice: false,
+            })
+        );
+        assert_eq!(
+            translate(":alice!u@h NOTICE Me :psst"),
+            Some(Event::PrivateMessage {
+                sender: "alice".into(),
+                text: "psst".into(),
+                notice: true,
+            })
+        );
+        assert!(matches!(
+            translate(":alice!u@h PRIVMSG Me :\u{1}ACTION waves\u{1}"),
+            Some(Event::PrivateMessage { .. })
+        ));
+        assert_eq!(translate(":alice!u@h PRIVMSG Me :\u{1}VERSION\u{1}"), None);
+        assert_eq!(translate(":irc.example NOTICE Me :*** Looking up"), None);
+        assert_eq!(translate(":alice!u@h PRIVMSG other :hello"), None);
+        assert_eq!(translate(":alice!u@h PRIVMSG #chan :hello"), None);
     }
 
     #[test]
@@ -2224,6 +2297,7 @@ mod tests {
                     sender,
                     text,
                     notice: is_notice,
+                    ..
                 }) => {
                     assert_eq!(channel, "!ABCDEtest");
                     assert_eq!(sender, "bob");

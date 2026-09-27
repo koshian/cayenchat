@@ -7,7 +7,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 ## Current scope
 
 The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
-History and notifications remain TODO.
+History remains TODO; desktop notifications cover mentions, keywords and private messages.
 
 - DONE — native GPUI application shell and app-owned selection
 - DONE — mock conversation switching with distinct message logs
@@ -36,7 +36,7 @@ History and notifications remain TODO.
 ## Private messages
 
 - TODO — open private conversation
-- PARTIAL — send private messages from the member context menu; incoming private messages still appear in the server log
+- PARTIAL — send private messages from the member context menu; incoming private messages (`<nick> text`, notices as `-nick- text`) still appear in the server log
 - TODO — conversation persistence during a session
 
 ## Messages
@@ -75,8 +75,8 @@ History and notifications remain TODO.
 ## Unread and highlights
 
 - PARTIAL — unread IDs, visual marks and clearing on selection for mock/live channel messages
-- TODO — highlight/mention state
-- TODO — configurable highlight words
+- PARTIAL — nickname mentions (whole word including `@nick`, RFC 1459 case mapping) and keywords drive desktop notifications, are drawn bold in the configurable highlight color (light/dark) in both logs, and turn unread channels in the tree to that color until selected
+- DONE — configurable notification keywords (comma-separated, case-insensitive substring), switched separately from mentions
 - TODO — window/application attention indication
 
 ## Input and commands
@@ -108,9 +108,9 @@ History and notifications remain TODO.
 
 ## Notifications
 
-- TODO — desktop notifications
+- PARTIAL — OS desktop notifications through notify-rust: org.freedesktop.Notifications on Linux, NSUserNotificationCenter on macOS (app bundle only), WinRT toasts on Windows (attributed to the PowerShell AppUserModelID until CayenChat registers its own); no action on click
 - TODO — per-network/channel controls
-- TODO — highlight/private-message notifications
+- DONE — mention, keyword and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds
 
 ## Settings
 
@@ -122,7 +122,7 @@ History and notifications remain TODO.
 - DONE — persisted channel auto-join list
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
-- TODO — notification preferences
+- DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
 
@@ -149,6 +149,6 @@ History and notifications remain TODO.
 
 - PARTIAL — macOS native application, connection, edit and diagnostic menus; Command+, opens the separate settings window
 - PARTIAL — Windows/Linux Alt alone or F10 toggles an in-window menu bar (also revealed by resting the pointer just below the title bar) in chat and settings windows, with shared app/connection/edit/view/window actions, arrows/Enter navigation and Escape/outside-click dismissal; Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics. Native GPUI menus remain unavailable there; platform runtime verification is pending.
-- TODO — notifications on both platforms
+- PARTIAL — notifications on macOS, Windows and Linux; macOS delivery reached the system (first-use permission banner) from the development bundle, Windows/Linux runtime unverified
 - PARTIAL — common macOS/Windows editing shortcuts; Windows runtime and custom
   macOS bindings unverified

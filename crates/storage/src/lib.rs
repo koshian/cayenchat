@@ -13,7 +13,7 @@ pub mod credentials;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
-const SETTINGS_VERSION: u32 = 11;
+const SETTINGS_VERSION: u32 = 12;
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
 
@@ -104,6 +104,8 @@ pub struct Appearance {
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub channel_event_color: String,
+    /// Mentions and keywords in logs, and channels where they arrived.
+    pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
     pub alternate_rows: bool,
@@ -125,6 +127,7 @@ pub struct DarkColors {
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub channel_event_color: String,
+    pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
 }
@@ -136,6 +139,7 @@ impl Default for DarkColors {
             main_log_background: "#1F2124".into(),
             main_log_alternate: "#272B31".into(),
             channel_event_color: "#6CC46C".into(),
+            highlight_color: "#EFA0BE".into(),
             sub_log_background: "#24272B".into(),
             sub_log_alternate: "#2C3036".into(),
         }
@@ -149,6 +153,7 @@ impl Default for Appearance {
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
             channel_event_color: "#007D00".into(),
+            highlight_color: "#D46A8E".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
@@ -170,12 +175,14 @@ impl Appearance {
             ("Main log", &self.main_log_background),
             ("Main alternate", &self.main_log_alternate),
             ("Channel event", &self.channel_event_color),
+            ("Highlight", &self.highlight_color),
             ("Sub log", &self.sub_log_background),
             ("Sub alternate", &self.sub_log_alternate),
             ("Dark member list", &self.dark.member_list_background),
             ("Dark main log", &self.dark.main_log_background),
             ("Dark main alternate", &self.dark.main_log_alternate),
             ("Dark channel event", &self.dark.channel_event_color),
+            ("Dark highlight", &self.dark.highlight_color),
             ("Dark sub log", &self.dark.sub_log_background),
             ("Dark sub alternate", &self.dark.sub_log_alternate),
         ] {
@@ -248,6 +255,31 @@ pub struct ImageUpload {
     pub provider: Option<String>,
 }
 
+/// Desktop notifications (version 12). Older settings get the defaults.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notifications {
+    pub enabled: bool,
+    /// Channel messages that mention our nickname.
+    pub mentions: bool,
+    /// Channel messages containing one of `keywords`.
+    pub keyword_alerts: bool,
+    pub keywords: Vec<String>,
+    pub private_messages: bool,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mentions: true,
+            keyword_alerts: true,
+            keywords: Vec::new(),
+            private_messages: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -270,6 +302,7 @@ pub struct Settings {
     pub appearance: Appearance,
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
+    pub notifications: Notifications,
 }
 
 impl Default for Settings {
@@ -295,6 +328,7 @@ impl Default for Settings {
             appearance: Appearance::default(),
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
+            notifications: Notifications::default(),
         }
     }
 }
@@ -707,6 +741,7 @@ mod tests {
             assert_eq!(settings.channels, "#test");
             assert!(settings.sasl_enabled);
             assert_eq!(settings.sasl_username, "account");
+            assert_eq!(settings.notifications, Notifications::default());
             assert_eq!(fs::read(&path).unwrap(), bytes);
             save_to(&path, &settings).unwrap();
             assert_eq!(load_from(&path).unwrap(), Some(settings));
@@ -783,7 +818,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.selected_profile().host, "irc.example.net");
         assert_eq!(settings.selected_profile().port, 6697);
         assert!(settings.selected_profile().verify_tls_certificates);
@@ -805,7 +840,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert!(
             settings
                 .servers
@@ -834,7 +869,7 @@ mod tests {
         }
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert!(
             settings
                 .servers
@@ -852,7 +887,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("appearance");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.appearance, Appearance::default());
         settings.appearance.alternate_rows = true;
         settings.appearance.main_log_background = "#123ABC".into();
@@ -895,7 +930,7 @@ mod tests {
         old["appearance"]["channel_event_color"] = "#3B7655".into();
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.appearance.channel_event_color, "#007D00");
 
         old["appearance"]["channel_event_color"] = "#246843".into();
@@ -918,7 +953,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert!(!settings.connect_on_startup);
         settings.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
@@ -935,7 +970,7 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.language, Language::System);
         settings.language = Language::English;
         save_to(&path, &settings).unwrap();
@@ -1141,7 +1176,7 @@ mod tests {
         )
         .unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.version, 11);
+        assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.theme, ThemeMode::System);
         assert_eq!(settings.linux_display, LinuxDisplay::Wayland);
         assert_eq!(settings.appearance.main_log_background, "#FAFAFA");
