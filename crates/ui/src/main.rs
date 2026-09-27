@@ -5324,8 +5324,11 @@ impl ChatWindow {
                             )
                     }),
             )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.dispatch(Command::SelectChannel(id), window, cx);
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                // A single click is too easy to hit while reading the combined log.
+                if event.click_count() == 2 {
+                    this.dispatch(Command::SelectChannel(id), window, cx);
+                }
             }))
             .into_any_element()
     }

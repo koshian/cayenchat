@@ -48,7 +48,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
-- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log still switches channels
+- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log switches channels on double-click
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
@@ -70,7 +70,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — jump to unread channels in mock or live mode; highlights remain TODO
 - DONE — reference four-pane placement: main log over subwindow on the left,
   users over channel tree on the right, draft between left logs
-- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on click; channel/server labels ellipsize on one line
+- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line
 
 ## Unread and highlights
 

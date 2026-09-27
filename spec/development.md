@@ -266,7 +266,7 @@ this delay.
    empty afterwards.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
-its HTTP(S) links open on a double-click. The lower combined log still uses clicks
+its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
 for channel switching. Long-draft horizontal scrolling,
 native/custom text bindings, general tab traversal, and exhaustive IME/accessibility
 behavior remain future work. Chat history does not survive application exit.
