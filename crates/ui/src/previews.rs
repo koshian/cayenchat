@@ -124,6 +124,10 @@ impl Previews {
     /// cache no longer holds are released, so nothing drawn later uses them.
     /// Call it while the main log pane redraws, never while that pane may be
     /// reused from its cache.
+    pub fn in_flight(&self) -> usize {
+        self.cache.borrow().in_flight()
+    }
+
     pub fn release(&self, window: &mut Window) {
         for preview in self.cache.borrow_mut().take_released() {
             let _ = window.drop_image(preview.image);
@@ -179,7 +183,7 @@ fn to_preview(thumbnail: Thumbnail) -> (Preview, usize) {
 /// other link fails without any request. Candidate recognition and decoding
 /// are the production code.
 #[cfg(feature = "preview-fixture")]
-mod fixture {
+pub(crate) mod fixture {
     use std::{path::PathBuf, time::Duration};
 
     use cayenchat_media::{CancelFlag, Fetcher, Limits, LoadError, MediaRef};
@@ -244,7 +248,8 @@ impl ChatWindow {
             return;
         };
         let limits = self.previews.limits;
-        loop {
+        // Fetches in flight are shared with avatars.
+        while self.media_loads() < crate::avatars::MAX_MEDIA_LOADS {
             let Some(job) = self.previews.cache.borrow_mut().next_job() else {
                 break;
             };
@@ -290,6 +295,7 @@ impl ChatWindow {
             cx.notify();
         }
         self.pump_previews(cx);
+        self.pump_avatars(cx);
     }
 }
 
