@@ -301,6 +301,15 @@ with the user's consent. Keys use stable internal IDs, never nicknames,
 hostnames or display names. `Secret`, `ConnectionConfig` and `SaslCredentials`
 redact their `Debug` output; credential errors carry sanitized text only.
 
+On macOS the system backend keeps every secret in one Keychain item and every
+backend value is cached for the process (2026-09-27). Separate items made the
+legacy Keychain ask for the login password once per secret on each connect and
+again on opening settings, since ad hoc signed builds drop off each item's
+access list on every update. The data protection Keychain would avoid the
+prompts but needs a keychain access group entitlement, which requires a
+Developer ID signature. One item costs one prompt per launch and rewrites the
+whole map on change, which is negligible for a handful of passwords.
+
 Sources: [keyring 4.2 crate](https://crates.io/crates/keyring),
 [keyring-rs wiki](https://github.com/open-source-cooperative/keyring-rs/wiki/Keyring),
 [XDG Base Directory specification](https://specifications.freedesktop.org/basedir-spec/latest/),
