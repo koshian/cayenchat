@@ -205,7 +205,9 @@ private messages) and a highlight color to the light and dark pane colors;
 older settings enable them all with no keywords. Version 13 moves the
 nickname, username, channels, SASL account and startup connection into each
 server profile (D017). Version 14 adds the image preview appearance setting,
-off for new and migrated settings (D018). The UI keeps the
+off for new and migrated settings (D018). Version 15 adds per-server IRCv3
+opt-ins (message tags and server timestamps), off for new and migrated
+settings (D022). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -261,8 +263,9 @@ routing and accepts `#`, `&` and IRCnet `!` channels.
 Safe-channel short names are sent unchanged in JOIN; the server's returned full
 name (including its five-character identifier) is used for the conversation,
 roster, messages and subsequent commands, and is preserved in WHOIS channel links.
-Its SASL state machine negotiates CAP, sends PLAIN credentials, and waits for
-success before ending CAP negotiation. The UI retains each server's active connection
+CAP negotiation is shared by SASL and the opt-in IRCv3 extensions (see IRCv3
+capabilities and message tags below); SASL sends PLAIN credentials once `sasl`
+is acknowledged, and CAP END waits for its success. The UI retains each server's active connection
 configuration and retries its unexpected disconnections after 3, 6, 12, 24, then 30
 seconds (capped), independently of the other servers.
 The core allows 15 seconds for TCP/TLS and 90 seconds for registration (001):
@@ -385,6 +388,89 @@ mock for tests. `ui::ChatWindow` maps GPUI key actions to
 navigation and send commands. GPUI entities retain separate server/channel draft
 editing, selection, nickname completion and IME state. No `irc` library types enter
 application state or rendering components.
+
+## IRCv3 capabilities and message tags
+
+```text
+storage::ServerProfile::ircv3 (Ircv3Preferences, per server, default off)
+        |   ui::connection_config / apply_servers (next connection only)
+        v
+irc-core ConnectionConfig::ircv3 (Ircv3Options)
+        |
+        v
+irc-core::cap::CapNegotiation (one per connection attempt)
+        |   CAP LS 302 -> REQ per capability -> ACK/NAK -> SASL -> CAP END
+        |   NEW/DEL followed after registration
+        v
+irc-core::tags (read on the parsed irc message; nothing retained)
+        |   server_time() only when server-time was acknowledged
+        v
+Event::{ChannelMessage, ChannelActivity, PrivateMessage}::server_time
+        |
+        v
+app::AppState::append_*_at -> Message::time (TimeOfDay, local HH:MM)
+```
+
+Negotiation starts only when SASL or an opt-in extension is configured. With
+everything off and no SASL, registration still opens with the plain
+`CAP END` the `irc` library's `identify()` sends, so a server sees exactly what
+it saw before. Otherwise the core sends `CAP LS 302`, collects continuation
+lines (`*`) and `name=value` offers (at most 256 names and 512-byte values
+kept, always including the names this connection may request), and sends one
+`CAP REQ` per wanted capability: a REQ is accepted or rejected as a whole, so
+a declined optional extension cannot take SASL down with it. Only
+implemented, opted-in extensions that the server offered are requested, plus
+`sasl` when SASL is configured. A NAK of an optional extension is a
+diagnostic, not an error. A multiline ACK is applied at its last line. CAP END
+goes out once every request is answered and SASL has finished; SASL failures
+and a missing PLAIN offer remain terminal refusals. A server without CAP
+registers directly (001), which ends negotiation. After registration CAP NEW
+requests newly offered wanted capabilities (never `sasl`) and CAP DEL
+withdraws them; unrequested ACKs are ignored and `-name` entries disable.
+The state lives in the connection's worker, so a reconnect always starts
+from nothing. Registration timeouts, nickname rejection, TLS requirements and
+credential redaction are unchanged, and no timer or thread was added.
+
+Tags come from irc-proto 1.1.0's parsed `Message`, which splits and
+unescapes them. `irc-core::tags` adds what the library leaves out: the last
+occurrence of a key wins, an empty value equals a missing one, a value
+containing U+FFFD (bytes the line codec could not decode) is dropped instead
+of used, and a tag section over 8,191 bytes (measured on the re-escaped
+tags, including `@` and the trailing space) is ignored as a whole while the
+body is still processed. The library enforces no line length at all, so
+neither limit truncates a line. Unknown tags are ignored. Only the values
+this client uses are read; no tag map is retained. TAGMSG produces no event:
+no chat row, unread mark, notification or preview request; it remains in
+the diagnostic transcript, where long tag sections are shortened to 512
+bytes. Server log lines are shown without their tags.
+
+Legacy encodings: the `irc` codec decodes a whole line with the connection's
+encoding before tags are parsed, while tag values are UTF-8. Replacing that
+codec would mean a transport rewrite, so the policy is narrow: `message-tags`
+(which lets other users' arbitrary client tags through, which could contain
+bytes such as ISO-2022-JP escapes that change the decoder's state for the
+body) is not requested on legacy-encoding connections, and the IRCv3 tab
+says so; `server-time` stays available because its values are ASCII.
+
+server-time: the `time` tag (`YYYY-MM-DDThh:mm:ss.sssZ`, UTC; any number of
+fraction digits accepted, leap second clamped) is parsed without new
+dependencies into a `SystemTime` that travels only on the event. `app`
+converts it to the local time of day and stores it in the existing
+`Message::time` (`TimeOfDay`, minutes as `u16`), so retained messages keep
+their size and no timestamp strings are stored. Absent or invalid values,
+and connections that did not negotiate server-time, use the receipt time.
+The arrival sequence remains the ordering key; logs are never reordered by
+server time. Local echoes of our own messages keep local time, and an old
+timestamp neither suppresses notifications nor marks anything as history.
+Diagnostic elapsed times are unchanged. Limitations for later history work:
+the date and seconds are discarded, so a line from a previous day shows only
+its HH:MM, and server log lines (numerics, server notices) keep receipt time.
+
+Preferences live in `Ircv3Preferences`, one field per feature with its own
+serde default; the settings tab renders one `ircv3_settings::Ircv3Feature`
+row per field. A feature can later become enabled by default (a settings
+version migration) or move to another tab by moving its row, without
+touching `irc-core`, which only receives `Ircv3Options` booleans.
 
 ## Notifications
 
