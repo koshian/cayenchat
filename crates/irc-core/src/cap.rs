@@ -103,8 +103,7 @@ impl CapNegotiation {
         }
     }
 
-    #[cfg(test)]
-    fn negotiating(&self) -> bool {
+    pub fn negotiating(&self) -> bool {
         matches!(self.phase, Phase::Listing | Phase::Requesting)
     }
 

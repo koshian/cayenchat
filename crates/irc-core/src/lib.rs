@@ -1011,12 +1011,13 @@ async fn run(
             return;
         }
     };
+    let opening = negotiation.start();
     diagnostic(
         &events,
         started,
         if negotiation.uses_sasl() {
             "Sending CAP LS, optional PASS, NICK, and USER; waiting for SASL and welcome."
-        } else if config.ircv3 != Ircv3Options::default() {
+        } else if negotiation.negotiating() {
             "Sending CAP LS, optional PASS, NICK, and USER; negotiating opt-in IRCv3 capabilities."
         } else {
             "Sending optional PASS, NICK, and USER; waiting for server welcome (001)."
@@ -1025,7 +1026,7 @@ async fn run(
     .await;
     // Mirror the library's identify() sequence so every registration command
     // can be included in the diagnostic transcript after it is queued.
-    let mut registration = vec![negotiation.start()];
+    let mut registration = vec![opening];
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         registration.push(IrcCommand::PASS(password));
     }
