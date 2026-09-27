@@ -462,7 +462,10 @@ and connections that did not negotiate server-time, use the receipt time.
 The arrival sequence remains the ordering key; logs are never reordered by
 server time. Local echoes of our own messages keep local time, and an old
 timestamp neither suppresses notifications nor marks anything as history.
-Diagnostic elapsed times are unchanged. Limitations for later history work:
+Diagnostic elapsed times are unchanged. Because `batch` is not negotiated,
+bouncer backlog delivered as ordinary tagged lines (ZNC or soju without
+batches) counts as live and can notify, within the notification rate limit;
+recognizing it belongs to later batch/chathistory work. Limitations for later history work:
 the date and seconds are discarded, so a line from a previous day shows only
 its HH:MM, and server log lines (numerics, server notices) keep receipt time.
 
@@ -509,9 +512,10 @@ notify (bouncer echoes), and neither does replayed history: `irc-core`
 user mask (a line from the server or bouncer itself, such as Tiarra's
 Log::Recent replaying channel logs as `:tiarra NOTICE #chan`), that belongs
 to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
-one), or whose server-time tag is at least five minutes old. Replayed
-messages still appear in the log (`model::Message::replayed`) but are neither
-highlighted there nor mark unread channels. Nothing notifies while the chat window is
+one). A server-time tag alone never marks history, however old (D022).
+Replayed messages still appear in the log (`model::Message::replayed`) and
+mark their channel unread, but are neither highlighted there nor in the
+channel tree. Nothing notifies while the chat window is
 focused and the message's conversation (the server view for private messages)
 is selected. At most five notifications are shown per ten seconds so bouncer
 history playback cannot flood the desktop; the log and unread marks are

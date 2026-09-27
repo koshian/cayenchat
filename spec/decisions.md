@@ -591,6 +591,15 @@ tags included. The last point is why `message-tags` is not requested on
 legacy-encoding connections; a proper fix needs a byte-level transport that
 splits tags before decoding, which is out of scope here.
 
+An old server-time never marks a line as replayed history. PR #18 had
+treated server-time at least five minutes old as history (no notification or
+highlight); that rule was removed when this change merged it, because it
+would hide live lines when the local clock runs ahead and because a
+timestamp alone does not say a line was replayed. History is still
+recognized by the missing user mask and by `chathistory`/`znc.in/playback`
+batches, whose references use the normalized tag reader. Until `batch` is
+negotiated, bouncer backlog without batches can notify like live traffic.
+
 Not included: batch, chathistory, echo-message, labeled-response, account
 tags, avatars, metadata, reactions, typing indicators and Matrix. Later
 features may become default-on or move tabs by changing their preference
