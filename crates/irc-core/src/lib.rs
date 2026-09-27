@@ -3116,6 +3116,7 @@ mod tests {
             message_tags: false,
             server_time: true,
             batch: false,
+            metadata: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -3201,6 +3202,7 @@ mod tests {
                 message_tags: true,
                 server_time: true,
                 batch: false,
+                metadata: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();
