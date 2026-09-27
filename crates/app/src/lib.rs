@@ -13,6 +13,8 @@ const MAX_CONVERSATIONS_PER_NETWORK: usize = 1_000;
 pub enum Selection {
     Server(NetworkId),
     Channel(ConversationId),
+    /// No server is configured.
+    None,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,13 +255,15 @@ impl AppState {
     }
 
     /// Every configured server in display order, none connected yet. The
-    /// first configured channel (or the first server) is selected.
+    /// first configured channel (or the first server, or nothing when there
+    /// are no servers) is selected.
     pub fn with_networks(networks: Vec<NetworkConfig>) -> Self {
-        assert!(!networks.is_empty(), "at least one network");
         let mut state = Self {
             networks: Vec::new(),
             conversations: Vec::new(),
-            selected: Selection::Server(networks[0].id),
+            selected: networks
+                .first()
+                .map_or(Selection::None, |network| Selection::Server(network.id)),
             previous_channel: None,
             unread: HashSet::new(),
             active_channels: HashSet::new(),
@@ -289,18 +293,20 @@ impl AppState {
     }
 
     /// Makes the networks match `networks` (display order and names): new
-    /// ones are added disconnected, missing ones are removed with their
-    /// conversations and logs. Returns the removed conversation IDs so the
+    /// ones are added disconnected with their configured channels, missing
+    /// ones are removed with their conversations and logs. Existing networks
+    /// keep their conversations. Returns the removed conversation IDs so the
     /// caller can drop state kept for them.
-    pub fn sync_networks(&mut self, networks: &[(NetworkId, String)]) -> Vec<ConversationId> {
-        if networks.is_empty() {
-            return Vec::new();
-        }
+    pub fn sync_networks(&mut self, networks: &[NetworkConfig]) -> Vec<ConversationId> {
         let removed_networks: Vec<NetworkId> = self
             .networks
             .iter()
             .map(|network| network.id)
-            .filter(|id| !networks.iter().any(|(kept, _)| kept == id))
+            .filter(|id| !networks.iter().any(|kept| kept.id == *id))
+            .collect();
+        let added: Vec<&NetworkConfig> = networks
+            .iter()
+            .filter(|config| !self.networks.iter().any(|network| network.id == config.id))
             .collect();
         let mut removed = Vec::new();
         for id in removed_networks {
@@ -311,17 +317,22 @@ impl AppState {
         }
         self.networks = networks
             .iter()
-            .map(|(id, name)| Network {
-                id: *id,
-                name: name.clone(),
+            .map(|config| Network {
+                id: config.id,
+                name: config.name.clone(),
             })
             .collect();
-        for (id, _) in networks {
+        for config in networks {
             self.statuses
-                .entry(*id)
+                .entry(config.id)
                 .or_insert_with(|| ConnectionStatus::Disconnected("Not connected.".into()));
         }
         self.sort_conversations();
+        for config in added {
+            for channel in &config.channels {
+                self.ensure_channel(config.id, channel);
+            }
+        }
         self.repair_selection();
         removed
     }
@@ -338,7 +349,7 @@ impl AppState {
         if !self.networks.iter().any(|server| server.id == network) {
             return Vec::new();
         }
-        let selected_here = self.selected_network().id == network;
+        let selected_here = self.selected_network().map(|selected| selected.id) == Some(network);
         let removed = self.remove_conversations(network);
         self.server_messages.remove(&network);
         self.active_servers.remove(&network);
@@ -397,9 +408,13 @@ impl AppState {
         let valid = match self.selected {
             Selection::Server(id) => self.networks.iter().any(|server| server.id == id),
             Selection::Channel(id) => self.conversations.iter().any(|channel| channel.id == id),
+            Selection::None => self.networks.is_empty(),
         };
         if !valid {
-            self.selected = Selection::Server(self.networks[0].id);
+            self.selected = self
+                .networks
+                .first()
+                .map_or(Selection::None, |network| Selection::Server(network.id));
         }
     }
 
@@ -627,7 +642,9 @@ impl AppState {
         self.conversations.iter().find(|channel| channel.id == id)
     }
 
-    pub fn selected_network(&self) -> &Network {
+    /// The selected server, or the server of the selected channel; `None`
+    /// only when no server is configured.
+    pub fn selected_network(&self) -> Option<&Network> {
         let id = match self.selected {
             Selection::Server(id) => id,
             Selection::Channel(id) => {
@@ -637,11 +654,14 @@ impl AppState {
                     .expect("selected channel exists")
                     .network
             }
+            Selection::None => return None,
         };
-        self.networks
-            .iter()
-            .find(|network| network.id == id)
-            .expect("selected network exists")
+        Some(
+            self.networks
+                .iter()
+                .find(|network| network.id == id)
+                .expect("selected network exists"),
+        )
     }
 
     pub fn is_unread(&self, id: ConversationId) -> bool {
@@ -710,6 +730,14 @@ impl AppState {
                     last.map(|index| (index + 1) % len).unwrap_or(0)
                 }
             }
+            // Unreachable with conversations present; start from the ends.
+            Selection::None => {
+                if forward {
+                    len - 1
+                } else {
+                    0
+                }
+            }
         };
         for step in 1..=len {
             let index = if forward {
@@ -735,7 +763,10 @@ impl AppState {
         if len == 0 {
             return;
         }
-        let selected_network = self.selected_network().id;
+        let Some(selected_network) = self.selected_network().map(|network| network.id) else {
+            self.select_server(self.networks[0].id);
+            return;
+        };
         let current = self
             .networks
             .iter()
@@ -859,11 +890,11 @@ mod tests {
     #[test]
     fn same_named_channels_keep_networks_and_logs_separate() {
         let mut state = AppState::mock();
-        let original_network = state.selected_network().id;
+        let original_network = state.selected_network().unwrap().id;
         let original_message = state.selected_channel().unwrap().messages[0].text.clone();
         state.dispatch(Command::SelectChannel(ConversationId(3)));
         assert_eq!(state.selected_channel().unwrap().name, "#general");
-        assert_ne!(state.selected_network().id, original_network);
+        assert_ne!(state.selected_network().unwrap().id, original_network);
         assert_ne!(
             state.selected_channel().unwrap().messages[0].text,
             original_message
@@ -1070,7 +1101,7 @@ mod tests {
             ]
         );
         state.dispatch(Command::SelectChannelAt(3));
-        assert_eq!(state.selected_network().id, NetworkId(2));
+        assert_eq!(state.selected_network().unwrap().id, NetworkId(2));
     }
 
     #[test]
@@ -1109,8 +1140,16 @@ mod tests {
         let mut state = two_networks();
         state.dispatch(Command::SelectServer(NetworkId(2)));
         let removed = state.sync_networks(&[
-            (NetworkId(3), "three.example".into()),
-            (NetworkId(1), "renamed.example".into()),
+            NetworkConfig {
+                id: NetworkId(3),
+                name: "three.example".into(),
+                channels: vec!["#new".into()],
+            },
+            NetworkConfig {
+                id: NetworkId(1),
+                name: "renamed.example".into(),
+                channels: vec!["#ignored-for-existing".into()],
+            },
         ]);
         assert_eq!(removed.len(), 1, "the second network's #a");
         let networks: Vec<_> = state
@@ -1129,8 +1168,40 @@ mod tests {
         assert!(state.status(NetworkId(2)).is_none());
         // The selected server disappeared; the first remaining one is shown.
         assert_eq!(state.selection(), Selection::Server(NetworkId(3)));
+        // A new network shows its configured channels; an existing one keeps
+        // its conversations, in network order.
+        let names: Vec<_> = state
+            .conversations()
+            .iter()
+            .map(|c| (c.network.0, c.name.as_str()))
+            .collect();
+        assert_eq!(names, [(3, "#new"), (1, "#a"), (1, "#b")]);
         // Messages for the removed network are ignored.
         state.append_channel_message(NetworkId(2), "#a", "bob", "late", false);
         assert!(state.server_messages(NetworkId(2)).is_empty());
+    }
+
+    #[test]
+    fn no_servers_select_nothing_until_one_is_added() {
+        let mut state = AppState::with_networks(Vec::new());
+        assert_eq!(state.selection(), Selection::None);
+        assert!(state.selected_network().is_none());
+        for command in [
+            Command::NextChannel,
+            Command::NextServer,
+            Command::NextUnreadChannel,
+        ] {
+            state.dispatch(command);
+        }
+        assert_eq!(state.selection(), Selection::None);
+        state.sync_networks(&[NetworkConfig {
+            id: NetworkId(1),
+            name: "one.example".into(),
+            channels: Vec::new(),
+        }]);
+        assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+        state.sync_networks(&[]);
+        assert_eq!(state.selection(), Selection::None);
+        assert!(state.networks().is_empty());
     }
 }

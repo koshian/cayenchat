@@ -134,8 +134,11 @@ impl SettingsForm {
         store: &CredentialStore,
         cx: &mut Context<SettingsWindow>,
     ) -> Self {
-        let (saved_server_password, saved_sasl_password) =
-            saved_passwords(values.selected_profile(), store);
+        let (saved_server_password, saved_sasl_password) = values
+            .selected_profile()
+            .map_or((false, false), |profile| saved_passwords(profile, store));
+        let empty = ServerProfile::default();
+        let profile = values.selected_profile().unwrap_or(&empty);
         let field =
             |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
                 cx.new(|cx| TextInput::new_field(placeholder, value, secret, cx))
@@ -143,34 +146,19 @@ impl SettingsForm {
         Self {
             custom_host: field(
                 &i18n.text("server_host_placeholder"),
-                &values.selected_profile().host,
+                &profile.host,
                 false,
                 cx,
             ),
-            port: field(
-                "6667",
-                &values.selected_profile().port.to_string(),
-                false,
-                cx,
-            ),
-            nickname: field(
-                &i18n.text("nickname"),
-                &values.selected_profile().nickname,
-                false,
-                cx,
-            ),
+            port: field("6667", &profile.port.to_string(), false, cx),
+            nickname: field(&i18n.text("nickname"), &profile.nickname, false, cx),
             username: field(
                 &i18n.text("username_placeholder"),
-                &values.selected_profile().username,
+                &profile.username,
                 false,
                 cx,
             ),
-            channels: field(
-                "#first,#second",
-                &values.selected_profile().channels,
-                false,
-                cx,
-            ),
+            channels: field("#first,#second", &profile.channels, false, cx),
             server_password: field(
                 &i18n.text(if saved_server_password {
                     "password_saved_placeholder"
@@ -183,7 +171,7 @@ impl SettingsForm {
             ),
             sasl_username: field(
                 &i18n.text("sasl_account_placeholder"),
-                &values.selected_profile().sasl_username,
+                &profile.sasl_username,
                 false,
                 cx,
             ),
@@ -301,26 +289,21 @@ impl SettingsForm {
     fn snapshot(&self, cx: &App) -> Result<Settings, String> {
         let mut settings = self.values.clone();
         let host = self.custom_host.read(cx).text().trim().to_owned();
-        let port = self
-            .port
-            .read(cx)
-            .text()
-            .trim()
-            .parse()
-            .map_err(|_| i18n_error(settings.language, "port_invalid"))?;
-        if port == 0 {
-            return Err(i18n_error(settings.language, "port_invalid"));
-        }
+        // Without a server the host and port fields are hidden and unused.
+        let port = match self.port.read(cx).text().trim().parse() {
+            Ok(port) if port != 0 => port,
+            _ if settings.servers.is_empty() => 6667,
+            _ => return Err(i18n_error(settings.language, "port_invalid")),
+        };
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
-        let profile = settings.selected_profile_mut();
-        if profile.custom {
+        if let Some(profile) = settings.selected_profile_mut() {
             profile.host = host;
+            profile.port = port;
+            profile.nickname = value(&self.nickname);
+            profile.username = value(&self.username);
+            profile.channels = value(&self.channels);
+            profile.sasl_username = value(&self.sasl_username);
         }
-        profile.port = port;
-        profile.nickname = value(&self.nickname);
-        profile.username = value(&self.username);
-        profile.channels = value(&self.channels);
-        profile.sasl_username = value(&self.sasl_username);
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
             main_log_background: value(&self.main_log_background),
@@ -360,7 +343,9 @@ impl SettingsForm {
             let text = field.read(cx).text();
             (!text.is_empty()).then(|| Secret::new(text))
         };
-        let profile = settings.selected_profile();
+        let profile = settings
+            .selected_profile()
+            .ok_or_else(|| i18n.text("server_required"))?;
         let (saved_server, saved_sasl) = saved_connection_secrets(profile, store, i18n)?;
         connection_config(
             profile,
@@ -378,7 +363,9 @@ impl SettingsForm {
         i18n: &Localizer,
         cx: &mut Context<SettingsWindow>,
     ) -> Result<(), String> {
-        let profile = self.values.selected_profile().clone();
+        let Some(profile) = self.values.selected_profile().cloned() else {
+            return Ok(());
+        };
         if !profile.remember_passwords {
             return Ok(());
         }
@@ -797,16 +784,23 @@ impl ChatWindow {
     }
 
     fn window_title(&self) -> String {
-        let network = self.state.selected_network();
         let app = if cfg!(feature = "test-build") {
             "CayenChat [test build]"
         } else {
             "CayenChat"
         };
+        let Some(network) = self.state.selected_network() else {
+            return app.into();
+        };
         match self.state.selected_channel() {
             Some(channel) => format!("{} @ {} — {app}", channel.name, network.name),
             None => format!("{} — {app}", network.name),
         }
+    }
+
+    /// The selected server; `None` only while no server is configured.
+    fn selected_network_id(&self) -> Option<NetworkId> {
+        self.state.selected_network().map(|network| network.id)
     }
 
     fn update_title(&self, window: &mut Window) {
@@ -846,10 +840,13 @@ impl ChatWindow {
         let state = AppState::with_networks(networks);
         let mut inputs = HashMap::new();
         let placeholder = i18n.text("draft_placeholder");
-        for key in state
-            .networks()
-            .iter()
-            .map(|server| Selection::Server(server.id))
+        for key in std::iter::once(Selection::None)
+            .chain(
+                state
+                    .networks()
+                    .iter()
+                    .map(|server| Selection::Server(server.id)),
+            )
             .chain(
                 state
                     .conversations()
@@ -1019,11 +1016,14 @@ impl ChatWindow {
     /// Creates draft inputs for servers and conversations that lack one.
     fn ensure_inputs(&mut self, cx: &mut Context<Self>) {
         let placeholder = self.i18n.text("draft_placeholder");
-        let keys: Vec<Selection> = self
-            .state
-            .networks()
-            .iter()
-            .map(|server| Selection::Server(server.id))
+        // Selection::None has a draft too, shown while no server exists.
+        let keys: Vec<Selection> = std::iter::once(Selection::None)
+            .chain(
+                self.state
+                    .networks()
+                    .iter()
+                    .map(|server| Selection::Server(server.id)),
+            )
             .chain(
                 self.state
                     .conversations()
@@ -1069,13 +1069,17 @@ impl ChatWindow {
                     id
                 }
             };
-            networks.push((id, profile.host.clone()));
+            networks.push(NetworkConfig {
+                id,
+                name: profile.host.clone(),
+                channels: profile.channels(),
+            });
         }
         let stale: Vec<NetworkId> = self
             .sessions
             .keys()
             .copied()
-            .filter(|id| !networks.iter().any(|(kept, _)| kept == id))
+            .filter(|id| !networks.iter().any(|kept| kept.id == *id))
             .collect();
         for id in stale {
             if let Some(mut session) = self.sessions.remove(&id) {
@@ -1214,11 +1218,16 @@ impl ChatWindow {
     }
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
-        self.disconnect(self.state.selected_network().id, cx);
+        if let Some(network) = self.selected_network_id() {
+            self.disconnect(network, cx);
+        }
     }
 
     fn reconnect_action(&mut self, _: &Reconnect, window: &mut Window, cx: &mut Context<Self>) {
-        self.reconnect(self.state.selected_network().id, window, cx);
+        match self.selected_network_id() {
+            Some(network) => self.reconnect(network, window, cx),
+            None => self.open_settings_for(None, window, cx),
+        }
     }
 
     /// Reconnects with the last configuration, or connects a server that has
@@ -1336,7 +1345,7 @@ impl ChatWindow {
             .format("status_disconnected", &[("reason", &reason)]);
         self.state.append_server_message(network, message.clone());
         // Another server's disconnect is shown in its tree row and log only.
-        if self.state.selected_network().id == network {
+        if self.selected_network_id() == Some(network) {
             self.feedback = Some(message);
         }
     }
@@ -1734,7 +1743,7 @@ impl ChatWindow {
     /// Profile of the selected server, which the settings window edits first.
     fn selected_profile_id(&self) -> Option<String> {
         self.sessions
-            .get(&self.state.selected_network().id)
+            .get(&self.selected_network_id()?)
             .map(|session| session.profile_id.clone())
     }
 
@@ -1846,14 +1855,15 @@ impl ChatWindow {
     }
 
     fn selected_session(&self) -> Option<&ServerSession> {
-        self.sessions.get(&self.state.selected_network().id)
+        self.sessions.get(&self.selected_network_id()?)
     }
 
     fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.debug_enabled = true;
         cx.set_menus(app_menus(true, &self.i18n));
-        let network = self.state.selected_network().id;
-        self.dispatch(Command::SelectServer(network), window, cx);
+        if let Some(network) = self.selected_network_id() {
+            self.dispatch(Command::SelectServer(network), window, cx);
+        }
         self.sync_log_lists();
         self.main_lists[&self.state.selection()]
             .state
@@ -2205,13 +2215,14 @@ impl ChatWindow {
             return;
         }
         let selected = self.state.selected_channel();
-        let network = self.state.selected_network().id;
-        let connection = self
-            .sessions
-            .get(&network)
+        let network = self.selected_network_id();
+        let connection = network
+            .and_then(|network| self.sessions.get(&network))
             .and_then(|session| session.irc.as_ref());
         let result = if let Some(connection) = connection {
-            if self.state.status(network) != Some(&ConnectionStatus::Registered) {
+            if network.and_then(|network| self.state.status(network))
+                != Some(&ConnectionStatus::Registered)
+            {
                 Err(self.i18n.text("wait_registration"))
             } else if text.starts_with('/') {
                 connection.send_command(&text, selected.map(|channel| channel.name.as_str()))
@@ -2390,9 +2401,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
-        settings
-            .servers
-            .retain(|server| !server.custom || !server.host.is_empty());
+        settings.servers.retain(|server| !server.host.is_empty());
         self.settings.persist_passwords(&store, &self.i18n, cx)?;
         if let Ok(Some(previous)) = cayenchat_storage::load() {
             forget_removed_profiles(&previous, &settings, &store);
@@ -2443,7 +2452,10 @@ impl SettingsWindow {
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         self.feedback = match self.settings.snapshot(cx).and_then(|settings| {
-            if settings.selected_profile().host.is_empty() {
+            if settings
+                .selected_profile()
+                .is_some_and(|profile| profile.host.is_empty())
+            {
                 return Err(self.i18n.text("server_required"));
             }
             let settings = self.commit_settings(settings, cx)?;
@@ -2484,14 +2496,18 @@ impl SettingsWindow {
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |owner, _, cx| {
-            owner.disconnect(owner.state.selected_network().id, cx)
+            if let Some(network) = owner.selected_network_id() {
+                owner.disconnect(network, cx)
+            }
         });
         cx.notify();
     }
 
     fn reconnect_action(&mut self, _: &Reconnect, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |owner, window, cx| {
-            owner.reconnect(owner.state.selected_network().id, window, cx)
+            if let Some(network) = owner.selected_network_id() {
+                owner.reconnect(network, window, cx)
+            }
         });
         cx.notify();
     }
@@ -2515,8 +2531,10 @@ impl SettingsWindow {
 
     fn toggle_remember_passwords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = secrets::store(cx);
-        if self.settings.values.selected_profile().remember_passwords {
-            let profile = self.settings.values.selected_profile().clone();
+        let Some(profile) = self.settings.values.selected_profile().cloned() else {
+            return;
+        };
+        if profile.remember_passwords {
             let result = store
                 .delete(&profile.server_password_key())
                 .and_then(|()| store.delete(&profile.sasl_password_key()))
@@ -2524,10 +2542,9 @@ impl SettingsWindow {
                 .and_then(|()| cayenchat_storage::clear_saved_passwords(&profile.id));
             match result {
                 Ok(()) => {
-                    self.settings
-                        .values
-                        .selected_profile_mut()
-                        .remember_passwords = false;
+                    if let Some(profile) = self.settings.values.selected_profile_mut() {
+                        profile.remember_passwords = false;
+                    }
                     self.show_selected_server(cx);
                     self.feedback = Some(self.i18n.text("passwords_removed"));
                 }
@@ -2540,10 +2557,9 @@ impl SettingsWindow {
             // Secure storage needs no plaintext warning, but it must work.
             match cayenchat_storage::credentials::SystemBackend::probe() {
                 Ok(()) => {
-                    self.settings
-                        .values
-                        .selected_profile_mut()
-                        .remember_passwords = true;
+                    if let Some(profile) = self.settings.values.selected_profile_mut() {
+                        profile.remember_passwords = true;
+                    }
                     self.feedback = None;
                 }
                 Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
@@ -2567,10 +2583,9 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update(cx, |this, cx| {
-                    this.settings
-                        .values
-                        .selected_profile_mut()
-                        .remember_passwords = true;
+                    if let Some(profile) = this.settings.values.selected_profile_mut() {
+                        profile.remember_passwords = true;
+                    }
                     this.feedback = None;
                     cx.notify();
                 });
@@ -2580,20 +2595,20 @@ impl SettingsWindow {
     }
 
     fn toggle_tls(&mut self, cx: &mut Context<Self>) {
-        if self.settings.values.selected_profile().use_tls
-            && self.settings.values.selected_profile().sasl_enabled
-        {
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        if profile.use_tls && profile.sasl_enabled {
             self.feedback = Some(self.i18n.text("disable_sasl_first"));
             cx.notify();
             return;
         }
-        self.feedback = None;
-        let use_tls = !self.settings.values.selected_profile().use_tls;
-        let profile = self.settings.values.selected_profile_mut();
+        let use_tls = !profile.use_tls;
         profile.use_tls = use_tls;
         if !use_tls {
             profile.verify_tls_certificates = true;
         }
+        self.feedback = None;
         let port = self.settings.port.read(cx).text().to_owned();
         if port == "6667" && use_tls {
             self.settings
@@ -2608,8 +2623,9 @@ impl SettingsWindow {
     }
 
     fn toggle_certificate_verification(&mut self, cx: &mut Context<Self>) {
-        let profile = self.settings.values.selected_profile_mut();
-        if profile.use_tls {
+        if let Some(profile) = self.settings.values.selected_profile_mut()
+            && profile.use_tls
+        {
             profile.verify_tls_certificates = !profile.verify_tls_certificates;
             cx.notify();
         }
@@ -2617,7 +2633,9 @@ impl SettingsWindow {
 
     fn toggle_sasl(&mut self, cx: &mut Context<Self>) {
         self.feedback = None;
-        let profile = self.settings.values.selected_profile_mut();
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
         profile.sasl_enabled = !profile.sasl_enabled;
         if profile.sasl_enabled && !profile.use_tls {
             self.toggle_tls(cx);
@@ -2626,7 +2644,12 @@ impl SettingsWindow {
     }
 
     fn show_selected_server(&mut self, cx: &mut Context<Self>) {
-        let profile = self.settings.values.selected_profile().clone();
+        let profile = self
+            .settings
+            .values
+            .selected_profile()
+            .cloned()
+            .unwrap_or_default();
         self.settings
             .custom_host
             .update(cx, |field, cx| field.set_text(&profile.host, cx));
@@ -2641,8 +2664,7 @@ impl SettingsWindow {
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
-        let (saved_server, saved_sasl) =
-            saved_passwords(self.settings.values.selected_profile(), &secrets::store(cx));
+        let (saved_server, saved_sasl) = saved_passwords(&profile, &secrets::store(cx));
         self.settings.saved_server_password = saved_server;
         self.settings.saved_sasl_password = saved_sasl;
         for (field, saved, key) in [
@@ -2683,10 +2705,11 @@ impl SettingsWindow {
         }
     }
 
-    fn add_server(&mut self, cx: &mut Context<Self>) {
+    /// Adds a server, blank or filled in from a preset's `host`.
+    fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
         match self.settings.snapshot(cx) {
             Ok(mut settings) => {
-                settings.add_custom_server();
+                settings.add_server(host);
                 self.settings.values = settings;
                 self.show_selected_server(cx);
             }
@@ -2698,15 +2721,18 @@ impl SettingsWindow {
     }
 
     fn remove_server(&mut self, cx: &mut Context<Self>) {
-        self.settings.values.remove_selected_custom_server();
+        self.settings.values.remove_selected_server();
         self.show_selected_server(cx);
     }
 
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = theme::current(cx);
-        let profile = self.settings.values.selected_profile().clone();
-        let tls = profile.use_tls;
-        let sasl = profile.sasl_enabled;
+        let profile = self.settings.values.selected_profile().cloned();
+        let no_server = profile.is_none();
+        let selected_id = profile.as_ref().map(|profile| profile.id.clone());
+        let server_fields = profile
+            .as_ref()
+            .map(|profile| self.render_server_fields(profile, cx));
         let mut language_selector = div().flex().gap_1();
         for (index, language) in [Language::System, Language::Japanese, Language::English]
             .into_iter()
@@ -2729,13 +2755,11 @@ impl SettingsWindow {
                     })),
             );
         }
-        let current_host = if profile.custom {
-            self.settings.custom_host.read(cx).text().trim().to_owned()
-        } else {
-            profile.host.clone()
-        };
+        let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
-        let selected_label = if current_host.is_empty() {
+        let selected_label = if no_server {
+            self.i18n.text("no_servers")
+        } else if current_host.is_empty() {
             self.i18n.text("new_server")
         } else {
             format!("{current_host}:{current_port}")
@@ -2762,7 +2786,7 @@ impl SettingsWindow {
                 .bg(theme.surface);
             for (index, server) in self.settings.values.ordered_servers().enumerate() {
                 let id = server.id.clone();
-                let (host, port) = if id == profile.id {
+                let (host, port) = if Some(&id) == selected_id.as_ref() {
                     (current_host.as_str(), current_port.as_str())
                 } else {
                     (server.host.as_str(), "")
@@ -2770,20 +2794,14 @@ impl SettingsWindow {
                 let label = if host.is_empty() {
                     self.i18n.text("new_server")
                 } else {
-                    let kind = self.i18n.text(if server.custom {
-                        "custom_server"
-                    } else {
-                        "preset_server"
-                    });
                     format!(
-                        "{}:{}{}",
+                        "{}:{}",
                         host,
                         if port.is_empty() {
                             server.port.to_string()
                         } else {
                             port.to_owned()
                         },
-                        kind
                     )
                 };
                 menu = menu.child(
@@ -2793,10 +2811,29 @@ impl SettingsWindow {
                         .py_1()
                         .cursor_pointer()
                         .hover(|d| d.bg(theme.hover))
-                        .when(profile.id == id, |d| d.bg(theme.selected))
+                        .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
                         .child(label)
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.select_server(id.clone(), cx)),
+                        ),
+                );
+            }
+            // Well-known servers are only suggestions for adding a server.
+            for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
+                menu = menu.child(
+                    div()
+                        .id(("add-preset-option", index))
+                        .px_2()
+                        .py_1()
+                        .when(index == 0, |d| d.border_t_1().border_color(theme.border))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .child(self.i18n.format(
+                            "add_preset_server",
+                            &[("name", preset.name), ("host", preset.host)],
+                        ))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.add_server(preset.host, cx)),
                         ),
                 );
             }
@@ -2805,53 +2842,12 @@ impl SettingsWindow {
                     .id("add-server-option")
                     .px_2()
                     .py_1()
-                    .border_t_1()
-                    .border_color(theme.border)
                     .cursor_pointer()
                     .hover(|d| d.bg(theme.hover))
                     .child(self.i18n.text("add_server"))
-                    .on_click(cx.listener(|this, _, _, cx| this.add_server(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.add_server("", cx))),
             );
             server_selector = server_selector.child(menu);
-        }
-        let mut encoding_selector = div().flex().flex_col().child(
-            div()
-                .id("encoding-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!("{}  ▾", profile.encoding.label()))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.encoding_list_open = !this.settings.encoding_list_open;
-                    this.settings.server_list_open = false;
-                    cx.notify();
-                })),
-        );
-        if self.settings.encoding_list_open {
-            let mut menu = div()
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, encoding) in TextEncoding::ALL.into_iter().enumerate() {
-                menu = menu.child(
-                    div()
-                        .id(("encoding-option", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(profile.encoding == encoding, |d| d.bg(theme.selected))
-                        .child(encoding.label())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.settings.values.selected_profile_mut().encoding = encoding;
-                            this.settings.encoding_list_open = false;
-                            cx.notify();
-                        })),
-                );
-            }
-            encoding_selector = encoding_selector.child(menu);
         }
         div()
             .w(px(680.))
@@ -2907,23 +2903,151 @@ impl SettingsWindow {
                     )
                     .child(server_selector.flex_1().min_w_0()),
             )
-            .when(profile.custom, |d| {
-                d.child(settings_field(
-                    &self.i18n.text("host"),
-                    self.settings.custom_host.clone(),
-                ))
-                .child(
+            .when_some(server_fields, |d, fields| d.child(fields))
+            .when(no_server, |d| {
+                d.child(
                     div()
-                        .id("remove-server")
                         .ml(px(158.))
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("no_servers_hint")),
+                )
+            })
+            .when_some(self.feedback.clone(), |d, feedback| {
+                d.child(div().text_color(theme.warning).child(feedback))
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .pt_2()
+                    .when(!no_server, |d| {
+                        d.child(
+                            div()
+                                .id("connect-button")
+                                .px_3()
+                                .py_1()
+                                .bg(theme.selected)
+                                .cursor_pointer()
+                                .child(self.i18n.text("save_and_connect"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.connect_from_settings(window, cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("save-button")
+                            .px_3()
+                            .py_1()
+                            .border_1()
+                            .border_color(theme.border)
+                            .cursor_pointer()
+                            .child(self.i18n.text("save"))
+                            .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
+                    )
+                    .child(
+                        div()
+                            .id("back-button")
+                            .px_3()
+                            .py_1()
+                            .border_1()
+                            .border_color(theme.border)
+                            .cursor_pointer()
+                            .child(self.i18n.text("back"))
+                            .on_click(
+                                cx.listener(|this, _, window, _| this.close_settings(window)),
+                            ),
+                    )
+                    .when(!no_server, |d| {
+                        d.child(
+                            div()
+                                .id("disconnect-button")
+                                .px_3()
+                                .py_1()
+                                .border_1()
+                                .border_color(theme.border)
+                                .cursor_pointer()
+                                .child(self.i18n.text("disconnect"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    // Disconnects the server being edited.
+                                    let profile = this.settings.values.selected_server.clone();
+                                    let _ = this.owner.update(cx, |owner, _, cx| {
+                                        if let Some(network) = owner.network_of_profile(&profile) {
+                                            owner.disconnect(network, cx);
+                                        }
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+    }
+
+    /// Everything on the Connection tab that belongs to `profile`.
+    fn render_server_fields(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
+        let tls = profile.use_tls;
+        let sasl = profile.sasl_enabled;
+        let mut encoding_selector = div().flex().flex_col().child(
+            div()
+                .id("encoding-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!("{}  ▾", profile.encoding.label()))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.encoding_list_open = !this.settings.encoding_list_open;
+                    this.settings.server_list_open = false;
+                    cx.notify();
+                })),
+        );
+        if self.settings.encoding_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            for (index, encoding) in TextEncoding::ALL.into_iter().enumerate() {
+                menu = menu.child(
+                    div()
+                        .id(("encoding-option", index))
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .text_color(theme.warning)
-                        .child(self.i18n.text("remove_server"))
-                        .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
-                )
-            })
+                        .hover(|d| d.bg(theme.hover))
+                        .when(profile.encoding == encoding, |d| d.bg(theme.selected))
+                        .child(encoding.label())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(profile) = this.settings.values.selected_profile_mut() {
+                                profile.encoding = encoding;
+                            }
+                            this.settings.encoding_list_open = false;
+                            cx.notify();
+                        })),
+                );
+            }
+            encoding_selector = encoding_selector.child(menu);
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(settings_field(
+                &self.i18n.text("host"),
+                self.settings.custom_host.clone(),
+            ))
+            .child(
+                div()
+                    .id("remove-server")
+                    .ml(px(158.))
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .text_color(theme.warning)
+                    .child(self.i18n.text("remove_server"))
+                    .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
+            )
             .child(settings_field(
                 &self.i18n.text("port"),
                 self.settings.port.clone(),
@@ -3029,17 +3153,16 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(
-                        if self.settings.values.selected_profile().connect_on_startup {
-                            "☑"
-                        } else {
-                            "☐"
-                        },
-                    )
+                    .child(if profile.connect_on_startup {
+                        "☑"
+                    } else {
+                        "☐"
+                    })
                     .child(self.i18n.text("connect_on_startup"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let profile = this.settings.values.selected_profile_mut();
-                        profile.connect_on_startup = !profile.connect_on_startup;
+                        if let Some(profile) = this.settings.values.selected_profile_mut() {
+                            profile.connect_on_startup = !profile.connect_on_startup;
+                        }
                         cx.notify();
                     })),
             )
@@ -3111,71 +3234,6 @@ impl SettingsWindow {
                     self.settings.sasl_password.clone(),
                 ))
             })
-            .when_some(self.feedback.clone(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        div()
-                            .id("connect-button")
-                            .px_3()
-                            .py_1()
-                            .bg(theme.selected)
-                            .cursor_pointer()
-                            .child(self.i18n.text("save_and_connect"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.connect_from_settings(window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("save-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text("save"))
-                            .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
-                    )
-                    .child(
-                        div()
-                            .id("back-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text("back"))
-                            .on_click(
-                                cx.listener(|this, _, window, _| this.close_settings(window)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("disconnect-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text("disconnect"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                // Disconnects the server being edited.
-                                let profile = this.settings.values.selected_server.clone();
-                                let _ = this.owner.update(cx, |owner, _, cx| {
-                                    if let Some(network) = owner.network_of_profile(&profile) {
-                                        owner.disconnect(network, cx);
-                                    }
-                                });
-                                cx.notify();
-                            })),
-                    ),
-            )
     }
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
@@ -3961,6 +4019,7 @@ impl ChatWindow {
         let log_id = match selection {
             Selection::Channel(id) => id.0,
             Selection::Server(id) => u32::MAX - id.0,
+            Selection::None => u32::MAX,
         };
         let border = theme.border;
         let appearance = &self.appearance;
@@ -4635,7 +4694,9 @@ impl ChatWindow {
         let count = self
             .selected_session()
             .map_or(0, |session| session.diagnostics.len());
-        let registration_incomplete = self.state.status(self.state.selected_network().id)
+        let registration_incomplete = self
+            .selected_network_id()
+            .and_then(|network| self.state.status(network))
             != Some(&ConnectionStatus::Registered);
         if self.state.selected_channel().is_some() {
             if registration_incomplete && count > 0 {
@@ -4672,11 +4733,15 @@ impl ChatWindow {
         let sequences: Vec<u64> = match self.state.selected_channel() {
             Some(channel) => channel.messages.iter().map(|m| m.sequence).collect(),
             None => self
-                .state
-                .server_messages(self.state.selected_network().id)
-                .iter()
-                .map(|m| m.sequence)
-                .collect(),
+                .selected_network_id()
+                .map(|network| {
+                    self.state
+                        .server_messages(network)
+                        .iter()
+                        .map(|m| m.sequence)
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         self.main_lists
             .entry(self.state.selection())
@@ -4710,7 +4775,14 @@ impl ChatWindow {
         let style = LogStyle::new(&self.appearance, theme::current(cx));
         match self.main_layout().row(row) {
             MainRow::Status => {
-                let text = self.status_text(self.state.status(self.state.selected_network().id));
+                let text = match self.selected_network_id() {
+                    Some(network) => self.status_text(self.state.status(network)),
+                    None => format!(
+                        "{} — {}",
+                        self.i18n.text("no_servers"),
+                        self.i18n.text("no_servers_hint")
+                    ),
+                };
                 div()
                     .w_full()
                     .when(self.state.selected_channel().is_some(), |d| {
@@ -4737,7 +4809,9 @@ impl ChatWindow {
             MainRow::Message(index) => match self.state.selected_channel() {
                 Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
                 None => {
-                    let network = self.state.selected_network().id;
+                    let Some(network) = self.selected_network_id() else {
+                        return div().into_any_element();
+                    };
                     let Some(message) = self.state.server_messages(network).get(index) else {
                         return div().into_any_element();
                     };
@@ -5438,18 +5512,19 @@ mod startup_tests {
     fn startup_uses_only_saved_credentials_when_enabled() {
         let store = memory_store();
         let mut settings = Settings::default();
-        settings.selected_profile_mut().nickname = "alice".into();
-        settings.selected_profile_mut().username = "ident".into();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        settings.selected_profile_mut().unwrap().nickname = "alice".into();
+        settings.selected_profile_mut().unwrap().username = "ident".into();
         assert!(startup_connections(&settings, &store).is_empty());
 
-        let profile = settings.selected_profile_mut();
+        let profile = settings.selected_profile_mut().unwrap();
         profile.connect_on_startup = true;
         profile.sasl_enabled = true;
         profile.sasl_username = "account".into();
         profile.use_tls = true;
         assert!(startup_connections(&settings, &store)[0].1.is_err());
 
-        let profile = settings.selected_profile().clone();
+        let profile = settings.selected_profile().unwrap().clone();
         store
             .set(&profile.sasl_password_key(), &Secret::new("secret"))
             .unwrap();
@@ -5461,7 +5536,7 @@ mod startup_tests {
             .unwrap();
         // Saved secrets are ignored until password saving is on.
         assert!(startup_connections(&settings, &store)[0].1.is_err());
-        settings.selected_profile_mut().remember_passwords = true;
+        settings.selected_profile_mut().unwrap().remember_passwords = true;
         let startup = startup_connections(&settings, &store);
         assert_eq!(startup.len(), 1);
         assert_eq!(startup[0].0, settings.selected_server);
@@ -5479,24 +5554,20 @@ mod startup_tests {
     fn every_server_marked_for_startup_connects_with_its_own_identity() {
         let store = memory_store();
         let mut settings = Settings::default();
-        settings.add_custom_server();
-        let custom = settings.selected_profile_mut();
+        settings.add_server("");
+        let custom = settings.selected_profile_mut().unwrap();
         custom.host = "irc.example.org".into();
         custom.nickname = "bob".into();
         custom.username = "bob".into();
         custom.channels = "#b".into();
         custom.connect_on_startup = true;
-        let preset = settings
-            .servers
-            .iter_mut()
-            .find(|server| server.id == cayenchat_storage::IRCNET_ID)
-            .unwrap();
+        let preset = settings.add_server(cayenchat_storage::PRESETS[0].host);
         preset.nickname = "alice".into();
         preset.username = "alice".into();
         preset.channels = "#a".into();
         preset.connect_on_startup = true;
         let startup = startup_connections(&settings, &store);
-        // Tree order: user-added servers before the presets.
+        // Tree order: the order the servers were added.
         let hosts: Vec<_> = startup
             .iter()
             .map(|(_, config)| {
@@ -5520,16 +5591,20 @@ mod startup_tests {
     #[test]
     fn nickname_and_username_stay_independent_without_credentials() {
         let mut settings = Settings::default();
-        settings.selected_profile_mut().nickname = "alice".into();
-        settings.selected_profile_mut().username = "someone".into();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        settings.selected_profile_mut().unwrap().nickname = "alice".into();
+        settings.selected_profile_mut().unwrap().username = "someone".into();
         let language = settings.language;
-        let config = connection_config(settings.selected_profile(), language, None, None).unwrap();
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
         assert_eq!(config.nickname, "alice");
         assert_eq!(config.username, "someone");
         assert!(config.server_password.is_none());
         assert!(config.sasl.is_none());
-        settings.selected_profile_mut().username.clear();
-        assert!(connection_config(settings.selected_profile(), language, None, None).is_err());
+        settings.selected_profile_mut().unwrap().username.clear();
+        assert!(
+            connection_config(settings.selected_profile().unwrap(), language, None, None).is_err()
+        );
     }
 
     #[test]
@@ -5538,32 +5613,33 @@ mod startup_tests {
         for legacy in [true, false] {
             let store = memory_store();
             let mut previous = Settings::default();
-            previous.add_custom_server();
-            previous.selected_profile_mut().host = "old.example.org".into();
-            previous.selected_profile_mut().remember_passwords = true;
+            previous.add_server("");
+            previous.selected_profile_mut().unwrap().host = "old.example.org".into();
+            previous.selected_profile_mut().unwrap().remember_passwords = true;
             if legacy {
-                previous.selected_profile_mut().id = "custom-1".into();
+                previous.selected_profile_mut().unwrap().id = "custom-1".into();
                 previous.selected_server = "custom-1".into();
             }
-            let removed = previous.selected_profile().clone();
+            let removed = previous.selected_profile().unwrap().clone();
             for key in [removed.server_password_key(), removed.sasl_password_key()] {
                 store.set(&key, &Secret::new("old-password")).unwrap();
             }
 
             let mut next = previous.clone();
-            next.remove_selected_custom_server();
-            next.add_custom_server();
-            next.selected_profile_mut().host = "new.example.org".into();
-            next.selected_profile_mut().remember_passwords = true;
-            next.selected_profile_mut().sasl_enabled = true;
+            next.remove_selected_server();
+            next.add_server("");
+            next.selected_profile_mut().unwrap().host = "new.example.org".into();
+            next.selected_profile_mut().unwrap().remember_passwords = true;
+            next.selected_profile_mut().unwrap().sasl_enabled = true;
 
             // Connecting reads saved credentials before committing settings.
             let i18n = super::Localizer::new(next.language);
             let (server, sasl) =
-                super::saved_connection_secrets(next.selected_profile(), &store, &i18n).unwrap();
+                super::saved_connection_secrets(next.selected_profile().unwrap(), &store, &i18n)
+                    .unwrap();
             assert!(server.is_none());
             assert!(sasl.is_none());
-            assert_ne!(next.selected_profile().id, removed.id);
+            assert_ne!(next.selected_profile().unwrap().id, removed.id);
 
             forget_removed_profiles(&previous, &next, &store);
             assert!(!store.contains(&removed.server_password_key()).unwrap());
@@ -5575,16 +5651,16 @@ mod startup_tests {
     fn removed_profiles_lose_their_saved_passwords() {
         let store = memory_store();
         let mut previous = Settings::default();
-        previous.add_custom_server();
-        previous.selected_profile_mut().host = "irc.example.org".into();
-        let removed = previous.selected_profile().clone();
+        previous.add_server("");
+        previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        let removed = previous.selected_profile().unwrap().clone();
         let kept = SecretKey::server_password(cayenchat_storage::IRCNET_ID);
         store
             .set(&removed.server_password_key(), &Secret::new("x"))
             .unwrap();
         store.set(&kept, &Secret::new("y")).unwrap();
         let mut next = previous.clone();
-        next.remove_selected_custom_server();
+        next.remove_selected_server();
         forget_removed_profiles(&previous, &next, &store);
         assert!(store.get(&removed.server_password_key()).unwrap().is_none());
         assert!(store.get(&kept).unwrap().is_some());
@@ -5595,7 +5671,9 @@ mod startup_tests {
 #[cfg(test)]
 fn settings_with_channels(channels: &str) -> Settings {
     let mut settings = Settings::default();
-    settings.selected_profile_mut().channels = channels.into();
+    settings
+        .add_server(cayenchat_storage::PRESETS[0].host)
+        .channels = channels.into();
     settings
 }
 
@@ -5617,7 +5695,7 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = Settings::default();
+        let settings = crate::settings_with_channels("");
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
         let channel = "!ABCDEtest";
@@ -5685,10 +5763,10 @@ mod pane_tests {
             assert!(chat.state.conversations()[0].members.is_empty());
         });
         cx.run_until_parked();
-        // Both preset servers and the joined channel.
+        // The server and the joined channel.
         assert_eq!(
             chat.read_with(cx, |chat, _| chat.tree_list.state.item_count()),
-            3
+            2
         );
     }
 
@@ -5706,15 +5784,15 @@ mod pane_tests {
             ));
         });
         let mut settings = crate::settings_with_channels("#a");
-        settings.add_custom_server();
-        settings.selected_profile_mut().host = "irc.example.org".into();
-        settings.selected_profile_mut().channels = "#a".into();
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        settings.selected_profile_mut().unwrap().channels = "#a".into();
         let custom = settings.selected_server.clone();
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });
-        // Tree order: the user-added server, then both presets.
-        let (custom_net, ircnet) = (NetworkId(1), NetworkId(2));
+        // Tree order: the order the servers were added.
+        let (ircnet, custom_net) = (NetworkId(1), NetworkId(2));
         let session_events = |channel: &str, text: &str| {
             vec![
                 Event::Registered {
@@ -5737,7 +5815,7 @@ mod pane_tests {
             ]
         };
         chat.update(cx, |chat, cx| {
-            assert_eq!(chat.state.networks().len(), 3);
+            assert_eq!(chat.state.networks().len(), 2);
             assert_eq!(chat.sessions[&custom_net].profile_id, custom);
             chat.handle_events(custom_net, session_events("#a", "custom"), false, cx);
             chat.handle_events(ircnet, session_events("#a", "ircnet"), false, cx);
@@ -5780,9 +5858,9 @@ mod pane_tests {
                 .map(|c| c.id)
                 .collect();
             let mut next = settings.clone();
-            next.remove_selected_custom_server();
+            next.remove_selected_server();
             chat.apply_servers(next, cx);
-            assert_eq!(chat.state.networks().len(), 2);
+            assert_eq!(chat.state.networks().len(), 1);
             assert!(!chat.sessions.contains_key(&custom_net));
             assert!(
                 removed
@@ -5806,8 +5884,8 @@ mod pane_tests {
             ));
         });
         let mut settings = crate::settings_with_channels("#a");
-        settings.add_custom_server();
-        settings.selected_profile_mut().host = "irc.example.org".into();
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "irc.example.org".into();
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });
@@ -5874,6 +5952,41 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn starts_without_servers_and_shows_one_once_added(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(Settings::default(), None, window, cx)
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert!(chat.state.networks().is_empty());
+            assert_eq!(chat.state.selection(), Selection::None);
+            assert_eq!(chat.tree_list.state.item_count(), 0);
+            assert!(chat.startup_connections.is_empty());
+        });
+        // The draft still accepts text and Enter reports that nothing is connected.
+        cx.simulate_input("hello");
+        cx.dispatch_action(super::SendMessage);
+        chat.read_with(cx, |chat, _| assert!(chat.feedback.is_some()));
+
+        let settings = crate::settings_with_channels("#a");
+        chat.update(cx, |chat, cx| chat.apply_servers(settings, cx));
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.state.networks().len(), 1);
+            assert_eq!(chat.state.networks()[0].name, "irc.ircnet.ne.jp");
+            assert_eq!(chat.tree_list.state.item_count(), 2);
+        });
+    }
+
+    #[gpui::test]
     fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
@@ -5900,10 +6013,10 @@ mod pane_tests {
         cx.run_until_parked();
         let rendered = chat.read_with(cx, |chat, _| chat.pane_renders);
         assert!(rendered >= 4, "panes rendered {rendered} times");
-        // Both preset server rows and the two configured channels.
+        // The server row and the two configured channels.
         assert_eq!(
             chat.read_with(cx, |chat, _| chat.tree_list.state.item_count()),
-            4
+            3
         );
 
         cx.simulate_input("hello");

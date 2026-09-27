@@ -213,13 +213,14 @@ this delay.
 
 1. Launch and confirm the separate settings window opens over the four-pane
    chat window. After closing it, reopen it through **CayenChat → 接続設定…**
-   or Cmd+, on macOS; use Ctrl+, on Windows/Linux. Verify the settings window
-   defaults to `irc.ircnet.ne.jp:6667`
-   with TLS off. Open the server drop-down and verify
-   `irc6.ircnet.ne.jp` is also offered.
-2. Add two servers from the drop-down, assign different hosts and encodings, and
-   verify both appear above the built-in choices. Switch among them to check that
-   host, port, TLS, and encoding values remain independent. Remove one custom server.
+   or Cmd+, on macOS; use Ctrl+, on Windows/Linux. With new settings (the
+   test build always starts with new settings) verify the server list says no
+   servers are registered, the main log explains how to add one, and the
+   drop-down offers IRCnet, IRCnet (IPv6) and another server.
+2. Add IRCnet and a blank server from the drop-down, assign different hosts and
+   encodings, and verify both are listed in the order added. Switch among them
+   to check that host, port, TLS, and encoding values remain independent.
+   Remove one; remove the other and verify the form returns to the empty state.
 3. Toggle TLS and verify the standard port changes to `6697`. The certificate
    verification option should appear, default to on, and show a warning when
    turned off. Turn TLS off and on again; verification should reset to on.
@@ -306,10 +307,11 @@ choose Custom, set its host and port, and leave TLS off; do not enter credential
    different nicknames and the same channel name, and mark both to connect
    at startup. Restart: both must register and join, each channel log and
    roster must stay with its server, and the tree must show every saved
-   server (unused presets without a status mark). Disconnect one from its
-   context menu; the other keeps receiving. Remove one in settings and save;
-   it disappears with its channels. Connect an unused preset from the tree:
-   with a nickname saved it connects, otherwise settings open on it.
+   server (servers not used yet without a status mark). Disconnect one from
+   its context menu; the other keeps receiving. Remove one in settings and
+   save; it disappears with its channels. Add a server, save without
+   connecting, and connect it from the tree: with a nickname saved it
+   connects, otherwise settings open on it.
 
 The deterministic `irc-core` local-server tests cover registration, automatic join,
 inbound message/NAMES translation, outgoing `PRIVMSG`/`NOTICE`, flushing `QUIT`,

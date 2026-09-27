@@ -156,8 +156,9 @@ An offline mock must not claim to have sent a message or NOTICE.
 
 Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
-platform user configuration directory. Default to `irc.ircnet.ne.jp:6667`
-without TLS, offer `irc6.ircnet.ne.jp`, and allow custom host/port and TLS.
+platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
+TLS and `irc6.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
+(since D016 the server list starts empty).
 Password saving is per server and off by default; switching it off
 immediately removes those stored values. (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
@@ -370,8 +371,14 @@ is connected, and any number of them can be connected at the same time
 auto-join channels, SASL account and startup connection into each profile, so
 each network has its own identity; versions 1–11 copy their single identity
 into every profile, keep SASL on only for TLS profiles and keep startup
-connection only for the previously selected server. The IRCnet presets stay in
-the tree even when unused.
+connection only for the previously selected server.
+
+The IRCnet servers are not stored by default: they are suggestions offered
+when adding a server (`storage::PRESETS`), because unused built-in servers in
+the tree got in the way once every profile became a network. The list starts
+empty and every profile can be edited and removed. Migration from 1–11 keeps
+an IRCnet profile only if it was selected or has saved passwords (keeping its
+ID so the passwords stay attached) and drops the others.
 
 Each connection keeps the existing design (D006): its own worker thread and
 current-thread Tokio runtime, bounded queues, and an awaited event stream.

@@ -299,8 +299,10 @@ The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
 double-click. The lower combined log retains click-to-channel navigation.
 
-Version 4 settings keep several server profiles, ordered with user-added entries
-before built-in presets. Host/port/TLS/certificate verification/encoding are per
+Version 4 settings keep several server profiles. Since version 12 the list
+starts empty: the IRCnet hosts are `storage::PRESETS`, offered only when adding
+a server, and every profile is editable and removable in the order added.
+Host/port/TLS/certificate verification/encoding are per
 profile; version 12 moves the nickname, `USER` username, auto-join channels,
 SASL account and startup connection into each profile too (see Servers and
 sessions below). Versions 1–3
@@ -328,7 +330,9 @@ the selected pane.
 ### Servers and sessions
 
 Every server profile in the settings is a network in the channel tree,
-connected or not, in settings order (user-added servers first). `ui::session::ServerSession`
+connected or not, in the order added. With no servers the selection is
+`Selection::None`: the tree is empty, the main log explains how to add one
+and settings open at startup. `ui::session::ServerSession`
 holds everything per connection: the `Connection`, the configuration reused by
 reconnects, retry state, the current nickname, pending WHOIS nicknames and a
 bounded transcript (1,000 lines per server). The chat window keys sessions by

@@ -124,8 +124,8 @@ fn settings(servers: usize) -> cayenchat_storage::Settings {
     let channels = (0..CHANNELS).map(channel).collect::<Vec<_>>().join(",");
     let mut settings = cayenchat_storage::Settings::default();
     for index in 0..servers {
-        settings.add_custom_server();
-        let profile = settings.selected_profile_mut();
+        settings.add_server("");
+        let profile = settings.selected_profile_mut().unwrap();
         profile.host = format!("irc{index}.load.invalid");
         profile.channels = channels.clone();
     }
