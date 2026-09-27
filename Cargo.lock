@@ -851,6 +851,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cayenchat-media"
+version = "0.1.0"
+dependencies = [
+ "cayenchat-model",
+ "image",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "cayenchat-model"
 version = "0.1.0"
 
