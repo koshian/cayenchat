@@ -20,9 +20,12 @@ path = "src/main.rs"
 cayenchat-app.workspace = true
 cayenchat-irc-core.workspace = true
 cayenchat-upload.workspace = true
+cayenchat-media.workspace = true
 cayenchat-model.workspace = true
 cayenchat-storage = { path = "../storage" }
 gpui.workspace = true
+# Pixel buffers for GPUI's `RenderImage`; the same crate GPUI decodes with.
+image = { version = "0.25", default-features = false }
 unicode-segmentation = "1.12"
 url = "2.5.8"
 serde_json.workspace = true
@@ -39,6 +42,7 @@ test-build = ["cayenchat-storage/test-build"]
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
