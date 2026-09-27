@@ -2,148 +2,41 @@
 
 [Japanese README](README.ja.md)
 
-A compact native IRC desktop client in Rust and GPUI. Configure a server in the app, connect, and auto-join channels. Connection preferences persist; chat history does not.
+A compact native IRC desktop client written in Rust and GPUI, for macOS, Windows and Linux.
 
-## License and artwork
+- Multiple servers at once, with per-server nickname, auto-join channels, TLS and SASL
+- UTF-8, ISO-2022-JP, Shift_JIS and EUC-JP encodings
+- Passwords kept in the OS credential store
+- Image sharing through your own image hosting account (ImgBB)
+- Japanese and English UI
 
-CayenChat's original source and `icon.png` are licensed under [GPL version 3 only](LICENSE). The adapted GPUI text input in `crates/ui/src/input.rs` remains Apache-2.0, and third-party dependencies retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). GPLv2 is not used because GPUI is Apache-2.0 and the two licenses are incompatible. Preserve these notices when distributing the application.
+Chat history is not saved.
 
 ## Build and run
 
-Use Rust 1.88 or later with Cargo (1.95.0 on macOS and 1.98.1 on Linux are tested). GPUI uses `let` chains, which older compilers reject. Debian's stock rustc (1.85) is too old; use backports or rustup. Run commands from the repository root. Cargo uses the committed lockfile; the first build downloads Rust dependencies unless they are cached.
+Requires Rust 1.88 or later.
 
 ```sh
-cargo build --locked -p cayenchat-ui
 cargo run --locked -p cayenchat-ui
 ```
 
-The debug executable is `target/debug/cayenchat`. For an optimized executable, run `cargo build --locked --release -p cayenchat-ui`; the result is `target/release/cayenchat` (or `cayenchat.exe` on Windows).
-
-## Connect to IRC
-
-Settings open in a separate window at startup by default, so closing that window leaves the four-pane chat window running. Reopen them with **CayenChat → Settings…** on macOS (`Cmd+,`), or `Ctrl+,` on Windows/Linux. A new installation has no servers. On the **Connection** tab open the **Server** list and choose **+ Add IRCnet (irc.ircnet.ne.jp)**, **+ Add IRCnet (IPv6) (irc6.ircnet.ne.jp)** or **+ Add another server…**; the IRCnet entries only fill in the host (port `6667`, TLS off) and are not listed as servers until added. Enter a nickname and a username, then click **Save and connect**. Every server can be edited or removed, and servers are listed in the order they were added. Everything on the Connection tab except the language belongs to the server chosen in the list: host, port, TLS certificate verification, character encoding, nickname, username, auto-join channels, passwords, SASL and **Connect when the app starts**. Every saved server is listed in the channel tree, and several can be connected at the same time; right-click a server there to connect, reconnect or disconnect it. List auto-join channels separated by commas, such as `#first,#second`. A channel list is optional: you can join later with `/join #channel`.
-
-**Nickname** is the name shown to others (`NICK`). **Username (USER)** is the separate ident sent in the IRC `USER` command during registration; it is not derived from the nickname. Settings saved by versions before 11 start with the username equal to the old nickname, because that is what earlier versions sent. The **SASL account** is a third, independent value: the services account used for SASL login.
-
-**Server authentication → Server password** is the IRC `PASS` credential, sent before registration (a bouncer such as Tiarra or ZNC usually expects its password here). It is unrelated to the **SASL** password, which logs in to a services account through IRCv3 SASL PLAIN. Both are optional and independent; without them CayenChat connects unauthenticated.
-
-Choose **Character encoding** for each server: UTF-8 (default), ISO-2022-JP, Shift_JIS, or EUC-JP. IRC does not mandate one character set, including for channel names. CayenChat encodes and decodes the entire IRC line, including Japanese channel names, with the selected server encoding. A channel name must use the same encoding each time it is joined or addressed; select the encoding used by that network before joining. ISO-2022-JP channel names can contain comma or colon *bytes* inside Japanese characters (for example two U+304C characters after `#`); whether such names work across a network depends on its servers. The local wire test verifies that CayenChat itself keeps those bytes inside one channel name. Text that cannot be represented in the selected encoding is rejected without clearing the draft. A server advertising `UTF8ONLY` requires the UTF-8 setting.
-
-Enable **TLS/SSL** for an encrypted connection; switching it on changes the standard port from `6667` to `6697` if that port has not been customized. TLS certificates are verified by default. When TLS is on, **Verify certificates** can be turned off for that server, for example for a self-signed Tiarra certificate. With verification off, the client cannot authenticate the server and a third party could impersonate it. Turning TLS off resets certificate verification to on. Server passwords and **SASL PLAIN** require TLS, but sending them with verification off does not protect against server impersonation. SASL needs an account name and password, and the server must advertise `sasl` with PLAIN support.
-
-The **Save** button persists preferences without reconnecting. Use **Back** or the window close button to close only settings. **Disconnect** disconnects the server shown in the form; **Save and connect** connects (or reconnects) that server with the form's current values while other servers stay connected. **Connect when the app starts** is off by default; enable and save it on each server that should connect when the app next starts. The settings window stays closed when every such server can start, and opens if none is marked or a saved configuration cannot start a connection. Auto-connect and connecting from the channel tree use only passwords explicitly saved for that server. An unexpected disconnection is retried after 3, 6, 12, 24, then every 30 seconds.
-
-Preferences are stored in the platform user configuration directory under `CayenChat/settings.json` (for example, `~/Library/Application Support/CayenChat/settings.json` on macOS). Existing version 1–12 settings are read and converted when next saved. Version 13 keeps the nickname, username, channels, SASL account and startup connection per server: older settings copy their single values into every server, keep SASL on only for TLS servers, and keep startup connection only for the server that was selected. Missing certificate-verification and startup-connection values default to on and off respectively; saved choices are retained. The old default background `#ECECEC` becomes white in version 8, and the old default channel event color `#3B7655` becomes `#007D00` in version 9; other saved colors remain unchanged. Server and SASL passwords are masked in the form and are never written to `settings.json`. **Save passwords** is off by default for each server; turning it on keeps both passwords in the credential storage described below (with the local-file backend it first asks for confirmation). Saved passwords are not shown again: the field reads *Saved — type to replace*, and typing a new value replaces it on **Save**. Turning **Save passwords** off immediately deletes that server's saved passwords, and removing a server deletes its passwords when the settings are saved. With it off, passwords entered for a connection are kept only in memory. Plaintext passwords saved by versions before 11 are moved out of `settings.json` into the credential storage on the next start. A running connection is marked in the channel tree; select the server to inspect registration messages and errors.
-
-If the app reports **Unsupported settings version** (or that the settings are newer than the app supports), update the executable you actually launch. For example, an app that supports version 10 cannot read version 11 settings created by a newer build. This applies to macOS, Windows and Linux. On macOS, check that `/Applications/CayenChat.app` is the updated copy rather than an older installed app left alongside a development build. Keep `settings.json` and the credential store intact; do not lower the version number or delete the file to bypass the check. Current builds report the settings path and supported version range. A missing or invalid version instead requires restoring a valid settings backup.
-
-During connection and after a failed connection, the diagnostic transcript is shown automatically in the selected channel or server view. On Windows/Linux, **press and release Alt alone** or press **F10** to reveal the menu bar; the same key or Escape hides it. Resting the pointer just below the title bar also slides it in, and it hides again when the pointer moves away. If Alt alone toggles your input method, use F10 or the pointer. **View → Show Connection Diagnostics** opens the server transcript at its start; **View → Copy Connection Diagnostics** copies it, including the final disconnect reason. macOS uses its native menu bar. The same actions use `Cmd+Shift+D` / `Cmd+Shift+L` on macOS and `Ctrl+Shift+D` / `Ctrl+Shift+L` on Windows/Linux. Entries marked `→` are IRC commands queued for sending and `←` are received IRC lines, interleaved with DNS, TCP/TLS, and registration progress. The transcript includes chat message bodies and retains the latest 1,000 entries in memory, so review it before sharing a copy. Server PASS, SASL payloads, OPER passwords, channel keys, and recognized NickServ/ChanServ credential commands are masked. IRC lines are shown after character-set decoding and parsing; this is not a byte-for-byte TLS or packet capture. The library can generate other maintenance traffic that is not surfaced in this transcript. The Windows/Linux menu is available in both chat and settings windows and supports arrow keys and Enter. Alt shortcuts do not open it. `Ctrl+,` also opens the separate settings window.
-
-## Credential storage
-
-The **Credential Storage** tab chooses where server passwords, SASL passwords and image hosting tokens are kept:
-
-- **System secure storage** (default): macOS Keychain, Windows Credential Manager, or on Linux and other Unix desktops the freedesktop Secret Service (GNOME Keyring, KWallet or another provider), through the [`keyring`](https://crates.io/crates/keyring) crate. Entries use the service name `CayenChat` and names such as `connection/<server-id>/sasl-password` or `uploader/imgbb/default/credential`, built from internal IDs rather than hostnames or nicknames. On macOS all of them are kept together in one Keychain item named `secrets`, so the Keychain asks for your login password at most once per launch rather than once per credential; items saved separately by earlier versions move into it when first used.
-- **Local configuration file**: an **unencrypted** JSON file, `$XDG_CONFIG_HOME/cayenchat/credentials.json` (or `~/.config/cayenchat/credentials.json`) on Linux, and `CayenChat/credentials.json` in the user configuration directory on macOS and Windows. On Unix the file is created with mode `0600` in a `0700` directory, written atomically, and tightened again if it is found readable by others. On Windows it inherits the user profile's permissions. It is less secure than system storage: any program running as your user, and any backup of the file, can read the credentials. Encrypting it with a key stored beside it would not change that, so CayenChat does not pretend to.
-
-Linux desktops without a Secret Service (Enlightenment, minimal window managers, remote sessions) can still use CayenChat: the tab reports that system storage is unavailable and offers the local file. CayenChat never switches to the local file on its own — choosing it asks for confirmation — with one exception: when upgrading from a version that saved plaintext passwords in `settings.json` and system storage is unavailable, those already-plaintext passwords move to the local file and the chat window says so. Switching the backend moves saved credentials to the new location. Credentials never appear in logs, the diagnostic transcript or debug output.
-
-## Sharing images
-
-IRC has no attachments, so CayenChat shares an image by uploading it to an image hosting account **you own** and putting the resulting link into your draft as ordinary text. Uploading is off until you choose a provider in the **Image Upload** tab and connect an account.
-
-**ImgBB** is currently supported; other services can be added later. ImgBB connects with your account's API key: sign in at [api.imgbb.com](https://api.imgbb.com/), choose **Get API key**, then choose **Connect Account** in CayenChat's **Image Upload** tab and paste the key. The key is stored in the credential storage and sent in the upload request body, never in a URL. **Reconnect Account** replaces it and **Disconnect Account** deletes it. No shared API key is shipped with CayenChat. ImgBB accepts files up to 32,000,000 bytes.
-
-To send an image, paste an image (`Cmd+V` / `Ctrl+V`) into a draft whose clipboard holds an image and no text, or drop one image file (PNG, JPEG, GIF, WebP, BMP, TIFF, HEIC/HEIF or AVIF) onto the draft row. Screenshots copied to the clipboard (on macOS `Cmd+Ctrl+Shift+4`) paste directly. On macOS you can also drag a photo straight from Photos, Mail or the screenshot thumbnail: these apps hand over the file only on drop (a *file promise*), and CayenChat receives it into a private temporary folder that is removed right after reading. iPhone and Photos pictures are usually HEIC and are uploaded as they are. Clipboard text always pastes as text, and a file copied in Finder still pastes its name. CayenChat then asks before anything leaves your computer, naming the provider. After **Upload**, the draft row shows progress; the link is inserted at the draft's cursor only after a successful upload, and nothing is sent until you press Enter. **Cancel** in the dialog uploads nothing and leaves the draft unchanged; cancelling during the upload stops waiting, but the image may already have reached the provider. Failures keep the draft as it was. If no provider is configured, or ImgBB rejects the key, the dialog offers to open the Image Upload settings.
-
-Uploaded images are kept by the hosting service, not by IRC. Treat the link as public: anyone who obtains it, including people outside the channel, may be able to view the image, and channel membership provides no access control. CayenChat does not set ImgBB's optional automatic expiration, so uploads stay until you delete them in your ImgBB account. Links are not shown inline in the chat log yet.
-
-## Appearance
-
-The separate settings window has **Connection** and **Appearance** tabs. In **Appearance**, enter `#RRGGBB` colors for the member list background (white by default), upper channel log, and lower combined log. Enable alternating rows to apply the corresponding alternate color to every second message. Choose installed font families for the upper and lower logs, member list, channel tree, and draft input; type in a font field to filter the selection list. Empty font fields use the system font. Timestamps use a monospaced font by default (Menlo on macOS, Consolas on Windows, and DejaVu Sans Mono on Linux). **Save and apply** persists and applies appearance changes without reconnecting. The nickname column is about 12 characters wide; longer nicks are shortened visually.
-
-## Language
-
-The **Language** control in the Connection tab offers **System language**, **Japanese**, and **English**. System language is the default: a Japanese OS locale selects Japanese; all other locales select English. Selecting a language previews it in Settings; **Save** applies it to the chat window and menus without reconnecting. The catalogs are `locales/en.json` and `locales/ja.json`. The app reads packaged files at runtime and falls back to bundled copies if those files are unavailable.
-
-## IRC commands
-
-Type `/` at the beginning of the draft and press Enter to send an IRC command after registration. Ordinary draft text sends `PRIVMSG` to the selected joined channel; `Ctrl+Enter` sends an IRC `NOTICE`. The following commands use the selected channel when the channel argument is omitted:
-
-| Example | Effect |
-| --- | --- |
-| `/join #other` | Join another channel |
-| `/part` or `/part Leaving now` | Leave the selected channel |
-| `/topic New topic` | Set the selected channel's topic; `/topic` queries it |
-| `/mode +o alice` | Change a mode on the selected channel |
-| `/kick bob goodbye` | Kick a user from the selected channel |
-| `/invite bob` | Invite a user to the selected channel |
-| `/names` | Request the selected channel's member list |
-| `/me waves` | Send a CTCP ACTION to the selected channel |
-| `/msg :hello everyone` or `/notice :hello everyone` | Message or notify the selected channel |
-| `/msg bob hello` or `/notice bob hello` | Send directly to a named target |
-| `/nick newname`, `/whois bob`, `/raw WHO #channel` | Send other IRC commands |
-
-For `MSG`, `PRIVMSG`, and `NOTICE`, the leading `:` in the message form above explicitly selects the current channel. `/raw` and `/quote` send the remaining line as an IRC command. Server responses appear in the server log; private-message conversations do not yet have their own pane. Commands and messages reject protocol line breaks and oversized lines.
-
-Platform prerequisites:
-
-| Platform | Required environment | Verification |
-| --- | --- | --- |
-| macOS | Full Xcode with its macOS SDK and command-line tools selected via `xcode-select`; a Metal-capable Mac. | Built and run on Apple Silicon/macOS 26.6.2 with Rust 1.95.0 and Xcode 26.6. |
-| Windows | Stable Rust MSVC toolchain, Visual Studio or Build Tools with Desktop development with C++, and a Windows SDK. Run from a Developer shell if required. | Not yet built or run on Windows. |
-| Linux | Rust 1.88+, a C toolchain and `pkg-config`, and a Vulkan-capable GPU/driver. On Debian/Ubuntu: `sudo apt install build-essential pkg-config libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 mesa-vulkan-drivers`. See [Zed's Linux build prerequisites](https://zed.dev/docs/development/linux) for a broader upstream dependency reference; this smaller project may need fewer packages. | Wayland and X11 features are enabled; not yet built or run on Linux. |
-
-On macOS, an optional development `.app` bundle with the `icon.png` artwork can be created with:
+On macOS, you can also build a development `.app` bundle:
 
 ```sh
 sh scripts/bundle-macos.sh
 open target/CayenChat.app
 ```
 
-The bundle stays in `target/`; it is not signed, notarized, or installed. It contains the icon derived from `icon.png`. The Windows executable embeds an `.ico` derived from the same image. The generated `.icns` and `.ico` files are committed so normal builds need no image tools; after changing `icon.png`, run `python3 scripts/generate-icons.py` with Pillow installed. After code changes, quit every running CayenChat instance with Cmd+Q, rerun `sh scripts/bundle-macos.sh`, and then open the bundle again; `cargo build` alone does not replace its executable. For code changes, run:
+See [development requirements](spec/development.md) for platform prerequisites and checks.
 
-```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features --locked
-cargo test --workspace --locked
-```
+## Usage
 
-See [development requirements](spec/development.md) for more platform detail.
+Add a server in the settings window that opens at startup (`Cmd+,` / `Ctrl+,`), then choose **Save and connect**. See [keyboard shortcuts and IRC commands](SHORTCUTS.md).
 
-## Layout and current behavior
+## Documentation
 
-Drag across message bodies in the upper channel log and use `Cmd+C` / `Ctrl+C` to copy the selected text. Double-click an HTTP or HTTPS URL there to open it in the system browser. The lower combined log keeps single-click channel switching and does not open URLs.
+The specifications under [`spec/`](spec/) are authoritative; start with [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md).
 
-The main log is above the other-channel subwindow on the left. The draft input sits between them. The selected channel's members are above the server/channel tree on the right. Selecting a server shows its connection status and server messages, with an empty member list. Clicking a subwindow message opens its source channel. Long channel and server names in the subwindow are shortened with an ellipsis to keep each label on one line. The subwindow orders messages by arrival, even when different channels receive lines during the same displayed minute. The main and subwindow logs follow new messages to the bottom, including a burst of channel history during initial connection. Scrolling up pauses following for that log; scrolling back to the bottom resumes it. Each server or channel keeps a separate in-memory draft until exit.
+## License
 
-Messages arriving in other channels mark them unread; opening one clears its mark. Active navigation follows registered/joined state. When no unread channel remains, the unread shortcuts leave the selection unchanged. Channel number shortcuts use the visible channel order across the server tree; `1` selects the first and `0` the tenth. A number beyond the available channels leaves the selection unchanged. On Windows/Linux, **Settings → Appearance → Channel number keys** switches the channel number modifier to Alt or Super for desktops that use Ctrl+number for workspaces; server numbers stay `Ctrl+Alt`.
-
-## Keyboard shortcuts
-
-`Cmd` means Command and `Opt` means Option on macOS. `Ctrl` and `Alt` refer to the corresponding Windows/Linux keys. The Windows/Linux assignments avoid OS-reserved Alt+Tab/Alt+Space and leave Ctrl+Left/Right available for word movement in the draft.
-
-| Action | macOS | Windows / Linux |
-| --- | --- | --- |
-| Complete a nickname from the selected channel's member list; repeat to cycle matches | `Tab` | `Tab` |
-| Next unread channel | `Ctrl+Tab` or `Opt+Space` | `Ctrl+Tab` |
-| Previous unread channel | `Ctrl+Shift+Tab` or `Opt+Shift+Space` | `Ctrl+Shift+Tab` |
-| Previously selected channel | `Opt+Tab` | `Alt+Left` |
-| Previous / next active channel | `Cmd+Up/Down`, `Cmd+Opt+Up/Down`, or `Cmd+{/}` | `Ctrl+PageUp/PageDown` |
-| Previous / next channel | `Ctrl+Up/Down` | `Alt+Up/Down` |
-| Previous / next active server | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
-| Previous / next server | `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
-| First through tenth channel | `Cmd+1..9, 0` | `Ctrl+1..9, 0` (configurable) |
-| First through tenth server | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
-| Send a channel message (`PRIVMSG`) | `Enter` | `Enter` |
-| Send as IRC `NOTICE` | `Ctrl+Enter` | `Ctrl+Enter` |
-| Open connection settings | `Cmd+,` | `Ctrl+,` |
-| Show/hide connection diagnostics | `Cmd+Shift+D` | `Ctrl+Shift+D` |
-| Copy connection diagnostics | `Cmd+Shift+L` | `Ctrl+Shift+L` |
-| Copy selected upper-log text | `Cmd+C` | `Ctrl+C` |
-
-Ordinary text sends only after the selected channel has been joined; slash commands can also be entered from the server view after registration. Successful local queueing clears the draft. Sending while disconnected or joining displays feedback and retains the draft. The input implements common platform editing bindings, selection, paste, undo/redo, and IME text input; GPUI 0.2.2 does not yet honor user-defined macOS `DefaultKeyBinding.dict` mappings. The app shortcuts above take precedence where they overlap input editing keys.
-
-On Windows, Send and nickname completion are suppressed while the text input has an active IME composition. The included GPUI 0.2.2 copy patches its handling of unrecognized language keys and IME-processed keys, following the relevant parts of an [upstream fix](https://github.com/zed-industries/zed/pull/41259). MS-IME switching with the Half-width/Full-width key still needs verification on a Windows 11 machine.
-
-The specifications under [`spec/`](spec/) are authoritative; see [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md) for implementation scope.
+GPL version 3 only ([LICENSE](LICENSE)). `crates/ui/src/input.rs`, adapted from GPUI, remains Apache-2.0; third-party dependencies keep their own licenses ([notices](THIRD_PARTY_NOTICES.md)).
