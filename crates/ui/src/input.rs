@@ -78,6 +78,7 @@ pub struct TextInput {
     /// Draft inputs let an image-only paste bubble up to the chat window's
     /// attachment flow instead of ignoring it.
     attachments: bool,
+    native_settings_style: bool,
 }
 
 impl TextInput {
@@ -822,10 +823,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (
-                input.placeholder.clone(),
-                crate::theme::current(cx).placeholder,
-            )
+            (input.placeholder.clone(), input.palette(cx).placeholder)
         } else if input.secret {
             // Keep the display byte length aligned with the UTF-8 editing offsets.
             ("*".repeat(content.len()).into(), style.color)
@@ -882,7 +880,15 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    gpui::blue(),
+                    if input.native_settings_style {
+                        crate::settings_theme::current(cx)
+                            .map(|n| {
+                                gpui::Hsla::from(crate::settings_theme::color(n.input.caret_color))
+                            })
+                            .unwrap_or_else(gpui::blue)
+                    } else {
+                        gpui::blue()
+                    },
                 )),
             )
         } else {
@@ -898,7 +904,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    crate::theme::current(cx).text_selection,
+                    input.palette(cx).text_selection,
                 )),
                 None,
             )
@@ -947,8 +953,15 @@ impl Element for TextElement {
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = crate::theme::current(cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.palette(cx);
+        let native = self
+            .native_settings_style
+            .then(|| crate::settings_theme::current(cx))
+            .flatten();
+        let focused = native.is_some() && self.focus_handle.is_focused(window);
+        let font_size = native.map_or(13., |n| n.input.font.size);
+        let line_height = (font_size * 1.4).max(20.);
         div()
             .flex()
             .key_context("TextInput")
@@ -989,14 +1002,29 @@ impl Render for TextInput {
             .bg(theme.window)
             .w_full()
             .overflow_hidden()
-            .line_height(px(20.))
-            .text_size(px(13.))
+            .line_height(px(line_height))
+            .text_size(px(font_size))
+            .when(self.native_settings_style, |d| d.text_color(theme.text))
+            .when_some(native, |d, n| d.font_family(n.input.font.family.clone()))
             .child(
                 div()
-                    .h(px(28.))
+                    .h(px(native.map_or(28., |n| {
+                        n.input.min_height.max(line_height + 10.)
+                    })))
                     .w_full()
                     .p(px(4.))
                     .bg(theme.surface)
+                    .when_some(native, |d, n| {
+                        d.rounded(px(n.input.border.corner_radius))
+                            .border(px(n.input.border.line_width.max(1.)))
+                            .border_color(crate::settings_theme::color(if focused {
+                                n.input
+                                    .focus_border_color
+                                    .unwrap_or(n.defaults.focus_ring_color)
+                            } else {
+                                n.input.border.color
+                            }))
+                    })
                     .child(TextElement { input: cx.entity() }),
             )
     }
@@ -1025,6 +1053,7 @@ impl TextInput {
             completion: None,
             secret: false,
             attachments: false,
+            native_settings_style: false,
         }
     }
 
@@ -1033,6 +1062,25 @@ impl TextInput {
         let mut input = Self::new(cx);
         input.placeholder = placeholder.to_owned().into();
         input.attachments = true;
+        input
+    }
+
+    fn palette(&self, cx: &App) -> crate::theme::Theme {
+        if self.native_settings_style {
+            crate::settings_theme::input_palette(cx)
+        } else {
+            crate::theme::current(cx)
+        }
+    }
+
+    pub fn new_settings_field(
+        placeholder: &str,
+        value: &str,
+        secret: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut input = Self::new_field(placeholder, value, secret, cx);
+        input.native_settings_style = true;
         input
     }
 

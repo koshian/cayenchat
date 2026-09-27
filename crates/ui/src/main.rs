@@ -12,6 +12,7 @@ mod notifier;
 mod perf_baseline;
 mod secrets;
 mod session;
+mod settings_theme;
 mod theme;
 mod whois;
 
@@ -149,7 +150,7 @@ impl SettingsForm {
         let profile = values.selected_profile().unwrap_or(&empty);
         let field =
             |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
-                cx.new(|cx| TextInput::new_field(placeholder, value, secret, cx))
+                cx.new(|cx| TextInput::new_settings_field(placeholder, value, secret, cx))
             };
         Self {
             custom_host: field(
@@ -2519,13 +2520,15 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let i18n = Localizer::new(values.language);
+        settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
         let mut fonts = window.text_system().all_font_names();
         fonts.sort_unstable();
         fonts.dedup();
-        let upload_token =
-            cx.new(|cx| TextInput::new_field(&i18n.text("image_token_placeholder"), "", true, cx));
+        let upload_token = cx.new(|cx| {
+            TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
+        });
         let mut this = Self {
             menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
             owner,
@@ -2880,7 +2883,7 @@ impl SettingsWindow {
     }
 
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
@@ -3076,12 +3079,7 @@ impl SettingsWindow {
                     .pt_2()
                     .when(!no_server, |d| {
                         d.child(
-                            div()
-                                .id("connect-button")
-                                .px_3()
-                                .py_1()
-                                .bg(theme.selected)
-                                .cursor_pointer()
+                            settings_theme::button("connect-button", true, cx)
                                 .child(self.i18n.text("save_and_connect"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.connect_from_settings(window, cx)
@@ -3089,24 +3087,12 @@ impl SettingsWindow {
                         )
                     })
                     .child(
-                        div()
-                            .id("save-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
+                        settings_theme::button("save-button", false, cx)
                             .child(self.i18n.text("save"))
                             .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
                     )
                     .child(
-                        div()
-                            .id("back-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
+                        settings_theme::button("back-button", false, cx)
                             .child(self.i18n.text("back"))
                             .on_click(
                                 cx.listener(|this, _, window, _| this.close_settings(window)),
@@ -3114,13 +3100,7 @@ impl SettingsWindow {
                     )
                     .when(!no_server, |d| {
                         d.child(
-                            div()
-                                .id("disconnect-button")
-                                .px_3()
-                                .py_1()
-                                .border_1()
-                                .border_color(theme.border)
-                                .cursor_pointer()
+                            settings_theme::button("disconnect-button", false, cx)
                                 .child(self.i18n.text("disconnect"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     // Disconnects the server being edited.
@@ -3139,7 +3119,7 @@ impl SettingsWindow {
 
     /// Everything on the Connection tab that belongs to `profile`.
     fn render_server_fields(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let tls = profile.use_tls;
         let sasl = profile.sasl_enabled;
         let mut encoding_selector = div().flex().flex_col().child(
@@ -3234,11 +3214,11 @@ impl SettingsWindow {
                     .child(
                         div()
                             .id("tls-toggle")
-                            .px_2()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .cursor_pointer()
+                            .child(settings_theme::checkbox(tls, true, cx))
                             .child(self.i18n.text(if tls { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
                     ),
@@ -3257,11 +3237,15 @@ impl SettingsWindow {
                         .child(
                             div()
                                 .id("certificate-verification-toggle")
-                                .px_2()
-                                .py_1()
-                                .border_1()
-                                .border_color(theme.border)
+                                .flex()
+                                .items_center()
+                                .gap_2()
                                 .cursor_pointer()
+                                .child(settings_theme::checkbox(
+                                    profile.verify_tls_certificates,
+                                    true,
+                                    cx,
+                                ))
                                 .child(self.i18n.text(if profile.verify_tls_certificates {
                                     "on"
                                 } else {
@@ -3307,11 +3291,11 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if profile.connect_on_startup {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        profile.connect_on_startup,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("connect_on_startup"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(profile) = this.settings.values.selected_profile_mut() {
@@ -3344,11 +3328,11 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if profile.remember_passwords {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        profile.remember_passwords,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("remember_passwords"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_remember_passwords(window, cx)
@@ -3369,11 +3353,11 @@ impl SettingsWindow {
                     .child(
                         div()
                             .id("sasl-toggle")
-                            .px_2()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .cursor_pointer()
+                            .child(settings_theme::checkbox(sasl, true, cx))
                             .child(self.i18n.text(if sasl { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
                     ),
@@ -3402,7 +3386,7 @@ impl SettingsWindow {
     }
 
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
         let mut field = div().flex().flex_col().child(
             div()
@@ -3487,7 +3471,7 @@ impl SettingsWindow {
     }
 
     fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         div()
             .w(px(680.))
             .p_4()
@@ -3578,11 +3562,11 @@ impl SettingsWindow {
                     .flex()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if self.settings.values.appearance.alternate_rows {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.alternate_rows,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("alternate_rows"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         let value = &mut this.settings.values.appearance.alternate_rows;
@@ -3618,12 +3602,7 @@ impl SettingsWindow {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
             .child(
-                div()
-                    .id("save-appearance")
-                    .px_3()
-                    .py_1()
-                    .bg(theme.selected)
-                    .cursor_pointer()
+                settings_theme::button("save-appearance", true, cx)
                     .child(self.i18n.text("save_and_apply"))
                     .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
             )
@@ -3632,7 +3611,7 @@ impl SettingsWindow {
     /// Channel-number and draft-editing keys; only Windows and Linux have
     /// choices here, so macOS hides this tab.
     fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let hint = |key: &str| {
             div()
                 .ml(px(158.))
@@ -3689,12 +3668,7 @@ impl SettingsWindow {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
             .child(
-                div()
-                    .id("save-keyboard")
-                    .px_3()
-                    .py_1()
-                    .bg(theme.selected)
-                    .cursor_pointer()
+                settings_theme::button("save-keyboard", true, cx)
                     .child(self.i18n.text("save_and_apply"))
                     .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
             )
@@ -3709,7 +3683,7 @@ impl SettingsWindow {
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         div()
             .id(id)
             .ml(px(158.))
@@ -3718,11 +3692,11 @@ impl SettingsWindow {
             .gap_2()
             .when(!enabled, |d| d.text_color(theme.text_secondary))
             .when(enabled, |d| d.cursor_pointer())
-            .child(if get(&self.settings.values.notifications) {
-                "☑"
-            } else {
-                "☐"
-            })
+            .child(settings_theme::checkbox(
+                get(&self.settings.values.notifications),
+                enabled,
+                cx,
+            ))
             .child(self.i18n.text(label_key))
             .when(enabled, |d| {
                 d.on_click(cx.listener(move |this, _, _, cx| {
@@ -3735,7 +3709,7 @@ impl SettingsWindow {
     /// Desktop notification preferences, shown through the operating
     /// system's notification service.
     fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let enabled = self.settings.values.notifications.enabled;
         let hint = |key: &str| {
             div()
@@ -3806,12 +3780,7 @@ impl SettingsWindow {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
             .child(
-                div()
-                    .id("save-notifications")
-                    .px_3()
-                    .py_1()
-                    .bg(theme.selected)
-                    .cursor_pointer()
+                settings_theme::button("save-notifications", true, cx)
                     .child(self.i18n.text("save_and_apply"))
                     .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
             )
@@ -3824,7 +3793,7 @@ impl SettingsWindow {
         label_key: &str,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         div()
             .id(id)
             .px_4()
@@ -3850,7 +3819,7 @@ impl SettingsWindow {
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let border = theme.border;
         let tabs = div()
             .flex()
@@ -3897,6 +3866,10 @@ impl SettingsWindow {
             .overflow_y_scroll()
             .bg(theme.window)
             .text_size(px(13.))
+            .when_some(settings_theme::current(cx), |d, native| {
+                d.font_family(native.defaults.font.family.clone())
+                    .text_size(px(native.defaults.font.size))
+            })
             .text_color(theme.text)
             .child(
                 div().w_full().flex().justify_center().child(
