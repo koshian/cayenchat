@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use cayenchat_app::Command;
 use cayenchat_irc_core::{Event, WireDirection};
-use cayenchat_storage::Settings;
 use gpui::{Focusable, TestAppContext};
 
 use crate::{ChatWindow, Selection};
@@ -110,10 +109,8 @@ fn perf_baseline(cx: &mut TestAppContext) {
             &cayenchat_storage::Appearance::default(),
         ))
     });
-    let settings = Settings {
-        channels: (0..CHANNELS).map(channel).collect::<Vec<_>>().join(","),
-        ..Settings::default()
-    };
+    let settings =
+        crate::settings_with_channels(&(0..CHANNELS).map(channel).collect::<Vec<_>>().join(","));
     let (chat, cx) =
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
 

@@ -149,14 +149,24 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            nickname: field(&i18n.text("nickname"), &values.nickname, false, cx),
-            username: field(
-                &i18n.text("username_placeholder"),
-                &values.username,
+            nickname: field(
+                &i18n.text("nickname"),
+                &values.selected_profile().nickname,
                 false,
                 cx,
             ),
-            channels: field("#first,#second", &values.channels, false, cx),
+            username: field(
+                &i18n.text("username_placeholder"),
+                &values.selected_profile().username,
+                false,
+                cx,
+            ),
+            channels: field(
+                "#first,#second",
+                &values.selected_profile().channels,
+                false,
+                cx,
+            ),
             server_password: field(
                 &i18n.text(if saved_server_password {
                     "password_saved_placeholder"
@@ -169,7 +179,7 @@ impl SettingsForm {
             ),
             sasl_username: field(
                 &i18n.text("sasl_account_placeholder"),
-                &values.sasl_username,
+                &values.selected_profile().sasl_username,
                 false,
                 cx,
             ),
@@ -297,16 +307,16 @@ impl SettingsForm {
         if port == 0 {
             return Err(i18n_error(settings.language, "port_invalid"));
         }
+        let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let profile = settings.selected_profile_mut();
         if profile.custom {
             profile.host = host;
         }
         profile.port = port;
-        settings.nickname = self.nickname.read(cx).text().trim().to_owned();
-        settings.username = self.username.read(cx).text().trim().to_owned();
-        settings.channels = self.channels.read(cx).text().trim().to_owned();
-        settings.sasl_username = self.sasl_username.read(cx).text().trim().to_owned();
-        let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
+        profile.nickname = value(&self.nickname);
+        profile.username = value(&self.username);
+        profile.channels = value(&self.channels);
+        profile.sasl_username = value(&self.sasl_username);
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
             main_log_background: value(&self.main_log_background),
@@ -425,7 +435,7 @@ fn saved_connection_secrets(
             .map_err(|error| secrets::error_text(i18n, &error))
     };
     let server = get(profile.server_password_key())?;
-    let sasl = if settings.sasl_enabled {
+    let sasl = if profile.sasl_enabled {
         get(profile.sasl_password_key())?
     } else {
         None
@@ -441,13 +451,13 @@ fn connection_config(
     let profile = settings.selected_profile();
     let mut config = ConnectionConfig::tls(
         profile.host.clone(),
-        settings.nickname.clone(),
-        settings.channels(),
+        profile.nickname.clone(),
+        profile.channels(),
     );
-    if settings.username.is_empty() {
+    if profile.username.is_empty() {
         return Err(i18n_error(settings.language, "username_required"));
     }
-    config.username = settings.username.clone();
+    config.username = profile.username.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
@@ -455,9 +465,9 @@ fn connection_config(
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         config.server_password = Some(password.expose().to_owned());
     }
-    if settings.sasl_enabled {
+    if profile.sasl_enabled {
         config.sasl = Some(SaslCredentials {
-            username: settings.sasl_username.clone(),
+            username: profile.sasl_username.clone(),
             password: sasl_password
                 .map(|value| value.expose().to_owned())
                 .unwrap_or_default(),
@@ -472,7 +482,7 @@ fn startup_connection_config(
     settings: &Settings,
     store: &CredentialStore,
 ) -> Option<Result<ConnectionConfig, String>> {
-    settings.connect_on_startup.then(|| {
+    settings.selected_profile().connect_on_startup.then(|| {
         let i18n = Localizer::new(settings.language);
         let (server_password, sasl_password) = saved_connection_secrets(settings, store, &i18n)?;
         connection_config(settings, server_password, sasl_password)
@@ -730,7 +740,10 @@ impl ChatWindow {
     ) -> Self {
         let i18n = Localizer::new(saved.language);
         let startup_connection = startup_connection_config(&saved, &secrets::store(cx));
-        let state = AppState::configured(saved.selected_profile().host.clone(), saved.channels());
+        let state = AppState::configured(
+            saved.selected_profile().host.clone(),
+            saved.selected_profile().channels(),
+        );
         let mut inputs: HashMap<_, _> = state
             .networks()
             .iter()
@@ -2132,7 +2145,9 @@ impl SettingsWindow {
     }
 
     fn toggle_tls(&mut self, cx: &mut Context<Self>) {
-        if self.settings.values.selected_profile().use_tls && self.settings.values.sasl_enabled {
+        if self.settings.values.selected_profile().use_tls
+            && self.settings.values.selected_profile().sasl_enabled
+        {
             self.feedback = Some(self.i18n.text("disable_sasl_first"));
             cx.notify();
             return;
@@ -2167,8 +2182,9 @@ impl SettingsWindow {
 
     fn toggle_sasl(&mut self, cx: &mut Context<Self>) {
         self.feedback = None;
-        self.settings.values.sasl_enabled = !self.settings.values.sasl_enabled;
-        if self.settings.values.sasl_enabled && !self.settings.values.selected_profile().use_tls {
+        let profile = self.settings.values.selected_profile_mut();
+        profile.sasl_enabled = !profile.sasl_enabled;
+        if profile.sasl_enabled && !profile.use_tls {
             self.toggle_tls(cx);
         }
         cx.notify();
@@ -2182,6 +2198,14 @@ impl SettingsWindow {
         self.settings.port.update(cx, |field, cx| {
             field.set_text(&profile.port.to_string(), cx)
         });
+        for (field, value) in [
+            (&self.settings.nickname, &profile.nickname),
+            (&self.settings.username, &profile.username),
+            (&self.settings.channels, &profile.channels),
+            (&self.settings.sasl_username, &profile.sasl_username),
+        ] {
+            field.update(cx, |field, cx| field.set_text(value, cx));
+        }
         let (saved_server, saved_sasl) =
             saved_passwords(&self.settings.values, &secrets::store(cx));
         self.settings.saved_server_password = saved_server;
@@ -2247,7 +2271,7 @@ impl SettingsWindow {
         let theme = theme::current(cx);
         let profile = self.settings.values.selected_profile().clone();
         let tls = profile.use_tls;
-        let sasl = self.settings.values.sasl_enabled;
+        let sasl = profile.sasl_enabled;
         let mut language_selector = div().flex().gap_1();
         for (index, language) in [Language::System, Language::Japanese, Language::English]
             .into_iter()
@@ -2570,15 +2594,17 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if self.settings.values.connect_on_startup {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(
+                        if self.settings.values.selected_profile().connect_on_startup {
+                            "☑"
+                        } else {
+                            "☐"
+                        },
+                    )
                     .child(self.i18n.text("connect_on_startup"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.values.connect_on_startup =
-                            !this.settings.values.connect_on_startup;
+                        let profile = this.settings.values.selected_profile_mut();
+                        profile.connect_on_startup = !profile.connect_on_startup;
                         cx.notify();
                     })),
             )
@@ -4768,17 +4794,16 @@ mod startup_tests {
     #[test]
     fn startup_uses_only_saved_credentials_when_enabled() {
         let store = memory_store();
-        let mut settings = Settings {
-            nickname: "alice".into(),
-            username: "ident".into(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
+        settings.selected_profile_mut().nickname = "alice".into();
+        settings.selected_profile_mut().username = "ident".into();
         assert!(startup_connection_config(&settings, &store).is_none());
 
-        settings.connect_on_startup = true;
-        settings.sasl_enabled = true;
-        settings.sasl_username = "account".into();
-        settings.selected_profile_mut().use_tls = true;
+        let profile = settings.selected_profile_mut();
+        profile.connect_on_startup = true;
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        profile.use_tls = true;
         assert!(
             startup_connection_config(&settings, &store)
                 .unwrap()
@@ -4816,17 +4841,15 @@ mod startup_tests {
 
     #[test]
     fn nickname_and_username_stay_independent_without_credentials() {
-        let mut settings = Settings {
-            nickname: "alice".into(),
-            username: "someone".into(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
+        settings.selected_profile_mut().nickname = "alice".into();
+        settings.selected_profile_mut().username = "someone".into();
         let config = connection_config(&settings, None, None).unwrap();
         assert_eq!(config.nickname, "alice");
         assert_eq!(config.username, "someone");
         assert!(config.server_password.is_none());
         assert!(config.sasl.is_none());
-        settings.username.clear();
+        settings.selected_profile_mut().username.clear();
         assert!(connection_config(&settings, None, None).is_err());
     }
 
@@ -4853,7 +4876,7 @@ mod startup_tests {
             next.add_custom_server();
             next.selected_profile_mut().host = "new.example.org".into();
             next.selected_profile_mut().remember_passwords = true;
-            next.sasl_enabled = true;
+            next.selected_profile_mut().sasl_enabled = true;
 
             // Connecting reads saved credentials before committing settings.
             let i18n = super::Localizer::new(next.language);
@@ -4888,6 +4911,14 @@ mod startup_tests {
     }
 }
 
+/// Default settings whose selected server auto-joins `channels`.
+#[cfg(test)]
+fn settings_with_channels(channels: &str) -> Settings {
+    let mut settings = Settings::default();
+    settings.selected_profile_mut().channels = channels.into();
+    settings
+}
+
 #[cfg(test)]
 mod pane_tests {
     use super::{ChatWindow, Selection};
@@ -4906,10 +4937,7 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = Settings {
-            channels: String::new(),
-            ..Settings::default()
-        };
+        let settings = Settings::default();
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
         let channel = "!ABCDEtest";
@@ -4991,10 +5019,7 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ))
         });
-        let settings = Settings {
-            channels: "#a,#b".into(),
-            ..Settings::default()
-        };
+        let settings = crate::settings_with_channels("#a,#b");
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
         cx.run_until_parked();

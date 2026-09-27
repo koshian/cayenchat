@@ -352,8 +352,7 @@ mod tests {
 
     use cayenchat_app::Selection;
     use cayenchat_storage::{
-        CredentialBackendKind, CredentialStore, Secret, SecretKey, Settings,
-        credentials::MemoryBackend,
+        CredentialBackendKind, CredentialStore, Secret, SecretKey, credentials::MemoryBackend,
     };
     use cayenchat_upload::{UploadError, testing::FakeUploader};
     use gpui::{
@@ -388,11 +387,8 @@ mod tests {
                 &cayenchat_storage::Appearance::default(),
             ))
         });
-        let mut settings = Settings {
-            channels: "#a".into(),
-            language: cayenchat_storage::Language::English,
-            ..Settings::default()
-        };
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
         settings.image_upload.provider = provider.map(str::to_owned);
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
