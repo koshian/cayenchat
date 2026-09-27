@@ -5053,34 +5053,39 @@ fn main() {
             )
             .expect("could not open CayenChat window");
         cx.activate(true);
-        let needs_settings = chat_window
+        // Settings open when nothing connects at startup or a saved server
+        // cannot start, showing the first such server; valid servers still
+        // connect.
+        let settings_for = chat_window
             .update(cx, |chat, window, cx| {
                 cx.set_menus(app_menus(false, &chat.i18n));
                 let startup = std::mem::take(&mut chat.startup_connections);
-                // Settings open when nothing connects at startup or a saved
-                // server is invalid; the servers that are valid still connect.
-                let mut needs_settings = startup.is_empty();
+                let mut settings_for = startup.is_empty().then(|| chat.selected_profile_id());
                 for (network, config) in startup {
-                    match config {
-                        Ok(config) => {
-                            needs_settings |=
-                                chat.apply_connection(network, config, window, cx).is_err();
-                        }
+                    let failed = match config {
+                        Ok(config) => chat.apply_connection(network, config, window, cx).is_err(),
                         Err(error) => {
                             chat.feedback =
                                 Some(chat.i18n.format("startup_invalid", &[("error", &error)]));
                             cx.notify();
-                            needs_settings = true;
+                            true
                         }
+                    };
+                    if failed && settings_for.is_none() {
+                        settings_for = Some(
+                            chat.sessions
+                                .get(&network)
+                                .map(|session| session.profile_id.clone()),
+                        );
                     }
                 }
-                needs_settings
+                settings_for
             })
             .expect("could not initialize the chat window");
-        if needs_settings {
+        if let Some(profile) = settings_for {
             chat_window
                 .update(cx, |chat, window, cx| {
-                    chat.open_settings(&OpenSettings, window, cx)
+                    chat.open_settings_for(profile, window, cx)
                 })
                 .expect("could not open the initial settings window");
         }
