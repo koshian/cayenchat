@@ -593,10 +593,26 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Some(1) => serde_json::from_value::<OldSettings>(value)
             .map(Settings::from)
             .map_err(|error| format!("Could not parse settings: {error}"))?,
-        Some(2..=11) => serde_json::from_value::<Settings>(value)
-            .map(Settings::normalize)
-            .map_err(|error| format!("Could not parse settings: {error}"))?,
-        _ => return Err(format!("Unsupported settings version: {version:?}")),
+        Some(version) if (2..=u64::from(SETTINGS_VERSION)).contains(&version) => {
+            serde_json::from_value::<Settings>(value)
+                .map(Settings::normalize)
+                .map_err(|error| format!("Could not parse settings: {error}"))?
+        }
+        Some(version) if version > u64::from(SETTINGS_VERSION) => {
+            return Err(format!(
+                "Settings version {version} is newer than this app supports (1–{SETTINGS_VERSION}). \
+                 Update CayenChat to a version that supports these settings. \
+                 Settings were left unchanged at {}.",
+                path.display()
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "The settings version is missing or invalid; this app supports versions 1–{SETTINGS_VERSION}. \
+                 Restore a valid settings file from a backup. Settings were left unchanged at {}.",
+                path.display()
+            ));
+        }
     };
     Ok(Some(settings))
 }
@@ -658,6 +674,82 @@ mod tests {
         let file_text = fs::read_to_string(path).unwrap();
         assert!(!file_text.contains("server_password"));
         assert!(!file_text.contains("sasl_password"));
+    }
+
+    #[test]
+    fn supported_profile_versions_preserve_connection_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        for version in 2..=SETTINGS_VERSION {
+            let original = serde_json::json!({
+                "version": version,
+                "selected_server": "custom-1",
+                "servers": [{
+                    "id": "custom-1", "custom": true, "host": "irc.example.net",
+                    "port": 6697, "use_tls": true, "encoding": "utf8",
+                    "remember_passwords": true
+                }],
+                "nickname": "alice", "username": "ident",
+                "channels": "#test", "sasl_enabled": true, "sasl_username": "account",
+                "credential_backend": "system"
+            });
+            let bytes = serde_json::to_vec(&original).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let settings = load_from(&path).unwrap().unwrap();
+            assert_eq!(settings.version, SETTINGS_VERSION);
+            assert_eq!(settings.selected_profile().id, "custom-1");
+            assert_eq!(settings.selected_profile().host, "irc.example.net");
+            assert_eq!(settings.selected_profile().port, 6697);
+            assert!(settings.selected_profile().use_tls);
+            assert!(settings.selected_profile().remember_passwords);
+            assert_eq!(settings.nickname, "alice");
+            assert_eq!(settings.username, "ident");
+            assert_eq!(settings.channels, "#test");
+            assert!(settings.sasl_enabled);
+            assert_eq!(settings.sasl_username, "account");
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            save_to(&path, &settings).unwrap();
+            assert_eq!(load_from(&path).unwrap(), Some(settings));
+        }
+    }
+
+    #[test]
+    fn future_settings_explain_how_to_recover_without_changing_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let future = SETTINGS_VERSION + 1;
+        let bytes = format!(r#"{{"version":{future},"future_field":"keep-me"}}"#);
+        fs::write(&path, &bytes).unwrap();
+        let error = load_from(&path).unwrap_err();
+        assert!(error.contains(&format!("Settings version {future}")));
+        assert!(error.contains(&format!("1–{SETTINGS_VERSION}")));
+        assert!(error.contains("Update CayenChat"));
+        assert!(error.contains(path.to_str().unwrap()));
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        assert!(clear_saved_passwords_from(&path, IRCNET_ID).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn invalid_versions_do_not_suggest_an_app_update_or_change_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        for bytes in [
+            r#"{}"#,
+            r#"{"version":null}"#,
+            r#"{"version":0}"#,
+            r#"{"version":-1}"#,
+            r#"{"version":1.5}"#,
+            r#"{"version":"private-invalid-value"}"#,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            let error = load_from(&path).unwrap_err();
+            assert!(error.contains("missing or invalid"));
+            assert!(!error.contains("Update CayenChat"));
+            assert!(!error.contains("private-invalid-value"));
+            assert!(error.contains(path.to_str().unwrap()));
+            assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        }
     }
 
     #[test]
