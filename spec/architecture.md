@@ -263,11 +263,12 @@ because repeating rejected credentials risks account lockout or a server ban.
 The `irc` library consumes 432/433 and reports `NoUsableNick` because no
 alternate nicknames are configured; the stream stays usable afterwards. Before
 registration the core turns it into `NicknameRejected`, pauses its registration
-timeout and keeps the link open. The UI opens a centered prompt prefilled with
-the rejected nick plus `_`; submitting sends NICK (or reconnects if the server
+timeout and keeps the link open. The UI adds a row for that server to the
+nickname dialog, prefilled with the rejected nick plus `_` (see Servers and
+sessions); submitting sends NICK (or reconnects if the server
 closed the link, which the core reports as `Refused` so it is not retried with
 the same nick) and replaces the nickname for this session's reconnects without
-changing saved settings. Cancel disconnects. After registration a rejected
+changing saved settings. Disconnect closes that server's connection. After registration a rejected
 `/nick` only produces a server line instead of dropping the connection.
 Reconnection preserves the in-memory conversation logs and drafts. A
 complete membership event reducer remains future work.
@@ -333,8 +334,12 @@ reconnects, retry state, the current nickname, pending WHOIS nicknames and a
 bounded transcript (1,000 lines per server). The chat window keys sessions by
 `NetworkId`; a profile keeps its network for the whole run. Events carry no
 network, so each event pump applies its batch to the network it was started
-for. Context menus, prompts (including the rejected-nickname prompt) and WHOIS
-windows remember their network and act on that server only. Menu commands
+for. Context menus, prompts and WHOIS windows remember their network and act
+on that server only. Rejected nicknames get one row per server in a single
+dialog, in arrival order: each row names the server, pre-fills the rejected
+nick plus `_`, and offers Retry or Disconnect; a repeated rejection updates
+the server's row and registration closes it. A new row takes focus unless
+another nickname field already has it, and Enter submits the focused row. Menu commands
 (Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server; the
 settings window's Save and connect and Disconnect act on the server being
 edited. Saving settings adds, renames or removes networks: a removed server is

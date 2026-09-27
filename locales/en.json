@@ -151,6 +151,7 @@
   "nick_prompt_title": "Nickname {nickname} is unavailable",
   "nick_prompt_placeholder": "Another nickname",
   "nick_prompt_submit": "Retry",
+  "nick_prompt_cancel": "Disconnect",
   "nick_prompt_required": "Enter a nickname.",
   "event_nick_rejected": "The server rejected nickname {nickname} (in use or invalid). Enter another nickname.",
   "event_nick_retry": "Retrying registration as {nickname}.",

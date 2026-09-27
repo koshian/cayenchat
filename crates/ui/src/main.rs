@@ -606,6 +606,9 @@ struct ChatWindow {
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
+    /// One row per server whose nickname was rejected during registration,
+    /// in the order the rejections arrived.
+    nick_prompts: Vec<NickPrompt>,
     startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
@@ -653,8 +656,18 @@ struct MemberMenu {
 enum MemberPromptKind {
     PrivateMessage,
     Invite,
-    /// The server rejected `nickname` during registration.
-    AlternateNick,
+}
+
+/// Another nickname for a server that rejected `rejected` (432/433) during
+/// registration. Several servers can wait for one at the same time.
+struct NickPrompt {
+    network: NetworkId,
+    rejected: String,
+    input: Entity<TextInput>,
+    error: Option<String>,
+    /// Set when shown from an event; render focuses the input if no other
+    /// nickname field has focus.
+    focus_pending: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -859,6 +872,7 @@ impl ChatWindow {
             member_menu: None,
             channel_menu: None,
             member_prompt: None,
+            nick_prompts: Vec::new(),
             startup_connections,
             settings_window: None,
             window_handle: window.window_handle().downcast::<ChatWindow>(),
@@ -1065,6 +1079,14 @@ impl ChatWindow {
             self.inputs.remove(&Selection::Server(id));
             self.main_lists.remove(&Selection::Server(id));
             self.whois_windows.retain(|(network, _), _| *network != id);
+            self.nick_prompts.retain(|prompt| prompt.network != id);
+            if self
+                .member_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.network == id)
+            {
+                self.member_prompt = None;
+            }
         }
         let removed = self.state.sync_networks(&networks);
         self.forget_conversations(&removed);
@@ -1130,6 +1152,7 @@ impl ChatWindow {
         {
             self.member_prompt = None;
         }
+        self.nick_prompts.retain(|prompt| prompt.network != network);
         let removed = self.state.reset_network(network, config.channels.clone());
         self.forget_conversations(&removed);
         self.main_lists.remove(&Selection::Server(network));
@@ -1490,7 +1513,6 @@ impl ChatWindow {
         let placeholder = self.i18n.text(match kind {
             MemberPromptKind::PrivateMessage => "member_message_placeholder",
             MemberPromptKind::Invite => "member_channel_placeholder",
-            MemberPromptKind::AlternateNick => "nick_prompt_placeholder",
         });
         let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
         let viewport = window.viewport_size();
@@ -1510,29 +1532,41 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Opens a centered prompt for another nickname after the server
-    /// rejected `rejected` during registration.
+    /// Asks for another nickname after `network` rejected `rejected` during
+    /// registration. Each server gets its own row; a repeated rejection on
+    /// the same server updates that row.
     fn show_nick_prompt(&mut self, network: NetworkId, rejected: String, cx: &mut Context<Self>) {
-        let placeholder = self.i18n.text("nick_prompt_placeholder");
         let suggestion = format!("{rejected}_");
-        let input = cx.new(|cx| TextInput::new_field(&placeholder, &suggestion, false, cx));
         self.server_menu = None;
         self.member_menu = None;
         self.channel_menu = None;
-        self.feedback = None;
-        self.member_prompt = Some(MemberPrompt {
-            position: None,
+        if let Some(prompt) = self
+            .nick_prompts
+            .iter_mut()
+            .find(|prompt| prompt.network == network)
+        {
+            prompt.rejected = rejected;
+            prompt.error = None;
+            prompt.focus_pending = true;
+            prompt
+                .input
+                .update(cx, |input, cx| input.set_text(&suggestion, cx));
+            return;
+        }
+        let placeholder = self.i18n.text("nick_prompt_placeholder");
+        let input = cx.new(|cx| TextInput::new_field(&placeholder, &suggestion, false, cx));
+        self.nick_prompts.push(NickPrompt {
             network,
-            nickname: rejected,
-            kind: MemberPromptKind::AlternateNick,
+            rejected,
             input,
+            error: None,
             focus_pending: true,
         });
     }
 
     /// Retries registration with the nickname from the prompt. The nickname
     /// replaces the configured one for this session's reconnects only.
-    fn submit_nick_prompt(
+    fn retry_nickname(
         &mut self,
         network: NetworkId,
         nickname: String,
@@ -1570,21 +1604,82 @@ impl ChatWindow {
         Ok(())
     }
 
-    fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let alternate_nick = self
-            .member_prompt
-            .take()
-            .filter(|prompt| matches!(prompt.kind, MemberPromptKind::AlternateNick))
-            .map(|prompt| prompt.network);
-        self.feedback = None;
-        if let Some(network) = alternate_nick
-            && self
-                .sessions
-                .get(&network)
-                .is_some_and(|session| session.irc.is_some())
+    fn submit_nick_prompt(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self
+            .nick_prompts
+            .iter()
+            .find(|prompt| prompt.network == network)
+        else {
+            return;
+        };
+        if prompt.input.read(cx).is_composing() {
+            return;
+        }
+        let value = prompt.input.read(cx).text().to_owned();
+        match self.retry_nickname(network, value, cx) {
+            Ok(()) => self.close_nick_prompt(network, window, cx),
+            Err(error) => {
+                if let Some(prompt) = self
+                    .nick_prompts
+                    .iter_mut()
+                    .find(|prompt| prompt.network == network)
+                {
+                    prompt.error = Some(error);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Gives up on a new nickname for `network` and disconnects it.
+    fn cancel_nick_prompt(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_nick_prompt(network, window, cx);
+        if self
+            .sessions
+            .get(&network)
+            .is_some_and(|session| session.irc.is_some())
         {
             self.disconnect(network, cx);
         }
+        cx.notify();
+    }
+
+    /// Removes the row and moves focus to the next waiting server, or back
+    /// to the draft when none is left.
+    fn close_nick_prompt(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nick_prompts.retain(|prompt| prompt.network != network);
+        match self.nick_prompts.first() {
+            Some(next) => window.focus(&next.input.focus_handle(cx)),
+            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx)),
+        }
+    }
+
+    /// The server whose nickname field has focus, if any.
+    fn focused_nick_prompt(&self, window: &Window, cx: &App) -> Option<NetworkId> {
+        self.nick_prompts
+            .iter()
+            .find(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+            .map(|prompt| prompt.network)
+    }
+
+    fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.member_prompt = None;
+        self.feedback = None;
         window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
         cx.notify();
     }
@@ -1598,19 +1693,6 @@ impl ChatWindow {
         }
         let value = prompt.input.read(cx).text().to_owned();
         let network = prompt.network;
-        if matches!(prompt.kind, MemberPromptKind::AlternateNick) {
-            match self.submit_nick_prompt(network, value, cx) {
-                Ok(()) => {
-                    self.member_prompt = None;
-                    self.feedback = None;
-                    window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
-                }
-                Err(error) => self.feedback = Some(error),
-            }
-            cx.notify();
-            return;
-        }
-        let prompt = self.member_prompt.as_ref().expect("checked above");
         let result = match self.registered_connection(network) {
             Ok(connection) => match prompt.kind {
                 MemberPromptKind::PrivateMessage if value.trim().is_empty() => {
@@ -1625,7 +1707,6 @@ impl ChatWindow {
                         channel: value.trim().to_owned(),
                     },
                 ),
-                MemberPromptKind::AlternateNick => unreachable!("submitted above"),
             },
             Err(error) => Err(error),
         };
@@ -1883,6 +1964,7 @@ impl ChatWindow {
             .member_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+            || self.focused_nick_prompt(window, cx).is_some()
         {
             return;
         }
@@ -1921,13 +2003,8 @@ impl ChatWindow {
                 Event::NicknameRejected { nickname } => {
                     self.show_nick_prompt(network, nickname.clone(), cx)
                 }
-                Event::Registered { .. }
-                    if self.member_prompt.as_ref().is_some_and(|prompt| {
-                        prompt.network == network
-                            && matches!(prompt.kind, MemberPromptKind::AlternateNick)
-                    }) =>
-                {
-                    self.member_prompt = None;
+                Event::Registered { .. } => {
+                    self.nick_prompts.retain(|prompt| prompt.network != network);
                 }
                 _ => {}
             }
@@ -2157,7 +2234,9 @@ impl ChatWindow {
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
-        if self
+        if let Some(network) = self.focused_nick_prompt(window, cx) {
+            self.submit_nick_prompt(network, window, cx);
+        } else if self
             .member_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
@@ -2169,7 +2248,9 @@ impl ChatWindow {
     }
 
     fn notice(&mut self, _: &Notice, window: &mut Window, cx: &mut Context<Self>) {
-        if self
+        if let Some(network) = self.focused_nick_prompt(window, cx) {
+            self.submit_nick_prompt(network, window, cx);
+        } else if self
             .member_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
@@ -4185,7 +4266,6 @@ impl ChatWindow {
                 match prompt.kind {
                     MemberPromptKind::PrivateMessage => "member_message_title",
                     MemberPromptKind::Invite => "member_invite_title",
-                    MemberPromptKind::AlternateNick => "nick_prompt_title",
                 },
                 &[("nickname", &prompt.nickname)],
             );
@@ -4195,10 +4275,7 @@ impl ChatWindow {
                     ((viewport.height - px(140.)) / 2.).max(px(0.)),
                 )
             });
-            let submit = self.i18n.text(match prompt.kind {
-                MemberPromptKind::AlternateNick => "nick_prompt_submit",
-                _ => "member_submit",
-            });
+            let submit = self.i18n.text("member_submit");
             div()
                 .id("member-prompt")
                 .absolute()
@@ -4249,6 +4326,7 @@ impl ChatWindow {
                         ),
                 )
         });
+        let nick_prompts = self.render_nick_prompts(origin, window, cx);
         div()
             .id("chat-window")
             .key_context("ChatWindow")
@@ -4288,7 +4366,114 @@ impl ChatWindow {
             .when_some(member_menu, |d, menu| d.child(menu))
             .when_some(channel_menu, |d, menu| d.child(menu))
             .when_some(member_prompt, |d, prompt| d.child(prompt))
+            .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .into_any_element()
+    }
+}
+
+impl ChatWindow {
+    /// One centered dialog with a row per server waiting for a nickname.
+    fn render_nick_prompts(
+        &mut self,
+        origin: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.nick_prompts.is_empty() {
+            return None;
+        }
+        // Focus a newly shown row unless the user is already typing in one.
+        let typing = self.focused_nick_prompt(window, cx).is_some();
+        let pending = self
+            .nick_prompts
+            .iter()
+            .position(|prompt| prompt.focus_pending);
+        for prompt in &mut self.nick_prompts {
+            prompt.focus_pending = false;
+        }
+        if let Some(index) = pending
+            && !typing
+        {
+            window.focus(&self.nick_prompts[index].input.focus_handle(cx));
+        }
+        let theme = theme::current(cx);
+        let border = theme.border;
+        let viewport = window.viewport_size();
+        let width = px(360.);
+        let mut dialog = div()
+            .id("nick-prompts")
+            .absolute()
+            .left(((viewport.width - width) / 2.).max(px(0.)) - origin.x)
+            .top(px(60.).min(viewport.height / 4.) - origin.y)
+            .w(width)
+            .p_2()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(border)
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .gap_2();
+        for (index, prompt) in self.nick_prompts.iter().enumerate() {
+            let network = prompt.network;
+            let server = self
+                .state
+                .networks()
+                .iter()
+                .find(|server| server.id == network)
+                .map(|server| server.name.clone())
+                .unwrap_or_default();
+            let title = self
+                .i18n
+                .format("nick_prompt_title", &[("nickname", &prompt.rejected)]);
+            dialog = dialog
+                .when(index > 0, |d| {
+                    d.child(div().border_t_1().border_color(theme.separator))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().font_weight(FontWeight::BOLD).child(server))
+                        .child(title)
+                        .child(prompt.input.clone())
+                        .when_some(prompt.error.clone(), |d, error| {
+                            d.child(div().text_color(theme.warning).child(error))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id(("nick-prompt-submit", network.0))
+                                        .px_2()
+                                        .py_1()
+                                        .bg(theme.selected)
+                                        .cursor_pointer()
+                                        .child(self.i18n.text("nick_prompt_submit"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.submit_nick_prompt(network, window, cx)
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id(("nick-prompt-cancel", network.0))
+                                        .px_2()
+                                        .py_1()
+                                        .border_1()
+                                        .border_color(border)
+                                        .cursor_pointer()
+                                        .child(self.i18n.text("nick_prompt_cancel"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.cancel_nick_prompt(network, window, cx)
+                                        })),
+                                ),
+                        ),
+                );
+        }
+        Some(dialog.into_any_element())
     }
 }
 
@@ -5594,6 +5779,85 @@ mod pane_tests {
             assert_eq!(texts(chat, ircnet), ["ircnet"]);
         });
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn each_server_that_rejects_a_nickname_gets_its_own_field(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.add_custom_server();
+        settings.selected_profile_mut().host = "irc.example.org".into();
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (first, second) = (NetworkId(1), NetworkId(2));
+        let rejected = |nickname: &str| {
+            vec![Event::NicknameRejected {
+                nickname: nickname.into(),
+            }]
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(first, rejected("alice"), false, cx);
+            chat.handle_events(second, rejected("bob"), false, cx);
+        });
+        cx.run_until_parked();
+        let rows = |chat: &ChatWindow, cx: &gpui::App| {
+            chat.nick_prompts
+                .iter()
+                .map(|prompt| {
+                    (
+                        prompt.network,
+                        prompt.rejected.clone(),
+                        prompt.input.read(cx).text().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            chat.read_with(cx, |chat, cx| rows(chat, cx)),
+            [
+                (first, "alice".into(), "alice_".into()),
+                (second, "bob".into(), "bob_".into())
+            ]
+        );
+        // The first new row has focus; typing goes there, not into the draft.
+        cx.simulate_input("x");
+        assert_eq!(
+            chat.read_with(cx, |chat, cx| rows(chat, cx))[0].2,
+            "alice_x"
+        );
+
+        // A second rejection on the same server updates its row.
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(first, rejected("alice_x"), false, cx)
+        });
+        let after = chat.read_with(cx, |chat, cx| rows(chat, cx));
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0], (first, "alice_x".into(), "alice_x_".into()));
+
+        // Registration on one server closes only its row.
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                first,
+                vec![Event::Registered {
+                    nickname: "alice_x_".into(),
+                }],
+                false,
+                cx,
+            )
+        });
+        assert_eq!(
+            chat.read_with(cx, |chat, cx| rows(chat, cx)),
+            [(second, "bob".into(), "bob_".into())]
+        );
     }
 
     #[gpui::test]

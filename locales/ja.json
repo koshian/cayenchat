@@ -151,6 +151,7 @@
   "nick_prompt_title": "ニックネーム {nickname} は使用できません",
   "nick_prompt_placeholder": "別のニックネーム",
   "nick_prompt_submit": "再試行",
+  "nick_prompt_cancel": "切断",
   "nick_prompt_required": "ニックネームを入力してください。",
   "event_nick_rejected": "サーバーがニックネーム {nickname} を拒否しました（使用中または無効）。別のニックネームを入力してください。",
   "event_nick_retry": "ニックネーム {nickname} で登録を再試行します。",
