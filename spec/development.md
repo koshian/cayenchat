@@ -569,7 +569,9 @@ win. Reopen settings after changing only the OS accent or font. Without a
 working desktop portal the UI must remain interactive and fall back to the
 platform preset or app colors. No data-model or authentication behavior changed.
 
-Known limits: widgets are GPUI drawings, not embedded OS controls; general
-keyboard traversal and accessibility are unchanged. New Windows/Linux native
+Tab/Shift+Tab move between settings text fields and wrap (D019); Tab in a
+chat draft still completes nicknames. Known limits: widgets are GPUI drawings,
+not embedded OS controls; buttons, checkboxes and selectors are not focusable
+and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.

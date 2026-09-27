@@ -1081,6 +1081,8 @@ impl TextInput {
     ) -> Self {
         let mut input = Self::new_field(placeholder, value, secret, cx);
         input.native_settings_style = true;
+        // Tab order follows paint order within the settings window.
+        input.focus_handle = cx.focus_handle().tab_stop(true);
         input
     }
 

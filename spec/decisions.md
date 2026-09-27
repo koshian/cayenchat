@@ -437,8 +437,8 @@ palette colors; raw `ResolvedTheme` supplies the per-widget geometry, fonts,
 input colors, and checkbox states that its flat GPUI theme cannot represent.
 Apply this to the existing settings controls, retaining IDs, callbacks,
 secret handling, text editing and IME composition. Native OS widget embedding,
-a full gpui-component widget migration, general keyboard traversal, and
-accessibility semantics are outside this change.
+a full gpui-component widget migration, keyboard focus for buttons and
+checkboxes, and accessibility semantics are outside this change.
 
 Cache both variants outside rendering. Read on opening settings and after
 GPUI reports an appearance change; the saved Light/Dark choice overrides the
@@ -459,3 +459,15 @@ Sources: [connector 0.5.7 API](https://docs.rs/native-theme-gpui/0.5.7/native_th
 [upstream](https://github.com/tiborgats/native-theme). Version compatibility was
 also checked against the downloaded crates' manifests and source, including
 0.5.8 and 0.5.9 (the website index lagged the registry).
+
+## D019 — Standard Tab traversal in settings
+
+2026-09-27. Settings must not capture keys for chat features. Scope the chat
+draft bindings (Tab nickname completion, Enter send, Ctrl+Enter NOTICE) to
+`ChatWindow > TextInput`; they formerly matched every `TextInput`, so Tab in a
+settings field dispatched a completion nobody handled and focus never moved.
+In `SettingsWindow`, Tab/Shift+Tab call GPUI's `focus_next`/`focus_prev`.
+`TextInput::new_settings_field` makes its focus handle a GPUI tab stop, so
+order follows paint order (top to bottom) and wraps, with no manual indices.
+Only text fields are tab stops; buttons, checkboxes and selectors still have
+no keyboard focus (see D018).
