@@ -444,6 +444,14 @@ connection's existing worker loop; no thread, timer or polling was added,
 and with every option off the wire traffic is unchanged. The process-level
 load scenarios were not rerun.
 
+The later batch opt-in was not measured: it changes no UI code, no event
+and no `model::Message` field (the existing `replayed` flag carries the
+result). Per incoming line it adds at most a scan of the open history
+references, and only for lines with a `batch` tag; the tracker holds at
+most 64 references of at most 64 bytes per connection, stores nothing for
+other batch types and never buffers messages. It runs in the existing
+worker loop with no thread, timer or polling.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The

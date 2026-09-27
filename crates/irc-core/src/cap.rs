@@ -20,6 +20,7 @@ use irc::proto::{CapSubCommand, Command as IrcCommand, Message as IrcMessage, Re
 pub const SASL: &str = "sasl";
 pub const MESSAGE_TAGS: &str = "message-tags";
 pub const SERVER_TIME: &str = "server-time";
+pub const BATCH: &str = "batch";
 
 /// Advertised capabilities kept per connection; a hostile server cannot grow
 /// the table beyond this.
@@ -35,6 +36,9 @@ pub struct Ircv3Options {
     pub message_tags: bool,
     /// Receive the server's `time` tag. Independent of `message_tags`.
     pub server_time: bool,
+    /// Receive `BATCH` and the `batch` tag, so history batches are told
+    /// apart from live traffic. Independent of the other options.
+    pub batch: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +84,10 @@ impl CapNegotiation {
         }
         if options.server_time {
             optional.push(SERVER_TIME);
+        }
+        // Batch references and the history types are ASCII, like server-time.
+        if options.batch {
+            optional.push(BATCH);
         }
         Self {
             phase: Phase::Inactive,
@@ -392,6 +400,7 @@ mod tests {
         Ircv3Options {
             message_tags,
             server_time,
+            batch: false,
         }
     }
 
@@ -548,6 +557,50 @@ mod tests {
             .observe(&line(":s CAP new NEW :message-tags sasl"))
             .unwrap();
         assert!(step.send.is_empty());
+    }
+
+    #[test]
+    fn batch_is_requested_only_when_opted_in_and_offered() {
+        let batch_only = Ircv3Options {
+            batch: true,
+            ..Ircv3Options::default()
+        };
+        // Offered alongside everything else: only batch is asked for.
+        let mut cap = CapNegotiation::new(batch_only, None, true);
+        assert_eq!(String::from(&cap.start()), "CAP LS 302");
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :batch server-time message-tags draft/chathistory",
+            ))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
+        let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(BATCH));
+        assert!(!cap.enabled(SERVER_TIME) && !cap.enabled(MESSAGE_TAGS));
+        cap.registered();
+        cap.observe(&line(":s CAP me DEL :batch")).unwrap();
+        assert!(!cap.enabled(BATCH));
+
+        // Not offered: nothing is requested.
+        let mut cap = CapNegotiation::new(batch_only, None, true);
+        cap.start();
+        let step = cap.observe(&line(":s CAP * LS :server-time")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+
+        // Off: never requested, even when offered.
+        let mut cap = CapNegotiation::new(options(false, true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :batch server-time"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time"]);
+
+        // Batch data is ASCII, so legacy encodings still ask for it.
+        let mut cap = CapNegotiation::new(batch_only, None, false);
+        cap.start();
+        let step = cap.observe(&line(":s CAP * LS :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
     }
 
     #[test]

@@ -240,7 +240,8 @@ pub struct ServerProfile {
     #[serde(default)]
     pub remember_passwords: bool,
     /// Identity and channels belong to each server (version 13); earlier
-    /// versions kept one application-wide set, copied here on migration.
+    /// versions kept one application-wide set, which migration gives only
+    /// to the server it was used with.
     #[serde(default)]
     pub nickname: String,
     /// IRC `USER` username (ident); independent of the nickname.
@@ -325,6 +326,9 @@ pub struct Ircv3Preferences {
     pub message_tags: bool,
     /// Request `server-time` and show server timestamps.
     pub server_time: bool,
+    /// Request `batch`, so history batches are recognized. Added after
+    /// version 15 without a version change: files without it read as off.
+    pub batch: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -376,7 +380,7 @@ pub struct Settings {
     pub image_upload: ImageUpload,
     pub notifications: Notifications,
     /// Application-wide identity of versions 1–12, read only to migrate it
-    /// into every server profile; never written back.
+    /// into the previously selected server profile; never written back.
     #[serde(flatten, skip_serializing)]
     legacy: LegacyIdentity,
 }
@@ -543,6 +547,15 @@ impl Settings {
                 server.legacy_sasl_password = None;
             }
         }
+        // The server that versions 1–12 connected with: the saved selection,
+        // or the only server there is. Otherwise it is not guessed.
+        let identity_owner = if self.servers.iter().any(|s| s.id == self.selected_server) {
+            Some(self.selected_server.clone())
+        } else if let [only] = self.servers.as_slice() {
+            Some(only.id.clone())
+        } else {
+            None
+        };
         if !self.servers.iter().any(|s| s.id == self.selected_server) {
             self.selected_server = self
                 .servers
@@ -551,19 +564,23 @@ impl Settings {
                 .unwrap_or_default();
         }
         let legacy = std::mem::take(&mut self.legacy);
-        if migrate_identity {
-            // Every server starts from the old shared identity. SASL stays on
-            // only where TLS is, because credentials require TLS; startup
-            // connection stays with the server that used to be connected.
-            for server in &mut self.servers {
-                server.nickname = legacy.nickname.clone();
-                server.username = legacy.username.clone();
-                server.channels = legacy.channels.clone();
-                server.sasl_username = legacy.sasl_username.clone();
-                server.sasl_enabled = legacy.sasl_enabled && server.use_tls;
-                server.connect_on_startup =
-                    legacy.connect_on_startup && server.id == self.selected_server;
-            }
+        if migrate_identity
+            && let Some(server) = self
+                .servers
+                .iter_mut()
+                .find(|s| Some(&s.id) == identity_owner.as_ref())
+        {
+            // The old shared identity belonged to the server it was used
+            // with. Other servers keep their connection details and stored
+            // credentials but start without a nickname, username, channels
+            // or account: copying them made every server auto-join the same
+            // channels. SASL stays on only with TLS, which credentials need.
+            server.nickname = legacy.nickname;
+            server.username = legacy.username;
+            server.channels = legacy.channels;
+            server.sasl_username = legacy.sasl_username;
+            server.sasl_enabled = legacy.sasl_enabled && server.use_tls;
+            server.connect_on_startup = legacy.connect_on_startup;
         }
         for server in &mut self.servers {
             if !server.use_tls {
@@ -744,7 +761,9 @@ fn clear_saved_passwords_from(path: &Path, server_id: &str) -> Result<(), String
     Ok(())
 }
 
-fn load_from(path: &Path) -> Result<Option<Settings>, String> {
+/// Reads and migrates settings from `path`; `None` when there is no file.
+/// [`load`] uses the platform path; tests pass their own.
+pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -781,7 +800,8 @@ fn load_from(path: &Path) -> Result<Option<Settings>, String> {
     Ok(Some(settings))
 }
 
-fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
+/// Writes settings to `path`, readable only by the user.
+pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("Settings path has no parent directory.")?;
@@ -889,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_identity_moves_into_every_server() {
+    fn shared_identity_moves_only_into_the_selected_server() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let old = serde_json::json!({
@@ -897,9 +917,11 @@ mod tests {
             "selected_server": "custom-1",
             "servers": [
                 {"id": "custom-1", "custom": true, "host": "irc.example.net",
-                 "port": 6697, "use_tls": true, "encoding": "utf8"},
+                 "port": 6697, "use_tls": true, "encoding": "utf8",
+                 "remember_passwords": true},
                 {"id": "custom-2", "custom": true, "host": "irc.example.org",
-                 "port": 6667, "use_tls": false, "encoding": "utf8"}
+                 "port": 7000, "use_tls": true, "encoding": "iso2022_jp",
+                 "verify_tls_certificates": false, "remember_passwords": true}
             ],
             "nickname": "alice", "username": "ident", "channels": "#a,#b",
             "sasl_enabled": true, "sasl_username": "account",
@@ -912,16 +934,27 @@ mod tests {
             2,
             "the unused IRCnet presets are dropped"
         );
-        for server in &settings.servers {
-            assert_eq!(server.nickname, "alice");
-            assert_eq!(server.username, "ident");
-            assert_eq!(server.channels(), ["#a", "#b"]);
-            assert_eq!(server.sasl_username, "account");
-            // Credentials need TLS, and only the formerly connected server
-            // keeps connecting at startup.
-            assert_eq!(server.sasl_enabled, server.use_tls);
-            assert_eq!(server.connect_on_startup, server.id == "custom-1");
-        }
+        let selected = settings.profile("custom-1").unwrap();
+        assert_eq!(selected.nickname, "alice");
+        assert_eq!(selected.username, "ident");
+        assert_eq!(selected.channels(), ["#a", "#b"]);
+        assert_eq!(selected.sasl_username, "account");
+        assert!(selected.sasl_enabled && selected.connect_on_startup);
+
+        // The other server keeps its connection details and saved-password
+        // choice (its credentials stay under its ID) but gets no copy of the
+        // shared identity, channels or account.
+        let other = settings.profile("custom-2").unwrap();
+        assert_eq!(
+            (other.host.as_str(), other.port, other.use_tls),
+            ("irc.example.org", 7000, true)
+        );
+        assert_eq!(other.encoding, TextEncoding::Iso2022Jp);
+        assert!(!other.verify_tls_certificates && other.remember_passwords);
+        assert!(other.nickname.is_empty() && other.username.is_empty());
+        assert!(other.channels().is_empty() && other.sasl_username.is_empty());
+        assert!(!other.sasl_enabled && !other.connect_on_startup);
+        assert_eq!(other.ircv3, Ircv3Preferences::default());
 
         // Version 13 keeps each server's values and writes no shared identity.
         settings.servers[1].nickname = "bob".into();
@@ -943,6 +976,92 @@ mod tests {
         assert_eq!(loaded.profile("custom-1").unwrap().nickname, "alice");
         assert_eq!(loaded.profile("custom-2").unwrap().nickname, "bob");
         assert_eq!(loaded.profile("custom-2").unwrap().channels(), ["#c"]);
+    }
+
+    #[test]
+    fn shared_identity_is_not_guessed_when_the_selection_is_unknown() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let server = |id: &str, host: &str| {
+            serde_json::json!({"id": id, "custom": true, "host": host, "port": 6697,
+                "use_tls": true, "encoding": "utf8"})
+        };
+        for (selected, servers, owner) in [
+            // The selection names a server that is gone: nobody is guessed.
+            (
+                "custom-9",
+                vec![
+                    server("custom-1", "a.example"),
+                    server("custom-2", "b.example"),
+                ],
+                None,
+            ),
+            // No selection at all.
+            (
+                "",
+                vec![
+                    server("custom-1", "a.example"),
+                    server("custom-2", "b.example"),
+                ],
+                None,
+            ),
+            // A single remaining server is unambiguous.
+            (
+                "custom-9",
+                vec![server("custom-1", "a.example")],
+                Some("custom-1"),
+            ),
+        ] {
+            let old = serde_json::json!({
+                "version": 12, "selected_server": selected, "servers": servers,
+                "nickname": "alice", "username": "ident", "channels": "#a",
+                "sasl_enabled": true, "sasl_username": "account",
+                "connect_on_startup": true
+            });
+            fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+            let settings = load_from(&path).unwrap().unwrap();
+            for profile in &settings.servers {
+                let owns = Some(profile.id.as_str()) == owner;
+                assert_eq!(
+                    profile.nickname == "alice",
+                    owns,
+                    "{selected} {}",
+                    profile.id
+                );
+                assert_eq!(profile.channels == "#a", owns);
+                assert_eq!(profile.sasl_enabled, owns);
+                assert_eq!(profile.connect_on_startup, owns);
+            }
+        }
+    }
+
+    #[test]
+    fn per_server_settings_survive_loading_even_when_identical() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        for host in ["a.example", "b.example"] {
+            let profile = settings.add_server(host);
+            // The same values on purpose: they are not mistakes to undo.
+            profile.nickname = "alice".into();
+            profile.username = "ident".into();
+            profile.channels = "#shared".into();
+            profile.use_tls = true;
+            profile.sasl_enabled = true;
+            profile.sasl_username = "account".into();
+            profile.remember_passwords = true;
+            profile.connect_on_startup = true;
+        }
+        settings.servers[1].ircv3.batch = true;
+        for version in 13..=SETTINGS_VERSION {
+            let mut file = serde_json::to_value(&settings).unwrap();
+            file["version"] = version.into();
+            fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+            let loaded = load_from(&path).unwrap().unwrap();
+            assert_eq!(loaded.servers, settings.servers, "version {version}");
+            save_to(&path, &loaded).unwrap();
+            assert_eq!(load_from(&path).unwrap().unwrap().servers, settings.servers);
+        }
     }
 
     #[test]
@@ -1228,13 +1347,31 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false})
         );
-        assert_eq!(load_from(&path).unwrap(), Some(settings));
+        assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+
+        // A version 15 file written before batch existed keeps its choices,
+        // and batch reads as off.
+        let mut old = saved.clone();
+        old["servers"][0]["ircv3"]
+            .as_object_mut()
+            .unwrap()
+            .remove("batch");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded, settings);
+        assert!(!loaded.servers[0].ircv3.batch && loaded.servers[0].ircv3.server_time);
+
+        // Batch is per server too.
+        settings.servers[1].ircv3.batch = true;
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(!loaded.servers[0].ircv3.batch && loaded.servers[1].ircv3.batch);
     }
 
     #[test]

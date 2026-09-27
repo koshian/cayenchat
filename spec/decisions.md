@@ -409,9 +409,21 @@ Every server profile is a network in the channel tree, shown whether or not it
 is connected, and any number of them can be connected at the same time
 (LimeChat's model). Settings version 13 moves the nickname, `USER` username,
 auto-join channels, SASL account and startup connection into each profile, so
-each network has its own identity; versions 1–12 copy their single identity
-into every profile, keep SASL on only for TLS profiles and keep startup
-connection only for the previously selected server.
+each network has its own identity. Versions 1–12 give their single
+identity (nickname, username, channels, SASL account and SASL, startup
+connection) only to the server it was used with: the previously selected
+server, or the only server when the selection is gone. Other servers keep
+their connection details, password-saving choice and stored credentials
+(keyed by profile ID) but start without a nickname, username, channels or
+account, to be entered for them. SASL stays on only with TLS.
+
+2026-09-27: until then migration copied the shared identity into every
+profile, so every server auto-joined the same channels and used the same
+account; that was the reported "shared auto-join channels" (the settings
+window itself kept values per server). Files already migrated (version 13
+and later) are left as they are: identical values on several servers may
+be intended, so they are not cleared or second-guessed. New servers always
+start blank; a preset fills only its host.
 
 The IRCnet servers are not stored by default: they are suggestions offered
 when adding a server (`storage::PRESETS`), because unused built-in servers in
@@ -552,8 +564,9 @@ Exceptions keep a half-finished edit from doing damage:
 
 - A typed password is stored when its field loses focus, not while it is
   being typed, because storing empties the field. Closing the window (close
-  button or Back) and quitting the app store every typed password, focused or
-  not.
+  button or Back), quitting the app and choosing another server store every
+  typed password, focused or not; a server switch stores them under the
+  server they were typed for (not yet for a server without a host).
 - While the selected server has no host nothing is saved and the window says
   a host is needed, because saving would drop the server and forget its
   passwords.
@@ -597,10 +610,21 @@ highlight); that rule was removed when this change merged it, because it
 would hide live lines when the local clock runs ahead and because a
 timestamp alone does not say a line was replayed. History is still
 recognized by the missing user mask and by `chathistory`/`znc.in/playback`
-batches, whose references use the normalized tag reader. Until `batch` is
-negotiated, bouncer backlog without batches can notify like live traffic.
+batches, whose references use the normalized tag reader. Bouncer backlog
+without a history batch can notify like live traffic.
 
-Not included: batch, chathistory, echo-message, labeled-response, account
+The `batch` capability was added later as a third opt-in (same object, no
+settings version change, off when absent). It extends `ReplayTracker`
+instead of adding a second tracker, requests only `batch` (never
+`draft/chathistory`, event-playback or multiline, and no CHATHISTORY
+requests), and keeps the rules above: only the two history types and their
+descendants are history, unknown types never mute, and a timestamp still
+proves nothing. Unsolicited batches on connections with the option off keep
+the handling they had before (history recognized, framing lines shown);
+that is compatibility, not negotiated support. Details and bounds are in
+`architecture.md`.
+
+Not included: chathistory requests, echo-message, labeled-response, account
 tags, avatars, metadata, reactions, typing indicators and Matrix. Later
 features may become default-on or move tabs by changing their preference
 default and settings row only; that migration is not implemented.
@@ -608,5 +632,7 @@ default and settings row only; that migration is not implemented.
 Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-negotiation),
 [message tags](https://ircv3.net/specs/extensions/message-tags),
 [server-time](https://ircv3.net/specs/extensions/server-time),
+[batch](https://ircv3.net/specs/extensions/batch),
+[chathistory batch type](https://ircv3.net/specs/batches/chathistory),
 [SASL 3.1](https://ircv3.net/specs/extensions/sasl-3.1),
 [SASL 3.2](https://ircv3.net/specs/extensions/sasl-3.2).

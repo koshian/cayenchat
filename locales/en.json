@@ -261,6 +261,8 @@
   "ircv3_server_time_hint": "Show the time the server recorded for incoming messages (server-time), in local time. Works without message tags.",
   "ircv3_message_tags": "Message tags",
   "ircv3_message_tags_hint": "Accept IRCv3 message tags from the server (message-tags). Tag-only messages (TAGMSG) are not shown.",
+  "ircv3_batch": "Message batches",
+  "ircv3_batch_hint": "Receive grouped messages (batch), so history a server or bouncer replays (chathistory, znc.in/playback) is recognized and does not notify. Other kinds of batches are shown as usual.",
   "ircv3_legacy_encoding": "This server uses {encoding}. Message tags are not requested because tag values are UTF-8; server timestamps still work.",
   "ircv3_next_connection": "Changes take effect the next time this server connects. A connected server is not reconnected."
 }

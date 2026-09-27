@@ -1067,6 +1067,7 @@ async fn run(
     let mut roster = RosterTracker::default();
     let mut whois = WhoisCollector::default();
     let mut replay = replay::ReplayTracker::default();
+    let mut batch_negotiated = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1182,6 +1183,11 @@ async fn run(
                                 return;
                             }
                         }
+                        // CAP DEL (or ACK -batch) withdrew batch: forget open batches.
+                        if batch_negotiated && !negotiation.enabled(cap::BATCH) {
+                            replay.reset();
+                        }
+                        batch_negotiated = negotiation.enabled(cap::BATCH);
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
                         }
@@ -1192,7 +1198,7 @@ async fn run(
                         }
                         let whois_reply = whois.observe(&message);
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
-                        for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
+                        for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
                                 _ => {}
@@ -1488,11 +1494,18 @@ fn translate_message(
     current_nick: &str,
     message: IrcMessage,
     server_time: Option<SystemTime>,
+    batch_negotiated: bool,
 ) -> Vec<Event> {
     // TAGMSG carries only tags. None is shown yet: no chat row, unread
     // mark, notification or preview; the transcript still records it.
     replay.observe(&message);
     if matches!(&message.command, IrcCommand::Raw(verb, _) if verb.eq_ignore_ascii_case("TAGMSG")) {
+        return Vec::new();
+    }
+    // Negotiated batch framing is not chat either; it stays in the
+    // transcript. Unsolicited BATCH lines keep appearing in the server log
+    // as they always did.
+    if batch_negotiated && matches!(message.command, IrcCommand::BATCH(..)) {
         return Vec::new();
     }
     let actor = message.source_nickname().map(str::to_owned);
@@ -3102,6 +3115,7 @@ mod tests {
         let options = Ircv3Options {
             message_tags: false,
             server_time: true,
+            batch: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -3186,6 +3200,7 @@ mod tests {
             Ircv3Options {
                 message_tags: true,
                 server_time: true,
+                batch: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();
@@ -3200,5 +3215,210 @@ mod tests {
         );
         assert!(events.iter().any(|event| matches!(event,
             Event::Diagnostic { message, .. } if message.contains("Message tags are not requested"))));
+    }
+
+    /// Channel message texts with their replayed flags, in arrival order.
+    fn replay_flags(events: &[Event]) -> Vec<(String, bool)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ChannelMessage { text, replayed, .. } => Some((text.clone(), *replayed)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn batch_server_lines(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ServerLine(line) if line.contains("BATCH") => Some(line.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const BATCH_TRAFFIC: &[u8] = b":srv BATCH +H1 chathistory #test\r\n\
+@batch=H1;time=2011-10-19T16:40:51.620Z :bob!u@h PRIVMSG #test :alice: old\r\n\
+:bob!u@h PRIVMSG #test :alice: live between\r\n\
+@batch=H1 :srv BATCH +n1 example.com/nested\r\n\
+@batch=n1 :bob!u@h PRIVMSG #test :alice: nested old\r\n\
+:srv BATCH +u1 example.com/unknown\r\n\
+@batch=u1 :bob!u@h PRIVMSG #test :alice: unknown type\r\n\
+@batch=h1 :bob!u@h PRIVMSG #test :alice: other case\r\n\
+@batch=H1 :srv BATCH -n1\r\n\
+:srv BATCH -u1\r\n\
+:srv BATCH -H1\r\n\
+@batch=H1 :bob!u@h PRIVMSG #test :alice: after end\r\n";
+
+    #[test]
+    fn negotiated_batch_marks_history_until_it_is_withdrawn() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            socket
+                .write_all(b":srv CAP * LS :batch server-time message-tags draft/chathistory\r\n")
+                .unwrap();
+            let requests: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            assert!(
+                requests.contains(&"CAP REQ batch".to_owned()),
+                "{requests:?}"
+            );
+            assert!(
+                requests
+                    .iter()
+                    .all(|line| !line.starts_with("CAP REQ") || line == "CAP REQ batch"),
+                "only the opted-in capability is requested: {requests:?}"
+            );
+            socket.write_all(b":srv CAP * ACK :batch\r\n").unwrap();
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            socket
+                .write_all(b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+            socket.write_all(BATCH_TRAFFIC).unwrap();
+            // Withdrawing batch forgets a history batch left open.
+            socket
+                .write_all(
+                    b":srv BATCH +h2 chathistory #test\r\n\
+@batch=h2 :bob!u@h PRIVMSG #test :alice: before del\r\n\
+:srv CAP alice DEL :batch\r\n\
+@batch=h2 :bob!u@h PRIVMSG #test :alice: after del\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+            drop(socket);
+
+            // Reconnect: batch is no longer offered; the old reference is
+            // meaningless on the new connection.
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            socket.write_all(b":srv CAP * LS :server-time\r\n").unwrap();
+            let requests: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            assert!(requests.contains(&"CAP END".to_owned()), "{requests:?}");
+            assert!(!requests.iter().any(|line| line.starts_with("CAP REQ")));
+            socket
+                .write_all(b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket
+                .write_all(b":alice!u@h JOIN #test\r\n@batch=h2 :bob!u@h PRIVMSG #test :alice: stale reference\r\n")
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let options = Ircv3Options {
+            batch: true,
+            ..Ircv3Options::default()
+        };
+        let events = run_fixture(plain_config(port, options), |events| {
+            replay_flags(events).len() == 8
+        });
+        let owned = |pairs: &[(&str, bool)]| -> Vec<(String, bool)> {
+            pairs
+                .iter()
+                .map(|(text, replayed)| ((*text).to_owned(), *replayed))
+                .collect()
+        };
+        assert_eq!(
+            replay_flags(&events),
+            owned(&[
+                ("alice: old", true),
+                ("alice: live between", false),
+                ("alice: nested old", true),
+                ("alice: unknown type", false),
+                ("alice: other case", false),
+                ("alice: after end", false),
+                ("alice: before del", true),
+                ("alice: after del", false),
+            ])
+        );
+        // History is still a mention; the app suppresses only its alerts.
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, mentioned: true, replayed: true, .. } if text == "alice: old")));
+        // server-time was not requested, so its tag is ignored.
+        assert!(
+            channel_messages(&events)
+                .iter()
+                .all(|(_, time)| time.is_none())
+        );
+        // Negotiated framing stays out of the server log but in the transcript.
+        let before_del = events
+            .iter()
+            .position(|event| matches!(event, Event::ServerLine(line) if line.contains("DEL")))
+            .unwrap_or(events.len());
+        assert!(batch_server_lines(&events[..before_del]).is_empty());
+        assert!(events.iter().any(|event| matches!(event,
+            Event::Wire { direction: WireDirection::Received, line, .. } if line.contains("BATCH +H1"))));
+
+        let events = run_fixture(plain_config(port, options), |events| {
+            replay_flags(events).len() == 1
+        });
+        server.join().unwrap();
+        assert_eq!(
+            replay_flags(&events),
+            owned(&[("alice: stale reference", false)])
+        );
+    }
+
+    #[test]
+    fn unsolicited_history_batches_keep_their_compatibility_handling() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let initial: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            assert_eq!(initial[0], "CAP END", "batch off: nothing is negotiated");
+            socket
+                .write_all(b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+            socket.write_all(BATCH_TRAFFIC).unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let events = run_fixture(plain_config(port, Ircv3Options::default()), |events| {
+            replay_flags(events).len() == 6
+        });
+        server.join().unwrap();
+        // Same classification as before the option existed.
+        assert_eq!(
+            replay_flags(&events),
+            [
+                ("alice: old", true),
+                ("alice: live between", false),
+                ("alice: nested old", true),
+                ("alice: unknown type", false),
+                ("alice: other case", false),
+                ("alice: after end", false),
+            ]
+            .map(|(text, replayed)| (text.to_owned(), replayed))
+        );
+        // Unsolicited framing lines still reach the server log as before.
+        assert_eq!(
+            batch_server_lines(&events),
+            [
+                ":srv BATCH +H1 CHATHISTORY #test",
+                ":srv BATCH +n1 EXAMPLE.COM/NESTED",
+                ":srv BATCH +u1 EXAMPLE.COM/UNKNOWN",
+                ":srv BATCH -n1",
+                ":srv BATCH -u1",
+                ":srv BATCH -H1",
+            ]
+        );
     }
 }
