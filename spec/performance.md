@@ -422,6 +422,28 @@ was available; the GPUI tests cover release of records, images and atlas
 tiles), GPU memory separately from footprint, real network latency and TLS,
 Windows and Linux.
 
+## IRCv3 negotiation and server-time (2026-09-27)
+
+A short check, not a baseline run. Same Apple Silicon Mac, release builds,
+one run each of the ordinary headless workload
+(`perf_baseline::perf_baseline --exact`: 10 channels × 2,000 lines, 1,000
+diagnostics), parent `a27bd69` (master with PR #18) against the IRCv3 branch
+after merging it. Medians in µs:
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- | --- |
+| Parent | 427 | 1,854 | 1,524 | 1,990 | 436 |
+| IRCv3 branch | 432 | 1,869 | 1,540 | 1,994 | 433 |
+
+The differences are within run-to-run noise, so no further runs were made.
+Typing still re-renders no pane (the test's `pane_renders` assertion). A
+retained `model::Message` stays 64 bytes plus sender and text: the IRCv3
+change adds no field (server-time reuses `TimeOfDay`), and PR #18's
+`replayed` flag fits in existing padding. Negotiation runs inside each
+connection's existing worker loop; no thread, timer or polling was added,
+and with every option off the wire traffic is unchanged. The process-level
+load scenarios were not rerun.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The
