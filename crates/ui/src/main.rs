@@ -2346,6 +2346,7 @@ impl ChatWindow {
                 text,
                 notice,
                 mentioned,
+                ..
             } => {
                 let highlighted = !self.is_own_nickname(network, &sender)
                     && (mentioned
@@ -2364,6 +2365,7 @@ impl ChatWindow {
                 channel,
                 actor,
                 kind,
+                ..
             } => {
                 let text = channel_activity_text(&actor, kind);
                 self.state.append_channel_activity(network, &channel, text);
@@ -2372,6 +2374,7 @@ impl ChatWindow {
                 sender,
                 text,
                 notice,
+                ..
             } => {
                 self.notify_message(network, None, &sender, &text, notice, false);
                 // Private conversations have no pane yet; keep them in the
@@ -6292,6 +6295,7 @@ mod pane_tests {
             text: text.into(),
             notice: false,
             mentioned,
+            server_time: None,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -6326,11 +6330,13 @@ mod pane_tests {
                         sender: "carol".into(),
                         text: "psst".into(),
                         notice: false,
+                        server_time: None,
                     },
                     Event::PrivateMessage {
                         sender: "NickServ".into(),
                         text: "notice".into(),
                         notice: true,
+                        server_time: None,
                     },
                 ],
                 false,
@@ -6422,6 +6428,7 @@ mod pane_tests {
                         text: "hello".into(),
                         notice: false,
                         mentioned: false,
+                        server_time: None,
                     },
                     Event::OutgoingAccepted {
                         channel: channel.into(),
@@ -6516,6 +6523,7 @@ mod pane_tests {
                     text: text.into(),
                     notice: false,
                     mentioned: false,
+                    server_time: None,
                 },
             ]
         };
