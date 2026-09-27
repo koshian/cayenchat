@@ -185,6 +185,7 @@ impl AppState {
                             sender: sender.into(),
                             text: text.into(),
                             activity: false,
+                            replayed: false,
                         }
                     })
                     .collect(),
@@ -483,6 +484,7 @@ impl AppState {
                 sender: "server".into(),
                 text,
                 activity: false,
+                replayed: false,
             },
         );
     }
@@ -584,12 +586,14 @@ impl AppState {
         sender: &str,
         text: &str,
         notice: bool,
+        replayed: bool,
     ) {
-        self.append_channel_message_at(network, name, sender, text, notice, None);
+        self.append_channel_message_at(network, name, sender, text, notice, replayed, None);
     }
 
     /// Like [`AppState::append_channel_message`], shown at `received` (a
     /// server-provided time) when present. Ordering still follows arrival.
+    #[allow(clippy::too_many_arguments)]
     pub fn append_channel_message_at(
         &mut self,
         network: NetworkId,
@@ -597,6 +601,7 @@ impl AppState {
         sender: &str,
         text: &str,
         notice: bool,
+        replayed: bool,
         received: Option<SystemTime>,
     ) {
         // Only joined or configured channels get a conversation; anything else
@@ -628,6 +633,7 @@ impl AppState {
                         text.into()
                     },
                     activity: false,
+                    replayed,
                 },
             );
         }
@@ -660,6 +666,7 @@ impl AppState {
                         sender: String::new(),
                         text,
                         activity: true,
+                        replayed: false,
                     },
                 );
             }
@@ -1037,7 +1044,7 @@ mod tests {
         state.set_status(NetworkId(1), ConnectionStatus::Registered);
         state.joined_channel(NetworkId(1), "#two");
         state.set_members(NetworkId(1), "#two", vec!["@alice".into()]);
-        state.append_channel_message(NetworkId(1), "#two", "alice", "hello", false);
+        state.append_channel_message(NetworkId(1), "#two", "alice", "hello", false, false);
         assert_eq!(state.conversations().len(), 2);
         assert!(state.is_unread(ConversationId(2)));
         state.dispatch(Command::SelectChannel(ConversationId(2)));
@@ -1066,8 +1073,8 @@ mod tests {
     fn channel_messages_keep_arrival_order_across_channels() {
         let mut state =
             AppState::live("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
-        state.append_channel_message(NetworkId(1), "#two", "alice", "first", false);
-        state.append_channel_message(NetworkId(1), "#one", "bob", "latest", false);
+        state.append_channel_message(NetworkId(1), "#two", "alice", "first", false, false);
+        state.append_channel_message(NetworkId(1), "#one", "bob", "latest", false, false);
 
         let mut messages: Vec<_> = state
             .conversations()
@@ -1104,7 +1111,7 @@ mod tests {
             AppState::live("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
         state.append_channel_activity(NetworkId(1), "#two", "alice has joined (u@h)".into());
         assert!(!state.is_unread(ConversationId(2)));
-        state.append_channel_message(NetworkId(1), "#two", "alice", "hello", false);
+        state.append_channel_message(NetworkId(1), "#two", "alice", "hello", false, false);
         assert!(state.is_unread(ConversationId(2)));
         let channel = &state.conversations()[1];
         assert!(channel.messages[0].activity);
@@ -1116,7 +1123,7 @@ mod tests {
     #[test]
     fn server_traffic_for_unjoined_channels_does_not_create_conversations() {
         let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
-        state.append_channel_message(NetworkId(1), "#stray", "mallory", "hi", false);
+        state.append_channel_message(NetworkId(1), "#stray", "mallory", "hi", false, false);
         state.append_channel_activity(NetworkId(1), "#stray", "mallory has joined".into());
         state.set_members(NetworkId(1), "#stray", vec!["mallory".into()]);
         assert_eq!(state.conversations().len(), 1);
@@ -1186,8 +1193,8 @@ mod tests {
     #[test]
     fn resetting_one_network_keeps_the_others() {
         let mut state = two_networks();
-        state.append_channel_message(NetworkId(2), "#a", "bob", "kept", false);
-        state.append_channel_message(NetworkId(1), "#b", "bob", "dropped", false);
+        state.append_channel_message(NetworkId(2), "#a", "bob", "kept", false, false);
+        state.append_channel_message(NetworkId(1), "#b", "bob", "dropped", false, false);
         state.append_server_message(NetworkId(1), "old".into());
         let old: Vec<_> = state
             .conversations()
@@ -1256,7 +1263,7 @@ mod tests {
             .collect();
         assert_eq!(names, [(3, "#new"), (1, "#a"), (1, "#b")]);
         // Messages for the removed network are ignored.
-        state.append_channel_message(NetworkId(2), "#a", "bob", "late", false);
+        state.append_channel_message(NetworkId(2), "#a", "bob", "late", false, false);
         assert!(state.server_messages(NetworkId(2)).is_empty());
     }
 
@@ -1296,9 +1303,25 @@ mod tests {
         let network = state.networks()[0].id;
         let later = UNIX_EPOCH + Duration::from_secs(1_319_042_451);
         let earlier = later - Duration::from_secs(3 * 3600);
-        state.append_channel_message_at(network, "#test", "bob", "first", false, Some(later));
-        state.append_channel_message_at(network, "#test", "bob", "second", false, Some(earlier));
-        state.append_channel_message_at(network, "#test", "bob", "third", false, None);
+        state.append_channel_message_at(
+            network,
+            "#test",
+            "bob",
+            "first",
+            false,
+            false,
+            Some(later),
+        );
+        state.append_channel_message_at(
+            network,
+            "#test",
+            "bob",
+            "second",
+            false,
+            false,
+            Some(earlier),
+        );
+        state.append_channel_message_at(network, "#test", "bob", "third", false, false, None);
         state.append_channel_activity_at(network, "#test", "bob left".into(), Some(earlier));
         state.append_server_message_at(network, "notice".into(), Some(later));
         let received_now = display_time(None);

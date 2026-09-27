@@ -87,6 +87,7 @@ fn incoming(sequence: usize, images: bool) -> [Event; 2] {
             notice: false,
             mentioned: false,
             server_time: None,
+            replayed: false,
         },
     ]
 }

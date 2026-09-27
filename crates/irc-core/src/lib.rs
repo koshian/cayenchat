@@ -1,6 +1,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
 mod cap;
+mod replay;
 mod tags;
 pub mod text;
 
@@ -276,6 +277,9 @@ pub enum Event {
         /// The server's `time` tag when server-time is negotiated and the
         /// tag is valid; `None` means use the receipt time.
         server_time: Option<SystemTime>,
+        /// History or a server/bouncer line rather than a live message from
+        /// a user; it must not notify again.
+        replayed: bool,
     },
     ChannelActivity {
         channel: String,
@@ -290,6 +294,8 @@ pub enum Event {
         text: String,
         notice: bool,
         server_time: Option<SystemTime>,
+        /// Replayed history (IRCv3 history batch).
+        replayed: bool,
     },
     Names {
         channel: String,
@@ -1060,6 +1066,7 @@ async fn run(
     let mut current_nick = registration_nick;
     let mut roster = RosterTracker::default();
     let mut whois = WhoisCollector::default();
+    let mut replay = replay::ReplayTracker::default();
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1185,7 +1192,7 @@ async fn run(
                         }
                         let whois_reply = whois.observe(&message);
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
-                        for event in translate_message(&client, &mut roster, &current_nick, message, server_time).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
+                        for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
                                 _ => {}
@@ -1448,6 +1455,7 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
 fn private_message(
     message: &IrcMessage,
     current_nick: &str,
+    replayed: bool,
     server_time: Option<SystemTime>,
 ) -> Option<Event> {
     let (target, text, notice) = match &message.command {
@@ -1469,18 +1477,21 @@ fn private_message(
         text: text.clone(),
         notice,
         server_time,
+        replayed,
     })
 }
 
 fn translate_message(
     client: &Client,
     roster: &mut RosterTracker,
+    replay: &mut replay::ReplayTracker,
     current_nick: &str,
     message: IrcMessage,
     server_time: Option<SystemTime>,
 ) -> Vec<Event> {
     // TAGMSG carries only tags. None is shown yet: no chat row, unread
     // mark, notification or preview; the transcript still records it.
+    replay.observe(&message);
     if matches!(&message.command, IrcCommand::Raw(verb, _) if verb.eq_ignore_ascii_case("TAGMSG")) {
         return Vec::new();
     }
@@ -1566,7 +1577,8 @@ fn translate_message(
         }
         _ => {}
     }
-    if let Some(private) = private_message(&message, current_nick, server_time) {
+    let replayed = replay.replayed(&message);
+    if let Some(private) = private_message(&message, current_nick, replayed, server_time) {
         return vec![private];
     }
     let mut translated = match &message.command {
@@ -1611,6 +1623,7 @@ fn translate_message(
                         current_nick,
                     ),
                 server_time,
+                replayed,
             }]
         }
         IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
@@ -1690,7 +1703,7 @@ mod tests {
     #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
         let translate =
-            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", None);
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
         assert_eq!(
             translate(":alice!u@h PRIVMSG me :hello"),
             Some(Event::PrivateMessage {
@@ -1698,6 +1711,7 @@ mod tests {
                 text: "hello".into(),
                 notice: false,
                 server_time: None,
+                replayed: false,
             })
         );
         assert_eq!(
@@ -1707,6 +1721,7 @@ mod tests {
                 text: "psst".into(),
                 notice: true,
                 server_time: None,
+                replayed: false,
             })
         );
         assert!(matches!(
