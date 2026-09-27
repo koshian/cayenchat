@@ -2403,6 +2403,8 @@ impl ChatWindow {
                     .append_server_message(network, self.i18n.text("event_transport_connected"));
             }
             Event::Registered { nickname } => {
+                // A new connection: nobody's avatar is known yet.
+                self.state.end_avatars(network);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
                     session.retry_attempt = 0;
@@ -2565,9 +2567,21 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
+                self.state.end_avatars(network);
                 self.record_disconnect(network, reason);
             }
-            Event::UserAvatar { .. } | Event::AvatarMoved { .. } | Event::AvatarsReset => {}
+            // Avatar references are recorded whether or not they are shown;
+            // showing them (and downloading images) is the Appearance setting.
+            Event::UserAvatar { nickname, url } => {
+                let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                self.state.set_avatar(network, &key, url.as_deref());
+            }
+            Event::AvatarMoved { from, to } => {
+                let from = cayenchat_irc_core::text::nickname_key(&from);
+                let to = cayenchat_irc_core::text::nickname_key(&to);
+                self.state.rename_avatar(network, &from, &to);
+            }
+            Event::AvatarsReset => self.state.end_avatars(network),
         }
     }
 
