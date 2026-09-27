@@ -1,5 +1,6 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
+mod replay;
 pub mod text;
 
 use std::{
@@ -400,6 +401,9 @@ pub enum Event {
         /// Someone else named our nickname as a word (for example `nick:` or
         /// `@nick`), ignoring formatting codes.
         mentioned: bool,
+        /// History or a server/bouncer line rather than a live message from
+        /// a user; it must not notify again.
+        replayed: bool,
     },
     ChannelActivity {
         channel: String,
@@ -412,6 +416,8 @@ pub enum Event {
         sender: String,
         text: String,
         notice: bool,
+        /// Replayed history (IRCv3 batch or old server-time).
+        replayed: bool,
     },
     Names {
         channel: String,
@@ -1177,6 +1183,7 @@ async fn run(
     let mut current_nick = registration_nick;
     let mut roster = RosterTracker::default();
     let mut whois = WhoisCollector::default();
+    let mut replay = replay::ReplayTracker::default();
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1292,7 +1299,7 @@ async fn run(
                             diagnostic(&events, started, "Registration completed (001 received).").await;
                         }
                         let whois_reply = whois.observe(&message);
-                        for event in translate_message(&client, &mut roster, &current_nick, message).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
+                        for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
                                 _ => {}
@@ -1552,7 +1559,7 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
 }
 
 /// Translates a user's PRIVMSG or NOTICE addressed to `current_nick`.
-fn private_message(message: &IrcMessage, current_nick: &str) -> Option<Event> {
+fn private_message(message: &IrcMessage, current_nick: &str, replayed: bool) -> Option<Event> {
     let (target, text, notice) = match &message.command {
         IrcCommand::PRIVMSG(target, text) => (target, text, false),
         IrcCommand::NOTICE(target, text) => (target, text, true),
@@ -1571,15 +1578,18 @@ fn private_message(message: &IrcMessage, current_nick: &str) -> Option<Event> {
         sender: sender.clone(),
         text: text.clone(),
         notice,
+        replayed,
     })
 }
 
 fn translate_message(
     client: &Client,
     roster: &mut RosterTracker,
+    replay: &mut replay::ReplayTracker,
     current_nick: &str,
     message: IrcMessage,
 ) -> Vec<Event> {
+    replay.observe(&message);
     let actor = message.source_nickname().map(str::to_owned);
     let activity = match &message.command {
         IrcCommand::JOIN(channel, _, _) => actor.as_ref().map(|actor| {
@@ -1659,7 +1669,8 @@ fn translate_message(
         }
         _ => {}
     }
-    if let Some(private) = private_message(&message, current_nick) {
+    let replayed = replay.replayed(&message);
+    if let Some(private) = private_message(&message, current_nick, replayed) {
         return vec![private];
     }
     let mut translated = match &message.command {
@@ -1703,6 +1714,7 @@ fn translate_message(
                         &crate::text::strip_formatting(text),
                         current_nick,
                     ),
+                replayed,
             }]
         }
         IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
@@ -1779,13 +1791,15 @@ mod tests {
 
     #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
-        let translate = |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me");
+        let translate =
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false);
         assert_eq!(
             translate(":alice!u@h PRIVMSG me :hello"),
             Some(Event::PrivateMessage {
                 sender: "alice".into(),
                 text: "hello".into(),
                 notice: false,
+                replayed: false,
             })
         );
         assert_eq!(
@@ -1794,6 +1808,7 @@ mod tests {
                 sender: "alice".into(),
                 text: "psst".into(),
                 notice: true,
+                replayed: false,
             })
         );
         assert!(matches!(

@@ -712,6 +712,17 @@ struct ChatWindow {
     pane_renders: usize,
 }
 
+/// An incoming channel or private message, as `notify_message` needs it.
+struct ReceivedMessage<'a> {
+    /// `None` for a private message.
+    channel: Option<&'a str>,
+    sender: &'a str,
+    text: &'a str,
+    notice: bool,
+    mentioned: bool,
+    replayed: bool,
+}
+
 struct ServerMenu {
     position: Point<Pixels>,
     network: NetworkId,
@@ -1054,16 +1065,17 @@ impl ChatWindow {
 
     /// Shows a desktop notification for an incoming IRC message when the
     /// rules ask for one and the message is not already in front of the user.
-    fn notify_message(
-        &mut self,
-        network: NetworkId,
-        channel: Option<&str>,
-        sender: &str,
-        text: &str,
-        notice: bool,
-        mentioned: bool,
-    ) {
+    fn notify_message(&mut self, network: NetworkId, message: ReceivedMessage) {
         use cayenchat_irc_core::text::{action_text, strip_formatting};
+
+        let ReceivedMessage {
+            channel,
+            sender,
+            text,
+            notice,
+            mentioned,
+            replayed,
+        } = message;
 
         let plain = match action_text(text) {
             Some(action) => format!("* {sender} {}", strip_formatting(action)),
@@ -1075,6 +1087,7 @@ impl ChatWindow {
             notice,
             from_self: self.is_own_nickname(network, sender),
             mentioned,
+            replayed,
         }) else {
             return;
         };
@@ -2346,6 +2359,7 @@ impl ChatWindow {
                 text,
                 notice,
                 mentioned,
+                replayed,
             } => {
                 let highlighted = !self.is_own_nickname(network, &sender)
                     && (mentioned
@@ -2353,7 +2367,17 @@ impl ChatWindow {
                             &cayenchat_irc_core::text::strip_formatting(&text),
                             &self.notification_rules.keywords,
                         ));
-                self.notify_message(network, Some(&channel), &sender, &text, notice, mentioned);
+                self.notify_message(
+                    network,
+                    ReceivedMessage {
+                        channel: Some(&channel),
+                        sender: &sender,
+                        text: &text,
+                        notice,
+                        mentioned,
+                        replayed,
+                    },
+                );
                 self.state
                     .append_channel_message(network, &channel, &sender, &text, notice);
                 if highlighted {
@@ -2372,8 +2396,19 @@ impl ChatWindow {
                 sender,
                 text,
                 notice,
+                replayed,
             } => {
-                self.notify_message(network, None, &sender, &text, notice, false);
+                self.notify_message(
+                    network,
+                    ReceivedMessage {
+                        channel: None,
+                        sender: &sender,
+                        text: &text,
+                        notice,
+                        mentioned: false,
+                        replayed,
+                    },
+                );
                 // Private conversations have no pane yet; keep them in the
                 // server log as before.
                 let line = if notice {
@@ -6292,6 +6327,7 @@ mod pane_tests {
             text: text.into(),
             notice: false,
             mentioned,
+            replayed: false,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -6322,15 +6358,31 @@ mod pane_tests {
                     message("#b", "\u{2}alice\u{2}: ping", true),
                     message("#b", "Deploy done", false),
                     message("#b", "\u{1}ACTION deploys\u{1}", false),
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "alice: deploy from the backlog".into(),
+                        notice: false,
+                        mentioned: true,
+                        replayed: true,
+                    },
+                    Event::PrivateMessage {
+                        sender: "carol".into(),
+                        text: "old psst".into(),
+                        notice: false,
+                        replayed: true,
+                    },
                     Event::PrivateMessage {
                         sender: "carol".into(),
                         text: "psst".into(),
                         notice: false,
+                        replayed: false,
                     },
                     Event::PrivateMessage {
                         sender: "NickServ".into(),
                         text: "notice".into(),
                         notice: true,
+                        replayed: false,
                     },
                 ],
                 false,
@@ -6422,6 +6474,7 @@ mod pane_tests {
                         text: "hello".into(),
                         notice: false,
                         mentioned: false,
+                        replayed: false,
                     },
                     Event::OutgoingAccepted {
                         channel: channel.into(),
@@ -6516,6 +6569,7 @@ mod pane_tests {
                     text: text.into(),
                     notice: false,
                     mentioned: false,
+                    replayed: false,
                 },
             ]
         };
