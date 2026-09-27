@@ -418,3 +418,58 @@ The UI adds no timers per connection. Connection state lives in one
 (logs, conversations, transcript, WHOIS) are unchanged; application-wide
 bounds are deliberately left for a separate change after measuring (see
 `performance.md`).
+
+## D018 — Inline image previews
+
+**Status:** Accepted
+
+An ordinary Appearance setting (settings version 14, off by default for new
+and existing users) shows a small static thumbnail below main-log channel
+messages that contain a direct image link. Avatars will be a separate
+ordinary setting; IRCv3 draft features get their own experimental opt-ins.
+
+Candidates: the first link of a message (found by the log's existing URL
+recognition) that is `http`/`https`, has no credentials, uses the default
+port, names a public host (no `localhost`, single-label names or non-public
+IP literals) and whose last path segment ends in `.png`, `.jpg`, `.jpeg`,
+`.gif` or `.webp`. ImgBB's `https://i.ibb.co/<id>/<name>.<ext>` links
+qualify; ImgBB's `ibb.co/<id>` pages do not. Web pages are never fetched to
+discover images: no HTML, Open Graph, oEmbed or provider-specific scraping.
+
+Loading treats URLs and bytes as untrusted: GET only, at most 3 redirects
+followed by hand with each target re-checked and no HTTPS→HTTP downgrade, a
+resolver that drops loopback, private, shared, link-local, multicast,
+documentation and reserved addresses (IPv4 and IPv6, including mapped and
+NAT64/6to4 forms) before connecting, so names and redirects cannot reach
+local services either; no proxy, cookies, `Referer`, credentials or
+compression; 5 s to connect and 15 s per preview in total. The response must
+be 200 with an `image/*` type (not SVG), at most 8 MiB, and the content must
+sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. Dimensions are
+read from the header first (at most 8192 px a side and 16.7 megapixels), the
+decoder may allocate at most 48 MiB, one decode runs at a time in the whole
+process, and the full image is dropped as soon as the thumbnail (at most
+400×200 px, shown at up to 200×100 logical px) exists. GIF and animated WebP
+show their first frame. There is no disk cache. Anything unsupported or
+failed leaves the ordinary text link.
+
+Implementation: a GPUI-free `cayenchat-media` crate owns recognition,
+loading, decoding and the application-wide `PreviewCache`; the UI runs loads
+on GPUI's background executor and draws `RenderImage`s. It uses `ureq` 3
+(already used by `upload`) with its resolver hook, and the `image` crate
+GPUI already depends on (PNG/JPEG/GIF/WebP decoders only); no new crates.
+GPUI's own `img()` URL loading was not used: it has no address, redirect,
+size or pixel limits and caches without a byte budget. GPUI 0.2.2's sprite
+atlases never reused the space of a removed image; the vendored copy now
+frees it (`vendor/gpui/PATCHES.md`), since evicted thumbnails are removed
+from the atlas.
+
+Matrix, if added, supplies its own media references (`mxc://` and
+server-made thumbnails) and fetcher with its own authentication to the same
+decode, cache and display layer; nothing Matrix-specific exists now, and
+`MediaRef` is non-exhaustive for that reason.
+
+Tests and measurements never contact real hosts: the HTTP loader is tested
+against a local fixture server through a test-only constructor that also
+allows 127.0.0.1, and the `preview-fixture` cargo feature (never used for
+release builds) swaps in a fetcher that reads `images.cayenchat.test` links
+from a local directory for GUI checks and `scripts/perf`.
