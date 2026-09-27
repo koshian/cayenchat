@@ -1,10 +1,13 @@
 use crate::{ChatWindow, localization::Localizer};
 use cayenchat_irc_core::WhoisInfo;
+use cayenchat_model::NetworkId;
 use gpui::{prelude::*, *};
 use std::collections::HashSet;
 
 pub struct WhoisWindow {
     owner: WindowHandle<ChatWindow>,
+    /// Server the reply came from; actions go back to the same server.
+    network: NetworkId,
     info: WhoisInfo,
     // Lowercase joined channel names pushed by the owner; reading the owner
     // while rendering would re-enter it during its own update.
@@ -21,6 +24,7 @@ pub struct WhoisWindow {
 impl WhoisWindow {
     pub fn open(
         owner: WindowHandle<ChatWindow>,
+        network: NetworkId,
         info: WhoisInfo,
         joined: HashSet<String>,
         i18n: Localizer,
@@ -44,6 +48,7 @@ impl WhoisWindow {
                     window.focus(&focus);
                     Self {
                         owner,
+                        network,
                         info,
                         joined,
                         selected_channel: 0,
@@ -93,9 +98,10 @@ impl WhoisWindow {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let nickname = self.info.nickname.clone();
+        let network = self.network;
         let result = self
             .owner
-            .update(cx, |chat, _, cx| chat.request_whois(&nickname, cx))
+            .update(cx, |chat, _, cx| chat.request_whois(network, &nickname, cx))
             .unwrap_or_else(|_| Err(self.i18n.text("not_connected")));
         self.status = Some(match result {
             Ok(()) => self.i18n.text("whois_updating"),
@@ -106,16 +112,18 @@ impl WhoisWindow {
 
     fn private_message(&mut self, cx: &mut Context<Self>) {
         let nickname = self.info.nickname.clone();
+        let network = self.network;
         let _ = self.owner.update(cx, |chat, window, cx| {
-            chat.show_private_message_prompt(nickname, window, cx);
+            chat.show_private_message_prompt(network, nickname, window, cx);
             window.activate_window();
         });
     }
 
     fn join(&mut self, channel: String, cx: &mut Context<Self>) {
+        let network = self.network;
         let result = self
             .owner
-            .update(cx, |chat, _, cx| chat.join_channel(&channel, cx))
+            .update(cx, |chat, _, cx| chat.join_channel(network, &channel, cx))
             .unwrap_or_else(|_| Err(self.i18n.text("not_connected")));
         self.status = result.err();
         cx.notify();

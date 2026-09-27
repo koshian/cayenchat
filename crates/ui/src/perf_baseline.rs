@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use cayenchat_app::Command;
 use cayenchat_irc_core::{Event, WireDirection};
+use cayenchat_model::NetworkId;
 use gpui::{Focusable, TestAppContext};
 
 use crate::{ChatWindow, Selection};
@@ -129,7 +130,9 @@ fn perf_baseline(cx: &mut TestAppContext) {
                 .collect(),
         });
     }
-    chat.update(cx, |chat, cx| chat.handle_events(setup, false, cx));
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(NetworkId(1), setup, false, cx)
+    });
     let mut sequence = 0;
     let history: Vec<Event> = (0..HISTORY * CHANNELS)
         .flat_map(|_| {
@@ -138,7 +141,9 @@ fn perf_baseline(cx: &mut TestAppContext) {
         })
         .collect();
     for batch in history.chunks(EVENT_BATCH) {
-        chat.update(cx, |chat, cx| chat.handle_events(batch.to_vec(), false, cx));
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(NetworkId(1), batch.to_vec(), false, cx)
+        });
     }
     cx.run_until_parked();
 
@@ -160,7 +165,7 @@ fn perf_baseline(cx: &mut TestAppContext) {
                 .iter()
                 .map(|c| c.messages.len())
                 .sum::<usize>(),
-            chat.diagnostics.len(),
+            chat.sessions[&NetworkId(1)].diagnostics.len(),
         )
     });
     println!(
@@ -199,7 +204,11 @@ fn perf_baseline(cx: &mut TestAppContext) {
                 incoming(sequence)
             })
             .collect();
-        burst.time(|| chat.update(cx, |chat, cx| chat.handle_events(batch, false, cx)));
+        burst.time(|| {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(NetworkId(1), batch, false, cx)
+            })
+        });
     }
     burst.report();
 

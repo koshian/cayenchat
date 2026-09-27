@@ -221,7 +221,7 @@ impl ChatWindow {
         cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.open_settings_tab(SettingsTab::ImageUpload, window, cx)
+                    this.open_settings_tab(SettingsTab::ImageUpload, None, window, cx)
                 });
             }
         })
