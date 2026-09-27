@@ -186,8 +186,8 @@ settings default to System, the dark defaults and Wayland. Version 11 adds the
 `USER` username (migrated from the old nickname, which earlier versions sent as
 USER), the credential backend choice and the image upload provider, and stops
 reading passwords from the file except to migrate them. Version 12 adds
-notification preferences (enabled, highlights, private messages and highlight
-words); older settings enable all three with no words. The UI keeps the
+notification preferences (enabled, mentions, keyword alerts, keywords and
+private messages); older settings enable them all with no keywords. The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -331,13 +331,16 @@ application state or rendering components.
 ## Notifications
 
 ```text
-irc-core Event::ChannelMessage / Event::PrivateMessage
-        |
+irc-core Event::ChannelMessage { mentioned } / Event::PrivateMessage
+        |   (irc-core::text: nickname word match, formatting and ACTION)
         v
-app::notifications::NotificationRules::trigger  (GPUI-free: nickname and
-        |                                        highlight-word matching)
+ui::ChatWindow::notify_message -> app::notifications::IncomingMessage
+        |   (plain text, channel/private, notice, from_self, mentioned)
         v
-ui::ChatWindow::notify_message  (skip the visible conversation, burst limit)
+app::notifications::NotificationRules::trigger  (GPUI- and protocol-free:
+        |                          mention / keyword / private message)
+        v
+ui::ChatWindow  (skip the visible conversation, burst limit)
         |
         v
 ui::notifier worker thread -> notify-rust
@@ -349,9 +352,15 @@ ui::notifier worker thread -> notify-rust
 `irc-core` reports a PRIVMSG or NOTICE from a user mask to our nickname as
 `PrivateMessage`; server notices and CTCP requests other than ACTION stay
 server lines. Private messages notify only as PRIVMSG, because private NOTICEs
-are usually services or bots. Channel messages notify when they mention our
-nickname as a whole word or contain a highlight word; our own nickname never
-notifies itself (bouncer echoes). Nothing notifies while the chat window is
+are usually services or bots. Mentions and keywords are separate choices.
+`irc-core` sets `mentioned` when someone else names our nickname as a whole
+word (RFC 1459 case mapping, formatting ignored), which also covers `nick:`
+and `@nick`; keywords are case-insensitive substrings, so the nickname is
+matched inside other words only if the user adds it as a keyword. The rules
+only receive the `mentioned` flag: a Matrix adapter would set it from the
+event's intentional mentions (`m.mentions`) and push rules instead of parsing
+text, so no `@`-specific rule is needed in `app`. Our own messages never
+notify (bouncer echoes). Nothing notifies while the chat window is
 focused and the message's conversation (the server view for private messages)
 is selected. At most five notifications are shown per ten seconds so bouncer
 history playback cannot flood the desktop; the log and unread marks are

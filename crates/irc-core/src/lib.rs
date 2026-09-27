@@ -1,5 +1,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
+pub mod text;
+
 use std::{
     collections::HashMap,
     fmt, thread,
@@ -395,6 +397,9 @@ pub enum Event {
         sender: String,
         text: String,
         notice: bool,
+        /// Someone else named our nickname as a word (for example `nick:` or
+        /// `@nick`), ignoring formatting codes.
+        mentioned: bool,
     },
     ChannelActivity {
         channel: String,
@@ -1687,11 +1692,17 @@ fn translate_message(
         IrcCommand::PRIVMSG(target, text) | IrcCommand::NOTICE(target, text)
             if valid_channel(target) =>
         {
+            let sender = message.source_nickname().unwrap_or("server");
             vec![Event::ChannelMessage {
                 channel: target.clone(),
-                sender: message.source_nickname().unwrap_or("server").to_owned(),
+                sender: sender.to_owned(),
                 text: text.clone(),
                 notice: matches!(message.command, IrcCommand::NOTICE(_, _)),
+                mentioned: !crate::text::same_nickname(sender, current_nick)
+                    && crate::text::mentions_nickname(
+                        &crate::text::strip_formatting(text),
+                        current_nick,
+                    ),
             }]
         }
         IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
@@ -2286,6 +2297,7 @@ mod tests {
                     sender,
                     text,
                     notice: is_notice,
+                    ..
                 }) => {
                     assert_eq!(channel, "!ABCDEtest");
                     assert_eq!(sender, "bob");

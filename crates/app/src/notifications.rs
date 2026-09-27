@@ -1,5 +1,9 @@
 //! Which incoming messages deserve a desktop notification, independent of
-//! how the platform shows it.
+//! the chat protocol and of how the platform shows it.
+//!
+//! Protocol adapters decide what counts as a mention (IRC: our nickname as a
+//! word; Matrix: the event's intentional mentions) and pass plain text with
+//! formatting already removed.
 
 use std::{
     collections::VecDeque,
@@ -8,80 +12,72 @@ use std::{
 
 /// Longest notification body in characters; the log keeps the full text.
 const MAX_BODY_CHARS: usize = 200;
-/// A bouncer replaying history can deliver dozens of highlights at once.
+/// A bouncer replaying history can deliver dozens of notifications at once.
 const BURST_LIMIT: usize = 5;
 const BURST_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NotificationRules {
     pub enabled: bool,
-    /// Channel messages that mention our nickname or a highlight word.
-    pub highlights: bool,
+    /// Channel messages that mention us.
+    pub mentions: bool,
+    /// Channel messages containing one of `keywords`.
+    pub keyword_alerts: bool,
+    pub keywords: Vec<String>,
     pub private_messages: bool,
-    pub highlight_words: Vec<String>,
+}
+
+/// An incoming message as the notification rules see it.
+#[derive(Clone, Copy, Debug)]
+pub struct IncomingMessage<'a> {
+    /// Plain text without formatting codes.
+    pub text: &'a str,
+    /// Sent to a channel or room rather than directly to us.
+    pub channel: bool,
+    pub notice: bool,
+    /// Our own message echoed back (for example by a bouncer).
+    pub from_self: bool,
+    pub mentioned: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trigger {
-    Highlight,
+    Mention,
+    Keyword,
     PrivateMessage,
 }
 
 impl NotificationRules {
-    /// Decides whether a channel message (`channel: true`) or a private
-    /// PRIVMSG should notify. NOTICEs are usually automated (bots, services),
-    /// so only channel NOTICEs that highlight us count.
-    pub fn trigger(
-        &self,
-        own_nickname: Option<&str>,
-        sender: &str,
-        text: &str,
-        channel: bool,
-        notice: bool,
-    ) -> Option<Trigger> {
-        if !self.enabled || own_nickname.is_some_and(|own| irc_eq(own, sender)) {
-            return None;
+    /// NOTICEs are usually automated (bots, services), so private NOTICEs
+    /// never notify; channel NOTICEs still notify on mentions and keywords.
+    pub fn trigger(&self, message: IncomingMessage) -> Option<Trigger> {
+        if !self.enabled || message.from_self {
+            None
+        } else if !message.channel {
+            (self.private_messages && !message.notice).then_some(Trigger::PrivateMessage)
+        } else if self.mentions && message.mentioned {
+            Some(Trigger::Mention)
+        } else if self.keyword_alerts && contains_keyword(message.text, &self.keywords) {
+            Some(Trigger::Keyword)
+        } else {
+            None
         }
-        if !channel {
-            return (self.private_messages && !notice).then_some(Trigger::PrivateMessage);
-        }
-        let text = plain_text(text);
-        (self.highlights
-            && (own_nickname.is_some_and(|own| mentions_nickname(&text, own))
-                || contains_highlight_word(&text, &self.highlight_words)))
-        .then_some(Trigger::Highlight)
     }
 }
 
-/// Whether `nickname` appears in `text` as a whole word. Neighbouring nickname
-/// characters (letters, digits and `-_[]\`^{}|`) make it part of another word,
-/// so `bob` does not match `bobby`.
-pub fn mentions_nickname(text: &str, nickname: &str) -> bool {
-    if nickname.is_empty() {
-        return false;
-    }
-    let text = irc_lowercase(text);
-    let nickname = irc_lowercase(nickname);
-    text.match_indices(&nickname).any(|(start, found)| {
-        let before = text[..start].chars().next_back();
-        let after = text[start + found.len()..].chars().next();
-        !before.is_some_and(is_nick_char) && !after.is_some_and(is_nick_char)
-    })
-}
-
-/// Case-insensitive substring match: highlight words are often Japanese,
-/// which has no word boundaries.
-pub fn contains_highlight_word(text: &str, words: &[String]) -> bool {
+/// Case-insensitive substring match: keywords are often Japanese, which has
+/// no word boundaries.
+pub fn contains_keyword(text: &str, keywords: &[String]) -> bool {
     let text = text.to_lowercase();
-    words
+    keywords
         .iter()
         .map(|word| word.trim())
         .filter(|word| !word.is_empty())
         .any(|word| text.contains(&word.to_lowercase()))
 }
 
-/// Parses the comma-separated highlight word field.
-pub fn parse_highlight_words(value: &str) -> Vec<String> {
+/// Parses the comma-separated keyword field.
+pub fn parse_keywords(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(str::trim)
@@ -90,77 +86,14 @@ pub fn parse_highlight_words(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Notification body text: IRC formatting removed, CTCP ACTION shown as
-/// `* sender text`, and long messages shortened.
-pub fn body_text(sender: &str, text: &str) -> String {
-    let text = match text
-        .strip_prefix("\u{1}ACTION ")
-        .map(|action| action.strip_suffix('\u{1}').unwrap_or(action))
-    {
-        Some(action) => format!("* {sender} {}", plain_text(action)),
-        None => plain_text(text),
-    };
+/// Shortens long messages for the notification body.
+pub fn body_text(text: &str) -> String {
     if text.chars().count() <= MAX_BODY_CHARS {
-        return text;
+        return text.to_owned();
     }
     let mut short: String = text.chars().take(MAX_BODY_CHARS - 1).collect();
     short.push('…');
     short
-}
-
-/// Removes mIRC formatting: bold, italics, underline, strikethrough,
-/// monospace, reverse, reset and color codes with their `fg[,bg]` digits.
-fn plain_text(text: &str) -> String {
-    let mut plain = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\u{2}' | '\u{f}' | '\u{11}' | '\u{16}' | '\u{1d}' | '\u{1e}' | '\u{1f}' => {}
-            '\u{3}' => {
-                fn digits(chars: &mut std::iter::Peekable<std::str::Chars>) -> usize {
-                    let mut count = 0;
-                    while count < 2 && chars.peek().is_some_and(char::is_ascii_digit) {
-                        chars.next();
-                        count += 1;
-                    }
-                    count
-                }
-                if digits(&mut chars) > 0 && chars.peek() == Some(&',') {
-                    let mut ahead = chars.clone();
-                    ahead.next();
-                    if ahead.peek().is_some_and(char::is_ascii_digit) {
-                        chars.next();
-                        digits(&mut chars);
-                    }
-                }
-            }
-            '\u{1}' => {}
-            ch => plain.push(ch),
-        }
-    }
-    plain
-}
-
-fn is_nick_char(ch: char) -> bool {
-    ch.is_alphanumeric() || "-_[]\\`^{}|".contains(ch)
-}
-
-/// RFC 1459 case mapping: `[]\~` are the uppercase forms of `{}|^`.
-fn irc_lowercase(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '[' => '{',
-            ']' => '}',
-            '\\' => '|',
-            '~' => '^',
-            ch => ch.to_ascii_lowercase(),
-        })
-        .collect()
-}
-
-fn irc_eq(left: &str, right: &str) -> bool {
-    irc_lowercase(left) == irc_lowercase(right)
 }
 
 /// Drops notifications beyond a short burst so history playback cannot flood
@@ -194,89 +127,99 @@ mod tests {
     fn rules() -> NotificationRules {
         NotificationRules {
             enabled: true,
-            highlights: true,
+            mentions: true,
+            keyword_alerts: true,
+            keywords: vec!["ビルド".into(), "Deploy".into()],
             private_messages: true,
-            highlight_words: vec!["ビルド".into(), "Deploy".into()],
+        }
+    }
+
+    fn channel(text: &str, mentioned: bool) -> IncomingMessage<'_> {
+        IncomingMessage {
+            text,
+            channel: true,
+            notice: false,
+            from_self: false,
+            mentioned,
         }
     }
 
     #[test]
-    fn nickname_mentions_need_word_boundaries() {
-        assert!(mentions_nickname("bob: hi", "Bob"));
-        assert!(mentions_nickname("hi, bob!", "bob"));
-        assert!(mentions_nickname("おはよう bob さん", "bob"));
-        assert!(mentions_nickname("{away}", "[away]"));
-        assert!(!mentions_nickname("bobby: hi", "bob"));
-        assert!(!mentions_nickname("bob_: hi", "bob"));
-        assert!(!mentions_nickname("anything", ""));
+    fn keywords_match_substrings_case_insensitively() {
+        let words = rules().keywords;
+        assert!(contains_keyword("ビルドが壊れた", &words));
+        assert!(contains_keyword("deployed now", &words));
+        assert!(!contains_keyword("nothing here", &words));
+        assert!(!contains_keyword("x", &[" ".into()]));
+        assert_eq!(parse_keywords(" a, ,b ,"), vec!["a", "b"]);
     }
 
     #[test]
-    fn highlight_words_match_substrings_case_insensitively() {
-        let words = rules().highlight_words;
-        assert!(contains_highlight_word("ビルドが壊れた", &words));
-        assert!(contains_highlight_word("deployed now", &words));
-        assert!(!contains_highlight_word("nothing here", &words));
-        assert!(!contains_highlight_word("x", &[" ".into()]));
-        assert_eq!(parse_highlight_words(" a, ,b ,"), vec!["a", "b"]);
-    }
-
-    #[test]
-    fn triggers_follow_preferences() {
+    fn mentions_and_keywords_are_separate_choices() {
         let rules = rules();
-        let own = Some("me");
         assert_eq!(
-            rules.trigger(own, "alice", "me: ping", true, false),
-            Some(Trigger::Highlight)
+            rules.trigger(channel("me: ping", true)),
+            Some(Trigger::Mention)
         );
         assert_eq!(
-            rules.trigger(own, "alice", "\u{2}me\u{2}: ping", true, true),
-            Some(Trigger::Highlight)
+            rules.trigger(channel("Deploy done", false)),
+            Some(Trigger::Keyword)
         );
-        assert_eq!(rules.trigger(own, "alice", "hello all", true, false), None);
-        assert_eq!(
-            rules.trigger(own, "Me", "me: note to self", true, false),
-            None
-        );
-        assert_eq!(
-            rules.trigger(own, "alice", "hello", false, false),
-            Some(Trigger::PrivateMessage)
-        );
-        assert_eq!(rules.trigger(own, "NickServ", "hello", false, true), None);
+        assert_eq!(rules.trigger(channel("hello all", false)), None);
 
+        let keywords_only = NotificationRules {
+            mentions: false,
+            ..rules.clone()
+        };
+        assert_eq!(keywords_only.trigger(channel("me: ping", true)), None);
+        assert_eq!(
+            keywords_only.trigger(channel("me: deploy?", true)),
+            Some(Trigger::Keyword)
+        );
+        let mentions_only = NotificationRules {
+            keyword_alerts: false,
+            ..rules
+        };
+        assert_eq!(mentions_only.trigger(channel("Deploy done", false)), None);
+        assert_eq!(
+            mentions_only.trigger(channel("me: ping", true)),
+            Some(Trigger::Mention)
+        );
+    }
+
+    #[test]
+    fn private_messages_self_echoes_and_master_switch() {
+        let rules = rules();
+        let private = |notice| IncomingMessage {
+            text: "hello",
+            channel: false,
+            notice,
+            from_self: false,
+            mentioned: false,
+        };
+        assert_eq!(rules.trigger(private(false)), Some(Trigger::PrivateMessage));
+        assert_eq!(rules.trigger(private(true)), None);
+        let echo = IncomingMessage {
+            from_self: true,
+            ..channel("Deploy me", true)
+        };
+        assert_eq!(rules.trigger(echo), None);
         let off = NotificationRules {
             enabled: false,
             ..rules.clone()
         };
-        assert_eq!(off.trigger(own, "alice", "me: ping", true, false), None);
+        assert_eq!(off.trigger(channel("me: ping", true)), None);
         let no_private = NotificationRules {
             private_messages: false,
-            ..rules.clone()
-        };
-        assert_eq!(no_private.trigger(own, "alice", "hi", false, false), None);
-        let no_highlight = NotificationRules {
-            highlights: false,
             ..rules
         };
-        assert_eq!(
-            no_highlight.trigger(own, "alice", "me: hi", true, false),
-            None
-        );
+        assert_eq!(no_private.trigger(private(false)), None);
     }
 
     #[test]
-    fn body_text_strips_formatting_and_shortens() {
-        assert_eq!(
-            body_text("a", "\u{3}04,01red\u{3} \u{2}bold\u{f}"),
-            "red bold"
-        );
-        assert_eq!(body_text("a", "\u{3}12,x"), ",x");
-        assert_eq!(
-            body_text("alice", "\u{1}ACTION waves\u{1}"),
-            "* alice waves"
-        );
-        let long = "あ".repeat(500);
-        let body = body_text("a", &long);
+    fn long_bodies_are_shortened() {
+        assert_eq!(body_text("short"), "short");
+        let body = body_text(&"あ".repeat(500));
         assert_eq!(body.chars().count(), MAX_BODY_CHARS);
         assert!(body.ends_with('…'));
     }

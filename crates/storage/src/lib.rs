@@ -253,19 +253,22 @@ pub struct ImageUpload {
 #[serde(default)]
 pub struct Notifications {
     pub enabled: bool,
-    /// Channel messages mentioning our nickname or a highlight word.
-    pub highlights: bool,
+    /// Channel messages that mention our nickname.
+    pub mentions: bool,
+    /// Channel messages containing one of `keywords`.
+    pub keyword_alerts: bool,
+    pub keywords: Vec<String>,
     pub private_messages: bool,
-    pub highlight_words: Vec<String>,
 }
 
 impl Default for Notifications {
     fn default() -> Self {
         Self {
             enabled: true,
-            highlights: true,
+            mentions: true,
+            keyword_alerts: true,
+            keywords: Vec::new(),
             private_messages: true,
-            highlight_words: Vec::new(),
         }
     }
 }

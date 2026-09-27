@@ -7,7 +7,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 ## Current scope
 
 The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
-History remains TODO; desktop notifications cover highlights and private messages.
+History remains TODO; desktop notifications cover mentions, keywords and private messages.
 
 - DONE — native GPUI application shell and app-owned selection
 - DONE — mock conversation switching with distinct message logs
@@ -75,8 +75,8 @@ History remains TODO; desktop notifications cover highlights and private message
 ## Unread and highlights
 
 - PARTIAL — unread IDs, visual marks and clearing on selection for mock/live channel messages
-- PARTIAL — nickname mentions (whole word, RFC 1459 case mapping) and highlight words drive desktop notifications; no visual highlight mark in logs or the tree yet
-- DONE — configurable highlight words (comma-separated, case-insensitive substring)
+- PARTIAL — nickname mentions (whole word including `@nick`, RFC 1459 case mapping) and keywords drive desktop notifications; no visual highlight mark in logs or the tree yet
+- DONE — configurable notification keywords (comma-separated, case-insensitive substring), switched separately from mentions
 - TODO — window/application attention indication
 
 ## Input and commands
@@ -110,7 +110,7 @@ History remains TODO; desktop notifications cover highlights and private message
 
 - PARTIAL — OS desktop notifications through notify-rust: org.freedesktop.Notifications on Linux, NSUserNotificationCenter on macOS (app bundle only), WinRT toasts on Windows (attributed to the PowerShell AppUserModelID until CayenChat registers its own); no action on click
 - TODO — per-network/channel controls
-- DONE — highlight and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds
+- DONE — mention, keyword and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds
 
 ## Settings
 
@@ -122,7 +122,7 @@ History remains TODO; desktop notifications cover highlights and private message
 - DONE — persisted channel auto-join list
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
-- DONE — Notifications tab: enable, highlights, private messages and highlight words
+- DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
 

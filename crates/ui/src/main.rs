@@ -15,7 +15,7 @@ mod whois;
 use cayenchat_app::{
     AppState, Command, ConnectionStatus, Selection,
     attachments::AttachmentFlow,
-    notifications::{self, BurstLimiter, NotificationRules, Trigger},
+    notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
 };
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
@@ -126,8 +126,8 @@ struct SettingsForm {
     channel_font: Entity<TextInput>,
     input_font: Entity<TextInput>,
     time_font: Entity<TextInput>,
-    /// Comma-separated highlight words.
-    highlight_words: Entity<TextInput>,
+    /// Comma-separated notification keywords.
+    keywords: Entity<TextInput>,
 }
 
 impl SettingsForm {
@@ -284,9 +284,9 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            highlight_words: field(
-                &i18n.text("highlight_words_placeholder"),
-                &values.notifications.highlight_words.join(", "),
+            keywords: field(
+                &i18n.text("keywords_placeholder"),
+                &values.notifications.keywords.join(", "),
                 false,
                 cx,
             ),
@@ -343,8 +343,8 @@ impl SettingsForm {
             },
         };
         settings.appearance.validate()?;
-        settings.notifications.highlight_words =
-            notifications::parse_highlight_words(self.highlight_words.read(cx).text());
+        settings.notifications.keywords =
+            notifications::parse_keywords(self.keywords.read(cx).text());
         Ok(settings)
     }
 
@@ -835,16 +835,32 @@ impl ChatWindow {
         this
     }
 
-    /// Shows a desktop notification for an incoming message when the rules
-    /// ask for one and the message is not already in front of the user.
-    fn notify_message(&mut self, channel: Option<&str>, sender: &str, text: &str, notice: bool) {
-        let Some(trigger) = self.notification_rules.trigger(
-            self.own_nickname.as_deref(),
-            sender,
-            text,
-            channel.is_some(),
+    /// Shows a desktop notification for an incoming IRC message when the
+    /// rules ask for one and the message is not already in front of the user.
+    fn notify_message(
+        &mut self,
+        channel: Option<&str>,
+        sender: &str,
+        text: &str,
+        notice: bool,
+        mentioned: bool,
+    ) {
+        use cayenchat_irc_core::text::{action_text, same_nickname, strip_formatting};
+
+        let plain = match action_text(text) {
+            Some(action) => format!("* {sender} {}", strip_formatting(action)),
+            None => strip_formatting(text),
+        };
+        let Some(trigger) = self.notification_rules.trigger(IncomingMessage {
+            text: &plain,
+            channel: channel.is_some(),
             notice,
-        ) else {
+            from_self: self
+                .own_nickname
+                .as_deref()
+                .is_some_and(|own| same_nickname(own, sender)),
+            mentioned,
+        }) else {
             return;
         };
         // Private messages have no pane yet and appear in the server log.
@@ -858,8 +874,8 @@ impl ChatWindow {
             return;
         }
         let summary = match (trigger, channel) {
-            (Trigger::Highlight, Some(channel)) => self.i18n.format(
-                "notification_highlight_title",
+            (Trigger::Mention | Trigger::Keyword, Some(channel)) => self.i18n.format(
+                "notification_channel_title",
                 &[("channel", channel), ("sender", sender)],
             ),
             _ => self
@@ -868,7 +884,7 @@ impl ChatWindow {
         };
         self.notifier.show(DesktopNotification {
             summary,
-            body: notifications::body_text(sender, text),
+            body: notifications::body_text(&plain),
         });
     }
 
@@ -1769,8 +1785,9 @@ impl ChatWindow {
                 sender,
                 text,
                 notice,
+                mentioned,
             } => {
-                self.notify_message(Some(&channel), &sender, &text, notice);
+                self.notify_message(Some(&channel), &sender, &text, notice, mentioned);
                 self.state
                     .append_channel_message(network, &channel, &sender, &text, notice);
             }
@@ -1787,7 +1804,7 @@ impl ChatWindow {
                 text,
                 notice,
             } => {
-                self.notify_message(None, &sender, &text, notice);
+                self.notify_message(None, &sender, &text, notice, false);
                 // Private conversations have no pane yet; keep them in the
                 // server log as before.
                 let line = if notice {
@@ -3168,10 +3185,10 @@ impl SettingsWindow {
                 cx,
             ))
             .child(self.notification_toggle(
-                "notify-highlights",
-                "notify_highlights",
-                |n| n.highlights,
-                |n| n.highlights = !n.highlights,
+                "notify-mentions",
+                "notify_mentions",
+                |n| n.mentions,
+                |n| n.mentions = !n.mentions,
                 enabled,
                 cx,
             ))
@@ -3183,11 +3200,19 @@ impl SettingsWindow {
                 enabled,
                 cx,
             ))
-            .child(settings_field(
-                &self.i18n.text("highlight_words"),
-                self.settings.highlight_words.clone(),
+            .child(self.notification_toggle(
+                "notify-keywords",
+                "notify_keywords",
+                |n| n.keyword_alerts,
+                |n| n.keyword_alerts = !n.keyword_alerts,
+                enabled,
+                cx,
             ))
-            .child(hint("highlight_words_hint"))
+            .child(settings_field(
+                &self.i18n.text("keywords"),
+                self.settings.keywords.clone(),
+            ))
+            .child(hint("keywords_hint"))
             .child(hint(if cfg!(target_os = "macos") {
                 "notifications_hint_macos"
             } else {
@@ -3311,9 +3336,10 @@ impl SettingsWindow {
 fn notification_rules(settings: &Notifications) -> NotificationRules {
     NotificationRules {
         enabled: settings.enabled,
-        highlights: settings.highlights,
+        mentions: settings.mentions,
+        keyword_alerts: settings.keyword_alerts,
+        keywords: settings.keywords.clone(),
         private_messages: settings.private_messages,
-        highlight_words: settings.highlight_words.clone(),
     }
 }
 
@@ -5120,14 +5146,15 @@ mod pane_tests {
             language: cayenchat_storage::Language::English,
             ..Settings::default()
         };
-        settings.notifications.highlight_words = vec!["deploy".into()];
+        settings.notifications.keywords = vec!["deploy".into()];
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
-        let message = |channel: &str, text: &str| Event::ChannelMessage {
+        let message = |channel: &str, text: &str, mentioned| Event::ChannelMessage {
             channel: channel.into(),
             sender: "bob".into(),
             text: text.into(),
             notice: false,
+            mentioned,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -5151,10 +5178,11 @@ mod pane_tests {
             chat.window_active = true;
             chat.handle_events(
                 vec![
-                    message("#a", "alice: visible already"),
-                    message("#b", "hello"),
-                    message("#b", "alice: ping"),
-                    message("#b", "Deploy done"),
+                    message("#a", "alice: visible already", true),
+                    message("#b", "hello", false),
+                    message("#b", "\u{2}alice\u{2}: ping", true),
+                    message("#b", "Deploy done", false),
+                    message("#b", "\u{1}ACTION deploys\u{1}", false),
                     Event::PrivateMessage {
                         sender: "carol".into(),
                         text: "psst".into(),
@@ -5170,7 +5198,9 @@ mod pane_tests {
                 cx,
             );
             chat.window_active = false;
-            chat.handle_events(vec![message("#a", "alice: away now")], false, cx);
+            chat.handle_events(vec![message("#a", "alice: away now", true)], false, cx);
+            chat.notification_rules.mentions = false;
+            chat.handle_events(vec![message("#a", "alice: ignored", true)], false, cx);
             let summaries: Vec<_> = chat
                 .notifier
                 .shown
@@ -5182,6 +5212,7 @@ mod pane_tests {
                 [
                     ("bob in #b", "alice: ping"),
                     ("bob in #b", "Deploy done"),
+                    ("bob in #b", "* bob deploys"),
                     ("carol (private message)", "psst"),
                     ("bob in #a", "alice: away now"),
                 ]
@@ -5225,6 +5256,7 @@ mod pane_tests {
                         sender: "bob".into(),
                         text: "hello".into(),
                         notice: false,
+                        mentioned: false,
                     },
                     Event::OutgoingAccepted {
                         channel: channel.into(),
