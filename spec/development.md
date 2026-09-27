@@ -38,6 +38,11 @@ cargo test --workspace
 
 For UI work, also build and run the desktop application on the currently available platform when practical.
 
+Changes that affect event handling, retained state, rendering or resource
+limits (for example multi-server connections or image display) must be
+compared against the baseline with the procedure in `spec/performance.md`
+(`scripts/perf/` and the ignored `perf_baseline` UI test).
+
 Do not claim cross-platform verification unless both platforms were actually tested.
 
 GitHub Actions CI builds and tests the whole workspace on Linux x86_64, Windows
@@ -60,6 +65,8 @@ Update only the relevant specification files when behavior or architecture chang
 - `decisions.md` for lasting technical choices
 - `feature-parity.md` for implementation status
 - `development.md` for build/test workflow
+- `performance.md` for the performance baseline, measurement procedure and
+  resource limits
 
 ## Source language
 
@@ -112,6 +119,21 @@ An optional local bundle makes the application discoverable to macOS UI tools:
 sh scripts/bundle-macos.sh
 open target/CayenChat.app
 ```
+
+For testing a branch without touching real settings or saved passwords:
+
+```sh
+sh scripts/bundle-macos.sh --test-build
+open "target/CayenChat Test.app"
+```
+
+This builds an optimized `CayenChat Test.app` with the `test-build` feature
+(`cargo build --release -p cayenchat-ui --features test-build` elsewhere).
+Every launch creates a new, empty settings directory under the system
+temporary directory (printed to stderr, `$TMPDIR/cayenchat-test-*`) for
+`settings.json` and the local credential file, files system-store secrets
+under the service `CayenChat Test Build`, and shows `[test build]` in the
+window title. Settings made in one launch are gone at the next.
 
 The helper only builds and copies into ignored `target/`. It neither installs nor
 signs/notarizes a distributable app. The normal `cargo run` entry point is portable.
@@ -191,13 +213,14 @@ this delay.
 
 1. Launch and confirm the separate settings window opens over the four-pane
    chat window. After closing it, reopen it through **CayenChat → 接続設定…**
-   or Cmd+, on macOS; use Ctrl+, on Windows/Linux. Verify the settings window
-   defaults to `irc.ircnet.ne.jp:6667`
-   with TLS off. Open the server drop-down and verify
-   `irc6.ircnet.ne.jp` is also offered.
-2. Add two servers from the drop-down, assign different hosts and encodings, and
-   verify both appear above the built-in choices. Switch among them to check that
-   host, port, TLS, and encoding values remain independent. Remove one custom server.
+   or Cmd+, on macOS; use Ctrl+, on Windows/Linux. With new settings (the
+   test build always starts with new settings) verify the server list says no
+   servers are registered, the main log explains how to add one, and the
+   drop-down offers IRCnet, IRCnet (IPv6) and another server.
+2. Add IRCnet and a blank server from the drop-down, assign different hosts and
+   encodings, and verify both are listed in the order added. Switch among them
+   to check that host, port, TLS, and encoding values remain independent.
+   Remove one; remove the other and verify the form returns to the empty state.
 3. Toggle TLS and verify the standard port changes to `6697`. The certificate
    verification option should appear, default to on, and show a warning when
    turned off. Turn TLS off and on again; verification should reset to on.
@@ -277,6 +300,18 @@ choose Custom, set its host and port, and leave TLS off; do not enter credential
    verify it stays put while new lines arrive; scroll back to the bottom and
    verify following resumes. Long channel/server labels in the lower log must
    remain on one line with an ellipsis.
+
+8. Run two local fixtures on different ports (for example
+   `python3 scripts/perf/irc_load_server.py --port 16671 --control-port 16672`
+   and `--port 16673 --control-port 16674`), add both as servers with
+   different nicknames and the same channel name, and mark both to connect
+   at startup. Restart: both must register and join, each channel log and
+   roster must stay with its server, and the tree must show every saved
+   server (servers not used yet without a status mark). Disconnect one from
+   its context menu; the other keeps receiving. Remove one in settings and
+   save; it disappears with its channels. Add a server, save without
+   connecting, and connect it from the tree: with a nickname saved it
+   connects, otherwise settings open on it.
 
 The deterministic `irc-core` local-server tests cover registration, automatic join,
 inbound message/NAMES translation, outgoing `PRIVMSG`/`NOTICE`, flushing `QUIT`,
@@ -479,7 +514,8 @@ Follow-up: the channel tree is virtualized too, and message times are stored
 as minutes (`TimeOfDay`), shrinking each retained message from 88 to 64 bytes
 plus one fewer heap allocation. Not done: formatting wire diagnostics lazily and
 sending roster deltas instead of full NAMES snapshots on JOIN/PART in large
-channels.
+channels. The 2026-09-27 baseline and remaining candidates are in
+`performance.md`.
 
 ### Window close error logs on Windows (2026-09-26)
 

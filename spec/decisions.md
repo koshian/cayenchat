@@ -156,18 +156,19 @@ An offline mock must not claim to have sent a message or NOTICE.
 
 Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
-platform user configuration directory. Default to `irc.ircnet.ne.jp:6667`
-without TLS, offer `irc6.ircnet.ne.jp`, and allow custom host/port and TLS.
+platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
+TLS and `irc6.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
+(since D017 the server list starts empty).
 Password saving is per server and off by default; switching it off
 immediately removes those stored values. (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. Support SASL PLAIN through IRCv3
-CAP negotiation in `irc-core`. The initial implementation covers one network
-and manual reconnect.
+CAP negotiation in `irc-core`. The initial implementation covered one network
+and manual reconnect; multi-server support is D017.
 
 Version 4 preferences store multiple server profiles and order user-added entries
-before built-in choices. The active connection remains single-server. Versions 1–3
+before built-in choices. Versions 1–3
 migrate on load with certificate verification enabled. Each profile owns its
 wire character encoding. RFC 2812 specifies no IRC charset, and channel names are
 protocol parameters whose encoded bytes identify the channel. Use the same selected
@@ -388,3 +389,30 @@ that is follow-up work, as is activating the conversation on click.
 Sources: [Desktop Notifications Specification](https://specifications.freedesktop.org/notification-spec/latest/),
 [notify-rust](https://github.com/hoodie/notify-rust),
 [Windows toast notifications from desktop apps](https://learn.microsoft.com/en-us/windows/apps/design/shell/tiles-and-notifications/send-local-toast-other-apps).
+
+## D017 — Multiple servers at once
+
+**Status:** Accepted
+
+Every server profile is a network in the channel tree, shown whether or not it
+is connected, and any number of them can be connected at the same time
+(LimeChat's model). Settings version 13 moves the nickname, `USER` username,
+auto-join channels, SASL account and startup connection into each profile, so
+each network has its own identity; versions 1–12 copy their single identity
+into every profile, keep SASL on only for TLS profiles and keep startup
+connection only for the previously selected server.
+
+The IRCnet servers are not stored by default: they are suggestions offered
+when adding a server (`storage::PRESETS`), because unused built-in servers in
+the tree got in the way once every profile became a network. The list starts
+empty and every profile can be edited and removed. Migration from 1–12 keeps
+an IRCnet profile only if it was selected or has saved passwords (keeping its
+ID so the passwords stay attached) and drops the others.
+
+Each connection keeps the existing design (D006): its own worker thread and
+current-thread Tokio runtime, bounded queues, and an awaited event stream.
+The UI adds no timers per connection. Connection state lives in one
+`ServerSession` per server rather than in the chat window. Per-server bounds
+(logs, conversations, transcript, WHOIS) are unchanged; application-wide
+bounds are deliberately left for a separate change after measuring (see
+`performance.md`).

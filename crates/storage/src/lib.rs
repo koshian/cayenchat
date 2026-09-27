@@ -13,9 +13,31 @@ pub mod credentials;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
-const SETTINGS_VERSION: u32 = 12;
+const SETTINGS_VERSION: u32 = 13;
+/// Profile IDs of the IRCnet servers that versions 1–12 always listed. They
+/// only matter for migration: profiles keep their IDs, so saved passwords stay
+/// attached.
 pub const IRCNET_ID: &str = "ircnet";
 pub const IRCNET_IPV6_ID: &str = "ircnet-ipv6";
+
+/// A well-known server offered when adding a server. Presets are never
+/// stored by themselves; adding one creates an ordinary server profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerPreset {
+    pub name: &'static str,
+    pub host: &'static str,
+}
+
+pub const PRESETS: [ServerPreset; 2] = [
+    ServerPreset {
+        name: "IRCnet",
+        host: "irc.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "IRCnet (IPv6)",
+        host: "irc6.ircnet.ne.jp",
+    },
+];
 
 fn default_verify_tls_certificates() -> bool {
     true
@@ -210,10 +232,25 @@ pub struct ServerProfile {
     #[serde(default = "default_verify_tls_certificates")]
     pub verify_tls_certificates: bool,
     pub encoding: TextEncoding,
-    pub custom: bool,
     /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
+    /// Identity and channels belong to each server (version 13); earlier
+    /// versions kept one application-wide set, copied here on migration.
+    #[serde(default)]
+    pub nickname: String,
+    /// IRC `USER` username (ident); independent of the nickname.
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub channels: String,
+    #[serde(default)]
+    pub sasl_enabled: bool,
+    /// SASL account name; independent of both nickname and username.
+    #[serde(default)]
+    pub sasl_username: String,
+    #[serde(default)]
+    pub connect_on_startup: bool,
     /// Plaintext passwords saved by version 10 and earlier. Read only for
     /// migration into the credential store; never written back.
     #[serde(rename = "server_password", default, skip_serializing)]
@@ -222,20 +259,41 @@ pub struct ServerProfile {
     legacy_sasl_password: Option<Secret>,
 }
 
+/// An empty profile, for forms shown before any server exists.
+impl Default for ServerProfile {
+    fn default() -> Self {
+        Self::new(String::new(), "")
+    }
+}
+
 impl ServerProfile {
-    fn preset(id: &str, host: &str) -> Self {
+    fn new(id: String, host: &str) -> Self {
         Self {
-            id: id.into(),
+            id,
             host: host.into(),
             port: 6667,
             use_tls: false,
             verify_tls_certificates: true,
             encoding: TextEncoding::Utf8,
-            custom: false,
             remember_passwords: false,
+            nickname: String::new(),
+            username: String::new(),
+            channels: String::new(),
+            sasl_enabled: false,
+            sasl_username: String::new(),
+            connect_on_startup: false,
             legacy_server_password: None,
             legacy_sasl_password: None,
         }
+    }
+
+    pub fn channels(&self) -> Vec<String> {
+        self.channels
+            .split(',')
+            .map(str::trim)
+            .filter(|channel| !channel.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn server_password_key(&self) -> SecretKey {
@@ -286,14 +344,6 @@ pub struct Settings {
     pub version: u32,
     pub selected_server: String,
     pub servers: Vec<ServerProfile>,
-    pub nickname: String,
-    /// IRC `USER` username (ident); independent of the nickname.
-    pub username: String,
-    pub channels: String,
-    pub sasl_enabled: bool,
-    /// SASL account name; independent of both nickname and username.
-    pub sasl_username: String,
-    pub connect_on_startup: bool,
     pub language: Language,
     pub theme: ThemeMode,
     pub linux_display: LinuxDisplay,
@@ -303,23 +353,30 @@ pub struct Settings {
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
     pub notifications: Notifications,
+    /// Application-wide identity of versions 1–12, read only to migrate it
+    /// into every server profile; never written back.
+    #[serde(flatten, skip_serializing)]
+    legacy: LegacyIdentity,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+struct LegacyIdentity {
+    nickname: String,
+    username: String,
+    channels: String,
+    sasl_enabled: bool,
+    sasl_username: String,
+    connect_on_startup: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             version: SETTINGS_VERSION,
-            selected_server: IRCNET_ID.into(),
-            servers: vec![
-                ServerProfile::preset(IRCNET_ID, "irc.ircnet.ne.jp"),
-                ServerProfile::preset(IRCNET_IPV6_ID, "irc6.ircnet.ne.jp"),
-            ],
-            nickname: String::new(),
-            username: String::new(),
-            channels: String::new(),
-            sasl_enabled: false,
-            sasl_username: String::new(),
-            connect_on_startup: false,
+            // No servers until the user adds one; see `PRESETS`.
+            selected_server: String::new(),
+            servers: Vec::new(),
             language: Language::System,
             theme: ThemeMode::System,
             linux_display: LinuxDisplay::Wayland,
@@ -329,6 +386,7 @@ impl Default for Settings {
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
             notifications: Notifications::default(),
+            legacy: LegacyIdentity::default(),
         }
     }
 }
@@ -366,64 +424,44 @@ impl Settings {
         })
     }
 
-    pub fn selected_profile(&self) -> &ServerProfile {
-        self.servers
-            .iter()
-            .find(|s| s.id == self.selected_server)
-            .expect("settings must contain the selected server")
+    /// The server shown in the settings form; `None` when there is none.
+    pub fn selected_profile(&self) -> Option<&ServerProfile> {
+        self.profile(&self.selected_server)
     }
 
-    pub fn selected_profile_mut(&mut self) -> &mut ServerProfile {
+    pub fn selected_profile_mut(&mut self) -> Option<&mut ServerProfile> {
         self.servers
             .iter_mut()
             .find(|s| s.id == self.selected_server)
-            .expect("settings must contain the selected server")
     }
 
+    /// Servers in display order (the order they were added).
     pub fn ordered_servers(&self) -> impl Iterator<Item = &ServerProfile> {
-        self.servers
-            .iter()
-            .filter(|s| s.custom)
-            .chain(self.servers.iter().filter(|s| !s.custom))
+        self.servers.iter()
     }
 
-    pub fn add_custom_server(&mut self) {
+    /// Adds a server with `host` (empty for a blank one, or a preset's host)
+    /// and selects it.
+    pub fn add_server(&mut self, host: &str) -> &mut ServerProfile {
         // Credentials outlive unsaved form edits and may survive failed deletes.
         // A new profile must never reuse a removed profile's credential keys.
         let id = format!("custom-{}", uuid::Uuid::new_v4());
         self.selected_server = id.clone();
-        self.servers.push(ServerProfile {
-            id,
-            host: String::new(),
-            port: 6667,
-            use_tls: false,
-            verify_tls_certificates: true,
-            encoding: TextEncoding::Utf8,
-            custom: true,
-            remember_passwords: false,
-            legacy_server_password: None,
-            legacy_sasl_password: None,
-        });
+        self.servers.push(ServerProfile::new(id, host));
+        self.servers.last_mut().expect("just added")
     }
 
-    pub fn remove_selected_custom_server(&mut self) {
-        self.servers
-            .retain(|s| !s.custom || s.id != self.selected_server);
-        let next = self
-            .ordered_servers()
-            .next()
+    pub fn profile(&self, id: &str) -> Option<&ServerProfile> {
+        self.servers.iter().find(|server| server.id == id)
+    }
+
+    pub fn remove_selected_server(&mut self) {
+        self.servers.retain(|s| s.id != self.selected_server);
+        self.selected_server = self
+            .servers
+            .first()
             .map(|s| s.id.clone())
-            .unwrap_or_else(|| IRCNET_ID.into());
-        self.selected_server = next;
-    }
-
-    pub fn channels(&self) -> Vec<String> {
-        self.channels
-            .split(',')
-            .map(str::trim)
-            .filter(|channel| !channel.is_empty())
-            .map(str::to_owned)
-            .collect()
+            .unwrap_or_default();
     }
 
     fn normalize(mut self) -> Self {
@@ -443,29 +481,37 @@ impl Settings {
         {
             self.appearance.channel_event_color = "#007D00".into();
         }
-        if self.version <= 10 && self.username.is_empty() {
+        if self.version <= 10 && self.legacy.username.is_empty() {
             // Earlier versions sent the nickname as the USER username; keep
             // that as the initial value so existing connections do not change.
-            self.username = self.nickname.clone();
+            self.legacy.username = self.legacy.nickname.clone();
         }
+        let migrate_identity = self.version <= 12;
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
         self.servers
             .retain(|s| !s.id.is_empty() && seen.insert(s.id.clone()) && s.port != 0);
-        for (id, host) in [
-            (IRCNET_ID, "irc.ircnet.ne.jp"),
-            (IRCNET_IPV6_ID, "irc6.ircnet.ne.jp"),
-        ] {
-            match self.servers.iter_mut().find(|s| s.id == id) {
-                Some(s) => {
-                    s.host = host.into();
-                    s.custom = false;
+        if migrate_identity {
+            // Versions 1–12 always listed both IRCnet servers after the
+            // user-added ones. Keep a preset only if it was in use: selected
+            // (created if the file omitted it) or holding saved passwords.
+            for (index, id) in [IRCNET_ID, IRCNET_IPV6_ID].into_iter().enumerate() {
+                let host = PRESETS[index].host;
+                match self.servers.iter_mut().find(|s| s.id == id) {
+                    Some(server) => server.host = host.into(),
+                    None if self.selected_server == id => {
+                        self.servers.push(ServerProfile::new(id.into(), host))
+                    }
+                    None => {}
                 }
-                None => self.servers.push(ServerProfile::preset(id, host)),
             }
+            let selected = self.selected_server.clone();
+            let is_preset = |s: &ServerProfile| s.id == IRCNET_ID || s.id == IRCNET_IPV6_ID;
+            self.servers
+                .retain(|s| !is_preset(s) || s.id == selected || s.remember_passwords);
+            self.servers.sort_by_key(is_preset);
         }
-        self.servers
-            .retain(|s| !s.custom || !s.host.trim().is_empty());
+        self.servers.retain(|s| !s.host.trim().is_empty());
         for server in &mut self.servers {
             if !server.use_tls {
                 server.verify_tls_certificates = true;
@@ -476,7 +522,31 @@ impl Settings {
             }
         }
         if !self.servers.iter().any(|s| s.id == self.selected_server) {
-            self.selected_server = IRCNET_ID.into();
+            self.selected_server = self
+                .servers
+                .first()
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
+        }
+        let legacy = std::mem::take(&mut self.legacy);
+        if migrate_identity {
+            // Every server starts from the old shared identity. SASL stays on
+            // only where TLS is, because credentials require TLS; startup
+            // connection stays with the server that used to be connected.
+            for server in &mut self.servers {
+                server.nickname = legacy.nickname.clone();
+                server.username = legacy.username.clone();
+                server.channels = legacy.channels.clone();
+                server.sasl_username = legacy.sasl_username.clone();
+                server.sasl_enabled = legacy.sasl_enabled && server.use_tls;
+                server.connect_on_startup =
+                    legacy.connect_on_startup && server.id == self.selected_server;
+            }
+        }
+        for server in &mut self.servers {
+            if !server.use_tls {
+                server.sasl_enabled = false;
+            }
         }
         self
     }
@@ -507,30 +577,68 @@ struct OldSettings {
 impl From<OldSettings> for Settings {
     fn from(old: OldSettings) -> Self {
         let mut settings = Settings {
-            nickname: old.nickname,
-            channels: old.channels,
-            sasl_enabled: old.sasl_enabled,
-            sasl_username: old.sasl_username,
+            version: 1,
+            legacy: LegacyIdentity {
+                nickname: old.nickname,
+                channels: old.channels,
+                sasl_enabled: old.sasl_enabled,
+                sasl_username: old.sasl_username,
+                ..LegacyIdentity::default()
+            },
             ..Settings::default()
         };
-        match old.server {
-            OldServerChoice::Ircnet => settings.selected_server = IRCNET_ID.into(),
-            OldServerChoice::IrcnetIpv6 => settings.selected_server = IRCNET_IPV6_ID.into(),
-            OldServerChoice::Custom => {
-                settings.add_custom_server();
-                settings.selected_profile_mut().host = old.custom_host;
-            }
-        }
-        let selected = settings.selected_profile_mut();
-        selected.port = old.port;
-        selected.use_tls = old.use_tls;
+        let (id, host) = match old.server {
+            OldServerChoice::Ircnet => (IRCNET_ID.to_owned(), PRESETS[0].host),
+            OldServerChoice::IrcnetIpv6 => (IRCNET_IPV6_ID.to_owned(), PRESETS[1].host),
+            OldServerChoice::Custom => ("custom-1".to_owned(), old.custom_host.as_str()),
+        };
+        let mut server = ServerProfile::new(id, host);
+        server.port = old.port;
+        server.use_tls = old.use_tls;
+        settings.selected_server = server.id.clone();
+        settings.servers.push(server);
         settings.normalize()
     }
 }
 
 pub fn settings_path() -> Result<PathBuf, String> {
-    let directory = dirs::config_dir().ok_or("Could not find the user configuration directory.")?;
-    Ok(directory.join("CayenChat").join("settings.json"))
+    #[cfg(feature = "test-build")]
+    {
+        Ok(test_build_directory()?.join("settings.json"))
+    }
+    #[cfg(not(feature = "test-build"))]
+    {
+        let directory =
+            dirs::config_dir().ok_or("Could not find the user configuration directory.")?;
+        Ok(directory.join("CayenChat").join("settings.json"))
+    }
+}
+
+/// A test build's configuration directory: new and empty for every launch,
+/// under the system temporary directory, readable only by the user.
+#[cfg(feature = "test-build")]
+pub fn test_build_directory() -> Result<PathBuf, String> {
+    static DIRECTORY: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    DIRECTORY
+        .get_or_init(|| {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis())
+                .unwrap_or_default();
+            let directory =
+                std::env::temp_dir().join(format!("cayenchat-test-{}-{stamp}", std::process::id()));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(&directory)
+                .map(|()| directory)
+                .map_err(|error| format!("Could not create the test settings directory: {error}"))
+        })
+        .clone()
 }
 
 pub fn load() -> Result<Option<Settings>, String> {
@@ -687,20 +795,28 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut settings = Settings::default();
-        settings.add_custom_server();
-        settings.selected_profile_mut().host = "irc.example.net".into();
-        settings.selected_profile_mut().port = 6697;
-        settings.selected_profile_mut().use_tls = true;
-        settings.selected_profile_mut().verify_tls_certificates = false;
-        settings.selected_profile_mut().encoding = TextEncoding::Iso2022Jp;
-        settings.nickname = "alice".into();
-        settings.channels = "#one, #two".into();
-        settings.sasl_enabled = true;
-        settings.sasl_username = "account".into();
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "irc.example.net".into();
+        settings.selected_profile_mut().unwrap().port = 6697;
+        settings.selected_profile_mut().unwrap().use_tls = true;
+        settings
+            .selected_profile_mut()
+            .unwrap()
+            .verify_tls_certificates = false;
+        settings.selected_profile_mut().unwrap().encoding = TextEncoding::Iso2022Jp;
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "alice".into();
+        profile.channels = "#one, #two".into();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        profile.connect_on_startup = true;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
-        assert_eq!(settings.channels(), ["#one", "#two"]);
-        assert_eq!(settings.selected_profile().host, "irc.example.net");
+        assert_eq!(
+            settings.selected_profile().unwrap().channels(),
+            ["#one", "#two"]
+        );
+        assert_eq!(settings.selected_profile().unwrap().host, "irc.example.net");
         assert_eq!(
             settings.ordered_servers().next().unwrap().host,
             "irc.example.net"
@@ -714,7 +830,7 @@ mod tests {
     fn supported_profile_versions_preserve_connection_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        for version in 2..=SETTINGS_VERSION {
+        for version in 2..SETTINGS_VERSION {
             let original = serde_json::json!({
                 "version": version,
                 "selected_server": "custom-1",
@@ -731,21 +847,146 @@ mod tests {
             fs::write(&path, &bytes).unwrap();
             let settings = load_from(&path).unwrap().unwrap();
             assert_eq!(settings.version, SETTINGS_VERSION);
-            assert_eq!(settings.selected_profile().id, "custom-1");
-            assert_eq!(settings.selected_profile().host, "irc.example.net");
-            assert_eq!(settings.selected_profile().port, 6697);
-            assert!(settings.selected_profile().use_tls);
-            assert!(settings.selected_profile().remember_passwords);
-            assert_eq!(settings.nickname, "alice");
-            assert_eq!(settings.username, "ident");
-            assert_eq!(settings.channels, "#test");
-            assert!(settings.sasl_enabled);
-            assert_eq!(settings.sasl_username, "account");
+            assert_eq!(settings.selected_profile().unwrap().id, "custom-1");
+            assert_eq!(settings.selected_profile().unwrap().host, "irc.example.net");
+            assert_eq!(settings.selected_profile().unwrap().port, 6697);
+            assert!(settings.selected_profile().unwrap().use_tls);
+            assert!(settings.selected_profile().unwrap().remember_passwords);
+            let profile = settings.selected_profile().unwrap();
+            assert_eq!(profile.nickname, "alice");
+            assert_eq!(profile.username, "ident");
+            assert_eq!(profile.channels, "#test");
+            assert!(profile.sasl_enabled);
+            assert_eq!(profile.sasl_username, "account");
             assert_eq!(settings.notifications, Notifications::default());
             assert_eq!(fs::read(&path).unwrap(), bytes);
             save_to(&path, &settings).unwrap();
             assert_eq!(load_from(&path).unwrap(), Some(settings));
         }
+    }
+
+    #[test]
+    fn shared_identity_moves_into_every_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let old = serde_json::json!({
+            "version": 12,
+            "selected_server": "custom-1",
+            "servers": [
+                {"id": "custom-1", "custom": true, "host": "irc.example.net",
+                 "port": 6697, "use_tls": true, "encoding": "utf8"},
+                {"id": "custom-2", "custom": true, "host": "irc.example.org",
+                 "port": 6667, "use_tls": false, "encoding": "utf8"}
+            ],
+            "nickname": "alice", "username": "ident", "channels": "#a,#b",
+            "sasl_enabled": true, "sasl_username": "account",
+            "connect_on_startup": true
+        });
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            settings.servers.len(),
+            2,
+            "the unused IRCnet presets are dropped"
+        );
+        for server in &settings.servers {
+            assert_eq!(server.nickname, "alice");
+            assert_eq!(server.username, "ident");
+            assert_eq!(server.channels(), ["#a", "#b"]);
+            assert_eq!(server.sasl_username, "account");
+            // Credentials need TLS, and only the formerly connected server
+            // keeps connecting at startup.
+            assert_eq!(server.sasl_enabled, server.use_tls);
+            assert_eq!(server.connect_on_startup, server.id == "custom-1");
+        }
+
+        // Version 13 keeps each server's values and writes no shared identity.
+        settings.servers[1].nickname = "bob".into();
+        settings.servers[1].channels = "#c".into();
+        save_to(&path, &settings).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], SETTINGS_VERSION);
+        for key in [
+            "nickname",
+            "username",
+            "channels",
+            "sasl_enabled",
+            "connect_on_startup",
+        ] {
+            assert!(saved.get(key).is_none(), "{key} is per server now");
+        }
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded, settings);
+        assert_eq!(loaded.profile("custom-1").unwrap().nickname, "alice");
+        assert_eq!(loaded.profile("custom-2").unwrap().nickname, "bob");
+        assert_eq!(loaded.profile("custom-2").unwrap().channels(), ["#c"]);
+    }
+
+    #[test]
+    fn new_settings_have_no_servers_and_presets_are_only_suggestions() {
+        let mut settings = Settings::default();
+        assert!(settings.servers.is_empty());
+        assert!(settings.selected_profile().is_none());
+        let added = settings.add_server(PRESETS[1].host);
+        assert_eq!(added.host, "irc6.ircnet.ne.jp");
+        assert!(
+            added.id.starts_with("custom-"),
+            "a fresh ID, not a preset's"
+        );
+        settings.remove_selected_server();
+        assert!(settings.servers.is_empty());
+        assert_eq!(settings.selected_server, "");
+        // An empty list survives a round trip.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        save_to(&path, &settings).unwrap();
+        assert!(load_from(&path).unwrap().unwrap().servers.is_empty());
+    }
+
+    #[test]
+    fn migration_keeps_only_irc_net_presets_in_use() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let server = |id: &str, custom: bool, host: &str, remember: bool| {
+            serde_json::json!({"id": id, "custom": custom, "host": host, "port": 6667,
+                "use_tls": false, "encoding": "utf8", "remember_passwords": remember})
+        };
+        for (selected, remember_ipv6, expected) in [
+            // Selected preset kept after the user's servers; the other dropped.
+            (IRCNET_ID, false, vec!["custom-1", IRCNET_ID]),
+            // A preset with saved passwords is kept even when not selected.
+            ("custom-1", true, vec!["custom-1", IRCNET_IPV6_ID]),
+            // Neither preset in use.
+            ("custom-1", false, vec!["custom-1"]),
+        ] {
+            let old = serde_json::json!({
+                "version": 11,
+                "selected_server": selected,
+                "servers": [
+                    server(IRCNET_ID, false, "irc.ircnet.ne.jp", false),
+                    server(IRCNET_IPV6_ID, false, "irc6.ircnet.ne.jp", remember_ipv6),
+                    server("custom-1", true, "irc.example.org", false),
+                ],
+                "nickname": "alice"
+            });
+            fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+            let settings = load_from(&path).unwrap().unwrap();
+            let ids: Vec<_> = settings.servers.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, expected, "selected {selected}");
+            assert_eq!(settings.selected_server, selected);
+        }
+        // A version 9 file without servers selected IRCnet implicitly.
+        fs::write(
+            &path,
+            r#"{"version":9,"selected_server":"ircnet","servers":[]}"#,
+        )
+        .unwrap();
+        let settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.servers.len(), 1);
+        assert_eq!(
+            settings.selected_profile().unwrap().host,
+            "irc.ircnet.ne.jp"
+        );
     }
 
     #[test]
@@ -792,24 +1033,24 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut settings = Settings::default();
-        settings.add_custom_server();
-        settings.selected_profile_mut().host = "legacy.example.org".into();
-        settings.selected_profile_mut().id = "custom-1".into();
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "legacy.example.org".into();
+        settings.selected_profile_mut().unwrap().id = "custom-1".into();
         settings.selected_server = "custom-1".into();
-        settings.add_custom_server();
-        settings.selected_profile_mut().host = "new.example.org".into();
-        let removed = settings.selected_profile().clone();
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "new.example.org".into();
+        let removed = settings.selected_profile().unwrap().clone();
         save_to(&path, &settings).unwrap();
 
         let mut loaded = load_from(&path).unwrap().unwrap();
-        assert_eq!(loaded.selected_profile().id, removed.id);
+        assert_eq!(loaded.selected_profile().unwrap().id, removed.id);
         assert!(loaded.servers.iter().any(|server| server.id == "custom-1"));
-        loaded.remove_selected_custom_server();
+        loaded.remove_selected_server();
         save_to(&path, &loaded).unwrap();
         let mut reloaded = load_from(&path).unwrap().unwrap();
-        reloaded.add_custom_server();
-        assert_ne!(reloaded.selected_profile().id, removed.id);
-        assert_ne!(reloaded.selected_profile().id, "custom-1");
+        reloaded.add_server("");
+        assert_ne!(reloaded.selected_profile().unwrap().id, removed.id);
+        assert_ne!(reloaded.selected_profile().unwrap().id, "custom-1");
     }
 
     #[test]
@@ -819,10 +1060,11 @@ mod tests {
         fs::write(&path, r##"{"version":1,"server":"custom","custom_host":"irc.example.net","port":6697,"use_tls":true,"nickname":"alice","channels":"#日本語","sasl_enabled":false,"sasl_username":""}"##).unwrap();
         let settings = load_from(&path).unwrap().unwrap();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.selected_profile().host, "irc.example.net");
-        assert_eq!(settings.selected_profile().port, 6697);
-        assert!(settings.selected_profile().verify_tls_certificates);
-        assert_eq!(settings.channels(), ["#日本語"]);
+        assert_eq!(settings.selected_profile().unwrap().host, "irc.example.net");
+        assert_eq!(settings.selected_profile().unwrap().port, 6697);
+        assert!(settings.selected_profile().unwrap().verify_tls_certificates);
+        assert_eq!(settings.selected_profile().unwrap().channels(), ["#日本語"]);
+        assert_eq!(settings.selected_profile().unwrap().username, "alice");
     }
 
     #[test]
@@ -947,17 +1189,23 @@ mod tests {
     fn startup_connection_is_opt_in_after_version_five_migration() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        let mut old = serde_json::to_value(Settings::default()).unwrap();
-        old["version"] = 5.into();
+        let mut old = old_default(5);
         old.as_object_mut().unwrap().remove("connect_on_startup");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
         assert_eq!(settings.version, SETTINGS_VERSION);
-        assert!(!settings.connect_on_startup);
-        settings.connect_on_startup = true;
+        assert!(!settings.selected_profile().unwrap().connect_on_startup);
+        settings.selected_profile_mut().unwrap().connect_on_startup = true;
         save_to(&path, &settings).unwrap();
-        assert!(load_from(&path).unwrap().unwrap().connect_on_startup);
+        assert!(
+            load_from(&path)
+                .unwrap()
+                .unwrap()
+                .selected_profile()
+                .unwrap()
+                .connect_on_startup
+        );
     }
 
     #[test]
@@ -1005,9 +1253,23 @@ mod tests {
         assert!(saved["appearance"].get("background").is_none());
     }
 
-    fn version_ten_with_passwords(remember: bool) -> serde_json::Value {
+    /// Default settings as a version 1–12 file wrote them: the IRCnet
+    /// server selected and listed.
+    fn old_default(version: u32) -> serde_json::Value {
         let mut old = serde_json::to_value(Settings::default()).unwrap();
-        old["version"] = 10.into();
+        old["version"] = version.into();
+        old["selected_server"] = IRCNET_ID.into();
+        old["servers"] = serde_json::json!([
+            {"id": IRCNET_ID, "custom": false, "host": "irc.ircnet.ne.jp",
+             "port": 6667, "use_tls": false, "encoding": "utf8"},
+            {"id": IRCNET_IPV6_ID, "custom": false, "host": "irc6.ircnet.ne.jp",
+             "port": 6667, "use_tls": false, "encoding": "utf8"}
+        ]);
+        old
+    }
+
+    fn version_ten_with_passwords(remember: bool) -> serde_json::Value {
+        let mut old = old_default(10);
         old["nickname"] = "alice".into();
         old.as_object_mut().unwrap().remove("username");
         old.as_object_mut().unwrap().remove("credential_backend");
@@ -1043,7 +1305,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut settings = Settings::default();
-        settings.selected_profile_mut().remember_passwords = true;
+        settings.add_server(PRESETS[0].host).remember_passwords = true;
         save_to(&path, &settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("server_password"));
@@ -1069,6 +1331,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .selected_profile()
+                .unwrap()
                 .remember_passwords
         );
     }
@@ -1083,7 +1346,11 @@ mod tests {
         )
         .unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert_eq!(settings.username, "alice", "USER keeps the old nickname");
+        assert_eq!(
+            settings.selected_profile().unwrap().username,
+            "alice",
+            "USER keeps the old nickname"
+        );
         let (system, local, open) = memory_stores();
         let report = migrate_legacy_secrets_at(&path, &mut settings, &open)
             .unwrap()
@@ -1156,12 +1423,12 @@ mod tests {
         .unwrap();
         let mut settings = load_from(&path).unwrap().unwrap();
         assert!(!settings.has_legacy_secrets());
-        settings.username = "ident".into();
-        settings.nickname = "bob".into();
+        settings.selected_profile_mut().unwrap().username = "ident".into();
+        settings.selected_profile_mut().unwrap().nickname = "bob".into();
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
-        assert_eq!(loaded.username, "ident");
-        assert_eq!(loaded.nickname, "bob");
+        assert_eq!(loaded.selected_profile().unwrap().username, "ident");
+        assert_eq!(loaded.selected_profile().unwrap().nickname, "bob");
         assert_eq!(loaded.image_upload.provider, None);
         assert_eq!(loaded.credential_backend, CredentialBackendKind::System);
     }

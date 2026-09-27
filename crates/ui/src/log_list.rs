@@ -38,12 +38,6 @@ impl LogList {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.state.reset(0);
-        self.prefix = 0;
-        self.sequences.clear();
-    }
-
     /// Tells the list which rows changed since the previous sync. Only rows
     /// whose sequence appeared or disappeared are replaced, so the others keep
     /// their measured heights and the scroll position. This covers appends,
@@ -116,8 +110,6 @@ mod tests {
         assert_eq!(log.state.item_count(), 6);
         assert_eq!(log.sequences, [1, 5, 6, 7, 8]);
 
-        log.clear();
-        assert_eq!(log.state.item_count(), 0);
         log.sync(0, &[]);
         assert_eq!(log.state.item_count(), 0);
     }

@@ -8,12 +8,15 @@ mod localization;
 mod log_list;
 mod menu_bar;
 mod notifier;
+#[cfg(test)]
+mod perf_baseline;
 mod secrets;
+mod session;
 mod theme;
 mod whois;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, Selection,
+    AppState, Command, ConnectionStatus, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
 };
@@ -24,23 +27,23 @@ use cayenchat_irc_core::{
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore, DarkColors,
-    Language, LinuxDisplay, Notifications, Secret, SecretKey, Settings, TextEncoding, TextKeyTheme,
-    ThemeMode, color_value,
+    Language, LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile, Settings,
+    TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
 use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
+use session::ServerSession;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
 use whois::WhoisWindow;
 
-const DIAGNOSTIC_LIMIT: usize = 1000;
 const RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(3),
     Duration::from_secs(6),
@@ -139,7 +142,11 @@ impl SettingsForm {
         store: &CredentialStore,
         cx: &mut Context<SettingsWindow>,
     ) -> Self {
-        let (saved_server_password, saved_sasl_password) = saved_passwords(&values, store);
+        let (saved_server_password, saved_sasl_password) = values
+            .selected_profile()
+            .map_or((false, false), |profile| saved_passwords(profile, store));
+        let empty = ServerProfile::default();
+        let profile = values.selected_profile().unwrap_or(&empty);
         let field =
             |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
                 cx.new(|cx| TextInput::new_field(placeholder, value, secret, cx))
@@ -147,24 +154,19 @@ impl SettingsForm {
         Self {
             custom_host: field(
                 &i18n.text("server_host_placeholder"),
-                &values.selected_profile().host,
+                &profile.host,
                 false,
                 cx,
             ),
-            port: field(
-                "6667",
-                &values.selected_profile().port.to_string(),
-                false,
-                cx,
-            ),
-            nickname: field(&i18n.text("nickname"), &values.nickname, false, cx),
+            port: field("6667", &profile.port.to_string(), false, cx),
+            nickname: field(&i18n.text("nickname"), &profile.nickname, false, cx),
             username: field(
                 &i18n.text("username_placeholder"),
-                &values.username,
+                &profile.username,
                 false,
                 cx,
             ),
-            channels: field("#first,#second", &values.channels, false, cx),
+            channels: field("#first,#second", &profile.channels, false, cx),
             server_password: field(
                 &i18n.text(if saved_server_password {
                     "password_saved_placeholder"
@@ -177,7 +179,7 @@ impl SettingsForm {
             ),
             sasl_username: field(
                 &i18n.text("sasl_account_placeholder"),
-                &values.sasl_username,
+                &profile.sasl_username,
                 false,
                 cx,
             ),
@@ -308,26 +310,21 @@ impl SettingsForm {
     fn snapshot(&self, cx: &App) -> Result<Settings, String> {
         let mut settings = self.values.clone();
         let host = self.custom_host.read(cx).text().trim().to_owned();
-        let port = self
-            .port
-            .read(cx)
-            .text()
-            .trim()
-            .parse()
-            .map_err(|_| i18n_error(settings.language, "port_invalid"))?;
-        if port == 0 {
-            return Err(i18n_error(settings.language, "port_invalid"));
-        }
-        let profile = settings.selected_profile_mut();
-        if profile.custom {
-            profile.host = host;
-        }
-        profile.port = port;
-        settings.nickname = self.nickname.read(cx).text().trim().to_owned();
-        settings.username = self.username.read(cx).text().trim().to_owned();
-        settings.channels = self.channels.read(cx).text().trim().to_owned();
-        settings.sasl_username = self.sasl_username.read(cx).text().trim().to_owned();
+        // Without a server the host and port fields are hidden and unused.
+        let port = match self.port.read(cx).text().trim().parse() {
+            Ok(port) if port != 0 => port,
+            _ if settings.servers.is_empty() => 6667,
+            _ => return Err(i18n_error(settings.language, "port_invalid")),
+        };
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
+        if let Some(profile) = settings.selected_profile_mut() {
+            profile.host = host;
+            profile.port = port;
+            profile.nickname = value(&self.nickname);
+            profile.username = value(&self.username);
+            profile.channels = value(&self.channels);
+            profile.sasl_username = value(&self.sasl_username);
+        }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
             main_log_background: value(&self.main_log_background),
@@ -371,9 +368,13 @@ impl SettingsForm {
             let text = field.read(cx).text();
             (!text.is_empty()).then(|| Secret::new(text))
         };
-        let (saved_server, saved_sasl) = saved_connection_secrets(settings, store, i18n)?;
+        let profile = settings
+            .selected_profile()
+            .ok_or_else(|| i18n.text("server_required"))?;
+        let (saved_server, saved_sasl) = saved_connection_secrets(profile, store, i18n)?;
         connection_config(
-            settings,
+            profile,
+            settings.language,
             typed(&self.server_password).or(saved_server),
             typed(&self.sasl_password).or(saved_sasl),
         )
@@ -387,7 +388,9 @@ impl SettingsForm {
         i18n: &Localizer,
         cx: &mut Context<SettingsWindow>,
     ) -> Result<(), String> {
-        let profile = self.values.selected_profile().clone();
+        let Some(profile) = self.values.selected_profile().cloned() else {
+            return Ok(());
+        };
         if !profile.remember_passwords {
             return Ok(());
         }
@@ -421,9 +424,8 @@ impl SettingsForm {
     }
 }
 
-/// Whether the selected profile has saved server and SASL passwords.
-fn saved_passwords(settings: &Settings, store: &CredentialStore) -> (bool, bool) {
-    let profile = settings.selected_profile();
+/// Whether the profile has saved server and SASL passwords.
+fn saved_passwords(profile: &ServerProfile, store: &CredentialStore) -> (bool, bool) {
     if !profile.remember_passwords {
         return (false, false);
     }
@@ -434,13 +436,12 @@ fn saved_passwords(settings: &Settings, store: &CredentialStore) -> (bool, bool)
     )
 }
 
-/// Saved passwords for the selected profile, when password saving is on.
+/// Saved passwords for the profile, when password saving is on.
 fn saved_connection_secrets(
-    settings: &Settings,
+    profile: &ServerProfile,
     store: &CredentialStore,
     i18n: &Localizer,
 ) -> Result<(Option<Secret>, Option<Secret>), String> {
-    let profile = settings.selected_profile();
     if !profile.remember_passwords {
         return Ok((None, None));
     }
@@ -450,7 +451,7 @@ fn saved_connection_secrets(
             .map_err(|error| secrets::error_text(i18n, &error))
     };
     let server = get(profile.server_password_key())?;
-    let sasl = if settings.sasl_enabled {
+    let sasl = if profile.sasl_enabled {
         get(profile.sasl_password_key())?
     } else {
         None
@@ -459,20 +460,20 @@ fn saved_connection_secrets(
 }
 
 fn connection_config(
-    settings: &Settings,
+    profile: &ServerProfile,
+    language: Language,
     server_password: Option<Secret>,
     sasl_password: Option<Secret>,
 ) -> Result<ConnectionConfig, String> {
-    let profile = settings.selected_profile();
     let mut config = ConnectionConfig::tls(
         profile.host.clone(),
-        settings.nickname.clone(),
-        settings.channels(),
+        profile.nickname.clone(),
+        profile.channels(),
     );
-    if settings.username.is_empty() {
-        return Err(i18n_error(settings.language, "username_required"));
+    if profile.username.is_empty() {
+        return Err(i18n_error(language, "username_required"));
     }
-    config.username = settings.username.clone();
+    config.username = profile.username.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
@@ -480,9 +481,9 @@ fn connection_config(
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         config.server_password = Some(password.expose().to_owned());
     }
-    if settings.sasl_enabled {
+    if profile.sasl_enabled {
         config.sasl = Some(SaslCredentials {
-            username: settings.sasl_username.clone(),
+            username: profile.sasl_username.clone(),
             password: sasl_password
                 .map(|value| value.expose().to_owned())
                 .unwrap_or_default(),
@@ -492,16 +493,33 @@ fn connection_config(
     Ok(config)
 }
 
-/// The startup connection uses only passwords saved in the credential store.
-fn startup_connection_config(
+/// A connection from saved settings alone (at startup or from the channel
+/// tree) uses only passwords saved in the credential store.
+fn saved_connection_config(
+    profile: &ServerProfile,
+    language: Language,
+    store: &CredentialStore,
+) -> Result<ConnectionConfig, String> {
+    let i18n = Localizer::new(language);
+    let (server_password, sasl_password) = saved_connection_secrets(profile, store, &i18n)?;
+    connection_config(profile, language, server_password, sasl_password)
+}
+
+/// Servers marked to connect at startup, in tree order, with their configs.
+fn startup_connections(
     settings: &Settings,
     store: &CredentialStore,
-) -> Option<Result<ConnectionConfig, String>> {
-    settings.connect_on_startup.then(|| {
-        let i18n = Localizer::new(settings.language);
-        let (server_password, sasl_password) = saved_connection_secrets(settings, store, &i18n)?;
-        connection_config(settings, server_password, sasl_password)
-    })
+) -> Vec<(String, Result<ConnectionConfig, String>)> {
+    settings
+        .ordered_servers()
+        .filter(|profile| profile.connect_on_startup)
+        .map(|profile| {
+            (
+                profile.id.clone(),
+                saved_connection_config(profile, settings.language, store),
+            )
+        })
+        .collect()
 }
 
 /// Deletes the saved passwords of profiles that no longer exist. New profiles
@@ -513,6 +531,48 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
             let _ = store.delete(&server.sasl_password_key());
         }
     }
+}
+
+/// The newest `limit` conversation lines (not channel activity) across every
+/// conversation except `excluded`, oldest first, as (sequence, conversation,
+/// message index). Merges the conversation tails newest-first, so the cost
+/// grows with `limit` and the number of conversations, not with every
+/// retained line (with several servers there are many conversations).
+fn newest_lines(
+    conversations: &[cayenchat_model::Conversation],
+    excluded: Option<ConversationId>,
+    limit: usize,
+) -> Vec<(u64, ConversationId, usize)> {
+    use std::collections::BinaryHeap;
+
+    fn previous_line(messages: &[cayenchat_model::Message], before: usize) -> Option<usize> {
+        messages[..before]
+            .iter()
+            .rposition(|message| !message.activity)
+    }
+
+    // (sequence, conversation position, message index), newest on top.
+    let mut heads: BinaryHeap<(u64, usize, usize)> = conversations
+        .iter()
+        .enumerate()
+        .filter(|(_, conversation)| Some(conversation.id) != excluded)
+        .filter_map(|(position, conversation)| {
+            let index = previous_line(&conversation.messages, conversation.messages.len())?;
+            Some((conversation.messages[index].sequence, position, index))
+        })
+        .collect();
+    let mut rows = Vec::with_capacity(limit.min(1024));
+    while rows.len() < limit
+        && let Some((sequence, position, index)) = heads.pop()
+    {
+        let conversation = &conversations[position];
+        rows.push((sequence, conversation.id, index));
+        if let Some(previous) = previous_line(&conversation.messages, index) {
+            heads.push((conversation.messages[previous].sequence, position, previous));
+        }
+    }
+    rows.reverse();
+    rows
 }
 
 /// Returns to the executor once, so other queued work runs before continuing.
@@ -549,31 +609,26 @@ struct ChatWindow {
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
-    irc: Option<Connection>,
-    active_config: Option<ConnectionConfig>,
-    manual_disconnect: bool,
-    retry_pending: bool,
-    retry_attempt: usize,
-    retry_token: u64,
-    server_menu: Option<Point<Pixels>>,
+    /// Connection state of every configured server, keyed like the tree.
+    sessions: HashMap<NetworkId, ServerSession>,
+    next_network_id: u32,
+    /// Saved settings; their server profiles define the networks.
+    saved: Settings,
+    server_menu: Option<ServerMenu>,
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
-    startup_connection: Option<Result<ConnectionConfig, String>>,
-    own_nickname: Option<String>,
+    /// One row per server whose nickname was rejected during registration,
+    /// in the order the rejections arrived.
+    nick_prompts: Vec<NickPrompt>,
+    startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
-    // Lowercase nicknames this client asked WHOIS for; replies requested by
-    // other clients sharing a bouncer only reach the server log.
-    pending_whois: HashSet<String>,
-    whois_windows: HashMap<String, WindowHandle<WhoisWindow>>,
-    whois_replies: Vec<(WhoisInfo, bool)>,
-    diagnostics: VecDeque<String>,
+    /// Open WHOIS windows by network and lowercase nickname.
+    whois_windows: HashMap<(NetworkId, String), WindowHandle<WhoisWindow>>,
+    whois_replies: Vec<(NetworkId, WhoisInfo, bool)>,
     debug_enabled: bool,
     menu_bar: menu_bar::MenuBar,
-    connection_started: Option<Instant>,
-    watchdog_stage: u8,
-    connection_generation: u64,
     appearance: Appearance,
     theme_mode: ThemeMode,
     i18n: Localizer,
@@ -596,14 +651,21 @@ struct ChatWindow {
     pane_renders: usize,
 }
 
+struct ServerMenu {
+    position: Point<Pixels>,
+    network: NetworkId,
+}
+
 struct ChannelMenu {
     position: Point<Pixels>,
+    network: NetworkId,
     channel: String,
     joined: bool,
 }
 
 struct MemberMenu {
     position: Point<Pixels>,
+    network: NetworkId,
     nickname: String,
     channel: String,
 }
@@ -612,8 +674,18 @@ struct MemberMenu {
 enum MemberPromptKind {
     PrivateMessage,
     Invite,
-    /// The server rejected `nickname` during registration.
-    AlternateNick,
+}
+
+/// Another nickname for a server that rejected `rejected` (432/433) during
+/// registration. Several servers can wait for one at the same time.
+struct NickPrompt {
+    network: NetworkId,
+    rejected: String,
+    input: Entity<TextInput>,
+    error: Option<String>,
+    /// Set when shown from an event; render focuses the input if no other
+    /// nickname field has focus.
+    focus_pending: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -628,6 +700,7 @@ enum MemberMenuChoice {
 struct MemberPrompt {
     /// `None` centers the prompt in the window.
     position: Option<Point<Pixels>>,
+    network: NetworkId,
     nickname: String,
     kind: MemberPromptKind,
     input: Entity<TextInput>,
@@ -743,11 +816,23 @@ impl ChatWindow {
     }
 
     fn window_title(&self) -> String {
-        let network = self.state.selected_network();
+        let app = if cfg!(feature = "test-build") {
+            "CayenChat [test build]"
+        } else {
+            "CayenChat"
+        };
+        let Some(network) = self.state.selected_network() else {
+            return app.into();
+        };
         match self.state.selected_channel() {
-            Some(channel) => format!("{} @ {} — CayenChat", channel.name, network.name),
-            None => format!("{} — CayenChat", network.name),
+            Some(channel) => format!("{} @ {} — {app}", channel.name, network.name),
+            None => format!("{} — {app}", network.name),
         }
+    }
+
+    /// The selected server; `None` only while no server is configured.
+    fn selected_network_id(&self) -> Option<NetworkId> {
+        self.state.selected_network().map(|network| network.id)
     }
 
     fn update_title(&self, window: &mut Window) {
@@ -761,26 +846,48 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let i18n = Localizer::new(saved.language);
-        let startup_connection = startup_connection_config(&saved, &secrets::store(cx));
-        let state = AppState::configured(saved.selected_profile().host.clone(), saved.channels());
-        let mut inputs: HashMap<_, _> = state
-            .networks()
-            .iter()
-            .map(|server| {
-                let placeholder = i18n.text("draft_placeholder");
-                (
-                    Selection::Server(server.id),
-                    cx.new(|cx| TextInput::new_live(&placeholder, cx)),
-                )
-            })
+        // Every configured server is a network in the tree, connected or not.
+        let mut sessions = HashMap::new();
+        let mut networks = Vec::new();
+        for (index, profile) in saved.ordered_servers().enumerate() {
+            let id = NetworkId(index as u32 + 1);
+            sessions.insert(id, ServerSession::new(profile.id.clone()));
+            networks.push(NetworkConfig {
+                id,
+                name: profile.host.clone(),
+                channels: profile.channels(),
+            });
+        }
+        let next_network_id = networks.len() as u32 + 1;
+        let network_of = |profile_id: &str| {
+            sessions
+                .iter()
+                .find(|(_, session)| session.profile_id == profile_id)
+                .map(|(id, _)| *id)
+        };
+        let startup_connections = startup_connections(&saved, &secrets::store(cx))
+            .into_iter()
+            .filter_map(|(profile, config)| Some((network_of(&profile)?, config)))
             .collect();
-        inputs.extend(state.conversations().iter().map(|channel| {
-            let placeholder = i18n.text("draft_placeholder");
-            (
-                Selection::Channel(channel.id),
-                cx.new(|cx| TextInput::new_live(&placeholder, cx)),
+        let state = AppState::with_networks(networks);
+        let mut inputs = HashMap::new();
+        let placeholder = i18n.text("draft_placeholder");
+        for key in std::iter::once(Selection::None)
+            .chain(
+                state
+                    .networks()
+                    .iter()
+                    .map(|server| Selection::Server(server.id)),
             )
-        }));
+            .chain(
+                state
+                    .conversations()
+                    .iter()
+                    .map(|channel| Selection::Channel(channel.id)),
+            )
+        {
+            inputs.insert(key, cx.new(|cx| TextInput::new_live(&placeholder, cx)));
+        }
         window.focus(&inputs[&state.selection()].focus_handle(cx));
         let this = Self {
             state,
@@ -793,40 +900,32 @@ impl ChatWindow {
             sub_rows: Vec::new(),
             inputs,
             feedback,
-            irc: None,
-            active_config: None,
-            manual_disconnect: false,
-            retry_pending: false,
-            retry_attempt: 0,
-            retry_token: 0,
+            sessions,
+            next_network_id,
             server_menu: None,
             member_menu: None,
             channel_menu: None,
             member_prompt: None,
-            startup_connection,
-            own_nickname: None,
+            nick_prompts: Vec::new(),
+            startup_connections,
             settings_window: None,
             window_handle: window.window_handle().downcast::<ChatWindow>(),
-            pending_whois: HashSet::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
-            diagnostics: VecDeque::new(),
             debug_enabled: false,
             menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
-            connection_started: None,
-            watchdog_stage: 0,
-            connection_generation: 0,
-            appearance: saved.appearance,
+            appearance: saved.appearance.clone(),
             theme_mode: saved.theme,
+            image_provider: saved.image_upload.provider.clone(),
+            notification_rules: notification_rules(&saved.notifications),
+            saved,
             i18n,
             log_focus: cx.focus_handle(),
             log_selection: None,
             log_dragging: false,
             attachments: AttachmentFlow::default(),
-            image_provider: saved.image_upload.provider.clone(),
             uploader_override: None,
             notifier: Notifier::new(),
-            notification_rules: notification_rules(&saved.notifications),
             notification_burst: BurstLimiter::default(),
             window_active: window.is_window_active(),
             #[cfg(test)]
@@ -846,22 +945,31 @@ impl ChatWindow {
         this
     }
 
-    fn is_own_nickname(&self, nickname: &str) -> bool {
-        self.own_nickname
-            .as_deref()
+    /// Our current nickname on `network`.
+    fn own_nickname(&self, network: NetworkId) -> Option<&str> {
+        self.sessions
+            .get(&network)
+            .and_then(|session| session.own_nickname.as_deref())
+    }
+
+    fn is_own_nickname(&self, network: NetworkId, nickname: &str) -> bool {
+        self.own_nickname(network)
             .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
     }
 
     /// Byte ranges of mentions of our nickname and of keywords in a channel
     /// message, drawn in the highlight color. Own lines and activity are
     /// not highlighted.
-    fn highlight_ranges(&self, message: &cayenchat_model::Message) -> Vec<std::ops::Range<usize>> {
-        if message.activity || self.is_own_nickname(&message.sender) {
+    fn highlight_ranges(
+        &self,
+        network: NetworkId,
+        message: &cayenchat_model::Message,
+    ) -> Vec<std::ops::Range<usize>> {
+        if message.activity || self.is_own_nickname(network, &message.sender) {
             return Vec::new();
         }
         let mut ranges = self
-            .own_nickname
-            .as_deref()
+            .own_nickname(network)
             .map(|own| cayenchat_irc_core::text::mention_ranges(&message.text, own))
             .unwrap_or_default();
         ranges.extend(notifications::keyword_ranges(
@@ -875,6 +983,7 @@ impl ChatWindow {
     /// rules ask for one and the message is not already in front of the user.
     fn notify_message(
         &mut self,
+        network: NetworkId,
         channel: Option<&str>,
         sender: &str,
         text: &str,
@@ -891,13 +1000,14 @@ impl ChatWindow {
             text: &plain,
             channel: channel.is_some(),
             notice,
-            from_self: self.is_own_nickname(sender),
+            from_self: self.is_own_nickname(network, sender),
             mentioned,
         }) else {
             return;
         };
         // Private messages have no pane yet and appear in the server log.
         let visible = self.window_active
+            && self.selected_network_id() == Some(network)
             && match (channel, self.state.selected_channel()) {
                 (Some(channel), Some(selected)) => selected.name.eq_ignore_ascii_case(channel),
                 (None, None) => true,
@@ -934,14 +1044,18 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Handles worker events as they arrive. The task sleeps while the
-    /// connection is idle instead of waking on a timer, and incoming lines are
-    /// shown without polling delay.
-    fn spawn_event_pump(&mut self, cx: &mut Context<Self>) {
-        let Some(mut events) = self.irc.as_mut().and_then(Connection::take_events) else {
+    /// Handles one server's worker events as they arrive. The task sleeps
+    /// while the connection is idle instead of waking on a timer, and incoming
+    /// lines are shown without polling delay. Each server has its own task and
+    /// yields after every batch, so a busy server cannot starve the others.
+    fn spawn_event_pump(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(&network) else {
             return;
         };
-        let generation = self.connection_generation;
+        let Some(mut events) = session.irc.as_mut().and_then(Connection::take_events) else {
+            return;
+        };
+        let generation = session.generation;
         cx.spawn(async move |this, cx| {
             loop {
                 let first = events.recv().await;
@@ -954,27 +1068,37 @@ impl ChatWindow {
                 }
                 let keep_going = this
                     .update(cx, |this, cx| {
-                        this.connection_generation == generation
-                            && this.handle_events(batch, closed, cx)
+                        this.is_current(network, generation)
+                            && this.handle_events(network, batch, closed, cx)
                     })
                     .unwrap_or(false);
                 if !keep_going {
                     break;
                 }
-                // Let input and redraws run between batches of a large burst.
+                // Let input, redraws and other servers run between batches.
                 yield_now().await;
             }
         })
         .detach();
-        self.spawn_watchdog(generation, cx);
+        self.spawn_watchdog(network, generation, cx);
+    }
+
+    fn is_current(&self, network: NetworkId, generation: u64) -> bool {
+        self.sessions
+            .get(&network)
+            .is_some_and(|session| session.generation == generation)
     }
 
     /// Reports a slow transport worker while the connection is still opening.
-    fn spawn_watchdog(&self, generation: u64, cx: &mut Context<Self>) {
+    fn spawn_watchdog(&self, network: NetworkId, generation: u64, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             for (stage, after) in [(1, Duration::from_secs(5)), (2, Duration::from_secs(15))] {
                 let Some(started) = this
-                    .update(cx, |this, _| this.connection_started)
+                    .update(cx, |this, _| {
+                        this.sessions
+                            .get(&network)
+                            .and_then(|session| session.connection_started)
+                    })
                     .ok()
                     .flatten()
                 else {
@@ -983,14 +1107,18 @@ impl ChatWindow {
                 Timer::after(after.saturating_sub(started.elapsed())).await;
                 let waiting = this
                     .update(cx, |this, cx| {
-                        let waiting = this.connection_generation == generation
-                            && this.connection_started.is_some()
-                            && this.state.status(NetworkId(1))
-                                == Some(&ConnectionStatus::Connecting);
-                        if waiting && stage > this.watchdog_stage {
-                            this.watchdog_stage = stage;
+                        let connecting =
+                            this.state.status(network) == Some(&ConnectionStatus::Connecting);
+                        let Some(session) = this.sessions.get_mut(&network) else {
+                            return false;
+                        };
+                        let waiting = session.generation == generation
+                            && session.connection_started.is_some()
+                            && connecting;
+                        if waiting && stage > session.watchdog_stage {
+                            session.watchdog_stage = stage;
                             let elapsed = started.elapsed();
-                            this.push_diagnostic(format!("[{:.1}s] UI is still waiting for the transport worker; inspect the latest diagnostic stage.", elapsed.as_secs_f32()));
+                            session.push_diagnostic(format!("[{:.1}s] UI is still waiting for the transport worker; inspect the latest diagnostic stage.", elapsed.as_secs_f32()));
                             cx.notify();
                         }
                         waiting
@@ -1004,64 +1132,179 @@ impl ChatWindow {
         .detach();
     }
 
-    fn apply_connection(
+    fn network_of_profile(&self, profile_id: &str) -> Option<NetworkId> {
+        self.sessions
+            .iter()
+            .find(|(_, session)| session.profile_id == profile_id)
+            .map(|(id, _)| *id)
+    }
+
+    /// Creates draft inputs for servers and conversations that lack one.
+    fn ensure_inputs(&mut self, cx: &mut Context<Self>) {
+        let placeholder = self.i18n.text("draft_placeholder");
+        // Selection::None has a draft too, shown while no server exists.
+        let keys: Vec<Selection> = std::iter::once(Selection::None)
+            .chain(
+                self.state
+                    .networks()
+                    .iter()
+                    .map(|server| Selection::Server(server.id)),
+            )
+            .chain(
+                self.state
+                    .conversations()
+                    .iter()
+                    .map(|channel| Selection::Channel(channel.id)),
+            )
+            .collect();
+        for key in keys {
+            self.inputs
+                .entry(key)
+                .or_insert_with(|| cx.new(|cx| TextInput::new_live(&placeholder, cx)));
+        }
+    }
+
+    /// Drops UI state kept for conversations that no longer exist.
+    fn forget_conversations(&mut self, removed: &[ConversationId]) {
+        for id in removed {
+            self.inputs.remove(&Selection::Channel(*id));
+            self.main_lists.remove(&Selection::Channel(*id));
+        }
+        if self
+            .log_selection
+            .is_some_and(|selection| removed.contains(&selection.channel))
+        {
+            self.log_selection = None;
+        }
+        self.sub_source = None;
+    }
+
+    /// Makes the networks follow the saved server profiles: new servers
+    /// appear disconnected, removed ones are disconnected and dropped, and a
+    /// changed host renames the server.
+    fn apply_servers(&mut self, settings: Settings, cx: &mut Context<Self>) {
+        let mut networks = Vec::new();
+        for profile in settings.ordered_servers() {
+            let id = match self.network_of_profile(&profile.id) {
+                Some(id) => id,
+                None => {
+                    let id = NetworkId(self.next_network_id);
+                    self.next_network_id += 1;
+                    self.sessions
+                        .insert(id, ServerSession::new(profile.id.clone()));
+                    id
+                }
+            };
+            networks.push(NetworkConfig {
+                id,
+                name: profile.host.clone(),
+                channels: profile.channels(),
+            });
+        }
+        let stale: Vec<NetworkId> = self
+            .sessions
+            .keys()
+            .copied()
+            .filter(|id| !networks.iter().any(|kept| kept.id == *id))
+            .collect();
+        for id in stale {
+            if let Some(mut session) = self.sessions.remove(&id) {
+                session.close();
+            }
+            self.inputs.remove(&Selection::Server(id));
+            self.main_lists.remove(&Selection::Server(id));
+            self.whois_windows.retain(|(network, _), _| *network != id);
+            self.nick_prompts.retain(|prompt| prompt.network != id);
+            if self
+                .member_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.network == id)
+            {
+                self.member_prompt = None;
+            }
+        }
+        let removed = self.state.sync_networks(&networks);
+        self.forget_conversations(&removed);
+        self.ensure_inputs(cx);
+        self.saved = settings;
+        cx.notify();
+    }
+
+    /// Connects the server of a saved profile with `config`, replacing any
+    /// connection it had, and selects it.
+    fn connect_profile(
         &mut self,
+        profile_id: &str,
         config: ConnectionConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.active_config = Some(config.clone());
-        self.manual_disconnect = false;
-        self.retry_pending = false;
-        self.retry_attempt = 0;
-        self.retry_token += 1;
-        self.member_menu = None;
-        self.channel_menu = None;
-        self.member_prompt = None;
-        if let Some(connection) = self.irc.take() {
-            let _ = connection.disconnect();
-        }
-        self.connection_generation += 1;
-        self.diagnostics.clear();
-        self.connection_started = Some(Instant::now());
-        self.watchdog_stage = 0;
-        self.state = AppState::live(config.host.clone(), config.channels.clone());
-        self.main_lists.clear();
-        self.sub_list.clear();
-        self.sub_source = None;
-        self.sub_rows.clear();
-        self.log_selection = None;
-        let placeholder = self.i18n.text("draft_placeholder");
-        self.inputs = self
+        let network = self
+            .network_of_profile(profile_id)
+            .ok_or_else(|| self.i18n.text("not_connected"))?;
+        let outcome = self.apply_connection(network, config, window, cx);
+        let target = self
             .state
-            .networks()
+            .conversations()
             .iter()
-            .map(|server| {
-                (
-                    Selection::Server(server.id),
-                    cx.new(|cx| TextInput::new_live(&placeholder, cx)),
-                )
-            })
-            .collect();
-        self.inputs
-            .extend(self.state.conversations().iter().map(|channel| {
-                (
-                    Selection::Channel(channel.id),
-                    cx.new(|cx| TextInput::new_live(&placeholder, cx)),
-                )
-            }));
-        self.own_nickname = Some(config.nickname.clone());
+            .find(|channel| channel.network == network)
+            .map_or(Command::SelectServer(network), |channel| {
+                Command::SelectChannel(channel.id)
+            });
+        self.dispatch(target, window, cx);
+        outcome
+    }
+
+    /// Starts a fresh session on `network`: its channel logs restart from the
+    /// configured channels while other servers keep theirs.
+    fn apply_connection(
+        &mut self,
+        network: NetworkId,
+        config: ConnectionConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return Err(self.i18n.text("not_connected"));
+        };
+        session.close();
+        session.manual_disconnect = false;
+        session.retry_attempt = 0;
+        session.active_config = Some(config.clone());
+        session.diagnostics.clear();
+        session.pending_whois.clear();
+        session.connection_started = Some(Instant::now());
+        session.watchdog_stage = 0;
+        session.own_nickname = Some(config.nickname.clone());
+        if self.menus_for(network) {
+            self.member_menu = None;
+            self.channel_menu = None;
+        }
+        if self
+            .member_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.network == network)
+        {
+            self.member_prompt = None;
+        }
+        self.nick_prompts.retain(|prompt| prompt.network != network);
+        let removed = self.state.reset_network(network, config.channels.clone());
+        self.forget_conversations(&removed);
+        self.main_lists.remove(&Selection::Server(network));
+        self.ensure_inputs(cx);
         let outcome = match Connection::connect(config) {
             Ok(connection) => {
-                self.irc = Some(connection);
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.irc = Some(connection);
+                }
                 self.feedback = None;
-                self.spawn_event_pump(cx);
+                self.spawn_event_pump(network, cx);
                 window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
                 Ok(())
             }
             Err(error) => {
-                self.record_disconnect(error.clone());
-                self.schedule_retry(cx);
+                self.record_disconnect(network, error.clone());
+                self.schedule_retry(network, cx);
                 Err(error)
             }
         };
@@ -1071,91 +1314,143 @@ impl ChatWindow {
         outcome
     }
 
-    fn disconnect(&mut self, cx: &mut Context<Self>) {
-        let cancelled_retry = self.retry_pending;
-        self.manual_disconnect = true;
-        self.retry_pending = false;
-        self.retry_token += 1;
+    /// Whether the open member or channel menu belongs to `network`.
+    fn menus_for(&self, network: NetworkId) -> bool {
+        self.member_menu
+            .as_ref()
+            .is_some_and(|menu| menu.network == network)
+            || self
+                .channel_menu
+                .as_ref()
+                .is_some_and(|menu| menu.network == network)
+    }
+
+    fn disconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
         self.server_menu = None;
-        if let Some(connection) = &self.irc {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return;
+        };
+        let cancelled_retry = session.retry_pending;
+        session.manual_disconnect = true;
+        session.retry_pending = false;
+        session.retry_token += 1;
+        if let Some(connection) = &session.irc {
             self.feedback = connection.disconnect().err();
         } else if cancelled_retry {
             let message = self.i18n.text("event_retry_cancelled");
-            self.state.append_server_message(NetworkId(1), message);
+            self.state.append_server_message(network, message);
         }
         cx.notify();
     }
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
-        self.disconnect(cx);
+        if let Some(network) = self.selected_network_id() {
+            self.disconnect(network, cx);
+        }
     }
 
     fn reconnect_action(&mut self, _: &Reconnect, window: &mut Window, cx: &mut Context<Self>) {
-        self.reconnect(window, cx);
-    }
-
-    fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.server_menu = None;
-        self.manual_disconnect = false;
-        self.retry_pending = false;
-        self.retry_attempt = 0;
-        self.retry_token += 1;
-        if self.active_config.is_none() {
-            self.open_settings(&OpenSettings, window, cx);
-            return;
+        match self.selected_network_id() {
+            Some(network) => self.reconnect(network, window, cx),
+            None => self.open_settings_for(None, window, cx),
         }
-        self.start_reconnect(cx);
     }
 
-    fn start_reconnect(&mut self, cx: &mut Context<Self>) {
-        let Some(config) = self.active_config.clone() else {
+    /// Reconnects with the last configuration, or connects a server that has
+    /// not been connected in this run from its saved settings.
+    fn reconnect(&mut self, network: NetworkId, window: &mut Window, cx: &mut Context<Self>) {
+        self.server_menu = None;
+        let Some(session) = self.sessions.get_mut(&network) else {
             return;
         };
-        self.retry_pending = false;
-        if let Some(connection) = self.irc.take() {
+        if session.active_config.is_none() {
+            let profile_id = session.profile_id.clone();
+            let config = self
+                .saved
+                .profile(&profile_id)
+                .ok_or_else(|| self.i18n.text("not_connected"))
+                .and_then(|profile| {
+                    saved_connection_config(profile, self.saved.language, &secrets::store(cx))
+                });
+            match config {
+                Ok(config) => {
+                    let _ = self.apply_connection(network, config, window, cx);
+                }
+                Err(error) => {
+                    self.feedback = Some(error);
+                    self.open_settings_for(Some(profile_id), window, cx);
+                }
+            }
+            return;
+        }
+        session.manual_disconnect = false;
+        session.retry_pending = false;
+        session.retry_attempt = 0;
+        session.retry_token += 1;
+        self.start_reconnect(network, cx);
+    }
+
+    fn start_reconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return;
+        };
+        let Some(config) = session.active_config.clone() else {
+            return;
+        };
+        session.retry_pending = false;
+        if let Some(connection) = session.irc.take() {
             let _ = connection.disconnect();
         }
-        self.connection_generation += 1;
-        self.connection_started = Some(Instant::now());
-        self.watchdog_stage = 0;
+        session.generation += 1;
+        session.connection_started = Some(Instant::now());
+        session.watchdog_stage = 0;
+        self.state.set_status(network, ConnectionStatus::Connecting);
         self.state
-            .set_status(NetworkId(1), ConnectionStatus::Connecting);
-        self.state
-            .append_server_message(NetworkId(1), self.i18n.text("event_reconnecting"));
+            .append_server_message(network, self.i18n.text("event_reconnecting"));
         self.feedback = None;
         match Connection::connect(config) {
             Ok(connection) => {
-                self.irc = Some(connection);
-                self.spawn_event_pump(cx);
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.irc = Some(connection);
+                }
+                self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                self.record_disconnect(error);
-                self.schedule_retry(cx);
+                self.record_disconnect(network, error);
+                self.schedule_retry(network, cx);
             }
         }
         cx.notify();
     }
 
-    fn schedule_retry(&mut self, cx: &mut Context<Self>) {
-        if self.manual_disconnect || self.active_config.is_none() {
+    fn schedule_retry(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return;
+        };
+        if session.manual_disconnect || session.active_config.is_none() {
             return;
         }
-        let delay = RETRY_DELAYS[self.retry_attempt.min(RETRY_DELAYS.len() - 1)];
-        self.retry_pending = true;
-        self.retry_attempt = self.retry_attempt.saturating_add(1);
-        self.retry_token += 1;
-        let token = self.retry_token;
+        let delay = RETRY_DELAYS[session.retry_attempt.min(RETRY_DELAYS.len() - 1)];
+        session.retry_pending = true;
+        session.retry_attempt = session.retry_attempt.saturating_add(1);
+        session.retry_token += 1;
+        let token = session.retry_token;
         let seconds = delay.as_secs().to_string();
         self.state.append_server_message(
-            NetworkId(1),
+            network,
             self.i18n
                 .format("event_retry_scheduled", &[("seconds", &seconds)]),
         );
         cx.spawn(async move |this, cx| {
             Timer::after(delay).await;
             let _ = this.update(cx, |this, cx| {
-                if this.retry_token == token && !this.manual_disconnect && this.irc.is_none() {
-                    this.start_reconnect(cx);
+                let due = this.sessions.get(&network).is_some_and(|session| {
+                    session.retry_token == token
+                        && !session.manual_disconnect
+                        && session.irc.is_none()
+                });
+                if due {
+                    this.start_reconnect(network, cx);
                 }
             });
         })
@@ -1163,18 +1458,22 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn record_disconnect(&mut self, reason: String) {
-        self.connection_started = None;
-        self.push_diagnostic(format!("Disconnected: {reason}"));
-        self.pending_whois.clear();
+    fn record_disconnect(&mut self, network: NetworkId, reason: String) {
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.connection_started = None;
+            session.push_diagnostic(format!("Disconnected: {reason}"));
+            session.pending_whois.clear();
+        }
         self.state
-            .set_status(NetworkId(1), ConnectionStatus::Disconnected(reason.clone()));
+            .set_status(network, ConnectionStatus::Disconnected(reason.clone()));
         let message = self
             .i18n
             .format("status_disconnected", &[("reason", &reason)]);
-        self.state
-            .append_server_message(NetworkId(1), message.clone());
-        self.feedback = Some(message);
+        self.state.append_server_message(network, message.clone());
+        // Another server's disconnect is shown in its tree row and log only.
+        if self.selected_network_id() == Some(network) {
+            self.feedback = Some(message);
+        }
     }
 
     fn member_command(&mut self, command: MemberCommand, cx: &mut Context<Self>) {
@@ -1182,27 +1481,25 @@ impl ChatWindow {
             return;
         };
         if command == MemberCommand::Whois {
-            self.feedback = self.request_whois(&menu.nickname, cx).err();
+            self.feedback = self.request_whois(menu.network, &menu.nickname, cx).err();
             cx.notify();
             return;
         }
-        self.feedback = match self.irc.as_ref() {
-            Some(connection)
-                if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
-            {
-                connection
-                    .send_member_command(&menu.nickname, command)
-                    .err()
-            }
-            _ => Some(self.i18n.text("not_connected")),
-        };
+        self.feedback = self
+            .registered_connection(menu.network)
+            .and_then(|connection| connection.send_member_command(&menu.nickname, command))
+            .err();
         cx.notify();
     }
 
-    fn registered_connection(&self) -> Result<&Connection, String> {
-        match self.irc.as_ref() {
+    fn registered_connection(&self, network: NetworkId) -> Result<&Connection, String> {
+        match self
+            .sessions
+            .get(&network)
+            .and_then(|session| session.irc.as_ref())
+        {
             Some(connection)
-                if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
+                if self.state.status(network) == Some(&ConnectionStatus::Registered) =>
             {
                 Ok(connection)
             }
@@ -1210,19 +1507,28 @@ impl ChatWindow {
         }
     }
 
-    fn request_whois(&mut self, nickname: &str, cx: &mut Context<Self>) -> Result<(), String> {
-        self.registered_connection()?
+    fn request_whois(
+        &mut self,
+        network: NetworkId,
+        nickname: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.registered_connection(network)?
             .send_member_command(nickname, MemberCommand::Whois)?;
-        self.pending_whois.insert(nickname.to_lowercase());
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.pending_whois.insert(nickname.to_lowercase());
+        }
         cx.notify();
         Ok(())
     }
 
-    fn joined_channels(&self) -> HashSet<String> {
+    fn joined_channels(&self, network: NetworkId) -> HashSet<String> {
         self.state
             .conversations()
             .iter()
-            .filter(|conversation| self.state.is_active_channel(conversation.id))
+            .filter(|conversation| {
+                conversation.network == network && self.state.is_active_channel(conversation.id)
+            })
             .map(|conversation| conversation.name.to_lowercase())
             .collect()
     }
@@ -1239,9 +1545,9 @@ impl ChatWindow {
             return;
         };
         self.feedback = if join {
-            self.join_channel(&menu.channel, cx).err()
+            self.join_channel(menu.network, &menu.channel, cx).err()
         } else {
-            self.registered_connection()
+            self.registered_connection(menu.network)
                 .and_then(|connection| {
                     connection.send_command(&format!("/part {}", menu.channel), None)
                 })
@@ -1250,15 +1556,26 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn join_channel(&mut self, channel: &str, cx: &mut Context<Self>) -> Result<(), String> {
-        self.registered_connection()?
+    fn join_channel(
+        &mut self,
+        network: NetworkId,
+        channel: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.registered_connection(network)?
             .send_command(&format!("/join {channel}"), None)?;
         cx.notify();
         Ok(())
     }
 
-    fn show_whois(&mut self, info: WhoisInfo, requested: bool, cx: &mut Context<Self>) {
-        let key = info.nickname.to_lowercase();
+    fn show_whois(
+        &mut self,
+        network: NetworkId,
+        info: WhoisInfo,
+        requested: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (network, info.nickname.to_lowercase());
         if let Some(handle) = self.whois_windows.get(&key).copied() {
             let shown = handle.update(cx, |view, window, cx| {
                 view.set_info(info.clone(), window, cx);
@@ -1276,7 +1593,8 @@ impl ChatWindow {
         let Some(owner) = self.window_handle else {
             return;
         };
-        match WhoisWindow::open(owner, info, self.joined_channels(), self.i18n.clone(), cx) {
+        let joined = self.joined_channels(network);
+        match WhoisWindow::open(owner, network, info, joined, self.i18n.clone(), cx) {
             Ok(handle) => {
                 self.whois_windows.insert(key, handle);
                 cx.activate(true);
@@ -1289,6 +1607,7 @@ impl ChatWindow {
 
     fn show_private_message_prompt(
         &mut self,
+        network: NetworkId,
         nickname: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1301,6 +1620,7 @@ impl ChatWindow {
         self.member_menu = None;
         self.server_menu = None;
         self.show_member_prompt(
+            network,
             nickname,
             MemberPromptKind::PrivateMessage,
             position,
@@ -1318,11 +1638,12 @@ impl ChatWindow {
         let Some(menu) = self.member_menu.take() else {
             return;
         };
-        self.show_member_prompt(menu.nickname, kind, menu.position, window, cx);
+        self.show_member_prompt(menu.network, menu.nickname, kind, menu.position, window, cx);
     }
 
     fn show_member_prompt(
         &mut self,
+        network: NetworkId,
         nickname: String,
         kind: MemberPromptKind,
         position: Point<Pixels>,
@@ -1332,7 +1653,6 @@ impl ChatWindow {
         let placeholder = self.i18n.text(match kind {
             MemberPromptKind::PrivateMessage => "member_message_placeholder",
             MemberPromptKind::Invite => "member_channel_placeholder",
-            MemberPromptKind::AlternateNick => "nick_prompt_placeholder",
         });
         let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
         let viewport = window.viewport_size();
@@ -1342,6 +1662,7 @@ impl ChatWindow {
                 position.x.min((viewport.width - px(300.)).max(px(0.))),
                 position.y.min((viewport.height - px(140.)).max(px(0.))),
             )),
+            network,
             nickname,
             kind,
             input: input.clone(),
@@ -1351,29 +1672,43 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Opens a centered prompt for another nickname after the server
-    /// rejected `rejected` during registration.
-    fn show_nick_prompt(&mut self, rejected: String, cx: &mut Context<Self>) {
-        let placeholder = self.i18n.text("nick_prompt_placeholder");
+    /// Asks for another nickname after `network` rejected `rejected` during
+    /// registration. Each server gets its own row; a repeated rejection on
+    /// the same server updates that row.
+    fn show_nick_prompt(&mut self, network: NetworkId, rejected: String, cx: &mut Context<Self>) {
         let suggestion = format!("{rejected}_");
-        let input = cx.new(|cx| TextInput::new_field(&placeholder, &suggestion, false, cx));
         self.server_menu = None;
         self.member_menu = None;
         self.channel_menu = None;
-        self.feedback = None;
-        self.member_prompt = Some(MemberPrompt {
-            position: None,
-            nickname: rejected,
-            kind: MemberPromptKind::AlternateNick,
+        if let Some(prompt) = self
+            .nick_prompts
+            .iter_mut()
+            .find(|prompt| prompt.network == network)
+        {
+            prompt.rejected = rejected;
+            prompt.error = None;
+            prompt.focus_pending = true;
+            prompt
+                .input
+                .update(cx, |input, cx| input.set_text(&suggestion, cx));
+            return;
+        }
+        let placeholder = self.i18n.text("nick_prompt_placeholder");
+        let input = cx.new(|cx| TextInput::new_field(&placeholder, &suggestion, false, cx));
+        self.nick_prompts.push(NickPrompt {
+            network,
+            rejected,
             input,
+            error: None,
             focus_pending: true,
         });
     }
 
     /// Retries registration with the nickname from the prompt. The nickname
     /// replaces the configured one for this session's reconnects only.
-    fn submit_nick_prompt(
+    fn retry_nickname(
         &mut self,
+        network: NetworkId,
         nickname: String,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
@@ -1381,37 +1716,110 @@ impl ChatWindow {
         if nickname.is_empty() {
             return Err(self.i18n.text("nick_prompt_required"));
         }
-        if let Some(connection) = &self.irc {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return Err(self.i18n.text("not_connected"));
+        };
+        if let Some(connection) = &session.irc {
             connection.change_nickname(&nickname)?;
         }
-        if let Some(config) = self.active_config.as_mut() {
+        if let Some(config) = session.active_config.as_mut() {
             config.nickname = nickname.clone();
         }
-        self.own_nickname = Some(nickname.clone());
+        session.own_nickname = Some(nickname.clone());
+        let closed = session.irc.is_none();
+        if closed {
+            // The server closed the link while the prompt was open.
+            session.manual_disconnect = false;
+            session.retry_attempt = 0;
+            session.retry_token += 1;
+        }
         self.state.append_server_message(
-            NetworkId(1),
+            network,
             self.i18n
                 .format("event_nick_retry", &[("nickname", &nickname)]),
         );
-        if self.irc.is_none() {
-            // The server closed the link while the prompt was open.
-            self.manual_disconnect = false;
-            self.retry_attempt = 0;
-            self.retry_token += 1;
-            self.start_reconnect(cx);
+        if closed {
+            self.start_reconnect(network, cx);
         }
         Ok(())
     }
 
-    fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let alternate_nick = self
-            .member_prompt
-            .take()
-            .is_some_and(|prompt| matches!(prompt.kind, MemberPromptKind::AlternateNick));
-        self.feedback = None;
-        if alternate_nick && self.irc.is_some() {
-            self.disconnect(cx);
+    fn submit_nick_prompt(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self
+            .nick_prompts
+            .iter()
+            .find(|prompt| prompt.network == network)
+        else {
+            return;
+        };
+        if prompt.input.read(cx).is_composing() {
+            return;
         }
+        let value = prompt.input.read(cx).text().to_owned();
+        match self.retry_nickname(network, value, cx) {
+            Ok(()) => self.close_nick_prompt(network, window, cx),
+            Err(error) => {
+                if let Some(prompt) = self
+                    .nick_prompts
+                    .iter_mut()
+                    .find(|prompt| prompt.network == network)
+                {
+                    prompt.error = Some(error);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Gives up on a new nickname for `network` and disconnects it.
+    fn cancel_nick_prompt(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_nick_prompt(network, window, cx);
+        if self
+            .sessions
+            .get(&network)
+            .is_some_and(|session| session.irc.is_some())
+        {
+            self.disconnect(network, cx);
+        }
+        cx.notify();
+    }
+
+    /// Removes the row and moves focus to the next waiting server, or back
+    /// to the draft when none is left.
+    fn close_nick_prompt(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nick_prompts.retain(|prompt| prompt.network != network);
+        match self.nick_prompts.first() {
+            Some(next) => window.focus(&next.input.focus_handle(cx)),
+            None => window.focus(&self.inputs[&self.state.selection()].focus_handle(cx)),
+        }
+    }
+
+    /// The server whose nickname field has focus, if any.
+    fn focused_nick_prompt(&self, window: &Window, cx: &App) -> Option<NetworkId> {
+        self.nick_prompts
+            .iter()
+            .find(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+            .map(|prompt| prompt.network)
+    }
+
+    fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.member_prompt = None;
+        self.feedback = None;
         window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
         cx.notify();
     }
@@ -1424,39 +1832,23 @@ impl ChatWindow {
             return;
         }
         let value = prompt.input.read(cx).text().to_owned();
-        if matches!(prompt.kind, MemberPromptKind::AlternateNick) {
-            match self.submit_nick_prompt(value, cx) {
-                Ok(()) => {
-                    self.member_prompt = None;
-                    self.feedback = None;
-                    window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+        let network = prompt.network;
+        let result = match self.registered_connection(network) {
+            Ok(connection) => match prompt.kind {
+                MemberPromptKind::PrivateMessage if value.trim().is_empty() => {
+                    Err(self.i18n.text("member_message_required"))
                 }
-                Err(error) => self.feedback = Some(error),
-            }
-            cx.notify();
-            return;
-        }
-        let result = match self.irc.as_ref() {
-            Some(connection)
-                if self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered) =>
-            {
-                match prompt.kind {
-                    MemberPromptKind::PrivateMessage if value.trim().is_empty() => {
-                        Err(self.i18n.text("member_message_required"))
-                    }
-                    MemberPromptKind::PrivateMessage => {
-                        connection.send_private_message(&prompt.nickname, &value)
-                    }
-                    MemberPromptKind::Invite => connection.send_member_command(
-                        &prompt.nickname,
-                        MemberCommand::Invite {
-                            channel: value.trim().to_owned(),
-                        },
-                    ),
-                    MemberPromptKind::AlternateNick => unreachable!("submitted above"),
+                MemberPromptKind::PrivateMessage => {
+                    connection.send_private_message(&prompt.nickname, &value)
                 }
-            }
-            _ => Err(self.i18n.text("not_connected")),
+                MemberPromptKind::Invite => connection.send_member_command(
+                    &prompt.nickname,
+                    MemberCommand::Invite {
+                        channel: value.trim().to_owned(),
+                    },
+                ),
+            },
+            Err(error) => Err(error),
         };
         match result {
             Ok(()) => {
@@ -1470,18 +1862,47 @@ impl ChatWindow {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_settings_tab(SettingsTab::Connection, window, cx);
+        let profile = self.selected_profile_id();
+        self.open_settings_for(profile, window, cx);
+    }
+
+    /// Profile of the selected server, which the settings window edits first.
+    fn selected_profile_id(&self) -> Option<String> {
+        self.sessions
+            .get(&self.selected_network_id()?)
+            .map(|session| session.profile_id.clone())
+    }
+
+    /// Opens (or raises) the settings window on the Connection tab showing
+    /// `profile`, when given.
+    fn open_settings_for(
+        &mut self,
+        profile: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings_tab(SettingsTab::Connection, profile, window, cx);
     }
 
     /// Opens (or raises) the settings window. `tab` is selected when the
-    /// window is new or when it is not the Connection tab.
-    fn open_settings_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
+    /// window is new or when it is not the Connection tab; `profile`, when
+    /// given, is shown on the Connection tab.
+    fn open_settings_tab(
+        &mut self,
+        tab: SettingsTab,
+        profile: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(handle) = self.settings_window
             && handle
                 .update(cx, |settings, window, cx| {
                     if tab != SettingsTab::Connection {
                         settings.tab = tab;
                         cx.notify();
+                    } else if let Some(profile) = profile.clone() {
+                        settings.tab = tab;
+                        settings.select_server(profile, cx);
                     }
                     window.activate_window()
                 })
@@ -1489,7 +1910,7 @@ impl ChatWindow {
         {
             return;
         }
-        let settings = match cayenchat_storage::load() {
+        let mut settings = match cayenchat_storage::load() {
             Ok(value) => value.unwrap_or_default(),
             Err(error) => {
                 self.feedback = Some(error);
@@ -1497,6 +1918,11 @@ impl ChatWindow {
                 return;
             }
         };
+        if let Some(profile) = profile
+            && settings.profile(&profile).is_some()
+        {
+            settings.selected_server = profile;
+        }
         let owner = window.window_handle().downcast::<ChatWindow>().unwrap();
         let bounds = Bounds::centered(None, size(px(740.), px(750.)), cx);
         match cx.open_window(
@@ -1538,21 +1964,32 @@ impl ChatWindow {
         cx.notify();
     }
 
+    /// Copies the selected server's transcript.
     fn copy_diagnostics(&mut self, _: &CopyDiagnostics, _: &mut Window, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(
-            self.diagnostics
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
+        let text = self
+            .selected_session()
+            .map(|session| {
+                session
+                    .diagnostics
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    fn selected_session(&self) -> Option<&ServerSession> {
+        self.sessions.get(&self.selected_network_id()?)
     }
 
     fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.debug_enabled = true;
         cx.set_menus(app_menus(true, &self.i18n));
-        let network = self.state.selected_network().id;
-        self.dispatch(Command::SelectServer(network), window, cx);
+        if let Some(network) = self.selected_network_id() {
+            self.dispatch(Command::SelectServer(network), window, cx);
+        }
         self.sync_log_lists();
         self.main_lists[&self.state.selection()]
             .state
@@ -1634,11 +2071,9 @@ impl ChatWindow {
         self.copy_selected_log(cx);
     }
 
-    fn push_diagnostic(&mut self, line: String) {
-        // Every IRC line is recorded, so drop the oldest without shifting.
-        self.diagnostics.push_back(line);
-        if self.diagnostics.len() > DIAGNOSTIC_LIMIT {
-            self.diagnostics.pop_front();
+    fn push_diagnostic(&mut self, network: NetworkId, line: String) {
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.push_diagnostic(line);
         }
     }
 
@@ -1670,6 +2105,7 @@ impl ChatWindow {
             .member_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
+            || self.focused_nick_prompt(window, cx).is_some()
         {
             return;
         }
@@ -1690,6 +2126,7 @@ impl ChatWindow {
     /// event stream ended. Returns whether to keep listening.
     fn handle_events(
         &mut self,
+        network: NetworkId,
         batch: Vec<Event>,
         worker_closed: bool,
         cx: &mut Context<Self>,
@@ -1704,63 +2141,64 @@ impl ChatWindow {
                     disconnected = true;
                     refused = true;
                 }
-                Event::NicknameRejected { nickname } => self.show_nick_prompt(nickname.clone(), cx),
-                Event::Registered { .. }
-                    if self.member_prompt.as_ref().is_some_and(|prompt| {
-                        matches!(prompt.kind, MemberPromptKind::AlternateNick)
-                    }) =>
-                {
-                    self.member_prompt = None;
+                Event::NicknameRejected { nickname } => {
+                    self.show_nick_prompt(network, nickname.clone(), cx)
+                }
+                Event::Registered { .. } => {
+                    self.nick_prompts.retain(|prompt| prompt.network != network);
                 }
                 _ => {}
             }
-            self.handle_event(event);
+            self.handle_event(network, event);
         }
-        for (info, requested) in std::mem::take(&mut self.whois_replies) {
-            self.show_whois(info, requested, cx);
+        for (network, info, requested) in std::mem::take(&mut self.whois_replies) {
+            self.show_whois(network, info, requested, cx);
         }
         if changed {
-            let joined = self.joined_channels();
-            self.whois_windows.retain(|_, handle| {
-                handle
-                    .update(cx, |view, _, cx| view.set_joined(joined.clone(), cx))
-                    .is_ok()
+            let joined = self.joined_channels(network);
+            self.whois_windows.retain(|(owner, _), handle| {
+                *owner != network
+                    || handle
+                        .update(cx, |view, _, cx| view.set_joined(joined.clone(), cx))
+                        .is_ok()
             });
-            let placeholder = self.i18n.text("draft_placeholder");
-            for channel in self.state.conversations() {
-                let key = Selection::Channel(channel.id);
-                self.inputs
-                    .entry(key)
-                    .or_insert_with(|| cx.new(|cx| TextInput::new_live(&placeholder, cx)));
-            }
+            self.ensure_inputs(cx);
             cx.notify();
         }
         if worker_closed && !disconnected {
-            self.push_diagnostic("IRC worker ended without a disconnect event.".into());
-            self.handle_event(Event::Disconnected(
-                "IRC worker stopped unexpectedly.".into(),
-            ));
+            self.push_diagnostic(
+                network,
+                "IRC worker ended without a disconnect event.".into(),
+            );
+            self.handle_event(
+                network,
+                Event::Disconnected("IRC worker stopped unexpectedly.".into()),
+            );
             cx.notify();
         }
         if disconnected || worker_closed {
-            self.irc = None;
+            if let Some(session) = self.sessions.get_mut(&network) {
+                session.irc = None;
+            }
             if refused {
                 // Retrying rejected credentials risks account lockout or a ban.
                 self.state
-                    .append_server_message(NetworkId(1), self.i18n.text("event_retry_refused"));
+                    .append_server_message(network, self.i18n.text("event_retry_refused"));
             } else {
-                self.schedule_retry(cx);
+                self.schedule_retry(network, cx);
             }
             return false;
         }
         true
     }
 
-    fn handle_event(&mut self, event: Event) {
-        let network = NetworkId(1);
+    fn handle_event(&mut self, network: NetworkId, event: Event) {
         match event {
             Event::Diagnostic { elapsed, message } => {
-                self.push_diagnostic(format!("[{:.1}s] {message}", elapsed.as_secs_f32()));
+                self.push_diagnostic(
+                    network,
+                    format!("[{:.1}s] {message}", elapsed.as_secs_f32()),
+                );
             }
             Event::Wire {
                 elapsed,
@@ -1771,19 +2209,26 @@ impl ChatWindow {
                     WireDirection::Sent => "→",
                     WireDirection::Received => "←",
                 };
-                self.push_diagnostic(format!("[{:.1}s] {arrow} {line}", elapsed.as_secs_f32()));
+                self.push_diagnostic(
+                    network,
+                    format!("[{:.1}s] {arrow} {line}", elapsed.as_secs_f32()),
+                );
             }
             Event::TransportConnected => {
-                self.connection_started = None;
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.connection_started = None;
+                }
                 self.state
                     .set_status(network, ConnectionStatus::TransportConnected);
                 self.state
                     .append_server_message(network, self.i18n.text("event_transport_connected"));
             }
             Event::Registered { nickname } => {
-                self.connection_started = None;
-                self.retry_attempt = 0;
-                self.own_nickname = Some(nickname.clone());
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.connection_started = None;
+                    session.retry_attempt = 0;
+                    session.own_nickname = Some(nickname.clone());
+                }
                 self.state.set_status(network, ConnectionStatus::Registered);
                 self.state.append_server_message(
                     network,
@@ -1806,7 +2251,9 @@ impl ChatWindow {
                 );
             }
             Event::NickChanged { nickname } => {
-                self.own_nickname = Some(nickname.clone());
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.own_nickname = Some(nickname.clone());
+                }
                 self.state.append_server_message(
                     network,
                     self.i18n
@@ -1820,13 +2267,13 @@ impl ChatWindow {
                 notice,
                 mentioned,
             } => {
-                let highlighted = !self.is_own_nickname(&sender)
+                let highlighted = !self.is_own_nickname(network, &sender)
                     && (mentioned
                         || notifications::contains_keyword(
                             &cayenchat_irc_core::text::strip_formatting(&text),
                             &self.notification_rules.keywords,
                         ));
-                self.notify_message(Some(&channel), &sender, &text, notice, mentioned);
+                self.notify_message(network, Some(&channel), &sender, &text, notice, mentioned);
                 self.state
                     .append_channel_message(network, &channel, &sender, &text, notice);
                 if highlighted {
@@ -1846,7 +2293,7 @@ impl ChatWindow {
                 text,
                 notice,
             } => {
-                self.notify_message(None, &sender, &text, notice, false);
+                self.notify_message(network, None, &sender, &text, notice, false);
                 // Private conversations have no pane yet; keep them in the
                 // server log as before.
                 let line = if notice {
@@ -1860,8 +2307,11 @@ impl ChatWindow {
             Event::ServerLine(line) => self.state.append_server_message(network, line),
             Event::Whois(info) => {
                 let info = *info;
-                let key = info.nickname.to_lowercase();
-                let requested = self.pending_whois.remove(&key);
+                let key = (network, info.nickname.to_lowercase());
+                let requested = self
+                    .sessions
+                    .get_mut(&network)
+                    .is_some_and(|session| session.pending_whois.remove(&key.1));
                 if requested && !info.found() && !self.whois_windows.contains_key(&key) {
                     self.feedback = Some(
                         self.i18n
@@ -1869,7 +2319,7 @@ impl ChatWindow {
                     );
                 }
                 if requested || self.whois_windows.contains_key(&key) {
-                    self.whois_replies.push((info, requested));
+                    self.whois_replies.push((network, info, requested));
                 }
             }
             Event::OutgoingAccepted {
@@ -1878,7 +2328,11 @@ impl ChatWindow {
                 notice,
             } => {
                 if valid_channel(&channel) {
-                    let nickname = self.own_nickname.as_deref().unwrap_or("me");
+                    let nickname = self
+                        .sessions
+                        .get(&network)
+                        .and_then(|session| session.own_nickname.as_deref())
+                        .unwrap_or("me");
                     self.state
                         .append_channel_message(network, &channel, nickname, &text, notice);
                 } else {
@@ -1897,7 +2351,7 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
-                self.record_disconnect(reason);
+                self.record_disconnect(network, reason);
             }
         }
     }
@@ -1913,8 +2367,14 @@ impl ChatWindow {
             return;
         }
         let selected = self.state.selected_channel();
-        let result = if let Some(connection) = &self.irc {
-            if self.state.status(NetworkId(1)) != Some(&ConnectionStatus::Registered) {
+        let network = self.selected_network_id();
+        let connection = network
+            .and_then(|network| self.sessions.get(&network))
+            .and_then(|session| session.irc.as_ref());
+        let result = if let Some(connection) = connection {
+            if network.and_then(|network| self.state.status(network))
+                != Some(&ConnectionStatus::Registered)
+            {
                 Err(self.i18n.text("wait_registration"))
             } else if text.starts_with('/') {
                 connection.send_command(&text, selected.map(|channel| channel.name.as_str()))
@@ -1942,7 +2402,9 @@ impl ChatWindow {
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
-        if self
+        if let Some(network) = self.focused_nick_prompt(window, cx) {
+            self.submit_nick_prompt(network, window, cx);
+        } else if self
             .member_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
@@ -1954,7 +2416,9 @@ impl ChatWindow {
     }
 
     fn notice(&mut self, _: &Notice, window: &mut Window, cx: &mut Context<Self>) {
-        if self
+        if let Some(network) = self.focused_nick_prompt(window, cx) {
+            self.submit_nick_prompt(network, window, cx);
+        } else if self
             .member_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
@@ -2089,9 +2553,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
-        settings
-            .servers
-            .retain(|server| !server.custom || !server.host.is_empty());
+        settings.servers.retain(|server| !server.host.is_empty());
         self.settings.persist_passwords(&store, &self.i18n, cx)?;
         if let Ok(Some(previous)) = cayenchat_storage::load() {
             forget_removed_profiles(&previous, &settings, &store);
@@ -2108,19 +2570,21 @@ impl SettingsWindow {
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             let settings = self.commit_settings(settings, cx)?;
             self.settings.values = settings.clone();
-            Ok::<_, String>((
-                config,
-                settings.appearance.clone(),
-                settings.theme,
-                settings.language,
-            ))
+            Ok::<_, String>((config, settings))
         })();
         self.feedback = match result {
-            Ok((config, appearance, mode, language)) => {
+            Ok((config, settings)) => {
+                let (appearance, mode, language) = (
+                    settings.appearance.clone(),
+                    settings.theme,
+                    settings.language,
+                );
+                let profile = settings.selected_server.clone();
                 match self.owner.update(cx, |owner, chat_window, cx| {
                     owner.apply_appearance(appearance, mode, cx);
                     owner.apply_language(language, chat_window, cx);
-                    owner.apply_connection(config, chat_window, cx)
+                    owner.apply_servers(settings, cx);
+                    owner.connect_profile(&profile, config, chat_window, cx)
                 }) {
                     Ok(Ok(())) => {
                         window.remove_window();
@@ -2140,7 +2604,10 @@ impl SettingsWindow {
 
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         self.feedback = match self.settings.snapshot(cx).and_then(|settings| {
-            if settings.selected_profile().host.is_empty() {
+            if settings
+                .selected_profile()
+                .is_some_and(|profile| profile.host.is_empty())
+            {
                 return Err(self.i18n.text("server_required"));
             }
             let settings = self.commit_settings(settings, cx)?;
@@ -2150,8 +2617,10 @@ impl SettingsWindow {
             let language = self.settings.values.language;
             let shortcuts = ShortcutPrefs::from(&self.settings.values);
             let provider = self.settings.values.image_upload.provider.clone();
+            let saved = self.settings.values.clone();
             let rules = notification_rules(&self.settings.values.notifications);
             let _ = self.owner.update(cx, |owner, window, cx| {
+                owner.apply_servers(saved, cx);
                 owner.image_provider = provider;
                 owner.notification_rules = rules;
                 apply_shortcuts(shortcuts, cx);
@@ -2180,14 +2649,20 @@ impl SettingsWindow {
     }
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.owner.update(cx, |owner, _, cx| owner.disconnect(cx));
+        let _ = self.owner.update(cx, |owner, _, cx| {
+            if let Some(network) = owner.selected_network_id() {
+                owner.disconnect(network, cx)
+            }
+        });
         cx.notify();
     }
 
     fn reconnect_action(&mut self, _: &Reconnect, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self
-            .owner
-            .update(cx, |owner, window, cx| owner.reconnect(window, cx));
+        let _ = self.owner.update(cx, |owner, window, cx| {
+            if let Some(network) = owner.selected_network_id() {
+                owner.reconnect(network, window, cx)
+            }
+        });
         cx.notify();
     }
 
@@ -2210,8 +2685,10 @@ impl SettingsWindow {
 
     fn toggle_remember_passwords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = secrets::store(cx);
-        if self.settings.values.selected_profile().remember_passwords {
-            let profile = self.settings.values.selected_profile().clone();
+        let Some(profile) = self.settings.values.selected_profile().cloned() else {
+            return;
+        };
+        if profile.remember_passwords {
             let result = store
                 .delete(&profile.server_password_key())
                 .and_then(|()| store.delete(&profile.sasl_password_key()))
@@ -2219,10 +2696,9 @@ impl SettingsWindow {
                 .and_then(|()| cayenchat_storage::clear_saved_passwords(&profile.id));
             match result {
                 Ok(()) => {
-                    self.settings
-                        .values
-                        .selected_profile_mut()
-                        .remember_passwords = false;
+                    if let Some(profile) = self.settings.values.selected_profile_mut() {
+                        profile.remember_passwords = false;
+                    }
                     self.show_selected_server(cx);
                     self.feedback = Some(self.i18n.text("passwords_removed"));
                 }
@@ -2235,10 +2711,9 @@ impl SettingsWindow {
             // Secure storage needs no plaintext warning, but it must work.
             match cayenchat_storage::credentials::SystemBackend::probe() {
                 Ok(()) => {
-                    self.settings
-                        .values
-                        .selected_profile_mut()
-                        .remember_passwords = true;
+                    if let Some(profile) = self.settings.values.selected_profile_mut() {
+                        profile.remember_passwords = true;
+                    }
                     self.feedback = None;
                 }
                 Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
@@ -2262,10 +2737,9 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update(cx, |this, cx| {
-                    this.settings
-                        .values
-                        .selected_profile_mut()
-                        .remember_passwords = true;
+                    if let Some(profile) = this.settings.values.selected_profile_mut() {
+                        profile.remember_passwords = true;
+                    }
                     this.feedback = None;
                     cx.notify();
                 });
@@ -2275,18 +2749,20 @@ impl SettingsWindow {
     }
 
     fn toggle_tls(&mut self, cx: &mut Context<Self>) {
-        if self.settings.values.selected_profile().use_tls && self.settings.values.sasl_enabled {
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        if profile.use_tls && profile.sasl_enabled {
             self.feedback = Some(self.i18n.text("disable_sasl_first"));
             cx.notify();
             return;
         }
-        self.feedback = None;
-        let use_tls = !self.settings.values.selected_profile().use_tls;
-        let profile = self.settings.values.selected_profile_mut();
+        let use_tls = !profile.use_tls;
         profile.use_tls = use_tls;
         if !use_tls {
             profile.verify_tls_certificates = true;
         }
+        self.feedback = None;
         let port = self.settings.port.read(cx).text().to_owned();
         if port == "6667" && use_tls {
             self.settings
@@ -2301,8 +2777,9 @@ impl SettingsWindow {
     }
 
     fn toggle_certificate_verification(&mut self, cx: &mut Context<Self>) {
-        let profile = self.settings.values.selected_profile_mut();
-        if profile.use_tls {
+        if let Some(profile) = self.settings.values.selected_profile_mut()
+            && profile.use_tls
+        {
             profile.verify_tls_certificates = !profile.verify_tls_certificates;
             cx.notify();
         }
@@ -2310,23 +2787,38 @@ impl SettingsWindow {
 
     fn toggle_sasl(&mut self, cx: &mut Context<Self>) {
         self.feedback = None;
-        self.settings.values.sasl_enabled = !self.settings.values.sasl_enabled;
-        if self.settings.values.sasl_enabled && !self.settings.values.selected_profile().use_tls {
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        profile.sasl_enabled = !profile.sasl_enabled;
+        if profile.sasl_enabled && !profile.use_tls {
             self.toggle_tls(cx);
         }
         cx.notify();
     }
 
     fn show_selected_server(&mut self, cx: &mut Context<Self>) {
-        let profile = self.settings.values.selected_profile().clone();
+        let profile = self
+            .settings
+            .values
+            .selected_profile()
+            .cloned()
+            .unwrap_or_default();
         self.settings
             .custom_host
             .update(cx, |field, cx| field.set_text(&profile.host, cx));
         self.settings.port.update(cx, |field, cx| {
             field.set_text(&profile.port.to_string(), cx)
         });
-        let (saved_server, saved_sasl) =
-            saved_passwords(&self.settings.values, &secrets::store(cx));
+        for (field, value) in [
+            (&self.settings.nickname, &profile.nickname),
+            (&self.settings.username, &profile.username),
+            (&self.settings.channels, &profile.channels),
+            (&self.settings.sasl_username, &profile.sasl_username),
+        ] {
+            field.update(cx, |field, cx| field.set_text(value, cx));
+        }
+        let (saved_server, saved_sasl) = saved_passwords(&profile, &secrets::store(cx));
         self.settings.saved_server_password = saved_server;
         self.settings.saved_sasl_password = saved_sasl;
         for (field, saved, key) in [
@@ -2367,10 +2859,11 @@ impl SettingsWindow {
         }
     }
 
-    fn add_server(&mut self, cx: &mut Context<Self>) {
+    /// Adds a server, blank or filled in from a preset's `host`.
+    fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
         match self.settings.snapshot(cx) {
             Ok(mut settings) => {
-                settings.add_custom_server();
+                settings.add_server(host);
                 self.settings.values = settings;
                 self.show_selected_server(cx);
             }
@@ -2382,15 +2875,18 @@ impl SettingsWindow {
     }
 
     fn remove_server(&mut self, cx: &mut Context<Self>) {
-        self.settings.values.remove_selected_custom_server();
+        self.settings.values.remove_selected_server();
         self.show_selected_server(cx);
     }
 
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = theme::current(cx);
-        let profile = self.settings.values.selected_profile().clone();
-        let tls = profile.use_tls;
-        let sasl = self.settings.values.sasl_enabled;
+        let profile = self.settings.values.selected_profile().cloned();
+        let no_server = profile.is_none();
+        let selected_id = profile.as_ref().map(|profile| profile.id.clone());
+        let server_fields = profile
+            .as_ref()
+            .map(|profile| self.render_server_fields(profile, cx));
         let mut language_selector = div().flex().gap_1();
         for (index, language) in [Language::System, Language::Japanese, Language::English]
             .into_iter()
@@ -2413,13 +2909,11 @@ impl SettingsWindow {
                     })),
             );
         }
-        let current_host = if profile.custom {
-            self.settings.custom_host.read(cx).text().trim().to_owned()
-        } else {
-            profile.host.clone()
-        };
+        let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
-        let selected_label = if current_host.is_empty() {
+        let selected_label = if no_server {
+            self.i18n.text("no_servers")
+        } else if current_host.is_empty() {
             self.i18n.text("new_server")
         } else {
             format!("{current_host}:{current_port}")
@@ -2446,7 +2940,7 @@ impl SettingsWindow {
                 .bg(theme.surface);
             for (index, server) in self.settings.values.ordered_servers().enumerate() {
                 let id = server.id.clone();
-                let (host, port) = if id == profile.id {
+                let (host, port) = if Some(&id) == selected_id.as_ref() {
                     (current_host.as_str(), current_port.as_str())
                 } else {
                     (server.host.as_str(), "")
@@ -2454,20 +2948,14 @@ impl SettingsWindow {
                 let label = if host.is_empty() {
                     self.i18n.text("new_server")
                 } else {
-                    let kind = self.i18n.text(if server.custom {
-                        "custom_server"
-                    } else {
-                        "preset_server"
-                    });
                     format!(
-                        "{}:{}{}",
+                        "{}:{}",
                         host,
                         if port.is_empty() {
                             server.port.to_string()
                         } else {
                             port.to_owned()
                         },
-                        kind
                     )
                 };
                 menu = menu.child(
@@ -2477,10 +2965,29 @@ impl SettingsWindow {
                         .py_1()
                         .cursor_pointer()
                         .hover(|d| d.bg(theme.hover))
-                        .when(profile.id == id, |d| d.bg(theme.selected))
+                        .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
                         .child(label)
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.select_server(id.clone(), cx)),
+                        ),
+                );
+            }
+            // Well-known servers are only suggestions for adding a server.
+            for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
+                menu = menu.child(
+                    div()
+                        .id(("add-preset-option", index))
+                        .px_2()
+                        .py_1()
+                        .when(index == 0, |d| d.border_t_1().border_color(theme.border))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .child(self.i18n.format(
+                            "add_preset_server",
+                            &[("name", preset.name), ("host", preset.host)],
+                        ))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.add_server(preset.host, cx)),
                         ),
                 );
             }
@@ -2489,53 +2996,12 @@ impl SettingsWindow {
                     .id("add-server-option")
                     .px_2()
                     .py_1()
-                    .border_t_1()
-                    .border_color(theme.border)
                     .cursor_pointer()
                     .hover(|d| d.bg(theme.hover))
                     .child(self.i18n.text("add_server"))
-                    .on_click(cx.listener(|this, _, _, cx| this.add_server(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.add_server("", cx))),
             );
             server_selector = server_selector.child(menu);
-        }
-        let mut encoding_selector = div().flex().flex_col().child(
-            div()
-                .id("encoding-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!("{}  ▾", profile.encoding.label()))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.encoding_list_open = !this.settings.encoding_list_open;
-                    this.settings.server_list_open = false;
-                    cx.notify();
-                })),
-        );
-        if self.settings.encoding_list_open {
-            let mut menu = div()
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, encoding) in TextEncoding::ALL.into_iter().enumerate() {
-                menu = menu.child(
-                    div()
-                        .id(("encoding-option", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(profile.encoding == encoding, |d| d.bg(theme.selected))
-                        .child(encoding.label())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.settings.values.selected_profile_mut().encoding = encoding;
-                            this.settings.encoding_list_open = false;
-                            cx.notify();
-                        })),
-                );
-            }
-            encoding_selector = encoding_selector.child(menu);
         }
         div()
             .w(px(680.))
@@ -2591,23 +3057,151 @@ impl SettingsWindow {
                     )
                     .child(server_selector.flex_1().min_w_0()),
             )
-            .when(profile.custom, |d| {
-                d.child(settings_field(
-                    &self.i18n.text("host"),
-                    self.settings.custom_host.clone(),
-                ))
-                .child(
+            .when_some(server_fields, |d, fields| d.child(fields))
+            .when(no_server, |d| {
+                d.child(
                     div()
-                        .id("remove-server")
                         .ml(px(158.))
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("no_servers_hint")),
+                )
+            })
+            .when_some(self.feedback.clone(), |d, feedback| {
+                d.child(div().text_color(theme.warning).child(feedback))
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .pt_2()
+                    .when(!no_server, |d| {
+                        d.child(
+                            div()
+                                .id("connect-button")
+                                .px_3()
+                                .py_1()
+                                .bg(theme.selected)
+                                .cursor_pointer()
+                                .child(self.i18n.text("save_and_connect"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.connect_from_settings(window, cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("save-button")
+                            .px_3()
+                            .py_1()
+                            .border_1()
+                            .border_color(theme.border)
+                            .cursor_pointer()
+                            .child(self.i18n.text("save"))
+                            .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
+                    )
+                    .child(
+                        div()
+                            .id("back-button")
+                            .px_3()
+                            .py_1()
+                            .border_1()
+                            .border_color(theme.border)
+                            .cursor_pointer()
+                            .child(self.i18n.text("back"))
+                            .on_click(
+                                cx.listener(|this, _, window, _| this.close_settings(window)),
+                            ),
+                    )
+                    .when(!no_server, |d| {
+                        d.child(
+                            div()
+                                .id("disconnect-button")
+                                .px_3()
+                                .py_1()
+                                .border_1()
+                                .border_color(theme.border)
+                                .cursor_pointer()
+                                .child(self.i18n.text("disconnect"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    // Disconnects the server being edited.
+                                    let profile = this.settings.values.selected_server.clone();
+                                    let _ = this.owner.update(cx, |owner, _, cx| {
+                                        if let Some(network) = owner.network_of_profile(&profile) {
+                                            owner.disconnect(network, cx);
+                                        }
+                                    });
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+    }
+
+    /// Everything on the Connection tab that belongs to `profile`.
+    fn render_server_fields(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
+        let tls = profile.use_tls;
+        let sasl = profile.sasl_enabled;
+        let mut encoding_selector = div().flex().flex_col().child(
+            div()
+                .id("encoding-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!("{}  ▾", profile.encoding.label()))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.encoding_list_open = !this.settings.encoding_list_open;
+                    this.settings.server_list_open = false;
+                    cx.notify();
+                })),
+        );
+        if self.settings.encoding_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            for (index, encoding) in TextEncoding::ALL.into_iter().enumerate() {
+                menu = menu.child(
+                    div()
+                        .id(("encoding-option", index))
                         .px_2()
                         .py_1()
                         .cursor_pointer()
-                        .text_color(theme.warning)
-                        .child(self.i18n.text("remove_server"))
-                        .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
-                )
-            })
+                        .hover(|d| d.bg(theme.hover))
+                        .when(profile.encoding == encoding, |d| d.bg(theme.selected))
+                        .child(encoding.label())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(profile) = this.settings.values.selected_profile_mut() {
+                                profile.encoding = encoding;
+                            }
+                            this.settings.encoding_list_open = false;
+                            cx.notify();
+                        })),
+                );
+            }
+            encoding_selector = encoding_selector.child(menu);
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(settings_field(
+                &self.i18n.text("host"),
+                self.settings.custom_host.clone(),
+            ))
+            .child(
+                div()
+                    .id("remove-server")
+                    .ml(px(158.))
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .text_color(theme.warning)
+                    .child(self.i18n.text("remove_server"))
+                    .on_click(cx.listener(|this, _, _, cx| this.remove_server(cx))),
+            )
             .child(settings_field(
                 &self.i18n.text("port"),
                 self.settings.port.clone(),
@@ -2713,15 +3307,16 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if self.settings.values.connect_on_startup {
+                    .child(if profile.connect_on_startup {
                         "☑"
                     } else {
                         "☐"
                     })
                     .child(self.i18n.text("connect_on_startup"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.values.connect_on_startup =
-                            !this.settings.values.connect_on_startup;
+                        if let Some(profile) = this.settings.values.selected_profile_mut() {
+                            profile.connect_on_startup = !profile.connect_on_startup;
+                        }
                         cx.notify();
                     })),
             )
@@ -2793,65 +3388,6 @@ impl SettingsWindow {
                     self.settings.sasl_password.clone(),
                 ))
             })
-            .when_some(self.feedback.clone(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        div()
-                            .id("connect-button")
-                            .px_3()
-                            .py_1()
-                            .bg(theme.selected)
-                            .cursor_pointer()
-                            .child(self.i18n.text("save_and_connect"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.connect_from_settings(window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("save-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text("save"))
-                            .on_click(cx.listener(|this, _, _, cx| this.save_settings(cx))),
-                    )
-                    .child(
-                        div()
-                            .id("back-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text("back"))
-                            .on_click(
-                                cx.listener(|this, _, window, _| this.close_settings(window)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("disconnect-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
-                            .child(self.i18n.text("disconnect"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let _ = this.owner.update(cx, |owner, _, cx| owner.disconnect(cx));
-                                cx.notify();
-                            })),
-                    ),
-            )
     }
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
@@ -3625,7 +4161,13 @@ impl ChatWindow {
                 else {
                     return div().into_any_element();
                 };
+                let used = self
+                    .sessions
+                    .get(&server_id)
+                    .is_some_and(ServerSession::used);
                 let status_mark = match self.state.status(server_id) {
+                    // Servers not connected in this run show no mark.
+                    _ if !used => "",
                     Some(ConnectionStatus::Registered) => " ●",
                     Some(ConnectionStatus::Connecting | ConnectionStatus::TransportConnected) => {
                         " …"
@@ -3647,18 +4189,21 @@ impl ChatWindow {
                     .child(format!("{}{}", network.name, status_mark))
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             let viewport = window.viewport_size();
-                            this.server_menu = Some(point(
-                                event
-                                    .position
-                                    .x
-                                    .min((viewport.width - px(176.)).max(px(0.))),
-                                event
-                                    .position
-                                    .y
-                                    .min((viewport.height - px(76.)).max(px(0.))),
-                            ));
+                            this.server_menu = Some(ServerMenu {
+                                position: point(
+                                    event
+                                        .position
+                                        .x
+                                        .min((viewport.width - px(176.)).max(px(0.))),
+                                    event
+                                        .position
+                                        .y
+                                        .min((viewport.height - px(76.)).max(px(0.))),
+                                ),
+                                network: server_id,
+                            });
                             this.member_menu = None;
                             this.channel_menu = None;
                             this.member_prompt = None;
@@ -3679,6 +4224,7 @@ impl ChatWindow {
                 let unread = self.state.is_unread(id);
                 let highlighted = self.state.is_highlighted(id);
                 let name = conversation.name.clone();
+                let network = conversation.network;
                 let joined = self.state.is_active_channel(id);
                 div()
                     .id(("channel", id.0))
@@ -3713,6 +4259,7 @@ impl ChatWindow {
                                         .y
                                         .min((viewport.height - px(76.)).max(px(0.))),
                                 ),
+                                network,
                                 channel: name.clone(),
                                 joined,
                             });
@@ -3777,6 +4324,7 @@ impl ChatWindow {
         let log_id = match selection {
             Selection::Channel(id) => id.0,
             Selection::Server(id) => u32::MAX - id.0,
+            Selection::None => u32::MAX,
         };
         let border = theme.border;
         let appearance = &self.appearance;
@@ -3916,8 +4464,17 @@ impl ChatWindow {
             .child(members)
             .child(panes.channels.clone().cached(pane_style().w_full()));
 
-        let connected = self.irc.is_some();
-        let server_menu = self.server_menu.map(|position| {
+        let server_menu = self.server_menu.as_ref().map(|menu| {
+            let network = menu.network;
+            let position = menu.position;
+            let session = self.sessions.get(&network);
+            let connected = session.is_some_and(|session| session.irc.is_some());
+            // A server not connected in this run offers Connect, not Reconnect.
+            let connect_key = if session.is_some_and(ServerSession::used) {
+                "reconnect"
+            } else {
+                "connect"
+            };
             div()
                 .id("server-context-menu")
                 .absolute()
@@ -3934,12 +4491,12 @@ impl ChatWindow {
                         .id("server-menu-reconnect")
                         .px_2()
                         .py_1()
-                        .child(self.i18n.text("reconnect"))
+                        .child(self.i18n.text(connect_key))
                         .when(!connected, |d| {
                             d.cursor_pointer()
                                 .hover(|d| d.bg(theme.hover_strong))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.reconnect(window, cx);
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.reconnect(network, window, cx);
                                 }))
                         })
                         .when(connected, |d| d.text_color(theme.text_muted)),
@@ -3953,14 +4510,15 @@ impl ChatWindow {
                         .when(connected, |d| {
                             d.cursor_pointer()
                                 .hover(|d| d.bg(theme.hover_strong))
-                                .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx)))
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.disconnect(network, cx)),
+                                )
                         })
                         .when(!connected, |d| d.text_color(theme.text_muted)),
                 )
         });
-        let registered =
-            connected && self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered);
         let channel_menu = self.channel_menu.as_ref().map(|menu| {
+            let registered = self.registered_connection(menu.network).is_ok();
             let mut popup = div()
                 .id("channel-context-menu")
                 .absolute()
@@ -4008,8 +4566,7 @@ impl ChatWindow {
                 .border_1()
                 .border_color(border)
                 .shadow_md();
-            let enabled =
-                connected && self.state.status(NetworkId(1)) == Some(&ConnectionStatus::Registered);
+            let enabled = self.registered_connection(menu.network).is_ok();
             for (index, (choice, key)) in [
                 (MemberMenuChoice::Whois, "member_whois"),
                 (MemberMenuChoice::PrivateMessage, "member_private_message"),
@@ -4078,7 +4635,6 @@ impl ChatWindow {
                 match prompt.kind {
                     MemberPromptKind::PrivateMessage => "member_message_title",
                     MemberPromptKind::Invite => "member_invite_title",
-                    MemberPromptKind::AlternateNick => "nick_prompt_title",
                 },
                 &[("nickname", &prompt.nickname)],
             );
@@ -4088,10 +4644,7 @@ impl ChatWindow {
                     ((viewport.height - px(140.)) / 2.).max(px(0.)),
                 )
             });
-            let submit = self.i18n.text(match prompt.kind {
-                MemberPromptKind::AlternateNick => "nick_prompt_submit",
-                _ => "member_submit",
-            });
+            let submit = self.i18n.text("member_submit");
             div()
                 .id("member-prompt")
                 .absolute()
@@ -4142,6 +4695,7 @@ impl ChatWindow {
                         ),
                 )
         });
+        let nick_prompts = self.render_nick_prompts(origin, window, cx);
         div()
             .id("chat-window")
             .key_context("ChatWindow")
@@ -4181,7 +4735,114 @@ impl ChatWindow {
             .when_some(member_menu, |d, menu| d.child(menu))
             .when_some(channel_menu, |d, menu| d.child(menu))
             .when_some(member_prompt, |d, prompt| d.child(prompt))
+            .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .into_any_element()
+    }
+}
+
+impl ChatWindow {
+    /// One centered dialog with a row per server waiting for a nickname.
+    fn render_nick_prompts(
+        &mut self,
+        origin: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.nick_prompts.is_empty() {
+            return None;
+        }
+        // Focus a newly shown row unless the user is already typing in one.
+        let typing = self.focused_nick_prompt(window, cx).is_some();
+        let pending = self
+            .nick_prompts
+            .iter()
+            .position(|prompt| prompt.focus_pending);
+        for prompt in &mut self.nick_prompts {
+            prompt.focus_pending = false;
+        }
+        if let Some(index) = pending
+            && !typing
+        {
+            window.focus(&self.nick_prompts[index].input.focus_handle(cx));
+        }
+        let theme = theme::current(cx);
+        let border = theme.border;
+        let viewport = window.viewport_size();
+        let width = px(360.);
+        let mut dialog = div()
+            .id("nick-prompts")
+            .absolute()
+            .left(((viewport.width - width) / 2.).max(px(0.)) - origin.x)
+            .top(px(60.).min(viewport.height / 4.) - origin.y)
+            .w(width)
+            .p_2()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(border)
+            .shadow_md()
+            .flex()
+            .flex_col()
+            .gap_2();
+        for (index, prompt) in self.nick_prompts.iter().enumerate() {
+            let network = prompt.network;
+            let server = self
+                .state
+                .networks()
+                .iter()
+                .find(|server| server.id == network)
+                .map(|server| server.name.clone())
+                .unwrap_or_default();
+            let title = self
+                .i18n
+                .format("nick_prompt_title", &[("nickname", &prompt.rejected)]);
+            dialog = dialog
+                .when(index > 0, |d| {
+                    d.child(div().border_t_1().border_color(theme.separator))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().font_weight(FontWeight::BOLD).child(server))
+                        .child(title)
+                        .child(prompt.input.clone())
+                        .when_some(prompt.error.clone(), |d, error| {
+                            d.child(div().text_color(theme.warning).child(error))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id(("nick-prompt-submit", network.0))
+                                        .px_2()
+                                        .py_1()
+                                        .bg(theme.selected)
+                                        .cursor_pointer()
+                                        .child(self.i18n.text("nick_prompt_submit"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.submit_nick_prompt(network, window, cx)
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id(("nick-prompt-cancel", network.0))
+                                        .px_2()
+                                        .py_1()
+                                        .border_1()
+                                        .border_color(border)
+                                        .cursor_pointer()
+                                        .child(self.i18n.text("nick_prompt_cancel"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.cancel_nick_prompt(network, window, cx)
+                                        })),
+                                ),
+                        ),
+                );
+        }
+        Some(dialog.into_any_element())
     }
 }
 
@@ -4335,8 +4996,12 @@ impl MainLayout {
 
 impl ChatWindow {
     fn main_layout(&self) -> MainLayout {
-        let count = self.diagnostics.len();
-        let registration_incomplete = self.state.status(self.state.selected_network().id)
+        let count = self
+            .selected_session()
+            .map_or(0, |session| session.diagnostics.len());
+        let registration_incomplete = self
+            .selected_network_id()
+            .and_then(|network| self.state.status(network))
             != Some(&ConnectionStatus::Registered);
         if self.state.selected_channel().is_some() {
             if registration_incomplete && count > 0 {
@@ -4373,11 +5038,15 @@ impl ChatWindow {
         let sequences: Vec<u64> = match self.state.selected_channel() {
             Some(channel) => channel.messages.iter().map(|m| m.sequence).collect(),
             None => self
-                .state
-                .server_messages(self.state.selected_network().id)
-                .iter()
-                .map(|m| m.sequence)
-                .collect(),
+                .selected_network_id()
+                .map(|network| {
+                    self.state
+                        .server_messages(network)
+                        .iter()
+                        .map(|m| m.sequence)
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         self.main_lists
             .entry(self.state.selection())
@@ -4395,24 +5064,7 @@ impl ChatWindow {
             return;
         }
         self.sub_source = Some(source);
-        let mut rows: Vec<(u64, ConversationId, usize)> = self
-            .state
-            .conversations()
-            .iter()
-            .filter(|conversation| Some(conversation.id) != selected)
-            .flat_map(|conversation| {
-                conversation
-                    .messages
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .filter(|(_, message)| !message.activity)
-                    .take(SUB_LOG_LIMIT)
-                    .map(move |(index, message)| (message.sequence, conversation.id, index))
-            })
-            .collect();
-        rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
-        rows.drain(..rows.len().saturating_sub(SUB_LOG_LIMIT));
+        let rows = newest_lines(self.state.conversations(), selected, SUB_LOG_LIMIT);
         let sequences: Vec<u64> = rows.iter().map(|(sequence, _, _)| *sequence).collect();
         self.sub_list.sync(0, &sequences);
         self.sub_rows = rows.into_iter().map(|(_, id, index)| (id, index)).collect();
@@ -4428,7 +5080,14 @@ impl ChatWindow {
         let style = LogStyle::new(&self.appearance, theme::current(cx));
         match self.main_layout().row(row) {
             MainRow::Status => {
-                let text = self.status_text(self.state.status(self.state.selected_network().id));
+                let text = match self.selected_network_id() {
+                    Some(network) => self.status_text(self.state.status(network)),
+                    None => format!(
+                        "{} — {}",
+                        self.i18n.text("no_servers"),
+                        self.i18n.text("no_servers_hint")
+                    ),
+                };
                 div()
                     .w_full()
                     .when(self.state.selected_channel().is_some(), |d| {
@@ -4446,12 +5105,18 @@ impl ChatWindow {
             MainRow::Diagnostic(index) => div()
                 .w_full()
                 .text_color(theme.text_secondary)
-                .child(self.diagnostics.get(index).cloned().unwrap_or_default())
+                .child(
+                    self.selected_session()
+                        .and_then(|session| session.diagnostics.get(index).cloned())
+                        .unwrap_or_default(),
+                )
                 .into_any_element(),
             MainRow::Message(index) => match self.state.selected_channel() {
                 Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
                 None => {
-                    let network = self.state.selected_network().id;
+                    let Some(network) = self.selected_network_id() else {
+                        return div().into_any_element();
+                    };
                     let Some(message) = self.state.server_messages(network).get(index) else {
                         return div().into_any_element();
                     };
@@ -4479,11 +5144,11 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme::current(cx);
-        let Some(message) = self
-            .state
-            .selected_channel()
-            .and_then(|channel| channel.messages.get(index))
-        else {
+        let Some(channel) = self.state.selected_channel() else {
+            return div().into_any_element();
+        };
+        let network = channel.network;
+        let Some(message) = channel.messages.get(index) else {
             return div().into_any_element();
         };
         let urls = log_urls(&message.text);
@@ -4491,7 +5156,7 @@ impl ChatWindow {
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
             .and_then(|selection| selection.range(index, message.text.len()));
-        let highlights = self.highlight_ranges(message);
+        let highlights = self.highlight_ranges(network, message);
         let styled = styled_log_text(
             &message.text,
             &urls,
@@ -4651,9 +5316,11 @@ impl ChatWindow {
                         };
                         StyledText::new(format!("{}: {}", message.sender, message.text))
                             .with_highlights(
-                                self.highlight_ranges(message).into_iter().map(|range| {
-                                    (range.start + offset..range.end + offset, highlight)
-                                }),
+                                self.highlight_ranges(conversation.network, message)
+                                    .into_iter()
+                                    .map(|range| {
+                                        (range.start + offset..range.end + offset, highlight)
+                                    }),
                             )
                     }),
             )
@@ -4675,6 +5342,7 @@ impl ChatWindow {
         };
         let end = range.end.min(channel.members.len());
         let start = range.start.min(end);
+        let network = channel.network;
         (start..end)
             .map(|index| {
                 let member = channel.members[index].clone();
@@ -4706,6 +5374,7 @@ impl ChatWindow {
                                         .y
                                         .min((viewport.height - px(190.)).max(px(0.))),
                                 ),
+                                network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
                             });
@@ -4941,6 +5610,14 @@ fn load_settings_at_startup() -> (Settings, Option<String>) {
 
 fn main() {
     diagnostics::init();
+    #[cfg(feature = "test-build")]
+    match cayenchat_storage::test_build_directory() {
+        Ok(directory) => eprintln!(
+            "CayenChat test build: fresh settings in {}",
+            directory.display()
+        ),
+        Err(error) => eprintln!("CayenChat test build: {error}"),
+    }
     let (saved, notice) = load_settings_at_startup();
     #[cfg(target_os = "linux")]
     select_linux_display(saved.linux_display);
@@ -4973,29 +5650,108 @@ fn main() {
             )
             .expect("could not open CayenChat window");
         cx.activate(true);
-        let needs_settings = chat_window
+        // Settings open when nothing connects at startup or a saved server
+        // cannot start, showing the first such server; valid servers still
+        // connect.
+        let settings_for = chat_window
             .update(cx, |chat, window, cx| {
                 cx.set_menus(app_menus(false, &chat.i18n));
-                match chat.startup_connection.take() {
-                    Some(Ok(config)) => chat.apply_connection(config, window, cx).is_err(),
-                    Some(Err(error)) => {
-                        chat.feedback =
-                            Some(chat.i18n.format("startup_invalid", &[("error", &error)]));
-                        cx.notify();
-                        true
+                let startup = std::mem::take(&mut chat.startup_connections);
+                let mut settings_for = startup.is_empty().then(|| chat.selected_profile_id());
+                for (network, config) in startup {
+                    let failed = match config {
+                        Ok(config) => chat.apply_connection(network, config, window, cx).is_err(),
+                        Err(error) => {
+                            chat.feedback =
+                                Some(chat.i18n.format("startup_invalid", &[("error", &error)]));
+                            cx.notify();
+                            true
+                        }
+                    };
+                    if failed && settings_for.is_none() {
+                        settings_for = Some(
+                            chat.sessions
+                                .get(&network)
+                                .map(|session| session.profile_id.clone()),
+                        );
                     }
-                    None => true,
                 }
+                settings_for
             })
             .expect("could not initialize the chat window");
-        if needs_settings {
+        if let Some(profile) = settings_for {
             chat_window
                 .update(cx, |chat, window, cx| {
-                    chat.open_settings(&OpenSettings, window, cx)
+                    chat.open_settings_for(profile, window, cx)
                 })
                 .expect("could not open the initial settings window");
         }
     });
+}
+
+#[cfg(test)]
+mod combined_log_tests {
+    use super::newest_lines;
+    use cayenchat_model::{Conversation, ConversationId, Message, NetworkId, TimeOfDay};
+
+    /// The previous implementation: every tail collected, then sorted.
+    fn collect_and_sort(
+        conversations: &[Conversation],
+        excluded: Option<ConversationId>,
+        limit: usize,
+    ) -> Vec<(u64, ConversationId, usize)> {
+        let mut rows: Vec<_> = conversations
+            .iter()
+            .filter(|c| Some(c.id) != excluded)
+            .flat_map(|c| {
+                c.messages
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, m)| !m.activity)
+                    .take(limit)
+                    .map(move |(index, m)| (m.sequence, c.id, index))
+            })
+            .collect();
+        rows.sort_unstable_by_key(|(sequence, _, _)| *sequence);
+        rows.drain(..rows.len().saturating_sub(limit));
+        rows
+    }
+
+    #[test]
+    fn merged_tails_match_collecting_and_sorting() {
+        // Interleaved arrivals across three conversations on two networks,
+        // with activity lines and an empty conversation.
+        let mut conversations: Vec<Conversation> = (0..4)
+            .map(|id| Conversation {
+                id: ConversationId(id + 1),
+                network: NetworkId(id / 2 + 1),
+                name: format!("#c{id}"),
+                topic: String::new(),
+                messages: Vec::new(),
+                members: Vec::new(),
+            })
+            .collect();
+        for sequence in 1..=500u64 {
+            let target = [0, 1, 1, 2, 0, 2, 1][sequence as usize % 7];
+            conversations[target].messages.push(Message {
+                time: TimeOfDay::new(0, 0),
+                sequence,
+                sender: "bob".into(),
+                text: String::new(),
+                activity: sequence % 5 == 0,
+            });
+        }
+        for excluded in [None, Some(ConversationId(2)), Some(ConversationId(4))] {
+            for limit in [0, 1, 7, 100, 1_000] {
+                assert_eq!(
+                    newest_lines(&conversations, excluded, limit),
+                    collect_and_sort(&conversations, excluded, limit),
+                    "excluded {excluded:?}, limit {limit}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5066,7 +5822,7 @@ mod log_tests {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::{connection_config, forget_removed_profiles, startup_connection_config};
+    use super::{connection_config, forget_removed_profiles, startup_connections};
     use cayenchat_storage::{
         CredentialBackendKind, CredentialStore, Secret, SecretKey, Settings,
         credentials::MemoryBackend,
@@ -5080,24 +5836,20 @@ mod startup_tests {
     #[test]
     fn startup_uses_only_saved_credentials_when_enabled() {
         let store = memory_store();
-        let mut settings = Settings {
-            nickname: "alice".into(),
-            username: "ident".into(),
-            ..Settings::default()
-        };
-        assert!(startup_connection_config(&settings, &store).is_none());
+        let mut settings = Settings::default();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        settings.selected_profile_mut().unwrap().nickname = "alice".into();
+        settings.selected_profile_mut().unwrap().username = "ident".into();
+        assert!(startup_connections(&settings, &store).is_empty());
 
-        settings.connect_on_startup = true;
-        settings.sasl_enabled = true;
-        settings.sasl_username = "account".into();
-        settings.selected_profile_mut().use_tls = true;
-        assert!(
-            startup_connection_config(&settings, &store)
-                .unwrap()
-                .is_err()
-        );
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.connect_on_startup = true;
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        profile.use_tls = true;
+        assert!(startup_connections(&settings, &store)[0].1.is_err());
 
-        let profile = settings.selected_profile().clone();
+        let profile = settings.selected_profile().unwrap().clone();
         store
             .set(&profile.sasl_password_key(), &Secret::new("secret"))
             .unwrap();
@@ -5108,15 +5860,12 @@ mod startup_tests {
             )
             .unwrap();
         // Saved secrets are ignored until password saving is on.
-        assert!(
-            startup_connection_config(&settings, &store)
-                .unwrap()
-                .is_err()
-        );
-        settings.selected_profile_mut().remember_passwords = true;
-        let config = startup_connection_config(&settings, &store)
-            .unwrap()
-            .unwrap();
+        assert!(startup_connections(&settings, &store)[0].1.is_err());
+        settings.selected_profile_mut().unwrap().remember_passwords = true;
+        let startup = startup_connections(&settings, &store);
+        assert_eq!(startup.len(), 1);
+        assert_eq!(startup[0].0, settings.selected_server);
+        let config = startup.into_iter().next().unwrap().1.unwrap();
         assert_eq!(config.host, "irc.ircnet.ne.jp");
         assert_eq!(config.nickname, "alice");
         assert_eq!(config.username, "ident");
@@ -5127,19 +5876,60 @@ mod startup_tests {
     }
 
     #[test]
+    fn every_server_marked_for_startup_connects_with_its_own_identity() {
+        let store = memory_store();
+        let mut settings = Settings::default();
+        settings.add_server("");
+        let custom = settings.selected_profile_mut().unwrap();
+        custom.host = "irc.example.org".into();
+        custom.nickname = "bob".into();
+        custom.username = "bob".into();
+        custom.channels = "#b".into();
+        custom.connect_on_startup = true;
+        let preset = settings.add_server(cayenchat_storage::PRESETS[0].host);
+        preset.nickname = "alice".into();
+        preset.username = "alice".into();
+        preset.channels = "#a".into();
+        preset.connect_on_startup = true;
+        let startup = startup_connections(&settings, &store);
+        // Tree order: the order the servers were added.
+        let hosts: Vec<_> = startup
+            .iter()
+            .map(|(_, config)| {
+                let config = config.as_ref().unwrap();
+                (
+                    config.host.as_str(),
+                    config.nickname.as_str(),
+                    config.channels.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            hosts,
+            [
+                ("irc.example.org", "bob", vec!["#b".to_owned()]),
+                ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
+            ]
+        );
+    }
+
+    #[test]
     fn nickname_and_username_stay_independent_without_credentials() {
-        let mut settings = Settings {
-            nickname: "alice".into(),
-            username: "someone".into(),
-            ..Settings::default()
-        };
-        let config = connection_config(&settings, None, None).unwrap();
+        let mut settings = Settings::default();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        settings.selected_profile_mut().unwrap().nickname = "alice".into();
+        settings.selected_profile_mut().unwrap().username = "someone".into();
+        let language = settings.language;
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
         assert_eq!(config.nickname, "alice");
         assert_eq!(config.username, "someone");
         assert!(config.server_password.is_none());
         assert!(config.sasl.is_none());
-        settings.username.clear();
-        assert!(connection_config(&settings, None, None).is_err());
+        settings.selected_profile_mut().unwrap().username.clear();
+        assert!(
+            connection_config(settings.selected_profile().unwrap(), language, None, None).is_err()
+        );
     }
 
     #[test]
@@ -5148,31 +5938,33 @@ mod startup_tests {
         for legacy in [true, false] {
             let store = memory_store();
             let mut previous = Settings::default();
-            previous.add_custom_server();
-            previous.selected_profile_mut().host = "old.example.org".into();
-            previous.selected_profile_mut().remember_passwords = true;
+            previous.add_server("");
+            previous.selected_profile_mut().unwrap().host = "old.example.org".into();
+            previous.selected_profile_mut().unwrap().remember_passwords = true;
             if legacy {
-                previous.selected_profile_mut().id = "custom-1".into();
+                previous.selected_profile_mut().unwrap().id = "custom-1".into();
                 previous.selected_server = "custom-1".into();
             }
-            let removed = previous.selected_profile().clone();
+            let removed = previous.selected_profile().unwrap().clone();
             for key in [removed.server_password_key(), removed.sasl_password_key()] {
                 store.set(&key, &Secret::new("old-password")).unwrap();
             }
 
             let mut next = previous.clone();
-            next.remove_selected_custom_server();
-            next.add_custom_server();
-            next.selected_profile_mut().host = "new.example.org".into();
-            next.selected_profile_mut().remember_passwords = true;
-            next.sasl_enabled = true;
+            next.remove_selected_server();
+            next.add_server("");
+            next.selected_profile_mut().unwrap().host = "new.example.org".into();
+            next.selected_profile_mut().unwrap().remember_passwords = true;
+            next.selected_profile_mut().unwrap().sasl_enabled = true;
 
             // Connecting reads saved credentials before committing settings.
             let i18n = super::Localizer::new(next.language);
-            let (server, sasl) = super::saved_connection_secrets(&next, &store, &i18n).unwrap();
+            let (server, sasl) =
+                super::saved_connection_secrets(next.selected_profile().unwrap(), &store, &i18n)
+                    .unwrap();
             assert!(server.is_none());
             assert!(sasl.is_none());
-            assert_ne!(next.selected_profile().id, removed.id);
+            assert_ne!(next.selected_profile().unwrap().id, removed.id);
 
             forget_removed_profiles(&previous, &next, &store);
             assert!(!store.contains(&removed.server_password_key()).unwrap());
@@ -5184,20 +5976,30 @@ mod startup_tests {
     fn removed_profiles_lose_their_saved_passwords() {
         let store = memory_store();
         let mut previous = Settings::default();
-        previous.add_custom_server();
-        previous.selected_profile_mut().host = "irc.example.org".into();
-        let removed = previous.selected_profile().clone();
+        previous.add_server("");
+        previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        let removed = previous.selected_profile().unwrap().clone();
         let kept = SecretKey::server_password(cayenchat_storage::IRCNET_ID);
         store
             .set(&removed.server_password_key(), &Secret::new("x"))
             .unwrap();
         store.set(&kept, &Secret::new("y")).unwrap();
         let mut next = previous.clone();
-        next.remove_selected_custom_server();
+        next.remove_selected_server();
         forget_removed_profiles(&previous, &next, &store);
         assert!(store.get(&removed.server_password_key()).unwrap().is_none());
         assert!(store.get(&kept).unwrap().is_some());
     }
+}
+
+/// Default settings whose selected server auto-joins `channels`.
+#[cfg(test)]
+fn settings_with_channels(channels: &str) -> Settings {
+    let mut settings = Settings::default();
+    settings
+        .add_server(cayenchat_storage::PRESETS[0].host)
+        .channels = channels.into();
+    settings
 }
 
 #[cfg(test)]
@@ -5218,11 +6020,8 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let mut settings = Settings {
-            channels: "#a,#b".into(),
-            language: cayenchat_storage::Language::English,
-            ..Settings::default()
-        };
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
         settings.notifications.keywords = vec!["deploy".into()];
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
@@ -5235,6 +6034,7 @@ mod pane_tests {
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
+                NetworkId(1),
                 vec![
                     Event::Registered {
                         nickname: "alice".into(),
@@ -5254,6 +6054,7 @@ mod pane_tests {
             ));
             chat.window_active = true;
             chat.handle_events(
+                NetworkId(1),
                 vec![
                     message("#a", "alice: visible already", true),
                     message("#b", "hello", false),
@@ -5275,9 +6076,19 @@ mod pane_tests {
                 cx,
             );
             chat.window_active = false;
-            chat.handle_events(vec![message("#a", "alice: away now", true)], false, cx);
+            chat.handle_events(
+                NetworkId(1),
+                vec![message("#a", "alice: away now", true)],
+                false,
+                cx,
+            );
             chat.notification_rules.mentions = false;
-            chat.handle_events(vec![message("#a", "alice: ignored", true)], false, cx);
+            chat.handle_events(
+                NetworkId(1),
+                vec![message("#a", "alice: ignored", true)],
+                false,
+                cx,
+            );
             let summaries: Vec<_> = chat
                 .notifier
                 .shown
@@ -5300,9 +6111,18 @@ mod pane_tests {
             );
             assert!(!chat.state.is_highlighted(a.id));
             assert!(chat.state.is_highlighted(b.id));
-            assert!(chat.highlight_ranges(&b.messages[0]).is_empty());
-            assert_eq!(chat.highlight_ranges(&b.messages[1]), vec![(1..6)]);
-            assert_eq!(chat.highlight_ranges(&b.messages[2]), vec![(0..6)]);
+            assert!(
+                chat.highlight_ranges(NetworkId(1), &b.messages[0])
+                    .is_empty()
+            );
+            assert_eq!(
+                chat.highlight_ranges(NetworkId(1), &b.messages[1]),
+                vec![(1..6)]
+            );
+            assert_eq!(
+                chat.highlight_ranges(NetworkId(1), &b.messages[2]),
+                vec![(0..6)]
+            );
         });
     }
 
@@ -5317,15 +6137,13 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = Settings {
-            channels: String::new(),
-            ..Settings::default()
-        };
+        let settings = crate::settings_with_channels("");
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
         let channel = "!ABCDEtest";
         chat.update(cx, |chat, cx| {
             chat.handle_events(
+                NetworkId(1),
                 vec![
                     Event::Registered {
                         nickname: "alice".into(),
@@ -5377,6 +6195,7 @@ mod pane_tests {
             chat.state
                 .dispatch(cayenchat_app::Command::SelectChannel(id));
             chat.handle_events(
+                NetworkId(1),
                 vec![Event::Parted {
                     channel: channel.into(),
                 }],
@@ -5387,10 +6206,228 @@ mod pane_tests {
             assert!(chat.state.conversations()[0].members.is_empty());
         });
         cx.run_until_parked();
+        // The server and the joined channel.
         assert_eq!(
             chat.read_with(cx, |chat, _| chat.tree_list.state.item_count()),
             2
         );
+    }
+
+    #[gpui::test]
+    fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppContext) {
+        use cayenchat_app::ConnectionStatus;
+        use cayenchat_irc_core::{Event, WireDirection};
+        use std::time::Duration;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        settings.selected_profile_mut().unwrap().channels = "#a".into();
+        let custom = settings.selected_server.clone();
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        // Tree order: the order the servers were added.
+        let (ircnet, custom_net) = (NetworkId(1), NetworkId(2));
+        let session_events = |channel: &str, text: &str| {
+            vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                Event::Joined {
+                    channel: channel.into(),
+                },
+                Event::Wire {
+                    elapsed: Duration::ZERO,
+                    direction: WireDirection::Received,
+                    line: text.into(),
+                },
+                Event::ChannelMessage {
+                    channel: channel.into(),
+                    sender: "bob".into(),
+                    text: text.into(),
+                    notice: false,
+                    mentioned: false,
+                },
+            ]
+        };
+        chat.update(cx, |chat, cx| {
+            assert_eq!(chat.state.networks().len(), 2);
+            assert_eq!(chat.sessions[&custom_net].profile_id, custom);
+            chat.handle_events(custom_net, session_events("#a", "custom"), false, cx);
+            chat.handle_events(ircnet, session_events("#a", "ircnet"), false, cx);
+            fn texts(chat: &ChatWindow, network: NetworkId) -> Vec<String> {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .filter(|c| c.network == network)
+                    .flat_map(|c| c.messages.iter().map(|m| m.text.clone()))
+                    .collect()
+            }
+            // Same channel name on two servers: separate conversations.
+            assert_eq!(texts(chat, custom_net), ["custom"]);
+            assert_eq!(texts(chat, ircnet), ["ircnet"]);
+            assert_eq!(chat.sessions[&custom_net].diagnostics.len(), 1);
+            assert_eq!(chat.sessions[&ircnet].diagnostics.len(), 1);
+
+            // A disconnect on one server leaves the other registered.
+            chat.handle_events(
+                custom_net,
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(matches!(
+                chat.state.status(custom_net),
+                Some(ConnectionStatus::Disconnected(_))
+            ));
+            assert_eq!(
+                chat.state.status(ircnet),
+                Some(&ConnectionStatus::Registered)
+            );
+
+            // Removing the server from the settings drops it and its state.
+            let removed: Vec<_> = chat
+                .state
+                .conversations()
+                .iter()
+                .filter(|c| c.network == custom_net)
+                .map(|c| c.id)
+                .collect();
+            let mut next = settings.clone();
+            next.remove_selected_server();
+            chat.apply_servers(next, cx);
+            assert_eq!(chat.state.networks().len(), 1);
+            assert!(!chat.sessions.contains_key(&custom_net));
+            assert!(
+                removed
+                    .iter()
+                    .all(|id| !chat.inputs.contains_key(&Selection::Channel(*id)))
+            );
+            assert_eq!(texts(chat, ircnet), ["ircnet"]);
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn each_server_that_rejects_a_nickname_gets_its_own_field(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.add_server("");
+        settings.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (first, second) = (NetworkId(1), NetworkId(2));
+        let rejected = |nickname: &str| {
+            vec![Event::NicknameRejected {
+                nickname: nickname.into(),
+            }]
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(first, rejected("alice"), false, cx);
+            chat.handle_events(second, rejected("bob"), false, cx);
+        });
+        cx.run_until_parked();
+        let rows = |chat: &ChatWindow, cx: &gpui::App| {
+            chat.nick_prompts
+                .iter()
+                .map(|prompt| {
+                    (
+                        prompt.network,
+                        prompt.rejected.clone(),
+                        prompt.input.read(cx).text().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            chat.read_with(cx, |chat, cx| rows(chat, cx)),
+            [
+                (first, "alice".into(), "alice_".into()),
+                (second, "bob".into(), "bob_".into())
+            ]
+        );
+        // The first new row has focus; typing goes there, not into the draft.
+        cx.simulate_input("x");
+        assert_eq!(
+            chat.read_with(cx, |chat, cx| rows(chat, cx))[0].2,
+            "alice_x"
+        );
+
+        // A second rejection on the same server updates its row.
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(first, rejected("alice_x"), false, cx)
+        });
+        let after = chat.read_with(cx, |chat, cx| rows(chat, cx));
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0], (first, "alice_x".into(), "alice_x_".into()));
+
+        // Registration on one server closes only its row.
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                first,
+                vec![Event::Registered {
+                    nickname: "alice_x_".into(),
+                }],
+                false,
+                cx,
+            )
+        });
+        assert_eq!(
+            chat.read_with(cx, |chat, cx| rows(chat, cx)),
+            [(second, "bob".into(), "bob_".into())]
+        );
+    }
+
+    #[gpui::test]
+    fn starts_without_servers_and_shows_one_once_added(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(Settings::default(), None, window, cx)
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert!(chat.state.networks().is_empty());
+            assert_eq!(chat.state.selection(), Selection::None);
+            assert_eq!(chat.tree_list.state.item_count(), 0);
+            assert!(chat.startup_connections.is_empty());
+        });
+        // The draft still accepts text and Enter reports that nothing is connected.
+        cx.simulate_input("hello");
+        cx.dispatch_action(super::SendMessage);
+        chat.read_with(cx, |chat, _| assert!(chat.feedback.is_some()));
+
+        let settings = crate::settings_with_channels("#a");
+        chat.update(cx, |chat, cx| chat.apply_servers(settings, cx));
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.state.networks().len(), 1);
+            assert_eq!(chat.state.networks()[0].name, "irc.ircnet.ne.jp");
+            assert_eq!(chat.tree_list.state.item_count(), 2);
+        });
     }
 
     #[gpui::test]
@@ -5403,10 +6440,7 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ))
         });
-        let settings = Settings {
-            channels: "#a,#b".into(),
-            ..Settings::default()
-        };
+        let settings = crate::settings_with_channels("#a,#b");
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
         cx.run_until_parked();
@@ -5423,7 +6457,7 @@ mod pane_tests {
         cx.run_until_parked();
         let rendered = chat.read_with(cx, |chat, _| chat.pane_renders);
         assert!(rendered >= 4, "panes rendered {rendered} times");
-        // One server row and the two configured channels.
+        // The server row and the two configured channels.
         assert_eq!(
             chat.read_with(cx, |chat, _| chat.tree_list.state.item_count()),
             3

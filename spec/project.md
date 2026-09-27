@@ -68,6 +68,8 @@ The initial connection layer uses `irc` 1.1.0 behind the GPUI-free `irc-core` bo
 4. Keep common actions immediately available and predictable.
 5. Preserve IRC concepts instead of hiding them behind proprietary abstractions.
 6. The client should remain comfortable during long-running use with many channels.
+   Lightweight, low-memory and fast operation is a requirement; see
+   `performance.md`.
 7. Avoid unnecessary animation, decorative chrome, cards, bubbles, and oversized controls.
 8. Keep text editing consistent with standard OS key bindings; app navigation must not
    take over text-editing shortcuts while the draft has focus.

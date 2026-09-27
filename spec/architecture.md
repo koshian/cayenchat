@@ -146,6 +146,9 @@ channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+The performance measures above, the current resource bounds and the
+measurement baseline are listed in `spec/performance.md`; keep them when
+adding servers or media.
 
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
@@ -158,10 +161,12 @@ There are no dependency cycles and GPUI occurs only in `ui`.
 
 `irc-core::Connection` owns a dedicated current-thread Tokio runtime. It translates
 the `irc` crate's messages into owned application events and accepts bounded outgoing
-commands. TCP/TLS connection and registration do not block GPUI. The UI moves the
-connection's `Events` stream into a GPUI task that sleeps until the worker sends
-something, applies up to 256 events per update to `app::AppState`, redraws, and
-yields between batches of a burst. An earlier 50 ms poll handled at most 64
+commands. TCP/TLS connection and registration do not block GPUI. Each connected
+server has its own `Connection`, thread and runtime. The UI moves each
+connection's `Events` stream into its own GPUI task that sleeps until the worker
+sends something, applies up to 256 events per update to `app::AppState` for that
+server's network, redraws, and yields between batches of a burst, so a busy
+server cannot hold back another's lines beyond one batch. An earlier 50 ms poll handled at most 64
 events per tick (about 640 incoming lines per second, since each line also
 produces a wire diagnostic), delayed every line and woke 20 times a second while
 idle. QUIT and NICK republish rosters only for channels that contained the user.
@@ -188,7 +193,9 @@ USER), the credential backend choice and the image upload provider, and stops
 reading passwords from the file except to migrate them. Version 12 adds
 notification preferences (enabled, mentions, keyword alerts, keywords and
 private messages) and a highlight color to the light and dark pane colors;
-older settings enable them all with no keywords. The UI keeps the
+older settings enable them all with no keywords. Version 13 moves the
+nickname, username, channels, SASL account and startup connection into each
+server profile (D017). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -236,16 +243,18 @@ off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
 requires TLS before sending either server PASS or SASL PLAIN credentials. The nickname (`NICK`), the `USER` username and the SASL account are separate
 settings; `ConnectionConfig` carries the username explicitly and its `Debug`
-output redacts both passwords. The core supports one connection, auto-join, channel
-messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands.
+output redacts both passwords. Each core connection supports auto-join, channel
+messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands; the UI runs one
+per connected server.
 Channel target validation is shared by the core and the UI's outgoing-message
 routing and accepts `#`, `&` and IRCnet `!` channels.
 Safe-channel short names are sent unchanged in JOIN; the server's returned full
 name (including its five-character identifier) is used for the conversation,
 roster, messages and subsequent commands, and is preserved in WHOIS channel links.
 Its SASL state machine negotiates CAP, sends PLAIN credentials, and waits for
-success before ending CAP negotiation. The UI retains the active connection configuration and
-retries unexpected disconnections after 3, 6, 12, 24, then 30 seconds (capped).
+success before ending CAP negotiation. The UI retains each server's active connection
+configuration and retries its unexpected disconnections after 3, 6, 12, 24, then 30
+seconds (capped), independently of the other servers.
 The core allows 15 seconds for TCP/TLS and 90 seconds for registration (001):
 IRCnet holds registration about 30 seconds when a client's ident port 113
 silently drops packets, which a 30-second limit turned into a reconnect loop.
@@ -257,11 +266,12 @@ because repeating rejected credentials risks account lockout or a server ban.
 The `irc` library consumes 432/433 and reports `NoUsableNick` because no
 alternate nicknames are configured; the stream stays usable afterwards. Before
 registration the core turns it into `NicknameRejected`, pauses its registration
-timeout and keeps the link open. The UI opens a centered prompt prefilled with
-the rejected nick plus `_`; submitting sends NICK (or reconnects if the server
+timeout and keeps the link open. The UI adds a row for that server to the
+nickname dialog, prefilled with the rejected nick plus `_` (see Servers and
+sessions); submitting sends NICK (or reconnects if the server
 closed the link, which the core reports as `Refused` so it is not retried with
 the same nick) and replaces the nickname for this session's reconnects without
-changing saved settings. Cancel disconnects. After registration a rejected
+changing saved settings. Disconnect closes that server's connection. After registration a rejected
 `/nick` only produces a server line instead of dropping the connection.
 Reconnection preserves the in-memory conversation logs and drafts. A
 complete membership event reducer remains future work.
@@ -292,9 +302,13 @@ The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
 double-click. The lower combined log retains click-to-channel navigation.
 
-Version 4 settings keep several server profiles, ordered with user-added entries
-before built-in presets. Host/port/TLS/certificate verification/encoding are per
-profile; the single live connection and nickname/channel list remain application-wide. Versions 1–3
+Version 4 settings keep several server profiles. Since version 13 the list
+starts empty: the IRCnet hosts are `storage::PRESETS`, offered only when adding
+a server, and every profile is editable and removable in the order added.
+Host/port/TLS/certificate verification/encoding are per
+profile; version 13 moves the nickname, `USER` username, auto-join channels,
+SASL account and startup connection into each profile too (see Servers and
+sessions below). Versions 1–3
 are migrated on load, as are version 4 settings. `irc-core` passes the profile's encoding to the `irc` line
 codec so protocol parameters, including channel names, and message text use the
 same wire charset. It strictly validates outgoing encoding and wire length before
@@ -315,6 +329,36 @@ below the title bar reveals the menu bar on Linux/Windows) or keyboard shortcuts
 buttons. Displaying diagnostics selects the server view, enables the transcript
 and scrolls to its start; copying exports the retained transcript regardless of
 the selected pane.
+
+### Servers and sessions
+
+Every server profile in the settings is a network in the channel tree,
+connected or not, in the order added. With no servers the selection is
+`Selection::None`: the tree is empty, the main log explains how to add one
+and settings open at startup. `ui::session::ServerSession`
+holds everything per connection: the `Connection`, the configuration reused by
+reconnects, retry state, the current nickname, pending WHOIS nicknames and a
+bounded transcript (1,000 lines per server). The chat window keys sessions by
+`NetworkId`; a profile keeps its network for the whole run. Events carry no
+network, so each event pump applies its batch to the network it was started
+for. Context menus, prompts and WHOIS windows remember their network and act
+on that server only. Rejected nicknames get one row per server in a single
+dialog, in arrival order: each row names the server, pre-fills the rejected
+nick plus `_`, and offers Retry or Disconnect; a repeated rejection updates
+the server's row and registration closes it. A new row takes focus unless
+another nickname field already has it, and Enter submits the focused row. Menu commands
+(Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server; the
+settings window's Save and connect and Disconnect act on the server being
+edited. Saving settings adds, renames or removes networks: a removed server is
+disconnected and its conversations, drafts and scroll state are dropped.
+Connecting a server replaces only that server's conversations with its
+configured channels; the other servers keep their logs. All servers marked
+Connect when the app starts connect at launch. Servers not used in this run
+show no connection mark and offer Connect instead of Reconnect in their
+context menu; connecting one uses its saved settings and stored passwords, or
+opens the settings on that server when they are incomplete.
+There is no application-wide bound on logs, conversations or transcripts yet;
+see `performance.md`.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels

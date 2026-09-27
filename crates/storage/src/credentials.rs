@@ -23,8 +23,12 @@ use std::{
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// Service name under which system-store entries are filed.
+/// Service name under which system-store entries are filed. Test builds use
+/// their own, so they never read or overwrite a user's saved passwords.
+#[cfg(not(feature = "test-build"))]
 pub const SERVICE: &str = "CayenChat";
+#[cfg(feature = "test-build")]
+pub const SERVICE: &str = "CayenChat Test Build";
 const LOCAL_FILE_VERSION: u32 = 1;
 /// Account label for uploader tokens; one account per provider for now.
 pub const DEFAULT_UPLOADER_ACCOUNT: &str = "default";
@@ -330,7 +334,11 @@ impl CredentialBackend for SystemBackend {
 /// `~/.config/cayenchat`) on Linux and other Unix desktops, the CayenChat
 /// configuration directory elsewhere.
 pub fn local_credentials_path() -> Result<PathBuf, String> {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(feature = "test-build")]
+    {
+        Ok(crate::test_build_directory()?.join("credentials.json"))
+    }
+    #[cfg(all(unix, not(target_os = "macos"), not(feature = "test-build")))]
     {
         let directory = xdg_config_home(
             std::env::var_os("XDG_CONFIG_HOME"),
@@ -339,7 +347,7 @@ pub fn local_credentials_path() -> Result<PathBuf, String> {
         .ok_or("Could not find the user configuration directory.")?;
         Ok(directory.join("cayenchat").join("credentials.json"))
     }
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    #[cfg(all(not(all(unix, not(target_os = "macos"))), not(feature = "test-build")))]
     {
         let directory =
             dirs::config_dir().ok_or("Could not find the user configuration directory.")?;
@@ -349,7 +357,10 @@ pub fn local_credentials_path() -> Result<PathBuf, String> {
 
 /// The XDG Base Directory rule: a relative or empty `XDG_CONFIG_HOME` is
 /// ignored in favor of `$HOME/.config`.
-#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+#[cfg_attr(
+    any(not(all(unix, not(target_os = "macos"))), feature = "test-build"),
+    allow(dead_code)
+)]
 fn xdg_config_home(xdg: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
     xdg.map(PathBuf::from)
         .filter(|path| path.is_absolute())
