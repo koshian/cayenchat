@@ -10,8 +10,10 @@ mod menu_bar;
 mod notifier;
 #[cfg(test)]
 mod perf_baseline;
+mod previews;
 mod secrets;
 mod session;
+mod settings_theme;
 mod theme;
 mod whois;
 
@@ -86,6 +88,8 @@ actions!(
         ToggleDebug,
         CopyDiagnostics,
         CopyLogSelection,
+        FocusNextField,
+        FocusPreviousField,
         Quit
     ]
 );
@@ -149,7 +153,7 @@ impl SettingsForm {
         let profile = values.selected_profile().unwrap_or(&empty);
         let field =
             |placeholder: &str, value: &str, secret: bool, cx: &mut Context<SettingsWindow>| {
-                cx.new(|cx| TextInput::new_field(placeholder, value, secret, cx))
+                cx.new(|cx| TextInput::new_settings_field(placeholder, value, secret, cx))
             };
         Self {
             custom_host: field(
@@ -334,6 +338,7 @@ impl SettingsForm {
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
+            image_previews: self.values.appearance.image_previews,
             main_log_font: value(&self.main_log_font),
             sub_log_font: value(&self.sub_log_font),
             member_font: value(&self.member_font),
@@ -698,6 +703,8 @@ struct ChatWindow {
     notifier: Notifier,
     notification_rules: NotificationRules,
     notification_burst: BurstLimiter,
+    /// Inline image previews in the main channel log (application-wide).
+    previews: previews::Previews,
     /// Whether the chat window has keyboard focus; messages in the selected
     /// conversation of a focused window are already visible.
     window_active: bool,
@@ -983,6 +990,7 @@ impl ChatWindow {
             theme_mode: saved.theme,
             image_provider: saved.image_upload.provider.clone(),
             notification_rules: notification_rules(&saved.notifications),
+            previews: previews::Previews::new(saved.appearance.image_previews),
             saved,
             i18n,
             log_focus: cx.focus_handle(),
@@ -1103,6 +1111,9 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         theme::apply(mode, &appearance, cx);
+        // Off: no more requests, pending loads are cancelled or ignored and
+        // decoded images are released on the next draw.
+        self.previews.set_enabled(appearance.image_previews);
         self.appearance = appearance;
         self.theme_mode = mode;
         // Fonts and row styles are drawn by the cached panes.
@@ -1235,6 +1246,10 @@ impl ChatWindow {
             self.inputs.remove(&Selection::Channel(*id));
             self.main_lists.remove(&Selection::Channel(*id));
         }
+        self.previews.retain_rows(|row| match row.selection {
+            Selection::Channel(id) => !removed.contains(&id),
+            _ => true,
+        });
         if self
             .log_selection
             .is_some_and(|selection| removed.contains(&selection.channel))
@@ -2584,13 +2599,15 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let i18n = Localizer::new(values.language);
+        settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
         let mut fonts = window.text_system().all_font_names();
         fonts.sort_unstable();
         fonts.dedup();
-        let upload_token =
-            cx.new(|cx| TextInput::new_field(&i18n.text("image_token_placeholder"), "", true, cx));
+        let upload_token = cx.new(|cx| {
+            TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
+        });
         let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
         for field in settings.text_fields() {
             subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
@@ -3068,7 +3085,7 @@ impl SettingsWindow {
     }
 
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
@@ -3264,12 +3281,7 @@ impl SettingsWindow {
                     .pt_2()
                     .when(!no_server, |d| {
                         d.child(
-                            div()
-                                .id("connect-button")
-                                .px_3()
-                                .py_1()
-                                .bg(theme.selected)
-                                .cursor_pointer()
+                            settings_theme::button("connect-button", true, cx)
                                 .child(self.i18n.text("connect"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.connect_from_settings(window, cx)
@@ -3277,13 +3289,7 @@ impl SettingsWindow {
                         )
                     })
                     .child(
-                        div()
-                            .id("back-button")
-                            .px_3()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
-                            .cursor_pointer()
+                        settings_theme::button("back-button", false, cx)
                             .child(self.i18n.text("back"))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
@@ -3291,13 +3297,7 @@ impl SettingsWindow {
                     )
                     .when(!no_server, |d| {
                         d.child(
-                            div()
-                                .id("disconnect-button")
-                                .px_3()
-                                .py_1()
-                                .border_1()
-                                .border_color(theme.border)
-                                .cursor_pointer()
+                            settings_theme::button("disconnect-button", false, cx)
                                 .child(self.i18n.text("disconnect"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     // Disconnects the server being edited.
@@ -3316,7 +3316,7 @@ impl SettingsWindow {
 
     /// Everything on the Connection tab that belongs to `profile`.
     fn render_server_fields(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let tls = profile.use_tls;
         let sasl = profile.sasl_enabled;
         let mut encoding_selector = div().flex().flex_col().child(
@@ -3411,11 +3411,11 @@ impl SettingsWindow {
                     .child(
                         div()
                             .id("tls-toggle")
-                            .px_2()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .cursor_pointer()
+                            .child(settings_theme::checkbox(tls, true, cx))
                             .child(self.i18n.text(if tls { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
                     ),
@@ -3434,11 +3434,15 @@ impl SettingsWindow {
                         .child(
                             div()
                                 .id("certificate-verification-toggle")
-                                .px_2()
-                                .py_1()
-                                .border_1()
-                                .border_color(theme.border)
+                                .flex()
+                                .items_center()
+                                .gap_2()
                                 .cursor_pointer()
+                                .child(settings_theme::checkbox(
+                                    profile.verify_tls_certificates,
+                                    true,
+                                    cx,
+                                ))
                                 .child(self.i18n.text(if profile.verify_tls_certificates {
                                     "on"
                                 } else {
@@ -3484,11 +3488,11 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if profile.connect_on_startup {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        profile.connect_on_startup,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("connect_on_startup"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(profile) = this.settings.values.selected_profile_mut() {
@@ -3521,11 +3525,11 @@ impl SettingsWindow {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if profile.remember_passwords {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        profile.remember_passwords,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("remember_passwords"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_remember_passwords(window, cx)
@@ -3546,11 +3550,11 @@ impl SettingsWindow {
                     .child(
                         div()
                             .id("sasl-toggle")
-                            .px_2()
-                            .py_1()
-                            .border_1()
-                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .cursor_pointer()
+                            .child(settings_theme::checkbox(sasl, true, cx))
                             .child(self.i18n.text(if sasl { "on" } else { "off" }))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
                     ),
@@ -3579,7 +3583,7 @@ impl SettingsWindow {
     }
 
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
         let mut field = div().flex().flex_col().child(
             div()
@@ -3664,7 +3668,7 @@ impl SettingsWindow {
     }
 
     fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         div()
             .w(px(680.))
             .p_4()
@@ -3755,17 +3759,42 @@ impl SettingsWindow {
                     .flex()
                     .gap_2()
                     .cursor_pointer()
-                    .child(if self.settings.values.appearance.alternate_rows {
-                        "☑"
-                    } else {
-                        "☐"
-                    })
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.alternate_rows,
+                        true,
+                        cx,
+                    ))
                     .child(self.i18n.text("alternate_rows"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         let value = &mut this.settings.values.appearance.alternate_rows;
                         *value = !*value;
                         cx.notify();
                     })),
+            )
+            .child(
+                div()
+                    .id("image-previews")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.image_previews,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("image_previews"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.image_previews;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("image_previews_hint")),
             )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
@@ -3799,7 +3828,7 @@ impl SettingsWindow {
     /// Channel-number and draft-editing keys; only Windows and Linux have
     /// choices here, so macOS hides this tab.
     fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let hint = |key: &str| {
             div()
                 .ml(px(158.))
@@ -3866,7 +3895,7 @@ impl SettingsWindow {
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         div()
             .id(id)
             .ml(px(158.))
@@ -3875,11 +3904,11 @@ impl SettingsWindow {
             .gap_2()
             .when(!enabled, |d| d.text_color(theme.text_secondary))
             .when(enabled, |d| d.cursor_pointer())
-            .child(if get(&self.settings.values.notifications) {
-                "☑"
-            } else {
-                "☐"
-            })
+            .child(settings_theme::checkbox(
+                get(&self.settings.values.notifications),
+                enabled,
+                cx,
+            ))
             .child(self.i18n.text(label_key))
             .when(enabled, |d| {
                 d.on_click(cx.listener(move |this, _, _, cx| {
@@ -3892,7 +3921,7 @@ impl SettingsWindow {
     /// Desktop notification preferences, shown through the operating
     /// system's notification service.
     fn render_notification_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let enabled = self.settings.values.notifications.enabled;
         let hint = |key: &str| {
             div()
@@ -3971,7 +4000,7 @@ impl SettingsWindow {
         label_key: &str,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         div()
             .id(id)
             .px_4()
@@ -3997,7 +4026,7 @@ impl SettingsWindow {
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let border = theme.border;
         let tabs = div()
             .flex()
@@ -4035,8 +4064,7 @@ impl SettingsWindow {
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
         };
-        div()
-            .id("settings-screen")
+        field_traversal(div().id("settings-screen"))
             .key_context("SettingsWindow")
             .size_full()
             .flex()
@@ -4044,6 +4072,10 @@ impl SettingsWindow {
             .overflow_y_scroll()
             .bg(theme.window)
             .text_size(px(13.))
+            .when_some(settings_theme::current(cx), |d, native| {
+                d.font_family(native.defaults.font.family.clone())
+                    .text_size(px(native.defaults.font.size))
+            })
             .text_color(theme.text)
             .child(
                 div().w_full().flex().justify_center().child(
@@ -4211,6 +4243,41 @@ fn styled_log_text(
         ))
     });
     StyledText::new(text.to_owned()).with_highlights(highlights)
+}
+
+/// A preview below a message: the thumbnail, or a box of the full height
+/// while it loads. A double-click opens the link, like on the text.
+fn preview_element(
+    link: String,
+    shown: previews::Shown,
+    index: usize,
+    theme: &Theme,
+    cx: &mut Context<ChatWindow>,
+) -> AnyElement {
+    let frame = div()
+        .id(("message-preview", index))
+        .mt(px(2.))
+        .mb(px(1.))
+        .flex_shrink_0();
+    match shown {
+        previews::Shown::Image(preview) => frame
+            .w(px(preview.width))
+            .h(px(preview.height))
+            .cursor_pointer()
+            .child(img(preview.image).size_full())
+            .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    cx.open_url(&link);
+                }
+            }))
+            .into_any_element(),
+        previews::Shown::Pending => frame
+            .w(px(previews::BOX_HEIGHT as f32 * 4. / 3.))
+            .h(px(previews::BOX_HEIGHT as f32))
+            .border_1()
+            .border_color(theme.border)
+            .into_any_element(),
+    }
 }
 
 impl Render for SettingsWindow {
@@ -5020,12 +5087,19 @@ struct ChatPane {
 }
 
 impl Render for ChatPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kind = self.kind;
         // Rows and their listeners belong to the chat window, so build them in
         // its context; it is not being updated while panes lay out.
         self.chat
-            .update(cx, |chat, cx| chat.render_pane(kind, cx))
+            .update(cx, |chat, cx| {
+                // Only while the main log redraws: a reused (cached) pane
+                // replays sprites that may still point at these images.
+                if matches!(kind, PaneKind::MainLog) {
+                    chat.previews.release(window);
+                }
+                chat.render_pane(kind, cx)
+            })
             .unwrap_or_else(|_| div().into_any_element())
     }
 }
@@ -5299,6 +5373,21 @@ impl ChatWindow {
             return div().into_any_element();
         };
         let urls = log_urls(&message.text);
+        // Channel activity lines stay text-only.
+        let preview = if message.activity {
+            None
+        } else {
+            self.previews.lookup(
+                &urls,
+                previews::RowRef {
+                    selection: Selection::Channel(selected_channel),
+                    sequence: message.sequence,
+                },
+            )
+        };
+        if matches!(preview, Some((_, previews::Shown::Pending))) {
+            self.pump_previews(cx);
+        }
         let selected_range = self
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
@@ -5346,10 +5435,10 @@ impl ChatWindow {
                         .child(":"),
                 )
             })
-            .child(
-                div()
+            .child({
+                let text = div()
                     .id(("message-text", index))
-                    .flex_1()
+                    .when(preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
                     .cursor(CursorStyle::IBeam)
@@ -5382,8 +5471,19 @@ impl ChatWindow {
                                 cx.open_url(url);
                             }
                         }
-                    })),
-            )
+                    }));
+                match preview {
+                    None => text.into_any_element(),
+                    Some((link, shown)) => div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(text)
+                        .child(preview_element(link, shown, index, &theme, cx))
+                        .into_any_element(),
+                }
+            })
             .into_any_element()
     }
 
@@ -5640,12 +5740,23 @@ fn rebind_shortcuts(cx: &mut App) {
     cx.bind_keys(shortcut_bindings(prefs.channel_modifier));
 }
 
+/// Standard Tab / Shift+Tab movement between settings fields (tab stops).
+fn field_traversal<E: InteractiveElement>(element: E) -> E {
+    element
+        .on_action(|_: &FocusNextField, window, _| window.focus_next())
+        .on_action(|_: &FocusPreviousField, window, _| window.focus_prev())
+}
+
 #[cfg_attr(target_os = "macos", allow(unused_variables))]
 fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
     let mut bindings = vec![
-        KeyBinding::new("tab", CompleteNickname, Some("TextInput")),
-        KeyBinding::new("enter", SendMessage, Some("TextInput")),
-        KeyBinding::new("ctrl-enter", Notice, Some("TextInput")),
+        // Chat-only: settings fields keep the platform's Tab traversal and
+        // are never captured by chat commands.
+        KeyBinding::new("tab", CompleteNickname, Some("ChatWindow > TextInput")),
+        KeyBinding::new("enter", SendMessage, Some("ChatWindow > TextInput")),
+        KeyBinding::new("ctrl-enter", Notice, Some("ChatWindow > TextInput")),
+        KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
+        KeyBinding::new("shift-tab", FocusPreviousField, Some("SettingsWindow")),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-shift-d", ToggleDebug, None),
         KeyBinding::new("secondary-shift-l", CopyDiagnostics, None),
@@ -6635,5 +6746,109 @@ mod pane_tests {
                 .item_count()
         });
         assert!(rows >= 1);
+    }
+}
+
+#[cfg(test)]
+mod field_traversal_tests {
+    use super::{CompleteNickname, field_traversal, shortcut_bindings};
+    use crate::input::TextInput;
+    use cayenchat_storage::ChannelNumberModifier;
+    use gpui::{
+        Context, Entity, Focusable, Render, TestAppContext, VisualTestContext, Window, div,
+        prelude::*,
+    };
+
+    struct Settings {
+        fields: Vec<Entity<TextInput>>,
+    }
+    impl Render for Settings {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            field_traversal(div().id("settings"))
+                .key_context("SettingsWindow")
+                .children(self.fields.clone())
+        }
+    }
+
+    struct Chat {
+        draft: Entity<TextInput>,
+        completions: usize,
+    }
+    impl Render for Chat {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context("ChatWindow")
+                .on_action(cx.listener(|this, _: &CompleteNickname, _, _| this.completions += 1))
+                .child(self.draft.clone())
+        }
+    }
+
+    fn bind(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::theme::apply(
+                cayenchat_storage::ThemeMode::Light,
+                &cayenchat_storage::Appearance::default(),
+                cx,
+            );
+            crate::input::bind_keys(false, cx);
+            cx.bind_keys(shortcut_bindings(ChannelNumberModifier::Ctrl));
+        });
+    }
+
+    fn focused(view: &Entity<Settings>, cx: &mut VisualTestContext) -> Option<usize> {
+        cx.update(|window, cx| {
+            view.read(cx)
+                .fields
+                .iter()
+                .position(|field| field.focus_handle(cx).is_focused(window))
+        })
+    }
+
+    #[gpui::test]
+    fn tab_moves_between_settings_fields_without_chat_commands(cx: &mut TestAppContext) {
+        bind(cx);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let fields: Vec<_> = ["Host", "Port", "Password"]
+                .into_iter()
+                .map(|name| {
+                    cx.new(|cx| TextInput::new_settings_field(name, "", name == "Password", cx))
+                })
+                .collect();
+            window.focus(&fields[0].focus_handle(cx));
+            Settings { fields }
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("tab");
+        assert_eq!(focused(&view, cx), Some(1));
+        cx.simulate_keystrokes("tab");
+        assert_eq!(focused(&view, cx), Some(2));
+        cx.simulate_keystrokes("tab");
+        assert_eq!(focused(&view, cx), Some(0), "wraps like platform forms");
+        cx.simulate_keystrokes("shift-tab");
+        assert_eq!(focused(&view, cx), Some(2));
+        // Typing, including Enter, still edits the field it lands in.
+        cx.simulate_input("secret");
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.fields[2].read(cx).text().to_owned()),
+            "secret"
+        );
+    }
+
+    #[gpui::test]
+    fn tab_still_completes_nicknames_in_chat(cx: &mut TestAppContext) {
+        bind(cx);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let draft = cx.new(|cx| TextInput::new_live("Draft", cx));
+            window.focus(&draft.focus_handle(cx));
+            Chat {
+                draft,
+                completions: 0,
+            }
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("tab");
+        assert_eq!(view.read_with(cx, |view, _| view.completions), 1);
+        assert!(cx.update(|window, cx| view.read(cx).draft.focus_handle(cx).is_focused(window)));
     }
 }

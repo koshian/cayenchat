@@ -75,3 +75,13 @@ main queue, and once all files arrive the drop is replayed as Entered (with
 the paths), Submit and Exited, after which the directory is removed. Drop
 handlers must therefore read the files synchronously. Upstream registered only
 `NSFilenamesPboardType`, so these drags were refused.
+
+In `src/platform/{mac/metal_atlas.rs,windows/directx_atlas.rs,blade/blade_atlas.rs}`,
+`PlatformAtlas::remove` (used by `Window::drop_image`) now always forgets the
+removed key and returns the tile's rectangle to the texture's `etagere`
+allocator when other tiles keep the texture alive. Upstream only decremented
+the texture's reference count, so the space of a dropped image was never
+reused, and Metal/DirectX kept the stale key. CayenChat's inline image
+previews drop evicted thumbnails; without this, every texture that still held
+one live tile (another thumbnail or an emoji glyph) kept all of its dead space
+and new thumbnails allocated new 1024×1024 textures (4 MiB each).

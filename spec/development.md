@@ -85,7 +85,9 @@ cargo build --locked -p cayenchat-ui
 ```
 
 Commit Cargo.lock when committing the application. No rust-toolchain override is used:
-The minimum is Rust 1.88 (`rust-version` in the workspace manifest): GPUI 0.2.2
+The desktop UI requires Rust 1.94 (`crates/ui/Cargo.toml`) for the pinned
+`native-theme-gpui` 0.5.7 connector. Other workspace crates retain Rust 1.88
+(`rust-version` in the workspace manifest): GPUI 0.2.2
 uses `let` chains, stabilized in 1.88, without declaring its own minimum, and
 several locked dependencies (zbus 1.87, image/icu/encoding_rs 1.88) declare it
 too. Debian's stock rustc 1.85 therefore cannot build; use backports or rustup.
@@ -134,6 +136,20 @@ temporary directory (printed to stderr, `$TMPDIR/cayenchat-test-*`) for
 `settings.json` and the local credential file, files system-store secrets
 under the service `CayenChat Test Build`, and shows `[test build]` in the
 window title. Settings made in one launch are gone at the next.
+
+Image previews fetch from the network in normal builds. To check them
+without contacting any host, build with the `preview-fixture` feature and
+point it at a directory of images; links to
+`https://images.cayenchat.test/<file>` are then read from that directory and
+every other link fails without a request (D018):
+
+```sh
+cargo build --release --locked -p cayenchat-ui --features preview-fixture
+CAYENCHAT_PREVIEW_FIXTURE_DIR=target/perf/preview-images target/release/cayenchat
+```
+
+`scripts/perf/run_baseline.py --previews` generates such images and sends
+matching links from the load fixture. Never ship a `preview-fixture` build.
 
 The helper only builds and copies into ignored `target/`. It neither installs nor
 signs/notarizes a distributable app. The normal `cargo run` entry point is portable.
@@ -269,6 +285,18 @@ this delay.
    HEIC photo from Photos and a screenshot thumbnail onto the draft row; both
    must reach the confirmation, and `$TMPDIR/gpui-file-promises/` must be
    empty afterwards.
+
+9. Image previews, with a `preview-fixture` build (above) and a local load
+   fixture started with `--image-every 2`: in **外観**, **画像リンクのプレビューを表示する**
+   is off for new settings. Turn it on: image links in the selected
+   channel show a thumbnail below the text (an outlined box while loading),
+   the link text stays, a double-click on the link or the thumbnail opens it,
+   drag selection and copy still cover only the text, and the combined log
+   and server log show no images. Scroll up and down while images load and
+   switch channels; the log must not jump or reset, and at the bottom it must
+   keep following new lines. Turn previews off: the thumbnails and
+   their space disappear at once and no further link is read (the fixture
+   directory's access times do not change).
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
@@ -555,3 +583,48 @@ workspace Clippy was
 clean apart from the existing `proc-macro-error2` future-incompatibility note.
 No real ImgBB upload, Photos drag, Windows build, Secret Service desktop (GNOME Keyring or
 KWallet) or GUI interaction was exercised.
+
+### Inline image previews (2026-09-27)
+
+On Apple Silicon macOS 26.6.2 (rustc 1.95.0), `cargo fmt --check`, workspace
+Clippy with all features and workspace tests passed with the lockfile.
+Automated coverage: settings version 14 migration and round trip (off by
+default); candidate recognition, including ImgBB links and refused schemes,
+credentials, ports and local/private addresses; address classification;
+the HTTP loader against a local fixture server (headers sent, non-image and
+SVG responses, error statuses, declared and streamed size limits, redirect
+limit and re-checked targets, the production policy never contacting
+127.0.0.1 or `localhost`, timeout and cancellation); decoding of small and
+large PNG/JPEG/GIF/WebP, malformed and oversized content and the decoder
+allocation cap; the cache (deduplication, bounded queue and in-flight
+loads, byte-budget eviction, bounded records and retries, disabling while
+loading, stale completions, removed rows); and GPUI tests for no loading
+while off, loading once per link when switched on live, local echoes,
+typing reusing the panes, disabling during a load, removed conversations and
+a removed server. The GUI check and measurements are in `performance.md`.
+Selection/copy, link opening by double-click and channel switching with
+previews were not exercised in the real window (no input automation was
+available); Windows and Linux were not run.
+
+### Native settings appearance checks (D019)
+
+The regression tests in `ui::settings_theme` render macOS Sonoma, Windows 11,
+Adwaita and KDE Breeze presets in light/dark modes on GPUI's test platform.
+This validates mapping, rendering, input retention and click callbacks; it
+is not native Windows/Linux runtime validation.
+
+On each desktop, check the Connection, Appearance, Notifications, Image Upload
+and Credential Storage tabs. Verify native fonts/fills, readable light/dark
+text, input focus borders, TLS/SASL/certificate and notification check states,
+password masking, save/connect/back behavior and large-font layout. Set the
+app to Light while the OS is dark and vice versa; the explicit app choice must
+win. Reopen settings after changing only the OS accent or font. Without a
+working desktop portal the UI must remain interactive and fall back to the
+platform preset or app colors. No data-model or authentication behavior changed.
+
+Tab/Shift+Tab move between settings text fields and wrap (D020); Tab in a
+chat draft still completes nicknames. Known limits: widgets are GPUI drawings,
+not embedded OS controls; buttons, checkboxes and selectors are not focusable
+and accessibility is unchanged. New Windows/Linux native
+reader behavior requires real desktop testing. System-only accent/font changes
+are not watched continuously; reopening settings refreshes them.

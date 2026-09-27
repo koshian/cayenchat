@@ -95,7 +95,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — paste an image-only clipboard (including screenshots) or drop one image file on the draft row; both share one flow. HEIC/HEIF/AVIF are recognized, and on macOS Photos/Mail/screenshot-thumbnail file-promise drags are accepted
 - DONE — confirmation before upload naming the provider and the public-link consequence; guidance to settings when no provider or account is configured, and to reconnect after an authentication failure
 - DONE — ImgBB external upload with progress, cancel (abandons the wait), network/auth/rejection handling; the link is inserted into the originating draft and never sent automatically
-- TODO — inline display of image links in the chat log (with a remote-loading preference and fetch limits)
+- PARTIAL — inline previews of direct image links (PNG, JPEG, GIF and WebP, static first frame) in the main channel log, behind an Appearance setting that is off by default; bounded, HTTP(S)-only loading of public hosts. The combined log, server log and activity lines stay text-only; no avatars, video or page previews
 - TODO — clipboard file references (copied files) as attachments; they paste as text today
 - OUT OF SCOPE (for now) — video/audio attachments, a transfer manager, Matrix native media
 
@@ -119,7 +119,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
 - DONE — settings open in a separate window; closing it leaves the chat window running
-- DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D018)
+- DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D021)
 - DONE — persisted channel auto-join list
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)

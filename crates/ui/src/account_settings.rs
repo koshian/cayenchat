@@ -6,7 +6,7 @@ use cayenchat_storage::{
 };
 use gpui::{prelude::*, *};
 
-use crate::{SettingsWindow, secrets, theme};
+use crate::{SettingsWindow, secrets, settings_theme};
 
 /// Every secret this configuration may have stored, for moving them when the
 /// credential backend changes.
@@ -124,7 +124,7 @@ impl SettingsWindow {
     }
 
     pub(crate) fn render_credential_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let current = secrets::store(cx).kind();
         let option = |kind: CredentialBackendKind, id: &'static str, label: String| {
             let selected = current == kind;
@@ -293,19 +293,11 @@ impl SettingsWindow {
     }
 
     pub(crate) fn render_image_upload_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let selected = self.settings.values.image_upload.provider.clone();
         let label = |key: &str| div().w(px(150.)).flex_shrink_0().child(self.i18n.text(key));
-        let button = |id: &'static str, text: String| {
-            div()
-                .id(id)
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(text)
-        };
+        let button =
+            |id: &'static str, text: String| settings_theme::button(id, false, cx).child(text);
         let mut choices = div().flex().gap_1().child(
             button(
                 "upload-provider-none",
@@ -430,12 +422,7 @@ impl SettingsWindow {
                             .flex()
                             .gap_2()
                             .child(
-                                div()
-                                    .id("upload-token-save")
-                                    .px_3()
-                                    .py_1()
-                                    .bg(theme.selected)
-                                    .cursor_pointer()
+                                settings_theme::button("upload-token-save", true, cx)
                                     .child(self.i18n.text("image_token_save"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.connect_upload_account(cx)
@@ -462,7 +449,7 @@ impl SettingsWindow {
 
 /// The bordered panel below the settings tabs.
 pub(crate) fn panel(cx: &App) -> Div {
-    let theme = theme::current(cx);
+    let theme = settings_theme::palette(cx);
     div()
         .w(px(680.))
         .p_4()

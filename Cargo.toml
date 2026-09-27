@@ -4,6 +4,7 @@ members = [
   "crates/irc-core",
   "crates/storage",
   "crates/upload",
+  "crates/media",
   "crates/app",
   "crates/ui",
 ]
@@ -22,6 +23,7 @@ cayenchat-model = { path = "crates/model" }
 cayenchat-app = { path = "crates/app" }
 cayenchat-irc-core = { path = "crates/irc-core" }
 cayenchat-upload = { path = "crates/upload" }
+cayenchat-media = { path = "crates/media" }
 gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders", "font-kit"] }
 irc = { version = "=1.1.0", default-features = false, features = ["tls-rust", "channel-lists", "encoding"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

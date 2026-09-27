@@ -23,6 +23,13 @@ the current Space and do not use the machine during a run.
 Input and channel switching are not driven here; see the ignored
 `perf_baseline` UI test (spec/performance.md).
 
+--previews turns image previews on and makes every --image-every-th fixture
+line an image link. It needs a binary built with the `preview-fixture`
+feature, which reads those links from generated local PNGs instead of the
+network (the production HTTP policy never contacts 127.0.0.1):
+
+  cargo build --release --locked -p cayenchat-ui --features preview-fixture
+
   python3 scripts/perf/run_baseline.py --runs 3 --out target/perf/baseline.json
   python3 scripts/perf/run_baseline.py --load-only   # S2-S4b only
   python3 scripts/perf/run_baseline.py --servers 4   # four fixture servers
@@ -31,6 +38,8 @@ Input and channel switching are not driven here; see the ignored
 
 import argparse
 import json
+import struct
+import zlib
 import os
 import platform
 import shutil
@@ -48,7 +57,36 @@ import sample_process  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def settings(ports, channels, connect):
+def png(width, height, rgb):
+    """A solid-color 8-bit RGB PNG."""
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    row = b"\x00" + bytes(rgb) * width
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(row * height, 6))
+            + chunk(b"IEND", b""))
+
+
+# Photos and screenshots of common sizes; the largest is a 12 MP phone photo.
+IMAGE_SIZES = [(1600, 1200), (3000, 2000), (800, 600), (4032, 3024)]
+
+
+def preview_images(count):
+    """Generates (once) the PNGs the preview fixture serves."""
+    directory = ROOT / "target" / "perf" / "preview-images"
+    directory.mkdir(parents=True, exist_ok=True)
+    for index in range(count):
+        path = directory / f"img{index:03d}.png"
+        if not path.exists():
+            width, height = IMAGE_SIZES[index % len(IMAGE_SIZES)]
+            color = ((index * 53) % 256, (index * 97) % 256, (index * 29) % 256)
+            path.write_bytes(png(width, height, color))
+    return directory
+
+
+def settings(ports, channels, connect, previews=False):
     """One server is written as version 11, which builds before and after
     multi-server support both read; several servers need version 12."""
     identity = {
@@ -76,6 +114,9 @@ def settings(ports, channels, connect):
         "theme": "light",
         "credential_backend": "local_file",
     }
+    if previews:
+        # Older builds ignore the field; missing fields keep their defaults.
+        common["appearance"] = {"image_previews": True}
     if len(ports) == 1:
         return {"version": 11, "servers": servers, **identity, **common}
     for server in servers:
@@ -121,9 +162,12 @@ class Control:
         return self.file.readline().strip()
 
 
-def launch(binary, home):
+def launch(binary, home, image_dir=None):
     env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
     env.pop("RUST_LOG", None)
+    env.pop("CAYENCHAT_PREVIEW_FIXTURE_DIR", None)
+    if image_dir:
+        env["CAYENCHAT_PREVIEW_FIXTURE_DIR"] = str(image_dir)
     return subprocess.Popen(
         [str(binary)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
@@ -192,6 +236,10 @@ def start_fixture(args, port, control_port, seed):
             str(args.channels),
             "--seed",
             str(seed),
+            "--image-every",
+            str(args.image_every if args.previews else 0),
+            "--image-links",
+            str(args.image_links),
         ],
         stderr=subprocess.DEVNULL if not args.verbose else None,
     )
@@ -215,9 +263,9 @@ def one_run(args, binary, index):
             home = base / "unconnected"
             config_dir(home).mkdir(parents=True)
             (config_dir(home) / "settings.json").write_text(
-                json.dumps(settings(ports, channels, False))
+                json.dumps(settings(ports, channels, False, args.previews))
             )
-            app = launch(binary, home)
+            app = launch(binary, home, args.image_dir)
             try:
                 time.sleep(args.settle)
                 measure("S1_idle_unconnected", app.pid, args.window, results)
@@ -227,7 +275,7 @@ def one_run(args, binary, index):
         home = base / "connected"
         config_dir(home).mkdir(parents=True)
         (config_dir(home) / "settings.json").write_text(
-            json.dumps(settings(ports, channels, True))
+            json.dumps(settings(ports, channels, True, args.previews))
         )
         fixtures = [
             start_fixture(args, port, control, index * 16 + number + 1)
@@ -235,7 +283,7 @@ def one_run(args, binary, index):
         ]
         controls = [Control(port) for port in control_ports]
         busy, others = controls[0], controls[1:]
-        app = launch(binary, home)
+        app = launch(binary, home, args.image_dir)
         try:
             started = time.monotonic()
             call_all(controls, "joined", timeout=60)
@@ -374,7 +422,12 @@ def main():
         "--load-only", action="store_true", help="run only S2-S4b (for a watched, visible window)"
     )
     parser.add_argument("--summarize", metavar="JSON", help="only summarize an earlier report")
+    parser.add_argument("--previews", action="store_true",
+                        help="image previews on, with image links (preview-fixture build)")
+    parser.add_argument("--image-every", type=int, default=20)
+    parser.add_argument("--image-links", type=int, default=120)
     args = parser.parse_args()
+    args.image_dir = None
     if args.summarize:
         summarize(json.loads(Path(args.summarize).read_text()))
         return
@@ -382,13 +435,15 @@ def main():
     binary = Path(args.binary)
     if not binary.exists():
         sys.exit(f"{binary} not found; run: cargo build --release --locked -p cayenchat-ui")
+    if args.previews:
+        args.image_dir = preview_images(args.image_links)
     report = {
         "environment": environment(binary),
         "parameters": {
             key: getattr(args, key)
             for key in [
                 "servers", "channels", "members", "history", "flood_rate", "flood_seconds",
-                "window", "settle", "load_only",
+                "window", "settle", "load_only", "previews", "image_every", "image_links",
             ]
         },
         "runs": [],
