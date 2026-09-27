@@ -61,6 +61,17 @@ pub struct AppState {
     statuses: HashMap<NetworkId, ConnectionStatus>,
     server_messages: HashMap<NetworkId, Vec<Message>>,
     next_message_sequence: u64,
+    /// Conversation IDs are never reused, so UI state keyed by a removed
+    /// conversation cannot attach to a new one.
+    next_conversation_id: u32,
+}
+
+/// A server as configured: its display name and auto-join channels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkConfig {
+    pub id: NetworkId,
+    pub name: String,
+    pub channels: Vec<String>,
 }
 
 impl AppState {
@@ -191,10 +202,12 @@ impl AppState {
             statuses,
             server_messages: HashMap::new(),
             next_message_sequence,
+            next_conversation_id: 5,
         }
     }
 
     pub fn live(host: String, channels: Vec<String>) -> Self {
+        let channel_count = channels.len() as u32;
         let network = Network {
             id: NetworkId(1),
             name: host,
@@ -226,6 +239,7 @@ impl AppState {
             active_servers: HashSet::new(),
             server_messages: HashMap::new(),
             next_message_sequence: 0,
+            next_conversation_id: channel_count + 1,
         }
     }
 
@@ -236,6 +250,157 @@ impl AppState {
             ConnectionStatus::Disconnected("Not connected.".into()),
         );
         state
+    }
+
+    /// Every configured server in display order, none connected yet. The
+    /// first configured channel (or the first server) is selected.
+    pub fn with_networks(networks: Vec<NetworkConfig>) -> Self {
+        assert!(!networks.is_empty(), "at least one network");
+        let mut state = Self {
+            networks: Vec::new(),
+            conversations: Vec::new(),
+            selected: Selection::Server(networks[0].id),
+            previous_channel: None,
+            unread: HashSet::new(),
+            active_channels: HashSet::new(),
+            active_servers: HashSet::new(),
+            statuses: HashMap::new(),
+            server_messages: HashMap::new(),
+            next_message_sequence: 0,
+            next_conversation_id: 1,
+        };
+        for config in networks {
+            state.networks.push(Network {
+                id: config.id,
+                name: config.name,
+            });
+            state.statuses.insert(
+                config.id,
+                ConnectionStatus::Disconnected("Not connected.".into()),
+            );
+            for channel in config.channels {
+                state.ensure_channel(config.id, &channel);
+            }
+        }
+        if let Some(first) = state.conversations.first() {
+            state.selected = Selection::Channel(first.id);
+        }
+        state
+    }
+
+    /// Makes the networks match `networks` (display order and names): new
+    /// ones are added disconnected, missing ones are removed with their
+    /// conversations and logs. Returns the removed conversation IDs so the
+    /// caller can drop state kept for them.
+    pub fn sync_networks(&mut self, networks: &[(NetworkId, String)]) -> Vec<ConversationId> {
+        if networks.is_empty() {
+            return Vec::new();
+        }
+        let removed_networks: Vec<NetworkId> = self
+            .networks
+            .iter()
+            .map(|network| network.id)
+            .filter(|id| !networks.iter().any(|(kept, _)| kept == id))
+            .collect();
+        let mut removed = Vec::new();
+        for id in removed_networks {
+            removed.extend(self.remove_conversations(id));
+            self.statuses.remove(&id);
+            self.server_messages.remove(&id);
+            self.active_servers.remove(&id);
+        }
+        self.networks = networks
+            .iter()
+            .map(|(id, name)| Network {
+                id: *id,
+                name: name.clone(),
+            })
+            .collect();
+        for (id, _) in networks {
+            self.statuses
+                .entry(*id)
+                .or_insert_with(|| ConnectionStatus::Disconnected("Not connected.".into()));
+        }
+        self.sort_conversations();
+        self.repair_selection();
+        removed
+    }
+
+    /// Starts a fresh session on `network`: its conversations are replaced
+    /// by the configured `channels` with empty logs, its server log is
+    /// cleared and its status becomes connecting. Other networks are kept.
+    /// Returns the removed conversation IDs.
+    pub fn reset_network(
+        &mut self,
+        network: NetworkId,
+        channels: Vec<String>,
+    ) -> Vec<ConversationId> {
+        if !self.networks.iter().any(|server| server.id == network) {
+            return Vec::new();
+        }
+        let selected_here = self.selected_network().id == network;
+        let removed = self.remove_conversations(network);
+        self.server_messages.remove(&network);
+        self.active_servers.remove(&network);
+        self.statuses.insert(network, ConnectionStatus::Connecting);
+        let mut first = None;
+        for channel in channels {
+            let id = self.ensure_channel(network, &channel);
+            first = first.or(id);
+        }
+        match (selected_here, first) {
+            (true, Some(id)) => self.selected = Selection::Channel(id),
+            (true, None) => self.selected = Selection::Server(network),
+            _ => {}
+        }
+        self.repair_selection();
+        removed
+    }
+
+    fn remove_conversations(&mut self, network: NetworkId) -> Vec<ConversationId> {
+        let removed: Vec<ConversationId> = self
+            .conversations
+            .iter()
+            .filter(|channel| channel.network == network)
+            .map(|channel| channel.id)
+            .collect();
+        self.conversations
+            .retain(|channel| channel.network != network);
+        for id in &removed {
+            self.unread.remove(id);
+            self.active_channels.remove(id);
+            if self.previous_channel == Some(*id) {
+                self.previous_channel = None;
+            }
+            if self.selected == Selection::Channel(*id) {
+                self.selected = Selection::Server(network);
+            }
+        }
+        removed
+    }
+
+    /// Keeps each network's conversations together, in network order, so
+    /// channel navigation and numbered shortcuts follow the tree.
+    fn sort_conversations(&mut self) {
+        let position = |network: NetworkId, networks: &[Network]| {
+            networks
+                .iter()
+                .position(|server| server.id == network)
+                .unwrap_or(usize::MAX)
+        };
+        let networks = &self.networks;
+        self.conversations
+            .sort_by_key(|channel| position(channel.network, networks));
+    }
+
+    fn repair_selection(&mut self) {
+        let valid = match self.selected {
+            Selection::Server(id) => self.networks.iter().any(|server| server.id == id),
+            Selection::Channel(id) => self.conversations.iter().any(|channel| channel.id == id),
+        };
+        if !valid {
+            self.selected = Selection::Server(self.networks[0].id);
+        }
     }
 
     pub fn status(&self, id: NetworkId) -> Option<&ConnectionStatus> {
@@ -307,22 +472,42 @@ impl AppState {
         {
             return None;
         }
-        let id = ConversationId(
-            self.conversations
-                .iter()
-                .map(|channel| channel.id.0)
-                .max()
-                .unwrap_or(0)
-                + 1,
+        let id = ConversationId(self.next_conversation_id);
+        self.next_conversation_id += 1;
+        // Insert after the network's last conversation to keep networks grouped.
+        let index = self
+            .conversations
+            .iter()
+            .rposition(|channel| channel.network == network)
+            .map(|index| index + 1)
+            .unwrap_or_else(|| {
+                let order = self
+                    .networks
+                    .iter()
+                    .position(|server| server.id == network)
+                    .unwrap_or(usize::MAX);
+                self.conversations
+                    .iter()
+                    .position(|channel| {
+                        self.networks
+                            .iter()
+                            .position(|server| server.id == channel.network)
+                            .unwrap_or(usize::MAX)
+                            > order
+                    })
+                    .unwrap_or(self.conversations.len())
+            });
+        self.conversations.insert(
+            index,
+            Conversation {
+                id,
+                network,
+                name: name.to_owned(),
+                topic: String::new(),
+                messages: Vec::new(),
+                members: Vec::new(),
+            },
         );
-        self.conversations.push(Conversation {
-            id,
-            network,
-            name: name.to_owned(),
-            topic: String::new(),
-            messages: Vec::new(),
-            members: Vec::new(),
-        });
         Some(id)
     }
 
@@ -836,5 +1021,116 @@ mod tests {
             state.joined_channel(NetworkId(1), &format!("#c{index}"));
         }
         assert_eq!(state.conversations().len(), MAX_CONVERSATIONS_PER_NETWORK);
+    }
+
+    fn two_networks() -> AppState {
+        AppState::with_networks(vec![
+            NetworkConfig {
+                id: NetworkId(1),
+                name: "one.example".into(),
+                channels: vec!["#a".into(), "#b".into()],
+            },
+            NetworkConfig {
+                id: NetworkId(2),
+                name: "two.example".into(),
+                channels: vec!["#a".into()],
+            },
+        ])
+    }
+
+    fn names(state: &AppState) -> Vec<(u32, String)> {
+        state
+            .conversations()
+            .iter()
+            .map(|c| (c.network.0, c.name.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn configured_networks_start_disconnected_and_keep_channels_grouped() {
+        let mut state = two_networks();
+        assert_eq!(state.networks().len(), 2);
+        for id in [NetworkId(1), NetworkId(2)] {
+            assert!(matches!(
+                state.status(id),
+                Some(ConnectionStatus::Disconnected(_))
+            ));
+        }
+        assert_eq!(state.selected_channel().unwrap().name, "#a");
+        // A channel joined later on the first network stays with it, so
+        // navigation and numbered shortcuts follow the tree.
+        state.joined_channel(NetworkId(1), "#late");
+        assert_eq!(
+            names(&state),
+            [
+                (1, "#a".into()),
+                (1, "#b".into()),
+                (1, "#late".into()),
+                (2, "#a".into())
+            ]
+        );
+        state.dispatch(Command::SelectChannelAt(3));
+        assert_eq!(state.selected_network().id, NetworkId(2));
+    }
+
+    #[test]
+    fn resetting_one_network_keeps_the_others() {
+        let mut state = two_networks();
+        state.append_channel_message(NetworkId(2), "#a", "bob", "kept", false);
+        state.append_channel_message(NetworkId(1), "#b", "bob", "dropped", false);
+        state.append_server_message(NetworkId(1), "old".into());
+        let old: Vec<_> = state
+            .conversations()
+            .iter()
+            .filter(|c| c.network == NetworkId(1))
+            .map(|c| c.id)
+            .collect();
+        let selected = state.selection();
+
+        let removed = state.reset_network(NetworkId(1), vec!["#c".into()]);
+        assert_eq!(removed, old);
+        assert_eq!(names(&state), [(1, "#c".into()), (2, "#a".into())]);
+        assert!(state.server_messages(NetworkId(1)).is_empty());
+        assert_eq!(
+            state.status(NetworkId(1)),
+            Some(&ConnectionStatus::Connecting)
+        );
+        let other = &state.conversations()[1];
+        assert_eq!(other.messages[0].text, "kept");
+        // The selected channel belonged to the reset network.
+        assert_ne!(state.selection(), selected);
+        assert_eq!(state.selected_channel().unwrap().name, "#c");
+        // IDs are never reused.
+        assert!(state.conversations().iter().all(|c| !old.contains(&c.id)));
+    }
+
+    #[test]
+    fn syncing_networks_adds_renames_reorders_and_removes() {
+        let mut state = two_networks();
+        state.dispatch(Command::SelectServer(NetworkId(2)));
+        let removed = state.sync_networks(&[
+            (NetworkId(3), "three.example".into()),
+            (NetworkId(1), "renamed.example".into()),
+        ]);
+        assert_eq!(removed.len(), 1, "the second network's #a");
+        let networks: Vec<_> = state
+            .networks()
+            .iter()
+            .map(|n| (n.id.0, n.name.clone()))
+            .collect();
+        assert_eq!(
+            networks,
+            [(3, "three.example".into()), (1, "renamed.example".into())]
+        );
+        assert!(matches!(
+            state.status(NetworkId(3)),
+            Some(ConnectionStatus::Disconnected(_))
+        ));
+        assert!(state.status(NetworkId(2)).is_none());
+        // The selected server disappeared; the first remaining one is shown.
+        assert_eq!(state.selection(), Selection::Server(NetworkId(3)));
+        // Messages for the removed network are ignored.
+        state.append_channel_message(NetworkId(2), "#a", "bob", "late", false);
+        assert!(state.server_messages(NetworkId(2)).is_empty());
     }
 }
