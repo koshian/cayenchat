@@ -107,13 +107,22 @@ pub fn thumbnail(
         image::ImageError::Limits(_) => LoadError::TooLarge,
         _ => LoadError::Malformed,
     })?;
+    // Avatars keep the centered square, so the slot is always filled.
+    let (image, crop_width, crop_height) = if limits.crop_square && width != height {
+        let side = width.min(height);
+        let square = image.crop_imm((width - side) / 2, (height - side) / 2, side, side);
+        drop(image);
+        (square, side, side)
+    } else {
+        (image, width, height)
+    };
     let (thumb_width, thumb_height) = fit(
-        width,
-        height,
+        crop_width,
+        crop_height,
         limits.thumbnail_width,
         limits.thumbnail_height,
     );
-    let small = if (thumb_width, thumb_height) == (width, height) {
+    let small = if (thumb_width, thumb_height) == (crop_width, crop_height) {
         image
     } else {
         let small = image.thumbnail_exact(thumb_width, thumb_height);
@@ -239,5 +248,35 @@ mod tests {
         assert_eq!(fit(3000, 300, 400, 200), (400, 40));
         assert_eq!(fit(100, 50, 400, 200), (100, 50));
         assert_eq!(fit(10_000, 1, 400, 200), (400, 1));
+    }
+
+    #[test]
+    fn avatars_are_small_centered_squares() {
+        let limits = Limits::avatar(32);
+        let cancel = CancelFlag::default();
+        for (width, height) in [(300, 100), (100, 300), (64, 64), (20, 10)] {
+            let thumb =
+                thumbnail(&encode(ImageFormat::Png, width, height), &limits, &cancel).unwrap();
+            let side = width.min(height).min(32);
+            assert_eq!(
+                (thumb.width, thumb.height),
+                (side, side),
+                "{width}x{height}"
+            );
+            assert_eq!((thumb.source_width, thumb.source_height), (width, height));
+            assert_eq!(thumb.byte_len(), (side * side * 4) as usize);
+        }
+        // Animated GIFs show their first frame here too.
+        let thumb = thumbnail(&gif_two_frames(), &limits, &cancel).unwrap();
+        assert!(thumb.bgra[2] > 200);
+        // Sources above the avatar limits are refused before decoding.
+        assert_eq!(
+            thumbnail(&encode(ImageFormat::Png, 4097, 8), &limits, &cancel),
+            Err(LoadError::TooLarge)
+        );
+        assert_eq!(
+            thumbnail(&encode(ImageFormat::Png, 2100, 2100), &limits, &cancel),
+            Err(LoadError::TooLarge)
+        );
     }
 }

@@ -64,6 +64,8 @@ pub struct Limits {
     /// logical pixels, so it stays sharp on 2× displays.
     pub thumbnail_width: u32,
     pub thumbnail_height: u32,
+    /// Crop the centered square before resizing (avatars).
+    pub crop_square: bool,
 }
 
 impl Default for Limits {
@@ -78,6 +80,26 @@ impl Default for Limits {
             max_decode_bytes: 48 * 1024 * 1024,
             thumbnail_width: 400,
             thumbnail_height: 200,
+            crop_square: false,
+        }
+    }
+}
+
+impl Limits {
+    /// Limits for small square avatars of `size` pixels a side: small
+    /// responses and sources, since only a tiny thumbnail is kept.
+    pub fn avatar(size: u32) -> Self {
+        Self {
+            max_response_bytes: 2 * 1024 * 1024,
+            max_redirects: 3,
+            connect_timeout: Duration::from_secs(5),
+            total_timeout: Duration::from_secs(10),
+            max_source_pixels: 2048 * 2048,
+            max_source_side: 4096,
+            max_decode_bytes: 24 * 1024 * 1024,
+            thumbnail_width: size,
+            thumbnail_height: size,
+            crop_square: true,
         }
     }
 }
@@ -187,5 +209,33 @@ mod tests {
         assert_eq!((large.source_width, large.source_height), (3000, 2000));
         assert_eq!(load("/broken.png"), Err(LoadError::Malformed));
         assert_eq!(load("/page.png"), Err(LoadError::NotImage));
+    }
+
+    #[test]
+    fn extensionless_avatar_endpoints_load_but_must_be_images() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/avatar/32/u1".to_string(),
+            Route::image("image/webp", encode(ImageFormat::WebP, 120, 80)),
+        );
+        routes.insert(
+            "/avatar/32/page".to_string(),
+            Route::image("text/html", b"<!doctype html>".to_vec()),
+        );
+        routes.insert(
+            "/avatar/32/svg".to_string(),
+            Route::image("image/svg+xml", b"<svg/>".to_vec()),
+        );
+        let server = FixtureServer::start(routes);
+        let limits = Limits::avatar(32);
+        let fetcher = HttpFetcher::for_local_fixture(&limits);
+        let load = |path: &str| {
+            let source = MediaRef::Link(url::Url::parse(&server.url(path)).unwrap());
+            load_thumbnail(&source, &fetcher, &limits, &CancelFlag::default())
+        };
+        let avatar = load("/avatar/32/u1").unwrap();
+        assert_eq!((avatar.width, avatar.height), (32, 32));
+        assert_eq!(load("/avatar/32/page"), Err(LoadError::NotImage));
+        assert_eq!(load("/avatar/32/svg"), Err(LoadError::NotImage));
     }
 }
