@@ -1,5 +1,6 @@
 //! Application state and commands, independent of any rendering framework.
 pub mod attachments;
+pub mod notifications;
 
 use std::collections::{HashMap, HashSet};
 
