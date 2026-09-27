@@ -163,11 +163,11 @@ immediately removes those stored values. (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. Support SASL PLAIN through IRCv3
-CAP negotiation in `irc-core`. The initial implementation covers one network
-and manual reconnect.
+CAP negotiation in `irc-core`. The initial implementation covered one network
+and manual reconnect; multi-server support is D016.
 
 Version 4 preferences store multiple server profiles and order user-added entries
-before built-in choices. The active connection remains single-server. Versions 1–3
+before built-in choices. Versions 1–3
 migrate on load with certificate verification enabled. Each profile owns its
 wire character encoding. RFC 2812 specifies no IRC charset, and channel names are
 protocol parameters whose encoded bytes identify the channel. Use the same selected
@@ -359,3 +359,25 @@ Sources: [ImgBB API](https://api.imgbb.com/),
 [Imgur API documentation](https://apidocs.imgur.com/),
 [Tautulli issue on Imgur registration](https://github.com/Tautulli/Tautulli/issues/2620),
 [NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver).
+
+## D016 — Multiple servers at once
+
+**Status:** Accepted
+
+Every server profile is a network in the channel tree, shown whether or not it
+is connected, and any number of them can be connected at the same time
+(LimeChat's model). Settings version 12 moves the nickname, `USER` username,
+auto-join channels, SASL account and startup connection into each profile, so
+each network has its own identity; versions 1–11 copy their single identity
+into every profile, keep SASL on only for TLS profiles and keep startup
+connection only for the previously selected server. The IRCnet presets stay in
+the tree even when unused.
+
+Each connection keeps the existing design (D006): its own worker thread and
+current-thread Tokio runtime, bounded queues, and an awaited event stream.
+The UI adds no timers per connection. Connection state lives in one
+`ServerSession` per server rather than in the chat window. Per-server bounds
+(logs, conversations, transcript, WHOIS) are unchanged; application-wide
+bounds are deliberately left for a separate change after measuring (see
+`performance.md`).
+

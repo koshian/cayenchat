@@ -285,6 +285,17 @@ choose Custom, set its host and port, and leave TLS off; do not enter credential
    verify following resumes. Long channel/server labels in the lower log must
    remain on one line with an ellipsis.
 
+8. Run two local fixtures on different ports (for example
+   `python3 scripts/perf/irc_load_server.py --port 16671 --control-port 16672`
+   and `--port 16673 --control-port 16674`), add both as servers with
+   different nicknames and the same channel name, and mark both to connect
+   at startup. Restart: both must register and join, each channel log and
+   roster must stay with its server, and the tree must show every saved
+   server (unused presets without a status mark). Disconnect one from its
+   context menu; the other keeps receiving. Remove one in settings and save;
+   it disappears with its channels. Connect an unused preset from the tree:
+   with a nickname saved it connects, otherwise settings open on it.
+
 The deterministic `irc-core` local-server tests cover registration, automatic join,
 inbound message/NAMES translation, outgoing `PRIVMSG`/`NOTICE`, flushing `QUIT`,
 slash-command normalization, and SASL PLAIN negotiation against a local protocol
