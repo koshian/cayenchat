@@ -577,3 +577,14 @@ decoded images back for release, and the HTTP agent with its idle connections
 is dropped. No preview timer or thread exists; loads run on GPUI's shared
 background executor. The limits, formats and remote-loading rules are in D018
 and `performance.md`.
+
+## Settings theme adapter
+
+`ui::settings_theme` caches light/dark native OS theme variants and their
+`native-theme-gpui` mappings (D019). Settings renderers use its palette and
+button/checkbox helpers. `TextInput::new_settings_field` opts settings fields
+into the native font, fill, border/focus, placeholder and selection styling;
+chat drafts and other prompts retain their original styling and editing code.
+The app's saved theme mode remains authoritative. OS reads happen outside
+rendering; non-macOS readers run in the background, with the existing palette
+available during loading or after errors.

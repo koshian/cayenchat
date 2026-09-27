@@ -16,3 +16,9 @@ licensed under MPL-2.0. No source code from that crate is copied into this proje
 its types remain inside `crates/irc-core`. The crate's license is retained in
 `licenses/IRC-MPL-2.0.md`. Include the dependency's required license and source
 availability materials when preparing a distributable binary.
+
+Settings appearance uses [native-theme and native-theme-gpui 0.5.7](https://github.com/tiborgats/native-theme)
+(MIT OR Apache-2.0 OR 0BSD) and [gpui-component 0.5.1](https://github.com/longbridge/gpui-component)
+(Apache-2.0). They are Cargo dependencies; no upstream implementation is copied.
+Include their license notices and those of their transitive dependencies when
+preparing a distributable binary.
