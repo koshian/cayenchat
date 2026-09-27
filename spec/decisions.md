@@ -416,3 +416,46 @@ The UI adds no timers per connection. Connection state lives in one
 (logs, conversations, transcript, WHOIS) are unchanged; application-wide
 bounds are deliberately left for a separate change after measuring (see
 `performance.md`).
+
+## D018 — Native settings appearance without a GPUI migration
+
+2026-09-27. Keep vendored GPUI 0.2.2 and its platform fixes. Pin
+`native-theme-gpui = 0.5.7`, `native-theme = 0.5.7`,
+`native-theme-derive = 0.5.7`, and
+`gpui-component = 0.5.1`. Connector 0.5.8 and 0.5.9 use `gpui-pre` and
+are incompatible with this application's GPUI types. Core 0.5.9 also changed
+APIs used by connector 0.5.7, so pinning the connector alone is insufficient.
+The transitive derive crate must also be pinned: 0.5.9 compiled with core
+0.5.7 but made platform presets fail resolution in regression tests.
+The UI now requires Rust 1.94; other workspace crates keep their existing floor.
+Disable icon bundles/system-icon loading. Enable only `svg-rasterize`, because
+0.5.7's icon module references that module even when default features are off.
+
+`ui::settings_theme` calls `SystemTheme::from_system()` and converts both
+variants with `native_theme_gpui::to_theme()`. The connector supplies settings
+palette colors; raw `ResolvedTheme` supplies the per-widget geometry, fonts,
+input colors, and checkbox states that its flat GPUI theme cannot represent.
+Apply this to the existing settings controls, retaining IDs, callbacks,
+secret handling, text editing and IME composition. Native OS widget embedding,
+a full gpui-component widget migration, general keyboard traversal, and
+accessibility semantics are outside this change.
+
+Cache both variants outside rendering. Read on opening settings and after
+GPUI reports an appearance change; the saved Light/Dark choice overrides the
+OS mode. AppKit reads run on the macOS main thread; Windows and Linux reads
+run on GPUI's background executor. There is no polling or additional watcher.
+An accent/font-only change is refreshed when settings are reopened. A failed
+read restores the existing app palette. Chat pane colors/fonts are independent.
+
+macOS reads AppKit colors/fonts and combines them with the Sonoma preset.
+Windows uses system colors/fonts and the Windows 11 preset; Linux reads KDE
+configuration or the desktop portal, with platform preset fallback. These
+are approximations rendered by GPUI, not native AppKit/WinUI/GTK widgets.
+Only fields consumed by this adapter affect controls; high-contrast mode and
+assistive-technology behavior need separate native-desktop validation.
+
+Sources: [connector 0.5.7 API](https://docs.rs/native-theme-gpui/0.5.7/native_theme_gpui/),
+[connector source](https://docs.rs/crate/native-theme-gpui/0.5.7/source/),
+[upstream](https://github.com/tiborgats/native-theme). Version compatibility was
+also checked against the downloaded crates' manifests and source, including
+0.5.8 and 0.5.9 (the website index lagged the registry).

@@ -85,7 +85,9 @@ cargo build --locked -p cayenchat-ui
 ```
 
 Commit Cargo.lock when committing the application. No rust-toolchain override is used:
-The minimum is Rust 1.88 (`rust-version` in the workspace manifest): GPUI 0.2.2
+The desktop UI requires Rust 1.94 (`crates/ui/Cargo.toml`) for the pinned
+`native-theme-gpui` 0.5.7 connector. Other workspace crates retain Rust 1.88
+(`rust-version` in the workspace manifest): GPUI 0.2.2
 uses `let` chains, stabilized in 1.88, without declaring its own minimum, and
 several locked dependencies (zbus 1.87, image/icu/encoding_rs 1.88) declare it
 too. Debian's stock rustc 1.85 therefore cannot build; use backports or rustup.
@@ -550,3 +552,24 @@ workspace Clippy was
 clean apart from the existing `proc-macro-error2` future-incompatibility note.
 No real ImgBB upload, Photos drag, Windows build, Secret Service desktop (GNOME Keyring or
 KWallet) or GUI interaction was exercised.
+
+### Native settings appearance checks (D018)
+
+The regression tests in `ui::settings_theme` render macOS Sonoma, Windows 11,
+Adwaita and KDE Breeze presets in light/dark modes on GPUI's test platform.
+This validates mapping, rendering, input retention and click callbacks; it
+is not native Windows/Linux runtime validation.
+
+On each desktop, check the Connection, Appearance, Notifications, Image Upload
+and Credential Storage tabs. Verify native fonts/fills, readable light/dark
+text, input focus borders, TLS/SASL/certificate and notification check states,
+password masking, save/connect/back behavior and large-font layout. Set the
+app to Light while the OS is dark and vice versa; the explicit app choice must
+win. Reopen settings after changing only the OS accent or font. Without a
+working desktop portal the UI must remain interactive and fall back to the
+platform preset or app colors. No data-model or authentication behavior changed.
+
+Known limits: widgets are GPUI drawings, not embedded OS controls; general
+keyboard traversal and accessibility are unchanged. New Windows/Linux native
+reader behavior requires real desktop testing. System-only accent/font changes
+are not watched continuously; reopening settings refreshes them.

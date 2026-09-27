@@ -501,3 +501,14 @@ producing an `m.image` event. It must not implement or call
 image links is not implemented; it should consume URLs (IRC) or media events
 (Matrix) through a separate display layer, with a remote-loading preference,
 HTTP(S)-only fetching, size and redirect limits, and decoding off the UI thread.
+
+### Settings theme adapter
+
+`ui::settings_theme` caches light/dark native OS theme variants and their
+`native-theme-gpui` mappings (D018). Settings renderers use its palette and
+button/checkbox helpers. `TextInput::new_settings_field` opts settings fields
+into the native font, fill, border/focus, placeholder and selection styling;
+chat drafts and other prompts retain their original styling and editing code.
+The app's saved theme mode remains authoritative. OS reads happen outside
+rendering; non-macOS readers run in the background, with the existing palette
+available during loading or after errors.
