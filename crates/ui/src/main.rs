@@ -23,14 +23,14 @@ use cayenchat_app::{
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
 };
 use cayenchat_irc_core::{
-    ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
-    WhoisInfo, WireDirection, valid_channel,
+    ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
+    SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore, DarkColors,
-    Language, LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile, Settings,
-    TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile,
+    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -537,6 +537,7 @@ fn connection_config(
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
     config.encoding = profile.encoding.label().into();
+    config.ircv3 = ircv3_options(profile.ircv3);
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         config.server_password = Some(password.expose().to_owned());
     }
@@ -550,6 +551,14 @@ fn connection_config(
     }
     config.validate()?;
     Ok(config)
+}
+
+/// The IRCv3 extensions a connection asks for, from the server's opt-ins.
+fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
+    Ircv3Options {
+        message_tags: preferences.message_tags,
+        server_time: preferences.server_time,
+    }
 }
 
 /// A connection from saved settings alone (at startup or from the channel
@@ -1275,6 +1284,15 @@ impl ChatWindow {
                     id
                 }
             };
+            // IRCv3 choices apply from the next connection, reconnects and
+            // retries included; the current connection is left alone.
+            if let Some(config) = self
+                .sessions
+                .get_mut(&id)
+                .and_then(|session| session.active_config.as_mut())
+            {
+                config.ircv3 = ircv3_options(profile.ircv3);
+            }
             networks.push(NetworkConfig {
                 id,
                 name: profile.host.clone(),
@@ -6280,6 +6298,78 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Ircv3Options;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.servers[0].nickname = "me".into();
+        settings.servers[0].username = "me".into();
+        settings.add_server("irc.example.org");
+        settings.servers[1].nickname = "me".into();
+        settings.servers[1].username = "me".into();
+        settings.servers[1].ircv3.server_time = true;
+        let config = |settings: &Settings, index: usize| {
+            crate::connection_config(
+                &settings.servers[index],
+                cayenchat_storage::Language::English,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(config(&settings, 0).ircv3, Ircv3Options::default());
+        assert_eq!(
+            config(&settings, 1).ircv3,
+            Ircv3Options {
+                message_tags: false,
+                server_time: true,
+            }
+        );
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (first, second) = (NetworkId(1), NetworkId(2));
+        chat.update(cx, |chat, cx| {
+            // Both servers were used in this run (as after a connection attempt).
+            chat.sessions.get_mut(&first).unwrap().active_config = Some(config(&settings, 0));
+            chat.sessions.get_mut(&second).unwrap().active_config = Some(config(&settings, 1));
+            let generation = chat.sessions[&first].generation;
+            let mut next = settings.clone();
+            next.servers[0].ircv3.message_tags = true;
+            chat.apply_servers(next, cx);
+            let ircv3 = |network| {
+                chat.sessions[&network]
+                    .active_config
+                    .as_ref()
+                    .unwrap()
+                    .ircv3
+            };
+            assert_eq!(
+                ircv3(first),
+                Ircv3Options {
+                    message_tags: true,
+                    server_time: false,
+                },
+                "reconnects use the new choice"
+            );
+            assert_eq!(
+                ircv3(second),
+                config(&settings, 1).ircv3,
+                "other server unchanged"
+            );
+            assert_eq!(chat.sessions[&first].generation, generation, "no reconnect");
+            assert!(chat.sessions[&first].irc.is_none());
+        });
+    }
 
     #[gpui::test]
     fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
