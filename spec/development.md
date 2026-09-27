@@ -38,6 +38,11 @@ cargo test --workspace
 
 For UI work, also build and run the desktop application on the currently available platform when practical.
 
+Changes that affect event handling, retained state, rendering or resource
+limits (for example multi-server connections or image display) must be
+compared against the baseline with the procedure in `spec/performance.md`
+(`scripts/perf/` and the ignored `perf_baseline` UI test).
+
 Do not claim cross-platform verification unless both platforms were actually tested.
 
 GitHub Actions CI builds and tests the whole workspace on Linux x86_64, Windows
@@ -60,6 +65,8 @@ Update only the relevant specification files when behavior or architecture chang
 - `decisions.md` for lasting technical choices
 - `feature-parity.md` for implementation status
 - `development.md` for build/test workflow
+- `performance.md` for the performance baseline, measurement procedure and
+  resource limits
 
 ## Source language
 
@@ -479,7 +486,8 @@ Follow-up: the channel tree is virtualized too, and message times are stored
 as minutes (`TimeOfDay`), shrinking each retained message from 88 to 64 bytes
 plus one fewer heap allocation. Not done: formatting wire diagnostics lazily and
 sending roster deltas instead of full NAMES snapshots on JOIN/PART in large
-channels.
+channels. The 2026-09-27 baseline and remaining candidates are in
+`performance.md`.
 
 ### Window close error logs on Windows (2026-09-26)
 

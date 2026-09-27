@@ -146,6 +146,9 @@ channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+The performance measures above, the current resource bounds and the
+measurement baseline are listed in `spec/performance.md`; keep them when
+adding servers or media.
 
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
