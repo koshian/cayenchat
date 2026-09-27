@@ -55,6 +55,8 @@ Do not build a second mechanism for any of these; extend them instead.
 | Linux: bounded per-word shaping cache in the vendored GPUI (swept every 128 lines, entries unused for four sweeps dropped) | `vendor/gpui`, see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
 | Image previews are requested only by main-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Receiving or retaining image links costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
 | A pending preview reserves its full height; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
+| Avatars are requested only by drawn main-log message rows and member rows, from their own small cache; the slot has a fixed size below the line height; image fetches in flight are shared with previews | `ui::avatars`, `media::cache` | A roster or history full of avatars costs nothing until rows are shown; an arriving avatar never changes a row's height; both features on do not add up their fetch concurrency. Nothing exists while avatars are off. |
+| Avatar references live once per network in `app::avatars`, keyed by user, not in messages | `app::avatars` | `model::Message` stays 64 bytes plus sender and text. |
 
 ## Resource bounds today
 
@@ -78,6 +80,13 @@ Do not build a second mechanism for any of these; extend them instead.
 | Preview response | 8 MiB, 3 redirects, 5 s connect, 15 s total | per load | At most 16 MiB of response buffers at once (two loads). |
 | Preview decoding | one at a time; ≤ 8192 px a side, ≤ 16.7 MP, decoder allocation ≤ 48 MiB | process | Checked from the header before decoding; the full image is freed once the thumbnail exists. |
 | Preview retries | transient failures (network, 408/429/5xx) once more after 5 min; others never | per record | While the record is retained; redraws never retry. |
+| Avatar metadata (irc-core) | 2,048 users with an avatar; values ≤ 2,048 bytes; 16 deferred channel syncs, 3 per channel | per connection | Only the `avatar` key is kept; later users get none. Reset on reconnect or lost capability. |
+| Avatar directory (app) | 2,048 current + 512 retired entries | per network | Worst case about 6 MiB per network at the maximum URL length; typical URLs are ~100 bytes. Removed with the server. |
+| Avatar loads | 2 in flight; with previews at most 3 media fetches in flight together | application | Decoding stays one at a time in the process (shared with previews). |
+| Queued avatar requests | 32, newest first | application | Only from drawn rows. |
+| Avatar records | 256 (ready, failed, queued, loading) | application | Least recently used ready or failed first. |
+| Ready avatars | 2 MiB charged (32×32 BGRA × 2 for CPU copy and GPU tile = 8 KiB each) | application | Separate from the 32 MiB preview budget. Released images leave the GPU atlas after both avatar panes redrew. |
+| Avatar response and decode | 2 MiB, 3 redirects, 5 s connect, 10 s total; ≤ 4096 px a side, ≤ 4.2 MP, decoder ≤ 24 MiB | per load | Centered square cropped and scaled to 32×32. |
 | Linux shaping cache | swept every 128 lines | process | Age-based, not a byte bound. |
 
 ## Measuring
@@ -468,7 +477,7 @@ the image preview section above); icons are still open.
 | Rosters | Keep one copy per channel, or bound the extra copies | Rosters are stored three times today; large channels multiply this with every added server. |
 | Image fetch | HTTP(S) only; at most a few concurrent fetches app-wide (for example 4) and per server (for example 2); a bounded queue that drops requests for rows scrolled out of view; body size and redirect limits | Fetching must never grow without bound during floods of links. |
 | Decoded image cache | Budget in decoded bytes (width × height × 4), not in entries (for example 64 MiB), with a per-image pixel limit (for example 4096 × 4096); GPU texture bytes counted against the same or a separate budget | Compressed size says little about memory; the settings window alone costs about 28 MiB of footprint, so GPU-side memory is significant. |
-| Icons | A separate, small decoded-byte budget | Icons are many and small; they must not evict previews or the reverse. |
+| Icons | A separate, small decoded-byte budget | Icons are many and small; they must not evict previews or the reverse. User avatars now have one (2 MiB, D023); channel/network icons are still open. |
 
 When a feature is off (icons, previews, experimental IRCv3 extensions) its
 caches, queues and threads must not exist, and the S1–S6 numbers must match

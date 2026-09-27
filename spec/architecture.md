@@ -46,10 +46,11 @@ Secrets never enter the preferences file.
 ### media
 
 Inline media display without GPUI or protocol types: which links are image
-preview candidates (`policy`), fetching (`fetch::Fetcher`; `HttpFetcher` for
-public HTTP(S) links), decoding into small thumbnails (`decode`), and the
-application-wide bounded record of previews (`cache::PreviewCache`). It does
-not upload and does not use `upload`.
+preview candidates and which explicitly supplied avatar URLs may be fetched
+(`policy`), fetching (`fetch::Fetcher`; `HttpFetcher` for public HTTP(S)
+links), decoding into small thumbnails (`decode`), and the bounded record of
+loads (`cache::PreviewCache`, one instance for previews and a separate small
+one for avatars). It does not upload and does not use `upload`.
 
 ### upload
 
@@ -207,8 +208,9 @@ nickname, username, channels, SASL account and startup connection into each
 server profile (D017). Version 14 adds the image preview appearance setting,
 off for new and migrated settings (D018). Version 15 adds per-server IRCv3
 opt-ins (message tags and server timestamps), off for new and migrated
-settings (D022); the later batch opt-in is a new field of the same object
-without a version change, read as off when absent. The UI keeps the
+settings (D022); the later batch and metadata (avatar) opt-ins are new
+fields of the same object without a version change, read as off when
+absent, and so is the Appearance `user_avatars` setting (D023). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -518,6 +520,48 @@ same tracker, with the same bounds, and its `BATCH` lines appear in the
 server log as before. That compatibility handling is not a claim of batch
 support.
 
+metadata (experimental, opt-in per server, D023): `draft/metadata-2` is
+wanted only when batch is also enabled for the server, because the draft
+requires batch; the IRCv3 tab shows that dependency and never turns batch
+on by itself. It is requested with its own `CAP REQ` only after `batch` is
+acknowledged (a server declining batch therefore never gets a metadata
+request) and never together with the legacy `metadata-notify`. If `batch`
+goes away (DEL or `ACK -batch`) metadata is dropped at once and
+`CAP REQ -draft/metadata-2` is sent. `irc-core::metadata` implements only
+the receive side avatars need:
+
+- Once registered (001) or once the capability arrives later, it sends
+  `METADATA * SUB avatar` a single time; the configured JOINs follow at
+  end-of-MOTD, so channel bursts include avatars.
+- `METADATA <target> avatar <visibility> [<value>]`, `761 RPL_KEYVALUE` and
+  `766 RPL_KEYNOTSET` for users produce `Event::UserAvatar`. Other keys,
+  channel targets and `*` are ignored; no metadata map is stored. A value
+  that is empty, missing, longer than 2,048 bytes, or contains controls,
+  whitespace or U+FFFD counts as no avatar. Metadata messages inside
+  `metadata` batches are handled like any other; the batch type is not a
+  history type, so `ReplayTracker` stores nothing for it.
+- `774 RPL_METADATASYNCLATER` for a joined channel schedules one
+  `METADATA <channel> SYNC` after the given delay (default 5 s, clamped to
+  1–300 s), at most 16 channels pending and 3 requests per channel and
+  connection. The select loop has a sleep branch only while one is pending;
+  PART/KICK drops the channel's request.
+- 770–772 and `FAIL METADATA` become diagnostics. Metadata lines of this
+  subset produce no server-log line, chat row, unread mark, notification or
+  preview; they stay in the transcript. With the capability off, a
+  `METADATA` line from a server is shown in the server log as before.
+- Avatars are remembered per connection for at most 2,048 users (later ones
+  get none). NICK moves an avatar (`Event::AvatarMoved`); QUIT, and PART or
+  KICK from the last channel shared with us (judged from the rosters
+  published before the message), end it (`UserAvatar { url: None }`).
+  Losing the capability sends `Event::AvatarsReset`. Everything lives in the
+  connection's worker, so a reconnect starts empty.
+
+On legacy encodings the whole line is decoded with the connection's
+charset, while metadata values are UTF-8. Avatar URLs are the only values
+used, so the fallback is narrow: only ASCII values are accepted there (any
+non-ASCII byte decodes differently), and non-ASCII URLs are dropped rather
+than guessed. The IRCv3 tab says so.
+
 Preferences live in `Ircv3Preferences`, one field per feature with its own
 serde default; the settings tab renders one `ircv3_settings::Ircv3Feature`
 row per field. A feature can later become enabled by default (a settings
@@ -725,6 +769,74 @@ decoded images back for release, and the HTTP agent with its idle connections
 is dropped. No preview timer or thread exists; loads run on GPUI's shared
 background executor. The limits, formats and remote-loading rules are in D018
 and `performance.md`.
+
+## User avatars
+
+```text
+irc-core metadata (opt-in draft/metadata-2)      a future Matrix client
+        |  Event::UserAvatar / AvatarMoved / AvatarsReset      |
+        v                                                      v
+app::avatars::AvatarDirectory  (per network: user key -> avatar reference,
+        |                       occupancy delimited by message sequences)
+        |   for_message(network, key, sequence) / current(network, key)
+        v
+ui::avatars (only while "Show user avatars" is on, only for drawn rows)
+        |   media::policy::avatar_url ({size} -> 32) -> MediaRef::Link
+        v
+media::cache::PreviewCache (separate small avatar instance)
+        |   next_job, fetch slots shared with previews (3 in flight)
+        v
+media::load_thumbnail (HttpFetcher, Limits::avatar(32): centered square)
+        v
+RenderImage in a fixed 16×16 slot (main-log message rows, member rows)
+```
+
+Presentation and protocol are separate. The Appearance setting "Show user
+avatars" (off by default) decides whether avatars are displayed and
+downloaded; the per-server IRCv3 opt-in decides whether IRC avatar
+references are received at all. `app::avatars` stores avatar references
+(for IRC, the metadata URL template) keyed by network and a
+protocol-folded user key (IRC: RFC 1459 case-mapped nickname); it knows no
+protocol and fetches nothing, and nothing is copied into retained messages
+(`model::Message` is unchanged). A Matrix client would fill the same
+directory from room member events and resolve its references through its
+own authenticated `Fetcher`, without the IRCv3 option or any uploader.
+
+Identity policy: an avatar belongs to one *occupancy* of a name, from the
+next message sequence after it was first seen until the user quits, leaves
+the last shared channel, changes name, is removed, disconnects, or the
+capability is lost. Messages that arrived during the occupancy show it,
+also after it ended (one retired occupancy per name is kept); a later user
+of the same nickname starts a new occupancy, so historical lines of an
+earlier occupant never show the new one's image, and lines received before
+an avatar was known (including replayed history) show none. Registered and
+Disconnected events end every occupancy of their network; resetting or
+removing a server forgets its directory. The member list shows only
+current occupancies. Bounds: 2,048 current and 512 retired entries per
+network, the oldest-ended retired entries dropped first.
+
+Display: with the setting on, main-log channel message rows (not activity
+lines, the server log or the combined subwindow) and member rows get a
+fixed 16×16 slot (below the 20 px line height, so rows keep their height)
+between the time and the nickname, or before the member name. Rows ask for
+their avatar while they are drawn, so only visible rows plus the log's
+400 px overdraw cause requests; a large roster fetches nothing until its
+rows are on screen, and a URL shared by several users is fetched once. A
+missing, loading or failed avatar leaves the slot blank. With the setting
+off there is no slot, no lookup, no fetch and no decode; turning it off
+cancels loads, drops late results (cache generation), releases the
+records and drops the HTTP agent. Released images are removed from the GPU
+atlas only after both cached panes that draw avatars (main log and member
+list) have redrawn, since a cached pane replays its last paint; if one
+lags, both are redrawn on the next frame.
+
+`media::policy::avatar_url` separates recognition from safety: an avatar
+URL was supplied as an image, so no file extension is required (unlike
+`image_link` for chat links, whose rules are unchanged), but the scheme,
+credential, port and public-address checks, redirect checks, response type
+(`image/*`, not SVG), sniffed content (PNG, JPEG, GIF, WebP; first frame
+of animations), size limits and background decoding are the ones previews
+use. Limits are in D023 and `performance.md`.
 
 ## Settings theme adapter
 

@@ -625,7 +625,8 @@ that is compatibility, not negotiated support. Details and bounds are in
 `architecture.md`.
 
 Not included: chathistory requests, echo-message, labeled-response, account
-tags, avatars, metadata, reactions, typing indicators and Matrix. Later
+tags, reactions, typing indicators and Matrix. Avatars through metadata
+came later (D023). Later
 features may become default-on or move tabs by changing their preference
 default and settings row only; that migration is not implemented.
 
@@ -636,3 +637,72 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
 [chathistory batch type](https://ircv3.net/specs/batches/chathistory),
 [SASL 3.1](https://ircv3.net/specs/extensions/sasl-3.1),
 [SASL 3.2](https://ircv3.net/specs/extensions/sasl-3.2).
+
+## D023 — User avatars and experimental IRCv3 metadata
+
+**Status:** Accepted (IRC metadata: experimental)
+
+2026-09-27. Two independent settings:
+
+- **Appearance → Show user avatars** (`Appearance::user_avatars`, off by
+  default, applies live, independent of image previews). It alone decides
+  whether avatars are displayed and their images downloaded. Off keeps the
+  compact layout exactly: no avatar column, no placeholder, no taller rows,
+  no lookups, fetches or decodes.
+- **IRCv3 → User avatars (experimental)** (`Ircv3Preferences::metadata`, per
+  server, off for new and existing settings, saved by autosave and applied
+  on the next connection like the other IRCv3 options). It decides whether
+  IRC avatar references are received through `draft/metadata-2`. It
+  requires the server's batch option; the tab shows the dependency and
+  nothing turns batch on implicitly. Receiving references downloads no
+  image.
+
+Both fields were added without a settings version change (like batch),
+read as off when absent. Showing and receiving are separate so a future
+Matrix client can use the display layer without the IRCv3 option or an
+external upload provider.
+
+Specification followed: ircv3-specifications `extensions/metadata.md` at
+its last change, commit ef205ce (2026-05-07; repository head 9ff58d1,
+2026-08-03), and the `avatar` user key of the IRCv3 registry
+(ircv3.github.io `_data/metadata_registry.yml`, commit 9480443,
+2026-05-21): "URL with an optional `{size}` substitution denoting the size
+to load in pixels". ircv3.net itself was unreachable from the build
+environment; the sources are the published repositories behind it.
+Implemented: capability negotiation (after batch, never with
+`metadata-notify`), `METADATA * SUB avatar`, the `METADATA` message,
+761/766 for the avatar key, 770–772 and `FAIL METADATA` as diagnostics,
+774 with bounded `SYNC` retries. Not implemented: GET, LIST, SET, CLEAR,
+UNSUB, SUBS, `before-connect`, MONITOR-based updates, 760 in WHOIS,
+channel avatars, other keys (`display-name`, `color`, …) and publishing
+our own avatar. Details are in `architecture.md` (IRCv3 capabilities and
+User avatars).
+
+Interoperability limits: checked only against local fixtures, not a real
+server. The draft does not say how a removal is announced; a `METADATA`
+line without a value (as in the earlier `metadata-notify`) or with an
+empty value removes the avatar. irc-proto 1.1.0 parses `METADATA` with the
+old metadata-3.2 client grammar and does not know 770–774, so arguments
+are read back positionally. Whether a server sends a joining user's
+metadata to existing members is unspecified; a user who joins later may
+show no avatar until they change it. Legacy encodings accept only ASCII
+avatar URLs.
+
+Identity policy (details in `architecture.md`): avatars are per network and
+per occupancy of a nickname, delimited by message sequence numbers, so a
+same-named user on another server or a later user of the nickname never
+inherits an avatar, and lines from before an avatar was known show none.
+Omitting an avatar is preferred to guessing.
+
+Media: avatar URLs go through `cayenchat-media` like previews but are
+recognized without a file extension (`policy::avatar_url`); safety checks,
+redirects, response and decode limits, background decoding and the static
+first frame are shared. `{size}` becomes 32. Limits: 2 MiB response,
+10 s total, sources up to 4096 px a side and 4.2 MP, decoder allocation up
+to 24 MiB, centered square cropped to 32×32 px and shown at 16×16 logical
+px. A separate cache (256 records, 2 MiB charged at twice the BGRA bytes,
+32 queued, 2 in flight) keeps avatars and previews from evicting each
+other; fetches in flight are limited to 3 for avatars and previews
+together, and decoding stays one at a time in the process. Avatars do not
+use `upload`/`ExternalUploader` or GPUI's URL image loader.
+

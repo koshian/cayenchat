@@ -297,6 +297,23 @@ this delay.
    keep following new lines. Turn previews off: the thumbnails and
    their space disappear at once and no further link is read (the fixture
    directory's access times do not change).
+10. User avatars, with a `preview-fixture` build and a local IRC fixture
+   that offers `batch` and `draft/metadata-2` (never a public server): in
+   **外観**, **ユーザーのアバターを表示する** is off for new settings, and in
+   **IRCv3**, **ユーザーのアバター (実験的)** is off and, when turned on
+   without **メッセージのバッチ**, shows that batch is required (batch stays
+   off). With both IRCv3 options on, connect and have the fixture send
+   `METADATA <nick> avatar * :https://images.cayenchat.test/<file>`: nothing
+   is downloaded and the layout is unchanged while the Appearance setting is
+   off. Turn it on: 16×16 images appear before nicknames in the channel log
+   and the member list, rows keep their height and the nickname stays
+   readable while images load or fail; the combined log, server log and
+   activity lines stay text-only. Scroll while images load, switch channels
+   and servers; the log must not jump and must keep following at the
+   bottom. Change a user's nick and reuse the old nick from another client:
+   the old lines keep the old image, the new user's lines show none until
+   their own avatar arrives. Turn the setting off: the column disappears at
+   once and no further image is read.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
