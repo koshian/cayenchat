@@ -1713,6 +1713,20 @@ impl ChatWindow {
                 let text = channel_activity_text(&actor, kind);
                 self.state.append_channel_activity(network, &channel, text);
             }
+            Event::PrivateMessage {
+                sender,
+                text,
+                notice,
+            } => {
+                // Private conversations have no pane yet; keep them in the
+                // server log as before.
+                let line = if notice {
+                    format!("-{sender}- {text}")
+                } else {
+                    format!("<{sender}> {text}")
+                };
+                self.state.append_server_message(network, line);
+            }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
             Event::Whois(info) => {
