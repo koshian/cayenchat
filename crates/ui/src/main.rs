@@ -10,6 +10,7 @@ mod menu_bar;
 mod notifier;
 #[cfg(test)]
 mod perf_baseline;
+mod previews;
 mod secrets;
 mod session;
 mod theme;
@@ -334,6 +335,7 @@ impl SettingsForm {
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
             alternate_rows: self.values.appearance.alternate_rows,
+            image_previews: self.values.appearance.image_previews,
             main_log_font: value(&self.main_log_font),
             sub_log_font: value(&self.sub_log_font),
             member_font: value(&self.member_font),
@@ -644,6 +646,8 @@ struct ChatWindow {
     notifier: Notifier,
     notification_rules: NotificationRules,
     notification_burst: BurstLimiter,
+    /// Inline image previews in the main channel log (application-wide).
+    previews: previews::Previews,
     /// Whether the chat window has keyboard focus; messages in the selected
     /// conversation of a focused window are already visible.
     window_active: bool,
@@ -918,6 +922,7 @@ impl ChatWindow {
             theme_mode: saved.theme,
             image_provider: saved.image_upload.provider.clone(),
             notification_rules: notification_rules(&saved.notifications),
+            previews: previews::Previews::new(saved.appearance.image_previews),
             saved,
             i18n,
             log_focus: cx.focus_handle(),
@@ -1038,6 +1043,9 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         theme::apply(mode, &appearance, cx);
+        // Off: no more requests, pending loads are cancelled or ignored and
+        // decoded images are released on the next draw.
+        self.previews.set_enabled(appearance.image_previews);
         self.appearance = appearance;
         self.theme_mode = mode;
         // Fonts and row styles are drawn by the cached panes.
@@ -1170,6 +1178,10 @@ impl ChatWindow {
             self.inputs.remove(&Selection::Channel(*id));
             self.main_lists.remove(&Selection::Channel(*id));
         }
+        self.previews.retain_rows(|row| match row.selection {
+            Selection::Channel(id) => !removed.contains(&id),
+            _ => true,
+        });
         if self
             .log_selection
             .is_some_and(|selection| removed.contains(&selection.channel))
@@ -3590,6 +3602,31 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(
+                div()
+                    .id("image-previews")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(if self.settings.values.appearance.image_previews {
+                        "☑"
+                    } else {
+                        "☐"
+                    })
+                    .child(self.i18n.text("image_previews"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.image_previews;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("image_previews_hint")),
+            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
@@ -4064,6 +4101,41 @@ fn styled_log_text(
         ))
     });
     StyledText::new(text.to_owned()).with_highlights(highlights)
+}
+
+/// A preview below a message: the thumbnail, or a box of the full height
+/// while it loads. A double-click opens the link, like on the text.
+fn preview_element(
+    link: String,
+    shown: previews::Shown,
+    index: usize,
+    theme: &Theme,
+    cx: &mut Context<ChatWindow>,
+) -> AnyElement {
+    let frame = div()
+        .id(("message-preview", index))
+        .mt(px(2.))
+        .mb(px(1.))
+        .flex_shrink_0();
+    match shown {
+        previews::Shown::Image(preview) => frame
+            .w(px(preview.width))
+            .h(px(preview.height))
+            .cursor_pointer()
+            .child(img(preview.image).size_full())
+            .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    cx.open_url(&link);
+                }
+            }))
+            .into_any_element(),
+        previews::Shown::Pending => frame
+            .w(px(previews::BOX_HEIGHT as f32 * 4. / 3.))
+            .h(px(previews::BOX_HEIGHT as f32))
+            .border_1()
+            .border_color(theme.border)
+            .into_any_element(),
+    }
 }
 
 impl Render for SettingsWindow {
@@ -4873,12 +4945,19 @@ struct ChatPane {
 }
 
 impl Render for ChatPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kind = self.kind;
         // Rows and their listeners belong to the chat window, so build them in
         // its context; it is not being updated while panes lay out.
         self.chat
-            .update(cx, |chat, cx| chat.render_pane(kind, cx))
+            .update(cx, |chat, cx| {
+                // Only while the main log redraws: a reused (cached) pane
+                // replays sprites that may still point at these images.
+                if matches!(kind, PaneKind::MainLog) {
+                    chat.previews.release(window);
+                }
+                chat.render_pane(kind, cx)
+            })
             .unwrap_or_else(|_| div().into_any_element())
     }
 }
@@ -5152,6 +5231,21 @@ impl ChatWindow {
             return div().into_any_element();
         };
         let urls = log_urls(&message.text);
+        // Channel activity lines stay text-only.
+        let preview = if message.activity {
+            None
+        } else {
+            self.previews.lookup(
+                &urls,
+                previews::RowRef {
+                    selection: Selection::Channel(selected_channel),
+                    sequence: message.sequence,
+                },
+            )
+        };
+        if matches!(preview, Some((_, previews::Shown::Pending))) {
+            self.pump_previews(cx);
+        }
         let selected_range = self
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
@@ -5199,10 +5293,10 @@ impl ChatWindow {
                         .child(":"),
                 )
             })
-            .child(
-                div()
+            .child({
+                let text = div()
                     .id(("message-text", index))
-                    .flex_1()
+                    .when(preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
                     .cursor(CursorStyle::IBeam)
@@ -5235,8 +5329,19 @@ impl ChatWindow {
                                 cx.open_url(url);
                             }
                         }
-                    })),
-            )
+                    }));
+                match preview {
+                    None => text.into_any_element(),
+                    Some((link, shown)) => div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(text)
+                        .child(preview_element(link, shown, index, &theme, cx))
+                        .into_any_element(),
+                }
+            })
             .into_any_element()
     }
 

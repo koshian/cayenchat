@@ -1,0 +1,15 @@
+[package]
+name = "cayenchat-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+cayenchat-model.workspace = true
+url = "2.5.8"
+# Same blocking client as `upload`: rustls/ring, no compression, no cookies.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# Already in the tree through GPUI; only the formats previews decode.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

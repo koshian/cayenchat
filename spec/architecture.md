@@ -43,6 +43,14 @@ Persistent formats should be explicit and versionable.
 Also owns the application's only credential store (`storage::credentials`).
 Secrets never enter the preferences file.
 
+### media
+
+Inline media display without GPUI or protocol types: which links are image
+preview candidates (`policy`), fetching (`fetch::Fetcher`; `HttpFetcher` for
+public HTTP(S) links), decoding into small thumbnails (`decode`), and the
+application-wide bounded record of previews (`cache::PreviewCache`). It does
+not upload and does not use `upload`.
+
 ### upload
 
 IRC's external image hosting: the `ExternalUploader` trait, provider
@@ -154,9 +162,10 @@ The visual treatment should follow `spec/project.md`: compact, direct, and Choco
 
 ## Current implementation
 
-The six workspace members use the `cayenchat-` package prefix. Dependencies include
+The seven workspace members use the `cayenchat-` package prefix. Dependencies include
 `ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> notify-rust`, `ui -> upload ->
-storage/model`, `storage -> keyring`, `upload -> ureq` and `irc-core -> irc/Tokio`.
+storage/model`, `ui -> media -> model`, `storage -> keyring`, `upload -> ureq`,
+`media -> ureq/url/image` and `irc-core -> irc/Tokio`.
 There are no dependency cycles and GPUI occurs only in `ui`.
 
 `irc-core::Connection` owns a dedicated current-thread Tokio runtime. It translates
@@ -195,7 +204,8 @@ notification preferences (enabled, mentions, keyword alerts, keywords and
 private messages) and a highlight color to the light and dark pane colors;
 older settings enable them all with no keywords. Version 13 moves the
 nickname, username, channels, SASL account and startup connection into each
-server profile (D017). The UI keeps the
+server profile (D017). Version 14 adds the image preview appearance setting,
+off for new and migrated settings (D018). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -300,7 +310,9 @@ snapshot replaces that carried rank.
 
 The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
-double-click. The lower combined log switches to a line's channel on double-click.
+double-click. With image previews on, a thumbnail of the message's first
+direct image link appears below its text (see Inline image previews). The
+lower combined log switches to a line's channel on double-click.
 
 Version 4 settings keep several server profiles. Since version 13 the list
 starts empty: the IRCnet hosts are `storage::PRESETS`, offered only when adding
@@ -514,7 +526,54 @@ Matrix support, if added, keeps the shared parts (`model::Attachment`, the
 selection-to-attachment UI actions and the confirmation/progress presentation)
 but replaces the transport step with the Matrix client's native media upload
 producing an `m.image` event. It must not implement or call
-`ExternalUploader`, and `upload` must not grow Matrix types. Inline display of
-image links is not implemented; it should consume URLs (IRC) or media events
-(Matrix) through a separate display layer, with a remote-loading preference,
-HTTP(S)-only fetching, size and redirect limits, and decoding off the UI thread.
+`ExternalUploader`, and `upload` must not grow Matrix types. Displaying images
+is the separate `media` layer below.
+
+## Inline image previews
+
+```text
+channel message text (main log row being drawn, previews on)
+        |   ui::log_urls (the same recognition as link opening)
+        v
+media::policy::image_link -> media::MediaRef::Link   (direct image link only)
+        |
+        v
+media::cache::PreviewCache  (one per app: dedupe, bounded queue/in-flight,
+        |                    byte budget, failures, generation)
+        |   next_job
+        v
+GPUI background executor: media::load_thumbnail
+        |   Fetcher (HttpFetcher: checked redirects, public addresses only)
+        |   decode: sniff, header dimensions, capped decode, resize, BGRA
+        v
+ui::previews: RenderImage in the cache; the row draws `img` below its text;
+evicted images are removed from the GPU sprite atlas (Window::drop_image)
+```
+
+Discovery, loading and display are separate. `MediaRef` is the boundary: IRC
+only produces public links, a Matrix client would add its own reference
+(`mxc://` plus server thumbnails) and `Fetcher` with its own transport and
+authentication, and reuse decoding, the cache and rendering. Nothing here
+depends on an upload provider or account, and `ExternalUploader` is not used.
+
+Rows request their preview while they are drawn, so only rows the virtualized
+log lays out (the viewport plus its 400 px overdraw) cause requests; receiving
+or retaining image links fetches nothing. Only channel message rows of the
+main log preview; the combined log, the server log (diagnostics, private
+messages) and activity lines stay text-only, and link opening and selection
+work on the text as before. A pending preview reserves a box of the full
+preview height so a finished load does not move the row. When the finished
+height differs (a wide image, or a failure that leaves only the text link),
+the rows that showed the placeholder have their measured height replaced in
+their `LogList` (`LogList::invalidate`), except the row at the scroll top,
+which is on screen and remeasured anyway; the list is not reset. A finished
+load notifies the chat window, which redraws the cached panes; typing still
+reuses them.
+
+Turning the setting off takes effect immediately: the cache stops answering,
+cancels running loads (checked between reads and before decoding), forgets
+every record, bumps a generation so late completions are dropped, and hands
+decoded images back for release, and the HTTP agent with its idle connections
+is dropped. No preview timer or thread exists; loads run on GPUI's shared
+background executor. The limits, formats and remote-loading rules are in D018
+and `performance.md`.

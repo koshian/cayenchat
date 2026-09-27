@@ -851,6 +851,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cayenchat-media"
+version = "0.1.0"
+dependencies = [
+ "cayenchat-model",
+ "image",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "cayenchat-model"
 version = "0.1.0"
 
@@ -873,6 +883,7 @@ dependencies = [
  "ashpd 0.11.1",
  "cayenchat-app",
  "cayenchat-irc-core",
+ "cayenchat-media",
  "cayenchat-model",
  "cayenchat-storage",
  "cayenchat-upload",
@@ -880,6 +891,7 @@ dependencies = [
  "embed-resource",
  "futures-util",
  "gpui",
+ "image",
  "log",
  "notify-rust",
  "objc2-foundation",
