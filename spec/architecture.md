@@ -424,8 +424,8 @@ user mask (a line from the server or bouncer itself, such as Tiarra's
 Log::Recent replaying channel logs as `:tiarra NOTICE #chan`), that belongs
 to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
 one), or whose server-time tag is at least five minutes old. Replayed
-messages still appear in the log, are highlighted there and mark unread
-channels. Nothing notifies while the chat window is
+messages still appear in the log (`model::Message::replayed`) but are neither
+highlighted there nor mark unread channels. Nothing notifies while the chat window is
 focused and the message's conversation (the server view for private messages)
 is selected. At most five notifications are shown per ten seconds so bouncer
 history playback cannot flood the desktop; the log and unread marks are

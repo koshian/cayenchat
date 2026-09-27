@@ -1042,14 +1042,14 @@ impl ChatWindow {
     }
 
     /// Byte ranges of mentions of our nickname and of keywords in a channel
-    /// message, drawn in the highlight color. Own lines and activity are
-    /// not highlighted.
+    /// message, drawn in the highlight color. Own lines, activity and
+    /// replayed history are not highlighted.
     fn highlight_ranges(
         &self,
         network: NetworkId,
         message: &cayenchat_model::Message,
     ) -> Vec<std::ops::Range<usize>> {
-        if message.activity || self.is_own_nickname(network, &message.sender) {
+        if message.activity || message.replayed || self.is_own_nickname(network, &message.sender) {
             return Vec::new();
         }
         let mut ranges = self
@@ -2361,7 +2361,8 @@ impl ChatWindow {
                 mentioned,
                 replayed,
             } => {
-                let highlighted = !self.is_own_nickname(network, &sender)
+                let highlighted = !replayed
+                    && !self.is_own_nickname(network, &sender)
                     && (mentioned
                         || notifications::contains_keyword(
                             &cayenchat_irc_core::text::strip_formatting(&text),
@@ -2379,7 +2380,7 @@ impl ChatWindow {
                     },
                 );
                 self.state
-                    .append_channel_message(network, &channel, &sender, &text, notice);
+                    .append_channel_message(network, &channel, &sender, &text, notice, replayed);
                 if highlighted {
                     self.state.mark_highlighted(network, &channel);
                 }
@@ -2449,7 +2450,7 @@ impl ChatWindow {
                         .and_then(|session| session.own_nickname.as_deref())
                         .unwrap_or("me");
                     self.state
-                        .append_channel_message(network, &channel, nickname, &text, notice);
+                        .append_channel_message(network, &channel, nickname, &text, notice, false);
                 } else {
                     self.state.append_server_message(
                         network,
@@ -6036,6 +6037,7 @@ mod combined_log_tests {
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
+                replayed: false,
             });
         }
         for excluded in [None, Some(ConversationId(2)), Some(ConversationId(4))] {
@@ -6436,6 +6438,32 @@ mod pane_tests {
                 chat.highlight_ranges(NetworkId(1), &b.messages[2]),
                 vec![(0..6)]
             );
+            assert!(b.messages[4].replayed);
+            assert!(
+                chat.highlight_ranges(NetworkId(1), &b.messages[4])
+                    .is_empty()
+            );
+
+            // Replayed history leaves an unselected channel unmarked.
+            let (a, b) = (a.id, b.id);
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(b));
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(a));
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::ChannelMessage {
+                    channel: "#b".into(),
+                    sender: "tiarra".into(),
+                    text: "12:34 <bob> alice: deploy".into(),
+                    notice: true,
+                    mentioned: true,
+                    replayed: true,
+                }],
+                false,
+                cx,
+            );
+            assert!(!chat.state.is_highlighted(b));
         });
     }
 
@@ -6789,7 +6817,7 @@ mod pane_tests {
         chat.update(cx, |chat, cx| {
             let name = chat.state.conversations()[0].name.clone();
             chat.state
-                .append_channel_message(NetworkId(1), &name, "bob", "hi", false);
+                .append_channel_message(NetworkId(1), &name, "bob", "hi", false, false);
             cx.notify();
         });
         cx.run_until_parked();
