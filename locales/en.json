@@ -237,5 +237,18 @@
   "upload_not_image": "Only PNG, JPEG, GIF, WebP, BMP, TIFF, HEIC/HEIF or AVIF images can be uploaded.",
   "upload_one_file": "Drop one image at a time.",
   "upload_read_failed": "Could not read the file ({error}).",
-  "upload_drop_hint": "Drop an image to upload it"
+  "upload_drop_hint": "Drop an image to upload it",
+  "notifications_tab": "Notifications",
+  "notifications_enabled": "Show desktop notifications",
+  "notify_mentions": "When someone mentions my nickname in a channel (e.g. nick: or @nick)",
+  "notify_private_messages": "When I receive a private message",
+  "notify_keywords": "When a channel message contains a keyword",
+  "keywords": "Keywords",
+  "keywords_placeholder": "word, another word",
+  "keywords_hint": "Comma-separated. Matched anywhere in a message, ignoring case. Add your nickname here only if you also want it matched inside other words.",
+  "notifications_hint": "Messages in the selected channel of the focused chat window do not notify.",
+  "notifications_hint_macos": "Messages in the selected channel of the focused chat window do not notify. macOS shows notifications only for the app bundle; allow them in System Settings > Notifications.",
+  "notification_channel_title": "{sender} in {channel}",
+  "notification_private_title": "{sender} (private message)",
+  "highlight_color": "Highlight text"
 }

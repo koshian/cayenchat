@@ -1,5 +1,6 @@
 //! Application state and commands, independent of any rendering framework.
 pub mod attachments;
+pub mod notifications;
 
 use std::collections::{HashMap, HashSet};
 
@@ -58,6 +59,8 @@ pub struct AppState {
     selected: Selection,
     previous_channel: Option<ConversationId>,
     unread: HashSet<ConversationId>,
+    /// Unread channels where someone mentioned us or a keyword appeared.
+    highlighted: HashSet<ConversationId>,
     active_channels: HashSet<ConversationId>,
     active_servers: HashSet<NetworkId>,
     statuses: HashMap<NetworkId, ConnectionStatus>,
@@ -199,6 +202,7 @@ impl AppState {
             previous_channel: None,
             // Unread fixtures make the shortcut observable before IRC events exist.
             unread: HashSet::from([ConversationId(2), ConversationId(4)]),
+            highlighted: HashSet::new(),
             active_channels,
             active_servers,
             statuses,
@@ -237,6 +241,7 @@ impl AppState {
             selected,
             previous_channel: None,
             unread: HashSet::new(),
+            highlighted: HashSet::new(),
             active_channels: HashSet::new(),
             active_servers: HashSet::new(),
             server_messages: HashMap::new(),
@@ -266,6 +271,7 @@ impl AppState {
                 .map_or(Selection::None, |network| Selection::Server(network.id)),
             previous_channel: None,
             unread: HashSet::new(),
+            highlighted: HashSet::new(),
             active_channels: HashSet::new(),
             active_servers: HashSet::new(),
             statuses: HashMap::new(),
@@ -379,6 +385,7 @@ impl AppState {
             .retain(|channel| channel.network != network);
         for id in &removed {
             self.unread.remove(id);
+            self.highlighted.remove(id);
             self.active_channels.remove(id);
             if self.previous_channel == Some(*id) {
                 self.previous_channel = None;
@@ -668,6 +675,19 @@ impl AppState {
         self.unread.contains(&id)
     }
 
+    pub fn is_highlighted(&self, id: ConversationId) -> bool {
+        self.highlighted.contains(&id)
+    }
+
+    /// Marks a channel that is not selected until the user opens it.
+    pub fn mark_highlighted(&mut self, network: NetworkId, name: &str) {
+        if let Some(id) = self.channel_id(network, name)
+            && self.selected != Selection::Channel(id)
+        {
+            self.highlighted.insert(id);
+        }
+    }
+
     pub fn is_active_channel(&self, id: ConversationId) -> bool {
         self.active_channels.contains(&id)
     }
@@ -691,6 +711,7 @@ impl AppState {
         }
         self.selected = Selection::Channel(id);
         self.unread.remove(&id);
+        self.highlighted.remove(&id);
     }
 
     fn select_server(&mut self, id: NetworkId) {
@@ -1017,6 +1038,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["first", "latest"]
         );
+    }
+
+    #[test]
+    fn highlights_mark_unselected_channels_until_selected() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+        let (a, b) = (state.conversations[0].id, state.conversations[1].id);
+        state.dispatch(Command::SelectChannel(a));
+        state.mark_highlighted(NetworkId(1), "#a");
+        state.mark_highlighted(NetworkId(1), "#b");
+        state.mark_highlighted(NetworkId(1), "#unknown");
+        assert!(!state.is_highlighted(a));
+        assert!(state.is_highlighted(b));
+        state.dispatch(Command::SelectChannel(b));
+        assert!(!state.is_highlighted(b));
     }
 
     #[test]

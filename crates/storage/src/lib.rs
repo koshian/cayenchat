@@ -13,8 +13,8 @@ pub mod credentials;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
-const SETTINGS_VERSION: u32 = 12;
-/// Profile IDs of the IRCnet servers that versions 1–11 always listed. They
+const SETTINGS_VERSION: u32 = 13;
+/// Profile IDs of the IRCnet servers that versions 1–12 always listed. They
 /// only matter for migration: profiles keep their IDs, so saved passwords stay
 /// attached.
 pub const IRCNET_ID: &str = "ircnet";
@@ -126,6 +126,8 @@ pub struct Appearance {
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub channel_event_color: String,
+    /// Mentions and keywords in logs, and channels where they arrived.
+    pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
     pub alternate_rows: bool,
@@ -147,6 +149,7 @@ pub struct DarkColors {
     pub main_log_background: String,
     pub main_log_alternate: String,
     pub channel_event_color: String,
+    pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
 }
@@ -158,6 +161,7 @@ impl Default for DarkColors {
             main_log_background: "#1F2124".into(),
             main_log_alternate: "#272B31".into(),
             channel_event_color: "#6CC46C".into(),
+            highlight_color: "#EFA0BE".into(),
             sub_log_background: "#24272B".into(),
             sub_log_alternate: "#2C3036".into(),
         }
@@ -171,6 +175,7 @@ impl Default for Appearance {
             main_log_background: "#FFFFFF".into(),
             main_log_alternate: "#F2F5FF".into(),
             channel_event_color: "#007D00".into(),
+            highlight_color: "#D46A8E".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
             alternate_rows: false,
@@ -192,12 +197,14 @@ impl Appearance {
             ("Main log", &self.main_log_background),
             ("Main alternate", &self.main_log_alternate),
             ("Channel event", &self.channel_event_color),
+            ("Highlight", &self.highlight_color),
             ("Sub log", &self.sub_log_background),
             ("Sub alternate", &self.sub_log_alternate),
             ("Dark member list", &self.dark.member_list_background),
             ("Dark main log", &self.dark.main_log_background),
             ("Dark main alternate", &self.dark.main_log_alternate),
             ("Dark channel event", &self.dark.channel_event_color),
+            ("Dark highlight", &self.dark.highlight_color),
             ("Dark sub log", &self.dark.sub_log_background),
             ("Dark sub alternate", &self.dark.sub_log_alternate),
         ] {
@@ -228,7 +235,7 @@ pub struct ServerProfile {
     /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
-    /// Identity and channels belong to each server (version 12); earlier
+    /// Identity and channels belong to each server (version 13); earlier
     /// versions kept one application-wide set, copied here on migration.
     #[serde(default)]
     pub nickname: String,
@@ -306,6 +313,31 @@ pub struct ImageUpload {
     pub provider: Option<String>,
 }
 
+/// Desktop notifications (version 12). Older settings get the defaults.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notifications {
+    pub enabled: bool,
+    /// Channel messages that mention our nickname.
+    pub mentions: bool,
+    /// Channel messages containing one of `keywords`.
+    pub keyword_alerts: bool,
+    pub keywords: Vec<String>,
+    pub private_messages: bool,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mentions: true,
+            keyword_alerts: true,
+            keywords: Vec::new(),
+            private_messages: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -320,7 +352,8 @@ pub struct Settings {
     pub appearance: Appearance,
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
-    /// Application-wide identity of versions 1–11, read only to migrate it
+    pub notifications: Notifications,
+    /// Application-wide identity of versions 1–12, read only to migrate it
     /// into every server profile; never written back.
     #[serde(flatten, skip_serializing)]
     legacy: LegacyIdentity,
@@ -352,6 +385,7 @@ impl Default for Settings {
             appearance: Appearance::default(),
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
+            notifications: Notifications::default(),
             legacy: LegacyIdentity::default(),
         }
     }
@@ -452,13 +486,13 @@ impl Settings {
             // that as the initial value so existing connections do not change.
             self.legacy.username = self.legacy.nickname.clone();
         }
-        let migrate_identity = self.version <= 11;
+        let migrate_identity = self.version <= 12;
         self.version = SETTINGS_VERSION;
         let mut seen = HashSet::new();
         self.servers
             .retain(|s| !s.id.is_empty() && seen.insert(s.id.clone()) && s.port != 0);
         if migrate_identity {
-            // Versions 1–11 always listed both IRCnet servers after the
+            // Versions 1–12 always listed both IRCnet servers after the
             // user-added ones. Keep a preset only if it was in use: selected
             // (created if the file omitted it) or holding saved passwords.
             for (index, id) in [IRCNET_ID, IRCNET_IPV6_ID].into_iter().enumerate() {
@@ -824,6 +858,7 @@ mod tests {
             assert_eq!(profile.channels, "#test");
             assert!(profile.sasl_enabled);
             assert_eq!(profile.sasl_username, "account");
+            assert_eq!(settings.notifications, Notifications::default());
             assert_eq!(fs::read(&path).unwrap(), bytes);
             save_to(&path, &settings).unwrap();
             assert_eq!(load_from(&path).unwrap(), Some(settings));
@@ -831,11 +866,11 @@ mod tests {
     }
 
     #[test]
-    fn version_eleven_identity_moves_into_every_server() {
+    fn shared_identity_moves_into_every_server() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let old = serde_json::json!({
-            "version": 11,
+            "version": 12,
             "selected_server": "custom-1",
             "servers": [
                 {"id": "custom-1", "custom": true, "host": "irc.example.net",
@@ -865,7 +900,7 @@ mod tests {
             assert_eq!(server.connect_on_startup, server.id == "custom-1");
         }
 
-        // Version 12 keeps each server's values and writes no shared identity.
+        // Version 13 keeps each server's values and writes no shared identity.
         settings.servers[1].nickname = "bob".into();
         settings.servers[1].channels = "#c".into();
         save_to(&path, &settings).unwrap();
@@ -1218,7 +1253,7 @@ mod tests {
         assert!(saved["appearance"].get("background").is_none());
     }
 
-    /// Default settings as a version 1–11 file wrote them: the IRCnet
+    /// Default settings as a version 1–12 file wrote them: the IRCnet
     /// server selected and listed.
     fn old_default(version: u32) -> serde_json::Value {
         let mut old = serde_json::to_value(Settings::default()).unwrap();

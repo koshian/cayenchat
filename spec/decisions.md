@@ -158,14 +158,14 @@ Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
 platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
 TLS and `irc6.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
-(since D016 the server list starts empty).
+(since D017 the server list starts empty).
 Password saving is per server and off by default; switching it off
 immediately removes those stored values. (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. Support SASL PLAIN through IRCv3
 CAP negotiation in `irc-core`. The initial implementation covered one network
-and manual reconnect; multi-server support is D016.
+and manual reconnect; multi-server support is D017.
 
 Version 4 preferences store multiple server profiles and order user-added entries
 before built-in choices. Versions 1–3
@@ -361,22 +361,51 @@ Sources: [ImgBB API](https://api.imgbb.com/),
 [Tautulli issue on Imgur registration](https://github.com/Tautulli/Tautulli/issues/2620),
 [NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver).
 
-## D016 — Multiple servers at once
+## D016 — OS desktop notifications through notify-rust
+
+**Status:** Accepted
+
+Notifications use the operating system's service, not in-app popups. Linux
+and BSD call `org.freedesktop.Notifications` on the session bus, which every
+major desktop implements; the XDG portal notification API is not used.
+`notify-rust` 4.18 provides this over zbus 5, which GPUI and keyring already
+bring in, and also covers macOS (`mac-notification-sys`, reusing objc2) and
+Windows (`tauri-winrt-notification`, reusing `windows` 0.61), so no
+per-platform code is kept here. The Linux body is escaped because servers with
+`body-markup` parse it.
+
+macOS: `mac-notification-sys` uses the deprecated but working
+`NSUserNotificationCenter`. Without an explicit application it asks
+AppleScript for an app named "use_default" and falls back to Finder, so the UI
+registers the main bundle identifier and disables notifications when there is
+none (`cargo run`); use `scripts/bundle-macos.sh`. notify-rust's
+`UNUserNotificationCenter` backend is still a preview feature.
+
+Windows: toasts need an AppUserModelID. notify-rust defaults to PowerShell's,
+so toasts are attributed to Windows PowerShell until CayenChat registers its
+own ID (a Start menu shortcut or the per-user `AppUserModelId` registry key);
+that is follow-up work, as is activating the conversation on click.
+
+Sources: [Desktop Notifications Specification](https://specifications.freedesktop.org/notification-spec/latest/),
+[notify-rust](https://github.com/hoodie/notify-rust),
+[Windows toast notifications from desktop apps](https://learn.microsoft.com/en-us/windows/apps/design/shell/tiles-and-notifications/send-local-toast-other-apps).
+
+## D017 — Multiple servers at once
 
 **Status:** Accepted
 
 Every server profile is a network in the channel tree, shown whether or not it
 is connected, and any number of them can be connected at the same time
-(LimeChat's model). Settings version 12 moves the nickname, `USER` username,
+(LimeChat's model). Settings version 13 moves the nickname, `USER` username,
 auto-join channels, SASL account and startup connection into each profile, so
-each network has its own identity; versions 1–11 copy their single identity
+each network has its own identity; versions 1–12 copy their single identity
 into every profile, keep SASL on only for TLS profiles and keep startup
 connection only for the previously selected server.
 
 The IRCnet servers are not stored by default: they are suggestions offered
 when adding a server (`storage::PRESETS`), because unused built-in servers in
 the tree got in the way once every profile became a network. The list starts
-empty and every profile can be edited and removed. Migration from 1–11 keeps
+empty and every profile can be edited and removed. Migration from 1–12 keeps
 an IRCnet profile only if it was selected or has saved passwords (keeping its
 ID so the passwords stay attached) and drops the others.
 
@@ -387,4 +416,3 @@ The UI adds no timers per connection. Connection state lives in one
 (logs, conversations, transcript, WHOIS) are unchanged; application-wide
 bounds are deliberately left for a separate change after measuring (see
 `performance.md`).
-

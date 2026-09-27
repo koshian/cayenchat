@@ -155,7 +155,7 @@ The visual treatment should follow `spec/project.md`: compact, direct, and Choco
 ## Current implementation
 
 The six workspace members use the `cayenchat-` package prefix. Dependencies include
-`ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> upload ->
+`ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> notify-rust`, `ui -> upload ->
 storage/model`, `storage -> keyring`, `upload -> ureq` and `irc-core -> irc/Tokio`.
 There are no dependency cycles and GPUI occurs only in `ui`.
 
@@ -190,9 +190,12 @@ colors beside the existing light ones, and a Linux display server choice; older
 settings default to System, the dark defaults and Wayland. Version 11 adds the
 `USER` username (migrated from the old nickname, which earlier versions sent as
 USER), the credential backend choice and the image upload provider, and stops
-reading passwords from the file except to migrate them. Version 12 moves the
+reading passwords from the file except to migrate them. Version 12 adds
+notification preferences (enabled, mentions, keyword alerts, keywords and
+private messages) and a highlight color to the light and dark pane colors;
+older settings enable them all with no keywords. Version 13 moves the
 nickname, username, channels, SASL account and startup connection into each
-server profile (D016). The UI keeps the
+server profile (D017). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -299,11 +302,11 @@ The upper channel log shapes each message body as selectable text, maps mouse
 positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
 double-click. The lower combined log retains click-to-channel navigation.
 
-Version 4 settings keep several server profiles. Since version 12 the list
+Version 4 settings keep several server profiles. Since version 13 the list
 starts empty: the IRCnet hosts are `storage::PRESETS`, offered only when adding
 a server, and every profile is editable and removable in the order added.
 Host/port/TLS/certificate verification/encoding are per
-profile; version 12 moves the nickname, `USER` username, auto-join channels,
+profile; version 13 moves the nickname, `USER` username, auto-join channels,
 SASL account and startup connection into each profile too (see Servers and
 sessions below). Versions 1–3
 are migrated on load, as are version 4 settings. `irc-core` passes the profile's encoding to the `irc` line
@@ -369,6 +372,53 @@ mock for tests. `ui::ChatWindow` maps GPUI key actions to
 navigation and send commands. GPUI entities retain separate server/channel draft
 editing, selection, nickname completion and IME state. No `irc` library types enter
 application state or rendering components.
+
+## Notifications
+
+```text
+irc-core Event::ChannelMessage { mentioned } / Event::PrivateMessage
+        |   (irc-core::text: nickname word match, formatting and ACTION)
+        v
+ui::ChatWindow::notify_message -> app::notifications::IncomingMessage
+        |   (plain text, channel/private, notice, from_self, mentioned)
+        v
+app::notifications::NotificationRules::trigger  (GPUI- and protocol-free:
+        |                          mention / keyword / private message)
+        v
+ui::ChatWindow  (skip the visible conversation, burst limit)
+        |
+        v
+ui::notifier worker thread -> notify-rust
+        +-- Linux/BSD: org.freedesktop.Notifications over zbus (body escaped)
+        +-- macOS: NSUserNotificationCenter via mac-notification-sys
+        +-- Windows: WinRT toast via tauri-winrt-notification
+```
+
+`irc-core` reports a PRIVMSG or NOTICE from a user mask to our nickname as
+`PrivateMessage`; server notices and CTCP requests other than ACTION stay
+server lines. Private messages notify only as PRIVMSG, because private NOTICEs
+are usually services or bots. Mentions and keywords are separate choices.
+`irc-core` sets `mentioned` when someone else names our nickname as a whole
+word (RFC 1459 case mapping, formatting ignored), which also covers `nick:`
+and `@nick`; keywords are case-insensitive substrings, so the nickname is
+matched inside other words only if the user adds it as a keyword. The rules
+only receive the `mentioned` flag: a Matrix adapter would set it from the
+event's intentional mentions (`m.mentions`) and push rules instead of parsing
+text, so no `@`-specific rule is needed in `app`. Our own messages never
+notify (bouncer echoes). Nothing notifies while the chat window is
+focused and the message's conversation (the server view for private messages)
+is selected. At most five notifications are shown per ten seconds so bouncer
+history playback cannot flood the desktop; the log and unread marks are
+unaffected. Showing can block (D-Bus, macOS delivery confirmation), so a
+dedicated thread does it; UI tests record notifications instead.
+
+The same matches are shown in the logs, whether or not notifications are on:
+`irc-core::text::mention_ranges` and `app::notifications::keyword_ranges`
+give byte ranges that the main and sub logs draw bold in the theme's highlight
+color (light `#D46A8E`, dark `#EFA0BE` by default, matching the pastel pane
+colors). A channel that receives a mention or keyword while it is not selected
+is recorded in `AppState::highlighted`, and the channel tree draws its name in
+the highlight color until it is selected.
 
 ## Credentials
 

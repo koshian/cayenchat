@@ -64,6 +64,7 @@ fn incoming(sequence: usize) -> [Event; 2] {
             sender,
             text,
             notice: false,
+            mentioned: false,
         },
     ]
 }
