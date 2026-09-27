@@ -561,3 +561,52 @@ Exceptions keep a half-finished edit from doing damage:
 - Removing a server that was already saved asks for confirmation, since the
   removal is saved at once and disconnects it and deletes its passwords.
 
+## D022 — Opt-in IRCv3 features and shared CAP negotiation
+
+**Status:** Accepted
+
+2026-09-27. Newly introduced IRCv3 features require an explicit opt-in per
+server and are off for new and migrated settings (settings version 15). The
+IRCv3 settings tab is their current home and names the server being
+configured. This milestone exposes message tags and server timestamps
+(server-time); server-time does not require message-tags, as the protocol
+allows. Changes are saved by the existing autosave (D021) and take effect on
+the next connection, including reconnects and retries; nothing reconnects.
+
+CAP negotiation is shared infrastructure, not a user-facing feature: SASL
+(D010) keeps working with every option off, and with no SASL and no option
+the registration traffic is unchanged. Negotiation, tag handling and the
+server-time representation are described in `architecture.md` (IRCv3
+capabilities and message tags).
+
+The `irc` 1.1.0 dependency (D007) is kept. Audit of the pinned source
+(irc-proto 1.1.0 `message.rs`, `line.rs`, `command.rs`, `caps.rs`; irc 1.1.0
+`client/mod.rs`): tags are parsed and unescaped as the specification asks,
+but duplicates are all kept and `key`/`key=` differ, so `irc-core` normalizes
+lookups; the library neither handles nor requests capabilities by itself;
+its CAP parser guesses the subcommand position (a nickname such as `new`
+confuses it), so replies are read back positionally; the line codec has no
+length limit and replaces undecodable bytes with U+FFFD for the whole line,
+tags included. The last point is why `message-tags` is not requested on
+legacy-encoding connections; a proper fix needs a byte-level transport that
+splits tags before decoding, which is out of scope here.
+
+An old server-time never marks a line as replayed history. PR #18 had
+treated server-time at least five minutes old as history (no notification or
+highlight); that rule was removed when this change merged it, because it
+would hide live lines when the local clock runs ahead and because a
+timestamp alone does not say a line was replayed. History is still
+recognized by the missing user mask and by `chathistory`/`znc.in/playback`
+batches, whose references use the normalized tag reader. Until `batch` is
+negotiated, bouncer backlog without batches can notify like live traffic.
+
+Not included: batch, chathistory, echo-message, labeled-response, account
+tags, avatars, metadata, reactions, typing indicators and Matrix. Later
+features may become default-on or move tabs by changing their preference
+default and settings row only; that migration is not implemented.
+
+Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-negotiation),
+[message tags](https://ircv3.net/specs/extensions/message-tags),
+[server-time](https://ircv3.net/specs/extensions/server-time),
+[SASL 3.1](https://ircv3.net/specs/extensions/sasl-3.1),
+[SASL 3.2](https://ircv3.net/specs/extensions/sasl-3.2).

@@ -13,7 +13,7 @@ pub mod credentials;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
-const SETTINGS_VERSION: u32 = 14;
+const SETTINGS_VERSION: u32 = 15;
 /// Profile IDs of the IRCnet servers that versions 1–12 always listed. They
 /// only matter for migration: profiles keep their IDs, so saved passwords stay
 /// attached.
@@ -255,6 +255,9 @@ pub struct ServerProfile {
     pub sasl_username: String,
     #[serde(default)]
     pub connect_on_startup: bool,
+    /// Opt-in IRCv3 features for this server (version 15), off by default.
+    #[serde(default)]
+    pub ircv3: Ircv3Preferences,
     /// Plaintext passwords saved by version 10 and earlier. Read only for
     /// migration into the credential store; never written back.
     #[serde(rename = "server_password", default, skip_serializing)]
@@ -286,6 +289,7 @@ impl ServerProfile {
             sasl_enabled: false,
             sasl_username: String::new(),
             connect_on_startup: false,
+            ircv3: Ircv3Preferences::default(),
             legacy_server_password: None,
             legacy_sasl_password: None,
         }
@@ -307,6 +311,20 @@ impl ServerProfile {
     pub fn sasl_password_key(&self) -> SecretKey {
         SecretKey::sasl_password(&self.id)
     }
+}
+
+/// Opt-in IRCv3 features of one server. Negotiation happens when the server
+/// next connects. Every field is a separate preference with its own serde
+/// default, so a feature can later become on by default (with a version
+/// migration) or be shown on another settings tab without touching the
+/// protocol code, which only receives the resulting booleans.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ircv3Preferences {
+    /// Request `message-tags`.
+    pub message_tags: bool,
+    /// Request `server-time` and show server timestamps.
+    pub server_time: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1165,12 +1183,57 @@ mod tests {
         settings.appearance.image_previews = true;
         save_to(&path, &settings).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["version"], 14);
+        assert_eq!(saved["version"], SETTINGS_VERSION);
         assert_eq!(saved["appearance"]["image_previews"], true);
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
         settings.appearance.image_previews = false;
         save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn ircv3_preferences_default_off_per_server_and_round_trip() {
+        let mut fresh = Settings::default();
+        assert_eq!(
+            fresh.add_server("irc.example.org").ircv3,
+            Ircv3Preferences::default()
+        );
+        assert!(!fresh.servers[0].ircv3.message_tags && !fresh.servers[0].ircv3.server_time);
+
+        // A version 14 file has no IRCv3 preferences: both stay off.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(&fresh).unwrap();
+        old["version"] = 14.into();
+        old["servers"][0].as_object_mut().unwrap().remove("ircv3");
+        old["servers"].as_array_mut().unwrap().push(
+            serde_json::json!({"id": "custom-2", "host": "irc.other.example",
+                "port": 6697, "use_tls": true, "encoding": "utf8"}),
+        );
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        assert!(
+            settings
+                .servers
+                .iter()
+                .all(|server| server.ircv3 == Ircv3Preferences::default())
+        );
+
+        // Each server keeps its own choices, and one is independent of the other.
+        settings.servers[0].ircv3.server_time = true;
+        settings.servers[1].ircv3.message_tags = true;
+        save_to(&path, &settings).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["servers"][0]["ircv3"],
+            serde_json::json!({"message_tags": false, "server_time": true})
+        );
+        assert_eq!(
+            saved["servers"][1]["ircv3"],
+            serde_json::json!({"message_tags": true, "server_time": false})
+        );
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
 

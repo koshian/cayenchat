@@ -1,15 +1,18 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
+mod cap;
 mod replay;
+mod tags;
 pub mod text;
+
+pub use cap::Ircv3Options;
 
 use std::{
     collections::HashMap,
     fmt, thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
-use base64::Engine;
 use encoding::{EncoderTrap, label::encoding_from_whatwg_label};
 use futures_util::StreamExt;
 use irc::{
@@ -17,10 +20,7 @@ use irc::{
         data::user::AccessLevel,
         prelude::{Client, Config},
     },
-    proto::{
-        CapSubCommand, Capability, Command as IrcCommand, Message as IrcMessage, Prefix, Response,
-        mode::Mode,
-    },
+    proto::{Command as IrcCommand, Message as IrcMessage, Prefix, Response, mode::Mode},
 };
 use tokio::sync::mpsc;
 
@@ -79,6 +79,8 @@ pub struct ConnectionConfig {
     pub encoding: String,
     pub server_password: Option<String>,
     pub sasl: Option<SaslCredentials>,
+    /// Opt-in IRCv3 extensions; all off unless the user enabled them.
+    pub ircv3: Ircv3Options,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -97,6 +99,7 @@ impl fmt::Debug for ConnectionConfig {
                 &self.server_password.as_ref().map(|_| "[redacted]"),
             )
             .field("sasl", &self.sasl)
+            .field("ircv3", &self.ircv3)
             .finish()
     }
 }
@@ -116,6 +119,7 @@ impl ConnectionConfig {
             encoding: "UTF-8".into(),
             server_password: None,
             sasl: None,
+            ircv3: Ircv3Options::default(),
         }
     }
 
@@ -233,137 +237,6 @@ fn validate_message_text(text: &str) -> Result<(), String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SaslPhase {
-    Listing,
-    Requesting,
-    Challenging,
-    WaitingForResult,
-    Complete,
-}
-
-struct SaslHandshake {
-    credentials: SaslCredentials,
-    phase: SaslPhase,
-    offered: bool,
-    sent_lines: Vec<String>,
-}
-
-impl SaslHandshake {
-    fn new(credentials: SaslCredentials) -> Self {
-        Self {
-            credentials,
-            phase: SaslPhase::Listing,
-            offered: false,
-            sent_lines: Vec::new(),
-        }
-    }
-
-    fn take_sent_lines(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.sent_lines)
-    }
-
-    fn observe(&mut self, client: &Client, message: &IrcMessage) -> Result<(), String> {
-        match (&self.phase, &message.command) {
-            (
-                SaslPhase::Listing,
-                IrcCommand::CAP(_, CapSubCommand::LS, continuation, capabilities),
-            ) => {
-                // irc-proto represents a three-argument server CAP LS as the
-                // continuation field; a four-argument multiline LS has both.
-                let capabilities = capabilities
-                    .as_deref()
-                    .or(continuation.as_deref())
-                    .unwrap_or("");
-                self.offered |= capabilities.split_whitespace().any(|capability| {
-                    let mut parts = capability.splitn(2, '=');
-                    if parts.next() != Some("sasl") {
-                        return false;
-                    }
-                    parts.next().is_none_or(|mechanisms| {
-                        mechanisms
-                            .split(',')
-                            .any(|name| name.eq_ignore_ascii_case("PLAIN"))
-                    })
-                });
-                if continuation.as_deref() != Some("*") {
-                    if !self.offered {
-                        return Err("Server does not offer SASL PLAIN.".into());
-                    }
-                    client
-                        .send_cap_req(&[Capability::Sasl])
-                        .map_err(|error| error.to_string())?;
-                    self.sent_lines.push("CAP REQ sasl".into());
-                    self.phase = SaslPhase::Requesting;
-                }
-            }
-            (
-                SaslPhase::Requesting,
-                IrcCommand::CAP(_, CapSubCommand::ACK, continuation, capabilities),
-            ) => {
-                let capabilities = capabilities
-                    .as_deref()
-                    .or(continuation.as_deref())
-                    .unwrap_or("");
-                if !capabilities
-                    .split_whitespace()
-                    .any(|capability| capability == "sasl" || capability.starts_with("sasl="))
-                {
-                    return Err("Server did not acknowledge SASL.".into());
-                }
-                client
-                    .send_sasl_plain()
-                    .map_err(|error| error.to_string())?;
-                self.sent_lines.push("AUTHENTICATE PLAIN".into());
-                self.phase = SaslPhase::Challenging;
-            }
-            (SaslPhase::Requesting, IrcCommand::CAP(_, CapSubCommand::NAK, _, _)) => {
-                return Err("Server rejected SASL capability.".into());
-            }
-            (SaslPhase::Challenging, IrcCommand::AUTHENTICATE(challenge)) if challenge == "+" => {
-                let payload = format!(
-                    "\0{}\0{}",
-                    self.credentials.username, self.credentials.password
-                );
-                let encoded = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
-                for chunk in encoded.as_bytes().chunks(400) {
-                    client
-                        .send_sasl(std::str::from_utf8(chunk).expect("base64 is ASCII"))
-                        .map_err(|error| error.to_string())?;
-                    self.sent_lines.push("AUTHENTICATE [redacted]".into());
-                }
-                if encoded.len() % 400 == 0 {
-                    client.send_sasl("+").map_err(|error| error.to_string())?;
-                    self.sent_lines.push("AUTHENTICATE +".into());
-                }
-                self.credentials.password.clear();
-                self.phase = SaslPhase::WaitingForResult;
-            }
-            (SaslPhase::WaitingForResult, IrcCommand::Response(Response::RPL_SASLSUCCESS, _)) => {
-                client
-                    .send(IrcCommand::CAP(None, CapSubCommand::END, None, None))
-                    .map_err(|error| error.to_string())?;
-                self.sent_lines.push("CAP END".into());
-                self.phase = SaslPhase::Complete;
-            }
-            (
-                _,
-                IrcCommand::Response(
-                    Response::ERR_SASLFAIL
-                    | Response::ERR_SASLTOOLONG
-                    | Response::ERR_SASLABORT
-                    | Response::ERR_SASLALREADY,
-                    _,
-                ),
-            ) => {
-                return Err("SASL authentication failed.".into());
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireDirection {
     Sent,
     Received,
@@ -401,6 +274,9 @@ pub enum Event {
         /// Someone else named our nickname as a word (for example `nick:` or
         /// `@nick`), ignoring formatting codes.
         mentioned: bool,
+        /// The server's `time` tag when server-time is negotiated and the
+        /// tag is valid; `None` means use the receipt time.
+        server_time: Option<SystemTime>,
         /// History or a server/bouncer line rather than a live message from
         /// a user; it must not notify again.
         replayed: bool,
@@ -409,6 +285,7 @@ pub enum Event {
         channel: String,
         actor: String,
         kind: ChannelActivityKind,
+        server_time: Option<SystemTime>,
     },
     /// A PRIVMSG or NOTICE a user sent to our nickname. CTCP requests other
     /// than ACTION and server notices stay [`Event::ServerLine`].
@@ -416,7 +293,8 @@ pub enum Event {
         sender: String,
         text: String,
         notice: bool,
-        /// Replayed history (IRCv3 batch or old server-time).
+        server_time: Option<SystemTime>,
+        /// Replayed history (IRCv3 history batch).
         replayed: bool,
     },
     Names {
@@ -544,10 +422,7 @@ fn redacted_wire_line(message: &IrcMessage) -> String {
         {
             format!("{verb} [redacted]")
         }
-        _ => message
-            .to_string()
-            .trim_end_matches(['\r', '\n'])
-            .to_owned(),
+        _ => tags::transcript_line(message),
     }
 }
 
@@ -1058,7 +933,21 @@ async fn run(
     let registration_user = config.username.clone();
     let auto_join_channels = config.channels.clone();
     let irc_config = library_config(&config);
-    let mut sasl = config.sasl.map(SaslHandshake::new);
+    let mut negotiation = cap::CapNegotiation::new(
+        config.ircv3,
+        config.sasl,
+        wire_encoding.eq_ignore_ascii_case("UTF-8"),
+    );
+    if config.ircv3.message_tags && !wire_encoding.eq_ignore_ascii_case("UTF-8") {
+        diagnostic(
+            &events,
+            started,
+            format!(
+                "Message tags are not requested with the {wire_encoding} encoding: tag values are UTF-8."
+            ),
+        )
+        .await;
+    }
     diagnostic(
         &events,
         started,
@@ -1128,11 +1017,14 @@ async fn run(
             return;
         }
     };
+    let opening = negotiation.start();
     diagnostic(
         &events,
         started,
-        if sasl.is_some() {
+        if negotiation.uses_sasl() {
             "Sending CAP LS, optional PASS, NICK, and USER; waiting for SASL and welcome."
+        } else if negotiation.negotiating() {
+            "Sending CAP LS, optional PASS, NICK, and USER; negotiating opt-in IRCv3 capabilities."
         } else {
             "Sending optional PASS, NICK, and USER; waiting for server welcome (001)."
         },
@@ -1140,16 +1032,7 @@ async fn run(
     .await;
     // Mirror the library's identify() sequence so every registration command
     // can be included in the diagnostic transcript after it is queued.
-    let mut registration = if sasl.is_some() {
-        vec![IrcCommand::CAP(
-            None,
-            CapSubCommand::LS,
-            Some("302".into()),
-            None,
-        )]
-    } else {
-        vec![IrcCommand::CAP(None, CapSubCommand::END, None, None)]
-    };
+    let mut registration = vec![opening];
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         registration.push(IrcCommand::PASS(password));
     }
@@ -1279,13 +1162,22 @@ async fn run(
                             )).await;
                             return;
                         }
-                        if let Some(handshake) = sasl.as_mut() {
-                            let result = handshake.observe(&client, &message);
-                            let sent_lines = handshake.take_sent_lines();
-                            for line in sent_lines {
-                                wire(&events, started, WireDirection::Sent, line).await;
+                        match negotiation.observe(&message) {
+                            Ok(step) => {
+                                for note in step.notes {
+                                    diagnostic(&events, started, note).await;
+                                }
+                                for command in step.send {
+                                    let message = IrcMessage::from(command);
+                                    let line = redacted_wire_line(&message);
+                                    if let Err(error) = client.send(message) {
+                                        let _ = events.send(Event::Disconnected(error_chain(&error))).await;
+                                        return;
+                                    }
+                                    wire(&events, started, WireDirection::Sent, line).await;
+                                }
                             }
-                            if let Err(error) = result {
+                            Err(error) => {
                                 let _ = events.send(Event::Refused(error)).await;
                                 return;
                             }
@@ -1295,11 +1187,12 @@ async fn run(
                         }
                         if matches!(message.command, IrcCommand::Response(Response::RPL_WELCOME, _)) {
                             registered = true;
-                            sasl = None;
+                            negotiation.registered();
                             diagnostic(&events, started, "Registration completed (001 received).").await;
                         }
                         let whois_reply = whois.observe(&message);
-                        for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
+                        let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
+                        for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
                                 _ => {}
@@ -1559,7 +1452,12 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
 }
 
 /// Translates a user's PRIVMSG or NOTICE addressed to `current_nick`.
-fn private_message(message: &IrcMessage, current_nick: &str, replayed: bool) -> Option<Event> {
+fn private_message(
+    message: &IrcMessage,
+    current_nick: &str,
+    replayed: bool,
+    server_time: Option<SystemTime>,
+) -> Option<Event> {
     let (target, text, notice) = match &message.command {
         IrcCommand::PRIVMSG(target, text) => (target, text, false),
         IrcCommand::NOTICE(target, text) => (target, text, true),
@@ -1578,6 +1476,7 @@ fn private_message(message: &IrcMessage, current_nick: &str, replayed: bool) -> 
         sender: sender.clone(),
         text: text.clone(),
         notice,
+        server_time,
         replayed,
     })
 }
@@ -1588,8 +1487,14 @@ fn translate_message(
     replay: &mut replay::ReplayTracker,
     current_nick: &str,
     message: IrcMessage,
+    server_time: Option<SystemTime>,
 ) -> Vec<Event> {
+    // TAGMSG carries only tags. None is shown yet: no chat row, unread
+    // mark, notification or preview; the transcript still records it.
     replay.observe(&message);
+    if matches!(&message.command, IrcCommand::Raw(verb, _) if verb.eq_ignore_ascii_case("TAGMSG")) {
+        return Vec::new();
+    }
     let actor = message.source_nickname().map(str::to_owned);
     let activity = match &message.command {
         IrcCommand::JOIN(channel, _, _) => actor.as_ref().map(|actor| {
@@ -1605,6 +1510,7 @@ fn translate_message(
                 channel: channel.clone(),
                 actor: actor.clone(),
                 kind: ChannelActivityKind::Joined { mask },
+                server_time,
             }
         }),
         IrcCommand::PART(channel, reason) => actor.as_ref().map(|actor| Event::ChannelActivity {
@@ -1613,6 +1519,7 @@ fn translate_message(
             kind: ChannelActivityKind::Left {
                 reason: reason.clone(),
             },
+            server_time,
         }),
         IrcCommand::ChannelMODE(channel, modes) => Some(Event::ChannelActivity {
             channel: channel.clone(),
@@ -1624,6 +1531,7 @@ fn translate_message(
                     .collect::<Vec<_>>()
                     .join(" "),
             },
+            server_time,
         }),
         _ => None,
     };
@@ -1670,7 +1578,7 @@ fn translate_message(
         _ => {}
     }
     let replayed = replay.replayed(&message);
-    if let Some(private) = private_message(&message, current_nick, replayed) {
+    if let Some(private) = private_message(&message, current_nick, replayed, server_time) {
         return vec![private];
     }
     let mut translated = match &message.command {
@@ -1714,6 +1622,7 @@ fn translate_message(
                         &crate::text::strip_formatting(text),
                         current_nick,
                     ),
+                server_time,
                 replayed,
             }]
         }
@@ -1723,7 +1632,7 @@ fn translate_message(
             };
             vec![names_snapshot(client, roster, channel)]
         }
-        _ => vec![Event::ServerLine(message.to_string().trim_end().to_owned())],
+        _ => vec![Event::ServerLine(tags::untagged_line(&message))],
     };
     if let Some(activity) = activity {
         translated.push(activity);
@@ -1740,6 +1649,7 @@ fn translate_message(
                     kind: ChannelActivityKind::Quit {
                         reason: reason.clone(),
                     },
+                    server_time,
                 }),
         );
     }
@@ -1754,6 +1664,7 @@ fn translate_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use std::{
         io::{BufRead, BufReader, Write},
         net::TcpListener,
@@ -1792,13 +1703,14 @@ mod tests {
     #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
         let translate =
-            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false);
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
         assert_eq!(
             translate(":alice!u@h PRIVMSG me :hello"),
             Some(Event::PrivateMessage {
                 sender: "alice".into(),
                 text: "hello".into(),
                 notice: false,
+                server_time: None,
                 replayed: false,
             })
         );
@@ -1808,6 +1720,7 @@ mod tests {
                 sender: "alice".into(),
                 text: "psst".into(),
                 notice: true,
+                server_time: None,
                 replayed: false,
             })
         );
@@ -2498,11 +2411,13 @@ mod tests {
                         channel,
                         actor,
                         kind,
+                        ..
                     } if channel == "#test" => activities.push((actor, kind)),
                     Event::ChannelActivity {
                         channel,
                         actor,
                         kind: ChannelActivityKind::Quit { .. },
+                        ..
                     } => panic!("{actor} quit shown in {channel} without being a member"),
                     Event::Wire {
                         direction, line, ..
@@ -3012,5 +2927,278 @@ mod tests {
         commands.try_send(Outgoing::Quit).unwrap();
         server.join().unwrap();
         worker.join().unwrap();
+    }
+
+    /// Reads client lines from a fixture socket, skipping PINGs.
+    fn read_client_line(reader: &mut BufReader<std::net::TcpStream>) -> String {
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if !line.starts_with("PING ") {
+                break line.trim_end().to_owned();
+            }
+        }
+    }
+
+    /// Runs one connection against a fixture until `done` sees its events,
+    /// then quits. Returns every event received.
+    fn run_fixture(config: ConnectionConfig, done: impl Fn(&[Event]) -> bool) -> Vec<Event> {
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let worker = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(config, command_rx, event_tx));
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut received = Vec::new();
+        while Instant::now() < deadline && !done(&received) {
+            match event_rx.try_recv() {
+                Ok(event) => {
+                    if let Event::Disconnected(reason) | Event::Refused(reason) = &event {
+                        panic!("unexpected end: {reason}");
+                    }
+                    received.push(event);
+                }
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(done(&received), "{received:?}");
+        command_tx.try_send(Outgoing::Quit).unwrap();
+        worker.join().unwrap();
+        received
+    }
+
+    fn plain_config(port: u16, ircv3: Ircv3Options) -> ConnectionConfig {
+        let mut config =
+            ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec!["#test".into()]);
+        config.port = port;
+        config.use_tls = false;
+        config.ircv3 = ircv3;
+        config
+    }
+
+    fn channel_messages(events: &[Event]) -> Vec<(String, Option<SystemTime>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ChannelMessage {
+                    text, server_time, ..
+                } => Some((text.clone(), *server_time)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const TAGGED_TRAFFIC: &[u8] =
+        b"@time=2011-10-19T16:40:51.620Z :bob!u@h PRIVMSG #test :stamped\r\n\
+@time=not-a-time :bob!u@h PRIVMSG #test :invalid\r\n\
+@+typing=active;time=2011-10-19T16:40:52.000Z :bob!u@h TAGMSG #test\r\n\
+@+typing=active :bob!u@h TAGMSG alice\r\n\
+@time=2011-10-19T16:40:53.000Z :bob!u@h PART #test :bye\r\n\
+@time=2011-10-19T16:40:54.000Z :irc.example NOTICE alice :tagged server line\r\n\
+:bob!u@h PRIVMSG #test :plain\r\n";
+
+    #[test]
+    fn disabled_ircv3_sends_plain_cap_end_and_ignores_tags() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let initial: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            assert_eq!(initial[0], "CAP END", "no CAP LS when nothing is enabled");
+            assert!(!initial.iter().any(|line| line.contains("CAP REQ")));
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+            socket.write_all(TAGGED_TRAFFIC).unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let events = run_fixture(plain_config(port, Ircv3Options::default()), |events| {
+            channel_messages(events).len() == 3
+        });
+        server.join().unwrap();
+        let messages = channel_messages(&events);
+        assert!(
+            messages.iter().all(|(_, time)| time.is_none()),
+            "{messages:?}"
+        );
+        assert_tagmsg_invisible(&events);
+    }
+
+    fn assert_tagmsg_invisible(events: &[Event]) {
+        for event in events {
+            match event {
+                Event::Wire { .. } | Event::Diagnostic { .. } => {}
+                other => assert!(
+                    !format!("{other:?}").contains("TAGMSG")
+                        && !format!("{other:?}").contains("typing"),
+                    "TAGMSG leaked into {other:?}"
+                ),
+            }
+        }
+        assert!(events.iter().any(|event| matches!(event,
+            Event::Wire { direction: WireDirection::Received, line, .. } if line.contains("TAGMSG"))));
+    }
+
+    #[test]
+    fn server_time_is_negotiated_per_connection_and_reset_on_reconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            // First connection: server-time offered across continuation lines.
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let initial: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            assert_eq!(initial[0], "CAP LS 302");
+            socket
+                .write_all(b":server CAP * LS * :multi-prefix sasl=PLAIN\r\n:server CAP * LS :server-time message-tags\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "CAP REQ server-time");
+            socket
+                .write_all(b":server CAP * ACK :server-time\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+            socket.write_all(TAGGED_TRAFFIC).unwrap();
+            let _ = read_client_line(&mut lines);
+            drop(socket);
+
+            // Reconnect: a server without CAP that still sends time tags.
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            socket
+                .write_all(b":server 421 * CAP :Unknown command\r\n")
+                .unwrap();
+            let _nick = read_client_line(&mut lines);
+            let _user = read_client_line(&mut lines);
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+            socket.write_all(TAGGED_TRAFFIC).unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let options = Ircv3Options {
+            message_tags: false,
+            server_time: true,
+        };
+        let events = run_fixture(plain_config(port, options), |events| {
+            channel_messages(events).len() == 3
+        });
+        let stamp = |millis: u64| Some(SystemTime::UNIX_EPOCH + Duration::from_millis(millis));
+        assert_eq!(
+            channel_messages(&events),
+            [
+                ("stamped".to_owned(), stamp(1_319_042_451_620)),
+                ("invalid".to_owned(), None),
+                ("plain".to_owned(), None),
+            ]
+        );
+        // An old timestamp alone does not make a live line replayed history.
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, replayed: false, server_time: Some(_), .. }
+                if text == "stamped")));
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelActivity { kind: ChannelActivityKind::Left { .. }, server_time, .. }
+                if *server_time == stamp(1_319_042_453_000))));
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line == ":irc.example NOTICE alice :tagged server line")));
+        assert_tagmsg_invisible(&events);
+
+        let events = run_fixture(plain_config(port, options), |events| {
+            channel_messages(events).len() == 3
+        });
+        server.join().unwrap();
+        assert!(
+            channel_messages(&events)
+                .iter()
+                .all(|(_, time)| time.is_none()),
+            "a new connection does not inherit the previous negotiation"
+        );
+    }
+
+    #[test]
+    fn legacy_encoding_keeps_server_time_and_skips_message_tags() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let codec = encoding_from_whatwg_label("iso-2022-jp").unwrap();
+        let body = codec
+            // Encoded with the line ending so the encoder returns to ASCII.
+            .encode("日本語の本文\r\n", EncoderTrap::Strict)
+            .unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            socket
+                .write_all(b":server CAP * LS :message-tags server-time\r\n")
+                .unwrap();
+            let requests: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            assert!(
+                requests.contains(&"CAP REQ server-time".to_owned()),
+                "{requests:?}"
+            );
+            assert!(
+                !requests.iter().any(|line| line.contains("message-tags")),
+                "{requests:?}"
+            );
+            socket
+                .write_all(b":server CAP * ACK :server-time\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+            let mut line =
+                b"@time=2011-10-19T16:40:51.620Z;msgid=abc :bob!u@h PRIVMSG #test :".to_vec();
+            line.extend_from_slice(&body);
+            socket.write_all(&line).unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut config = plain_config(
+            port,
+            Ircv3Options {
+                message_tags: true,
+                server_time: true,
+            },
+        );
+        config.encoding = "ISO-2022-JP".into();
+        let events = run_fixture(config, |events| channel_messages(events).len() == 1);
+        server.join().unwrap();
+        assert_eq!(
+            channel_messages(&events),
+            [(
+                "日本語の本文".to_owned(),
+                Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1_319_042_451_620))
+            )]
+        );
+        assert!(events.iter().any(|event| matches!(event,
+            Event::Diagnostic { message, .. } if message.contains("Message tags are not requested"))));
     }
 }

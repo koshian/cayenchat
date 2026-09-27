@@ -251,5 +251,16 @@
   "notifications_hint_macos": "Messages in the selected channel of the focused chat window do not notify. macOS shows notifications only for the app bundle; allow them in System Settings > Notifications.",
   "notification_channel_title": "{sender} in {channel}",
   "notification_private_title": "{sender} (private message)",
-  "highlight_color": "Highlight text"
+  "highlight_color": "Highlight text",
+  "ircv3_tab": "IRCv3",
+  "ircv3_intro": "Optional IRCv3 extensions, chosen for each server. Each stays off until you turn it on.",
+  "ircv3_server": "Server",
+  "ircv3_configuring": "Settings for {server}",
+  "ircv3_no_server": "Add a server on the Connection tab first.",
+  "ircv3_server_time": "Server timestamps",
+  "ircv3_server_time_hint": "Show the time the server recorded for incoming messages (server-time), in local time. Works without message tags.",
+  "ircv3_message_tags": "Message tags",
+  "ircv3_message_tags_hint": "Accept IRCv3 message tags from the server (message-tags). Tag-only messages (TAGMSG) are not shown.",
+  "ircv3_legacy_encoding": "This server uses {encoding}. Message tags are not requested because tag values are UTF-8; server timestamps still work.",
+  "ircv3_next_connection": "Changes take effect the next time this server connects. A connected server is not reconnected."
 }

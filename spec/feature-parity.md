@@ -44,7 +44,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — receive/send channel PRIVMSG; no private-message routing or delivery receipt
 - PARTIAL — receive/send channel NOTICE; no private-message routing
 - PARTIAL — `/me` sends CTCP ACTION; received ACTION is not specially rendered
-- PARTIAL — local receive/send timestamps; no server-time tags
+- PARTIAL — local receive/send timestamps; with the per-server server-time opt-in, incoming channel messages, activity and private messages show the server's time (local HH:MM, receipt-time fallback); server log lines and dates are not shown
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
@@ -110,7 +110,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 
 - PARTIAL — OS desktop notifications through notify-rust: org.freedesktop.Notifications on Linux, NSUserNotificationCenter on macOS (app bundle only), WinRT toasts on Windows (attributed to the PowerShell AppUserModelID until CayenChat registers its own); no action on click
 - TODO — per-network/channel controls
-- DONE — mention, keyword and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds; replayed history (lines without a user mask such as Tiarra's Log::Recent, IRCv3 `chathistory`/`znc.in/playback` batches, server-time at least 5 minutes old) neither notifies nor highlights
+- DONE — mention, keyword and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds; replayed history (lines without a user mask such as Tiarra's Log::Recent, IRCv3 `chathistory`/`znc.in/playback` batches) neither notifies nor highlights; an old server-time alone does not count as history
 
 ## Settings
 
@@ -124,14 +124,16 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
+- DONE — IRCv3 tab: per-server opt-ins for server timestamps and message tags, naming the configured server; changes apply on the next connection
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
 
 ## IRCv3
 
-- PARTIAL — CAP negotiation for SASL PLAIN
-- TODO — message tags
-- TODO — server-time
+- PARTIAL — shared CAP negotiation (LS 302 with continuation and values, per-capability REQ, multiline ACK, NAK, NEW/DEL, coordinated CAP END) for SASL PLAIN and opt-in extensions; public-server interoperability unverified
+- PARTIAL — message tags: per-server opt-in (default off), tags parsed and normalized, TAGMSG kept out of the chat; no tag is displayed yet, and it is not requested with legacy encodings
+- DONE — server-time: per-server opt-in (default off), independent of message tags
+- TODO — batch, echo-message and labeled-response
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify

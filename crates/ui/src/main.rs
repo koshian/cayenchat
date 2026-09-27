@@ -4,6 +4,7 @@ mod desktop;
 mod diagnostics;
 mod image_upload;
 mod input;
+mod ircv3_settings;
 mod localization;
 mod log_list;
 mod menu_bar;
@@ -23,14 +24,14 @@ use cayenchat_app::{
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
 };
 use cayenchat_irc_core::{
-    ChannelActivityKind, Connection, ConnectionConfig, Event, MemberCommand, SaslCredentials,
-    WhoisInfo, WireDirection, valid_channel,
+    ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
+    SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore, DarkColors,
-    Language, LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile, Settings,
-    TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile,
+    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -537,6 +538,7 @@ fn connection_config(
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
     config.encoding = profile.encoding.label().into();
+    config.ircv3 = ircv3_options(profile.ircv3);
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         config.server_password = Some(password.expose().to_owned());
     }
@@ -550,6 +552,14 @@ fn connection_config(
     }
     config.validate()?;
     Ok(config)
+}
+
+/// The IRCv3 extensions a connection asks for, from the server's opt-ins.
+fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
+    Ircv3Options {
+        message_tags: preferences.message_tags,
+        server_time: preferences.server_time,
+    }
 }
 
 /// A connection from saved settings alone (at startup or from the channel
@@ -827,6 +837,7 @@ enum SettingsTab {
     Appearance,
     Keyboard,
     Notifications,
+    Ircv3,
     ImageUpload,
     Credentials,
 }
@@ -1288,6 +1299,15 @@ impl ChatWindow {
                     id
                 }
             };
+            // IRCv3 choices apply from the next connection, reconnects and
+            // retries included; the current connection is left alone.
+            if let Some(config) = self
+                .sessions
+                .get_mut(&id)
+                .and_then(|session| session.active_config.as_mut())
+            {
+                config.ircv3 = ircv3_options(profile.ircv3);
+            }
             networks.push(NetworkConfig {
                 id,
                 name: profile.host.clone(),
@@ -2359,6 +2379,7 @@ impl ChatWindow {
                 text,
                 notice,
                 mentioned,
+                server_time,
                 replayed,
             } => {
                 let highlighted = !replayed
@@ -2379,8 +2400,15 @@ impl ChatWindow {
                         replayed,
                     },
                 );
-                self.state
-                    .append_channel_message(network, &channel, &sender, &text, notice, replayed);
+                self.state.append_channel_message_at(
+                    network,
+                    &channel,
+                    &sender,
+                    &text,
+                    notice,
+                    replayed,
+                    server_time,
+                );
                 if highlighted {
                     self.state.mark_highlighted(network, &channel);
                 }
@@ -2389,14 +2417,17 @@ impl ChatWindow {
                 channel,
                 actor,
                 kind,
+                server_time,
             } => {
                 let text = channel_activity_text(&actor, kind);
-                self.state.append_channel_activity(network, &channel, text);
+                self.state
+                    .append_channel_activity_at(network, &channel, text, server_time);
             }
             Event::PrivateMessage {
                 sender,
                 text,
                 notice,
+                server_time,
                 replayed,
             } => {
                 self.notify_message(
@@ -2417,7 +2448,8 @@ impl ChatWindow {
                 } else {
                     format!("<{sender}> {text}")
                 };
-                self.state.append_server_message(network, line);
+                self.state
+                    .append_server_message_at(network, line, server_time);
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
@@ -4080,6 +4112,7 @@ impl SettingsWindow {
                 "notifications_tab",
                 cx,
             ))
+            .child(self.settings_tab(SettingsTab::Ircv3, "ircv3-tab", "ircv3_tab", cx))
             .child(self.settings_tab(
                 SettingsTab::ImageUpload,
                 "image-upload-tab",
@@ -4097,6 +4130,7 @@ impl SettingsWindow {
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
             SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
+            SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
         };
@@ -6308,6 +6342,78 @@ mod pane_tests {
     use gpui::{Focusable, TestAppContext};
 
     #[gpui::test]
+    fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Ircv3Options;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.servers[0].nickname = "me".into();
+        settings.servers[0].username = "me".into();
+        settings.add_server("irc.example.org");
+        settings.servers[1].nickname = "me".into();
+        settings.servers[1].username = "me".into();
+        settings.servers[1].ircv3.server_time = true;
+        let config = |settings: &Settings, index: usize| {
+            crate::connection_config(
+                &settings.servers[index],
+                cayenchat_storage::Language::English,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(config(&settings, 0).ircv3, Ircv3Options::default());
+        assert_eq!(
+            config(&settings, 1).ircv3,
+            Ircv3Options {
+                message_tags: false,
+                server_time: true,
+            }
+        );
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (first, second) = (NetworkId(1), NetworkId(2));
+        chat.update(cx, |chat, cx| {
+            // Both servers were used in this run (as after a connection attempt).
+            chat.sessions.get_mut(&first).unwrap().active_config = Some(config(&settings, 0));
+            chat.sessions.get_mut(&second).unwrap().active_config = Some(config(&settings, 1));
+            let generation = chat.sessions[&first].generation;
+            let mut next = settings.clone();
+            next.servers[0].ircv3.message_tags = true;
+            chat.apply_servers(next, cx);
+            let ircv3 = |network| {
+                chat.sessions[&network]
+                    .active_config
+                    .as_ref()
+                    .unwrap()
+                    .ircv3
+            };
+            assert_eq!(
+                ircv3(first),
+                Ircv3Options {
+                    message_tags: true,
+                    server_time: false,
+                },
+                "reconnects use the new choice"
+            );
+            assert_eq!(
+                ircv3(second),
+                config(&settings, 1).ircv3,
+                "other server unchanged"
+            );
+            assert_eq!(chat.sessions[&first].generation, generation, "no reconnect");
+            assert!(chat.sessions[&first].irc.is_none());
+        });
+    }
+
+    #[gpui::test]
     fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Event;
 
@@ -6329,6 +6435,7 @@ mod pane_tests {
             text: text.into(),
             notice: false,
             mentioned,
+            server_time: None,
             replayed: false,
         };
         chat.update(cx, |chat, cx| {
@@ -6367,23 +6474,27 @@ mod pane_tests {
                         notice: false,
                         mentioned: true,
                         replayed: true,
+                        server_time: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
                         text: "old psst".into(),
                         notice: false,
                         replayed: true,
+                        server_time: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
                         text: "psst".into(),
                         notice: false,
+                        server_time: None,
                         replayed: false,
                     },
                     Event::PrivateMessage {
                         sender: "NickServ".into(),
                         text: "notice".into(),
                         notice: true,
+                        server_time: None,
                         replayed: false,
                     },
                 ],
@@ -6459,11 +6570,92 @@ mod pane_tests {
                     notice: true,
                     mentioned: true,
                     replayed: true,
+                    server_time: None,
                 }],
                 false,
                 cx,
             );
             assert!(!chat.state.is_highlighted(b));
+        });
+    }
+
+    #[gpui::test]
+    fn old_server_times_display_locally_and_still_notify(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let old = UNIX_EPOCH + Duration::from_secs(1_319_042_451);
+        let local = |time: SystemTime| {
+            use chrono::Timelike;
+            let time = chrono::DateTime::<chrono::Local>::from(time);
+            cayenchat_model::TimeOfDay::new(time.hour() as u8, time.minute() as u8)
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            chat.state.dispatch(cayenchat_app::Command::SelectChannel(
+                chat.state.conversations()[0].id,
+            ));
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "now".into(),
+                        notice: false,
+                        mentioned: false,
+                        server_time: None,
+                        replayed: false,
+                    },
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "alice: from years ago".into(),
+                        notice: false,
+                        mentioned: true,
+                        server_time: Some(old),
+                        replayed: false,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let b = &chat.state.conversations()[1];
+            assert_eq!(b.messages[1].text, "alice: from years ago");
+            assert!(b.messages[0].sequence < b.messages[1].sequence);
+            assert_eq!(b.messages[1].time, local(old));
+            assert!(chat.state.is_unread(b.id));
+            assert_eq!(
+                chat.notifier.shown.len(),
+                1,
+                "an old timestamp does not mute"
+            );
         });
     }
 
@@ -6502,6 +6694,7 @@ mod pane_tests {
                         text: "hello".into(),
                         notice: false,
                         mentioned: false,
+                        server_time: None,
                         replayed: false,
                     },
                     Event::OutgoingAccepted {
@@ -6597,6 +6790,7 @@ mod pane_tests {
                     text: text.into(),
                     notice: false,
                     mentioned: false,
+                    server_time: None,
                     replayed: false,
                 },
             ]
