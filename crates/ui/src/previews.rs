@@ -122,6 +122,8 @@ impl Previews {
 
     /// Frees the GPU textures of images that left the cache. Only images the
     /// cache no longer holds are released, so nothing drawn later uses them.
+    /// Call it while the main log pane redraws, never while that pane may be
+    /// reused from its cache.
     pub fn release(&self, window: &mut Window) {
         for preview in self.cache.borrow_mut().take_released() {
             let _ = window.drop_image(preview.image);

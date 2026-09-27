@@ -4156,7 +4156,6 @@ impl Render for SettingsWindow {
 
 impl Render for ChatWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.previews.release(window);
         let content = self.render_chat(window, cx);
         let content = menu_bar::wrap(
             &self.menu_bar,
@@ -4952,6 +4951,8 @@ impl Render for ChatPane {
         // its context; it is not being updated while panes lay out.
         self.chat
             .update(cx, |chat, cx| {
+                // Only while the main log redraws: a reused (cached) pane
+                // replays sprites that may still point at these images.
                 if matches!(kind, PaneKind::MainLog) {
                     chat.previews.release(window);
                 }
