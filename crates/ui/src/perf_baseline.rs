@@ -14,7 +14,11 @@
 //! holds), served by an in-memory fetcher with an 800×400 PNG. Loads run
 //! between samples (`run_until_parked`), outside the timed sections; the
 //! test dispatcher runs background work on the test thread, so only the
-//! UI-side cost is timed. All variants also time scrolling the main log.
+//! UI-side cost is timed. `perf_baseline_avatars` turns user avatars on
+//! instead: every member has an avatar (one URL each, served by the same
+//! fetcher and cropped to a 32×32 square), so message and member rows draw
+//! avatar slots. All
+//! variants also time scrolling the main log.
 //!
 //! GPUI's test platform draws a dirty window synchronously at the end of each
 //! update, so each timing covers the app's state update plus element
@@ -133,19 +137,25 @@ impl Timings {
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline(cx: &mut TestAppContext) {
-    run(cx, 1, false);
+    run(cx, 1, false, false);
 }
 
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_4_servers(cx: &mut TestAppContext) {
-    run(cx, 4, false);
+    run(cx, 4, false, false);
 }
 
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_previews(cx: &mut TestAppContext) {
-    run(cx, 1, true);
+    run(cx, 1, true, false);
+}
+
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_avatars(cx: &mut TestAppContext) {
+    run(cx, 1, false, true);
 }
 
 /// Serves one 800×400 PNG for every link and counts requests.
@@ -192,7 +202,7 @@ fn settings(servers: usize) -> cayenchat_storage::Settings {
     settings
 }
 
-fn run(cx: &mut TestAppContext, servers: usize, images: bool) {
+fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
         crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
@@ -204,10 +214,12 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool) {
     });
     let mut settings = settings(servers);
     settings.appearance.image_previews = images;
+    settings.appearance.user_avatars = avatars;
     let fetcher = memory_fetcher();
     let (chat, cx) = cx.add_window_view(|window, cx| {
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
         chat.previews.use_fetcher(fetcher.clone());
+        chat.avatars.use_fetcher(fetcher.clone());
         chat
     });
 
@@ -225,6 +237,12 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool) {
                 .map(|member| format!("user{member:03}"))
                 .collect(),
         });
+    }
+    if avatars {
+        setup.extend((0..MEMBERS).map(|member| Event::UserAvatar {
+            nickname: format!("user{member:03}"),
+            url: Some(format!("https://avatars.load.example/{member:03}/{{size}}")),
+        }));
     }
     for network in &networks {
         chat.update(cx, |chat, cx| {
@@ -272,7 +290,7 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool) {
         )
     });
     println!(
-        "perf_baseline servers={servers} previews={images} setup channels={CHANNELS} members={MEMBERS} retained_messages={retained} diagnostics={diagnostics}"
+        "perf_baseline servers={servers} previews={images} avatars={avatars} setup channels={CHANNELS} members={MEMBERS} retained_messages={retained} diagnostics={diagnostics}"
     );
 
     // Typing into the selected channel's draft; panes must stay cached.
@@ -374,6 +392,21 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool) {
             cache.ready_bytes(),
             cache.in_flight(),
             cache.queued(),
+        );
+        let cache = chat.avatars.cache();
+        let stats = cache.stats();
+        println!(
+            "perf_baseline servers={servers} avatars={avatars} jobs={} ready={} failed={} evicted={} dropped_from_queue={} records={} ready_bytes={} in_flight={} waiting_release={} message_size={}",
+            stats.jobs_started,
+            stats.ready,
+            stats.failed,
+            stats.evicted,
+            stats.dropped_from_queue,
+            cache.records(),
+            cache.ready_bytes(),
+            cache.in_flight(),
+            chat.avatars.waiting_release(),
+            std::mem::size_of::<cayenchat_model::Message>(),
         );
     });
 }
