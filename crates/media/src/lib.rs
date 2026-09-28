@@ -15,6 +15,7 @@
 //! This is not the IRC image *upload* path (`cayenchat-upload`); previews need
 //! no provider or account.
 
+pub mod avatar_edit;
 pub mod cache;
 pub mod decode;
 pub mod fetch;

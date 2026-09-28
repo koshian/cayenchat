@@ -15,7 +15,7 @@ use image::{DynamicImage, ImageFormat, ImageReader};
 use crate::{CancelFlag, Limits, LoadError};
 
 /// Serializes decoding so full-size images never coexist.
-static DECODE: Mutex<()> = Mutex::new(());
+pub(crate) static DECODE: Mutex<()> = Mutex::new(());
 
 /// A decoded thumbnail in GPUI's BGRA byte order, not premultiplied.
 #[derive(Clone, PartialEq, Eq)]
