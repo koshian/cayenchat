@@ -801,9 +801,10 @@ ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh /tmp/cayenc
 python3 scripts/e2e/history_gui.py --app target/debug/cayenchat --ergo-dir /tmp/cayenchat-ergo --out /tmp/cayenchat-e2e
 ```
 
-It needs Xvfb, xdotool, xwd (x11-apps), xclip and a Vulkan driver
-(`mesa-vulkan-drivers`' lavapipe renders without a GPU), and Go 1.26 for
-Ergo (or `GOTOOLCHAIN=go1.26.4`, which fetches it into the work directory).
+Required packages, running without root, reading the output and adding
+checks are in `HOW_TO_TEST.md` ("GUI end-to-end test"). Operating-system
+packages cannot be declared in Cargo; that list and the `gui-e2e-linux` job
+in `.github/workflows/ci.yml` name the same packages and change together.
 It takes about two minutes. CI runs it in the `gui-e2e-linux` job and
 uploads the screenshots. It is Linux/X11 only: the driving tools are X11
 ones. The same scenario on macOS or Windows would need a logged-in desktop
