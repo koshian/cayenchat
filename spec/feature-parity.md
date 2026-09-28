@@ -18,7 +18,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — every persisted server profile appears in the channel tree in the order added; the list starts empty and IRCnet is offered as a suggestion when adding a server; any number connect at once, each with its own nickname, username, channels, SASL account and startup connection
 - DONE — per-server UTF-8, ISO-2022-JP, Shift_JIS, or EUC-JP line encoding, including channel names; local ISO-2022-JP wire round trip tested
 - PARTIAL — rustls connection with certificate verification on by default and a per-server opt-out for self-signed or otherwise invalid certificates; public-server interoperability unverified
-- DONE — initial connect, manual disconnect and manual reconnect via settings, native menu or server context menu; the server context menu disables reconnect while a connection is active and disconnect while none is active; unexpected disconnections retry with capped backoff, while explicit disconnect cancels retries; a nickname rejected during registration (432/433) prompts for another nickname instead of retrying
+- DONE — initial connect, manual disconnect and manual reconnect via settings, native menu or server context menu; the server context menu disables reconnect while a connection is active, and it and the menu bar disable disconnect unless a connection or a scheduled retry exists; disconnect also cancels a connection still in TCP/TLS setup; unexpected disconnections retry with capped backoff, while explicit disconnect cancels retries; a nickname rejected during registration (432/433) prompts for another nickname instead of retrying
 - DONE — multiple live networks; each connects, disconnects and retries independently, and its events, menus, prompts and WHOIS windows stay with it
 - PARTIAL — connecting, registered, disconnected status and errors shown in the UI; directional IRC transcript appears automatically during connection/failure, with a menu toggle after registration and clipboard copy (parsed lines, not a complete socket capture)
 - DONE — optional server PASS over TLS
@@ -115,7 +115,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 
 ## Settings
 
-- DONE — single-network connection settings with a server drop-down, multiple saved custom profiles, per-profile host/port/TLS/certificate verification/encoding and optional server password
+- DONE — single-network connection settings with a server drop-down, multiple saved custom profiles, per-profile host/port/TLS/certificate verification/encoding and optional server password (sent without TLS only after a per-server opt-in with a warning, for bouncers such as ZNC)
 - DONE — persisted nickname, independent IRC `USER` username and optional SASL account name; per-server server/SASL password persistence in the credential store (system store, or an explicitly chosen local file after a plaintext warning), with immediate deletion when disabled
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)

@@ -246,6 +246,10 @@ pub struct ServerProfile {
     /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
+    /// Send the server password even without TLS, after the user accepted a
+    /// warning; for bouncers such as ZNC on a trusted network.
+    #[serde(default)]
+    pub allow_plaintext_pass: bool,
     /// Identity and channels belong to each server (version 13); earlier
     /// versions kept one application-wide set, which migration gives only
     /// to the server it was used with.
@@ -297,6 +301,7 @@ impl ServerProfile {
             verify_tls_certificates: true,
             encoding: TextEncoding::Utf8,
             remember_passwords: false,
+            allow_plaintext_pass: false,
             nickname: String::new(),
             username: String::new(),
             channels: String::new(),
@@ -960,6 +965,10 @@ mod tests {
         assert_eq!(selected.channels(), ["#a", "#b"]);
         assert_eq!(selected.sasl_username, "account");
         assert!(selected.sasl_enabled && selected.connect_on_startup);
+        assert!(
+            !selected.allow_plaintext_pass,
+            "absent means TLS is required for passwords"
+        );
 
         // The other server keeps its connection details and saved-password
         // choice (its credentials stay under its ID) but gets no copy of the
@@ -1073,6 +1082,7 @@ mod tests {
             profile.connect_on_startup = true;
         }
         settings.servers[1].ircv3.batch = true;
+        settings.servers[1].allow_plaintext_pass = true;
         for version in 13..=SETTINGS_VERSION {
             let mut file = serde_json::to_value(&settings).unwrap();
             file["version"] = version.into();

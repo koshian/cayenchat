@@ -621,6 +621,7 @@ fn connection_config(
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
+    config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.encoding = profile.encoding.label().into();
     config.ircv3 = ircv3_options(profile.ircv3);
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
@@ -1533,6 +1534,19 @@ impl ChatWindow {
                 .channel_menu
                 .as_ref()
                 .is_some_and(|menu| menu.network == network)
+    }
+
+    /// Whether Disconnect has something to stop on `network`: a connection
+    /// (including one still opening) or a scheduled reconnect.
+    fn can_disconnect(&self, network: NetworkId) -> bool {
+        self.sessions
+            .get(&network)
+            .is_some_and(|session| session.irc.is_some() || session.retry_pending)
+    }
+
+    fn can_disconnect_selected(&self) -> bool {
+        self.selected_network_id()
+            .is_some_and(|network| self.can_disconnect(network))
     }
 
     fn disconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
@@ -3137,6 +3151,42 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Sending PASS without TLS is never turned on without a confirmation.
+    fn toggle_plaintext_pass(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        if profile.allow_plaintext_pass {
+            profile.allow_plaintext_pass = false;
+            cx.notify();
+            return;
+        }
+        let id = profile.id.clone();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &self.i18n.text("plaintext_pass_title"),
+            Some(&self.i18n.text("plaintext_pass_detail")),
+            &[
+                PromptButton::ok(self.i18n.text("plaintext_pass_confirm")),
+                PromptButton::cancel(self.i18n.text("cancel")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(profile) = this.settings.values.selected_profile_mut()
+                        && profile.id == id
+                    {
+                        profile.allow_plaintext_pass = true;
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     fn toggle_tls(&mut self, cx: &mut Context<Self>) {
         let Some(profile) = self.settings.values.selected_profile_mut() else {
             return;
@@ -3685,6 +3735,34 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("server_password_hint")),
             )
+            .when(!tls, |d| {
+                d.child(
+                    div()
+                        .id("plaintext-pass")
+                        .ml(px(158.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .child(settings_theme::checkbox(
+                            profile.allow_plaintext_pass,
+                            true,
+                            cx,
+                        ))
+                        .child(self.i18n.text("plaintext_pass"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_plaintext_pass(window, cx)
+                        })),
+                )
+                .when(profile.allow_plaintext_pass, |d| {
+                    d.child(
+                        div()
+                            .ml(px(158.))
+                            .text_color(theme.warning)
+                            .child(self.i18n.text("plaintext_pass_warning")),
+                    )
+                })
+            })
             .child(
                 div()
                     .id("remember-passwords")
@@ -4284,7 +4362,12 @@ impl SettingsWindow {
                 ),
             )
             .on_action(cx.listener(Self::open_settings_action))
-            .on_action(cx.listener(Self::disconnect_action))
+            .when(
+                self.owner
+                    .read(cx)
+                    .is_ok_and(ChatWindow::can_disconnect_selected),
+                |d| d.on_action(cx.listener(Self::disconnect_action)),
+            )
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
             .on_action(cx.listener(Self::copy_diagnostics_action))
@@ -4878,6 +4961,7 @@ impl ChatWindow {
             let position = menu.position;
             let session = self.sessions.get(&network);
             let connected = session.is_some_and(|session| session.irc.is_some());
+            let can_disconnect = self.can_disconnect(network);
             // A server not connected in this run offers Connect, not Reconnect.
             let connect_key = if session.is_some_and(ServerSession::used) {
                 "reconnect"
@@ -4916,14 +5000,14 @@ impl ChatWindow {
                         .px_2()
                         .py_1()
                         .child(self.i18n.text("disconnect"))
-                        .when(connected, |d| {
+                        .when(can_disconnect, |d| {
                             d.cursor_pointer()
                                 .hover(|d| d.bg(theme.hover_strong))
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.disconnect(network, cx)),
                                 )
                         })
-                        .when(!connected, |d| d.text_color(theme.text_muted)),
+                        .when(!can_disconnect, |d| d.text_color(theme.text_muted)),
                 )
         });
         let channel_menu = self.channel_menu.as_ref().map(|menu| {
@@ -5133,7 +5217,9 @@ impl ChatWindow {
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::notice))
             .on_action(cx.listener(Self::open_settings))
-            .on_action(cx.listener(Self::disconnect_action))
+            .when(self.can_disconnect_selected(), |d| {
+                d.on_action(cx.listener(Self::disconnect_action))
+            })
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
@@ -6451,6 +6537,32 @@ mod startup_tests {
     }
 
     #[test]
+    fn plaintext_server_password_needs_the_profile_opt_in() {
+        let mut settings = Settings::default();
+        let profile = settings.add_server("znc.lan");
+        profile.nickname = "alice".into();
+        profile.username = "alice".into();
+        let language = settings.language;
+        let password = || Some(Secret::new("alice/net:secret"));
+        let profile = settings.selected_profile().unwrap();
+        assert!(!profile.use_tls);
+        assert!(connection_config(profile, language, password(), None).is_err());
+        settings
+            .selected_profile_mut()
+            .unwrap()
+            .allow_plaintext_pass = true;
+        let config = connection_config(
+            settings.selected_profile().unwrap(),
+            language,
+            password(),
+            None,
+        )
+        .unwrap();
+        assert!(!config.use_tls && config.allow_plaintext_pass);
+        assert_eq!(config.server_password.as_deref(), Some("alice/net:secret"));
+    }
+
+    #[test]
     fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
         // Cover both legacy sequential IDs and IDs assigned to new profiles.
         for legacy in [true, false] {
@@ -6930,6 +7042,32 @@ mod pane_tests {
             );
             assert_eq!(chat.sessions[&first].generation, generation, "no reconnect");
             assert!(chat.sessions[&first].irc.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn disconnect_is_offered_only_while_there_is_something_to_stop(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            let network = NetworkId(1);
+            assert!(!chat.can_disconnect(network), "never connected");
+            // A failed connection waiting to retry can still be stopped.
+            chat.sessions.get_mut(&network).unwrap().retry_pending = true;
+            assert!(chat.can_disconnect(network));
+            chat.disconnect(network, cx);
+            let session = &chat.sessions[&network];
+            assert!(session.manual_disconnect && !session.retry_pending);
+            assert!(!chat.can_disconnect(network));
         });
     }
 

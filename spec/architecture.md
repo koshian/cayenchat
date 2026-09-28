@@ -256,7 +256,8 @@ Passwords persist per server only when password saving is on for that server,
 and only through the credential store (see Credentials below); turning saving
 off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
-requires TLS before sending either server PASS or SASL PLAIN credentials. The nickname (`NICK`), the `USER` username and the SASL account are separate
+requires TLS before sending SASL PLAIN credentials, and before sending server
+PASS unless the server's profile explicitly allows it without TLS (D024). The nickname (`NICK`), the `USER` username and the SASL account are separate
 settings; `ConnectionConfig` carries the username explicitly and its `Debug`
 output redacts both passwords. Each core connection supports auto-join, channel
 messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands; the UI runs one
@@ -275,7 +276,9 @@ The core allows 15 seconds for TCP/TLS and 90 seconds for registration (001):
 IRCnet holds registration about 30 seconds when a client's ident port 113
 silently drops packets, which a 30-second limit turned into a reconnect loop.
 A successful registration resets the delay; an explicit disconnect cancels pending
-retries. The core reports a terminal `Refused` event instead of `Disconnected`
+retries. Disconnect during DNS lookup or TCP/TLS setup ends the worker at once
+(the command queue is read only after the transport opens); once connected it
+sends QUIT and flushes it before closing. The core reports a terminal `Refused` event instead of `Disconnected`
 for SASL failures, a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,
 and 464/465 during registration; the UI does not retry those automatically,
 because repeating rejected credentials risks account lockout or a server ban.
@@ -365,7 +368,10 @@ dialog, in arrival order: each row names the server, pre-fills the rejected
 nick plus `_`, and offers Retry or Disconnect; a repeated rejection updates
 the server's row and registration closes it. A new row takes focus unless
 another nickname field already has it, and Enter submits the focused row. Menu commands
-(Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server; the
+(Disconnect, Reconnect, Show/Copy diagnostics) act on the selected server;
+Disconnect is available (in the menu bar and the server context menu) only
+while that server has a connection, including one still opening, or a
+scheduled reconnect to cancel; the
 settings window's Connect and Disconnect act on the server being
 edited. A new server, blank or from a preset, starts with an empty
 nickname, `USER` username, auto-join channels and SASL account, SASL,
