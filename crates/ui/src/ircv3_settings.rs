@@ -629,7 +629,22 @@ impl SettingsWindow {
                                 .avatar_url
                                 .update(cx, |field, cx| field.set_text(&url, cx));
                         }
-                        self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_uploaded"));
+                        // Uploading an image means "use it": send it to
+                        // the server now, when it is connected.
+                        let sent = self.owner.update(cx, |owner, _, _| {
+                            owner.request_own_avatar(&target, Some(url))
+                        });
+                        self.avatar_feedback = match sent {
+                            Ok(Ok(())) => None,
+                            Ok(Err("ircv3_avatar_unavailable")) => {
+                                Some(self.i18n.text("ircv3_avatar_uploaded_not_sent"))
+                            }
+                            Ok(Err(key)) => Some(self.i18n.text(key)),
+                            Err(error) => Some(
+                                self.i18n
+                                    .format("chat_closed", &[("error", &error.to_string())]),
+                            ),
+                        };
                     }
                     Err(key) => self.avatar_feedback = Some(self.i18n.text(key)),
                 }
@@ -903,15 +918,13 @@ mod tests {
             "ircv3_avatar_edit_loading",
             "ircv3_avatar_edit_hint",
             "ircv3_avatar_edit_result",
-            "ircv3_avatar_edit_zoom_in",
-            "ircv3_avatar_edit_zoom_out",
             "ircv3_avatar_edit_reset",
             "ircv3_avatar_edit_upload",
             "ircv3_avatar_edit_unsupported",
             "ircv3_avatar_edit_too_large",
             "ircv3_avatar_edit_unreadable",
             "ircv3_avatar_uploading",
-            "ircv3_avatar_uploaded",
+            "ircv3_avatar_uploaded_not_sent",
             "ircv3_avatar_upload_bad_url",
             "ircv3_avatar_upload_server_gone",
             "ircv3_avatar_upload_needs_setup",

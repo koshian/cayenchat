@@ -136,6 +136,57 @@ impl AvatarSource {
         }
     }
 
+    /// The part `crop` of the image fitted into `max_side` pixels, for
+    /// showing a selection enlarged.
+    pub fn square_preview(&self, crop: Crop, max_side: u32) -> Thumbnail {
+        let crop = self.clamp(crop);
+        let side = crop.side.round().max(1.0) as u32;
+        let x = (crop.x.round() as u32).min(self.width() - side);
+        let y = (crop.y.round() as u32).min(self.height() - side);
+        let out = side.min(max_side);
+        let small = self
+            .image
+            .crop_imm(x, y, side, side)
+            .thumbnail_exact(out, out);
+        let mut bgra = small.into_rgba8().into_raw();
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        Thumbnail {
+            width: out,
+            height: out,
+            source_width: side,
+            source_height: side,
+            bgra,
+        }
+    }
+
+    /// The square a drag from `anchor` to `to` (working pixels) outlines:
+    /// its side is the larger of the two distances, it grows from the
+    /// anchor in the drag's direction and stops at the image's edges.
+    pub fn square_from_drag(&self, anchor: (f64, f64), to: (f64, f64)) -> Crop {
+        let (width, height) = (f64::from(self.width()), f64::from(self.height()));
+        let anchor = (anchor.0.clamp(0.0, width), anchor.1.clamp(0.0, height));
+        let (dx, dy) = (to.0 - anchor.0, to.1 - anchor.1);
+        let room_x = if dx < 0.0 { anchor.0 } else { width - anchor.0 };
+        let room_y = if dy < 0.0 {
+            anchor.1
+        } else {
+            height - anchor.1
+        };
+        let side = dx.abs().max(dy.abs()).min(room_x).min(room_y);
+        Crop {
+            x: if dx < 0.0 { anchor.0 - side } else { anchor.0 },
+            y: if dy < 0.0 { anchor.1 - side } else { anchor.1 },
+            side,
+        }
+    }
+
+    /// Whether `crop` is large enough to be used.
+    pub fn usable(&self, crop: Crop) -> bool {
+        crop.side >= MIN_CROP_SIDE.min(f64::from(self.width().min(self.height())))
+    }
+
     /// The largest centered square: the starting selection.
     pub fn initial_crop(&self) -> Crop {
         let (width, height) = (f64::from(self.width()), f64::from(self.height()));
@@ -264,6 +315,46 @@ mod tests {
         let preview = source.preview(320);
         assert_eq!((preview.width, preview.height), (320, 160));
         assert_eq!(preview.bgra.len(), 320 * 160 * 4);
+    }
+
+    #[test]
+    fn dragging_outlines_a_square_inside_the_image() {
+        let source = open(&encode(ImageFormat::Png, 400, 200)).unwrap();
+        // Down-right: the larger distance wins.
+        assert_eq!(
+            source.square_from_drag((10.0, 20.0), (60.0, 40.0)),
+            Crop {
+                x: 10.0,
+                y: 20.0,
+                side: 50.0
+            }
+        );
+        // Up-left from the anchor, stopped by the top edge.
+        assert_eq!(
+            source.square_from_drag((300.0, 50.0), (100.0, 0.0)),
+            Crop {
+                x: 250.0,
+                y: 0.0,
+                side: 50.0
+            }
+        );
+        // Beyond the right edge.
+        let crop = source.square_from_drag((380.0, 10.0), (500.0, 150.0));
+        assert_eq!(crop.side, 20.0);
+        assert!(!source.usable(crop), "too small to use");
+        assert!(source.usable(source.square_from_drag((0.0, 0.0), (100.0, 100.0))));
+        // A selection shown enlarged, at most the requested size.
+        let preview = source.square_preview(
+            Crop {
+                x: 0.0,
+                y: 0.0,
+                side: 100.0,
+            },
+            640,
+        );
+        assert_eq!((preview.width, preview.height), (100, 100));
+        let preview = source.square_preview(source.initial_crop(), 64);
+        assert_eq!((preview.width, preview.height), (64, 64));
     }
 
     #[test]
