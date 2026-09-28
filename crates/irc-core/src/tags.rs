@@ -220,6 +220,29 @@ mod tests {
         assert_eq!(untagged_line(&message), ":n!u@h PRIVMSG #c hi");
     }
 
+    // message-tags: "Implementations MUST treat tag key names as
+    // case-sensitive opaque identifiers and MUST NOT perform any validation
+    // that would reject the message if an invalid tag key name is used."
+    #[test]
+    fn tag_keys_are_case_sensitive_opaque_and_never_reject_the_message() {
+        let message = parse(
+            "@TIME=2026-01-01T00:00:00.000Z;example.com/key=v;+example.com/typing=active;!odd~key=1 :n!u@h PRIVMSG #c :body",
+        );
+        assert_eq!(tag_value(&message, "time"), None);
+        assert!(server_time(&message, true).is_none(), "TIME is not time");
+        assert_eq!(tag_value(&message, "example.com/key"), Some("v"));
+        assert_eq!(tag_value(&message, "+example.com/typing"), Some("active"));
+        assert_eq!(
+            tag_value(&message, "example.com/typing"),
+            None,
+            "+ is part of the name"
+        );
+        assert_eq!(tag_value(&message, "!odd~key"), Some("1"));
+        assert!(
+            matches!(message.command, irc::proto::Command::PRIVMSG(_, ref text) if text == "body")
+        );
+    }
+
     #[test]
     fn replaced_bytes_and_oversized_tag_sections_are_ignored() {
         let message = parse("@time=2026-01-01T00:00:00.000Z;x=bad\u{FFFD} :s NOTICE * :hi");
