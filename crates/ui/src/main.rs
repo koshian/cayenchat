@@ -1510,6 +1510,19 @@ impl ChatWindow {
                 .is_some_and(|menu| menu.network == network)
     }
 
+    /// Whether Disconnect has something to stop on `network`: a connection
+    /// (including one still opening) or a scheduled reconnect.
+    fn can_disconnect(&self, network: NetworkId) -> bool {
+        self.sessions
+            .get(&network)
+            .is_some_and(|session| session.irc.is_some() || session.retry_pending)
+    }
+
+    fn can_disconnect_selected(&self) -> bool {
+        self.selected_network_id()
+            .is_some_and(|network| self.can_disconnect(network))
+    }
+
     fn disconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
         self.server_menu = None;
         let Some(session) = self.sessions.get_mut(&network) else {
@@ -4225,7 +4238,12 @@ impl SettingsWindow {
                 ),
             )
             .on_action(cx.listener(Self::open_settings_action))
-            .on_action(cx.listener(Self::disconnect_action))
+            .when(
+                self.owner
+                    .read(cx)
+                    .is_ok_and(ChatWindow::can_disconnect_selected),
+                |d| d.on_action(cx.listener(Self::disconnect_action)),
+            )
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
             .on_action(cx.listener(Self::copy_diagnostics_action))
@@ -4819,6 +4837,7 @@ impl ChatWindow {
             let position = menu.position;
             let session = self.sessions.get(&network);
             let connected = session.is_some_and(|session| session.irc.is_some());
+            let can_disconnect = self.can_disconnect(network);
             // A server not connected in this run offers Connect, not Reconnect.
             let connect_key = if session.is_some_and(ServerSession::used) {
                 "reconnect"
@@ -4857,14 +4876,14 @@ impl ChatWindow {
                         .px_2()
                         .py_1()
                         .child(self.i18n.text("disconnect"))
-                        .when(connected, |d| {
+                        .when(can_disconnect, |d| {
                             d.cursor_pointer()
                                 .hover(|d| d.bg(theme.hover_strong))
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.disconnect(network, cx)),
                                 )
                         })
-                        .when(!connected, |d| d.text_color(theme.text_muted)),
+                        .when(!can_disconnect, |d| d.text_color(theme.text_muted)),
                 )
         });
         let channel_menu = self.channel_menu.as_ref().map(|menu| {
@@ -5074,7 +5093,9 @@ impl ChatWindow {
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::notice))
             .on_action(cx.listener(Self::open_settings))
-            .on_action(cx.listener(Self::disconnect_action))
+            .when(self.can_disconnect_selected(), |d| {
+                d.on_action(cx.listener(Self::disconnect_action))
+            })
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
@@ -6871,6 +6892,32 @@ mod pane_tests {
             );
             assert_eq!(chat.sessions[&first].generation, generation, "no reconnect");
             assert!(chat.sessions[&first].irc.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn disconnect_is_offered_only_while_there_is_something_to_stop(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            let network = NetworkId(1);
+            assert!(!chat.can_disconnect(network), "never connected");
+            // A failed connection waiting to retry can still be stopped.
+            chat.sessions.get_mut(&network).unwrap().retry_pending = true;
+            assert!(chat.can_disconnect(network));
+            chat.disconnect(network, cx);
+            let session = &chat.sessions[&network];
+            assert!(session.manual_disconnect && !session.retry_pending);
+            assert!(!chat.can_disconnect(network));
         });
     }
 
