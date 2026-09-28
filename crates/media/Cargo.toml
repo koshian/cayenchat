@@ -11,5 +11,6 @@ cayenchat-model.workspace = true
 url = "2.5.8"
 # Same blocking client as `upload`: rustls/ring, no compression, no cookies.
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
-# Already in the tree through GPUI; only the formats previews decode.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Already in the tree through GPUI. Previews decode PNG, JPEG, GIF and WebP;
+# avatar editing also opens BMP and TIFF (clipboard images).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }

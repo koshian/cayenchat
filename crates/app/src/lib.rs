@@ -2,6 +2,7 @@
 pub mod attachments;
 pub mod avatars;
 pub mod notifications;
+pub mod own_avatar;
 
 use std::{
     collections::{HashMap, HashSet},

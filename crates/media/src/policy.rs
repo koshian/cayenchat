@@ -73,6 +73,80 @@ pub fn avatar_url(template: &str, size: u32) -> Option<MediaRef> {
     Some(MediaRef::Link(url))
 }
 
+/// Why a URL may not be published as our own avatar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishProblem {
+    /// Empty, too long, not a URL, or containing spaces or controls.
+    Invalid,
+    /// A user name, password or token-like query parameter: publishing it
+    /// would hand a credential to everyone on the network.
+    Credentials,
+    /// Not something avatars may be fetched from (scheme, port, a private
+    /// or local host); other users could not load it either.
+    Blocked,
+}
+
+/// Query or fragment parameters that usually carry a credential. Compared
+/// case-insensitively, with `-` treated as `_`.
+const SECRET_PARAMETERS: [&str; 17] = [
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "code",
+    "jwt",
+    "key",
+    "pass",
+    "passwd",
+    "password",
+    "secret",
+    "session",
+    "sid",
+    "sig",
+    "signature",
+    "token",
+    "x_amz_credential",
+];
+
+/// Checks a URL the user wants to publish as their avatar (for IRC, the
+/// value of the `avatar` metadata key, which may contain `{size}`). The
+/// rules are those of [`avatar_url`], so what we publish is what other
+/// CayenChat users would load, plus a refusal of anything that looks like
+/// a credential. Nothing is fetched.
+pub fn publishable_avatar_url(template: &str) -> Result<(), PublishProblem> {
+    if template.is_empty()
+        || template.len() > MAX_URL_LEN
+        || template
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(PublishProblem::Invalid);
+    }
+    let parsed = Url::parse(&template.replace(AVATAR_SIZE_PLACEHOLDER, "32"))
+        .map_err(|_| PublishProblem::Invalid)?;
+    let secret = |name: &str| {
+        let name = name.to_ascii_lowercase().replace('-', "_");
+        SECRET_PARAMETERS.contains(&name.as_str())
+    };
+    let fragment_pairs = parsed
+        .fragment()
+        .map(|fragment| url::form_urlencoded::parse(fragment.as_bytes()))
+        .into_iter()
+        .flatten();
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed
+            .query_pairs()
+            .chain(fragment_pairs)
+            .any(|(name, _)| secret(&name))
+    {
+        return Err(PublishProblem::Credentials);
+    }
+    avatar_url(template, 32)
+        .map(|_| ())
+        .ok_or(PublishProblem::Blocked)
+}
+
 /// Checks a URL before it is requested. `previous` is the URL that
 /// redirected here; a redirect may not go from HTTPS to plain HTTP.
 pub(crate) fn check_request(
@@ -277,6 +351,57 @@ mod tests {
         );
         assert!(check_request(&https, Some(&http), Rules::default()).is_ok());
     }
+    #[test]
+    fn published_avatar_urls_are_fetchable_and_carry_no_credentials() {
+        for ok in [
+            "https://example.com/avatar.png",
+            "https://example.com/u/42/{size}",
+            "http://example.com/a?s=64&v=2",
+            "https://example.com/a#crop",
+        ] {
+            assert_eq!(publishable_avatar_url(ok), Ok(()), "{ok}");
+        }
+        for (url, problem) in [
+            ("", PublishProblem::Invalid),
+            ("not a url", PublishProblem::Invalid),
+            ("https://example.com/a\r\nQUIT", PublishProblem::Invalid),
+            ("https://example.com/\u{0}", PublishProblem::Invalid),
+            (
+                "https://user:pw@example.com/a.png",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://user@example.com/a.png",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://example.com/a.png?token=abc",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://example.com/a.png?X-Amz-Credential=x",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://example.com/a.png?API-KEY=x",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://example.com/a.png#access_token=x",
+                PublishProblem::Credentials,
+            ),
+            ("ftp://example.com/a.png", PublishProblem::Blocked),
+            ("https://127.0.0.1/a.png", PublishProblem::Blocked),
+            ("https://localhost/a.png", PublishProblem::Blocked),
+            ("https://example.com:8443/a.png", PublishProblem::Blocked),
+            ("https://192.168.1.2/a.png", PublishProblem::Blocked),
+        ] {
+            assert_eq!(publishable_avatar_url(url), Err(problem), "{url}");
+        }
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
+        assert_eq!(publishable_avatar_url(&long), Err(PublishProblem::Invalid));
+    }
+
     #[test]
     fn avatar_urls_need_no_extension_but_stay_safe() {
         let url = |text: &str| avatar_url(text, 32).map(|MediaRef::Link(url)| url.to_string());

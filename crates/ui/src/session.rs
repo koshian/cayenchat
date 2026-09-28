@@ -10,6 +10,7 @@ use std::{
     time::Instant,
 };
 
+use cayenchat_app::own_avatar::OwnAvatar;
 use cayenchat_irc_core::{Connection, ConnectionConfig};
 
 /// Newest transcript lines kept per server.
@@ -36,6 +37,13 @@ pub struct ServerSession {
     pub watchdog_stage: u8,
     /// Invalidates the event pump and watchdog of a replaced connection.
     pub generation: u64,
+    /// Our own avatar as this server confirmed it on the current
+    /// connection; the draft URL lives in the settings profile.
+    pub own_avatar: OwnAvatar,
+    /// Whether the current connection asked for avatar metadata (the
+    /// option and batch were on when it started), so a server that never
+    /// enabled it can be reported as not supporting avatars.
+    pub metadata_requested: bool,
 }
 
 impl ServerSession {
@@ -54,6 +62,8 @@ impl ServerSession {
             connection_started: None,
             watchdog_stage: 0,
             generation: 0,
+            own_avatar: OwnAvatar::default(),
+            metadata_requested: false,
         }
     }
 
@@ -77,6 +87,7 @@ impl ServerSession {
         self.retry_pending = false;
         self.retry_token += 1;
         self.generation += 1;
+        self.own_avatar.connection_ended();
         if let Some(connection) = self.irc.take() {
             let _ = connection.disconnect();
         }

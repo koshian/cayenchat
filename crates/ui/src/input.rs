@@ -134,6 +134,12 @@ impl TextInput {
         &self.content
     }
 
+    /// Lets an image-only paste reach the enclosing view's attachment
+    /// handler instead of being ignored.
+    pub fn accept_pasted_images(&mut self) {
+        self.attachments = true;
+    }
+
     pub fn set_placeholder(&mut self, placeholder: &str, cx: &mut Context<Self>) {
         self.placeholder = placeholder.to_owned().into();
         cx.notify();

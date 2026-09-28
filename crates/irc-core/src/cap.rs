@@ -42,8 +42,10 @@ pub struct Ircv3Options {
     /// Receive `BATCH` and the `batch` tag, so history batches are told
     /// apart from live traffic. Independent of the other options.
     pub batch: bool,
-    /// Receive user avatars through the experimental `draft/metadata-2`.
-    /// Requested only together with `batch`, which the draft requires.
+    /// Receive user avatars (and publish ours) through the experimental
+    /// `draft/metadata-2`, when the server offers it. The draft requires
+    /// `batch`, which is then requested too even if `batch` is off, but only
+    /// from servers that offer metadata.
     pub metadata: bool,
 }
 
@@ -68,6 +70,8 @@ pub struct CapNegotiation {
     phase: Phase,
     /// Opt-in extensions still wanted, in request order.
     optional: Vec<&'static str>,
+    /// `batch` is wanted only as metadata's prerequisite.
+    batch_for_metadata_only: bool,
     sasl: Option<SaslHandshake>,
     offered: HashMap<String, Option<String>>,
     enabled: HashSet<&'static str>,
@@ -92,20 +96,20 @@ impl CapNegotiation {
             optional.push(SERVER_TIME);
         }
         // Batch references and the history types are ASCII, like server-time.
-        if options.batch {
+        if options.batch || options.metadata {
             optional.push(BATCH);
         }
-        // draft/metadata-2 MUST be used with batch. It is wanted only when
-        // batch is wanted too, and requested only once batch is enabled, so
-        // a server declining batch never ends up with metadata alone. Values
-        // are UTF-8 even on legacy encodings; the worker then accepts only
-        // ASCII avatar URLs (see `metadata`).
-        if options.metadata && options.batch {
+        // draft/metadata-2 MUST be used with batch. It is requested only once
+        // batch is enabled, so a server declining batch never ends up with
+        // metadata alone. Values are UTF-8 even on legacy encodings; the
+        // worker then accepts only ASCII avatar URLs (see `metadata`).
+        if options.metadata {
             optional.push(METADATA);
         }
         Self {
             phase: Phase::Inactive,
             optional,
+            batch_for_metadata_only: options.metadata && !options.batch,
             sasl: sasl.map(SaslHandshake::new),
             offered: HashMap::new(),
             enabled: HashSet::new(),
@@ -260,6 +264,9 @@ impl CapNegotiation {
                 && !self.enabled.contains(name)
                 && !self.pending.contains(&name)
                 && (name != METADATA || self.enabled.contains(BATCH))
+                && (name != BATCH
+                    || !self.batch_for_metadata_only
+                    || self.offered.contains_key(METADATA))
             {
                 step.send.push(request(name));
                 self.pending.push(name);
@@ -693,10 +700,23 @@ mod tests {
     }
 
     #[test]
-    fn metadata_waits_for_batch_and_is_never_requested_without_it() {
-        // Batch off: metadata alone is never requested, even when offered.
+    fn metadata_waits_for_batch_and_brings_it_along() {
+        // Batch off: it is still requested as metadata's prerequisite, but
+        // only from a server that offers metadata.
         let mut cap = CapNegotiation::new(avatars(false), None, true);
-        assert_eq!(String::from(&cap.start()), "CAP END");
+        assert_eq!(String::from(&cap.start()), "CAP LS 302");
+        let step = cap
+            .observe(&line(":s CAP * LS :batch draft/metadata-2"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
+        let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/metadata-2"]);
+        let mut cap = CapNegotiation::new(avatars(false), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :batch server-time"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"], "no metadata: batch stays off");
 
         // Both on and offered: batch first, metadata after its ACK.
         let mut cap = CapNegotiation::new(avatars(true), None, true);

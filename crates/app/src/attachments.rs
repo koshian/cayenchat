@@ -6,6 +6,10 @@
 //! selected when the image arrived. The flow never sends a message; the user
 //! reviews the draft and sends it. Uploading itself happens outside this
 //! module, which only tracks the steps.
+//!
+//! The target is a type parameter: a chat draft ([`Selection`], the
+//! default) or, for an avatar image, the server profile whose avatar URL
+//! draft receives the link (which is then published only on request).
 
 use cayenchat_model::attachment::Attachment;
 
@@ -58,9 +62,9 @@ pub enum UploadFailure {
 
 /// The result of an upload the caller finished.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Completion {
+pub enum Completion<T = Selection> {
     /// Insert `url` into the draft of `target`.
-    InsertLink { target: Selection, url: String },
+    InsertLink { target: T, url: String },
     /// Report the failure; the draft stays as it is.
     Failed {
         provider: String,
@@ -71,27 +75,27 @@ pub enum Completion {
 }
 
 #[derive(Clone, Debug)]
-pub enum Phase {
+pub enum Phase<T = Selection> {
     Idle,
     Confirming {
         attachment: Attachment,
-        target: Selection,
+        target: T,
         provider: String,
     },
     Uploading {
         id: u64,
-        target: Selection,
+        target: T,
         provider: String,
     },
 }
 
 #[derive(Debug)]
-pub struct AttachmentFlow {
-    phase: Phase,
+pub struct AttachmentFlow<T = Selection> {
+    phase: Phase<T>,
     next_id: u64,
 }
 
-impl Default for AttachmentFlow {
+impl<T> Default for AttachmentFlow<T> {
     fn default() -> Self {
         Self {
             phase: Phase::Idle,
@@ -100,8 +104,8 @@ impl Default for AttachmentFlow {
     }
 }
 
-impl AttachmentFlow {
-    pub fn phase(&self) -> &Phase {
+impl<T: Clone> AttachmentFlow<T> {
+    pub fn phase(&self) -> &Phase<T> {
         &self.phase
     }
 
@@ -117,7 +121,7 @@ impl AttachmentFlow {
     pub fn offer(
         &mut self,
         attachment: Attachment,
-        target: Selection,
+        target: T,
         readiness: UploaderReadiness,
     ) -> Offer {
         if !matches!(self.phase, Phase::Idle) {
@@ -182,7 +186,7 @@ impl AttachmentFlow {
         cancelled
     }
 
-    pub fn finish(&mut self, id: u64, result: Result<String, UploadFailure>) -> Completion {
+    pub fn finish(&mut self, id: u64, result: Result<String, UploadFailure>) -> Completion<T> {
         let Phase::Uploading {
             id: current,
             target,
@@ -196,7 +200,7 @@ impl AttachmentFlow {
         }
         let completion = match result {
             Ok(url) => Completion::InsertLink {
-                target: *target,
+                target: target.clone(),
                 url,
             },
             Err(failure) => Completion::Failed {
@@ -247,6 +251,24 @@ mod tests {
     }
 
     const TARGET: Selection = Selection::Channel(ConversationId(7));
+
+    #[test]
+    fn other_targets_such_as_an_avatar_draft_use_the_same_steps() {
+        let mut flow: AttachmentFlow<String> = AttachmentFlow::default();
+        assert!(matches!(
+            flow.offer(image(), "server-a".into(), ready()),
+            Offer::Confirm { .. }
+        ));
+        assert_eq!(flow.offer(image(), "server-b".into(), ready()), Offer::Busy);
+        let job = flow.confirm().unwrap();
+        assert_eq!(
+            flow.finish(job.id, Ok("https://i.ibb.co/x/a.png".into())),
+            Completion::InsertLink {
+                target: "server-a".to_owned(),
+                url: "https://i.ibb.co/x/a.png".into()
+            }
+        );
+    }
 
     #[test]
     fn missing_configuration_or_account_guides_the_user() {

@@ -13,6 +13,8 @@ pub const MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 pub enum AttachmentSource {
     Clipboard,
     Drop,
+    /// Picked in the system file dialog.
+    Chooser,
 }
 
 /// Image formats recognized from their leading bytes.

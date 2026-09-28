@@ -645,25 +645,33 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
 
 **Status:** Accepted (IRC metadata: experimental)
 
-2026-09-27. Two independent settings:
+2026-09-27; revised 2026-09-28 to a single switch.
 
 - **Appearance → Show user avatars** (`Appearance::user_avatars`, off by
   default, applies live, independent of image previews). It alone decides
   whether avatars are displayed and their images downloaded. Off keeps the
   compact layout exactly: no avatar column, no placeholder, no taller rows,
-  no lookups, fetches or decodes.
-- **IRCv3 → User avatars (experimental)** (`Ircv3Preferences::metadata`, per
-  server, off for new and existing settings, saved by autosave and applied
-  on the next connection like the other IRCv3 options). It decides whether
-  IRC avatar references are received through `draft/metadata-2`. It
-  requires the server's batch option; the tab shows the dependency and
-  nothing turns batch on implicitly. Receiving references downloads no
-  image.
+  no lookups, fetches or decodes. With it on, users without an avatar (or
+  whose image failed) get a client-drawn default avatar (2026-09-28),
+  ported from CayenChat's `defaultAvatar.js`: FNV-1a of the nickname's
+  first four UTF-16 code units (as shown, case included) picks one of 8
+  Okabe–Ito backgrounds, a figure color from the opposite light/dark set
+  (contrast ≥ 4:1), one of 4 calyx hats and 4 eyes, 512 looks in all. It is
+  an SVG rasterized by GPUI; it says nothing about identity (a later user of
+  the nickname looks the same) and works for any protocol.
+- **IRC avatar metadata** has no switch (the first version had a per-server
+  "IRCv3 → User avatars (experimental)" option; it confused users, who
+  turned it on and saw nothing while the display setting was off, and was
+  removed): every connection asks a server that offers `draft/metadata-2`
+  for it, and for `batch` as its prerequisite even when the server's batch
+  option is off (a server that does not offer metadata gets no batch
+  request from this). Receiving references downloads no image; the IRCv3
+  tab only holds our own avatar. Files that still carry the old
+  `ircv3.metadata` field load without it.
 
-Both fields were added without a settings version change (like batch),
-read as off when absent. Showing and receiving are separate so a future
-Matrix client can use the display layer without the IRCv3 option or an
-external upload provider.
+`user_avatars` was added without a settings version change (like batch),
+read as off when absent. The display layer is protocol-independent so a
+future Matrix client can use it without an external upload provider.
 
 Specification followed: ircv3-specifications `extensions/metadata.md` at
 its last change, commit ef205ce (2026-05-07; repository head 9ff58d1,
@@ -675,21 +683,118 @@ environment; the sources are the published repositories behind it.
 Implemented: capability negotiation (after batch, never with
 `metadata-notify`), `METADATA * SUB avatar`, the `METADATA` message,
 761/766 for the avatar key, 770–772 and `FAIL METADATA` as diagnostics,
-774 with bounded `SYNC` retries. Not implemented: GET, LIST, SET, CLEAR,
-UNSUB, SUBS, `before-connect`, MONITOR-based updates, 760 in WHOIS,
-channel avatars, other keys (`display-name`, `color`, …) and publishing
-our own avatar. Details are in `architecture.md` (IRCv3 capabilities and
+774 with bounded `SYNC` retries, `GET avatar` for ourselves once after
+subscribing and for users who join later (bounded, below), and
+`SET avatar` with or without a value to publish or remove our own avatar.
+Not implemented: LIST, CLEAR, UNSUB, SUBS, `before-connect`, MONITOR-based
+updates, 760 in WHOIS, channel avatars and other keys (`display-name`,
+`color`, …). Details are in `architecture.md` (IRCv3 capabilities and
 User avatars).
 
-Interoperability limits: checked only against local fixtures, not a real
-server. The draft does not say how a removal is announced; a `METADATA`
-line without a value (as in the earlier `metadata-notify`) or with an
-empty value removes the avatar. irc-proto 1.1.0 parses `METADATA` with the
-old metadata-3.2 client grammar and does not know 770–774, so arguments
-are read back positionally. Whether a server sends a joining user's
-metadata to existing members is unspecified; a user who joins later may
-show no avatar until they change it. Legacy encodings accept only ASCII
-avatar URLs.
+**Publishing our own avatar (2026-09-28).** The IRCv3 tab has, per server,
+an avatar URL field
+and explicit **Send to IRC Server** (IRCサーバに送信; "Publish" in code) /
+**Remove from IRC Server** (IRCサーバから削除) buttons. The section has no
+explanatory text (by the user's choice, after trying a version with an
+exposure warning and hints); the warning that sending shows the URL to
+everyone on the network is the Send button's tooltip. Send appears only
+when connected with the capability and the typed URL differs from what the
+server confirmed; Remove, at the right end in the warning color and asking
+for confirmation, only when the server holds an avatar; a request in progress or a
+failure is the only status line. The URL is a draft saved
+with the server profile (`ServerProfile::avatar_url`, added without a
+version change, empty when absent); autosave never publishes it, and it is
+never republished on reconnect. Publish sends `METADATA * SET avatar
+:<url>` on the server's current connection only when it is registered with
+the capability negotiated; Remove sends `METADATA * SET avatar` (never
+`CLEAR`, so no other key is touched). One request is outstanding per
+connection; success is shown only from the server's `761`/`766` answer,
+and `FAIL METADATA` (including `RATE_LIMITED` with its delay), a 20 s
+timeout, a disconnect or losing the capability end it as a failure.
+Requests carry session-wide identifiers so answers to earlier or abandoned
+requests never confirm a later one. What the server holds is tracked
+separately from the draft (`app::own_avatar`), from a single `METADATA *
+GET avatar` after subscribing and from changes reported for our nickname;
+changes made elsewhere are shown, not overwritten. Before sending, the URL
+must pass the avatar fetch policy without being fetched
+(`media::policy::publishable_avatar_url`: http/https, default port, public
+host, no user name or password, no token-like query or fragment
+parameter), contain no spaces or controls, be at most 400 bytes (one IRC
+line) and be ASCII on legacy encodings. `{size}` is kept as typed. Turning
+**Show user avatars** off changes nothing on the server.
+
+The avatar value is a URL because the registry defines it so and metadata
+carries only short text (Ergo: 350 bytes of key and value); IRC has no
+upload of its own. When an image host is configured on the Image Upload
+tab, an image can also be dropped on the avatar section, pasted into the
+URL field or picked with **Choose Image…**. It first opens in a square
+selection editor (`media::avatar_edit`, decoded off the UI thread with the
+preview limits, EXIF orientation applied, kept at most 2048 px a side while
+open): the selected square has a handle at each corner to resize it and
+can be dragged to move it; when a drop leaves it under half of the
+image's shorter side, the view shows it centered in twice its size so it
+can be adjusted precisely (otherwise the whole image), **Whole Image**
+starts over, and a small preview shows the result; the upload button names the
+host and is the confirmation. Only the selected square is uploaded, shrunk to at most
+256×256 (JPEG quality 88, or PNG when the image has transparency), so a
+full-resolution photo never leaves the computer. PNG, JPEG, GIF, WebP,
+BMP and TIFF can be edited; HEIC/AVIF are refused with a hint to export
+JPEG. The upload goes through the same `ExternalUploader` as chat images
+(`app::attachments::AttachmentFlow`, whose target is generic: a chat draft
+or a server profile), and the returned URL replaces that server's avatar
+draft if it passes the same checks and is then sent to the server at once
+(users expect an uploaded avatar to be in use); if the server is not
+connected the draft is kept, a line says it was not sent, and Send
+remains available. Because an upload is sent at once, "Choose Image…",
+dropping and pasting an image are offered only while the server can
+receive an avatar (connected, capability negotiated); on a server without
+avatar metadata, or while disconnected, only the URL field is shown. When
+the current connection asked for avatar metadata (option and batch on when
+it started) and registration completed without it being enabled, the
+section says that the IRC server does not support avatars; this is an
+inference from capability negotiation, not a query, and it is not shown
+when the options were only turned on after connecting. A typed URL
+is still sent only with the button. Without an image host the URL is
+typed. A future
+standard upload service (for example if soju's `soju.im/filehost` becomes
+an IRCv3 specification) would be another source of that URL; the
+settings section would stay as it is.
+
+**Users who join later (2026-09-28).** The draft sends a channel's
+metadata to the user who joins, not the joiner's metadata to the members
+already there, and Ergo 2.19 follows it, so a later joiner showed no
+avatar. A live JOIN of a user who shares no other channel with us and has
+no known avatar schedules one `METADATA <nick> GET avatar` after 2 s,
+unless the server announces the value meanwhile. Lookups are deduplicated
+per user, at most 64 pending (further joiners are skipped with one
+diagnostic), at most 8 unanswered, at most two per second, given up after
+30 s, retried once after `RATE_LIMITED` (which also pauses all lookups),
+cancelled when the user leaves (an answer already on its way is dropped
+unless the name joined again first), moved on NICK, and never sent for
+replayed JOINs, NAMES or redraws. Everything lives in the connection's
+worker, so a reconnect, a removed server or an old connection generation
+cannot receive answers. No periodic polling exists.
+
+Interoperability: checked against Ergo v2.19.1 (commit 63c743a) built
+from source in a scratch directory with its default configuration on
+loopback (`scripts/ergo-metadata-interop.sh`,
+`crates/irc-core/tests/metadata_interop.rs`); results and observed wire
+behavior are in `development.md`. Ergo implements `draft/metadata-2` by
+enabling its `draft/metadata-3` code: it announces other users' changes
+as `761`/`766` numerics addressed to `*` instead of `METADATA` messages,
+names failures `INVALID_KEY`/`INVALID_VALUE`/`FORBIDDEN` (the draft:
+`KEY_INVALID`/`VALUE_INVALID`), answers a removal with `766` even when
+the key was not set, sends `774 * *ALL 0` after SUB, limits key plus
+value to 350 bytes without advertising `max-value-bytes`, allows 10
+changes per 2 minutes, and keeps no metadata for a user without an
+account after they disconnect. CayenChat accepts both spellings and treats
+a numeric whose first parameter is `*` as a notification, not an answer;
+`*ALL` is ignored (not in the draft). The draft does not say how a removal
+is announced; a `METADATA` line without a value (as in the earlier
+`metadata-notify`) or with an empty value removes the avatar. irc-proto
+1.1.0 parses `METADATA` with the old metadata-3.2 client grammar and does
+not know 770–774, so arguments are read back positionally. Legacy
+encodings accept (and publish) only ASCII avatar URLs.
 
 Identity policy (details in `architecture.md`): avatars are per network and
 per occupancy of a nickname, delimited by message sequence numbers, so a

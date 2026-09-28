@@ -81,7 +81,10 @@ Do not build a second mechanism for any of these; extend them instead.
 | Preview decoding | one at a time; ≤ 8192 px a side, ≤ 16.7 MP, decoder allocation ≤ 48 MiB | process | Checked from the header before decoding; the full image is freed once the thumbnail exists. |
 | Preview retries | transient failures (network, 408/429/5xx) once more after 5 min; others never | per record | While the record is retained; redraws never retry. |
 | Avatar metadata (irc-core) | 2,048 users with an avatar; values ≤ 2,048 bytes; 16 deferred channel syncs, 3 per channel | per connection | Only the `avatar` key is kept; later users get none. Reset on reconnect or lost capability. |
+| Avatar lookups for later joiners (irc-core) | 64 pending, 8 unanswered, 2 sent per second after a 2 s pause, 2 attempts, 30 s timeout | per connection | Only live JOINs of users sharing no other channel; never NAMES, redraws or history. Further joiners are skipped until the table drains. |
+| Own avatar requests (irc-core, app) | 1 outstanding, 20 s timeout, URL ≤ 400 bytes | per connection | Only on Send to / Remove from IRC Server, or after an avatar image upload. |
 | Avatar directory (app) | 2,048 current + 512 retired entries | per network | Worst case about 6 MiB per network at the maximum URL length; typical URLs are ~100 bytes. Removed with the server. |
+| Default avatars (ui) | 512 looks, one 32×32 SVG image each | application | Kept per look while avatars are shown (about 4 KiB of pixels each in GPUI's image cache and atlas); cleared when the setting is turned off. |
 | Avatar loads | 2 in flight; with previews at most 3 media fetches in flight together | application | Decoding stays one at a time in the process (shared with previews). |
 | Queued avatar requests | 32, newest first | application | Only from drawn rows. |
 | Avatar records | 256 (ready, failed, queued, loading) | application | Least recently used ready or failed first. |
@@ -501,6 +504,29 @@ avatars, the log staying put while scrolled up during a burst and
 following again at the bottom, and the column disappearing at once when
 the setting was turned off. The process-level scenarios (`run_baseline.py`)
 were not run.
+
+## Own avatar and later-joiner lookups (2026-09-28)
+
+Focused request-count checks, not the baseline matrix (no measured UI hot
+path changed: `ChatWindow::handle_events` only gains one scan of each
+batch for own-avatar events, and the settings window is redrawn only for
+batches that contain them). `model::Message` is unchanged: no avatar URL
+or image byte is stored in messages, and our own avatar state is one small
+struct per server session.
+
+- Unit tests (`irc-core::metadata`): 200 JOINs in one burst keep 64
+  lookups and one diagnostic; over 4 s at most 8 requests are in flight
+  and at most one leaves per 500 ms; an unanswered lookup frees its slot
+  after 30 s and is not retried; everything drains with at most 64
+  requests in total.
+- Against Ergo v2.19.1 on loopback (macOS, debug build,
+  `metadata_interop::join_bursts_and_repeated_updates_stay_bounded`): 24
+  users joining at once caused exactly 24 `GET` requests, the last
+  answered 13.6 s after the burst (2 s pause + 23 × 0.5 s); 8 consecutive
+  avatar changes by one member and a NAMES refresh caused no request.
+  Consequence: in a large join burst the last joiners' avatars can take
+  tens of seconds to appear (64 × 0.5 s ≈ 32 s), and joiners beyond 64
+  pending get none until they change their avatar or rejoin.
 
 ## Resource limit candidates (proposal)
 

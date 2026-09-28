@@ -202,6 +202,39 @@ pub fn button(id: impl Into<ElementId>, primary: bool, cx: &App) -> Stateful<Div
     button
 }
 
+/// A tooltip in the platform's tooltip style (small text, tooltip fill,
+/// thin border, rounded corners, shadow), or a neutral fallback.
+pub fn tooltip(text: SharedString, cx: &App) -> Div {
+    let fallback = crate::theme::current(cx);
+    let tip = div()
+        .max_w(px(280.))
+        .px(px(6.))
+        .py(px(3.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(fallback.border)
+        .bg(fallback.surface)
+        .text_color(fallback.text)
+        .text_size(px(11.))
+        .line_height(relative(1.3))
+        .shadow_md();
+    let Some(native) = current(cx) else {
+        return tip.child(text);
+    };
+    let t = &native.tooltip;
+    tip.bg(color(t.background_color))
+        .text_color(color(t.font.color))
+        .font_family(t.font.family.clone())
+        .text_size(px(t.font.size))
+        .max_w(px(t.max_width))
+        .rounded(px(t.border.corner_radius))
+        .border(px(t.border.line_width))
+        .border_color(color(t.border.color))
+        .px(px(t.border.padding_horizontal))
+        .py(px(t.border.padding_vertical))
+        .child(text)
+}
+
 pub fn checkbox(checked: bool, enabled: bool, cx: &App) -> Div {
     let fallback = crate::theme::current(cx);
     let mut indicator = div()

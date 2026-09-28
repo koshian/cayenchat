@@ -526,22 +526,27 @@ same tracker, with the same bounds, and its `BATCH` lines appear in the
 server log as before. That compatibility handling is not a claim of batch
 support.
 
-metadata (experimental, opt-in per server, D023): `draft/metadata-2` is
-wanted only when batch is also enabled for the server, because the draft
-requires batch; the IRCv3 tab shows that dependency and never turns batch
-on by itself. It is requested with its own `CAP REQ` only after `batch` is
+metadata (experimental, D023): `draft/metadata-2` is wanted on every
+connection (`Ircv3Options::metadata` is always set by the UI; there is no
+option). The draft requires batch, so `batch` is requested too, even when
+the server's batch option is off, but only from a server that offers
+`draft/metadata-2`. Metadata is requested with its own `CAP REQ` only after `batch` is
 acknowledged (a server declining batch therefore never gets a metadata
 request) and never together with the legacy `metadata-notify`. If `batch`
 goes away (DEL or `ACK -batch`) metadata is dropped at once and
 `CAP REQ -draft/metadata-2` is sent. `irc-core::metadata` implements only
-the receive side avatars need:
+the subset avatars need:
 
 - Once registered (001) or once the capability arrives later, it sends
-  `METADATA * SUB avatar` a single time; the configured JOINs follow at
-  end-of-MOTD, so channel bursts include avatars.
+  `METADATA * SUB avatar` and `METADATA * GET avatar` (our own current
+  value) a single time and reports `Event::MetadataReady`; the configured
+  JOINs follow at end-of-MOTD, so channel bursts include avatars.
 - `METADATA <target> avatar <visibility> [<value>]`, `761 RPL_KEYVALUE` and
   `766 RPL_KEYNOTSET` for users produce `Event::UserAvatar`. Other keys,
-  channel targets and `*` are ignored; no metadata map is stored. A value
+  channel targets and `*` are ignored; no metadata map is stored. A
+  numeric whose first parameter is `*` is a notification (Ergo announces
+  changes that way); one addressed to us answers our request. Values for
+  our own nickname (or `*` in an answer) also produce `Event::OwnAvatar`. A value
   that is empty, missing, longer than 2,048 bytes, or contains controls,
   whitespace or U+FFFD counts as no avatar. Metadata messages inside
   `metadata` batches are handled like any other; the batch type is not a
@@ -555,6 +560,30 @@ the receive side avatars need:
   subset produce no server-log line, chat row, unread mark, notification or
   preview; they stay in the transcript. With the capability off, a
   `METADATA` line from a server is shown in the server log as before.
+- Our own avatar: `Connection::set_own_avatar(request, Some(url) | None)`
+  queues `METADATA * SET avatar :<url>` or `METADATA * SET avatar`
+  (removal of that key only). The worker refuses it unless registered with
+  the capability (`OwnAvatarFailed { Unavailable }`) and keeps one request
+  outstanding (`Busy`). The answer is `Event::OwnAvatar { url, request:
+  Some(id) }` (the server's value, which may differ) or `OwnAvatarFailed`
+  with the `FAIL METADATA` code and description (`KEY_NOT_SET` on a removal
+  counts as removed), `RateLimited { retry_after }`, `NoReply` after 20 s
+  or `CapabilityLost`. Replies are matched by position (one request at a
+  time): a `761`/`766` for us addressed to us, or a `FAIL` naming us or the
+  key. The value is checked again here (no controls or spaces, at most 400
+  bytes, ASCII on legacy encodings).
+- Later joiners: a live JOIN (not in a history batch) of someone who
+  shares no other channel with us (judged from the rosters published
+  before it) and has no known avatar is looked up with `METADATA <nick>
+  GET avatar` after 2 s unless the server announces it first. At most 64
+  lookups are pending, 8 unanswered and two sent per second; an unanswered
+  one is abandoned after 30 s and its late answer dropped; `RATE_LIMITED`
+  retries once after the given delay and pauses all lookups; `INVALID_TARGET`
+  or a permission failure ends it. PART, KICK or QUIT from the last shared
+  channel cancels it (an answer in flight is dropped unless the user joined
+  again first, since the server's answer then describes the new
+  occupant); NICK moves it. The timer branch of the select loop exists
+  only while a sync, a request or a lookup is pending.
 - Avatars are remembered per connection for at most 2,048 users (later ones
   get none). NICK moves an avatar (`Event::AvatarMoved`); QUIT, and PART or
   KICK from the last channel shared with us (judged from the rosters
@@ -566,7 +595,49 @@ On legacy encodings the whole line is decoded with the connection's
 charset, while metadata values are UTF-8. Avatar URLs are the only values
 used, so the fallback is narrow: only ASCII values are accepted there (any
 non-ASCII byte decodes differently), and non-ASCII URLs are dropped rather
-than guessed. The IRCv3 tab says so.
+than guessed; publishing likewise accepts only ASCII URLs there. The IRCv3
+tab says so.
+
+Publishing from the UI: the IRCv3 tab shows, for the selected server, the
+draft URL field (`ServerProfile::avatar_url`,
+saved by autosave like any field and never sent by it), "Choose Image…"
+when an image host is set up, "Send to IRC Server" (with the exposure warning as its tooltip) only when
+connected and the draft differs from the server-confirmed URL, "Remove
+from IRC Server" (right-aligned, warning color, confirmation dialog) only
+when the server holds one, and only an in-progress or failed
+outcome; no explanatory text, except one line that the IRC server does not
+support avatars when the current connection asked for them
+(`ServerSession::metadata_requested`) and registered without
+`MetadataReady`. `ui::ircv3_settings` checks the
+draft (`media::policy::publishable_avatar_url`, the length and encoding
+rules) and asks `ChatWindow::request_own_avatar`, which starts a request in
+the server's `ServerSession::own_avatar` (`app::own_avatar::OwnAvatar`) and
+queues it. That state is protocol-free: `Confirmed` (unknown, not set, a
+URL), at most one pending request with a session-wide identifier, and the
+last `Outcome`. With an image host configured, `ui::ircv3_settings` also
+accepts an image dropped on the section, pasted into the URL field (the
+field propagates image-only pastes like chat drafts) or chosen in the
+system file dialog, opens it in `ui::avatar_editor` (square selection over
+a 320-logical-pixel view: corner handles resize the square (the opposite
+corner stays), dragging inside moves it, the area outside is shaded, and
+mouse moves are followed window-wide during a drag; after a drop leaving
+the square under half of the image's shorter side the view becomes that
+square centered in twice its size, clamped to the image (shown at once
+from the whole image and sharpened when its own preview is made off the
+UI thread), otherwise the whole image; "Whole Image" resets, and a 64 px
+result preview follows; `media::avatar_edit` decodes, crops and encodes at most
+256×256 off the UI thread), and runs the encoded square through the chat
+upload steps shared in
+`ui::image_upload` (`configured_uploader`, `acceptable_attachment`,
+`upload_in_background`) with its own `AttachmentFlow<String>` targeting
+the server profile ID; the confirmed URL goes into that profile's draft
+(`place_uploaded_avatar`) and is sent at once through
+`ChatWindow::request_own_avatar` when that server is connected. The own-avatar
+state only changes on `MetadataReady`, `OwnAvatar`,
+`OwnAvatarFailed`, `AvatarsReset` and the end of a connection (disconnect,
+reconnect, removal), which fails a pending request and forgets what the
+server held. The settings window reads it through its owner handle and is
+redrawn only for batches containing those events.
 
 Preferences live in `Ircv3Preferences`, one field per feature with its own
 serde default; the settings tab renders one `ircv3_settings::Ircv3Feature`
@@ -815,21 +886,27 @@ capability is lost. Messages that arrived during the occupancy show it,
 also after it ended (one retired occupancy per name is kept); a later user
 of the same nickname starts a new occupancy, so historical lines of an
 earlier occupant never show the new one's image, and lines received before
-an avatar was known (including replayed history) show none. Registered and
+an avatar was known (including replayed history, and a later joiner's
+lines before the lookup answer) show none. Registered and
 Disconnected events end every occupancy of their network; resetting or
 removing a server forgets its directory. The member list shows only
 current occupancies. Bounds: 2,048 current and 512 retired entries per
 network, the oldest-ended retired entries dropped first.
 
-Display: with the setting on, main-log channel message rows (not activity
+Display: with the setting on (the only avatar switch, for every server),
+main-log channel message rows (not activity
 lines, the server log or the combined subwindow) and member rows get a
 fixed 16×16 slot (below the 20 px line height, so rows keep their height)
 between the time and the nickname, or before the member name. Rows ask for
 their avatar while they are drawn, so only visible rows plus the log's
 400 px overdraw cause requests; a large roster fetches nothing until its
 rows are on screen, and a URL shared by several users is fetched once. A
-missing, loading or failed avatar leaves the slot blank. With the setting
-off there is no slot, no lookup, no fetch and no decode; turning it off
+loading avatar leaves the slot blank; a missing or failed one shows the
+nickname's default avatar (`ui::default_avatar`: the `defaultAvatar.js`
+port, an SVG of 32 px rasterized by GPUI's `img`, kept per look in
+`ui::avatars`, at most 512, cleared when the setting is turned off). With
+the setting off there is no slot, no lookup, no fetch, no decode and no
+default avatar; turning it off
 cancels loads, drops late results (cache generation), releases the
 records and drops the HTTP agent. Released images are removed from the GPU
 atlas only after both cached panes that draw avatars (main log and member

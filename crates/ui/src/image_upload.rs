@@ -1,11 +1,14 @@
-//! Chat-window side of IRC image sharing: clipboard images and dropped files
+//! IRC image sharing through the configured external host. Clipboard
+//! images, dropped files and (for avatars) files picked in the system dialog
 //! enter one attachment flow (`cayenchat_app::attachments`), which asks for
-//! confirmation, uploads through the configured external host and inserts
-//! the link into the draft. Nothing here sends an IRC message.
+//! confirmation, uploads and inserts the link: into the chat draft in the
+//! chat window, or into a server's avatar URL draft in the settings window
+//! (`ircv3_settings`). Nothing here sends an IRC message or publishes an
+//! avatar.
 
 use std::{path::PathBuf, sync::Arc};
 
-use cayenchat_app::attachments::{Completion, Offer, UploadFailure, UploaderReadiness};
+use cayenchat_app::attachments::{Completion, Offer, UploadFailure, UploadJob, UploaderReadiness};
 use cayenchat_model::attachment::{
     Attachment, AttachmentError, AttachmentSource, MAX_ATTACHMENT_BYTES, format_size,
 };
@@ -13,38 +16,138 @@ use cayenchat_storage::SecretKey;
 use cayenchat_upload::{ExternalUploader, UploadError};
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, SettingsTab, input, secrets};
+use crate::{ChatWindow, SettingsTab, input, localization::Localizer, secrets};
+
+/// The uploader for `provider` (a provider ID from settings) and what the
+/// attachment flow should know about it; `replacement` (tests) wins.
+/// Credential failures become user-visible text.
+pub(crate) fn configured_uploader(
+    provider: Option<&str>,
+    replacement: Option<&Arc<dyn ExternalUploader>>,
+    i18n: &Localizer,
+    cx: &App,
+) -> Result<(UploaderReadiness, Option<Arc<dyn ExternalUploader>>), String> {
+    if let Some(uploader) = replacement {
+        let provider = uploader.provider().name.to_owned();
+        return Ok((
+            UploaderReadiness::Ready { provider },
+            Some(uploader.clone()),
+        ));
+    }
+    let Some(info) = provider.and_then(cayenchat_upload::provider) else {
+        return Ok((UploaderReadiness::NotConfigured, None));
+    };
+    let provider = info.name.to_owned();
+    match secrets::store(cx).get(&SecretKey::uploader_token(info.id)) {
+        Ok(Some(token)) => Ok((
+            UploaderReadiness::Ready { provider },
+            cayenchat_upload::connect(info.id, token),
+        )),
+        Ok(None) => Ok((UploaderReadiness::NeedsAccount { provider }, None)),
+        Err(error) => Err(secrets::error_text(i18n, &error)),
+    }
+}
+
+/// An image from a paste or a single file, or the text explaining why not.
+pub(crate) fn clipboard_attachment(cx: &App) -> Option<Result<Attachment, AttachmentError>> {
+    let item = cx.read_from_clipboard()?;
+    if item.text().is_some() {
+        return None;
+    }
+    let image = input::clipboard_image(&item)?;
+    Some(Attachment::image(
+        None,
+        image.bytes().to_vec(),
+        AttachmentSource::Clipboard,
+    ))
+}
+
+/// Reads the one file in `paths` as an image attachment.
+pub(crate) fn file_attachment(
+    paths: &[PathBuf],
+    source: AttachmentSource,
+    i18n: &Localizer,
+) -> Result<Result<Attachment, AttachmentError>, String> {
+    let [path] = paths else {
+        // No path means a file promise (Photos, Mail) was not fulfilled.
+        return Err(if paths.is_empty() {
+            i18n.format("upload_read_failed", &[("error", "no file was received")])
+        } else {
+            i18n.text("upload_one_file")
+        });
+    };
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    read_limited(path)
+        .map(|bytes| Attachment::image(name.as_deref(), bytes, source))
+        .map_err(|error| i18n.format("upload_read_failed", &[("error", &error)]))
+}
+
+/// The attachment if it is an image the uploader accepts, or why not.
+pub(crate) fn acceptable_attachment(
+    attachment: Result<Attachment, AttachmentError>,
+    uploader: Option<&Arc<dyn ExternalUploader>>,
+    i18n: &Localizer,
+) -> Result<Attachment, String> {
+    let attachment = attachment.map_err(|error| match error {
+        AttachmentError::NotAnImage => i18n.text("upload_not_image"),
+        AttachmentError::TooLarge { limit } => {
+            i18n.format("upload_failed_too_large", &[("limit", &format_size(limit))])
+        }
+    })?;
+    if let Some(uploader) = uploader
+        && attachment.bytes.len() > uploader.provider().max_bytes
+    {
+        let limit = format_size(uploader.provider().max_bytes);
+        return Err(i18n.format("upload_failed_too_large", &[("limit", &limit)]));
+    }
+    Ok(attachment)
+}
+
+/// Runs a confirmed upload off the UI thread.
+pub(crate) fn upload_in_background(
+    uploader: Arc<dyn ExternalUploader>,
+    job: UploadJob,
+    cx: &App,
+) -> Task<Result<String, UploadFailure>> {
+    cx.background_spawn(async move {
+        uploader
+            .upload(&job.attachment)
+            .map(|image| image.url)
+            .map_err(|error| match error {
+                UploadError::Authentication => UploadFailure::Authentication,
+                UploadError::Rejected(reason) => UploadFailure::Rejected(reason),
+                UploadError::Network(reason) => UploadFailure::Network(reason),
+            })
+    })
+}
+
+/// Text for a failed upload other than a rejected credential.
+pub(crate) fn upload_failure_text(
+    provider: &str,
+    failure: UploadFailure,
+    i18n: &Localizer,
+) -> String {
+    let (key, error) = match failure {
+        UploadFailure::Network(error) => ("upload_failed_network", error),
+        UploadFailure::Rejected(error) => ("upload_failed_rejected", error),
+        UploadFailure::Authentication => ("upload_reconnect_title", String::new()),
+    };
+    i18n.format(key, &[("provider", provider), ("error", &error)])
+}
 
 impl ChatWindow {
-    /// The uploader to use now and what the attachment flow should know
-    /// about it. Credential failures become user-visible text.
     fn uploader(
         &self,
         cx: &App,
     ) -> Result<(UploaderReadiness, Option<Arc<dyn ExternalUploader>>), String> {
-        if let Some(uploader) = &self.uploader_override {
-            let provider = uploader.provider().name.to_owned();
-            return Ok((
-                UploaderReadiness::Ready { provider },
-                Some(uploader.clone()),
-            ));
-        }
-        let Some(info) = self
-            .image_provider
-            .as_deref()
-            .and_then(cayenchat_upload::provider)
-        else {
-            return Ok((UploaderReadiness::NotConfigured, None));
-        };
-        let provider = info.name.to_owned();
-        match secrets::store(cx).get(&SecretKey::uploader_token(info.id)) {
-            Ok(Some(token)) => Ok((
-                UploaderReadiness::Ready { provider },
-                cayenchat_upload::connect(info.id, token),
-            )),
-            Ok(None) => Ok((UploaderReadiness::NeedsAccount { provider }, None)),
-            Err(error) => Err(secrets::error_text(&self.i18n, &error)),
-        }
+        configured_uploader(
+            self.image_provider.as_deref(),
+            self.uploader_override.as_ref(),
+            &self.i18n,
+            cx,
+        )
     }
 
     /// Paste in a draft whose clipboard has an image and no text.
@@ -54,18 +157,9 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
-        if item.text().is_some() {
-            return;
+        if let Some(attachment) = clipboard_attachment(cx) {
+            self.accept_attachment(attachment, window, cx);
         }
-        let Some(image) = input::clipboard_image(&item) else {
-            return;
-        };
-        let attachment =
-            Attachment::image(None, image.bytes().to_vec(), AttachmentSource::Clipboard);
-        self.accept_attachment(attachment, window, cx);
     }
 
     /// Files dropped on the draft row.
@@ -75,26 +169,10 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let [path] = paths else {
-            // No path means a file promise (Photos, Mail) was not fulfilled.
-            self.feedback = Some(if paths.is_empty() {
-                self.i18n
-                    .format("upload_read_failed", &[("error", "no file was received")])
-            } else {
-                self.i18n.text("upload_one_file")
-            });
-            cx.notify();
-            return;
-        };
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        let result = read_limited(path)
-            .map(|bytes| Attachment::image(name.as_deref(), bytes, AttachmentSource::Drop));
-        match result {
+        match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {
             Ok(attachment) => self.accept_attachment(attachment, window, cx),
             Err(error) => {
-                self.feedback = Some(self.i18n.format("upload_read_failed", &[("error", &error)]));
+                self.feedback = Some(error);
                 cx.notify();
             }
         }
@@ -106,41 +184,19 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let attachment = match attachment {
-            Ok(attachment) => attachment,
-            Err(AttachmentError::NotAnImage) => {
-                self.feedback = Some(self.i18n.text("upload_not_image"));
-                cx.notify();
-                return;
-            }
-            Err(AttachmentError::TooLarge { limit }) => {
-                self.feedback = Some(
-                    self.i18n
-                        .format("upload_failed_too_large", &[("limit", &format_size(limit))]),
-                );
-                cx.notify();
-                return;
-            }
-        };
-        let (readiness, uploader) = match self.uploader(cx) {
-            Ok(found) => found,
+        let checked = acceptable_attachment(attachment, None, &self.i18n).and_then(|attachment| {
+            let (readiness, uploader) = self.uploader(cx)?;
+            let attachment = acceptable_attachment(Ok(attachment), uploader.as_ref(), &self.i18n)?;
+            Ok((attachment, readiness, uploader))
+        });
+        let (attachment, readiness, uploader) = match checked {
+            Ok(checked) => checked,
             Err(error) => {
                 self.feedback = Some(error);
                 cx.notify();
                 return;
             }
         };
-        if let Some(uploader) = &uploader
-            && attachment.bytes.len() > uploader.provider().max_bytes
-        {
-            let limit = format_size(uploader.provider().max_bytes);
-            self.feedback = Some(
-                self.i18n
-                    .format("upload_failed_too_large", &[("limit", &limit)]),
-            );
-            cx.notify();
-            return;
-        }
         let target = self.state.selection();
         match self.attachments.offer(attachment, target, readiness) {
             Offer::Confirm {
@@ -239,17 +295,8 @@ impl ChatWindow {
         };
         self.feedback = None;
         cx.notify();
-        let upload = cx.background_spawn(async move {
-            uploader
-                .upload(&job.attachment)
-                .map(|image| image.url)
-                .map_err(|error| match error {
-                    UploadError::Authentication => UploadFailure::Authentication,
-                    UploadError::Rejected(reason) => UploadFailure::Rejected(reason),
-                    UploadError::Network(reason) => UploadFailure::Network(reason),
-                })
-        });
         let id = job.id;
+        let upload = upload_in_background(uploader, job, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = upload.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -291,15 +338,7 @@ impl ChatWindow {
                 );
             }
             Completion::Failed { provider, failure } => {
-                let (key, error) = match failure {
-                    UploadFailure::Network(error) => ("upload_failed_network", error),
-                    UploadFailure::Rejected(error) => ("upload_failed_rejected", error),
-                    UploadFailure::Authentication => unreachable!(),
-                };
-                self.feedback = Some(
-                    self.i18n
-                        .format(key, &[("provider", &provider), ("error", &error)]),
-                );
+                self.feedback = Some(upload_failure_text(&provider, failure, &self.i18n));
             }
             Completion::Ignored => {}
         }

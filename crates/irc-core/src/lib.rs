@@ -7,6 +7,7 @@ mod tags;
 pub mod text;
 
 pub use cap::Ircv3Options;
+pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 
 use std::{
     collections::HashMap,
@@ -338,8 +339,27 @@ pub enum Event {
         to: String,
     },
     /// Metadata stopped (the capability or `batch` was withdrawn): every
-    /// avatar of this connection is unknown from now on.
+    /// avatar of this connection is unknown from now on, and our own avatar
+    /// can no longer be published on it.
     AvatarsReset,
+    /// Avatar metadata is usable on this connection: registered, with the
+    /// capability negotiated and the subscription sent. Our own avatar can
+    /// be published from now until `AvatarsReset` or the connection ends.
+    MetadataReady,
+    /// Our own avatar as the server reports it: the answer to our query
+    /// after subscribing, the confirmation of our request `request`, or a
+    /// change made elsewhere (another client of the same user, services).
+    /// The value may differ from what we asked for.
+    OwnAvatar {
+        url: Option<String>,
+        request: Option<u64>,
+    },
+    /// Our request `request` to publish or remove our avatar did not
+    /// succeed.
+    OwnAvatarFailed {
+        request: u64,
+        failure: AvatarRequestFailure,
+    },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
     /// `Disconnected`, but reconnecting with the same settings would only be
@@ -518,6 +538,12 @@ enum Outgoing {
         notice: bool,
     },
     Raw(IrcMessage),
+    /// Publish (`Some`) or remove (`None`) our own avatar; `request`
+    /// identifies the outcome events.
+    OwnAvatar {
+        request: u64,
+        url: Option<String>,
+    },
     Quit,
 }
 
@@ -536,6 +562,11 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
             }
         }
         Outgoing::Raw(message) => message.clone(),
+        Outgoing::OwnAvatar { url, .. } => {
+            let mut args = vec!["*".to_owned(), "SET".into(), metadata::AVATAR_KEY.into()];
+            args.extend(url.clone());
+            IrcMessage::from(IrcCommand::Raw("METADATA".into(), args))
+        }
         Outgoing::Quit => return Ok(()),
     };
     validate_wire(&message.to_string(), encoding)
@@ -889,6 +920,26 @@ impl Connection {
             .map_err(|error| format!("Could not queue nickname change: {error}"))
     }
 
+    /// Publishes our avatar URL (`Some`) or removes our avatar (`None`) on
+    /// this connection, through experimental IRCv3 metadata. Only the
+    /// `avatar` key is touched. The outcome arrives as
+    /// [`Event::OwnAvatar`] with this `request`, or
+    /// [`Event::OwnAvatarFailed`]; queuing it says nothing about success.
+    /// The URL must already satisfy the caller's URL policy.
+    pub fn set_own_avatar(&self, request: u64, url: Option<&str>) -> Result<(), String> {
+        if let Some(url) = url {
+            publishable_avatar(url, self.encoding.eq_ignore_ascii_case("UTF-8"))?;
+        }
+        let outgoing = Outgoing::OwnAvatar {
+            request,
+            url: url.map(str::to_owned),
+        };
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue avatar request: {error}"))
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
@@ -1009,14 +1060,6 @@ async fn run_cancellable(
             format!(
                 "Avatar metadata with the {wire_encoding} encoding: only ASCII avatar URLs are used, because metadata values are UTF-8."
             ),
-        )
-        .await;
-    }
-    if config.ircv3.metadata && !config.ircv3.batch {
-        diagnostic(
-            &events,
-            started,
-            "Avatar metadata needs message batches (batch), which are off for this server; it is not requested.",
         )
         .await;
     }
@@ -1198,6 +1241,30 @@ async fn run_cancellable(
                             }
                         }
                     }
+                    Outgoing::OwnAvatar { request, url } => {
+                        let queued = metadata.request_own(
+                            request,
+                            url.as_deref(),
+                            registered && metadata_enabled,
+                            tokio::time::Instant::now(),
+                        );
+                        match queued {
+                            Ok(command) => {
+                                let message = IrcMessage::from(command);
+                                let line = redacted_wire_line(&message);
+                                if let Err(error) = client.send(message) {
+                                    let _ = events.send(Event::Disconnected(error_chain(&error))).await;
+                                    return;
+                                }
+                                wire(&events, started, WireDirection::Sent, line).await;
+                            }
+                            Err(failure) => {
+                                if events.send(Event::OwnAvatarFailed { request, failure }).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Outgoing::Quit => {
                         let quit = IrcMessage::from(IrcCommand::QUIT(Some("Leaving CayenChat".into())));
                         if client.send(quit.clone()).is_ok() {
@@ -1270,9 +1337,10 @@ async fn run_cancellable(
                         // Metadata stopped (its own DEL, or batch went away):
                         // every avatar of this connection becomes unknown.
                         if metadata_enabled && !negotiation.enabled(cap::METADATA) {
-                            metadata.reset();
-                            if events.send(Event::AvatarsReset).await.is_err() {
-                                return;
+                            for event in metadata.reset().into_iter().chain([Event::AvatarsReset]) {
+                                if events.send(event).await.is_err() {
+                                    return;
+                                }
                             }
                         }
                         metadata_enabled = negotiation.enabled(cap::METADATA);
@@ -1286,18 +1354,28 @@ async fn run_cancellable(
                         }
                         // Subscribe once registered (the draft allows it earlier
                         // only with `before-connect`), also after a later NEW.
-                        if registered && metadata_enabled && let Some(subscribe) = metadata.subscribe() {
-                            let message = IrcMessage::from(subscribe);
-                            let line = redacted_wire_line(&message);
-                            if let Err(error) = client.send(message) {
-                                let _ = events.send(Event::Disconnected(error_chain(&error))).await;
+                        let start = if registered && metadata_enabled {
+                            metadata.start(tokio::time::Instant::now())
+                        } else {
+                            Vec::new()
+                        };
+                        if !start.is_empty() {
+                            for command in start {
+                                let message = IrcMessage::from(command);
+                                let line = redacted_wire_line(&message);
+                                if let Err(error) = client.send(message) {
+                                    let _ = events.send(Event::Disconnected(error_chain(&error))).await;
+                                    return;
+                                }
+                                wire(&events, started, WireDirection::Sent, line).await;
+                            }
+                            if events.send(Event::MetadataReady).await.is_err() {
                                 return;
                             }
-                            wire(&events, started, WireDirection::Sent, line).await;
                         }
                         if metadata_enabled {
                             let joined = client.list_channels().unwrap_or_default();
-                            let handled = metadata.observe(&message, tokio::time::Instant::now(), |channel| {
+                            let handled = metadata.observe(&message, tokio::time::Instant::now(), &current_nick, |channel| {
                                 joined.iter().any(|name| name.eq_ignore_ascii_case(channel))
                             });
                             if let Some(handled) = handled {
@@ -1314,7 +1392,12 @@ async fn run_cancellable(
                             if let IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) = &message.command {
                                 metadata.forget_channel(channel);
                             }
-                            metadata.lifecycle(&message, &roster.last, &current_nick)
+                            let replayed = replay.replayed(&message);
+                            let handled = metadata.lifecycle(&message, &roster.last, &current_nick, replayed, tokio::time::Instant::now());
+                            for note in handled.notes {
+                                diagnostic(&events, started, note).await;
+                            }
+                            handled.events
                         } else {
                             Vec::new()
                         };
@@ -1365,18 +1448,25 @@ async fn run_cancellable(
                     }
                 }
             }
-            // Deferred avatar synchronizations (774); no timer runs otherwise.
-            _ = tokio::time::sleep_until(metadata.next_sync().unwrap_or_else(tokio::time::Instant::now)), if metadata_enabled && metadata.next_sync().is_some() => {
+            // Deferred avatar synchronizations (774), request timeouts and
+            // spaced-out lookups; no timer runs while none is pending.
+            _ = tokio::time::sleep_until(metadata.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if metadata_enabled && metadata.next_deadline().is_some() => {
                 let joined = client.list_channels().unwrap_or_default();
-                let due = metadata.due_syncs(tokio::time::Instant::now(), |channel| {
+                let handled = metadata.tick(tokio::time::Instant::now(), |channel| {
                     joined.iter().any(|name| name.eq_ignore_ascii_case(channel))
                 });
-                for command in due {
+                for command in handled.send {
                     let message = IrcMessage::from(command);
                     let line = redacted_wire_line(&message);
                     if client.send(message).is_ok() {
                         wire(&events, started, WireDirection::Sent, line).await;
                     }
+                }
+                for note in handled.notes {
+                    diagnostic(&events, started, note).await;
+                }
+                for event in handled.events {
+                    if events.send(event).await.is_err() { return; }
                 }
             }
             _ = registration_progress.tick(), if !registered && !awaiting_nick => {
@@ -3711,6 +3801,7 @@ mod tests {
                 .unwrap();
             // The subscription goes out at 001, before the configured JOIN.
             assert_eq!(read_client_line(&mut lines), "METADATA * SUB avatar");
+            assert_eq!(read_client_line(&mut lines), "METADATA * GET avatar");
             assert_eq!(read_client_line(&mut lines), "JOIN #test");
             socket
                 .write_all(
@@ -3794,58 +3885,216 @@ mod tests {
     }
 
     #[test]
-    fn metadata_is_off_by_default_and_needs_batch() {
+    fn own_avatar_requests_and_later_joiners_follow_the_server() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server =
-            thread::spawn(move || {
-                for expected in [None, Some("CAP REQ server-time")] {
-                    let (mut socket, _) = listener.accept().unwrap();
-                    socket
-                        .set_read_timeout(Some(Duration::from_secs(5)))
+        // The server answers like Ergo 2.19 does (see spec/development.md).
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let mut send = |text: &str| socket.write_all(text.as_bytes()).unwrap();
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            send(":srv CAP * LS :batch draft/metadata-2=before-connect,max-subs=10\r\n");
+            let _: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+            send(":srv CAP * ACK :batch\r\n");
+            assert_eq!(read_client_line(&mut lines), "CAP REQ draft/metadata-2");
+            send(":srv CAP * ACK :draft/metadata-2\r\n");
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            send(
+                ":srv 001 alice :Welcome\r\n:srv BATCH +r metadata alice\r\n:srv BATCH -r\r\n:srv 376 alice :End\r\n",
+            );
+            assert_eq!(read_client_line(&mut lines), "METADATA * SUB avatar");
+            assert_eq!(read_client_line(&mut lines), "METADATA * GET avatar");
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            send(
+                ":srv 770 alice avatar\r\n:srv 774 * *ALL 0 :Try again later\r\n\
+:srv BATCH +g metadata alice\r\n@batch=g :srv 766 alice alice avatar :Key is not set\r\n:srv BATCH -g\r\n\
+:alice!u@h JOIN #test\r\n:srv 353 alice = #test :alice bob\r\n:srv 366 alice #test :End\r\n",
+            );
+            // Publishing, confirmed with the value the server kept.
+            assert_eq!(
+                read_client_line(&mut lines),
+                "METADATA * SET avatar https://example.com/me.png"
+            );
+            send(":srv 761 alice alice avatar * :https://example.com/me.png\r\n");
+            // A user who joins later is looked up after a pause; members
+            // from NAMES are not.
+            send(":dave!u@h JOIN #test\r\n");
+            assert_eq!(read_client_line(&mut lines), "METADATA dave GET avatar");
+            send(
+                ":srv BATCH +d metadata dave\r\n@batch=d :srv 761 alice dave avatar * :https://example.com/d.png\r\n:srv BATCH -d\r\n",
+            );
+            // Removal touches only the avatar key.
+            assert_eq!(read_client_line(&mut lines), "METADATA * SET avatar");
+            send(":srv 766 alice alice avatar :Key deleted\r\n");
+            assert_eq!(
+                read_client_line(&mut lines),
+                "METADATA * SET avatar https://example.com/second.png"
+            );
+            send("FAIL METADATA INVALID_VALUE avatar :Value is too long\r\n");
+            send(":bob!u@h PRIVMSG #test :done\r\n");
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(
+            port,
+            Ircv3Options {
+                batch: true,
+                metadata: true,
+                ..Ircv3Options::default()
+            },
+        ))
+        .unwrap();
+        // Refused on this connection until registration and the capability.
+        connection
+            .set_own_avatar(1, Some("https://example.com/early.png"))
+            .unwrap();
+        assert!(connection.set_own_avatar(9, Some("bad\r\nQUIT")).is_err());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut seen = Vec::new();
+        let mut names = false;
+        let mut ready = false;
+        while Instant::now() < deadline {
+            let Some(event) = connection.try_recv() else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            match &event {
+                Event::MetadataReady => ready = true,
+                Event::Names { .. } if ready && !names => {
+                    names = true;
+                    connection
+                        .set_own_avatar(2, Some("https://example.com/me.png"))
                         .unwrap();
-                    let mut lines = BufReader::new(socket.try_clone().unwrap());
-                    let first = read_client_line(&mut lines);
-                    if expected.is_none() {
-                        // Everything off: the plain registration of old.
-                        assert_eq!(first, "CAP END");
-                    } else {
-                        assert_eq!(first, "CAP LS 302");
-                        socket
-                            .write_all(b":srv CAP * LS :batch draft/metadata-2 server-time\r\n")
-                            .unwrap();
-                        let requests: Vec<String> =
-                            (0..3).map(|_| read_client_line(&mut lines)).collect();
-                        assert!(
-                            requests.iter().all(|line| !line.starts_with("CAP REQ")
-                                || Some(line.as_str()) == expected),
-                            "{requests:?}"
-                        );
-                        socket
-                            .write_all(b":srv CAP * ACK :server-time\r\n")
-                            .unwrap();
-                        assert_eq!(read_client_line(&mut lines), "CAP END");
+                }
+                Event::UserAvatar { nickname, .. } if nickname == "dave" => {
+                    connection.set_own_avatar(3, None).unwrap();
+                }
+                Event::OwnAvatar {
+                    request: Some(3), ..
+                } => connection
+                    .set_own_avatar(4, Some("https://example.com/second.png"))
+                    .unwrap(),
+                Event::ChannelMessage { .. } => {
+                    seen.push(event);
+                    break;
+                }
+                _ => {}
+            }
+            seen.push(event);
+        }
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+        let own: Vec<_> = seen
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Event::OwnAvatar { .. } | Event::OwnAvatarFailed { .. }
+                )
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            own,
+            [
+                Event::OwnAvatarFailed {
+                    request: 1,
+                    failure: AvatarRequestFailure::Unavailable
+                },
+                Event::OwnAvatar {
+                    url: None,
+                    request: None
+                },
+                Event::OwnAvatar {
+                    url: Some("https://example.com/me.png".into()),
+                    request: Some(2)
+                },
+                Event::OwnAvatar {
+                    url: None,
+                    request: Some(3)
+                },
+                Event::OwnAvatarFailed {
+                    request: 4,
+                    failure: AvatarRequestFailure::Rejected {
+                        code: "INVALID_VALUE".into(),
+                        description: "Value is too long".into()
                     }
+                },
+            ]
+        );
+        assert_eq!(
+            avatar_events(&seen),
+            [
+                "alice=https://example.com/me.png",
+                "dave=https://example.com/d.png",
+                "alice=-",
+            ]
+        );
+        // Metadata never becomes a chat row or a server-log line.
+        assert!(!seen.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("METADATA") || line.contains(" 76"))));
+    }
+
+    #[test]
+    fn metadata_without_batch_brings_batch_along_or_stays_off() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for metadata in [false, true] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut lines = BufReader::new(socket.try_clone().unwrap());
+                let first = read_client_line(&mut lines);
+                if !metadata {
+                    // Everything off: the plain registration of old.
+                    assert_eq!(first, "CAP END");
+                } else {
+                    assert_eq!(first, "CAP LS 302");
                     socket
-                        .write_all(
-                            b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n\
+                        .write_all(b":srv CAP * LS :batch draft/metadata-2 server-time\r\n")
+                        .unwrap();
+                    let requests: Vec<String> =
+                        (0..4).map(|_| read_client_line(&mut lines)).collect();
+                    assert!(
+                        requests.contains(&"CAP REQ server-time".to_owned()),
+                        "{requests:?}"
+                    );
+                    assert!(
+                        requests.contains(&"CAP REQ batch".to_owned()),
+                        "{requests:?}"
+                    );
+                    // Batch declined: metadata is never requested alone.
+                    socket
+                        .write_all(b":srv CAP * ACK :server-time\r\n:srv CAP * NAK :batch\r\n")
+                        .unwrap();
+                    assert_eq!(read_client_line(&mut lines), "CAP END");
+                }
+                socket
+                    .write_all(
+                        b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n\
 :srv METADATA bob avatar * :https://example.com/b.png\r\n\
 :bob!u@h PRIVMSG #test :hi\r\n",
-                        )
-                        .unwrap();
-                    loop {
-                        let next = read_client_line(&mut lines);
-                        assert!(!next.starts_with("METADATA"), "{next}");
-                        if next == "JOIN #test" {
-                            break;
-                        }
+                    )
+                    .unwrap();
+                loop {
+                    let next = read_client_line(&mut lines);
+                    assert!(!next.starts_with("METADATA"), "{next}");
+                    if next == "JOIN #test" {
+                        break;
                     }
-                    let _ = read_client_line(&mut lines);
                 }
-            });
+                let _ = read_client_line(&mut lines);
+            }
+        });
         for options in [
             Ircv3Options::default(),
-            // Metadata without batch requests neither.
+            // Metadata with batch off: batch is asked for as its
+            // prerequisite; declined, so no metadata either.
             Ircv3Options {
                 server_time: true,
                 metadata: true,

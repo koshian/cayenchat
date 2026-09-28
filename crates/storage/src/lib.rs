@@ -134,11 +134,11 @@ pub struct Appearance {
     /// Inline thumbnails of direct image links in the main channel log
     /// (version 14). Off by default, also for settings saved before it existed.
     pub image_previews: bool,
-    /// Small user avatars beside main-log messages and in the member list.
-    /// Independent of `image_previews` and of any protocol option: IRC
-    /// avatars also need the server's experimental metadata opt-in. Added
-    /// after version 15 without a version change; files without it read as
-    /// off.
+    /// Small user avatars beside main-log messages and in the member list,
+    /// with client-drawn defaults for users without one: the only avatar
+    /// switch, for every server and protocol. Independent of
+    /// `image_previews`. Added after version 15 without a version change;
+    /// files without it read as off.
     pub user_avatars: bool,
     pub main_log_font: String,
     pub sub_log_font: String,
@@ -270,6 +270,12 @@ pub struct ServerProfile {
     /// Opt-in IRCv3 features for this server (version 15), off by default.
     #[serde(default)]
     pub ircv3: Ircv3Preferences,
+    /// Draft URL of our own avatar for this server's experimental metadata
+    /// (D023). Saving it publishes nothing: only the IRCv3 tab's explicit
+    /// Publish sends it, on a connected server. Added without a version
+    /// change; files without it read as empty.
+    #[serde(default)]
+    pub avatar_url: String,
     /// Plaintext passwords saved by version 10 and earlier. Read only for
     /// migration into the credential store; never written back.
     #[serde(rename = "server_password", default, skip_serializing)]
@@ -303,6 +309,7 @@ impl ServerProfile {
             sasl_username: String::new(),
             connect_on_startup: false,
             ircv3: Ircv3Preferences::default(),
+            avatar_url: String::new(),
             legacy_server_password: None,
             legacy_sasl_password: None,
         }
@@ -341,12 +348,6 @@ pub struct Ircv3Preferences {
     /// Request `batch`, so history batches are recognized. Added after
     /// version 15 without a version change: files without it read as off.
     pub batch: bool,
-    /// Request the experimental `draft/metadata-2` and subscribe to the
-    /// `avatar` key. Needs `batch`, which is never turned on implicitly.
-    /// Receiving avatar URLs is separate from showing them
-    /// (`Appearance::user_avatars`). Added without a version change like
-    /// `batch`; files without it read as off.
-    pub metadata: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1370,13 +1371,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false,
-                "metadata": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false,
-                "metadata": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
@@ -1387,10 +1386,6 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("batch");
-        old["servers"][0]["ircv3"]
-            .as_object_mut()
-            .unwrap()
-            .remove("metadata");
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
         assert_eq!(loaded, settings);
@@ -1402,12 +1397,47 @@ mod tests {
         let loaded = load_from(&path).unwrap().unwrap();
         assert!(!loaded.servers[0].ircv3.batch && loaded.servers[1].ircv3.batch);
 
-        // Metadata (avatars) is per server and never turns batch on by itself.
-        settings.servers[0].ircv3.metadata = true;
+        // The per-server avatar option of earlier builds is gone; files that
+        // still have it load and keep everything else.
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["servers"][0]["ircv3"]["metadata"] = true.into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+    }
+
+    #[test]
+    fn avatar_url_drafts_are_per_server_and_read_as_empty_when_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("irc.one.example");
+        settings.add_server("irc.two.example");
+        assert!(
+            settings
+                .servers
+                .iter()
+                .all(|server| server.avatar_url.is_empty())
+        );
+        settings.servers[0].avatar_url = "https://example.com/me/{size}.png".into();
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
-        assert!(loaded.servers[0].ircv3.metadata && !loaded.servers[0].ircv3.batch);
-        assert!(!loaded.servers[1].ircv3.metadata && loaded.servers[1].ircv3.batch);
+        assert_eq!(
+            loaded.servers[0].avatar_url,
+            "https://example.com/me/{size}.png"
+        );
+        assert_eq!(loaded.servers[1].avatar_url, "", "other server untouched");
+        // A file written before the field existed loads with no draft and
+        // keeps its other choices.
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("avatar_url");
+        old["servers"][0]["ircv3"]["batch"] = true.into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.servers[0].avatar_url, "");
+        assert!(loaded.servers[0].ircv3.batch);
     }
 
     #[test]

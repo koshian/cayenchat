@@ -1,6 +1,8 @@
 mod account_settings;
+mod avatar_editor;
 mod avatars;
 mod decorations;
+mod default_avatar;
 mod desktop;
 mod diagnostics;
 mod image_upload;
@@ -23,6 +25,7 @@ use cayenchat_app::{
     AppState, Command, ConnectionStatus, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
+    own_avatar::OwnAvatar,
 };
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
@@ -36,6 +39,7 @@ use cayenchat_storage::{
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
+use ircv3_settings::own_avatar_failure;
 use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
@@ -139,6 +143,9 @@ struct SettingsForm {
     time_font: Entity<TextInput>,
     /// Comma-separated notification keywords.
     keywords: Entity<TextInput>,
+    /// Draft URL of our own avatar for the selected server (IRCv3 tab).
+    /// Editing it saves the draft; only Publish sends it.
+    avatar_url: Entity<TextInput>,
 }
 
 impl SettingsForm {
@@ -301,6 +308,17 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            avatar_url: {
+                let input = field(
+                    &i18n.text("ircv3_avatar_url_placeholder"),
+                    &profile.avatar_url,
+                    false,
+                    cx,
+                );
+                // A pasted image goes to the avatar upload (IRCv3 tab).
+                input.update(cx, |input, _| input.accept_pasted_images());
+                input
+            },
             server_list_open: false,
             encoding_list_open: false,
             values,
@@ -324,6 +342,7 @@ impl SettingsForm {
             profile.username = value(&self.username);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
+            profile.avatar_url = value(&self.avatar_url);
         }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
@@ -383,7 +402,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 29] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 30] {
         [
             &self.custom_host,
             &self.port,
@@ -414,6 +433,7 @@ impl SettingsForm {
             &self.input_font,
             &self.time_font,
             &self.keywords,
+            &self.avatar_url,
         ]
     }
 
@@ -514,6 +534,7 @@ impl SettingsForm {
             (&self.username, &profile.username),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
+            (&self.avatar_url, &profile.avatar_url),
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
@@ -626,7 +647,9 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         message_tags: preferences.message_tags,
         server_time: preferences.server_time,
         batch: preferences.batch,
-        metadata: preferences.metadata,
+        // Avatar metadata is always asked for when a server offers it:
+        // references only, nothing is downloaded unless avatars are shown.
+        metadata: true,
     }
 }
 
@@ -944,6 +967,16 @@ struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     autosave_error: Option<String>,
+    /// Why Publish or Remove could not be started for our own avatar, or
+    /// how an avatar image upload went.
+    avatar_feedback: Option<String>,
+    /// Avatar images on their way to the image host; the target is the
+    /// server profile whose avatar URL draft receives the link.
+    avatar_upload: AttachmentFlow<String>,
+    /// The square selection for an avatar image, before uploading it.
+    avatar_editor: Option<avatar_editor::AvatarEditor>,
+    /// An avatar image is being decoded or encoded.
+    avatar_opening: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1457,6 +1490,7 @@ impl ChatWindow {
         session.manual_disconnect = false;
         session.retry_attempt = 0;
         session.active_config = Some(config.clone());
+        session.metadata_requested = config.ircv3.metadata;
         session.diagnostics.clear();
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
@@ -1601,6 +1635,8 @@ impl ChatWindow {
             let _ = connection.disconnect();
         }
         session.generation += 1;
+        session.own_avatar.connection_ended();
+        session.metadata_requested = config.ircv3.metadata;
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
         self.state.set_status(network, ConnectionStatus::Connecting);
@@ -2097,10 +2133,10 @@ impl ChatWindow {
             && handle
                 .update(cx, |settings, window, cx| {
                     if tab != SettingsTab::Connection {
-                        settings.tab = tab;
+                        settings.show_tab(tab);
                         cx.notify();
                     } else if let Some(profile) = profile.clone() {
-                        settings.tab = tab;
+                        settings.show_tab(tab);
                         settings.select_server(profile, cx);
                     }
                     window.activate_window()
@@ -2333,6 +2369,20 @@ impl ChatWindow {
         let changed = !batch.is_empty();
         let mut disconnected = false;
         let mut refused = false;
+        // The IRCv3 settings tab shows our own avatar and whether it can
+        // be published; it is redrawn only when that may have changed.
+        let own_avatar_changed = batch.iter().any(|event| {
+            matches!(
+                event,
+                Event::Registered { .. }
+                    | Event::Disconnected(_)
+                    | Event::Refused(_)
+                    | Event::AvatarsReset
+                    | Event::MetadataReady
+                    | Event::OwnAvatar { .. }
+                    | Event::OwnAvatarFailed { .. }
+            )
+        });
         for event in batch {
             match &event {
                 Event::Disconnected(_) => disconnected = true,
@@ -2352,6 +2402,9 @@ impl ChatWindow {
         }
         for (network, info, requested) in std::mem::take(&mut self.whois_replies) {
             self.show_whois(network, info, requested, cx);
+        }
+        if own_avatar_changed || worker_closed {
+            self.refresh_settings(cx);
         }
         if changed {
             let joined = self.joined_channels(network);
@@ -2588,6 +2641,7 @@ impl ChatWindow {
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
                 self.state.end_avatars(network);
+                self.update_own_avatar(network, OwnAvatar::connection_ended);
                 self.record_disconnect(network, reason);
             }
             // Avatar references are recorded whether or not they are shown;
@@ -2601,7 +2655,19 @@ impl ChatWindow {
                 let to = cayenchat_irc_core::text::nickname_key(&to);
                 self.state.rename_avatar(network, &from, &to);
             }
-            Event::AvatarsReset => self.state.end_avatars(network),
+            Event::AvatarsReset => {
+                self.state.end_avatars(network);
+                self.update_own_avatar(network, OwnAvatar::capability_lost);
+            }
+            // Our own avatar: shown on the IRCv3 settings tab only.
+            Event::MetadataReady => self.update_own_avatar(network, OwnAvatar::set_ready),
+            Event::OwnAvatar { url, request } => {
+                self.update_own_avatar(network, |own| own.reported(url, request));
+            }
+            Event::OwnAvatarFailed { request, failure } => {
+                let failure = own_avatar_failure(failure);
+                self.update_own_avatar(network, |own| own.failed(request, failure));
+            }
         }
     }
 
@@ -2817,6 +2883,10 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             autosave_error: None,
+            avatar_feedback: None,
+            avatar_upload: AttachmentFlow::default(),
+            avatar_editor: None,
+            avatar_opening: false,
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -3201,6 +3271,8 @@ impl SettingsWindow {
     }
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        self.avatar_feedback = None;
+        self.avatar_editor = None;
         let store = secrets::store(cx);
         match self.settings.switch_server(change, &store, &self.i18n, cx) {
             Ok(()) => self.feedback = None,
@@ -4231,10 +4303,21 @@ impl SettingsWindow {
             })
             .child(self.i18n.text(label_key))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.tab = tab;
+                this.show_tab(tab);
                 this.font_picker = None;
                 cx.notify();
             }))
+    }
+
+    /// Switches tabs. A message about something done on one tab (such as
+    /// connecting an image upload account) is not shown on the others;
+    /// an autosave failure still is.
+    fn show_tab(&mut self, tab: SettingsTab) {
+        if self.tab != tab {
+            self.feedback = None;
+            self.avatar_feedback = None;
+        }
+        self.tab = tab;
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5660,6 +5743,7 @@ impl ChatWindow {
                                 message.sequence,
                             )
                             .cloned(),
+                        &message.sender,
                         cx,
                     ),
                 )
@@ -5737,24 +5821,26 @@ impl ChatWindow {
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
-    /// is ready, otherwise blank. It never changes the row's height.
-    fn avatar_slot(&self, avatar: Option<Arc<str>>, cx: &mut Context<Self>) -> Div {
+    /// is ready, blank while it loads, and the nickname's default avatar
+    /// when there is none or it failed. It never changes the row's height.
+    fn avatar_slot(&self, avatar: Option<Arc<str>>, nickname: &str, cx: &mut Context<Self>) -> Div {
         let slot = div()
             .w(px(avatars::SLOT))
             .h(px(avatars::SLOT))
             .mt(px(2.))
             .flex_shrink_0()
             .overflow_hidden();
-        let Some(avatar) = avatar else {
-            return slot;
+        let shown = match &avatar {
+            Some(avatar) => self.avatars.lookup(avatar),
+            None => avatars::Shown::None,
         };
-        match self.avatars.lookup(&avatar) {
+        match shown {
             avatars::Shown::Image(image) => slot.child(img(image).size_full()),
             avatars::Shown::Pending => {
                 self.pump_avatars(cx);
                 slot
             }
-            avatars::Shown::None => slot,
+            avatars::Shown::None => slot.child(img(self.avatars.default_for(nickname)).size_full()),
         }
     }
 
@@ -5864,6 +5950,7 @@ impl ChatWindow {
         let end = range.end.min(channel.members.len());
         let start = range.start.min(end);
         let network = channel.network;
+        let avatars_shown = self.avatars.enabled();
         (start..end)
             .map(|index| {
                 let member = channel.members[index].clone();
@@ -5871,7 +5958,7 @@ impl ChatWindow {
                 let nickname = member
                     .trim_start_matches(['~', '&', '@', '%', '+'])
                     .to_owned();
-                let avatar = self.avatars.enabled().then(|| {
+                let avatar = avatars_shown.then(|| {
                     self.state
                         .avatars()
                         .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
@@ -5886,7 +5973,7 @@ impl ChatWindow {
                         row.flex()
                             .items_center()
                             .gap_1()
-                            .child(self.avatar_slot(avatar, cx))
+                            .child(self.avatar_slot(avatar, &nickname, cx))
                     })
                     .child(member)
                     .on_mouse_down(
@@ -6604,7 +6691,6 @@ mod server_settings_tests {
             message_tags: true,
             server_time: true,
             batch: true,
-            metadata: true,
         };
         settings
     }
@@ -6927,7 +7013,6 @@ mod pane_tests {
         settings.servers[1].username = "me".into();
         settings.servers[1].ircv3.server_time = true;
         settings.servers[1].ircv3.batch = true;
-        settings.servers[1].ircv3.metadata = true;
         let config = |settings: &Settings, index: usize| {
             crate::connection_config(
                 &settings.servers[index],
@@ -6937,7 +7022,14 @@ mod pane_tests {
             )
             .unwrap()
         };
-        assert_eq!(config(&settings, 0).ircv3, Ircv3Options::default());
+        // Avatar metadata is always asked for; the rest follows the options.
+        assert_eq!(
+            config(&settings, 0).ircv3,
+            Ircv3Options {
+                metadata: true,
+                ..Ircv3Options::default()
+            }
+        );
         assert_eq!(
             config(&settings, 1).ircv3,
             Ircv3Options {
@@ -6972,7 +7064,7 @@ mod pane_tests {
                     message_tags: true,
                     server_time: false,
                     batch: false,
-                    metadata: false,
+                    metadata: true,
                 },
                 "reconnects use the new choice; batch stays off here"
             );

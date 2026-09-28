@@ -85,3 +85,10 @@ reused, and Metal/DirectX kept the stale key. CayenChat's inline image
 previews drop evicted thumbnails; without this, every texture that still held
 one live tile (another thumbnail or an emoji glyph) kept all of its dead space
 and new thumbnails allocated new 1024×1024 textures (4 MiB each).
+
+In `src/platform.rs`, `Image::to_image_data` swaps the red and blue channels
+of rasterized SVG images like it does for every other format: the renderer
+expects BGRA, but the SVG branch passed resvg's RGBA through unchanged, so
+colored SVGs shown with `img(Arc<Image>)` had red and blue exchanged.
+CayenChat's default avatars are such SVGs. (Monochrome `svg()` elements use
+a separate path and were unaffected.)
