@@ -650,6 +650,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         // Avatar metadata is always asked for when a server offers it:
         // references only, nothing is downloaded unless avatars are shown.
         metadata: true,
+        peer_avatars: false,
     }
 }
 
@@ -7037,6 +7038,7 @@ mod pane_tests {
                 server_time: true,
                 batch: true,
                 metadata: true,
+                peer_avatars: false,
             }
         );
         let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -7065,6 +7067,7 @@ mod pane_tests {
                     server_time: false,
                     batch: false,
                     metadata: true,
+                    peer_avatars: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );
