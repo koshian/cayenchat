@@ -28,8 +28,8 @@ use cayenchat_app::{
     own_avatar::OwnAvatar,
 };
 use cayenchat_irc_core::{
-    ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
-    SaslCredentials, WhoisInfo, WireDirection, valid_channel,
+    ChannelActivityKind, Connection, ConnectionConfig, CtcpQuery, Event, Ircv3Options,
+    MemberCommand, SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
 use cayenchat_storage::{
@@ -855,6 +855,8 @@ struct MemberMenu {
     network: NetworkId,
     nickname: String,
     channel: String,
+    /// The CTCP submenu is open; hovering another item closes it.
+    ctcp_open: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -882,7 +884,16 @@ enum MemberMenuChoice {
     Invite,
     GiveOp,
     Deop,
+    Ctcp,
 }
+
+const CTCP_MENU: [(CtcpQuery, &str); 5] = [
+    (CtcpQuery::Ping, "Ping"),
+    (CtcpQuery::Time, "Time"),
+    (CtcpQuery::Version, "Version"),
+    (CtcpQuery::UserInfo, "UserInfo"),
+    (CtcpQuery::ClientInfo, "ClientInfo"),
+];
 
 struct MemberPrompt {
     /// `None` centers the prompt in the window.
@@ -5092,6 +5103,7 @@ impl ChatWindow {
             }
             popup
         });
+        let viewport = window.viewport_size();
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
                 .id("member-context-menu")
@@ -5111,53 +5123,87 @@ impl ChatWindow {
                 (MemberMenuChoice::Invite, "member_invite"),
                 (MemberMenuChoice::GiveOp, "member_give_op"),
                 (MemberMenuChoice::Deop, "member_deop"),
+                (MemberMenuChoice::Ctcp, "member_ctcp"),
             ]
             .into_iter()
             .enumerate()
             {
-                if index == 3 {
+                if index == 3 || index == 5 {
                     popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
                 }
                 let channel = menu.channel.clone();
-                popup = popup.child(
-                    div()
-                        .id(("member-menu-action", index))
-                        .px_2()
-                        .py_1()
-                        .child(self.i18n.text(key))
-                        .when(enabled, |d| {
-                            d.cursor_pointer()
-                                .hover(|d| d.bg(theme.hover_strong))
-                                .on_click(cx.listener(move |this, _, window, cx| match choice {
-                                    MemberMenuChoice::Whois => {
-                                        this.member_command(MemberCommand::Whois, cx)
-                                    }
-                                    MemberMenuChoice::PrivateMessage => this.open_member_prompt(
-                                        MemberPromptKind::PrivateMessage,
-                                        window,
-                                        cx,
-                                    ),
-                                    MemberMenuChoice::Invite => this.open_member_prompt(
-                                        MemberPromptKind::Invite,
-                                        window,
-                                        cx,
-                                    ),
-                                    MemberMenuChoice::GiveOp => this.member_command(
-                                        MemberCommand::GiveOp {
-                                            channel: channel.clone(),
-                                        },
-                                        cx,
-                                    ),
-                                    MemberMenuChoice::Deop => this.member_command(
-                                        MemberCommand::Deop {
-                                            channel: channel.clone(),
-                                        },
-                                        cx,
-                                    ),
-                                }))
-                        })
-                        .when(!enabled, |d| d.text_color(theme.text_muted)),
-                );
+                let ctcp = matches!(choice, MemberMenuChoice::Ctcp);
+                let mut row = div()
+                    .id(("member-menu-action", index))
+                    .when(ctcp, |d| d.debug_selector(|| "member-ctcp".into()))
+                    .px_2()
+                    .py_1()
+                    .when(ctcp && menu.ctcp_open, |d| d.bg(theme.hover_strong))
+                    .when(!ctcp, |d| d.child(self.i18n.text(key)))
+                    .when(ctcp, |d| {
+                        d.relative()
+                            .flex()
+                            .justify_between()
+                            .child(self.i18n.text(key))
+                            .child("›")
+                    })
+                    .when(enabled, |d| {
+                        d.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if let Some(menu) = this.member_menu.as_mut()
+                                && *hovered
+                                && menu.ctcp_open != ctcp
+                            {
+                                menu.ctcp_open = ctcp;
+                                cx.notify();
+                            }
+                        }))
+                    })
+                    .when(enabled && !ctcp, |d| {
+                        d.cursor_pointer()
+                            .hover(|d| d.bg(theme.hover_strong))
+                            .on_click(cx.listener(move |this, _, window, cx| match choice {
+                                MemberMenuChoice::Whois => {
+                                    this.member_command(MemberCommand::Whois, cx)
+                                }
+                                MemberMenuChoice::PrivateMessage => this.open_member_prompt(
+                                    MemberPromptKind::PrivateMessage,
+                                    window,
+                                    cx,
+                                ),
+                                MemberMenuChoice::Invite => {
+                                    this.open_member_prompt(MemberPromptKind::Invite, window, cx)
+                                }
+                                MemberMenuChoice::GiveOp => this.member_command(
+                                    MemberCommand::GiveOp {
+                                        channel: channel.clone(),
+                                    },
+                                    cx,
+                                ),
+                                MemberMenuChoice::Deop => this.member_command(
+                                    MemberCommand::Deop {
+                                        channel: channel.clone(),
+                                    },
+                                    cx,
+                                ),
+                                MemberMenuChoice::Ctcp => {}
+                            }))
+                    })
+                    .when(enabled && ctcp, |d| {
+                        // Clicking opens the submenu too; the window's click
+                        // handler would otherwise close the whole menu.
+                        d.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(menu) = this.member_menu.as_mut() {
+                                menu.ctcp_open = true;
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                    })
+                    .when(!enabled, |d| d.text_color(theme.text_muted));
+                if ctcp && enabled && menu.ctcp_open {
+                    row = row.child(self.render_ctcp_menu(menu, viewport, cx));
+                }
+                popup = popup.child(row);
             }
             popup
         });
@@ -5167,7 +5213,6 @@ impl ChatWindow {
             prompt.focus_pending = false;
             window.focus(&prompt.input.focus_handle(cx));
         }
-        let viewport = window.viewport_size();
         let member_prompt = self.member_prompt.as_ref().map(|prompt| {
             let title = self.i18n.format(
                 match prompt.kind {
@@ -5281,6 +5326,55 @@ impl ChatWindow {
 }
 
 impl ChatWindow {
+    /// The member menu's CTCP submenu, placed beside the CTCP row: to the
+    /// left when the right edge has no room, upward when the bottom has none.
+    fn render_ctcp_menu(
+        &self,
+        menu: &MemberMenu,
+        viewport: Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        const WIDTH: f32 = 150.;
+        // The CTCP row's offset in the member menu and the submenu height,
+        // from the 28px rows (20px lines and 4px padding) and separators.
+        const ROW_TOP: f32 = 162.;
+        const HEIGHT: f32 = 152.;
+        let theme = theme::current(cx);
+        let right = menu.position.x + px(210. + WIDTH) <= viewport.width;
+        let down = menu.position.y + px(ROW_TOP + HEIGHT) <= viewport.height;
+        let mut submenu = div()
+            .id("member-ctcp-menu")
+            .absolute()
+            .w(px(WIDTH))
+            .p_1()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .text_color(theme.text)
+            .when(right, |d| d.left(px(202.)))
+            .when(!right, |d| d.left(px(-WIDTH - 2.)))
+            .when(down, |d| d.top(px(-5.)))
+            .when(!down, |d| d.bottom(px(-5.)));
+        for (index, (query, label)) in CTCP_MENU.into_iter().enumerate() {
+            submenu = submenu.child(
+                div()
+                    .id(("member-ctcp-action", index))
+                    .debug_selector(move || format!("member-ctcp-{label}"))
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.hover_strong))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.member_command(MemberCommand::Ctcp(query), cx);
+                    })),
+            );
+        }
+        submenu
+    }
+
     /// One centered dialog with a row per server waiting for a nickname.
     fn render_nick_prompts(
         &mut self,
@@ -6013,11 +6107,12 @@ impl ChatWindow {
                                     event
                                         .position
                                         .y
-                                        .min((viewport.height - px(190.)).max(px(0.))),
+                                        .min((viewport.height - px(220.)).max(px(0.))),
                                 ),
                                 network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
+                                ctcp_open: false,
                             });
                             cx.stop_propagation();
                             cx.notify();
@@ -7015,6 +7110,112 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn member_menu_sends_ctcp_queries_from_its_submenu(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Connection, ConnectionConfig, Event, Ircv3Options};
+        use gpui::{Modifiers, point, px};
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            thread,
+            time::Duration,
+        };
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut read = || {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                line.trim_end().to_owned()
+            };
+            while !read().starts_with("USER ") {}
+            socket.write_all(b":srv 001 alice :Welcome\r\n").unwrap();
+            loop {
+                let line = read();
+                if line.starts_with("PRIVMSG ") {
+                    return line;
+                }
+            }
+        });
+        let connection = Connection::connect(ConnectionConfig {
+            host: "127.0.0.1".into(),
+            port,
+            nickname: "alice".into(),
+            username: "alice".into(),
+            channels: Vec::new(),
+            use_tls: false,
+            verify_tls_certificates: true,
+            encoding: "UTF-8".into(),
+            server_password: None,
+            allow_plaintext_pass: false,
+            sasl: None,
+            ircv3: Ircv3Options::default(),
+            shared_avatar: None,
+        })
+        .unwrap();
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let network = NetworkId(1);
+        chat.update(cx, |chat, cx| {
+            chat.sessions.get_mut(&network).unwrap().irc = Some(connection);
+            let registered = Event::Registered {
+                nickname: "alice".into(),
+            };
+            chat.handle_events(network, vec![registered], false, cx);
+            chat.member_menu = Some(super::MemberMenu {
+                position: point(px(20.), px(20.)),
+                network,
+                nickname: "bob".into(),
+                channel: "#a".into(),
+                ctcp_open: false,
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let ctcp_open = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                chat.member_menu.as_ref().map(|menu| menu.ctcp_open)
+            })
+        };
+        assert!(cx.debug_bounds("member-ctcp-Version").is_none());
+        let row = cx
+            .debug_bounds("member-ctcp")
+            .expect("CTCP row must render");
+        cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+        assert_eq!(ctcp_open(cx), Some(true));
+        let item = cx
+            .debug_bounds("member-ctcp-Version")
+            .expect("hovering CTCP opens its submenu");
+        assert!(
+            item.left() >= row.right() - px(8.),
+            "submenu opens to the right"
+        );
+        cx.simulate_mouse_move(item.center(), None, Modifiers::default());
+        assert_eq!(
+            ctcp_open(cx),
+            Some(true),
+            "moving into the submenu keeps it"
+        );
+        cx.simulate_click(item.center(), Modifiers::default());
+        assert_eq!(ctcp_open(cx), None, "choosing a query closes the menu");
+        assert_eq!(server.join().unwrap(), "PRIVMSG bob \u{1}VERSION\u{1}");
+    }
 
     #[gpui::test]
     fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAppContext) {

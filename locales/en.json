@@ -43,6 +43,7 @@
   "member_invite": "Invite…",
   "member_give_op": "+o Give Op",
   "member_deop": "-o Deop",
+  "member_ctcp": "CTCP",
   "member_message_title": "Private message to {nickname}",
   "member_invite_title": "Invite {nickname}",
   "member_message_placeholder": "Message",

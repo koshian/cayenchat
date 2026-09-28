@@ -43,6 +43,7 @@
   "member_invite": "招待…",
   "member_give_op": "+o オペレーター権限を付与",
   "member_deop": "-o オペレーター権限を解除",
+  "member_ctcp": "CTCP",
   "member_message_title": "{nickname} にメッセージ",
   "member_invite_title": "{nickname} を招待",
   "member_message_placeholder": "メッセージ",
