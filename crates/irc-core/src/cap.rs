@@ -418,7 +418,8 @@ impl SaslHandshake {
             (
                 _,
                 IrcCommand::Response(
-                    Response::ERR_SASLFAIL
+                    Response::ERR_NICKLOCKED
+                    | Response::ERR_SASLFAIL
                     | Response::ERR_SASLTOOLONG
                     | Response::ERR_SASLABORT
                     | Response::ERR_SASLALREADY,
@@ -808,11 +809,12 @@ mod tests {
         assert_ne!(short[0], "AUTHENTICATE +");
     }
 
-    // SASL 3.1: 904 (failed), 905 (too long), 906 (aborted) and 907 (already
-    // authenticated) end the attempt; none of them may be retried blindly.
+    // SASL 3.1: 902 (account locked or held), 904 (failed), 905 (too long),
+    // 906 (aborted) and 907 (already authenticated) end the attempt; none of
+    // them may be retried blindly.
     #[test]
     fn every_sasl_failure_numeric_is_a_refusal() {
-        for numeric in ["904", "905", "906", "907"] {
+        for numeric in ["902", "904", "905", "906", "907"] {
             let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
             cap.start();
             cap.observe(&line(":s CAP * LS :sasl")).unwrap();
