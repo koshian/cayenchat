@@ -317,6 +317,8 @@
   "ircv3_avatar_remove_detail": "このネットワークの他のユーザーには表示されなくなります。URL は欄に残ります。",
   "ircv3_avatar_remove_confirm": "削除",
   "ircv3_avatar_unsupported": "この IRC サーバーはアバターに対応していません。",
+  "ircv3_chathistory": "チャンネルの最近の履歴 (実験的)",
+  "ircv3_chathistory_hint": "チャンネルに参加したとき、最近の発言を最大 50 行サーバーに要求し (draft/chathistory)、通知せずに表示します。対応サーバーにはタイムスタンプとバッチも要求します。",
   "ircv3_peer_avatars": "ピア間のアバター (CTCP AVATAR、実験的)",
   "ircv3_peer_avatars_hint": "サーバーにアバターのメタデータがない場合に、KVIrc などほかのクライアントとアバターの URL を交換します。発言した人を WHO で調べ、アバターを持つ人にだけ問い合わせます。「ピアに共有」を選ぶまで、自分のアバターは共有しません。",
   "ircv3_peer_share": "ピアに共有",
