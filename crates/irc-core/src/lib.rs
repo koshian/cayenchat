@@ -1,6 +1,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
 mod cap;
+mod ctcp;
 mod metadata;
 mod peer_avatar;
 mod replay;
@@ -317,8 +318,8 @@ pub enum Event {
         kind: ChannelActivityKind,
         server_time: Option<SystemTime>,
     },
-    /// A PRIVMSG or NOTICE a user sent to our nickname. CTCP requests other
-    /// than ACTION and server notices stay [`Event::ServerLine`].
+    /// A PRIVMSG or NOTICE a user sent to our nickname. Server notices stay
+    /// [`Event::ServerLine`]; CTCP other than ACTION is handled by `ctcp`.
     PrivateMessage {
         sender: String,
         text: String,
@@ -1088,6 +1089,7 @@ async fn run_cancellable(
             config.shared_avatar.clone(),
         )
     });
+    let mut ctcp = ctcp::CtcpReplies::new(config.ircv3.peer_avatars);
     let mut negotiation = cap::CapNegotiation::new(
         config.ircv3,
         config.sasl,
@@ -1468,6 +1470,18 @@ async fn run_cancellable(
                             }
                             for note in handled.notes {
                                 diagnostic(&events, started, note).await;
+                            }
+                            for event in handled.events {
+                                if events.send(event).await.is_err() { return; }
+                            }
+                            continue;
+                        }
+                        // Other CTCP requests and replies become one
+                        // readable server line, answered when asked.
+                        if let Some(handled) = ctcp.observe(&message, &current_nick, replayed, tokio::time::Instant::now()) {
+                            if let Err(detail) = send_all(&client, &events, started, handled.send).await {
+                                let _ = events.send(Event::Disconnected(detail)).await;
+                                return;
                             }
                             for event in handled.events {
                                 if events.send(event).await.is_err() { return; }
@@ -4117,7 +4131,80 @@ mod tests {
     }
 
     #[test]
-    fn peer_avatars_off_keeps_ctcp_avatar_as_before() {
+    fn ctcp_requests_are_answered_privately_and_shown_readably() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            assert_eq!(read_client_line(&mut lines), "NICK alice");
+            read_client_line(&mut lines);
+            socket
+                .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket
+                .write_all(
+                    b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice bob carol\r\n\
+:srv.example 366 alice #test :End\r\n\
+:bob!u@h PRIVMSG alice :\x01VERSION\x01\r\n\
+:carol!u@h PRIVMSG #test :\x01TIME\x01\r\n\
+:bob!u@h PRIVMSG alice :\x01PING 1727490000\x01\r\n\
+:bob!u@h PRIVMSG #test :\x01ACTION waves\x01\r\n\
+:bob!u@h PRIVMSG #test :hello\r\n",
+                )
+                .unwrap();
+            assert_eq!(
+                read_client_line(&mut lines),
+                concat!(
+                    "NOTICE bob :\u{1}VERSION CayenChat ",
+                    env!("CARGO_PKG_VERSION"),
+                    "\u{1}"
+                )
+            );
+            assert_eq!(
+                read_client_line(&mut lines),
+                "NOTICE bob :\u{1}PING 1727490000\u{1}"
+            );
+            // The channel request is not answered.
+            let next = read_client_line(&mut lines);
+            assert!(next.is_empty() || next.starts_with("QUIT"), "{next:?}");
+        });
+        let config = plain_config(port, Ircv3Options::default());
+        let events = run_fixture(config, |events| channel_messages(events).len() == 2);
+        server.join().unwrap();
+        assert_eq!(
+            channel_messages(&events)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>(),
+            ["\u{1}ACTION waves\u{1}", "hello"]
+        );
+        let shown: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ServerLine(line) if line.contains("CTCP") => Some(line.as_str()),
+                Event::PrivateMessage { text, .. } => panic!("private row: {text:?}"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "CTCP VERSION request from bob",
+                "CTCP TIME request from carol to #test (not answered)",
+                "CTCP PING request from bob",
+            ]
+        );
+    }
+
+    #[test]
+    fn peer_avatars_off_leaves_ctcp_avatar_unanswered() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4154,7 +4241,7 @@ mod tests {
         server.join().unwrap();
         assert!(avatar_events(&events).is_empty());
         assert!(events.iter().any(|event| matches!(event,
-            Event::ServerLine(line) if line.contains("AVATAR"))));
+            Event::ServerLine(line) if line == "CTCP AVATAR request from kv (not answered)")));
     }
 
     #[test]
