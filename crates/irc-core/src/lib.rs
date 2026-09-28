@@ -79,6 +79,8 @@ pub struct ConnectionConfig {
     pub verify_tls_certificates: bool,
     pub encoding: String,
     pub server_password: Option<String>,
+    /// Lets `PASS` go out over a plaintext connection; the user opted in.
+    pub allow_plaintext_pass: bool,
     pub sasl: Option<SaslCredentials>,
     /// Opt-in IRCv3 extensions; all off unless the user enabled them.
     pub ircv3: Ircv3Options,
@@ -99,6 +101,7 @@ impl fmt::Debug for ConnectionConfig {
                 "server_password",
                 &self.server_password.as_ref().map(|_| "[redacted]"),
             )
+            .field("allow_plaintext_pass", &self.allow_plaintext_pass)
             .field("sasl", &self.sasl)
             .field("ircv3", &self.ircv3)
             .finish()
@@ -119,6 +122,7 @@ impl ConnectionConfig {
             verify_tls_certificates: true,
             encoding: "UTF-8".into(),
             server_password: None,
+            allow_plaintext_pass: false,
             sasl: None,
             ircv3: Ircv3Options::default(),
         }
@@ -165,8 +169,8 @@ impl ConnectionConfig {
             if password.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
                 return Err("Server password contains a protocol control character.".into());
             }
-            if !password.is_empty() && !self.use_tls {
-                return Err("Enable TLS before using a server password.".into());
+            if !password.is_empty() && !self.use_tls && !self.allow_plaintext_pass {
+                return Err("Enable TLS, or allow sending the server password without TLS.".into());
             }
         }
         if let Some(sasl) = &self.sasl {
@@ -2673,6 +2677,72 @@ mod tests {
         assert!(
             outgoing.contains(&"NOTICE #test notice".to_owned()),
             "{outgoing:?}"
+        );
+    }
+
+    #[test]
+    fn plaintext_server_password_requires_opt_in_and_sasl_still_requires_tls() {
+        let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+        config.use_tls = false;
+        config.server_password = Some("user/network:secret".into());
+        assert!(config.validate().is_err());
+        config.allow_plaintext_pass = true;
+        config.validate().unwrap();
+        config.sasl = Some(SaslCredentials {
+            username: "account".into(),
+            password: "secret".into(),
+        });
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn opted_in_plaintext_connection_sends_server_password() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let mut received = Vec::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                lines.read_line(&mut line).unwrap();
+                received.push(line.trim_end().to_owned());
+                if line.starts_with("USER ") {
+                    break;
+                }
+            }
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
+                .unwrap();
+            received
+        });
+
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+        config.port = port;
+        config.use_tls = false;
+        config.server_password = Some("alice/net:secret".into());
+        config.allow_plaintext_pass = true;
+        let mut connection = Connection::connect(config).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut registered = false;
+        while Instant::now() < deadline && !registered {
+            match connection.try_recv() {
+                Some(Event::Registered { .. }) => registered = true,
+                Some(Event::Disconnected(reason) | Event::Refused(reason)) => {
+                    panic!("unexpected disconnect: {reason}")
+                }
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(registered, "client did not register");
+        let received = server.join().unwrap();
+        assert!(
+            received.contains(&"PASS alice/net:secret".to_owned()),
+            "{received:?}"
         );
     }
 

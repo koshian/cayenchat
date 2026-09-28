@@ -256,7 +256,8 @@ Passwords persist per server only when password saving is on for that server,
 and only through the credential store (see Credentials below); turning saving
 off immediately removes stored values. TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
-requires TLS before sending either server PASS or SASL PLAIN credentials. The nickname (`NICK`), the `USER` username and the SASL account are separate
+requires TLS before sending SASL PLAIN credentials, and before sending server
+PASS unless the server's profile explicitly allows it without TLS (D024). The nickname (`NICK`), the `USER` username and the SASL account are separate
 settings; `ConnectionConfig` carries the username explicitly and its `Debug`
 output redacts both passwords. Each core connection supports auto-join, channel
 messages, NAMES snapshots, `PRIVMSG`/`NOTICE`, and `/` commands; the UI runs one

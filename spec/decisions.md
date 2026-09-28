@@ -163,7 +163,8 @@ Password saving is per server and off by default; switching it off
 immediately removes those stored values. (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
-off certificate verification for that server. Support SASL PLAIN through IRCv3
+off certificate verification for that server. (Since D024 a server password may
+go without TLS after an explicit per-server opt-in; SASL still requires TLS.) Support SASL PLAIN through IRCv3
 CAP negotiation in `irc-core`. The initial implementation covered one network
 and manual reconnect; multi-server support is D017.
 
@@ -708,3 +709,20 @@ other; fetches in flight are limited to 3 for avatars and previews
 together, and decoding stays one at a time in the process. Avatars do not
 use `upload`/`ExternalUploader` or GPUI's URL image loader.
 
+## D024 — Opt-in server password without TLS
+
+**Status:** Accepted
+
+2026-09-28 (issue #23). A bouncer such as ZNC on the user's own LAN or VM
+often has no TLS listener and authenticates with `PASS user/network:password`;
+D010's TLS requirement made it unreachable, while LimeChat connects to it.
+Each server profile gets **Send the server password without TLS**
+(`ServerProfile::allow_plaintext_pass`, `ConnectionConfig::allow_plaintext_pass`).
+It is off by default and read as off when absent, so it was added without a
+settings version change. Turning it on asks for confirmation in a warning
+dialog; while on and TLS is off, the settings show a persistent warning. It
+only relaxes the server PASS check: SASL PLAIN still requires TLS.
+
+Loopback or private addresses are not allowed automatically: a hostname does
+not prove the network is trusted, and plaintext credentials should never be
+sent without the user having chosen it.

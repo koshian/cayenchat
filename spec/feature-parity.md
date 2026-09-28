@@ -115,7 +115,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 
 ## Settings
 
-- DONE — single-network connection settings with a server drop-down, multiple saved custom profiles, per-profile host/port/TLS/certificate verification/encoding and optional server password
+- DONE — single-network connection settings with a server drop-down, multiple saved custom profiles, per-profile host/port/TLS/certificate verification/encoding and optional server password (sent without TLS only after a per-server opt-in with a warning, for bouncers such as ZNC)
 - DONE — persisted nickname, independent IRC `USER` username and optional SASL account name; per-server server/SASL password persistence in the credential store (system store, or an explicitly chosen local file after a plaintext warning), with immediate deletion when disabled
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
