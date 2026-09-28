@@ -22,7 +22,7 @@ mod theme;
 mod whois;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, NetworkConfig, Selection,
+    AppState, Command, ConnectionStatus, MessageMeta, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -705,6 +705,20 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
     }
 }
 
+/// What the IRC adapter knows about an incoming message besides its text:
+/// server-time, a usable `msgid`, and whether it is replayed history.
+fn irc_message_meta(
+    server_time: Option<std::time::SystemTime>,
+    msgid: Option<&str>,
+    replayed: bool,
+) -> MessageMeta {
+    MessageMeta {
+        server_time,
+        native_id: msgid.and_then(cayenchat_model::NativeMessageId::new),
+        ..MessageMeta::replayed(replayed)
+    }
+}
+
 /// The newest `limit` conversation lines (not channel activity) across every
 /// conversation except `excluded`, oldest first, as (sequence, conversation,
 /// message index). Merges the conversation tails newest-first, so the cost
@@ -1176,7 +1190,10 @@ impl ChatWindow {
         network: NetworkId,
         message: &cayenchat_model::Message,
     ) -> Vec<std::ops::Range<usize>> {
-        if message.activity || message.replayed || self.is_own_nickname(network, &message.sender) {
+        if message.activity
+            || message.is_history()
+            || self.is_own_nickname(network, &message.sender)
+        {
             return Vec::new();
         }
         let mut ranges = self
@@ -2542,8 +2559,21 @@ impl ChatWindow {
                 notice,
                 mentioned,
                 server_time,
+                msgid,
                 replayed,
             } => {
+                // A copy of a message the conversation already has (overlapping
+                // history) neither notifies nor highlights again.
+                if !self.state.append_channel_message_at(
+                    network,
+                    &channel,
+                    &sender,
+                    &text,
+                    notice,
+                    irc_message_meta(server_time, msgid.as_deref(), replayed),
+                ) {
+                    return;
+                }
                 let highlighted = !replayed
                     && !self.is_own_nickname(network, &sender)
                     && (mentioned
@@ -2562,15 +2592,6 @@ impl ChatWindow {
                         replayed,
                     },
                 );
-                self.state.append_channel_message_at(
-                    network,
-                    &channel,
-                    &sender,
-                    &text,
-                    notice,
-                    replayed,
-                    server_time,
-                );
                 if highlighted {
                     self.state.mark_highlighted(network, &channel);
                 }
@@ -2582,14 +2603,19 @@ impl ChatWindow {
                 server_time,
             } => {
                 let text = channel_activity_text(&actor, kind);
-                self.state
-                    .append_channel_activity_at(network, &channel, text, server_time);
+                self.state.append_channel_activity_at(
+                    network,
+                    &channel,
+                    text,
+                    MessageMeta::at(server_time),
+                );
             }
             Event::PrivateMessage {
                 sender,
                 text,
                 notice,
                 server_time,
+                msgid,
                 replayed,
             } => {
                 self.notify_message(
@@ -2610,8 +2636,11 @@ impl ChatWindow {
                 } else {
                     format!("<{sender}> {text}")
                 };
-                self.state
-                    .append_server_message_at(network, line, server_time);
+                self.state.append_server_message_at(
+                    network,
+                    line,
+                    irc_message_meta(server_time, msgid.as_deref(), replayed),
+                );
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
@@ -6389,10 +6418,12 @@ mod combined_log_tests {
             conversations[target].messages.push(Message {
                 time: TimeOfDay::new(0, 0),
                 sequence,
+                timestamp: None,
+                native_id: None,
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
-                replayed: false,
+                provenance: Default::default(),
             });
         }
         for excluded in [None, Some(ConversationId(2)), Some(ConversationId(4))] {
@@ -7133,6 +7164,70 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn repeated_message_ids_are_shown_and_notified_once(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_790_553_511_123);
+        let mention = |msgid: &str, replayed| Event::ChannelMessage {
+            channel: "#b".into(),
+            sender: "bob".into(),
+            text: "alice: look".into(),
+            notice: false,
+            mentioned: true,
+            server_time: Some(stamp),
+            msgid: Some(msgid.into()),
+            replayed,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                    mention("m1", false),
+                    // A bouncer or history request delivering it again.
+                    mention("m1", true),
+                    mention("m1", false),
+                    mention("m2", false),
+                ],
+                false,
+                cx,
+            );
+            assert_eq!(chat.notifier.shown.len(), 2);
+            let b = &chat.state.conversations()[1];
+            assert_eq!(b.messages.len(), 2);
+            let ids: Vec<_> = b
+                .messages
+                .iter()
+                .map(|m| m.native_id.as_ref().map(|id| id.as_str()))
+                .collect();
+            assert_eq!(ids, [Some("m1"), Some("m2")]);
+            assert!(b.messages.iter().all(|m| {
+                m.timestamp
+                    .is_some_and(|t| t.as_millis() == 1_790_553_511_123)
+            }));
+        });
+    }
+
+    #[gpui::test]
     fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Event;
 
@@ -7155,6 +7250,7 @@ mod pane_tests {
             notice: false,
             mentioned,
             server_time: None,
+            msgid: None,
             replayed: false,
         };
         chat.update(cx, |chat, cx| {
@@ -7194,6 +7290,7 @@ mod pane_tests {
                         mentioned: true,
                         replayed: true,
                         server_time: None,
+                        msgid: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -7201,12 +7298,14 @@ mod pane_tests {
                         notice: false,
                         replayed: true,
                         server_time: None,
+                        msgid: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
                         text: "psst".into(),
                         notice: false,
                         server_time: None,
+                        msgid: None,
                         replayed: false,
                     },
                     Event::PrivateMessage {
@@ -7214,6 +7313,7 @@ mod pane_tests {
                         text: "notice".into(),
                         notice: true,
                         server_time: None,
+                        msgid: None,
                         replayed: false,
                     },
                 ],
@@ -7268,7 +7368,7 @@ mod pane_tests {
                 chat.highlight_ranges(NetworkId(1), &b.messages[2]),
                 vec![(0..6)]
             );
-            assert!(b.messages[4].replayed);
+            assert!(b.messages[4].is_history());
             assert!(
                 chat.highlight_ranges(NetworkId(1), &b.messages[4])
                     .is_empty()
@@ -7290,6 +7390,7 @@ mod pane_tests {
                     mentioned: true,
                     replayed: true,
                     server_time: None,
+                    msgid: None,
                 }],
                 false,
                 cx,
@@ -7350,6 +7451,7 @@ mod pane_tests {
                         notice: false,
                         mentioned: false,
                         server_time: None,
+                        msgid: None,
                         replayed: false,
                     },
                     Event::ChannelMessage {
@@ -7359,6 +7461,7 @@ mod pane_tests {
                         notice: false,
                         mentioned: true,
                         server_time: Some(old),
+                        msgid: None,
                         replayed: false,
                     },
                 ],
@@ -7414,6 +7517,7 @@ mod pane_tests {
                         notice: false,
                         mentioned: false,
                         server_time: None,
+                        msgid: None,
                         replayed: false,
                     },
                     Event::OutgoingAccepted {
@@ -7510,6 +7614,7 @@ mod pane_tests {
                     notice: false,
                     mentioned: false,
                     server_time: None,
+                    msgid: None,
                     replayed: false,
                 },
             ]

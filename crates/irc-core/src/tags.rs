@@ -97,6 +97,14 @@ pub fn transcript_line(message: &IrcMessage) -> String {
     )
 }
 
+/// The `msgid` tag: the server's identifier for this message, opaque and
+/// compared exactly. Read whenever present, since only servers that
+/// implement message IDs send it; the application decides whether the value
+/// is usable as an identity (`model::NativeMessageId`).
+pub fn msgid(message: &IrcMessage) -> Option<&str> {
+    tag_value(message, "msgid")
+}
+
 /// The `time` tag as an instant, when server-time is enabled on this
 /// connection. Absent or invalid values yield `None` so callers fall back to
 /// the receipt time.
@@ -251,6 +259,27 @@ mod tests {
         assert!(line.len() < 600);
         assert!(line.contains("tag bytes omitted]"));
         assert!(line.ends_with(" :s PRIVMSG #c hi"));
+    }
+
+    #[test]
+    fn msgid_uses_the_normalized_reader() {
+        let tagged = parse("@time=2026-09-27T23:58:31.123Z;msgid=abc :n!u@h PRIVMSG #c :hi");
+        assert_eq!(msgid(&tagged), Some("abc"));
+        assert_eq!(msgid(&parse(":n!u@h PRIVMSG #c :hi")), None);
+        assert_eq!(msgid(&parse("@msgid= :n!u@h PRIVMSG #c :hi")), None);
+        assert_eq!(
+            msgid(&parse("@msgid=a;msgid=b :n!u@h PRIVMSG #c :hi")),
+            Some("b")
+        );
+        assert_eq!(
+            msgid(&parse("@msgid=x\u{FFFD} :n!u@h PRIVMSG #c :hi")),
+            None
+        );
+        // Escapes are undone before the value is used.
+        assert_eq!(
+            msgid(&parse("@msgid=a\\sb :n!u@h PRIVMSG #c :hi")),
+            Some("a b")
+        );
     }
 
     #[test]

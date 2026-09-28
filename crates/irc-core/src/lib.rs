@@ -307,6 +307,8 @@ pub enum Event {
         /// The server's `time` tag when server-time is negotiated and the
         /// tag is valid; `None` means use the receipt time.
         server_time: Option<SystemTime>,
+        /// The server's `msgid` tag, when present and non-empty.
+        msgid: Option<String>,
         /// History or a server/bouncer line rather than a live message from
         /// a user; it must not notify again.
         replayed: bool,
@@ -324,6 +326,8 @@ pub enum Event {
         text: String,
         notice: bool,
         server_time: Option<SystemTime>,
+        /// The server's `msgid` tag, when present and non-empty.
+        msgid: Option<String>,
         /// Replayed history (IRCv3 history batch).
         replayed: bool,
     },
@@ -1847,6 +1851,7 @@ fn private_message(
         text: text.clone(),
         notice,
         server_time,
+        msgid: tags::msgid(message).map(str::to_owned),
         replayed,
     })
 }
@@ -2000,6 +2005,7 @@ fn translate_message(
                         current_nick,
                     ),
                 server_time,
+                msgid: tags::msgid(&message).map(str::to_owned),
                 replayed,
             }]
         }
@@ -2088,6 +2094,7 @@ mod tests {
                 text: "hello".into(),
                 notice: false,
                 server_time: None,
+                msgid: None,
                 replayed: false,
             })
         );
@@ -2098,6 +2105,7 @@ mod tests {
                 text: "psst".into(),
                 notice: true,
                 server_time: None,
+                msgid: None,
                 replayed: false,
             })
         );
@@ -3463,8 +3471,8 @@ mod tests {
     }
 
     const TAGGED_TRAFFIC: &[u8] =
-        b"@time=2011-10-19T16:40:51.620Z :bob!u@h PRIVMSG #test :stamped\r\n\
-@time=not-a-time :bob!u@h PRIVMSG #test :invalid\r\n\
+        b"@time=2011-10-19T16:40:51.620Z;msgid=Ab1 :bob!u@h PRIVMSG #test :stamped\r\n\
+@time=not-a-time;msgid= :bob!u@h PRIVMSG #test :invalid\r\n\
 @+typing=active;time=2011-10-19T16:40:52.000Z :bob!u@h TAGMSG #test\r\n\
 @+typing=active :bob!u@h TAGMSG alice\r\n\
 @time=2011-10-19T16:40:53.000Z :bob!u@h PART #test :bye\r\n\
@@ -3592,6 +3600,11 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event,
             Event::ChannelMessage { text, replayed: false, server_time: Some(_), .. }
                 if text == "stamped")));
+        // The message ID travels with the event; an empty one is absent.
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, msgid: Some(id), .. } if text == "stamped" && id == "Ab1")));
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, msgid: None, .. } if text == "invalid")));
         assert!(events.iter().any(|event| matches!(event,
             Event::ChannelActivity { kind: ChannelActivityKind::Left { .. }, server_time, .. }
                 if *server_time == stamp(1_319_042_453_000))));
