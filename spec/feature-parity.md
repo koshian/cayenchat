@@ -7,7 +7,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 ## Current scope
 
 The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
-Server history is limited to recent channel history on opt-in IRCv3 servers; desktop notifications cover mentions, keywords and private messages.
+Server history is limited to channel history on opt-in IRCv3 servers (recent lines on join, older pages on scroll); desktop notifications cover mentions, keywords and private messages.
 
 - DONE — native GPUI application shell and app-owned selection
 - DONE — mock conversation switching with distinct message logs
@@ -107,7 +107,7 @@ Server history is limited to recent channel history on opt-in IRCv3 servers; des
 - TODO — local logs
 - TODO — searchable history
 - DONE — bounded in-memory channel and server scrollback
-- PARTIAL — IRCv3/server history integration where available: recent channel history on join (`draft/chathistory`, experimental, per-server opt-in, default off; up to 50 lines, deduplicated, quiet); checked against Ergo v2.19.1; no older pages, reconnect gap recovery, private-message history or persistence
+- PARTIAL — IRCv3/server history integration where available (`draft/chathistory`, experimental, per-server opt-in, default off): recent channel history on join (up to 50 lines) and older pages when the main log is scrolled to its top (`BEFORE`, up to 50 lines a page, msgid or timestamp reference within `MSGREFTYPES`, until the server reports the beginning or the 2,000-line log bound is reached); deduplicated, quiet, and the viewport stays on the same line; checked against Ergo v2.19.1; no reconnect gap recovery, private-message history or persistence
 
 ## Notifications
 
@@ -142,7 +142,7 @@ Server history is limited to recent channel history on opt-in IRCv3 servers; des
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify
-- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` for joined channels only (see Logging and history)
+- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS
 - TODO — other capabilities based on real-world usefulness
 
 ## Appearance

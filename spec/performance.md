@@ -62,7 +62,7 @@ Do not build a second mechanism for any of these; extend them instead.
 
 | Resource | Bound | Scope | Notes |
 | --- | --- | --- | --- |
-| Channel log | 2,000 messages, trimmed to 1,000 | per conversation | No application-wide bound: 1,000 conversations × 2,000 lines is allowed. |
+| Channel log | 2,000 messages, trimmed to 1,000 | per conversation | No application-wide bound: 1,000 conversations × 2,000 lines is allowed. Older history pages fill it up to 2,000 and never trim it. |
 | Server log | 2,000 messages, trimmed to 1,000 | per network | |
 | Conversations | 1,000 | per network | |
 | Diagnostics transcript | 1,000 lines | per server | Formatted eagerly for every IRC line, shown or not. No application-wide bound. |
@@ -553,6 +553,26 @@ reservation (a `u64`), at most 256 inserted lines per reply, and the
 existing 2,000-line bound applied after insertion. A reply is moved into
 the log with one `Vec::splice`; nothing is cloned. With the option off no
 state is allocated and the wire is unchanged.
+
+## Older channel history pages (2026-09-28)
+
+No measured hot path changed; bounds by construction, checked by tests
+(`older_pages_stay_within_the_log_bound`,
+`prepended_rows_of_any_height_do_not_move_the_viewport`). A page is asked
+for only from a user's scroll event near the top of the main log; no timer
+or polling exists, and an idle or merely open channel sends nothing. Per
+conversation: one request on its way and a two-field state (created by the
+first page, dropped with the session, the channel or the conversation). A
+page adds at most 50 lines (100 kept if a server sends more) and never
+takes the log past 2,000 lines, so repeated paging stops at the bound
+instead of trimming what the user is reading. Insertion is one
+`Vec::splice` at the front (moving at most 2,000 `Message` values, no
+clones) and `LogList::sync` splices the new rows in one run; rows above
+the viewport are not measured until drawn. Overlap checking builds a
+temporary filter of at most 356 keys that is dropped afterwards, and the
+conversation's 512-key filter is only read. Worker side: BEFORE shares the
+64-entry queue and single outstanding request of recent history, and the
+30 s timeout timer exists only while a request is outstanding.
 
 ## Resource limit candidates (proposal)
 

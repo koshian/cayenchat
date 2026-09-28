@@ -744,7 +744,9 @@ protocol:
   order key: unique for the run, never reused, assigned when the message is
   added. Logs keep arrival order and are never re-sorted by timestamp;
   `LogList`, the combined subwindow, previews and avatar occupancy all key on
-  it.
+  it. Ordinary messages count up from 2^62; older history pages, which go
+  before everything a conversation holds, count down from it (see Channel
+  history), so every log stays ascending without renumbering.
 - `time` (`TimeOfDay`) is presentation only: the source's time when there is
   one, otherwise the receipt time.
 - `timestamp` (`Option<model::Timestamp>`, milliseconds since the Unix epoch)
@@ -845,7 +847,29 @@ example a room or DM identifier) through the same `AppState` calls and
 appends timeline items with `MessageMeta`; the IRC-specific parts above
 stay in the IRC adapter.
 
-## Recent channel history
+## Channel history
+
+Four behaviors look alike and are kept apart:
+
+- **Server-pushed playback**: history a server or bouncer sends by itself
+  (soju/ZNC join backlog, Tiarra's Log::Recent). Recognized by
+  `replay::ReplayTracker`, shown as `Provenance::Replayed`, never asked
+  for. Receiving `chathistory` batches (`batch` framing) is this, not
+  history request support.
+- **Recent history on join**: `CHATHISTORY LATEST` when we join a channel
+  (below).
+- **Older pages**: `CHATHISTORY BEFORE` when the user scrolls to the top of
+  a channel's log (below).
+- **Reconnect gap recovery**: asking for what was missed while
+  disconnected. Not implemented; after a reconnect the join's LATEST
+  request is all there is.
+
+The last three share the per-server option, `irc-core::history`'s queue
+and the duplicate filter, and produce `Provenance::Requested` lines, which
+never notify, highlight or mark unread and stay out of the combined
+subwindow.
+
+### Recent history on join
 
 ```text
 storage Ircv3Preferences::chathistory (per server, default off)
@@ -919,8 +943,95 @@ repeated in the reply without msgid or matching server-time appears twice;
 and the reply is placed after lines received before the request (for
 example our own JOIN line).
 
-Not implemented: older pages (BEFORE/scroll back), reconnect gap recovery
-(AFTER/BETWEEN), TARGETS and private-message history, persistence.
+### Older pages
+
+```text
+ui main log scroll handler (LogList::on_scroll, deferred)
+        |   first visible row within 5 message rows of the top
+        v
+ChatWindow::load_older_history
+        |   app::AppState::request_older_history(conversation)
+        |     -> OlderHistoryRequest { request, native_id, timestamp, limit }
+        v
+irc-core Connection::request_older_history(channel, request, MessageReference, limit)
+        |   worker: history::HistoryRequests::enqueue_older (queue front)
+        |   CHATHISTORY BEFORE <channel> msgid=<id> | timestamp=<time> <n>
+        |   reply batch -> Event::OlderChannelHistory { request, messages, status }
+        v
+app::AppState::insert_older_history / older_history_failed
+        |   prepend with descending sequences, skip overlap, bound
+        v
+LogList::sync keeps the top row (sequence + pixel offset) in place
+```
+
+Trigger: the main log's GPUI scroll handler (a user's wheel or trackpad
+scroll, never a redraw, a timer or merely opening the channel) reports the
+first visible row; within 5 message rows of the top the chat window asks
+the application for one page. The handler runs while the list is
+borrowed, so it defers to the chat window. `AppState::request_older_history`
+decides whether a page may be asked for: the network can page
+(`Event::HistoryAvailable(true)`: registered with `draft/chathistory`), the
+conversation is a joined channel, its recent-history request is not still
+open, no page is on its way (`older_history_in_flight`), paging has not
+ended, and the log is below its 2,000-line bound. Scroll jitter only
+repeats that check. Private conversations are not paged.
+
+State (`app`, per `ConversationId`, created by the first page): the request
+on its way (a run-wide counter, never reused) and whether paging ended.
+Ended means the reply was empty or tagged `draft/chathistory-end`, a page
+added nothing new (so the same request is not repeated), or a request
+failed (FAIL, timeout, capability lost, queue full, no usable reference).
+All of it is dropped when the network disconnects, the channel is left, or
+the conversation is closed or replaced (reset, removed server); the next
+session may page again.
+
+Reference: among the oldest 256 lines, the one with the earliest source
+time (recent history is placed after our own JOIN line, so the first line
+is not necessarily the oldest), or else the first with a msgid. The
+application hands over its `NativeMessageId` and `Timestamp`
+(`OlderHistoryRequest`); `irc-core` picks the wire form: `msgid=` when the
+server accepts msgid references and the identifier is 1–128 bytes of
+visible ASCII, else `timestamp=YYYY-MM-DDThh:mm:ss.sssZ` when it accepts
+timestamps. `MSGREFTYPES` (read from ISUPPORT, absent means both) limits
+the choice; CayenChat prefers msgid whatever the server's order, because a
+timestamp reference skips other messages of the same millisecond. With no
+usable reference the request fails at once. On legacy encodings
+message-tags is not requested, so only timestamp references normally
+exist; both forms are ASCII, so no decoded text is ever sent back.
+
+Limits: `min(50, ISUPPORT CHATHISTORY, room left under 2,000 lines)`;
+servers returning more are cut at 100 kept lines as for LATEST. BEFORE
+requests share the one-outstanding-request queue with LATEST and go ahead
+of queued LATEST requests; one per channel. Every accepted request ends in
+exactly one `OlderChannelHistory` (`More`, `Beginning`, `Failed`); PART,
+KICK or losing the capability ends queued ones as failures.
+
+Insertion (`insert_older_history`): the answer is matched by its request
+number, so a page for a left channel, a closed or replaced conversation, or
+an ended session is ignored (the UI also drops events of an old connection
+generation). Lines already near the top of the log (a repeated page,
+recent history, playback) are skipped with a temporary duplicate filter
+seeded from the oldest 256 lines, and lines received recently with the
+conversation's own filter (checked, not recorded, so paging does not push
+out the keys live traffic needs). The rest is prepended in the server's
+order with sequences counted down below everything the log holds, with
+one `Vec::splice`; nothing already shown moves, is renumbered or
+re-sorted, and live lines arriving meanwhile stay at the bottom. When the
+log would exceed 2,000 lines the oldest lines of the page are dropped;
+paging resumes once live traffic trims the log.
+
+Viewport: `LogList::sync` records the message row at the top of a scrolled
+list and its pixel offset within the row, and after splicing restores that
+row by sequence (GPUI's `ListState::splice` already shifts its scroll top by
+the rows inserted above, so this is a check rather than a correction).
+Rows above need no measured height, so images, avatars and wrapped text
+of any height above or below do not move the view; a list following the
+bottom keeps following it. With a status or diagnostics row at the very
+top (disconnected, or the debug transcript on) the row inserted below it
+still appears below it.
+
+Not implemented: reconnect gap recovery (AFTER/BETWEEN), TARGETS and
+private-message history, persistence.
 
 ## Notifications
 
