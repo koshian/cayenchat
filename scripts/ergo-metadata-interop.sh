@@ -10,6 +10,12 @@
 #
 #   CAYENCHAT_INTEROP_IRC=127.0.0.1:PORT \
 #     cargo test --locked -p cayenchat-irc-core --test metadata_interop -- --ignored
+#
+# ERGO_SETUP_ONLY=1 builds and configures without starting the server (the
+# GUI end-to-end test starts it itself); ERGO_NO_FAKELAG=1 turns off Ergo's
+# command rate limit so a test client can fill a channel quickly. GOTOOLCHAIN
+# defaults to local; set it (for example go1.26.4) to let Go fetch the
+# toolchain Ergo needs into WORK_DIR when the installed Go is older.
 set -eu
 ERGO_TAG=v2.19.1
 ERGO_COMMIT=63c743a70644f0f19109508ade8580bf37f7d23d
@@ -26,8 +32,9 @@ if [ "$(git -C "$work/ergo-src" rev-parse HEAD)" != "$ERGO_COMMIT" ]; then
     exit 1
 fi
 # Vendored dependencies; caches inside WORK_DIR.
-(cd "$work/ergo-src" && GOPATH="$work/gopath" GOCACHE="$work/gocache" \
-    GOFLAGS=-mod=vendor GOTOOLCHAIN=local go build -o "$work/ergo" .)
+(cd "$work/ergo-src" && GOPATH="$work/gopath" GOMODCACHE="$work/gopath/pkg/mod" \
+    GOCACHE="$work/gocache" GOFLAGS=-mod=vendor GOTOOLCHAIN="${GOTOOLCHAIN:-local}" \
+    go build -o "$work/ergo" .)
 
 run="$work/run"
 rm -rf "$run"
@@ -48,7 +55,14 @@ if ! grep -q "\"127.0.0.1:$port\":" "$run/ircd.yaml" || grep -q ':6697":' "$run/
     echo "Could not rewrite the listeners of default.yaml" >&2
     exit 1
 fi
+if [ "${ERGO_NO_FAKELAG:-}" = 1 ]; then
+    sed -i.bak '/^fakelag:/,/enabled:/ s/enabled: true/enabled: false/' "$run/ircd.yaml"
+fi
 cd "$run"
 "$work/ergo" initdb --conf ircd.yaml --quiet
+if [ "${ERGO_SETUP_ONLY:-}" = 1 ]; then
+    echo "Ergo $ERGO_TAG configured in $run"
+    exit 0
+fi
 echo "Ergo $ERGO_TAG listening on 127.0.0.1:$port (Ctrl-C to stop; data in $run)"
 exec "$work/ergo" run --conf ircd.yaml
