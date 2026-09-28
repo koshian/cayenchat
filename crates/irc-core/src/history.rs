@@ -5,6 +5,10 @@
 //!
 //! - when we join a channel, `CHATHISTORY LATEST <channel> * <limit>` asks
 //!   for its latest lines (recent history);
+//! - when we join a channel again after a reconnect and the application
+//!   knows the newest message it received before the link dropped
+//!   ([`HistoryResume`]), `CHATHISTORY LATEST <channel> <reference>
+//!   <limit>` asks only for what came after it (reconnect gap recovery);
 //! - when the user scrolls to the top of a channel's log, the application
 //!   asks for one older page, `CHATHISTORY BEFORE <channel> <reference>
 //!   <limit>`, where the reference is the oldest message it holds (see
@@ -57,6 +61,14 @@ const MAX_REFERENCE_BYTES: usize = 64;
 const MAX_MSGID_BYTES: usize = 128;
 /// The reply tag saying no older (for BEFORE) messages remain.
 const END_TAG: &str = "draft/chathistory-end";
+/// Channels a connection may resume; more than a network can have
+/// conversations.
+const MAX_RESUME: usize = 1024;
+/// How far a timestamp reference for gap recovery reaches back, for clock
+/// skew between the servers of a network (the specification suggests 1 to
+/// 10 s). The lines this repeats are already shown and dropped as
+/// duplicates.
+const RESUME_SKEW: Duration = Duration::from_secs(5);
 
 /// One line of requested history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +91,15 @@ pub struct MessageReference {
     pub time: Option<SystemTime>,
 }
 
+/// Where a channel's log stopped when the previous connection ended: the
+/// newest message received from the server before the link dropped. On
+/// this connection our JOIN of `channel` asks only for what came after it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryResume {
+    pub channel: String,
+    pub after: MessageReference,
+}
+
 /// How an older-page request ended ([`crate::Event::OlderChannelHistory`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OlderHistoryStatus {
@@ -97,6 +118,9 @@ pub enum OlderHistoryStatus {
 pub(crate) enum Page {
     /// The latest lines, on join.
     Latest,
+    /// The latest lines after a reference, on the first join after a
+    /// reconnect.
+    Resume,
     /// One page before a reference, for the application's request
     /// `request`.
     Before { request: u64 },
@@ -110,6 +134,10 @@ pub(crate) struct Finished {
     pub messages: Vec<HistoryMessage>,
     /// The reply said nothing older remains (BEFORE only).
     pub end: bool,
+    /// A resumed request whose reply reached its limit without the end
+    /// tag: lines between the reference and the oldest one returned may be
+    /// missing.
+    pub incomplete: bool,
     /// The request failed or was given up; `messages` is empty.
     pub failed: bool,
     pub note: Option<String>,
@@ -122,6 +150,7 @@ impl Finished {
             page,
             messages: Vec::new(),
             end: false,
+            incomplete: false,
             failed: true,
             note,
         }
@@ -174,6 +203,8 @@ struct Outstanding {
     reference: Option<String>,
     /// The reply batch carried `draft/chathistory-end`.
     end: bool,
+    /// Lines asked for.
+    limit: usize,
     nested: Vec<String>,
     messages: Vec<HistoryMessage>,
     dropped: usize,
@@ -203,6 +234,9 @@ pub(crate) struct HistoryRequests {
     reference_types: ReferenceTypes,
     queue: VecDeque<Queued>,
     outstanding: Option<Outstanding>,
+    /// Channels whose first join resumes after a reference; each entry is
+    /// used (or dropped) by that join.
+    resume: Vec<HistoryResume>,
     /// Channels of abandoned requests: a late reply is swallowed, not shown
     /// as live or as another request's reply.
     abandoned: VecDeque<String>,
@@ -211,6 +245,16 @@ pub(crate) struct HistoryRequests {
 }
 
 impl HistoryRequests {
+    /// Requests for a connection that resumes `resume` (at most
+    /// [`MAX_RESUME`] channels).
+    pub(crate) fn with_resume(mut resume: Vec<HistoryResume>) -> Self {
+        resume.truncate(MAX_RESUME);
+        Self {
+            resume,
+            ..Self::default()
+        }
+    }
+
     /// Reads `CHATHISTORY=<n>` and `MSGREFTYPES=<types>` (and their
     /// removal) from RPL_ISUPPORT.
     pub(crate) fn isupport(&mut self, message: &IrcMessage) {
@@ -269,10 +313,14 @@ impl HistoryRequests {
     }
 
     /// Queues a request for `channel`'s latest lines, unless one is already
-    /// queued or being answered. Returns a note when the queue is full.
+    /// queued or being answered. The first join of a channel this
+    /// connection resumes asks only for the lines after its reference, when
+    /// the server accepts one of its reference types; otherwise, and on
+    /// later joins, for the latest lines. Returns a note when the queue is
+    /// full.
     pub(crate) fn enqueue(&mut self, channel: &str) -> Option<String> {
         let latest = |name: &str, page: &Page| {
-            *page == Page::Latest && crate::text::same_nickname(name, channel)
+            matches!(page, Page::Latest | Page::Resume) && crate::text::same_nickname(name, channel)
         };
         if self
             .queue
@@ -290,14 +338,44 @@ impl HistoryRequests {
                 "History for {channel} was not requested: {MAX_QUEUED} requests are already waiting."
             ));
         }
+        let resume = self
+            .resume
+            .iter()
+            .position(|resume| crate::text::same_nickname(&resume.channel, channel))
+            .map(|index| self.resume.swap_remove(index));
+        let resumed = resume.and_then(|resume| {
+            let mut after = resume.after;
+            after.time = after.time.map(|time| {
+                time.checked_sub(RESUME_SKEW)
+                    .unwrap_or(std::time::UNIX_EPOCH)
+            });
+            self.selector(&after)
+        });
+        let (page, selector) = match resumed {
+            Some(selector) => (Page::Resume, selector),
+            None => (Page::Latest, "*".into()),
+        };
         self.queue.push_back(Queued {
             channel: channel.to_owned(),
-            page: Page::Latest,
-            selector: "*".into(),
+            page,
+            selector,
             // Lowered to the server's limit when sent.
             limit: HISTORY_LIMIT,
         });
         None
+    }
+
+    /// A resumed request failed: the channel still gets its latest lines,
+    /// as on any join, unless the queue is full.
+    fn fall_back(&mut self, finished: &Finished) {
+        if finished.page == Page::Resume && self.queue.len() < MAX_QUEUED {
+            self.queue.push_back(Queued {
+                channel: finished.channel.clone(),
+                page: Page::Latest,
+                selector: "*".into(),
+                limit: HISTORY_LIMIT,
+            });
+        }
     }
 
     /// Queues the application's request `request` for up to `limit` lines of
@@ -375,7 +453,7 @@ impl HistoryRequests {
         }
         let queued = self.queue.pop_front()?;
         let subcommand = match queued.page {
-            Page::Latest => "LATEST",
+            Page::Latest | Page::Resume => "LATEST",
             Page::Before { .. } => "BEFORE",
         };
         let limit = queued.limit.min(self.limit());
@@ -394,6 +472,7 @@ impl HistoryRequests {
             sent: now,
             reference: None,
             end: false,
+            limit,
             nested: Vec::new(),
             messages: Vec::new(),
             dropped: 0,
@@ -424,11 +503,9 @@ impl HistoryRequests {
             outstanding.channel,
             RESPONSE_TIMEOUT.as_secs()
         );
-        Some(Observed::Finished(Finished::failed(
-            outstanding.channel,
-            outstanding.page,
-            Some(note),
-        )))
+        let finished = Finished::failed(outstanding.channel, outstanding.page, Some(note));
+        self.fall_back(&finished);
+        Some(Observed::Finished(finished))
     }
 
     /// The capability went away: nothing is requested any more. Returns the
@@ -445,9 +522,12 @@ impl HistoryRequests {
             matches!(queued.page, Page::Before { .. })
                 .then(|| Finished::failed(queued.channel, queued.page, None))
         }));
+        // Resume entries not used yet stay: a channel joined later on this
+        // connection is still the one that was cut off.
         *self = Self {
             server_limit: self.server_limit,
             reference_types: self.reference_types,
+            resume: std::mem::take(&mut self.resume),
             ..Self::default()
         };
         ended
@@ -491,11 +571,9 @@ impl HistoryRequests {
             && let Some(note) = failure(message, &outstanding.channel)
         {
             let outstanding = self.outstanding.take().expect("outstanding request");
-            return Observed::Finished(Finished::failed(
-                outstanding.channel,
-                outstanding.page,
-                Some(note),
-            ));
+            let finished = Finished::failed(outstanding.channel, outstanding.page, Some(note));
+            self.fall_back(&finished);
+            return Observed::Finished(finished);
         }
         Observed::Unrelated
     }
@@ -530,11 +608,15 @@ impl HistoryRequests {
                     outstanding.channel, outstanding.dropped
                 )
             });
+            let incomplete = outstanding.page == Page::Resume
+                && !outstanding.end
+                && outstanding.messages.len() + outstanding.dropped >= outstanding.limit;
             return Observed::Finished(Finished {
                 channel: outstanding.channel,
                 page: outstanding.page,
                 messages: outstanding.messages,
                 end: outstanding.end,
+                incomplete,
                 failed: false,
                 note,
             });
@@ -1158,5 +1240,136 @@ mod tests {
         );
         assert!(ended.iter().all(|f| f.failed && f.messages.is_empty()));
         assert!(requests.queue.is_empty() && requests.next_deadline().is_none());
+    }
+
+    fn resume(channel: &str, msgid: Option<&str>, secs: Option<u64>) -> HistoryResume {
+        HistoryResume {
+            channel: channel.into(),
+            after: reference(msgid, secs),
+        }
+    }
+
+    #[test]
+    fn the_first_join_after_a_reconnect_asks_only_for_what_came_after() {
+        let mut requests = HistoryRequests::with_resume(vec![
+            resume("#a", Some("m9"), Some(1_790_550_000)),
+            resume("#b", None, Some(1_790_550_000)),
+        ]);
+        requests.isupport(&parse(":srv 005 me CHATHISTORY=30 :are supported"));
+        let now = Instant::now();
+        requests.enqueue("#A");
+        requests.enqueue("#b");
+        requests.enqueue("#c");
+        let (channel, page, _) = requests.next_request(now).unwrap();
+        assert_eq!((channel.as_str(), &page), ("#A", &Page::Resume));
+        requests.observe(&parse(":srv BATCH +r chathistory #a"));
+        requests.observe(&parse(":srv BATCH -r"));
+        // A timestamp reference reaches back a few seconds for clock skew;
+        // what that repeats is dropped as duplicates by the application.
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY LATEST #b timestamp=2026-09-27T22:59:55.123Z 30")
+        );
+        requests.observe(&parse(":srv BATCH +s chathistory #b"));
+        requests.observe(&parse(":srv BATCH -s"));
+        // A channel with nothing to resume from asks for its latest lines.
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY LATEST #c * 30")
+        );
+        requests.observe(&parse(":srv BATCH +t chathistory #c"));
+        requests.observe(&parse(":srv BATCH -t"));
+        // Each reference is used once: joining again asks for the latest.
+        requests.enqueue("#a");
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY LATEST #a * 30")
+        );
+    }
+
+    #[test]
+    fn resuming_uses_msgid_first_and_nothing_the_server_refuses() {
+        let now = Instant::now();
+        let mut requests =
+            HistoryRequests::with_resume(vec![resume("#a", Some("m9"), Some(1_790_550_000))]);
+        requests.enqueue("#a");
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY LATEST #a msgid=m9 50")
+        );
+
+        let mut requests = HistoryRequests::with_resume(vec![resume("#a", Some("m9"), None)]);
+        requests.isupport(&parse(":srv 005 me MSGREFTYPES=timestamp :are supported"));
+        requests.enqueue("#a");
+        let (_, page, command) = requests.next_request(now).unwrap();
+        assert_eq!(page, Page::Latest, "no usable reference: not a resume");
+        assert!(
+            IrcMessage::from(command)
+                .to_string()
+                .contains("LATEST #a * 50")
+        );
+    }
+
+    #[test]
+    fn a_full_resumed_reply_may_have_missed_lines() {
+        let now = Instant::now();
+        let full = |end: bool, lines: usize| {
+            let mut requests = HistoryRequests::with_resume(vec![resume("#a", Some("m1"), None)]);
+            requests.isupport(&parse(":srv 005 me CHATHISTORY=3 :are supported"));
+            requests.enqueue("#a");
+            sent(&mut requests, now);
+            let tag = if end { "@draft/chathistory-end " } else { "" };
+            requests.observe(&parse(&format!("{tag}:srv BATCH +r chathistory #a")));
+            for index in 0..lines {
+                requests.observe(&parse(&format!("@batch=r :bob!u@h PRIVMSG #a :{index}")));
+            }
+            finished(requests.observe(&parse(":srv BATCH -r")))
+        };
+        let reply = full(false, 3);
+        assert_eq!(reply.page, Page::Resume);
+        assert!(reply.incomplete);
+        assert!(!full(true, 3).incomplete, "the server says that was all");
+        assert!(!full(false, 2).incomplete, "fewer than asked for");
+        assert!(full(false, 0).messages.is_empty());
+
+        // A plain LATEST is never incomplete: its limit is the point.
+        let mut requests = HistoryRequests::default();
+        requests.isupport(&parse(":srv 005 me CHATHISTORY=3 :are supported"));
+        requests.enqueue("#a");
+        sent(&mut requests, now);
+        requests.observe(&parse(":srv BATCH +r chathistory #a"));
+        for index in 0..3 {
+            requests.observe(&parse(&format!("@batch=r :bob!u@h PRIVMSG #a :{index}")));
+        }
+        assert!(!finished(requests.observe(&parse(":srv BATCH -r"))).incomplete);
+    }
+
+    #[test]
+    fn a_failed_resume_falls_back_to_the_latest_lines() {
+        let now = Instant::now();
+        let mut requests = HistoryRequests::with_resume(vec![
+            resume("#a", Some("m1"), None),
+            resume("#b", Some("m2"), None),
+        ]);
+        requests.enqueue("#a");
+        sent(&mut requests, now);
+        let failed = finished(requests.observe(&parse(
+            ":srv FAIL CHATHISTORY INVALID_MSGREFTYPE LATEST #a :msgid-based history requests are not supported",
+        )));
+        assert_eq!(failed.page, Page::Resume);
+        assert!(failed.failed && !failed.incomplete);
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY LATEST #a * 50")
+        );
+        // A timeout falls back too, once: the fallback is a plain LATEST.
+        let Some(Observed::Finished(_)) = requests.tick(now + RESPONSE_TIMEOUT) else {
+            panic!();
+        };
+        assert!(requests.next_request(now).is_none());
+        // Losing the capability keeps unused references for a later join.
+        requests.reset();
+        requests.enqueue("#b");
+        assert!(sent(&mut requests, now).unwrap().contains("msgid=m2"));
     }
 }
