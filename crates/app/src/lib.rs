@@ -11,7 +11,8 @@ use std::{
 };
 
 use cayenchat_model::{
-    Conversation, ConversationId, Message, Network, NetworkId, Provenance, TimeOfDay, Timestamp,
+    Conversation, ConversationId, ConversationKind, Message, Network, NetworkId, Provenance,
+    TimeOfDay, Timestamp,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -19,6 +20,10 @@ pub use timeline::MessageMeta;
 /// Upper bound on conversations per network, so a hostile server or bouncer
 /// cannot grow memory without limit by announcing endless channel joins.
 const MAX_CONVERSATIONS_PER_NETWORK: usize = 1_000;
+/// Upper bound on private conversations per network (within the limit
+/// above), so a flood of messages from new nicknames cannot fill the channel
+/// tree; further ones go to the server log.
+pub const MAX_PRIVATE_CONVERSATIONS_PER_NETWORK: usize = 100;
 /// Sequences set aside when history is requested for a conversation: the
 /// most lines one reply can add. They sit between the lines that arrived
 /// before the request and those after it, so inserting the reply keeps
@@ -195,6 +200,7 @@ impl AppState {
             |(id, network, name, topic, messages, members)| Conversation {
                 id: ConversationId(id),
                 network: NetworkId(network),
+                kind: ConversationKind::Channel,
                 name: name.into(),
                 topic: topic.into(),
                 messages: messages
@@ -255,6 +261,7 @@ impl AppState {
             .map(|(index, name)| Conversation {
                 id: ConversationId(index as u32 + 1),
                 network: network.id,
+                kind: ConversationKind::Channel,
                 name,
                 topic: String::new(),
                 messages: Vec::new(),
@@ -482,6 +489,12 @@ impl AppState {
         if self.networks.iter().any(|network| network.id == id) {
             if status == ConnectionStatus::Registered {
                 self.active_servers.insert(id);
+                // Private conversations need no join: usable once registered.
+                for conversation in &self.conversations {
+                    if conversation.network == id && conversation.is_private() {
+                        self.active_channels.insert(conversation.id);
+                    }
+                }
             } else if matches!(status, ConnectionStatus::Disconnected(_)) {
                 self.active_servers.remove(&id);
                 for channel in self
@@ -520,17 +533,177 @@ impl AppState {
         self.next_message_sequence
     }
 
-    fn channel_id(&self, network: NetworkId, name: &str) -> Option<ConversationId> {
+    /// The channel conversation `name` of `network`.
+    pub fn channel_id(&self, network: NetworkId, name: &str) -> Option<ConversationId> {
         self.conversations
             .iter()
-            .find(|channel| channel.network == network && channel.name.eq_ignore_ascii_case(name))
+            .find(|channel| {
+                channel.network == network
+                    && channel.kind == ConversationKind::Channel
+                    && channel.name.eq_ignore_ascii_case(name)
+            })
             .map(|channel| channel.id)
+    }
+
+    /// The private conversation with `peer_key` on `network`.
+    pub fn private_id(&self, network: NetworkId, peer_key: &str) -> Option<ConversationId> {
+        self.conversations
+            .iter()
+            .find(|conversation| {
+                conversation.network == network && conversation.peer_key() == Some(peer_key)
+            })
+            .map(|conversation| conversation.id)
+    }
+
+    /// The private conversation with `peer_key` on `network`, named `name`
+    /// (the peer's current display name). It is created when `create` is
+    /// set and the network has room; `None` means the caller keeps the
+    /// message in the server log. An existing conversation takes `name`,
+    /// so it follows the spelling the peer uses now.
+    pub fn private_conversation(
+        &mut self,
+        network: NetworkId,
+        peer_key: &str,
+        name: &str,
+        create: bool,
+    ) -> Option<ConversationId> {
+        if let Some(id) = self.private_id(network, peer_key) {
+            if let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id)
+                && conversation.name != name
+            {
+                conversation.name = name.to_owned();
+            }
+            return Some(id);
+        }
+        if !create
+            || self
+                .conversations
+                .iter()
+                .filter(|c| c.network == network && c.is_private())
+                .count()
+                >= MAX_PRIVATE_CONVERSATIONS_PER_NETWORK
+        {
+            return None;
+        }
+        let id = self.add_conversation(
+            network,
+            ConversationKind::Private {
+                peer_key: peer_key.to_owned(),
+            },
+            name,
+        )?;
+        if self.status(network) == Some(&ConnectionStatus::Registered) {
+            self.active_channels.insert(id);
+        }
+        Some(id)
+    }
+
+    /// A private conversation's peer changed name. The conversation follows
+    /// them unless one with the new name already exists (then both stay as
+    /// they are, rather than merging two histories). Returns the
+    /// conversation that was renamed.
+    pub fn rename_private(
+        &mut self,
+        network: NetworkId,
+        from_key: &str,
+        to_key: &str,
+        to_name: &str,
+    ) -> Option<ConversationId> {
+        let id = self.private_id(network, from_key)?;
+        if from_key != to_key && self.private_id(network, to_key).is_some() {
+            return None;
+        }
+        let conversation = self.conversations.iter_mut().find(|c| c.id == id)?;
+        conversation.kind = ConversationKind::Private {
+            peer_key: to_key.to_owned(),
+        };
+        conversation.name = to_name.to_owned();
+        Some(id)
+    }
+
+    /// Closes a private conversation (channels are left with PART instead).
+    /// Returns whether it was removed; the caller drops its UI state.
+    pub fn close_private(&mut self, id: ConversationId) -> bool {
+        let Some(index) = self
+            .conversations
+            .iter()
+            .position(|c| c.id == id && c.is_private())
+        else {
+            return false;
+        };
+        let network = self.conversations.remove(index).network;
+        self.duplicates.remove(&id);
+        self.pending_history.remove(&id);
+        self.unread.remove(&id);
+        self.highlighted.remove(&id);
+        self.active_channels.remove(&id);
+        if self.previous_channel == Some(id) {
+            self.previous_channel = None;
+        }
+        if self.selected == Selection::Channel(id) {
+            self.selected = Selection::Server(network);
+        }
+        true
+    }
+
+    /// Adds a message to conversation `id` (any kind). `unread` marks it
+    /// unread when it is not selected. Returns `false` for a duplicate.
+    pub fn append_conversation_message(
+        &mut self,
+        id: ConversationId,
+        sender: &str,
+        text: &str,
+        notice: bool,
+        meta: MessageMeta,
+        unread: bool,
+    ) -> bool {
+        let text = if notice {
+            format!("[NOTICE] {text}")
+        } else {
+            text.into()
+        };
+        if !self.append_to_conversation(id, new_message(sender.into(), text, false, meta)) {
+            return false;
+        }
+        if unread {
+            self.mark_unread(id);
+        }
+        true
+    }
+
+    /// Adds an activity line (a nick change, a quit) to conversation `id`.
+    pub fn append_conversation_activity(&mut self, id: ConversationId, text: String) {
+        self.append_to_conversation(
+            id,
+            new_message(String::new(), text, true, MessageMeta::live()),
+        );
+    }
+
+    /// Marks conversation `id` highlighted until it is selected.
+    pub fn highlight(&mut self, id: ConversationId) {
+        if self.selected != Selection::Channel(id) && self.conversations.iter().any(|c| c.id == id)
+        {
+            self.highlighted.insert(id);
+        }
     }
 
     fn ensure_channel(&mut self, network: NetworkId, name: &str) -> Option<ConversationId> {
         if let Some(id) = self.channel_id(network, name) {
             return Some(id);
         }
+        self.add_conversation(network, ConversationKind::Channel, name)
+    }
+
+    /// Adds a conversation to `network`, within its limit. Each network's
+    /// conversations stay together in network order, channels before
+    /// private conversations, so navigation and numbered shortcuts follow
+    /// the tree.
+    fn add_conversation(
+        &mut self,
+        network: NetworkId,
+        kind: ConversationKind,
+        name: &str,
+    ) -> Option<ConversationId> {
         if !self.networks.iter().any(|server| server.id == network)
             || self
                 .conversations
@@ -543,12 +716,16 @@ impl AppState {
         }
         let id = ConversationId(self.next_conversation_id);
         self.next_conversation_id += 1;
-        // Insert after the network's last conversation to keep networks grouped.
+        let private = kind != ConversationKind::Channel;
         let index = self
             .conversations
             .iter()
-            .rposition(|channel| channel.network == network)
+            .rposition(|c| c.network == network && (private || !c.is_private()))
             .map(|index| index + 1)
+            .or_else(|| {
+                // A network's first channel goes before its private ones.
+                self.conversations.iter().position(|c| c.network == network)
+            })
             .unwrap_or_else(|| {
                 let order = self
                     .networks
@@ -571,6 +748,7 @@ impl AppState {
             Conversation {
                 id,
                 network,
+                kind,
                 name: name.to_owned(),
                 topic: String::new(),
                 messages: Vec::new(),
@@ -1866,6 +2044,198 @@ mod tests {
         );
         let history = messages.iter().filter(|m| m.is_history()).count();
         assert_eq!(history, HISTORY_RESERVE);
+    }
+
+    /// A peer's messages as the IRC adapter routes them.
+    fn private(
+        state: &mut AppState,
+        network: NetworkId,
+        nick: &str,
+        text: &str,
+    ) -> Option<ConversationId> {
+        let key = nick.to_lowercase();
+        let id = state.private_conversation(network, &key, nick, true)?;
+        state.append_conversation_message(id, nick, text, false, MessageMeta::live(), true);
+        Some(id)
+    }
+
+    #[test]
+    fn private_conversations_are_created_once_per_peer_and_network() {
+        let mut state = two_networks();
+        state.set_status(NetworkId(1), ConnectionStatus::Registered);
+        let first = private(&mut state, NetworkId(1), "Bob", "hi").unwrap();
+        let again = private(&mut state, NetworkId(1), "bob", "again").unwrap();
+        assert_eq!(first, again, "the adapter's folded key decides");
+        // The same nickname on another server is another person.
+        let other = private(&mut state, NetworkId(2), "Bob", "elsewhere").unwrap();
+        assert_ne!(first, other);
+        let bob = state
+            .conversations()
+            .iter()
+            .find(|c| c.id == first)
+            .unwrap();
+        assert_eq!(bob.name, "bob", "follows the spelling used now");
+        assert!(bob.is_private());
+        let texts: Vec<_> = bob.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["hi", "again"]);
+        assert!(state.is_unread(first));
+        assert!(state.is_active_channel(first), "registered: can send");
+        assert!(
+            !state.is_active_channel(other),
+            "network 2 is not connected"
+        );
+        // Channels stay first within their network, private ones after.
+        state.joined_channel(NetworkId(1), "#late");
+        assert_eq!(
+            names(&state),
+            [
+                (1, "#a".into()),
+                (1, "#b".into()),
+                (1, "#late".into()),
+                (1, "bob".into()),
+                (2, "#a".into()),
+                (2, "Bob".into()),
+            ]
+        );
+        // A channel lookup never finds a private conversation.
+        assert!(state.channel_id(NetworkId(1), "bob").is_none());
+        state.append_channel_message(NetworkId(1), "bob", "x", "y", false, false);
+        assert_eq!(
+            state
+                .conversations()
+                .iter()
+                .find(|c| c.id == first)
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn notices_and_overflow_do_not_create_private_conversations() {
+        let mut state = AppState::live("irc.example".into(), vec![]);
+        let network = NetworkId(1);
+        assert!(
+            state
+                .private_conversation(network, "nickserv", "NickServ", false)
+                .is_none()
+        );
+        assert!(state.conversations().is_empty());
+        for index in 0..MAX_PRIVATE_CONVERSATIONS_PER_NETWORK {
+            assert!(private(&mut state, network, &format!("n{index}"), "x").is_some());
+        }
+        assert!(private(&mut state, network, "one-too-many", "x").is_none());
+        // Channels are still allowed.
+        state.joined_channel(network, "#room");
+        assert!(state.channel_id(network, "#room").is_some());
+    }
+
+    #[test]
+    fn renames_follow_the_peer_but_never_merge_conversations() {
+        let mut state = AppState::live("irc.example".into(), vec![]);
+        let network = NetworkId(1);
+        let bob = private(&mut state, network, "bob", "hi").unwrap();
+        assert_eq!(
+            state.rename_private(network, "bob", "robert", "Robert"),
+            Some(bob)
+        );
+        assert_eq!(state.private_id(network, "robert"), Some(bob));
+        assert!(state.private_id(network, "bob").is_none());
+        // A new user taking the old nickname starts a new conversation.
+        let newcomer = private(&mut state, network, "bob", "who am i").unwrap();
+        assert_ne!(newcomer, bob);
+        // Renaming into an existing conversation leaves both alone.
+        assert_eq!(state.rename_private(network, "robert", "bob", "bob"), None);
+        assert_eq!(state.private_id(network, "robert"), Some(bob));
+        assert_eq!(state.private_id(network, "bob"), Some(newcomer));
+        // Unknown users change nothing; a case-only change keeps the key.
+        assert_eq!(state.rename_private(network, "carol", "dave", "dave"), None);
+        assert_eq!(
+            state.rename_private(network, "bob", "bob", "BOB"),
+            Some(newcomer)
+        );
+        let texts: Vec<_> = state
+            .conversations()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(texts, ["Robert", "BOB"]);
+    }
+
+    #[test]
+    fn private_conversations_end_with_their_session_and_can_be_closed() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        state.set_status(network, ConnectionStatus::Registered);
+        let bob = private(&mut state, network, "bob", "hi").unwrap();
+        state.dispatch(Command::SelectChannel(bob));
+        state.set_status(network, ConnectionStatus::Disconnected("gone".into()));
+        assert!(
+            !state.is_active_channel(bob),
+            "cannot send while disconnected"
+        );
+        state.set_status(network, ConnectionStatus::Registered);
+        assert!(state.is_active_channel(bob));
+        // Channels cannot be closed this way.
+        let channel = state.channel_id(network, "#a").unwrap();
+        assert!(!state.close_private(channel));
+        assert!(state.close_private(bob));
+        assert_eq!(state.selection(), Selection::Server(network));
+        assert!(!state.is_unread(bob) && !state.is_active_channel(bob));
+        // A new session keeps only the configured channels.
+        let carol = private(&mut state, network, "carol", "hi").unwrap();
+        let removed = state.reset_network(network, vec!["#a".into()]);
+        assert!(removed.contains(&carol));
+        assert!(state.private_id(network, "carol").is_none());
+    }
+
+    #[test]
+    fn private_messages_use_timeline_identity_and_bounds() {
+        let mut state = AppState::live("irc.example".into(), vec![]);
+        let network = NetworkId(1);
+        let bob = state
+            .private_conversation(network, "bob", "bob", true)
+            .unwrap();
+        assert!(state.append_conversation_message(
+            bob,
+            "bob",
+            "hi",
+            false,
+            meta(Some(1), Some("p1"), Provenance::Live),
+            true,
+        ));
+        assert!(!state.append_conversation_message(
+            bob,
+            "bob",
+            "hi",
+            false,
+            meta(Some(1), Some("p1"), Provenance::Replayed),
+            true,
+        ));
+        // Our own lines do not mark it unread.
+        state.dispatch(Command::SelectServer(network));
+        state.dispatch(Command::SelectChannel(bob));
+        state.dispatch(Command::SelectServer(network));
+        state.append_conversation_message(bob, "me", "sent", false, MessageMeta::live(), false);
+        assert!(!state.is_unread(bob));
+        for index in 0..MAX_RETAINED + 5 {
+            state.append_conversation_message(
+                bob,
+                "bob",
+                &index.to_string(),
+                false,
+                MessageMeta::live(),
+                true,
+            );
+        }
+        let messages = &state.conversations()[0].messages;
+        assert!(messages.len() <= MAX_RETAINED);
+        assert!(
+            messages
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
     }
 
     #[test]

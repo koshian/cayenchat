@@ -14,15 +14,45 @@ pub struct Network {
     pub name: String,
 }
 
+/// What a conversation is, as far as the application and its presentation
+/// need to know. Target syntax and case mapping stay with the protocol
+/// adapter, which supplies the folded key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConversationKind {
+    /// A shared conversation several people join (IRC: a channel).
+    Channel,
+    /// A one-to-one conversation. `peer_key` identifies the other person
+    /// within the conversation's network, folded by the adapter (IRC: the
+    /// RFC 1459 case-mapped nickname); it is never compared across networks.
+    Private { peer_key: String },
+}
+
 #[derive(Clone, Debug)]
 pub struct Conversation {
     pub id: ConversationId,
     pub network: NetworkId,
+    pub kind: ConversationKind,
+    /// Display name, and for IRC the message target (channel name or the
+    /// peer's current nickname).
     pub name: String,
     pub topic: String,
     pub messages: Vec<Message>,
     /// Display-only mock roster; live membership will arrive as application events.
     pub members: Vec<String>,
+}
+
+impl Conversation {
+    pub fn is_private(&self) -> bool {
+        matches!(self.kind, ConversationKind::Private { .. })
+    }
+
+    /// The folded key of a private conversation's peer.
+    pub fn peer_key(&self) -> Option<&str> {
+        match &self.kind {
+            ConversationKind::Private { peer_key } => Some(peer_key),
+            ConversationKind::Channel => None,
+        }
+    }
 }
 
 /// Local wall-clock time a message arrived, to the minute. Stored as a number

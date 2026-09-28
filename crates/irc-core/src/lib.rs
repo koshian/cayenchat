@@ -252,7 +252,9 @@ pub fn valid_channel(value: &str) -> bool {
             .any(|ch| ch.is_whitespace() || ch.is_control() || ch == ',')
 }
 
-fn valid_nickname(value: &str) -> bool {
+/// Whether a name can be a nickname target (no channel prefix, spaces or
+/// separators).
+pub fn valid_nickname(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with(['#', '&', '!', '~', '@', '%', '+'])
         && !value
@@ -332,6 +334,27 @@ pub enum Event {
         msgid: Option<String>,
         /// Replayed history (IRCv3 history batch).
         replayed: bool,
+    },
+    /// A PRIVMSG or NOTICE we sent to a user, seen on the wire: a bouncer
+    /// relaying what another of our clients sent, or its playback. (Our own
+    /// messages from this client arrive as [`Event::OutgoingAccepted`].)
+    OwnPrivateMessage {
+        target: String,
+        text: String,
+        notice: bool,
+        server_time: Option<SystemTime>,
+        msgid: Option<String>,
+        replayed: bool,
+    },
+    /// Another user changed nickname (ours is [`Event::NickChanged`]).
+    UserNickChanged {
+        from: String,
+        to: String,
+    },
+    /// Another user quit. Only users sharing a channel with us are seen.
+    UserQuit {
+        nickname: String,
+        reason: Option<String>,
     },
     Names {
         channel: String,
@@ -529,6 +552,17 @@ fn is_service_secret(target: &str, body: &str) -> bool {
             .is_some_and(is_secret_service_command)
 }
 
+/// What our own message shows in its conversation: credentials sent to
+/// services (`IDENTIFY`, `REGISTER`, ...) are not shown, as in the
+/// transcript.
+fn echo_text(target: &str, text: String) -> String {
+    if is_service_secret(target, &text) {
+        "[redacted]".into()
+    } else {
+        text
+    }
+}
+
 async fn wire(
     events: &mpsc::Sender<Event>,
     started: Instant,
@@ -620,6 +654,14 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
     validate_wire(&message.to_string(), encoding)
 }
 
+/// The selected conversation's target for /me and /msg without a target: a
+/// channel or, in a private conversation, the peer's nickname.
+fn selected_target(target: Option<&str>) -> Result<&str, String> {
+    target
+        .filter(|value| valid_channel(value) || valid_nickname(value))
+        .ok_or_else(|| "Select a channel or provide an explicit target.".into())
+}
+
 fn selected_channel(channel: Option<&str>) -> Result<&str, String> {
     channel
         .filter(|value| valid_channel(value))
@@ -702,7 +744,7 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
     let verb = verb.to_ascii_uppercase();
     match verb.as_str() {
         "ME" => {
-            let target = selected_channel(selected)?;
+            let target = selected_target(selected)?;
             let action = rest.trim_start_matches(':');
             if action.is_empty() {
                 return Err("/me requires action text.".into());
@@ -718,11 +760,11 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
         }
         "MSG" | "PRIVMSG" | "NOTICE" => {
             let (target, text) = if let Some(text) = rest.strip_prefix(':') {
-                (selected_channel(selected)?, text)
+                (selected_target(selected)?, text)
             } else {
                 let (first, remainder) = split_word(rest);
                 if remainder.is_empty() {
-                    (selected_channel(selected)?, first)
+                    (selected_target(selected)?, first)
                 } else {
                     (first, remainder.trim_start_matches(':'))
                 }
@@ -924,7 +966,12 @@ impl Connection {
             .map_err(|error| format!("Could not queue IRC message: {error}"))
     }
 
-    pub fn send_private_message(&self, nickname: &str, text: &str) -> Result<(), String> {
+    pub fn send_private_message(
+        &self,
+        nickname: &str,
+        text: &str,
+        notice: bool,
+    ) -> Result<(), String> {
         if !valid_nickname(nickname) {
             return Err("Invalid message target.".into());
         }
@@ -933,7 +980,7 @@ impl Connection {
             target: nickname.to_owned(),
             text: text.to_owned(),
             display_text: text.to_owned(),
-            notice: false,
+            notice,
         };
         validate_outgoing(&outgoing, &self.encoding)?;
         self.commands
@@ -1295,7 +1342,8 @@ async fn run_cancellable(
                         let event = match result {
                             Ok(()) => {
                                 wire(&events, started, WireDirection::Sent, line).await;
-                                Event::OutgoingAccepted {channel: target, text: display_text, notice}
+                                let text = echo_text(&target, display_text);
+                                Event::OutgoingAccepted {channel: target, text, notice}
                             }
                             Err(error) => Event::ServerLine(format!("Send failed: {error}")),
                         };
@@ -1977,7 +2025,24 @@ fn private_message(
         return None;
     };
     let ctcp = text.starts_with('\u{1}');
-    if !target.eq_ignore_ascii_case(current_nick) || (ctcp && !text.starts_with("\u{1}ACTION ")) {
+    if ctcp && !text.starts_with("\u{1}ACTION ") {
+        return None;
+    }
+    // Our own line to someone else, relayed by a bouncer.
+    if crate::text::same_nickname(sender, current_nick)
+        && !crate::text::same_nickname(target, current_nick)
+        && valid_nickname(target)
+    {
+        return Some(Event::OwnPrivateMessage {
+            target: target.clone(),
+            text: text.clone(),
+            notice,
+            server_time,
+            msgid: tags::msgid(message).map(str::to_owned),
+            replayed,
+        });
+    }
+    if !crate::text::same_nickname(target, current_nick) {
         return None;
     }
     Some(Event::PrivateMessage {
@@ -2124,6 +2189,13 @@ fn translate_message(
                 nickname: nickname.clone(),
             }]
         }
+        IrcCommand::NICK(nickname) => match message.source_nickname() {
+            Some(from) => vec![Event::UserNickChanged {
+                from: from.to_owned(),
+                to: nickname.clone(),
+            }],
+            None => Vec::new(),
+        },
         IrcCommand::PRIVMSG(target, text) | IrcCommand::NOTICE(target, text)
             if valid_channel(target) =>
         {
@@ -2157,6 +2229,10 @@ fn translate_message(
     if let IrcCommand::QUIT(reason) = &message.command
         && let Some(actor) = actor
     {
+        translated.push(Event::UserQuit {
+            nickname: actor.clone(),
+            reason: reason.clone(),
+        });
         translated.extend(
             changed_channels
                 .iter()
@@ -2218,6 +2294,37 @@ mod tests {
     }
 
     #[test]
+    fn private_conversations_are_targets_for_me_and_msg_but_not_channel_commands() {
+        let target = |line: &str| match parse_slash_command(line, Some("bob")) {
+            Ok(Outgoing::Message { target, .. }) => Ok(target),
+            Ok(other) => Err(format!("{other:?}")),
+            Err(error) => Err(error),
+        };
+        assert_eq!(target("/me waves").as_deref(), Ok("bob"));
+        assert_eq!(target("/msg :hello").as_deref(), Ok("bob"));
+        assert_eq!(target("/msg carol hi").as_deref(), Ok("carol"));
+        assert!(parse_slash_command("/part", Some("bob")).is_err());
+        assert!(parse_slash_command("/topic new", Some("bob")).is_err());
+    }
+
+    #[test]
+    fn service_credentials_are_not_echoed_into_conversations() {
+        assert_eq!(
+            echo_text("NickServ", "IDENTIFY hunter2".into()),
+            "[redacted]"
+        );
+        assert_eq!(
+            echo_text("nickserv@services.example", "identify a b".into()),
+            "[redacted]"
+        );
+        assert_eq!(echo_text("NickServ", "INFO bob".into()), "INFO bob");
+        assert_eq!(
+            echo_text("bob", "IDENTIFY hunter2".into()),
+            "IDENTIFY hunter2"
+        );
+    }
+
+    #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
         let translate =
             |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
@@ -2250,6 +2357,26 @@ mod tests {
         assert_eq!(translate(":alice!u@h PRIVMSG Me :\u{1}VERSION\u{1}"), None);
         assert_eq!(translate(":irc.example NOTICE Me :*** Looking up"), None);
         assert_eq!(translate(":alice!u@h PRIVMSG other :hello"), None);
+        // RFC 1459 case mapping: `[` and `{` are the same letter.
+        let message = ":alice!u@h PRIVMSG m{e} :x".parse::<IrcMessage>().unwrap();
+        assert!(private_message(&message, "M[E]", false, None).is_some());
+        // Our own line to someone, relayed by a bouncer (another client of
+        // ours, or its playback).
+        let own =
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", true, None);
+        assert_eq!(
+            own("@msgid=x1 :me!u@h PRIVMSG bob :sent elsewhere"),
+            Some(Event::OwnPrivateMessage {
+                target: "bob".into(),
+                text: "sent elsewhere".into(),
+                notice: false,
+                server_time: None,
+                msgid: Some("x1".into()),
+                replayed: true,
+            })
+        );
+        assert_eq!(own(":me!u@h PRIVMSG #chan :channel"), None);
+        assert_eq!(own(":me!u@h PRIVMSG bob :\u{1}VERSION\u{1}"), None);
         assert_eq!(translate(":alice!u@h PRIVMSG #chan :hello"), None);
     }
 
@@ -2884,6 +3011,7 @@ mod tests {
         let mut seen_nick_update = false;
         let mut seen_quit_update = false;
         let mut activities = Vec::new();
+        let mut people = Vec::new();
         let mut rosters = Vec::new();
         let mut transcript = Vec::new();
         while Instant::now() < deadline
@@ -2944,12 +3072,30 @@ mod tests {
                         direction, line, ..
                     } => transcript.push((direction, line)),
                     Event::Disconnected(reason) => panic!("unexpected disconnect: {reason}"),
+                    event @ (Event::UserNickChanged { .. } | Event::UserQuit { .. }) => {
+                        people.push(event)
+                    }
                     _ => {}
                 }
             } else {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+        // Other users' renames and quits, once each, for private
+        // conversations.
+        assert_eq!(
+            people,
+            [
+                Event::UserNickChanged {
+                    from: "charlie".into(),
+                    to: "dave".into()
+                },
+                Event::UserQuit {
+                    nickname: "dave".into(),
+                    reason: Some("bye".into())
+                },
+            ]
+        );
         assert!(
             seen_registered
                 && seen_joined
@@ -2996,7 +3142,9 @@ mod tests {
         }
         connection.send_message("#test", "outgoing", false).unwrap();
         connection.send_message("#test", "notice", true).unwrap();
-        connection.send_private_message("charlie", "hello").unwrap();
+        connection
+            .send_private_message("charlie", "hello", false)
+            .unwrap();
         connection
             .send_member_command("charlie", MemberCommand::Whois)
             .unwrap();

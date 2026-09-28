@@ -35,14 +35,13 @@ Server history is limited to recent channel history on opt-in IRCv3 servers; des
 
 ## Private messages
 
-- TODO — open private conversation
-- PARTIAL — send private messages from the member context menu; incoming private messages (`<nick> text`, notices as `-nick- text`) still appear in the server log
-- TODO — conversation persistence during a session
+- DONE — dedicated private conversations: an incoming PRIVMSG opens one per peer and server (RFC 1459 case mapping), our own messages to that nickname (draft, `/msg`, member/WHOIS prompt, bouncer-relayed) join it, the same renderer/scrolling/avatars/previews/bounds as channels, unread/highlight/notification as private messages, nick changes followed conservatively, quits marked, closable from the channel tree; private NOTICEs join only an existing conversation (else the server log)
+- PARTIAL — conversation persistence during a session: kept across disconnects, dropped when the server is connected again (like channel logs) or closed; no private-message history (CHATHISTORY TARGETS) yet
 
 ## Messages
 
-- PARTIAL — receive/send channel PRIVMSG; no private-message routing or delivery receipt
-- PARTIAL — receive/send channel NOTICE; no private-message routing
+- PARTIAL — receive/send channel and private PRIVMSG; no delivery receipt
+- PARTIAL — receive/send channel and private NOTICE
 - PARTIAL — `/me` sends CTCP ACTION; received ACTION is not specially rendered
 - PARTIAL — CTCP AVATAR (KVIrc protocol, experimental, per-server opt-in): realname mark when sharing, answers to private queries with an explicitly shared URL, bounded WHO/realname discovery and queries to marked users; URL only (no DCC); checked against wire fixtures from KVIrc's source, not a running KVIrc
 - PARTIAL — local receive/send timestamps; with the per-server server-time opt-in, incoming channel messages, activity and private messages show the server's time (local HH:MM, receipt-time fallback); server log lines and dates are not shown
@@ -84,7 +83,7 @@ Server history is limited to recent channel history on opt-in IRCv3 servers; des
 
 - PARTIAL — editable single-line draft; Enter sends to a joined channel
 - PARTIAL — Tab completes listed member nicknames; Ctrl+Enter sends channel NOTICE
-- PARTIAL — `/` commands, common channel-target inference, `/raw`/`/quote`; private-conversation UI and command history remain pending
+- PARTIAL — `/` commands, common channel-target inference, `/raw`/`/quote`; command history remains pending
 - TODO — command history
 - PARTIAL — initial/switch focus, common OS editing shortcuts, undo/redo and
   platform-specific app bindings; user-customized macOS text bindings unsupported
