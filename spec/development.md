@@ -842,6 +842,18 @@ environment (it is not installed and was not built), so interoperation
 with KVIrc itself is an assumption from its source, not a tested result.
 No GUI run was made for this change; manual step 12 lists the check.
 
+### CTCP queries from the member menu (2026-09-28)
+
+The member context menu gained a CTCP submenu (Ping, Time, Version,
+UserInfo, ClientInfo). `irc-core` tests the PRIVMSG lines each query sends
+and the server lines made from replies (formatting removed, PING round trip,
+only NOTICEs from users to our nickname). A GPUI test hovers the CTCP row,
+moves into the submenu, clicks Version and checks that a local IRC fixture
+receives `PRIVMSG bob \x01VERSION\x01`. No GUI run was made: on a desktop,
+check that the submenu opens beside the menu, flips left near the right
+window edge and upward near the bottom, and that replies from a real client
+(for example LimeChat or HexChat) appear in the server log.
+
 ### Native settings appearance checks (D019)
 
 The regression tests in `ui::settings_theme` render macOS Sonoma, Windows 11,

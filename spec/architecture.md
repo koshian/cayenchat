@@ -300,6 +300,14 @@ PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
 group. The member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
+Its CTCP submenu (opened by hovering or clicking the CTCP row, placed left or
+upward when the window edge has no room) sends PING (carrying the send time in
+Unix milliseconds), TIME, VERSION, USERINFO or CLIENTINFO as a PRIVMSG to the
+nick. A CTCP NOTICE a user sends to our nickname becomes a readable server
+line, `CTCP <TAG> reply from <nick>: <params>` with formatting removed; a
+PING reply echoing a send time under a day old shows the round trip in
+seconds. CayenChat does not answer other clients' CTCP requests (only AVATAR,
+D025); those still appear as raw server lines.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
 The core merges WHOIS numerics (311–319, 330, 301 while pending, and other

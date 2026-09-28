@@ -59,6 +59,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — nick changes update the roster through the IRC client's channel list
 - PARTIAL — join/part/quit synchronize the roster through the IRC client's channel list
 - DONE — member context menu offers Whois, private-message composition, channel invite and +o/-o commands
+- PARTIAL — member context menu CTCP submenu sends Ping, Time, Version, UserInfo and ClientInfo; replies appear as readable server-log lines (Ping as round-trip time); CayenChat does not answer these requests from others
 - DONE — WHOIS replies requested by this client open a raised per-nick WHOIS window with join, private message and update actions; replies requested by other bouncer clients stay in the server log
 
 ## Navigation
