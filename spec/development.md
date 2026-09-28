@@ -345,9 +345,11 @@ this delay.
    **画像アップロード** (a test account), drop a PNG on the section, paste a
    screenshot into the URL field and use **画像を選択…** (also a large
    phone photo, which must appear upright): each opens the square editor;
-   dragging outlines a square that follows the mouse, releasing enlarges it
-   to fill the view, a second drag narrows it, **全体に戻す** resets, and
-   the result preview follows; Cancel uploads nothing; **… にアップロードして
+   the corner handles resize the square and dragging inside moves it
+   (also when the mouse leaves the view); dropping it below half of the
+   image shows it centered with the area around it at twice its size,
+   growing it again shows the whole image, **全体に戻す** resets, and the
+   result preview follows; Cancel uploads nothing; **… にアップロードして
    送信** shows progress, puts the host's URL into the field and sends it
    (the server line then shows it; while disconnected the tab says it was
    not sent), and the uploaded image is at most 256×256. A HEIC file is refused with the

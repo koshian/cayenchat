@@ -319,7 +319,7 @@
   "ircv3_avatar_upload_reconnect": "「画像アップロード」タブで {provider} のアカウントを接続し直すか、URL を入力してください。",
   "ircv3_avatar_upload_cancelled": "アップロードの待機をやめました。画像はホストに届いている場合があります。",
   "ircv3_avatar_edit_loading": "画像を開いています…",
-  "ircv3_avatar_edit_hint": "画像の上をドラッグして使う正方形を囲んでください。マウスを離すとその範囲を拡大表示し、さらに絞り込めます。{side}×{side} ピクセルに縮小します。",
+  "ircv3_avatar_edit_hint": "四隅のつまみをドラッグすると大きさを、枠の内側をドラッグすると位置を変えられます。小さい範囲は周りを含めて拡大表示します。{side}×{side} ピクセルに縮小します。",
   "ircv3_avatar_edit_result": "仕上がり",
   "ircv3_avatar_edit_reset": "全体に戻す",
   "ircv3_avatar_edit_upload": "{provider} にアップロードして送信",

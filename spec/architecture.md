@@ -611,10 +611,14 @@ last `Outcome`. With an image host configured, `ui::ircv3_settings` also
 accepts an image dropped on the section, pasted into the URL field (the
 field propagates image-only pastes like chat drafts) or chosen in the
 system file dialog, opens it in `ui::avatar_editor` (square selection over
-a 320-logical-pixel view: a drag outlines a square, releasing it enlarges
-the square to fill the view (the whole image is shown enlarged at once and
-a sharp preview of the square replaces it when made off the UI thread),
-"Whole Image" resets, and a 64 px result preview follows; `media::avatar_edit` decodes, crops and encodes at most
+a 320-logical-pixel view: corner handles resize the square (the opposite
+corner stays), dragging inside moves it, the area outside is shaded, and
+mouse moves are followed window-wide during a drag; after a drop leaving
+the square under half of the image's shorter side the view becomes that
+square centered in twice its size, clamped to the image (shown at once
+from the whole image and sharpened when its own preview is made off the
+UI thread), otherwise the whole image; "Whole Image" resets, and a 64 px
+result preview follows; `media::avatar_edit` decodes, crops and encodes at most
 256×256 off the UI thread), and runs the encoded square through the chat
 upload steps shared in
 `ui::image_upload` (`configured_uploader`, `acceptable_attachment`,

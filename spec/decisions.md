@@ -715,9 +715,11 @@ tab, an image can also be dropped on the avatar section, pasted into the
 URL field or picked with **Choose Image…**. It first opens in a square
 selection editor (`media::avatar_edit`, decoded off the UI thread with the
 preview limits, EXIF orientation applied, kept at most 2048 px a side while
-open): dragging outlines a square, releasing the mouse enlarges it to
-fill the view (dragging again narrows it further, **Whole Image** starts
-over), and a small preview shows the result; the upload button names the
+open): the selected square has a handle at each corner to resize it and
+can be dragged to move it; when a drop leaves it under half of the
+image's shorter side, the view shows it centered in twice its size so it
+can be adjusted precisely (otherwise the whole image), **Whole Image**
+starts over, and a small preview shows the result; the upload button names the
 host and is the confirmation. Only the selected square is uploaded, shrunk to at most
 256×256 (JPEG quality 88, or PNG when the image has transparency), so a
 full-resolution photo never leaves the computer. PNG, JPEG, GIF, WebP,

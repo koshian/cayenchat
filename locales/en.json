@@ -319,7 +319,7 @@
   "ircv3_avatar_upload_reconnect": "Reconnect your {provider} account on the Image Upload tab, or type a URL.",
   "ircv3_avatar_upload_cancelled": "Stopped waiting for the upload. The image may still reach the host.",
   "ircv3_avatar_edit_loading": "Opening the image…",
-  "ircv3_avatar_edit_hint": "Drag over the image to outline the square to use; releasing the mouse enlarges it, and you can narrow it again. It is shrunk to {side}×{side} pixels.",
+  "ircv3_avatar_edit_hint": "Drag a corner handle to resize the square and drag inside it to move it. A small square is shown close up with the area around it. It is shrunk to {side}×{side} pixels.",
   "ircv3_avatar_edit_result": "Result",
   "ircv3_avatar_edit_reset": "Whole Image",
   "ircv3_avatar_edit_upload": "Upload to {provider} and Send",
