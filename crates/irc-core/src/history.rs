@@ -351,6 +351,10 @@ fn history_line(message: &IrcMessage, channel: &str) -> Option<HistoryMessage> {
     if !crate::text::same_nickname(target, channel) {
         return None;
     }
+    // CTCP other than ACTION is never chat, live or from history (D029).
+    if text.starts_with('\u{1}') && crate::text::action_text(text).is_none() {
+        return None;
+    }
     let sender = match &message.prefix {
         Some(Prefix::Nickname(nickname, _, _)) => nickname.clone(),
         Some(Prefix::ServerName(name)) => name.clone(),
@@ -460,15 +464,17 @@ mod tests {
                 "@draft/chathistory-end :srv BATCH +r1 chathistory #a",
                 "@batch=r1;time=2026-09-27T23:58:31.123Z;msgid=m1 :bob!u@h PRIVMSG #a :one",
                 "@batch=r1;msgid=m2 :bob!u@h NOTICE #a :two",
+                "@batch=r1 :bob!u@h PRIVMSG #a :\u{1}VERSION\u{1}",
+                "@batch=r1 :bob!u@h NOTICE #a :\u{1}AVATAR bob.png\u{1}",
                 ":srv BATCH -r1",
             ],
         );
-        assert!(finished[..3].iter().all(|o| *o == Observed::Consumed));
+        assert!(finished[..5].iter().all(|o| *o == Observed::Consumed));
         let Observed::Finished {
             channel,
             messages,
             note,
-        } = &finished[3]
+        } = &finished[5]
         else {
             panic!("{finished:?}");
         };

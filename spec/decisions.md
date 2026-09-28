@@ -1026,7 +1026,8 @@ are on (`peer_avatar` sees it first):
   `CTCP VERSION reply from bob: irssi 1.4` (formatting and controls
   stripped, cut at 200 characters). Never a chat row, private message,
   mention, unread mark or notification. Replayed history, our own echoes
-  and CTCP to other targets are dropped silently.
+  and CTCP to other targets are dropped silently, and requested channel
+  history (D027) leaves CTCP other than ACTION out.
 - **Rate limit** in the style of D025: requests (answered or only shown,
   channel ones included) at most five per ten seconds in total and two per
   user; past that, one line
