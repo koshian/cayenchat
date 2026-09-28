@@ -20,8 +20,8 @@ use std::{
 };
 
 use cayenchat_irc_core::{
-    Connection, ConnectionConfig, Event, HISTORY_LIMIT, HistoryMessage, Ircv3Options,
-    MessageReference, OlderHistoryStatus, WireDirection,
+    Connection, ConnectionConfig, Event, HISTORY_LIMIT, HistoryMessage, HistoryResume,
+    Ircv3Options, MessageReference, OlderHistoryStatus, WireDirection,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -105,7 +105,18 @@ struct Client {
 
 impl Client {
     fn connect(host: &str, port: u16, nick: &str, channels: Vec<String>) -> Self {
+        Self::resume(host, port, nick, channels, Vec::new())
+    }
+
+    fn resume(
+        host: &str,
+        port: u16,
+        nick: &str,
+        channels: Vec<String>,
+        resume_history: Vec<HistoryResume>,
+    ) -> Self {
         let mut config = ConnectionConfig::tls(host.into(), nick.into(), channels);
+        config.resume_history = resume_history;
         config.port = port;
         config.use_tls = false;
         config.ircv3 = Ircv3Options {
@@ -171,12 +182,28 @@ impl Client {
     }
 
     fn history(&mut self, channel: &str) -> Vec<HistoryMessage> {
+        self.history_reply(channel).0
+    }
+
+    fn history_reply(&mut self, channel: &str) -> (Vec<HistoryMessage>, bool) {
         match self.wait("history reply", |event| {
             matches!(event, Event::ChannelHistory { channel: c, .. } if c.eq_ignore_ascii_case(channel))
         }) {
-            Event::ChannelHistory { messages, .. } => messages,
+            Event::ChannelHistory {
+                messages,
+                incomplete,
+                ..
+            } => (messages, incomplete),
             _ => unreachable!(),
         }
+    }
+
+    fn quit(self) {
+        self.connection.disconnect().unwrap();
+        let mut client = self;
+        client.wait("disconnect", |event| {
+            matches!(event, Event::Disconnected(_))
+        });
     }
 }
 
@@ -370,4 +397,114 @@ fn older_channel_history_pages_against_a_real_server() {
             .iter()
             .any(|event| matches!(event, Event::ChannelMessage { .. }))
     );
+}
+
+#[test]
+#[ignore = "needs a disposable local IRC server with chathistory (CAYENCHAT_INTEROP_IRC)"]
+fn reconnect_recovers_missed_lines_against_a_real_server() {
+    let (host, port) = server().expect("set CAYENCHAT_INTEROP_IRC=host:port");
+    let run = suffix();
+    let channel = format!("#gap{run}");
+    let nick = format!("cg{run}");
+    let mut peer = Peer::connect(&host, port, &format!("pg{run}"));
+    peer.send(&format!("JOIN {channel}"));
+    peer.expect(|line| line.contains(" 366 "));
+
+    // The first session sees A live, then its link ends.
+    let mut client = Client::connect(&host, port, &nick, vec![channel.clone()]);
+    client.history(&channel);
+    peer.send(&format!("PRIVMSG {channel} :A before the gap"));
+    let Event::ChannelMessage {
+        msgid, server_time, ..
+    } = client.wait(
+        "A",
+        |event| matches!(event, Event::ChannelMessage { text, .. } if text == "A before the gap"),
+    )
+    else {
+        unreachable!()
+    };
+    client.quit();
+
+    // Lines sent while we were away.
+    peer.send(&format!("PRIVMSG {channel} :B in the gap"));
+    peer.send(&format!("PRIVMSG {channel} :C in the gap"));
+    peer.send(&format!("PING :gap{run}"));
+    peer.expect(|line| line.contains(&format!("gap{run}")));
+
+    // By msgid: exactly what was missed.
+    let resume = |msgid: Option<String>| {
+        vec![HistoryResume {
+            channel: channel.clone(),
+            after: MessageReference {
+                msgid,
+                time: server_time,
+            },
+        }]
+    };
+    let mut client = Client::resume(
+        &host,
+        port,
+        &nick,
+        vec![channel.clone()],
+        resume(msgid.clone()),
+    );
+    let (missed, incomplete) = client.history_reply(&channel);
+    let texts: Vec<_> = missed
+        .iter()
+        .filter(|m| m.sender != "HistServ")
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(texts, ["B in the gap", "C in the gap"]);
+    assert!(!incomplete);
+    assert!(
+        client
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::HistoryRequested { resumed: true, .. }))
+    );
+    let sent: Vec<_> = client
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Wire {
+                direction: WireDirection::Sent,
+                line,
+                ..
+            } if line.starts_with("CHATHISTORY") => Some(line.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [format!(
+            "CHATHISTORY LATEST {channel} msgid={} {HISTORY_LIMIT}",
+            msgid.unwrap()
+        )]
+    );
+    // A live line afterwards is live.
+    peer.send(&format!("PRIVMSG {channel} :D after"));
+    client.wait("D", |event| {
+        matches!(event, Event::ChannelMessage { text, replayed: false, .. } if text == "D after")
+    });
+    client.quit();
+
+    // By timestamp only: the skew allowance repeats A (the application
+    // drops it as a duplicate); nothing missed is left out.
+    let mut client = Client::resume(&host, port, &nick, vec![channel.clone()], resume(None));
+    let (missed, _) = client.history_reply(&channel);
+    let texts: Vec<_> = missed
+        .iter()
+        .filter(|m| m.sender != "HistServ")
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "A before the gap",
+            "B in the gap",
+            "C in the gap",
+            "D after"
+        ]
+    );
+    client.quit();
 }
