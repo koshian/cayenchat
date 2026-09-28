@@ -2,6 +2,7 @@
 
 mod cap;
 mod ctcp;
+mod history;
 mod metadata;
 mod peer_avatar;
 mod replay;
@@ -9,6 +10,7 @@ mod tags;
 pub mod text;
 
 pub use cap::Ircv3Options;
+pub use history::{HISTORY_LIMIT, HistoryMessage, MAX_HISTORY_LINES};
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 pub use peer_avatar::shareable as shareable_avatar;
 
@@ -251,7 +253,9 @@ pub fn valid_channel(value: &str) -> bool {
             .any(|ch| ch.is_whitespace() || ch.is_control() || ch == ',')
 }
 
-fn valid_nickname(value: &str) -> bool {
+/// Whether a name can be a nickname target (no channel prefix, spaces or
+/// separators).
+pub fn valid_nickname(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with(['#', '&', '!', '~', '@', '%', '+'])
         && !value
@@ -308,6 +312,8 @@ pub enum Event {
         /// The server's `time` tag when server-time is negotiated and the
         /// tag is valid; `None` means use the receipt time.
         server_time: Option<SystemTime>,
+        /// The server's `msgid` tag, when present and non-empty.
+        msgid: Option<String>,
         /// History or a server/bouncer line rather than a live message from
         /// a user; it must not notify again.
         replayed: bool,
@@ -325,8 +331,31 @@ pub enum Event {
         text: String,
         notice: bool,
         server_time: Option<SystemTime>,
+        /// The server's `msgid` tag, when present and non-empty.
+        msgid: Option<String>,
         /// Replayed history (IRCv3 history batch).
         replayed: bool,
+    },
+    /// A PRIVMSG or NOTICE we sent to a user, seen on the wire: a bouncer
+    /// relaying what another of our clients sent, or its playback. (Our own
+    /// messages from this client arrive as [`Event::OutgoingAccepted`].)
+    OwnPrivateMessage {
+        target: String,
+        text: String,
+        notice: bool,
+        server_time: Option<SystemTime>,
+        msgid: Option<String>,
+        replayed: bool,
+    },
+    /// Another user changed nickname (ours is [`Event::NickChanged`]).
+    UserNickChanged {
+        from: String,
+        to: String,
+    },
+    /// Another user quit. Only users sharing a channel with us are seen.
+    UserQuit {
+        nickname: String,
+        reason: Option<String>,
     },
     Names {
         channel: String,
@@ -381,6 +410,21 @@ pub enum Event {
     OwnAvatarFailed {
         request: u64,
         failure: AvatarRequestFailure,
+    },
+    /// We asked the server for `channel`'s latest history (opt-in
+    /// `draft/chathistory`). Its reply is older than every line of the
+    /// channel that arrives after this event. Exactly one
+    /// [`Event::ChannelHistory`] follows on this connection.
+    HistoryRequested {
+        channel: String,
+    },
+    /// The complete reply to our history request for `channel`, in the
+    /// server's order (oldest first). Empty when the server had nothing, the
+    /// request failed or timed out, or the capability went away; a reply
+    /// that never ended reports nothing partial.
+    ChannelHistory {
+        channel: String,
+        messages: Vec<HistoryMessage>,
     },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
@@ -509,6 +553,17 @@ fn is_service_secret(target: &str, body: &str) -> bool {
             .is_some_and(is_secret_service_command)
 }
 
+/// What our own message shows in its conversation: credentials sent to
+/// services (`IDENTIFY`, `REGISTER`, ...) are not shown, as in the
+/// transcript.
+fn echo_text(target: &str, text: String) -> String {
+    if is_service_secret(target, &text) {
+        "[redacted]".into()
+    } else {
+        text
+    }
+}
+
 async fn wire(
     events: &mpsc::Sender<Event>,
     started: Instant,
@@ -600,6 +655,14 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
     validate_wire(&message.to_string(), encoding)
 }
 
+/// The selected conversation's target for /me and /msg without a target: a
+/// channel or, in a private conversation, the peer's nickname.
+fn selected_target(target: Option<&str>) -> Result<&str, String> {
+    target
+        .filter(|value| valid_channel(value) || valid_nickname(value))
+        .ok_or_else(|| "Select a channel or provide an explicit target.".into())
+}
+
 fn selected_channel(channel: Option<&str>) -> Result<&str, String> {
     channel
         .filter(|value| valid_channel(value))
@@ -682,7 +745,7 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
     let verb = verb.to_ascii_uppercase();
     match verb.as_str() {
         "ME" => {
-            let target = selected_channel(selected)?;
+            let target = selected_target(selected)?;
             let action = rest.trim_start_matches(':');
             if action.is_empty() {
                 return Err("/me requires action text.".into());
@@ -698,11 +761,11 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
         }
         "MSG" | "PRIVMSG" | "NOTICE" => {
             let (target, text) = if let Some(text) = rest.strip_prefix(':') {
-                (selected_channel(selected)?, text)
+                (selected_target(selected)?, text)
             } else {
                 let (first, remainder) = split_word(rest);
                 if remainder.is_empty() {
-                    (selected_channel(selected)?, first)
+                    (selected_target(selected)?, first)
                 } else {
                     (first, remainder.trim_start_matches(':'))
                 }
@@ -904,7 +967,12 @@ impl Connection {
             .map_err(|error| format!("Could not queue IRC message: {error}"))
     }
 
-    pub fn send_private_message(&self, nickname: &str, text: &str) -> Result<(), String> {
+    pub fn send_private_message(
+        &self,
+        nickname: &str,
+        text: &str,
+        notice: bool,
+    ) -> Result<(), String> {
         if !valid_nickname(nickname) {
             return Err("Invalid message target.".into());
         }
@@ -913,7 +981,7 @@ impl Connection {
             target: nickname.to_owned(),
             text: text.to_owned(),
             display_text: text.to_owned(),
-            notice: false,
+            notice,
         };
         validate_outgoing(&outgoing, &self.encoding)?;
         self.commands
@@ -1254,6 +1322,8 @@ async fn run_cancellable(
     let mut batch_negotiated = false;
     let mut metadata = metadata::MetadataState::new(wire_encoding.eq_ignore_ascii_case("UTF-8"));
     let mut metadata_enabled = false;
+    let mut history = history::HistoryRequests::default();
+    let mut history_enabled = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1274,7 +1344,8 @@ async fn run_cancellable(
                         let event = match result {
                             Ok(()) => {
                                 wire(&events, started, WireDirection::Sent, line).await;
-                                Event::OutgoingAccepted {channel: target, text: display_text, notice}
+                                let text = echo_text(&target, display_text);
+                                Event::OutgoingAccepted {channel: target, text, notice}
                             }
                             Err(error) => Event::ServerLine(format!("Send failed: {error}")),
                         };
@@ -1414,6 +1485,17 @@ async fn run_cancellable(
                             }
                         }
                         metadata_enabled = negotiation.enabled(cap::METADATA);
+                        // chathistory went away (its own DEL, or batch): the
+                        // request being answered ends without lines.
+                        if history_enabled && !negotiation.enabled(cap::CHATHISTORY)
+                            && let Some(channel) = history.reset()
+                            && events.send(Event::ChannelHistory { channel, messages: Vec::new() }).await.is_err()
+                        {
+                            return;
+                        }
+                        let history_started = !history_enabled && negotiation.enabled(cap::CHATHISTORY);
+                        history_enabled = negotiation.enabled(cap::CHATHISTORY);
+                        history.isupport(&message);
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
                         }
@@ -1441,6 +1523,31 @@ async fn run_cancellable(
                             }
                             if events.send(Event::MetadataReady).await.is_err() {
                                 return;
+                            }
+                        }
+                        // Enabled after registration (CAP NEW): the channels
+                        // already joined get their history too.
+                        if history_started && registered {
+                            for channel in client.list_channels().unwrap_or_default() {
+                                if let Some(note) = history.enqueue(&channel) {
+                                    diagnostic(&events, started, note).await;
+                                }
+                            }
+                        }
+                        // Our history replies are consumed whole; nothing in
+                        // them is live traffic.
+                        if history_enabled {
+                            match history.observe(&message) {
+                                history::Observed::Unrelated => {}
+                                history::Observed::Consumed => continue,
+                                finished => {
+                                    if !history_finished(&events, started, finished).await
+                                        || !request_history(&client, &events, started, &mut history, registered).await
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
                             }
                         }
                         if metadata_enabled {
@@ -1508,6 +1615,22 @@ async fn run_cancellable(
                             Vec::new()
                         }));
                         let whois_reply = whois.observe(&message);
+                        if history_enabled && message.source_nickname() == Some(current_nick.as_str()) {
+                            match &message.command {
+                                IrcCommand::JOIN(channel, _, _) => {
+                                    if let Some(note) = history.enqueue(channel) {
+                                        diagnostic(&events, started, note).await;
+                                    }
+                                }
+                                IrcCommand::PART(channel, _) => history.forget(channel),
+                                _ => {}
+                            }
+                        }
+                        if let IrcCommand::KICK(channel, nickname, _) = &message.command
+                            && nickname == &current_nick
+                        {
+                            history.forget(channel);
+                        }
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
                         for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
@@ -1526,6 +1649,11 @@ async fn run_cancellable(
                         }
                         for event in lifecycle {
                             if events.send(event).await.is_err() { return; }
+                        }
+                        // After the JOIN's own events, so the channel exists
+                        // in the application before its history is asked for.
+                        if history_enabled && !request_history(&client, &events, started, &mut history, registered).await {
+                            return;
                         }
                     }
                     // irc consumes 432/433 and reports NoUsableNick because no
@@ -1583,6 +1711,15 @@ async fn run_cancellable(
                     if events.send(event).await.is_err() { return; }
                 }
             }
+            // An unanswered history request; no timer runs otherwise.
+            _ = tokio::time::sleep_until(history.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if history_enabled && history.next_deadline().is_some() => {
+                if let Some(finished) = history.tick(tokio::time::Instant::now())
+                    && (!history_finished(&events, started, finished).await
+                        || !request_history(&client, &events, started, &mut history, registered).await)
+                {
+                    return;
+                }
+            }
             // Peer avatar lookups and queries, spaced out; no timer runs
             // while none is queued or outstanding.
             _ = tokio::time::sleep_until(peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).unwrap_or_else(tokio::time::Instant::now)), if registered && peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).is_some() => {
@@ -1605,6 +1742,55 @@ async fn run_cancellable(
             }
         }
     }
+}
+
+/// Sends the next queued history request, if any may go out now, and
+/// reports it. `false` means the connection or the event channel failed.
+async fn request_history(
+    client: &Client,
+    events: &mpsc::Sender<Event>,
+    started: Instant,
+    history: &mut history::HistoryRequests,
+    registered: bool,
+) -> bool {
+    if !registered {
+        return true;
+    }
+    let Some((channel, command)) = history.next_request(tokio::time::Instant::now()) else {
+        return true;
+    };
+    if let Err(detail) = send_all(client, events, started, vec![command]).await {
+        let _ = events.send(Event::Disconnected(detail)).await;
+        return false;
+    }
+    events
+        .send(Event::HistoryRequested { channel })
+        .await
+        .is_ok()
+}
+
+/// Reports a finished history request. `false` means the event channel
+/// closed.
+async fn history_finished(
+    events: &mpsc::Sender<Event>,
+    started: Instant,
+    finished: history::Observed,
+) -> bool {
+    let history::Observed::Finished {
+        channel,
+        messages,
+        note,
+    } = finished
+    else {
+        return true;
+    };
+    if let Some(note) = note {
+        diagnostic(events, started, note).await;
+    }
+    events
+        .send(Event::ChannelHistory { channel, messages })
+        .await
+        .is_ok()
 }
 
 /// Passes metadata's avatar events through the peer avatar merge when
@@ -1853,7 +2039,24 @@ fn private_message(
         return None;
     };
     let ctcp = text.starts_with('\u{1}');
-    if !target.eq_ignore_ascii_case(current_nick) || (ctcp && !text.starts_with("\u{1}ACTION ")) {
+    if ctcp && !text.starts_with("\u{1}ACTION ") {
+        return None;
+    }
+    // Our own line to someone else, relayed by a bouncer.
+    if crate::text::same_nickname(sender, current_nick)
+        && !crate::text::same_nickname(target, current_nick)
+        && valid_nickname(target)
+    {
+        return Some(Event::OwnPrivateMessage {
+            target: target.clone(),
+            text: text.clone(),
+            notice,
+            server_time,
+            msgid: tags::msgid(message).map(str::to_owned),
+            replayed,
+        });
+    }
+    if !crate::text::same_nickname(target, current_nick) {
         return None;
     }
     Some(Event::PrivateMessage {
@@ -1861,6 +2064,7 @@ fn private_message(
         text: text.clone(),
         notice,
         server_time,
+        msgid: tags::msgid(message).map(str::to_owned),
         replayed,
     })
 }
@@ -1999,6 +2203,13 @@ fn translate_message(
                 nickname: nickname.clone(),
             }]
         }
+        IrcCommand::NICK(nickname) => match message.source_nickname() {
+            Some(from) => vec![Event::UserNickChanged {
+                from: from.to_owned(),
+                to: nickname.clone(),
+            }],
+            None => Vec::new(),
+        },
         IrcCommand::PRIVMSG(target, text) | IrcCommand::NOTICE(target, text)
             if valid_channel(target) =>
         {
@@ -2014,6 +2225,7 @@ fn translate_message(
                         current_nick,
                     ),
                 server_time,
+                msgid: tags::msgid(&message).map(str::to_owned),
                 replayed,
             }]
         }
@@ -2031,6 +2243,10 @@ fn translate_message(
     if let IrcCommand::QUIT(reason) = &message.command
         && let Some(actor) = actor
     {
+        translated.push(Event::UserQuit {
+            nickname: actor.clone(),
+            reason: reason.clone(),
+        });
         translated.extend(
             changed_channels
                 .iter()
@@ -2092,6 +2308,37 @@ mod tests {
     }
 
     #[test]
+    fn private_conversations_are_targets_for_me_and_msg_but_not_channel_commands() {
+        let target = |line: &str| match parse_slash_command(line, Some("bob")) {
+            Ok(Outgoing::Message { target, .. }) => Ok(target),
+            Ok(other) => Err(format!("{other:?}")),
+            Err(error) => Err(error),
+        };
+        assert_eq!(target("/me waves").as_deref(), Ok("bob"));
+        assert_eq!(target("/msg :hello").as_deref(), Ok("bob"));
+        assert_eq!(target("/msg carol hi").as_deref(), Ok("carol"));
+        assert!(parse_slash_command("/part", Some("bob")).is_err());
+        assert!(parse_slash_command("/topic new", Some("bob")).is_err());
+    }
+
+    #[test]
+    fn service_credentials_are_not_echoed_into_conversations() {
+        assert_eq!(
+            echo_text("NickServ", "IDENTIFY hunter2".into()),
+            "[redacted]"
+        );
+        assert_eq!(
+            echo_text("nickserv@services.example", "identify a b".into()),
+            "[redacted]"
+        );
+        assert_eq!(echo_text("NickServ", "INFO bob".into()), "INFO bob");
+        assert_eq!(
+            echo_text("bob", "IDENTIFY hunter2".into()),
+            "IDENTIFY hunter2"
+        );
+    }
+
+    #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
         let translate =
             |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
@@ -2102,6 +2349,7 @@ mod tests {
                 text: "hello".into(),
                 notice: false,
                 server_time: None,
+                msgid: None,
                 replayed: false,
             })
         );
@@ -2112,6 +2360,7 @@ mod tests {
                 text: "psst".into(),
                 notice: true,
                 server_time: None,
+                msgid: None,
                 replayed: false,
             })
         );
@@ -2122,6 +2371,26 @@ mod tests {
         assert_eq!(translate(":alice!u@h PRIVMSG Me :\u{1}VERSION\u{1}"), None);
         assert_eq!(translate(":irc.example NOTICE Me :*** Looking up"), None);
         assert_eq!(translate(":alice!u@h PRIVMSG other :hello"), None);
+        // RFC 1459 case mapping: `[` and `{` are the same letter.
+        let message = ":alice!u@h PRIVMSG m{e} :x".parse::<IrcMessage>().unwrap();
+        assert!(private_message(&message, "M[E]", false, None).is_some());
+        // Our own line to someone, relayed by a bouncer (another client of
+        // ours, or its playback).
+        let own =
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", true, None);
+        assert_eq!(
+            own("@msgid=x1 :me!u@h PRIVMSG bob :sent elsewhere"),
+            Some(Event::OwnPrivateMessage {
+                target: "bob".into(),
+                text: "sent elsewhere".into(),
+                notice: false,
+                server_time: None,
+                msgid: Some("x1".into()),
+                replayed: true,
+            })
+        );
+        assert_eq!(own(":me!u@h PRIVMSG #chan :channel"), None);
+        assert_eq!(own(":me!u@h PRIVMSG bob :\u{1}VERSION\u{1}"), None);
         assert_eq!(translate(":alice!u@h PRIVMSG #chan :hello"), None);
     }
 
@@ -2756,6 +3025,7 @@ mod tests {
         let mut seen_nick_update = false;
         let mut seen_quit_update = false;
         let mut activities = Vec::new();
+        let mut people = Vec::new();
         let mut rosters = Vec::new();
         let mut transcript = Vec::new();
         while Instant::now() < deadline
@@ -2816,12 +3086,30 @@ mod tests {
                         direction, line, ..
                     } => transcript.push((direction, line)),
                     Event::Disconnected(reason) => panic!("unexpected disconnect: {reason}"),
+                    event @ (Event::UserNickChanged { .. } | Event::UserQuit { .. }) => {
+                        people.push(event)
+                    }
                     _ => {}
                 }
             } else {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+        // Other users' renames and quits, once each, for private
+        // conversations.
+        assert_eq!(
+            people,
+            [
+                Event::UserNickChanged {
+                    from: "charlie".into(),
+                    to: "dave".into()
+                },
+                Event::UserQuit {
+                    nickname: "dave".into(),
+                    reason: Some("bye".into())
+                },
+            ]
+        );
         assert!(
             seen_registered
                 && seen_joined
@@ -2868,7 +3156,9 @@ mod tests {
         }
         connection.send_message("#test", "outgoing", false).unwrap();
         connection.send_message("#test", "notice", true).unwrap();
-        connection.send_private_message("charlie", "hello").unwrap();
+        connection
+            .send_private_message("charlie", "hello", false)
+            .unwrap();
         connection
             .send_member_command("charlie", MemberCommand::Whois)
             .unwrap();
@@ -3477,13 +3767,238 @@ mod tests {
     }
 
     const TAGGED_TRAFFIC: &[u8] =
-        b"@time=2011-10-19T16:40:51.620Z :bob!u@h PRIVMSG #test :stamped\r\n\
-@time=not-a-time :bob!u@h PRIVMSG #test :invalid\r\n\
+        b"@time=2011-10-19T16:40:51.620Z;msgid=Ab1 :bob!u@h PRIVMSG #test :stamped\r\n\
+@time=not-a-time;msgid= :bob!u@h PRIVMSG #test :invalid\r\n\
 @+typing=active;time=2011-10-19T16:40:52.000Z :bob!u@h TAGMSG #test\r\n\
 @+typing=active :bob!u@h TAGMSG alice\r\n\
 @time=2011-10-19T16:40:53.000Z :bob!u@h PART #test :bye\r\n\
 @time=2011-10-19T16:40:54.000Z :irc.example NOTICE alice :tagged server line\r\n\
 :bob!u@h PRIVMSG #test :plain\r\n";
+
+    fn history_options() -> Ircv3Options {
+        Ircv3Options {
+            chathistory: true,
+            ..Ircv3Options::default()
+        }
+    }
+
+    /// Answers registration for a server offering `offer`, acknowledging
+    /// every request, then accepts the JOIN of #test.
+    fn register_with(
+        socket: &mut std::net::TcpStream,
+        lines: &mut BufReader<std::net::TcpStream>,
+        offer: &str,
+        isupport: &str,
+    ) -> Vec<String> {
+        assert_eq!(read_client_line(lines), "CAP LS 302");
+        let _nick = read_client_line(lines);
+        let _user = read_client_line(lines);
+        socket
+            .write_all(format!(":srv CAP * LS :{offer}\r\n").as_bytes())
+            .unwrap();
+        let mut requested = Vec::new();
+        loop {
+            let line = read_client_line(lines);
+            if line == "CAP END" {
+                break;
+            }
+            let name = line.strip_prefix("CAP REQ ").unwrap().to_owned();
+            socket
+                .write_all(format!(":srv CAP * ACK :{name}\r\n").as_bytes())
+                .unwrap();
+            requested.push(name);
+        }
+        socket
+            .write_all(
+                format!(":srv 001 alice :Welcome\r\n:srv 005 alice {isupport} :are supported\r\n:srv 376 alice :End\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(read_client_line(lines), "JOIN #test");
+        socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+        requested
+    }
+
+    #[test]
+    fn chathistory_requests_the_latest_lines_on_join_and_reports_them_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "batch server-time message-tags draft/chathistory draft/event-playback",
+                "CHATHISTORY=20 MSGREFTYPES=msgid,timestamp",
+            );
+            assert_eq!(
+                requested,
+                ["message-tags", "server-time", "batch", "draft/chathistory"]
+            );
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 20"
+            );
+            // A live line arrives before the reply and is also in it.
+            socket
+                .write_all(
+                    b"@time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
+@draft/chathistory-end :srv BATCH +r1 chathistory #test\r\n\
+@batch=r1;time=2026-09-27T23:50:00.000Z;msgid=old1 :bob!u@h PRIVMSG #test :alice: old\r\n\
+@batch=r1;time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
+:srv BATCH -r1\r\n\
+@time=2026-09-27T23:59:00.000Z;msgid=after1 :bob!u@h PRIVMSG #test :after\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let events = run_fixture(plain_config(port, history_options()), |events| {
+            channel_messages(events).len() == 2
+                && events
+                    .iter()
+                    .any(|event| matches!(event, Event::ChannelHistory { .. }))
+        });
+        server.join().unwrap();
+        let requested = events
+            .iter()
+            .position(|e| matches!(e, Event::HistoryRequested { channel } if channel == "#test"))
+            .expect("request reported");
+        let joined = events
+            .iter()
+            .position(|e| matches!(e, Event::Joined { .. }))
+            .unwrap();
+        assert!(joined < requested, "the channel exists before its request");
+        let history: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ChannelHistory { channel, messages } => Some((channel, messages)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(history.len(), 1);
+        let (channel, messages) = history[0];
+        assert_eq!(channel, "#test");
+        let lines: Vec<_> = messages
+            .iter()
+            .map(|m| (m.text.as_str(), m.msgid.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("alice: old", Some("old1")),
+                ("alice: live during request", Some("live1"))
+            ]
+        );
+        assert!(messages.iter().all(|m| m.server_time.is_some()));
+        // Reply lines never become live messages or server lines.
+        let live: Vec<_> = channel_messages(&events)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(live, ["alice: live during request", "after"]);
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("BATCH") || line.contains("old"))));
+    }
+
+    #[test]
+    fn chathistory_is_not_requested_from_servers_without_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "batch server-time message-tags",
+                "CHANTYPES=#",
+            );
+            assert!(requested.is_empty(), "{requested:?}");
+            socket
+                .write_all(b":bob!u@h PRIVMSG #test :hello\r\n")
+                .unwrap();
+            // The next thing the client sends is its QUIT, not a request.
+            assert!(read_client_line(&mut lines).starts_with("QUIT"));
+        });
+        let events = run_fixture(plain_config(port, history_options()), |events| {
+            channel_messages(events).len() == 1
+        });
+        server.join().unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::HistoryRequested { .. } | Event::ChannelHistory { .. }
+        )));
+    }
+
+    #[test]
+    fn a_reply_cut_off_by_a_disconnect_reports_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(&mut socket, &mut lines, "batch draft/chathistory", "");
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 50"
+            );
+            socket
+                .write_all(
+                    b":srv BATCH +r chathistory #test\r\n@batch=r :bob!u@h PRIVMSG #test :partial\r\n",
+                )
+                .unwrap();
+            drop(socket);
+        });
+        let (_command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let config = plain_config(port, history_options());
+        let worker = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(config, command_rx, event_tx));
+        });
+        let mut events = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match event_rx.try_recv() {
+                Ok(event) => {
+                    let end = matches!(event, Event::Disconnected(_));
+                    events.push(event);
+                    if end {
+                        break;
+                    }
+                }
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        worker.join().unwrap();
+        server.join().unwrap();
+        assert!(
+            matches!(events.last(), Some(Event::Disconnected(_))),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::HistoryRequested { .. }))
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::ChannelHistory { .. } | Event::ChannelMessage { .. }
+        )));
+    }
 
     #[test]
     fn disabled_ircv3_sends_plain_cap_end_and_ignores_tags() {
@@ -3589,6 +4104,7 @@ mod tests {
             batch: false,
             metadata: false,
             peer_avatars: false,
+            chathistory: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -3606,6 +4122,11 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event,
             Event::ChannelMessage { text, replayed: false, server_time: Some(_), .. }
                 if text == "stamped")));
+        // The message ID travels with the event; an empty one is absent.
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, msgid: Some(id), .. } if text == "stamped" && id == "Ab1")));
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ChannelMessage { text, msgid: None, .. } if text == "invalid")));
         assert!(events.iter().any(|event| matches!(event,
             Event::ChannelActivity { kind: ChannelActivityKind::Left { .. }, server_time, .. }
                 if *server_time == stamp(1_319_042_453_000))));
@@ -3676,6 +4197,7 @@ mod tests {
                 batch: false,
                 metadata: false,
                 peer_avatars: false,
+                chathistory: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();

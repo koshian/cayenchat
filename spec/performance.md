@@ -265,7 +265,8 @@ Not measured or not confirmed:
 - GPU memory separately from `phys_footprint`.
 - Windows and Linux; TLS connections; sessions longer than about five
   minutes; channels with thousands of members and heavy JOIN/PART churn;
-  private-message traffic (currently routed to the server log).
+  private-message traffic (routed to the server log at the time; private
+  conversations came later and are bounded at 100 per network).
 - The 200 lines/s and maximum rates are synthetic. The fixture sends no
   JOIN/PART/QUIT churn during floods.
 
@@ -527,6 +528,31 @@ struct per server session.
   Consequence: in a large join burst the last joiners' avatars can take
   tens of seconds to appear (64 × 0.5 s ≈ 32 s), and joiners beyond 64
   pending get none until they change their avatar or rejoin.
+
+## Message identity (2026-09-28)
+
+A retained `model::Message` grew from 64 to 96 bytes (asserted by
+`model::tests::retained_message_size_stays_bounded`): the source timestamp
+(`Option<Timestamp>`, 16) and native identifier (`Option<Box<str>>`, 16; its
+text, at most 128 bytes, is on the heap only when a server sent a msgid).
+At 20,000 retained lines that is about 640 KiB more, a few percent of the
+measured 250–550 bytes per line. The duplicate filter holds at most 512
+64-bit keys per conversation (about 10 KiB with the hash set) and exists
+only for conversations that received a msgid or server-time; with IRCv3 off
+nothing is allocated. Hashing is bounded to 512 text bytes per line. No
+timer, thread or render path changed, so the UI baseline was not rerun.
+
+## Recent channel history (2026-09-28)
+
+No measured hot path changed; bounds by construction. Per connection: at
+most 64 channels queued, one request outstanding (so at most one reply
+buffered: 100 lines), 8 abandoned channel names and 16 nested batch
+references; the only timer is the outstanding request's 30 s timeout, armed
+only while a request is outstanding. Per conversation: one pending
+reservation (a `u64`), at most 256 inserted lines per reply, and the
+existing 2,000-line bound applied after insertion. A reply is moved into
+the log with one `Vec::splice`; nothing is cloned. With the option off no
+state is allocated and the wire is unchanged.
 
 ## Resource limit candidates (proposal)
 

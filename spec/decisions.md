@@ -935,6 +935,67 @@ our realname; KVIrc accepts our answer's URL
 but applies its own image limits; users who never speak and are not
 WHOISed are not discovered; `{size}` is not shared.
 
+## D026 — Protocol-neutral message identity
+
+**Status:** Accepted
+
+2026-09-28. Retained messages carry the application's own identity (the
+arrival `sequence`), the source's timestamp and native identifier when it
+supplied them, and a provenance (`Live`, `Replayed`, `Requested`), so
+history requests, reconnect recovery and echo reconciliation can
+recognize overlap. The IRC `msgid` is stored as an opaque
+`model::NativeMessageId`, never as the universal identity: most IRC lines
+have none, and another backend (for example a future Matrix event ID) has
+its own identifier with its own scope. Logs are never re-sorted by
+timestamp. Duplicate suppression is per conversation and bounded (512
+keys, forgotten with the conversation); a fingerprint fallback only drops
+history, never a live line, because it is not collision-free. No
+persistent deduplication and no Matrix-specific fields. Details in
+`architecture.md` (Timeline items).
+
+## D027 — Recent channel history with draft/chathistory
+
+**Status:** Accepted (experimental)
+
+2026-09-28. A per-server IRCv3 option (off by default, no settings version
+change) requests `draft/chathistory` and asks for `CHATHISTORY LATEST
+<channel> * min(50, server limit)` when we join a channel. The
+specification (ircv3-specifications `extensions/chathistory.md`, commit
+9f65105, 2026-05-14) says a client that negotiates the capability should
+no longer get automatic playback, so negotiation and requests come as one
+feature. CayenChat's own requirements, not the specification's: `batch`
+must be acknowledged first (replies are recognized by their batch), and
+`server-time` and `message-tags` (UTF-8 only) are requested with it as the
+specification's "full support". event-playback, echo-message and
+labeled-response are not needed and not requested.
+
+Replies are consumed whole in the connection worker, reported once when
+the batch ends, and inserted by the application at the point of the
+request (reserved sequences) as requested history, which never notifies,
+highlights or marks unread and is not shown in the combined subwindow.
+One request at a time, 50 lines asked, 100 kept, 64 channels queued, 30 s
+timeout. Older pages, gap recovery on reconnect, private-message history
+(TARGETS) and persistence are separate future work. Details in
+`architecture.md` (Recent channel history); Ergo results in
+`development.md`.
+
+## D028 — Dedicated private conversations
+
+**Status:** Accepted
+
+2026-09-28. Private messages get their own conversations instead of the
+server log. `model::Conversation` gained one concept, `ConversationKind`
+(`Channel` or `Private { peer_key }`), so the application and UI work on
+conversations and timeline items rather than IRC targets; the server log
+stays separate. The peer key is supplied by the protocol adapter (IRC:
+RFC 1459 case-mapped nickname) and scoped to one network. NOTICEs open no
+conversation (services and bots), NICK renames without ever merging two
+conversations, QUIT marks a boundary, accounts are not used, and at most
+100 private conversations exist per network. No protocol framework was
+added: IRC routing rules live in the UI's event adapter, and a future
+backend would create conversations of the same kinds with its own keys.
+Details in `architecture.md` (Conversations).
+
 ## D029 — Answers to common CTCP queries
 
 **Status:** Accepted

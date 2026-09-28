@@ -7,7 +7,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 ## Current scope
 
 The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
-History remains TODO; desktop notifications cover mentions, keywords and private messages.
+Server history is limited to recent channel history on opt-in IRCv3 servers; desktop notifications cover mentions, keywords and private messages.
 
 - DONE — native GPUI application shell and app-owned selection
 - DONE — mock conversation switching with distinct message logs
@@ -35,14 +35,13 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 
 ## Private messages
 
-- TODO — open private conversation
-- PARTIAL — send private messages from the member context menu; incoming private messages (`<nick> text`, notices as `-nick- text`) still appear in the server log
-- TODO — conversation persistence during a session
+- DONE — dedicated private conversations: an incoming PRIVMSG opens one per peer and server (RFC 1459 case mapping), our own messages to that nickname (draft, `/msg`, member/WHOIS prompt, bouncer-relayed) join it, the same renderer/scrolling/avatars/previews/bounds as channels, unread/highlight/notification as private messages, nick changes followed conservatively, quits marked, closable from the channel tree; private NOTICEs join only an existing conversation (else the server log)
+- PARTIAL — conversation persistence during a session: kept across disconnects, dropped when the server is connected again (like channel logs) or closed; no private-message history (CHATHISTORY TARGETS) yet
 
 ## Messages
 
-- PARTIAL — receive/send channel PRIVMSG; no private-message routing or delivery receipt
-- PARTIAL — receive/send channel NOTICE; no private-message routing
+- PARTIAL — receive/send channel and private PRIVMSG; no delivery receipt
+- PARTIAL — receive/send channel and private NOTICE
 - PARTIAL — `/me` sends CTCP ACTION; received ACTION is not specially rendered
 - DONE — CTCP PING, VERSION, TIME and CLIENTINFO answered by NOTICE to private requests only, rate-limited (five per ten seconds, two per user); USERINFO, DCC and channel requests are not answered; requests and replies appear as readable server lines (`CTCP VERSION request from bob`), never as chat rows (D029)
 - TODO — sending CTCP requests (`/ctcp`, `/ping` with lag display)
@@ -86,7 +85,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 
 - PARTIAL — editable single-line draft; Enter sends to a joined channel
 - PARTIAL — Tab completes listed member nicknames; Ctrl+Enter sends channel NOTICE
-- PARTIAL — `/` commands, common channel-target inference, `/raw`/`/quote`; private-conversation UI and command history remain pending
+- PARTIAL — `/` commands, common channel-target inference, `/raw`/`/quote`; command history remains pending
 - TODO — command history
 - PARTIAL — initial/switch focus, common OS editing shortcuts, undo/redo and
   platform-specific app bindings; user-customized macOS text bindings unsupported
@@ -108,7 +107,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - TODO — local logs
 - TODO — searchable history
 - DONE — bounded in-memory channel and server scrollback
-- TODO — IRCv3/server history integration where available
+- PARTIAL — IRCv3/server history integration where available: recent channel history on join (`draft/chathistory`, experimental, per-server opt-in, default off; up to 50 lines, deduplicated, quiet); checked against Ergo v2.19.1; no older pages, reconnect gap recovery, private-message history or persistence
 
 ## Notifications
 
@@ -137,13 +136,13 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — shared CAP negotiation (LS 302 with continuation and values, per-capability REQ, multiline ACK, NAK, NEW/DEL, coordinated CAP END) for SASL PLAIN and opt-in extensions; public-server interoperability unverified
 - PARTIAL — message tags: per-server opt-in (default off), tags parsed and normalized, TAGMSG kept out of the chat; no tag is displayed yet, and it is not requested with legacy encodings
 - DONE — server-time: per-server opt-in (default off), independent of message tags
-- PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only, and no CHATHISTORY requests
+- PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
 - TODO — echo-message and labeled-response
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify
-- TODO — chathistory evaluation
+- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` for joined channels only (see Logging and history)
 - TODO — other capabilities based on real-world usefulness
 
 ## Appearance

@@ -45,6 +45,40 @@ compared against the baseline with the procedure in `spec/performance.md`
 
 Do not claim cross-platform verification unless both platforms were actually tested.
 
+### Test coverage and test inventory
+
+Step-by-step instructions for people are in `HOW_TO_TEST.md`
+(`HOW_TO_TEST.ja.md`). `scripts/coverage.sh` measures coverage of
+`cargo test --workspace` with
+[cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) and lists every
+test:
+
+```sh
+cargo install cargo-llvm-cov --locked   # once, into ~/.cargo/bin
+scripts/coverage.sh
+```
+
+It writes `target/llvm-cov/html/index.html` (line, region and function
+coverage per file, with annotated sources) and `target/coverage/tests.html`
+(every test with its file, line and result, grouped by file next to that
+file's coverage, counted per crate and per IRCv3 area, with a filter box;
+`scripts/test-inventory.py` builds it from the sources, the run log and the
+JSON summary). The IRCv3 area of a test is assigned from its file and name
+(`AREA_BY_FILE`, `AREA_BY_NAME`), only as a navigation aid.
+
+The LLVM tools must match rustc's LLVM major version. With rustup, use
+`rustup component add llvm-tools`; without it (Homebrew's Rust on macOS,
+whose standard library already includes the profiler runtime), the script
+uses Homebrew's `llvm` (`brew install llvm`, keg-only, nothing linked) and
+checks the version. Ignored tests (the interoperability checks, which need
+a local server) are not run unless `-- --include-ignored` is passed.
+
+Coverage counts the `#[cfg(test)]` modules inside source files as lines, so
+percentages of files with inline tests read somewhat high, and GPUI
+rendering code is mostly exercised by headless UI tests only. Coverage says
+which code ran, not whether a specification is checked; conformance still
+needs tests named after the requirement they check.
+
 GitHub Actions CI builds and tests the whole workspace on Linux x86_64, Windows
 x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
 system credential store probe against Credential Manager. CI does not exercise
@@ -761,6 +795,30 @@ The tests use CayenChat's `Connection` as the client under test and a
 minimal raw client for the other users, with per-run nicknames and
 channels and example.com URLs (nothing is fetched). Stop the server with
 Ctrl-C and delete the directory afterwards.
+
+### Recent channel history (2026-09-28)
+
+The same pinned Ergo serves the chathistory check (its default
+configuration keeps in-memory channel history and advertises
+`CHATHISTORY=1000`, `MSGREFTYPES=msgid,timestamp` and `draft/chathistory`):
+
+```sh
+CAYENCHAT_INTEROP_IRC=127.0.0.1:36667 cargo test --locked -p cayenchat-irc-core --test chathistory_interop -- --ignored --nocapture
+```
+
+Result against Ergo v2.19.1 on loopback (macOS, debug build; passed):
+`CAP REQ message-tags`, `server-time`, `batch`, then `draft/chathistory`
+after batch's ACK; one `CHATHISTORY LATEST <channel> * 50` per joined
+channel, the second only after the first reply ended; a reply of at most
+50 lines ending with the newest line, with msgid and server-time; a live
+line afterwards arriving as an ordinary live message and no history line
+arriving as live. Observed: Ergo returns our own JOIN (and other joins) as
+`HistServ` PRIVMSGs ("<nick> joined the channel") counted within the
+limit when event-playback is not negotiated, so a channel nobody spoke in
+still returns those lines; and its fakelag lets the filling client send
+about two lines a second (the test waits up to 60 s). Empty replies, FAIL,
+malformed/unended/nested batches, bounds, timeouts and stale replies are
+covered by fixtures and unit tests, not by Ergo.
 
 ### Own avatar publishing and later joiners (2026-09-28)
 

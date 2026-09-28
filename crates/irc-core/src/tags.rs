@@ -97,6 +97,14 @@ pub fn transcript_line(message: &IrcMessage) -> String {
     )
 }
 
+/// The `msgid` tag: the server's identifier for this message, opaque and
+/// compared exactly. Read whenever present, since only servers that
+/// implement message IDs send it; the application decides whether the value
+/// is usable as an identity (`model::NativeMessageId`).
+pub fn msgid(message: &IrcMessage) -> Option<&str> {
+    tag_value(message, "msgid")
+}
+
 /// The `time` tag as an instant, when server-time is enabled on this
 /// connection. Absent or invalid values yield `None` so callers fall back to
 /// the receipt time.
@@ -220,6 +228,29 @@ mod tests {
         assert_eq!(untagged_line(&message), ":n!u@h PRIVMSG #c hi");
     }
 
+    // message-tags: "Implementations MUST treat tag key names as
+    // case-sensitive opaque identifiers and MUST NOT perform any validation
+    // that would reject the message if an invalid tag key name is used."
+    #[test]
+    fn tag_keys_are_case_sensitive_opaque_and_never_reject_the_message() {
+        let message = parse(
+            "@TIME=2026-01-01T00:00:00.000Z;example.com/key=v;+example.com/typing=active;!odd~key=1 :n!u@h PRIVMSG #c :body",
+        );
+        assert_eq!(tag_value(&message, "time"), None);
+        assert!(server_time(&message, true).is_none(), "TIME is not time");
+        assert_eq!(tag_value(&message, "example.com/key"), Some("v"));
+        assert_eq!(tag_value(&message, "+example.com/typing"), Some("active"));
+        assert_eq!(
+            tag_value(&message, "example.com/typing"),
+            None,
+            "+ is part of the name"
+        );
+        assert_eq!(tag_value(&message, "!odd~key"), Some("1"));
+        assert!(
+            matches!(message.command, irc::proto::Command::PRIVMSG(_, ref text) if text == "body")
+        );
+    }
+
     #[test]
     fn replaced_bytes_and_oversized_tag_sections_are_ignored() {
         let message = parse("@time=2026-01-01T00:00:00.000Z;x=bad\u{FFFD} :s NOTICE * :hi");
@@ -251,6 +282,27 @@ mod tests {
         assert!(line.len() < 600);
         assert!(line.contains("tag bytes omitted]"));
         assert!(line.ends_with(" :s PRIVMSG #c hi"));
+    }
+
+    #[test]
+    fn msgid_uses_the_normalized_reader() {
+        let tagged = parse("@time=2026-09-27T23:58:31.123Z;msgid=abc :n!u@h PRIVMSG #c :hi");
+        assert_eq!(msgid(&tagged), Some("abc"));
+        assert_eq!(msgid(&parse(":n!u@h PRIVMSG #c :hi")), None);
+        assert_eq!(msgid(&parse("@msgid= :n!u@h PRIVMSG #c :hi")), None);
+        assert_eq!(
+            msgid(&parse("@msgid=a;msgid=b :n!u@h PRIVMSG #c :hi")),
+            Some("b")
+        );
+        assert_eq!(
+            msgid(&parse("@msgid=x\u{FFFD} :n!u@h PRIVMSG #c :hi")),
+            None
+        );
+        // Escapes are undone before the value is used.
+        assert_eq!(
+            msgid(&parse("@msgid=a\\sb :n!u@h PRIVMSG #c :hi")),
+            Some("a b")
+        );
     }
 
     #[test]

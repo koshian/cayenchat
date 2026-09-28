@@ -35,7 +35,7 @@ Add a server in the settings window that opens at startup (`Cmd+,` / `Ctrl+,`), 
 
 ## Documentation
 
-The specifications under [`spec/`](spec/) are authoritative; start with [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md).
+The specifications under [`spec/`](spec/) are authoritative; start with [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md). To run the tests and view their coverage, see [How to test](HOW_TO_TEST.md).
 
 ## License
 

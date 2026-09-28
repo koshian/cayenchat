@@ -360,6 +360,10 @@ pub struct Ircv3Preferences {
     /// (experimental), for servers without avatar metadata. Added without a
     /// version change: files without it read as off.
     pub peer_avatars: bool,
+    /// Request recent channel history with `draft/chathistory`
+    /// (experimental). Added without a version change: files without it
+    /// read as off.
+    pub chathistory: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1383,11 +1387,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
@@ -1408,6 +1412,25 @@ mod tests {
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
         assert!(!loaded.servers[0].ircv3.batch && loaded.servers[1].ircv3.batch);
+
+        // So is channel history, off when a file predates it.
+        settings.servers[0].ircv3.chathistory = true;
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.servers[0].ircv3.chathistory && !loaded.servers[1].ircv3.chathistory);
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["servers"][0]["ircv3"]
+            .as_object_mut()
+            .unwrap()
+            .remove("chathistory");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(
+            !load_from(&path).unwrap().unwrap().servers[0]
+                .ircv3
+                .chathistory
+        );
+        settings.servers[0].ircv3.chathistory = false;
+        save_to(&path, &settings).unwrap();
 
         // The per-server avatar option of earlier builds is gone; files that
         // still have it load and keep everything else.
