@@ -2128,10 +2128,10 @@ impl ChatWindow {
             && handle
                 .update(cx, |settings, window, cx| {
                     if tab != SettingsTab::Connection {
-                        settings.tab = tab;
+                        settings.show_tab(tab);
                         cx.notify();
                     } else if let Some(profile) = profile.clone() {
-                        settings.tab = tab;
+                        settings.show_tab(tab);
                         settings.select_server(profile, cx);
                     }
                     window.activate_window()
@@ -4298,10 +4298,21 @@ impl SettingsWindow {
             })
             .child(self.i18n.text(label_key))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.tab = tab;
+                this.show_tab(tab);
                 this.font_picker = None;
                 cx.notify();
             }))
+    }
+
+    /// Switches tabs. A message about something done on one tab (such as
+    /// connecting an image upload account) is not shown on the others;
+    /// an autosave failure still is.
+    fn show_tab(&mut self, tab: SettingsTab) {
+        if self.tab != tab {
+            self.feedback = None;
+            self.avatar_feedback = None;
+        }
+        self.tab = tab;
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
