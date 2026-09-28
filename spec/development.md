@@ -45,6 +45,38 @@ compared against the baseline with the procedure in `spec/performance.md`
 
 Do not claim cross-platform verification unless both platforms were actually tested.
 
+### Test coverage and test inventory
+
+`scripts/coverage.sh` measures coverage of `cargo test --workspace` with
+[cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) and lists every
+test:
+
+```sh
+cargo install cargo-llvm-cov --locked   # once, into ~/.cargo/bin
+scripts/coverage.sh
+```
+
+It writes `target/llvm-cov/html/index.html` (line, region and function
+coverage per file, with annotated sources) and `target/coverage/tests.html`
+(every test with its file, line and result, grouped by file next to that
+file's coverage, counted per crate and per IRCv3 area, with a filter box;
+`scripts/test-inventory.py` builds it from the sources, the run log and the
+JSON summary). The IRCv3 area of a test is assigned from its file and name
+(`AREA_BY_FILE`, `AREA_BY_NAME`), only as a navigation aid.
+
+The LLVM tools must match rustc's LLVM major version. With rustup, use
+`rustup component add llvm-tools`; without it (Homebrew's Rust on macOS,
+whose standard library already includes the profiler runtime), the script
+uses Homebrew's `llvm` (`brew install llvm`, keg-only, nothing linked) and
+checks the version. Ignored tests (the interoperability checks, which need
+a local server) are not run unless `-- --include-ignored` is passed.
+
+Coverage counts the `#[cfg(test)]` modules inside source files as lines, so
+percentages of files with inline tests read somewhat high, and GPUI
+rendering code is mostly exercised by headless UI tests only. Coverage says
+which code ran, not whether a specification is checked; conformance still
+needs tests named after the requirement they check.
+
 GitHub Actions CI builds and tests the whole workspace on Linux x86_64, Windows
 x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
 system credential store probe against Credential Manager. CI does not exercise
