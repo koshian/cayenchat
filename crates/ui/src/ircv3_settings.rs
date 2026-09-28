@@ -6,17 +6,30 @@
 //! enabling it by default, changes only its row or storage default and never
 //! the protocol code.
 
+use std::{path::PathBuf, sync::Arc};
+
 use cayenchat_app::{
     ConnectionStatus,
+    attachments::{Completion, Offer, UploadFailure},
     own_avatar::{Action, Blocked, Confirmed, Failure, Outcome, OwnAvatar},
 };
 use cayenchat_irc_core::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 use cayenchat_media::policy::{PublishProblem, publishable_avatar_url};
 use cayenchat_model::NetworkId;
-use cayenchat_storage::{Ircv3Preferences, ServerProfile, TextEncoding};
+use cayenchat_model::attachment::{Attachment, AttachmentError, AttachmentSource};
+use cayenchat_storage::{Ircv3Preferences, ServerProfile, Settings, TextEncoding};
+use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, SettingsWindow, account_settings::panel, settings_theme};
+use crate::{
+    ChatWindow, SettingsWindow,
+    account_settings::panel,
+    image_upload::{
+        acceptable_attachment, clipboard_attachment, configured_uploader, file_attachment,
+        upload_failure_text, upload_in_background,
+    },
+    input, settings_theme,
+};
 
 /// Server descriptions shown with a rejection are cut to this many
 /// characters.
@@ -274,11 +287,68 @@ impl SettingsWindow {
             .outcome
             .as_ref()
             .map(|outcome| outcome_text(&self.i18n, outcome));
+        // With an image host configured, an image can be dropped here,
+        // pasted into the field or chosen; its uploaded URL becomes the
+        // draft. Without one the URL is typed.
+        let provider = self
+            .settings
+            .values
+            .image_upload
+            .provider
+            .as_deref()
+            .and_then(cayenchat_upload::provider)
+            .map(|provider| provider.name);
+        let uploading = self.avatar_upload.uploading().map(str::to_owned);
+        let upload_row = match provider {
+            Some(name) => {
+                let mut row = div().ml(px(158.)).flex().items_center().gap_2().child(
+                    action_button(
+                        "ircv3-avatar-choose",
+                        "ircv3_avatar_choose",
+                        false,
+                        uploading.is_none(),
+                    )
+                    .when(uploading.is_none(), |button| {
+                        button.on_click(
+                            cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
+                        )
+                    }),
+                );
+                if let Some(provider) = &uploading {
+                    row = row
+                        .child(
+                            self.i18n
+                                .format("ircv3_avatar_uploading", &[("provider", provider)]),
+                        )
+                        .child(
+                            settings_theme::button("ircv3-avatar-upload-cancel", false, cx)
+                                .child(self.i18n.text("cancel"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cancel_avatar_upload(cx)),
+                                ),
+                        );
+                }
+                div().flex().flex_col().gap_2().child(row).child(note(
+                    self.i18n
+                        .format("ircv3_avatar_upload_hint", &[("provider", name)]),
+                ))
+            }
+            None => div().child(note(self.i18n.text("ircv3_avatar_upload_unconfigured"))),
+        };
         section
+            .on_action(cx.listener(Self::paste_avatar_image))
+            .when(provider.is_some(), |section| {
+                section
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                        this.drop_avatar_image(paths.paths(), window, cx)
+                    }))
+            })
             .child(crate::settings_field(
                 &self.i18n.text("ircv3_avatar_url"),
                 self.settings.avatar_url.clone(),
             ))
+            .child(upload_row)
             .child(
                 div()
                     .ml(px(158.))
@@ -346,6 +416,216 @@ impl SettingsWindow {
         };
         cx.notify();
     }
+}
+
+/// Avatar images: uploaded through the configured image host into the
+/// selected server's avatar URL draft, with the same confirmation and
+/// attachment flow as chat drafts. Uploading never publishes.
+impl SettingsWindow {
+    fn paste_avatar_image(
+        &mut self,
+        _: &input::Paste,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(attachment) = clipboard_attachment(cx) {
+            self.offer_avatar_image(attachment, window, cx);
+        }
+    }
+
+    fn drop_avatar_image(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {
+            Ok(attachment) => self.offer_avatar_image(attachment, window, cx),
+            Err(error) => {
+                self.avatar_feedback = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
+    fn choose_avatar_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(self.i18n.text("ircv3_avatar_choose_prompt").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                match file_attachment(&paths, AttachmentSource::Chooser, &this.i18n) {
+                    Ok(attachment) => this.offer_avatar_image(attachment, window, cx),
+                    Err(error) => {
+                        this.avatar_feedback = Some(error);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn offer_avatar_image(
+        &mut self,
+        attachment: Result<Attachment, AttachmentError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.avatar_feedback = None;
+        let Some(profile) = self
+            .settings
+            .values
+            .selected_profile()
+            .map(|p| p.id.clone())
+        else {
+            return;
+        };
+        let provider = self.settings.values.image_upload.provider.clone();
+        let checked = acceptable_attachment(attachment, None, &self.i18n).and_then(|attachment| {
+            let (readiness, uploader) =
+                configured_uploader(provider.as_deref(), None, &self.i18n, cx)?;
+            let attachment = acceptable_attachment(Ok(attachment), uploader.as_ref(), &self.i18n)?;
+            Ok((attachment, readiness, uploader))
+        });
+        let (attachment, readiness, uploader) = match checked {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.avatar_feedback = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        match self.avatar_upload.offer(attachment, profile, readiness) {
+            Offer::Confirm {
+                provider,
+                name,
+                size,
+            } => {
+                let answer = window.prompt(
+                    PromptLevel::Info,
+                    &self.i18n.format(
+                        "ircv3_avatar_upload_confirm_title",
+                        &[("provider", &provider)],
+                    ),
+                    Some(&self.i18n.format(
+                        "ircv3_avatar_upload_confirm_detail",
+                        &[("provider", &provider), ("name", &name), ("size", &size)],
+                    )),
+                    &[
+                        PromptButton::ok(self.i18n.text("upload_confirm")),
+                        PromptButton::cancel(self.i18n.text("cancel")),
+                    ],
+                    cx,
+                );
+                cx.spawn_in(window, async move |this, cx| {
+                    let accepted = answer.await == Ok(0);
+                    let _ = this.update(cx, |this, cx| {
+                        if accepted && let Some(uploader) = uploader {
+                            this.start_avatar_upload(uploader, cx);
+                        } else {
+                            this.avatar_upload.decline();
+                        }
+                    });
+                })
+                .detach();
+            }
+            Offer::Configure => {
+                self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
+            }
+            Offer::Reconnect { provider } => {
+                self.avatar_feedback = Some(
+                    self.i18n
+                        .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
+                );
+            }
+            Offer::Busy => self.avatar_feedback = Some(self.i18n.text("upload_busy")),
+        }
+        cx.notify();
+    }
+
+    fn start_avatar_upload(&mut self, uploader: Arc<dyn ExternalUploader>, cx: &mut Context<Self>) {
+        let Some(job) = self.avatar_upload.confirm() else {
+            return;
+        };
+        let id = job.id;
+        let upload = upload_in_background(uploader, job, cx);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = upload.await;
+            let _ = this.update(cx, |this, cx| {
+                let completion = this.avatar_upload.finish(id, result);
+                this.complete_avatar_upload(completion, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn complete_avatar_upload(&mut self, completion: Completion<String>, cx: &mut Context<Self>) {
+        match completion {
+            Completion::InsertLink { target, url } => {
+                match place_uploaded_avatar(&mut self.settings.values, &target, &url) {
+                    Ok(shown) => {
+                        if shown {
+                            self.settings
+                                .avatar_url
+                                .update(cx, |field, cx| field.set_text(&url, cx));
+                        }
+                        self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_uploaded"));
+                    }
+                    Err(key) => self.avatar_feedback = Some(self.i18n.text(key)),
+                }
+            }
+            Completion::Failed {
+                provider,
+                failure: UploadFailure::Authentication,
+            } => {
+                self.avatar_feedback = Some(
+                    self.i18n
+                        .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
+                );
+            }
+            Completion::Failed { provider, failure } => {
+                self.avatar_feedback = Some(upload_failure_text(&provider, failure, &self.i18n));
+            }
+            Completion::Ignored => {}
+        }
+        cx.notify();
+    }
+
+    fn cancel_avatar_upload(&mut self, cx: &mut Context<Self>) {
+        if self.avatar_upload.cancel_upload() {
+            self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_cancelled"));
+        }
+        cx.notify();
+    }
+}
+
+/// Puts an uploaded image's URL into the avatar URL draft of `profile_id`
+/// (never publishing it). Returns whether that server is the one shown, so
+/// its field must show the URL too; `Err` is a localization key.
+pub(crate) fn place_uploaded_avatar(
+    values: &mut Settings,
+    profile_id: &str,
+    url: &str,
+) -> Result<bool, &'static str> {
+    if publishable_avatar_url(url).is_err() || url.len() > MAX_PUBLISHED_AVATAR_BYTES {
+        return Err("ircv3_avatar_upload_bad_url");
+    }
+    let shown = values.selected_server == profile_id;
+    let profile = values
+        .servers
+        .iter_mut()
+        .find(|profile| profile.id == profile_id)
+        .ok_or("ircv3_avatar_upload_server_gone")?;
+    profile.avatar_url = url.to_owned();
+    Ok(shown)
 }
 
 /// What the IRCv3 tab shows about our own avatar on one server.
@@ -516,8 +796,75 @@ fn server_label(host: &str, port: u16, i18n: &crate::localization::Localizer) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{IRCV3_FEATURES, avatar_url_problem};
-    use cayenchat_storage::Ircv3Preferences;
+    use super::{IRCV3_FEATURES, avatar_url_problem, place_uploaded_avatar};
+    use cayenchat_storage::{Ircv3Preferences, Settings};
+
+    #[test]
+    fn uploaded_images_fill_the_draft_of_the_server_they_were_for() {
+        let mut settings = Settings::default();
+        let first = settings.add_server("irc.one.example").id.clone();
+        let second = settings.add_server("irc.two.example").id.clone();
+        settings.selected_server = first.clone();
+        let url = "https://i.ibb.co/abc/me.png";
+        // The shown server: its field must show the URL too.
+        assert_eq!(place_uploaded_avatar(&mut settings, &first, url), Ok(true));
+        // The user switched servers while uploading: the draft of the
+        // server the image was for changes, the shown one does not.
+        assert_eq!(
+            place_uploaded_avatar(&mut settings, &second, "https://i.ibb.co/x/b.png"),
+            Ok(false)
+        );
+        assert_eq!(settings.servers[0].avatar_url, url);
+        assert_eq!(settings.servers[1].avatar_url, "https://i.ibb.co/x/b.png");
+        // Removed meanwhile, or a URL we would refuse to publish.
+        assert_eq!(
+            place_uploaded_avatar(&mut settings, "gone", url),
+            Err("ircv3_avatar_upload_server_gone")
+        );
+        for bad in [
+            "http://localhost/a.png".to_owned(),
+            "https://i.ibb.co/a.png?token=x".to_owned(),
+            format!("https://i.ibb.co/{}.png", "a".repeat(400)),
+        ] {
+            assert_eq!(
+                place_uploaded_avatar(&mut settings, &first, &bad),
+                Err("ircv3_avatar_upload_bad_url"),
+                "{bad}"
+            );
+        }
+        assert_eq!(settings.servers[0].avatar_url, url, "unchanged");
+        // Only the draft changes: nothing about publishing is stored.
+        assert!(settings.servers.iter().all(|server| !server.ircv3.metadata));
+    }
+
+    #[test]
+    fn avatar_upload_texts_exist_in_both_languages() {
+        let catalogs = [
+            include_str!("../../../locales/en.json"),
+            include_str!("../../../locales/ja.json"),
+        ];
+        for key in [
+            "ircv3_avatar_choose",
+            "ircv3_avatar_choose_prompt",
+            "ircv3_avatar_upload_hint",
+            "ircv3_avatar_upload_unconfigured",
+            "ircv3_avatar_upload_confirm_title",
+            "ircv3_avatar_upload_confirm_detail",
+            "ircv3_avatar_uploading",
+            "ircv3_avatar_uploaded",
+            "ircv3_avatar_upload_bad_url",
+            "ircv3_avatar_upload_server_gone",
+            "ircv3_avatar_upload_needs_setup",
+            "ircv3_avatar_upload_reconnect",
+            "ircv3_avatar_upload_cancelled",
+            "upload_confirm",
+            "upload_busy",
+        ] {
+            for catalog in catalogs {
+                assert!(catalog.contains(&format!("\"{key}\"")), "{key}");
+            }
+        }
+    }
 
     #[test]
     fn drafts_are_checked_before_anything_is_sent() {

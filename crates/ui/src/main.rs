@@ -306,12 +306,17 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            avatar_url: field(
-                &i18n.text("ircv3_avatar_url_placeholder"),
-                &profile.avatar_url,
-                false,
-                cx,
-            ),
+            avatar_url: {
+                let input = field(
+                    &i18n.text("ircv3_avatar_url_placeholder"),
+                    &profile.avatar_url,
+                    false,
+                    cx,
+                );
+                // A pasted image goes to the avatar upload (IRCv3 tab).
+                input.update(cx, |input, _| input.accept_pasted_images());
+                input
+            },
             server_list_open: false,
             encoding_list_open: false,
             values,
@@ -957,8 +962,12 @@ struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     autosave_error: Option<String>,
-    /// Why Publish or Remove could not be started for our own avatar.
+    /// Why Publish or Remove could not be started for our own avatar, or
+    /// how an avatar image upload went.
     avatar_feedback: Option<String>,
+    /// Avatar images on their way to the image host; the target is the
+    /// server profile whose avatar URL draft receives the link.
+    avatar_upload: AttachmentFlow<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -2851,6 +2860,7 @@ impl SettingsWindow {
             autosave: None,
             autosave_error: None,
             avatar_feedback: None,
+            avatar_upload: AttachmentFlow::default(),
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
