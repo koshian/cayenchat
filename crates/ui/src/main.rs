@@ -602,6 +602,7 @@ fn connection_config(
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
+    config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.encoding = profile.encoding.label().into();
     config.ircv3 = ircv3_options(profile.ircv3);
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
@@ -3092,6 +3093,42 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Sending PASS without TLS is never turned on without a confirmation.
+    fn toggle_plaintext_pass(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        if profile.allow_plaintext_pass {
+            profile.allow_plaintext_pass = false;
+            cx.notify();
+            return;
+        }
+        let id = profile.id.clone();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &self.i18n.text("plaintext_pass_title"),
+            Some(&self.i18n.text("plaintext_pass_detail")),
+            &[
+                PromptButton::ok(self.i18n.text("plaintext_pass_confirm")),
+                PromptButton::cancel(self.i18n.text("cancel")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(profile) = this.settings.values.selected_profile_mut()
+                        && profile.id == id
+                    {
+                        profile.allow_plaintext_pass = true;
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     fn toggle_tls(&mut self, cx: &mut Context<Self>) {
         let Some(profile) = self.settings.values.selected_profile_mut() else {
             return;
@@ -3639,6 +3676,34 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("server_password_hint")),
             )
+            .when(!tls, |d| {
+                d.child(
+                    div()
+                        .id("plaintext-pass")
+                        .ml(px(158.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .child(settings_theme::checkbox(
+                            profile.allow_plaintext_pass,
+                            true,
+                            cx,
+                        ))
+                        .child(self.i18n.text("plaintext_pass"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_plaintext_pass(window, cx)
+                        })),
+                )
+                .when(profile.allow_plaintext_pass, |d| {
+                    d.child(
+                        div()
+                            .ml(px(158.))
+                            .text_color(theme.warning)
+                            .child(self.i18n.text("plaintext_pass_warning")),
+                    )
+                })
+            })
             .child(
                 div()
                     .id("remember-passwords")
@@ -6410,6 +6475,32 @@ mod startup_tests {
         assert!(
             connection_config(settings.selected_profile().unwrap(), language, None, None).is_err()
         );
+    }
+
+    #[test]
+    fn plaintext_server_password_needs_the_profile_opt_in() {
+        let mut settings = Settings::default();
+        let profile = settings.add_server("znc.lan");
+        profile.nickname = "alice".into();
+        profile.username = "alice".into();
+        let language = settings.language;
+        let password = || Some(Secret::new("alice/net:secret"));
+        let profile = settings.selected_profile().unwrap();
+        assert!(!profile.use_tls);
+        assert!(connection_config(profile, language, password(), None).is_err());
+        settings
+            .selected_profile_mut()
+            .unwrap()
+            .allow_plaintext_pass = true;
+        let config = connection_config(
+            settings.selected_profile().unwrap(),
+            language,
+            password(),
+            None,
+        )
+        .unwrap();
+        assert!(!config.use_tls && config.allow_plaintext_pass);
+        assert_eq!(config.server_password.as_deref(), Some("alice/net:secret"));
     }
 
     #[test]
