@@ -328,12 +328,12 @@ this delay.
    example the pinned Ergo below; never a public server or real account):
    in **IRCv3**, with **ユーザーのアバター (実験的)** on, the section
    **このサーバーでの自分のアバター** shows the URL field, the exposure
-   warning, **公開** and **削除**. Type a URL and wait for autosave: nothing
+   warning, **サーバに送信** and **削除**. Type a URL and wait for autosave: nothing
    is sent (the transcript shows no `METADATA * SET`). While disconnected
-   both buttons are disabled with the reason shown. Connected, **公開**
+   both buttons are disabled with the reason shown. Connected, **サーバに送信**
    shows the waiting line, then the server-confirmed URL; another client
    in the channel receives it, and our own lines show the image when
-   avatars are displayed. Change the URL and publish again; then **削除**
+   avatars are displayed. Change the URL and send again; then **削除**
    (only `METADATA * SET avatar` is sent). A URL with `user:pass@`,
    `?token=` or a private host is refused before sending; an over-long URL
    is refused by Ergo (`INVALID_VALUE`) and more than 10 changes in 2
@@ -345,10 +345,12 @@ this delay.
    **画像アップロード** (a test account), drop a PNG on the section, paste a
    screenshot into the URL field and use **画像を選択…** (also a large
    phone photo, which must appear upright): each opens the square editor;
-   drag and scroll move and resize the square and the result preview
-   follows; Cancel uploads nothing; **… にアップロード** shows progress and
-   then puts the host's URL into the field without publishing, and the
-   uploaded image is at most 256×256. A HEIC file is refused with the
+   dragging outlines a square that follows the mouse, releasing enlarges it
+   to fill the view, a second drag narrows it, **全体に戻す** resets, and
+   the result preview follows; Cancel uploads nothing; **… にアップロードして
+   送信** shows progress, puts the host's URL into the field and sends it
+   (the server line then shows it; while disconnected the tab says it was
+   not sent), and the uploaded image is at most 256×256. A HEIC file is refused with the
    export hint.
    Switch servers during an upload: the URL goes to the server it was for.
    With no host set up, the section says to set one up and an image paste

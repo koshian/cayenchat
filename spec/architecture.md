@@ -600,7 +600,7 @@ tab says so.
 Publishing from the UI: the IRCv3 tab shows, while the selected server's
 metadata option is on, the draft URL field (`ServerProfile::avatar_url`,
 saved by autosave like any field and never sent by it), a warning that the
-URL becomes visible to everyone on the network, Publish and Remove, what
+URL becomes visible to everyone on the network, Send to Server and Remove, what
 the server holds and the last outcome. `ui::ircv3_settings` checks the
 draft (`media::policy::publishable_avatar_url`, the length and encoding
 rules) and asks `ChatWindow::request_own_avatar`, which starts a request in
@@ -611,14 +611,17 @@ last `Outcome`. With an image host configured, `ui::ircv3_settings` also
 accepts an image dropped on the section, pasted into the URL field (the
 field propagates image-only pastes like chat drafts) or chosen in the
 system file dialog, opens it in `ui::avatar_editor` (square selection over
-a 320-logical-pixel view, drag to move, wheel/buttons to resize, a 64 px
-result preview; `media::avatar_edit` decodes, crops and encodes at most
+a 320-logical-pixel view: a drag outlines a square, releasing it enlarges
+the square to fill the view (the whole image is shown enlarged at once and
+a sharp preview of the square replaces it when made off the UI thread),
+"Whole Image" resets, and a 64 px result preview follows; `media::avatar_edit` decodes, crops and encodes at most
 256×256 off the UI thread), and runs the encoded square through the chat
 upload steps shared in
 `ui::image_upload` (`configured_uploader`, `acceptable_attachment`,
 `upload_in_background`) with its own `AttachmentFlow<String>` targeting
 the server profile ID; the confirmed URL goes into that profile's draft
-(`place_uploaded_avatar`), never published by the upload. The own-avatar
+(`place_uploaded_avatar`) and is sent at once through
+`ChatWindow::request_own_avatar` when that server is connected. The own-avatar
 state only changes on `MetadataReady`, `OwnAvatar`,
 `OwnAvatarFailed`, `AvatarsReset` and the end of a connection (disconnect,
 reconnect, removal), which fails a pending request and forgets what the

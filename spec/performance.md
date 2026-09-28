@@ -82,7 +82,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Preview retries | transient failures (network, 408/429/5xx) once more after 5 min; others never | per record | While the record is retained; redraws never retry. |
 | Avatar metadata (irc-core) | 2,048 users with an avatar; values ≤ 2,048 bytes; 16 deferred channel syncs, 3 per channel | per connection | Only the `avatar` key is kept; later users get none. Reset on reconnect or lost capability. |
 | Avatar lookups for later joiners (irc-core) | 64 pending, 8 unanswered, 2 sent per second after a 2 s pause, 2 attempts, 30 s timeout | per connection | Only live JOINs of users sharing no other channel; never NAMES, redraws or history. Further joiners are skipped until the table drains. |
-| Own avatar requests (irc-core, app) | 1 outstanding, 20 s timeout, URL ≤ 400 bytes | per connection | Only on an explicit Publish or Remove. |
+| Own avatar requests (irc-core, app) | 1 outstanding, 20 s timeout, URL ≤ 400 bytes | per connection | Only on Send to Server, Remove, or after an avatar image upload. |
 | Avatar directory (app) | 2,048 current + 512 retired entries | per network | Worst case about 6 MiB per network at the maximum URL length; typical URLs are ~100 bytes. Removed with the server. |
 | Avatar loads | 2 in flight; with previews at most 3 media fetches in flight together | application | Decoding stays one at a time in the process (shared with previews). |
 | Queued avatar requests | 32, newest first | application | Only from drawn rows. |

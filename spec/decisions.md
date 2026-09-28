@@ -685,7 +685,8 @@ User avatars).
 
 **Publishing our own avatar (2026-09-28).** The IRCv3 tab has, per server
 and only while that server's metadata option is on, an avatar URL field
-and explicit **Publish** / **Remove** buttons. The URL is a draft saved
+and explicit **Send to Server** (サーバに送信; "Publish" in code) /
+**Remove** buttons. The URL is a draft saved
 with the server profile (`ServerProfile::avatar_url`, added without a
 version change, empty when absent); autosave never publishes it, and it is
 never republished on reconnect. Publish sends `METADATA * SET avatar
@@ -714,17 +715,21 @@ tab, an image can also be dropped on the avatar section, pasted into the
 URL field or picked with **Choose Image…**. It first opens in a square
 selection editor (`media::avatar_edit`, decoded off the UI thread with the
 preview limits, EXIF orientation applied, kept at most 2048 px a side while
-open): the user drags the square, resizes it with the scroll wheel or
-buttons and sees the result; the upload button names the host and is the
-confirmation. Only the selected square is uploaded, shrunk to at most
+open): dragging outlines a square, releasing the mouse enlarges it to
+fill the view (dragging again narrows it further, **Whole Image** starts
+over), and a small preview shows the result; the upload button names the
+host and is the confirmation. Only the selected square is uploaded, shrunk to at most
 256×256 (JPEG quality 88, or PNG when the image has transparency), so a
 full-resolution photo never leaves the computer. PNG, JPEG, GIF, WebP,
 BMP and TIFF can be edited; HEIC/AVIF are refused with a hint to export
 JPEG. The upload goes through the same `ExternalUploader` as chat images
 (`app::attachments::AttachmentFlow`, whose target is generic: a chat draft
 or a server profile), and the returned URL replaces that server's avatar
-draft if it passes the same checks. Uploading never publishes; the user
-still clicks Publish. Without an image host the URL is typed. A future
+draft if it passes the same checks and is then sent to the server at once
+(users expect an uploaded avatar to be in use); if the server is not
+connected the draft is kept and the tab says it was not sent. A typed URL
+is still sent only with the button. Without an image host the URL is
+typed. A future
 standard upload service (for example if soju's `soju.im/filehost` becomes
 an IRCv3 specification) would be another source of that URL; the
 settings section would stay as it is.
