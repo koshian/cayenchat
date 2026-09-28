@@ -23,6 +23,7 @@ use cayenchat_app::{
     AppState, Command, ConnectionStatus, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
+    own_avatar::OwnAvatar,
 };
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
@@ -36,6 +37,7 @@ use cayenchat_storage::{
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
+use ircv3_settings::own_avatar_failure;
 use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
@@ -139,6 +141,9 @@ struct SettingsForm {
     time_font: Entity<TextInput>,
     /// Comma-separated notification keywords.
     keywords: Entity<TextInput>,
+    /// Draft URL of our own avatar for the selected server (IRCv3 tab).
+    /// Editing it saves the draft; only Publish sends it.
+    avatar_url: Entity<TextInput>,
 }
 
 impl SettingsForm {
@@ -301,6 +306,12 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            avatar_url: field(
+                &i18n.text("ircv3_avatar_url_placeholder"),
+                &profile.avatar_url,
+                false,
+                cx,
+            ),
             server_list_open: false,
             encoding_list_open: false,
             values,
@@ -324,6 +335,7 @@ impl SettingsForm {
             profile.username = value(&self.username);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
+            profile.avatar_url = value(&self.avatar_url);
         }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
@@ -383,7 +395,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 29] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 30] {
         [
             &self.custom_host,
             &self.port,
@@ -414,6 +426,7 @@ impl SettingsForm {
             &self.input_font,
             &self.time_font,
             &self.keywords,
+            &self.avatar_url,
         ]
     }
 
@@ -514,6 +527,7 @@ impl SettingsForm {
             (&self.username, &profile.username),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
+            (&self.avatar_url, &profile.avatar_url),
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
@@ -943,6 +957,8 @@ struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     autosave_error: Option<String>,
+    /// Why Publish or Remove could not be started for our own avatar.
+    avatar_feedback: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -1587,6 +1603,7 @@ impl ChatWindow {
             let _ = connection.disconnect();
         }
         session.generation += 1;
+        session.own_avatar.connection_ended();
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
         self.state.set_status(network, ConnectionStatus::Connecting);
@@ -2319,6 +2336,20 @@ impl ChatWindow {
         let changed = !batch.is_empty();
         let mut disconnected = false;
         let mut refused = false;
+        // The IRCv3 settings tab shows our own avatar and whether it can
+        // be published; it is redrawn only when that may have changed.
+        let own_avatar_changed = batch.iter().any(|event| {
+            matches!(
+                event,
+                Event::Registered { .. }
+                    | Event::Disconnected(_)
+                    | Event::Refused(_)
+                    | Event::AvatarsReset
+                    | Event::MetadataReady
+                    | Event::OwnAvatar { .. }
+                    | Event::OwnAvatarFailed { .. }
+            )
+        });
         for event in batch {
             match &event {
                 Event::Disconnected(_) => disconnected = true,
@@ -2338,6 +2369,9 @@ impl ChatWindow {
         }
         for (network, info, requested) in std::mem::take(&mut self.whois_replies) {
             self.show_whois(network, info, requested, cx);
+        }
+        if own_avatar_changed || worker_closed {
+            self.refresh_settings(cx);
         }
         if changed {
             let joined = self.joined_channels(network);
@@ -2574,6 +2608,7 @@ impl ChatWindow {
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
                 self.state.end_avatars(network);
+                self.update_own_avatar(network, OwnAvatar::connection_ended);
                 self.record_disconnect(network, reason);
             }
             // Avatar references are recorded whether or not they are shown;
@@ -2587,9 +2622,19 @@ impl ChatWindow {
                 let to = cayenchat_irc_core::text::nickname_key(&to);
                 self.state.rename_avatar(network, &from, &to);
             }
-            Event::AvatarsReset => self.state.end_avatars(network),
-            // Publishing our own avatar has no UI yet.
-            Event::MetadataReady | Event::OwnAvatar { .. } | Event::OwnAvatarFailed { .. } => {}
+            Event::AvatarsReset => {
+                self.state.end_avatars(network);
+                self.update_own_avatar(network, OwnAvatar::capability_lost);
+            }
+            // Our own avatar: shown on the IRCv3 settings tab only.
+            Event::MetadataReady => self.update_own_avatar(network, OwnAvatar::set_ready),
+            Event::OwnAvatar { url, request } => {
+                self.update_own_avatar(network, |own| own.reported(url, request));
+            }
+            Event::OwnAvatarFailed { request, failure } => {
+                let failure = own_avatar_failure(failure);
+                self.update_own_avatar(network, |own| own.failed(request, failure));
+            }
         }
     }
 
@@ -2805,6 +2850,7 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             autosave_error: None,
+            avatar_feedback: None,
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -3153,6 +3199,7 @@ impl SettingsWindow {
     }
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        self.avatar_feedback = None;
         let store = secrets::store(cx);
         match self.settings.switch_server(change, &store, &self.i18n, cx) {
             Ok(()) => self.feedback = None,

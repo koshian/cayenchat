@@ -627,6 +627,52 @@ mod tests {
     }
 
     #[gpui::test]
+    fn metadata_about_joiners_and_ourselves_is_not_chat_and_loads_nothing_while_off(
+        cx: &mut TestAppContext,
+    ) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, false, false, &fetcher);
+        let counts = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                (
+                    chat.state.server_messages(NetworkId(1)).len(),
+                    chat.state.conversations()[0].messages.len(),
+                )
+            })
+        };
+        let before = counts(&chat, cx);
+        // A later joiner's looked-up avatar and our own confirmed one.
+        events(
+            &chat,
+            cx,
+            vec![
+                Event::MetadataReady,
+                Event::OwnAvatar {
+                    url: Some(BOB.into()),
+                    request: None,
+                },
+                avatar("me", Some(BOB)),
+                avatar("dave", Some(CAROL)),
+                Event::OwnAvatarFailed {
+                    request: 99,
+                    failure: cayenchat_irc_core::AvatarRequestFailure::NoReply,
+                },
+            ],
+        );
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(counts(&chat, cx), before, "no chat rows or server lines");
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.avatars.lookups.get(), 0);
+            assert_eq!(chat.avatars.cache().records(), 0);
+            assert!(chat.state.avatars().current(NetworkId(1), "dave").is_some());
+            // A stale failure for a request never made changes nothing.
+            assert_eq!(chat.sessions[&NetworkId(1)].own_avatar.outcome(), None);
+        });
+        assert!(fetcher.calls().is_empty(), "nothing downloaded while off");
+    }
+
+    #[gpui::test]
     fn removing_a_server_forgets_its_avatars(cx: &mut TestAppContext) {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, false, &fetcher);
