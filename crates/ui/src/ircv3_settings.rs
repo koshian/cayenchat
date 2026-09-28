@@ -280,17 +280,29 @@ impl SettingsWindow {
                 )
             })
             .when(can_send, |row| {
+                // Sending exposes the URL to the whole network.
+                let warning: SharedString = self.i18n.text("ircv3_avatar_exposure").into();
                 row.child(
-                    button("ircv3-avatar-publish", "ircv3_avatar_publish", true).on_click(
-                        cx.listener(|this, _, _, cx| this.request_own_avatar(Action::Publish, cx)),
-                    ),
+                    button("ircv3-avatar-publish", "ircv3_avatar_publish", true)
+                        .tooltip(move |_, cx| {
+                            let text = warning.clone();
+                            cx.new(|_| TextTooltip(text)).into()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.request_own_avatar(Action::Publish, cx)
+                        })),
                 )
             })
+            // Removal is at the far end, in the warning color, and asks
+            // first.
             .when(can_remove, |row| {
-                row.child(
-                    button("ircv3-avatar-remove", "ircv3_avatar_remove", false).on_click(
-                        cx.listener(|this, _, _, cx| this.request_own_avatar(Action::Remove, cx)),
-                    ),
+                row.child(div().flex_1()).child(
+                    button("ircv3-avatar-remove", "ircv3_avatar_remove", false)
+                        .text_color(theme.warning)
+                        .border_color(theme.warning)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.confirm_avatar_removal(window, cx)
+                        })),
                 )
             });
         // Only what needs attention: a request in progress or a failure.
@@ -342,6 +354,25 @@ impl SettingsWindow {
                 )
             })
             .children(provider.and_then(|name| self.render_avatar_editor(name, cx)))
+    }
+
+    fn confirm_avatar_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &self.i18n.text("ircv3_avatar_remove_title"),
+            Some(&self.i18n.text("ircv3_avatar_remove_detail")),
+            &[
+                PromptButton::ok(self.i18n.text("ircv3_avatar_remove_confirm")),
+                PromptButton::cancel(self.i18n.text("cancel")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| this.request_own_avatar(Action::Remove, cx));
+            }
+        })
+        .detach();
     }
 
     /// Publish or Remove, only when clicked. The draft is checked here;
@@ -648,6 +679,24 @@ pub(crate) fn place_uploaded_avatar(
     Ok(shown)
 }
 
+/// A plain text tooltip in the settings palette.
+struct TextTooltip(SharedString);
+
+impl Render for TextTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = settings_theme::palette(cx);
+        div()
+            .max_w(px(320.))
+            .px_2()
+            .py_1()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.border)
+            .text_color(theme.text)
+            .child(self.0.clone())
+    }
+}
+
 /// What the IRCv3 tab shows about our own avatar on one server.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OwnAvatarStatus {
@@ -881,6 +930,10 @@ mod tests {
             "ircv3_avatar_upload_reconnect",
             "ircv3_avatar_upload_cancelled",
             "upload_busy",
+            "ircv3_avatar_exposure",
+            "ircv3_avatar_remove_title",
+            "ircv3_avatar_remove_detail",
+            "ircv3_avatar_remove_confirm",
         ] {
             for catalog in catalogs {
                 assert!(catalog.contains(&format!("\"{key}\"")), "{key}");

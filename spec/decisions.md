@@ -688,9 +688,11 @@ and only while that server's metadata option is on, an avatar URL field
 and explicit **Send to IRC Server** (IRCサーバに送信; "Publish" in code) /
 **Remove from IRC Server** (IRCサーバから削除) buttons. The section has no
 explanatory text (by the user's choice, after trying a version with an
-exposure warning and hints): Send appears only when connected with the
-capability and the typed URL differs from what the server confirmed, and
-Remove only when the server holds an avatar; a request in progress or a
+exposure warning and hints); the warning that sending shows the URL to
+everyone on the network is the Send button's tooltip. Send appears only
+when connected with the capability and the typed URL differs from what the
+server confirmed; Remove, at the right end in the warning color and asking
+for confirmation, only when the server holds an avatar; a request in progress or a
 failure is the only status line. The URL is a draft saved
 with the server profile (`ServerProfile::avatar_url`, added without a
 version change, empty when absent); autosave never publishes it, and it is

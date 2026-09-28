@@ -335,8 +335,10 @@ this delay.
    confirmed) and **IRCサーバから削除** appears; another client in the
    channel receives it, and our own lines show the image when avatars are
    displayed. Edit the URL: **IRCサーバに送信** reappears; send again; then
-   **IRCサーバから削除**
-   (only `METADATA * SET avatar` is sent). A URL with `user:pass@`,
+   **IRCサーバから削除** (right-aligned in the warning color; hovering
+   **IRCサーバに送信** shows the exposure warning as a tooltip): a
+   confirmation dialog appears, Cancel sends nothing, and 削除 sends only
+   `METADATA * SET avatar`. A URL with `user:pass@`,
    `?token=` or a private host is refused before sending; an over-long URL
    is refused by Ergo (`INVALID_VALUE`) and more than 10 changes in 2
    minutes show the rate limit with its delay. Turning **ユーザーのアバターを

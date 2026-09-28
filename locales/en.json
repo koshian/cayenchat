@@ -315,5 +315,9 @@
   "ircv3_avatar_edit_unsupported": "This image format cannot be edited here. Use PNG, JPEG, GIF, WebP, BMP or TIFF (for example, export HEIC photos as JPEG).",
   "ircv3_avatar_edit_too_large": "This image is too large to open (at most 8192 pixels a side and about 16 megapixels).",
   "ircv3_avatar_edit_unreadable": "This image could not be read.",
-  "ircv3_avatar_uploaded_not_sent": "Uploaded, but this server is not connected, so the avatar was not sent. Connect and click Send to Server."
+  "ircv3_avatar_uploaded_not_sent": "Uploaded, but this server is not connected, so the avatar was not sent. Connect and click Send to Server.",
+  "ircv3_avatar_exposure": "Sending shows this URL to everyone on this network, and the server may keep it. Never include passwords or access tokens.",
+  "ircv3_avatar_remove_title": "Remove your avatar from the IRC server?",
+  "ircv3_avatar_remove_detail": "Other users on this network will no longer see it. The URL stays in the field.",
+  "ircv3_avatar_remove_confirm": "Remove"
 }

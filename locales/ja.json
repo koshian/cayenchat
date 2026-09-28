@@ -315,5 +315,9 @@
   "ircv3_avatar_edit_unsupported": "この画像形式はここでは編集できません。PNG・JPEG・GIF・WebP・BMP・TIFF を使ってください (HEIC の写真は JPEG として書き出してください)。",
   "ircv3_avatar_edit_too_large": "画像が大きすぎて開けません (一辺 8192 ピクセル、約 1600 万ピクセルまで)。",
   "ircv3_avatar_edit_unreadable": "この画像を読み込めませんでした。",
-  "ircv3_avatar_uploaded_not_sent": "アップロードしましたが、このサーバーに接続していないため送信していません。接続してから「サーバに送信」を押してください。"
+  "ircv3_avatar_uploaded_not_sent": "アップロードしましたが、このサーバーに接続していないため送信していません。接続してから「サーバに送信」を押してください。",
+  "ircv3_avatar_exposure": "送信すると、この URL はこのネットワークの全員に見え、サーバーに保存されることがあります。パスワードやアクセストークンは含めないでください。",
+  "ircv3_avatar_remove_title": "IRC サーバーからアバターを削除しますか?",
+  "ircv3_avatar_remove_detail": "このネットワークの他のユーザーには表示されなくなります。URL は欄に残ります。",
+  "ircv3_avatar_remove_confirm": "削除"
 }

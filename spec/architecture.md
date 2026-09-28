@@ -600,9 +600,10 @@ tab says so.
 Publishing from the UI: the IRCv3 tab shows, while the selected server's
 metadata option is on, the draft URL field (`ServerProfile::avatar_url`,
 saved by autosave like any field and never sent by it), "Choose Image…"
-when an image host is set up, "Send to IRC Server" only when connected
-and the draft differs from the server-confirmed URL, "Remove from IRC
-Server" only when the server holds one, and only an in-progress or failed
+when an image host is set up, "Send to IRC Server" (with the exposure warning as its tooltip) only when
+connected and the draft differs from the server-confirmed URL, "Remove
+from IRC Server" (right-aligned, warning color, confirmation dialog) only
+when the server holds one, and only an in-progress or failed
 outcome; no explanatory text. `ui::ircv3_settings` checks the
 draft (`media::policy::publishable_avatar_url`, the length and encoding
 rules) and asks `ChatWindow::request_own_avatar`, which starts a request in
