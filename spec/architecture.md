@@ -610,7 +610,11 @@ URL), at most one pending request with a session-wide identifier, and the
 last `Outcome`. With an image host configured, `ui::ircv3_settings` also
 accepts an image dropped on the section, pasted into the URL field (the
 field propagates image-only pastes like chat drafts) or chosen in the
-system file dialog, and runs it through the chat upload steps shared in
+system file dialog, opens it in `ui::avatar_editor` (square selection over
+a 320-logical-pixel view, drag to move, wheel/buttons to resize, a 64 px
+result preview; `media::avatar_edit` decodes, crops and encodes at most
+256×256 off the UI thread), and runs the encoded square through the chat
+upload steps shared in
 `ui::image_upload` (`configured_uploader`, `acceptable_attachment`,
 `upload_in_background`) with its own `AttachmentFlow<String>` targeting
 the server profile ID; the confirmed URL goes into that profile's draft

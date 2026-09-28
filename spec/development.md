@@ -343,9 +343,13 @@ this delay.
    server kept. A user joining the channel after us gets an avatar in the
    member list about 2 s after joining. With an image host set up on
    **画像アップロード** (a test account), drop a PNG on the section, paste a
-   screenshot into the URL field and use **画像を選択…**: each asks for
-   confirmation naming the host, Cancel changes nothing, and Upload shows
-   progress and then puts the host's URL into the field without publishing.
+   screenshot into the URL field and use **画像を選択…** (also a large
+   phone photo, which must appear upright): each opens the square editor;
+   drag and scroll move and resize the square and the result preview
+   follows; Cancel uploads nothing; **… にアップロード** shows progress and
+   then puts the host's URL into the field without publishing, and the
+   uploaded image is at most 256×256. A HEIC file is refused with the
+   export hint.
    Switch servers during an upload: the URL goes to the server it was for.
    With no host set up, the section says to set one up and an image paste
    explains the same.

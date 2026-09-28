@@ -711,8 +711,16 @@ The avatar value is a URL because the registry defines it so and metadata
 carries only short text (Ergo: 350 bytes of key and value); IRC has no
 upload of its own. When an image host is configured on the Image Upload
 tab, an image can also be dropped on the avatar section, pasted into the
-URL field or picked with **Choose Image…**: it goes through the same
-confirmation and `ExternalUploader` as chat images
+URL field or picked with **Choose Image…**. It first opens in a square
+selection editor (`media::avatar_edit`, decoded off the UI thread with the
+preview limits, EXIF orientation applied, kept at most 2048 px a side while
+open): the user drags the square, resizes it with the scroll wheel or
+buttons and sees the result; the upload button names the host and is the
+confirmation. Only the selected square is uploaded, shrunk to at most
+256×256 (JPEG quality 88, or PNG when the image has transparency), so a
+full-resolution photo never leaves the computer. PNG, JPEG, GIF, WebP,
+BMP and TIFF can be edited; HEIC/AVIF are refused with a hint to export
+JPEG. The upload goes through the same `ExternalUploader` as chat images
 (`app::attachments::AttachmentFlow`, whose target is generic: a chat draft
 or a server profile), and the returned URL replaces that server's avatar
 draft if it passes the same checks. Uploading never publishes; the user
