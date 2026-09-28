@@ -370,8 +370,8 @@ this delay.
 12. Peer avatars (D025), against a disposable local server without
    `draft/metadata-2` (never a public server), with a raw client or KVIrc
    as the peer: **ピア間のアバター (CTCP AVATAR、実験的)** is off for new
-   settings; with it off, `\x01AVATAR\x01` from the peer is shown as before
-   and never answered, and the `USER` line ends in `CayenChat`. Turn it on
+   settings; with it off, `\x01AVATAR\x01` from the peer is never answered
+   and shows `CTCP AVATAR request from <peer> (not answered)` (D026), and the `USER` line ends in `CayenChat`. Turn it on
    and type a URL: autosave shares nothing (no **ピアに共有中** line; a
    query from the peer gets no NOTICE). **ピアに共有** (tooltip: the
    exposure warning) shows **ピアに共有中: <url>**, the peer's query is now
@@ -841,6 +841,31 @@ writes them (see D025); no running KVIrc was available in this
 environment (it is not installed and was not built), so interoperation
 with KVIrc itself is an assumption from its source, not a tested result.
 No GUI run was made for this change; manual step 12 lists the check.
+
+### CTCP answers (2026-09-28)
+
+On Apple Silicon macOS, `cargo fmt --check`, workspace Clippy with all
+targets and features (`-D warnings`) and workspace tests passed. The
+performance suite was not run: only the worker's handling of CTCP lines
+changed. Automated coverage (`irc-core::ctcp` and one fixture connection
+through the real worker): PING with and without an argument and without
+the closing 0x01, VERSION, TIME with a fixed clock, CLIENTINFO with and
+without peer avatars; USERINFO, DCC, AVATAR with peer avatars off, channel
+requests, server-prefixed requests, oversized PING and odd tags shown but
+not answered; replies shown with formatting stripped and long text cut;
+replayed, own and misaddressed CTCP dropped silently; ACTION and plain
+text left to chat; per-user and total limits, the single refusal line, the
+reply budget kept separate; and through the worker, private VERSION and
+PING answered in order while a channel TIME is not, ACTION and chat still
+channel rows, no private rows.
+
+Manual check, against a disposable local server with a raw client as the
+peer: `PRIVMSG <me> :\x01VERSION\x01`, `…PING 123…`, `…TIME…` and
+`…CLIENTINFO…` each get a NOTICE and a `CTCP … request from <peer>` line in
+the server log; `PRIVMSG #chan :\x01VERSION\x01` shows
+`… to #chan (not answered)` and gets nothing; ten quick requests get at
+most five answers (two per sender) and one "Too many CTCP requests" line.
+No GUI run was made for this change.
 
 ### Native settings appearance checks (D019)
 

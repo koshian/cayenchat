@@ -44,6 +44,8 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — receive/send channel PRIVMSG; no private-message routing or delivery receipt
 - PARTIAL — receive/send channel NOTICE; no private-message routing
 - PARTIAL — `/me` sends CTCP ACTION; received ACTION is not specially rendered
+- DONE — CTCP PING, VERSION, TIME and CLIENTINFO answered by NOTICE to private requests only, rate-limited (five per ten seconds, two per user); USERINFO, DCC and channel requests are not answered; requests and replies appear as readable server lines (`CTCP VERSION request from bob`), never as chat rows (D026)
+- TODO — sending CTCP requests (`/ctcp`, `/ping` with lag display)
 - PARTIAL — CTCP AVATAR (KVIrc protocol, experimental, per-server opt-in): realname mark when sharing, answers to private queries with an explicitly shared URL, bounded WHO/realname discovery and queries to marked users; URL only (no DCC); checked against wire fixtures from KVIrc's source, not a running KVIrc
 - PARTIAL — local receive/send timestamps; with the per-server server-time opt-in, incoming channel messages, activity and private messages show the server's time (local HH:MM, receipt-time fallback); server log lines and dates are not shown
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending

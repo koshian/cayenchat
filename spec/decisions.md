@@ -921,8 +921,9 @@ What CayenChat does:
   user with a metadata avatar is not queried. Losing metadata
   (`AvatarsReset`) reports the peer avatars again.
 - CTCP AVATAR traffic makes no chat row, unread mark, highlight,
-  notification or preview. With the option off, CTCP AVATAR is handled
-  exactly as before (shown as server or channel lines, never answered).
+  notification or preview. With the option off, CTCP AVATAR is never
+  answered and is shown like other CTCP (D026), for example
+  `CTCP AVATAR request from kv (not answered)`.
 
 Interoperability: verified against wire-accurate fixtures written from
 KVIrc's source (realname mark, query, `M`-suffixed answer, empty answer,
@@ -933,3 +934,47 @@ Known limits: KVIrc finds a CayenChat user only when a WHO reply shows it
 our realname; KVIrc accepts our answer's URL
 but applies its own image limits; users who never speak and are not
 WHOISed are not discovered; `{size}` is not shared.
+
+## D026 — Answers to common CTCP queries
+
+**Status:** Accepted
+
+2026-09-28. Until now only CTCP AVATAR (D025) was handled. Other CTCP
+requests (`PRIVMSG alice :\x01VERSION\x01`) got no answer, showed up as
+raw server lines with control characters, and in channels even became
+chat rows. Other clients expect PING, VERSION, TIME and CLIENTINFO.
+
+`irc-core::ctcp::CtcpReplies` (per connection, in the worker) handles every
+CTCP PRIVMSG or NOTICE except ACTION, and except AVATAR while peer avatars
+are on (`peer_avatar` sees it first):
+
+- **Answered** only when the request is private, live, from a user and not
+  our own echo, by `NOTICE <sender>`: PING echoes its argument (not
+  answered above 128 bytes or with an inner 0x01), VERSION
+  `CayenChat <version>`, TIME the local time
+  (`Mon Sep 28 12:34:56 2026 +0900`), CLIENTINFO
+  `ACTION [AVATAR] CLIENTINFO PING TIME VERSION` (AVATAR only while peer
+  avatars are on).
+- **Not answered**: USERINFO (CayenChat has no user info to give; an empty
+  answer would only add traffic), FINGER, SOURCE, DCC and unknown tags; no
+  ERRMSG. Channel requests are never answered: one request can reach a
+  whole channel of clients, and answering is what floods.
+- **Shown** as one server line: `CTCP VERSION request from bob`,
+  `CTCP TIME request from carol to #test (not answered)`,
+  `CTCP VERSION reply from bob: irssi 1.4` (formatting and controls
+  stripped, cut at 200 characters). Never a chat row, private message,
+  mention, unread mark or notification. Replayed history, our own echoes
+  and CTCP to other targets are dropped silently.
+- **Rate limit** in the style of D025: requests (answered or only shown,
+  channel ones included) at most five per ten seconds in total and two per
+  user; past that, one line
+  `Too many CTCP requests; ignoring them for now (…)` and then silence
+  until a request is admitted again. Replies are shown under a separate
+  budget of the same size, so a reply flood cannot stop answers. Together
+  with AVATAR answers we send at most ten CTCP NOTICEs per ten seconds.
+- **No privacy setting for VERSION.** The `USER` realname is already
+  `CayenChat` and visible to everyone through WHOIS/WHO, and the answer
+  has no OS, architecture, host or library names, so a switch would hide
+  only the version number. TIME reveals the time zone offset, which is the
+  behavior users of other clients expect; a setting can be added later if
+  asked for.
