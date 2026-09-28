@@ -10,7 +10,9 @@ mod tags;
 pub mod text;
 
 pub use cap::Ircv3Options;
-pub use history::{HISTORY_LIMIT, HistoryMessage, MAX_HISTORY_LINES};
+pub use history::{
+    HISTORY_LIMIT, HistoryMessage, MAX_HISTORY_LINES, MessageReference, OlderHistoryStatus,
+};
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 pub use peer_avatar::shareable as shareable_avatar;
 
@@ -426,6 +428,20 @@ pub enum Event {
         channel: String,
         messages: Vec<HistoryMessage>,
     },
+    /// Whether older channel history can be asked for on this connection
+    /// ([`Connection::request_older_history`]): registered with
+    /// `draft/chathistory` negotiated. Sent when that changes; a new
+    /// connection starts without it.
+    HistoryAvailable(bool),
+    /// The end of older-history request `request` for `channel`: its lines
+    /// in the server's order (oldest first), none when it ended otherwise.
+    /// Exactly one follows every accepted request on this connection.
+    OlderChannelHistory {
+        channel: String,
+        request: u64,
+        messages: Vec<HistoryMessage>,
+        status: OlderHistoryStatus,
+    },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
     /// `Disconnected`, but reconnecting with the same settings would only be
@@ -623,6 +639,13 @@ enum Outgoing {
     },
     /// The URL answered to CTCP AVATAR queries (`None`: stop answering).
     ShareAvatar(Option<String>),
+    /// One page of `channel`'s history before `reference`.
+    OlderHistory {
+        channel: String,
+        request: u64,
+        reference: MessageReference,
+        limit: usize,
+    },
     Quit,
 }
 
@@ -649,6 +672,11 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
         Outgoing::ShareAvatar(url) => IrcMessage::from(IrcCommand::NOTICE(
             "*".into(),
             format!("\u{1}AVATAR {}\u{1}", url.as_deref().unwrap_or_default()),
+        )),
+        // Built and checked by the worker, whose reference types decide it.
+        Outgoing::OlderHistory { channel, .. } => IrcMessage::from(IrcCommand::Raw(
+            "CHATHISTORY".into(),
+            vec!["BEFORE".into(), channel.clone(), "*".into(), "1".into()],
         )),
         Outgoing::Quit => return Ok(()),
     };
@@ -1052,6 +1080,34 @@ impl Connection {
             .map_err(|error| format!("Could not queue avatar sharing: {error}"))
     }
 
+    /// Asks for up to `limit` lines of `channel`'s history before
+    /// `reference` (the oldest message the caller holds), as request
+    /// `request`. The lines, or the reason there are none, arrive as one
+    /// [`Event::OlderChannelHistory`] with the same `request`; when history
+    /// is not available ([`Event::HistoryAvailable`]) it arrives at once as
+    /// a failure. `Err` means nothing was queued and no event follows.
+    pub fn request_older_history(
+        &self,
+        channel: &str,
+        request: u64,
+        reference: MessageReference,
+        limit: usize,
+    ) -> Result<(), String> {
+        if !valid_channel(channel) {
+            return Err("Invalid history target.".into());
+        }
+        let outgoing = Outgoing::OlderHistory {
+            channel: channel.to_owned(),
+            request,
+            reference,
+            limit,
+        };
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue history request: {error}"))
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
@@ -1324,6 +1380,8 @@ async fn run_cancellable(
     let mut metadata_enabled = false;
     let mut history = history::HistoryRequests::default();
     let mut history_enabled = false;
+    // Last reported Event::HistoryAvailable.
+    let mut history_available = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1403,6 +1461,20 @@ async fn run_cancellable(
                     Outgoing::ShareAvatar(url) => {
                         if let Some(peers) = peers.as_mut() {
                             peers.set_share(url);
+                        }
+                    }
+                    Outgoing::OlderHistory { channel, request, reference, limit } => {
+                        let queued = if registered && history_enabled {
+                            history.enqueue_older(&channel, request, &reference, limit)
+                        } else {
+                            Err(history::Finished::failed_older(channel, request))
+                        };
+                        let sent = match queued {
+                            Ok(()) => request_history(&client, &events, started, &mut history, registered).await,
+                            Err(finished) => history_finished(&events, started, finished).await,
+                        };
+                        if !sent {
+                            return;
                         }
                     }
                     Outgoing::Quit => {
@@ -1487,11 +1559,12 @@ async fn run_cancellable(
                         metadata_enabled = negotiation.enabled(cap::METADATA);
                         // chathistory went away (its own DEL, or batch): the
                         // request being answered ends without lines.
-                        if history_enabled && !negotiation.enabled(cap::CHATHISTORY)
-                            && let Some(channel) = history.reset()
-                            && events.send(Event::ChannelHistory { channel, messages: Vec::new() }).await.is_err()
-                        {
-                            return;
+                        if history_enabled && !negotiation.enabled(cap::CHATHISTORY) {
+                            for finished in history.reset() {
+                                if !history_finished(&events, started, finished).await {
+                                    return;
+                                }
+                            }
                         }
                         let history_started = !history_enabled && negotiation.enabled(cap::CHATHISTORY);
                         history_enabled = negotiation.enabled(cap::CHATHISTORY);
@@ -1503,6 +1576,14 @@ async fn run_cancellable(
                             registered = true;
                             negotiation.registered();
                             diagnostic(&events, started, "Registration completed (001 received).").await;
+                        }
+                        // Reported ahead of the 001's own Registered event;
+                        // the application forgets it only on disconnect.
+                        if history_available != (registered && history_enabled) {
+                            history_available = registered && history_enabled;
+                            if events.send(Event::HistoryAvailable(history_available)).await.is_err() {
+                                return;
+                            }
                         }
                         // Subscribe once registered (the draft allows it earlier
                         // only with `before-connect`), also after a later NEW.
@@ -1540,7 +1621,7 @@ async fn run_cancellable(
                             match history.observe(&message) {
                                 history::Observed::Unrelated => {}
                                 history::Observed::Consumed => continue,
-                                finished => {
+                                history::Observed::Finished(finished) => {
                                     if !history_finished(&events, started, finished).await
                                         || !request_history(&client, &events, started, &mut history, registered).await
                                     {
@@ -1622,14 +1703,24 @@ async fn run_cancellable(
                                         diagnostic(&events, started, note).await;
                                     }
                                 }
-                                IrcCommand::PART(channel, _) => history.forget(channel),
+                                IrcCommand::PART(channel, _) => {
+                                    for finished in history.forget(channel) {
+                                        if !history_finished(&events, started, finished).await {
+                                            return;
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }
                         if let IrcCommand::KICK(channel, nickname, _) = &message.command
                             && nickname == &current_nick
                         {
-                            history.forget(channel);
+                            for finished in history.forget(channel) {
+                                if !history_finished(&events, started, finished).await {
+                                    return;
+                                }
+                            }
                         }
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
                         for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
@@ -1713,7 +1804,7 @@ async fn run_cancellable(
             }
             // An unanswered history request; no timer runs otherwise.
             _ = tokio::time::sleep_until(history.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if history_enabled && history.next_deadline().is_some() => {
-                if let Some(finished) = history.tick(tokio::time::Instant::now())
+                if let Some(history::Observed::Finished(finished)) = history.tick(tokio::time::Instant::now())
                     && (!history_finished(&events, started, finished).await
                         || !request_history(&client, &events, started, &mut history, registered).await)
                 {
@@ -1756,17 +1847,22 @@ async fn request_history(
     if !registered {
         return true;
     }
-    let Some((channel, command)) = history.next_request(tokio::time::Instant::now()) else {
+    let Some((channel, page, command)) = history.next_request(tokio::time::Instant::now()) else {
         return true;
     };
     if let Err(detail) = send_all(client, events, started, vec![command]).await {
         let _ = events.send(Event::Disconnected(detail)).await;
         return false;
     }
-    events
-        .send(Event::HistoryRequested { channel })
-        .await
-        .is_ok()
+    // Only recent history needs its place reserved; an older page goes
+    // before everything the conversation holds.
+    match page {
+        history::Page::Latest => events
+            .send(Event::HistoryRequested { channel })
+            .await
+            .is_ok(),
+        history::Page::Before { .. } => true,
+    }
 }
 
 /// Reports a finished history request. `false` means the event channel
@@ -1774,23 +1870,25 @@ async fn request_history(
 async fn history_finished(
     events: &mpsc::Sender<Event>,
     started: Instant,
-    finished: history::Observed,
+    finished: history::Finished,
 ) -> bool {
-    let history::Observed::Finished {
-        channel,
-        messages,
-        note,
-    } = finished
-    else {
-        return true;
-    };
-    if let Some(note) = note {
-        diagnostic(events, started, note).await;
+    if let Some(note) = &finished.note {
+        diagnostic(events, started, note.clone()).await;
     }
-    events
-        .send(Event::ChannelHistory { channel, messages })
-        .await
-        .is_ok()
+    let status = finished.older_status();
+    let event = match finished.page {
+        history::Page::Latest => Event::ChannelHistory {
+            channel: finished.channel,
+            messages: finished.messages,
+        },
+        history::Page::Before { request } => Event::OlderChannelHistory {
+            channel: finished.channel,
+            request,
+            messages: finished.messages,
+            status,
+        },
+    };
+    events.send(event).await.is_ok()
 }
 
 /// Passes metadata's avatar events through the peer avatar merge when
@@ -3902,6 +4000,202 @@ mod tests {
         assert_eq!(live, ["alice: live during request", "after"]);
         assert!(!events.iter().any(|event| matches!(event,
             Event::ServerLine(line) if line.contains("BATCH") || line.contains("old"))));
+    }
+
+    /// Like [`run_fixture`], but `step` may queue commands as events arrive;
+    /// it returns `true` once everything expected has been received.
+    fn run_fixture_driven(
+        config: ConnectionConfig,
+        mut step: impl FnMut(&[Event], &mpsc::Sender<Outgoing>) -> bool,
+    ) -> Vec<Event> {
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let worker = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(config, command_rx, event_tx));
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut received = Vec::new();
+        let mut done = false;
+        while Instant::now() < deadline && !done {
+            match event_rx.try_recv() {
+                Ok(event) => {
+                    if let Event::Disconnected(reason) | Event::Refused(reason) = &event {
+                        panic!("unexpected end: {reason}");
+                    }
+                    received.push(event);
+                    done = step(&received, &command_tx);
+                }
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(done, "{received:?}");
+        command_tx.try_send(Outgoing::Quit).unwrap();
+        worker.join().unwrap();
+        received
+    }
+
+    fn older_request(request: u64, msgid: &str) -> Outgoing {
+        Outgoing::OlderHistory {
+            channel: "#test".into(),
+            request,
+            reference: MessageReference {
+                msgid: Some(msgid.into()),
+                time: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_550_000)),
+            },
+            limit: 100,
+        }
+    }
+
+    #[test]
+    fn older_history_asks_before_the_oldest_message_and_reports_the_page_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "batch server-time message-tags draft/chathistory",
+                "CHATHISTORY=20 MSGREFTYPES=msgid,timestamp",
+            );
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 20"
+            );
+            socket
+                .write_all(
+                    b":srv BATCH +r chathistory #test
+@batch=r;time=2026-09-27T23:50:00.000Z;msgid=m5 :bob!u@h PRIVMSG #test :five
+:srv BATCH -r
+",
+                )
+                .unwrap();
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY BEFORE #test msgid=m5 20"
+            );
+            // A live line arrives while the page is on its way.
+            socket
+                .write_all(
+                    b"@time=2026-09-27T23:59:00.000Z;msgid=live :carol!u@h PRIVMSG #test :live meanwhile
+@draft/chathistory-end :srv BATCH +o chathistory #test
+@batch=o;time=2026-09-27T23:40:00.000Z;msgid=m3 :bob!u@h PRIVMSG #test :three
+@batch=o;time=2026-09-27T23:45:00.000Z;msgid=m4 :bob!u@h NOTICE #test :four
+:srv BATCH -o
+",
+                )
+                .unwrap();
+            assert!(read_client_line(&mut lines).starts_with("QUIT"));
+        });
+        let mut asked = false;
+        let events =
+            run_fixture_driven(plain_config(port, history_options()), |events, commands| {
+                if !asked
+                    && events
+                        .iter()
+                        .any(|e| matches!(e, Event::ChannelHistory { .. }))
+                {
+                    asked = true;
+                    commands.try_send(older_request(42, "m5")).unwrap();
+                }
+                channel_messages(events).len() == 1
+                    && events
+                        .iter()
+                        .any(|e| matches!(e, Event::OlderChannelHistory { .. }))
+            });
+        server.join().unwrap();
+        let available = events
+            .iter()
+            .position(|e| matches!(e, Event::HistoryAvailable(true)))
+            .expect("availability reported");
+        let joined = events
+            .iter()
+            .position(|e| matches!(e, Event::Joined { .. }))
+            .unwrap();
+        assert!(available < joined);
+        let pages: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::OlderChannelHistory {
+                    channel,
+                    request,
+                    messages,
+                    status,
+                } => Some((channel, *request, messages, *status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pages.len(), 1);
+        let (channel, request, messages, status) = &pages[0];
+        assert_eq!((channel.as_str(), *request), ("#test", 42));
+        assert_eq!(*status, OlderHistoryStatus::Beginning);
+        let lines: Vec<_> = messages
+            .iter()
+            .map(|m| (m.text.as_str(), m.notice, m.msgid.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [("three", false, Some("m3")), ("four", true, Some("m4"))]
+        );
+        // The live line stayed live; the page never did; no second reservation.
+        assert_eq!(
+            channel_messages(&events)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>(),
+            ["live meanwhile"]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::HistoryRequested { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn older_history_fails_at_once_without_chathistory() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(&mut socket, &mut lines, "batch server-time", "CHANTYPES=#");
+            // Nothing is asked of the server: the next line is QUIT.
+            assert!(read_client_line(&mut lines).starts_with("QUIT"));
+        });
+        let mut asked = false;
+        let events =
+            run_fixture_driven(plain_config(port, history_options()), |events, commands| {
+                if !asked && events.iter().any(|e| matches!(e, Event::Joined { .. })) {
+                    asked = true;
+                    commands.try_send(older_request(7, "m1")).unwrap();
+                }
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::OlderChannelHistory { .. }))
+            });
+        server.join().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::HistoryAvailable(_)))
+        );
+        assert!(events.iter().any(|e| matches!(e,
+            Event::OlderChannelHistory { request: 7, status: OlderHistoryStatus::Failed, messages, .. }
+            if messages.is_empty())));
     }
 
     #[test]
