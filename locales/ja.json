@@ -49,6 +49,7 @@
   "member_message_required": "メッセージを入力してください。",
   "member_channel_placeholder": "#チャンネル",
   "member_submit": "送信",
+  "conversation_close": "閉じる",
   "channel_join": "参加",
   "channel_part": "退出",
   "whois_nickname": "ニックネーム",
