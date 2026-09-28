@@ -383,3 +383,87 @@ fn avatar_metadata_against_a_real_server() {
     peer.send("QUIT :bye");
     again.connection.disconnect().unwrap();
 }
+
+/// Request counts for a burst of joiners and repeated updates: lookups stay
+/// one per new user, spaced out, and updates cause no requests at all.
+#[test]
+#[ignore = "needs a disposable local metadata server (CAYENCHAT_INTEROP_IRC)"]
+fn join_bursts_and_repeated_updates_stay_bounded() {
+    let Some((host, port)) = server() else {
+        panic!("set CAYENCHAT_INTEROP_IRC=host:port");
+    };
+    let run = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        % 100_000;
+    let channel = format!("#cc-burst-{run}");
+    let mut client = Client::connect(&host, port, &format!("cb{run}"), &channel);
+    client.wait("MetadataReady", |event| *event == Event::MetadataReady);
+    client.wait(
+        "joined",
+        |event| matches!(event, Event::Names { users, .. } if !users.is_empty()),
+    );
+
+    const JOINERS: usize = 24;
+    let mut peers: Vec<Peer> = (0..JOINERS)
+        .map(|n| {
+            let mut peer = Peer::connect(&host, port, &format!("j{n}x{run}"));
+            if n % 2 == 0 {
+                peer.send(&format!(
+                    "METADATA * SET avatar :https://example.com/j{n}.png"
+                ));
+            }
+            peer
+        })
+        .collect();
+    let started = Instant::now();
+    for peer in &mut peers {
+        peer.send(&format!("JOIN {channel}"));
+    }
+    // Every even joiner's avatar arrives through a lookup, in any order.
+    let joined_with_avatar = |events: &[Event]| {
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::UserAvatar { nickname, url: Some(_) } if nickname.starts_with('j')))
+            .count()
+    };
+    while joined_with_avatar(&client.events) < JOINERS / 2 {
+        client.wait("joiner avatars", |event| {
+            matches!(event, Event::UserAvatar { .. })
+        });
+    }
+    let elapsed = started.elapsed();
+    let lookups = client.sent("METADATA j");
+    println!("{JOINERS} joiners: {lookups} lookups in {elapsed:?}");
+    assert_eq!(lookups, JOINERS, "one lookup per joiner, no repeats");
+    // At most two per second after the 2 s pause.
+    assert!(elapsed >= Duration::from_millis(2000 + 500 * (JOINERS as u64 / 2 - 1)));
+
+    // Repeated updates by one member: followed, and no request sent.
+    let before = client.sent("METADATA");
+    for version in 0..8 {
+        peers[0].send(&format!(
+            "METADATA * SET avatar :https://example.com/v{version}.png"
+        ));
+    }
+    let nick = format!("j0x{run}");
+    client.wait("last update", |event| {
+        matches!(event, Event::UserAvatar { nickname, url: Some(url) } if *nickname == nick && url.ends_with("v7.png"))
+    });
+    assert_eq!(client.sent("METADATA"), before, "updates cost no requests");
+    // A NAMES refresh asks nothing either.
+    client
+        .connection
+        .send_command(&format!("/names {channel}"), None)
+        .ok();
+    thread::sleep(Duration::from_secs(3));
+    while let Some(event) = client.connection.try_recv() {
+        client.events.push(event);
+    }
+    assert_eq!(client.sent("METADATA"), before, "NAMES triggers no lookups");
+    for peer in &mut peers {
+        peer.send("QUIT :bye");
+    }
+    client.connection.disconnect().unwrap();
+}
