@@ -10,7 +10,9 @@ pub use cap::Ircv3Options;
 
 use std::{
     collections::HashMap,
-    fmt, thread,
+    fmt,
+    sync::Arc,
+    thread,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -23,10 +25,11 @@ use irc::{
     },
     proto::{Command as IrcCommand, Message as IrcMessage, Prefix, Response, mode::Mode},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 512;
+const USER_DISCONNECT: &str = "Disconnected by user.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
 /// finish. IRCnet waits about 30 seconds when the client's port 113 silently
@@ -751,6 +754,9 @@ impl Events {
 
 pub struct Connection {
     commands: mpsc::Sender<Outgoing>,
+    /// Stops a worker that is still resolving or opening the transport,
+    /// before it reads queued commands.
+    cancel: Arc<Notify>,
     /// `None` after [`Connection::take_events`].
     events: Option<Events>,
     encoding: String,
@@ -771,6 +777,8 @@ impl Connection {
         let encoding = config.encoding.clone();
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
+        let cancel = Arc::new(Notify::new());
+        let worker_cancel = cancel.clone();
         thread::Builder::new()
             .name("cayenchat-irc".into())
             .spawn(move || {
@@ -780,7 +788,12 @@ impl Connection {
                         .enable_all()
                         .build();
                     match runtime {
-                        Ok(runtime) => runtime.block_on(run(config, command_rx, event_tx)),
+                        Ok(runtime) => runtime.block_on(run_cancellable(
+                            config,
+                            command_rx,
+                            event_tx,
+                            worker_cancel,
+                        )),
                         Err(error) => {
                             let _ = event_tx.blocking_send(Event::Disconnected(error.to_string()));
                         }
@@ -795,6 +808,7 @@ impl Connection {
             .map_err(|error| format!("Could not start IRC worker: {error}"))?;
         Ok(Self {
             commands,
+            cancel,
             events: Some(Events(events)),
             encoding,
         })
@@ -876,6 +890,9 @@ impl Connection {
     }
 
     pub fn disconnect(&self) -> Result<(), String> {
+        // A worker still setting up the transport ends at once; a connected
+        // one takes QUIT from the queue and flushes it first.
+        self.cancel.notify_one();
         self.commands
             .try_send(Outgoing::Quit)
             .map_err(|error| format!("Could not queue disconnect: {error}"))
@@ -898,10 +915,20 @@ fn library_config(config: &ConnectionConfig) -> Config {
     }
 }
 
+#[cfg(test)]
 async fn run(
+    config: ConnectionConfig,
+    commands: mpsc::Receiver<Outgoing>,
+    events: mpsc::Sender<Event>,
+) {
+    run_cancellable(config, commands, events, Arc::new(Notify::new())).await
+}
+
+async fn run_cancellable(
     config: ConnectionConfig,
     mut commands: mpsc::Receiver<Outgoing>,
     events: mpsc::Sender<Event>,
+    cancel: Arc<Notify>,
 ) {
     let started = Instant::now();
     let host = config.host.clone();
@@ -918,12 +945,17 @@ async fn run(
         ),
     )
     .await;
-    match tokio::time::timeout(
-        Duration::from_secs(3),
-        tokio::net::lookup_host((host.as_str(), port)),
-    )
-    .await
-    {
+    let lookup = tokio::select! {
+        lookup = tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::net::lookup_host((host.as_str(), port)),
+        ) => lookup,
+        _ = cancel.notified() => {
+            let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
+            return;
+        }
+    };
+    match lookup {
         Ok(Ok(addresses)) => {
             diagnostic(
                 &events,
@@ -1008,6 +1040,11 @@ async fn run(
         tokio::select! {
             result = &mut connecting => break Some(result),
             _ = &mut connect_timeout => break None,
+            _ = cancel.notified() => {
+                diagnostic(&events, started, "Transport setup cancelled by the user.").await;
+                let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
+                return;
+            }
             _ = progress.tick() => diagnostic(&events, started,
                 "Still waiting for TCP connection or TLS handshake.").await,
         }
@@ -1169,7 +1206,7 @@ async fn run(
                         // ClientStream drives the library's outgoing queue. Poll it once more
                         // so QUIT is flushed before the runtime and socket are dropped.
                         let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
-                        let _ = events.send(Event::Disconnected("Disconnected by user.".into())).await;
+                        let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
                         break;
                     }
                 }
@@ -1937,6 +1974,7 @@ mod tests {
         drop(event_tx);
         let mut connection = Connection {
             commands,
+            cancel: Arc::new(Notify::new()),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
         };
@@ -1954,6 +1992,7 @@ mod tests {
         let (event_tx, events) = mpsc::channel(1);
         let mut connection = Connection {
             commands,
+            cancel: Arc::new(Notify::new()),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
         };
@@ -2678,6 +2717,31 @@ mod tests {
             outgoing.contains(&"NOTICE #test notice".to_owned()),
             "{outgoing:?}"
         );
+    }
+
+    #[test]
+    fn disconnect_during_tls_handshake_ends_immediately() {
+        // The listener accepts but never answers the TLS ClientHello, so the
+        // worker would otherwise wait for the full transport timeout.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || listener.accept().map(|(socket, _)| socket));
+
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+        config.port = port;
+        let mut connection = Connection::connect(config).unwrap();
+        let _socket = server.join().unwrap().unwrap();
+        connection.disconnect().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut reason = None;
+        while Instant::now() < deadline && reason.is_none() {
+            match connection.try_recv() {
+                Some(Event::Disconnected(detail) | Event::Refused(detail)) => reason = Some(detail),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert_eq!(reason.as_deref(), Some(USER_DISCONNECT));
     }
 
     #[test]
