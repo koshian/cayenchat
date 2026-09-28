@@ -2588,6 +2588,8 @@ impl ChatWindow {
                 self.state.rename_avatar(network, &from, &to);
             }
             Event::AvatarsReset => self.state.end_avatars(network),
+            // Publishing our own avatar has no UI yet.
+            Event::MetadataReady | Event::OwnAvatar { .. } | Event::OwnAvatarFailed { .. } => {}
         }
     }
 
