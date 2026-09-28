@@ -1,4 +1,5 @@
 mod account_settings;
+mod avatar_editor;
 mod avatars;
 mod decorations;
 mod desktop;
@@ -969,6 +970,10 @@ struct SettingsWindow {
     /// Avatar images on their way to the image host; the target is the
     /// server profile whose avatar URL draft receives the link.
     avatar_upload: AttachmentFlow<String>,
+    /// The square selection for an avatar image, before uploading it.
+    avatar_editor: Option<avatar_editor::AvatarEditor>,
+    /// An avatar image is being decoded or encoded.
+    avatar_opening: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -2875,6 +2880,8 @@ impl SettingsWindow {
             autosave_error: None,
             avatar_feedback: None,
             avatar_upload: AttachmentFlow::default(),
+            avatar_editor: None,
+            avatar_opening: false,
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -3260,6 +3267,7 @@ impl SettingsWindow {
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.avatar_feedback = None;
+        self.avatar_editor = None;
         let store = secrets::store(cx);
         match self.settings.switch_server(change, &store, &self.i18n, cx) {
             Ok(()) => self.feedback = None,

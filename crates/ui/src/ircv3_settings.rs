@@ -10,7 +10,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use cayenchat_app::{
     ConnectionStatus,
-    attachments::{Completion, Offer, UploadFailure},
+    attachments::{Completion, Offer, UploadFailure, UploaderReadiness},
     own_avatar::{Action, Blocked, Confirmed, Failure, Outcome, OwnAvatar},
 };
 use cayenchat_irc_core::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
@@ -328,10 +328,19 @@ impl SettingsWindow {
                                 ),
                         );
                 }
-                div().flex().flex_col().gap_2().child(row).child(note(
-                    self.i18n
-                        .format("ircv3_avatar_upload_hint", &[("provider", name)]),
-                ))
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(row)
+                    .child(note(
+                        self.i18n
+                            .format("ircv3_avatar_upload_hint", &[("provider", name)]),
+                    ))
+                    .when(self.avatar_opening, |d| {
+                        d.child(note(self.i18n.text("ircv3_avatar_edit_loading")))
+                    })
+                    .children(self.render_avatar_editor(name, cx))
             }
             None => div().child(note(self.i18n.text("ircv3_avatar_upload_unconfigured"))),
         };
@@ -472,10 +481,12 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// An image for the avatar: checked, then opened in the square
+    /// selection editor. Nothing leaves the computer yet.
     fn offer_avatar_image(
         &mut self,
         attachment: Result<Attachment, AttachmentError>,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.avatar_feedback = None;
@@ -487,6 +498,76 @@ impl SettingsWindow {
         else {
             return;
         };
+        if self.avatar_upload.uploading().is_some() {
+            self.avatar_feedback = Some(self.i18n.text("upload_busy"));
+            cx.notify();
+            return;
+        }
+        let attachment = match acceptable_attachment(attachment, None, &self.i18n) {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                self.avatar_feedback = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let provider = self.settings.values.image_upload.provider.clone();
+        match configured_uploader(provider.as_deref(), None, &self.i18n, cx) {
+            Ok((UploaderReadiness::Ready { .. }, Some(_))) => {
+                self.open_avatar_editor(profile, attachment.bytes.clone(), attachment.source, cx);
+            }
+            Ok((UploaderReadiness::NeedsAccount { provider }, _)) => {
+                self.avatar_feedback = Some(
+                    self.i18n
+                        .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
+                );
+            }
+            Ok(_) => {
+                self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
+            }
+            Err(error) => self.avatar_feedback = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// The editor's upload button: encode the selected square off the UI
+    /// thread, then upload it (the button was the confirmation).
+    pub(crate) fn upload_edited_avatar(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.avatar_editor.take() else {
+            return;
+        };
+        let (source, crop) = (editor.source(), editor.crop());
+        let (profile, kind) = (editor.profile, editor.source_kind);
+        self.avatar_opening = true;
+        cx.notify();
+        let encoding = cx.background_spawn(async move { source.encode(crop) });
+        cx.spawn(async move |this, cx| {
+            let encoded = encoding.await;
+            let _ = this.update(cx, |this, cx| {
+                this.avatar_opening = false;
+                match encoded {
+                    Ok(encoded) => {
+                        let name = format!("avatar.{}", encoded.extension);
+                        let attachment = Attachment::image(Some(&name), encoded.bytes, kind);
+                        this.upload_avatar_attachment(profile, attachment, cx);
+                    }
+                    Err(error) => {
+                        this.avatar_feedback =
+                            Some(this.i18n.text(crate::avatar_editor::open_error_key(&error)));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn upload_avatar_attachment(
+        &mut self,
+        profile: String,
+        attachment: Result<Attachment, AttachmentError>,
+        cx: &mut Context<Self>,
+    ) {
         let provider = self.settings.values.image_upload.provider.clone();
         let checked = acceptable_attachment(attachment, None, &self.i18n).and_then(|attachment| {
             let (readiness, uploader) =
@@ -498,44 +579,16 @@ impl SettingsWindow {
             Ok(checked) => checked,
             Err(error) => {
                 self.avatar_feedback = Some(error);
-                cx.notify();
                 return;
             }
         };
         match self.avatar_upload.offer(attachment, profile, readiness) {
-            Offer::Confirm {
-                provider,
-                name,
-                size,
-            } => {
-                let answer = window.prompt(
-                    PromptLevel::Info,
-                    &self.i18n.format(
-                        "ircv3_avatar_upload_confirm_title",
-                        &[("provider", &provider)],
-                    ),
-                    Some(&self.i18n.format(
-                        "ircv3_avatar_upload_confirm_detail",
-                        &[("provider", &provider), ("name", &name), ("size", &size)],
-                    )),
-                    &[
-                        PromptButton::ok(self.i18n.text("upload_confirm")),
-                        PromptButton::cancel(self.i18n.text("cancel")),
-                    ],
-                    cx,
-                );
-                cx.spawn_in(window, async move |this, cx| {
-                    let accepted = answer.await == Ok(0);
-                    let _ = this.update(cx, |this, cx| {
-                        if accepted && let Some(uploader) = uploader {
-                            this.start_avatar_upload(uploader, cx);
-                        } else {
-                            this.avatar_upload.decline();
-                        }
-                    });
-                })
-                .detach();
-            }
+            // The editor's upload button, which names the host, was the
+            // confirmation.
+            Offer::Confirm { .. } => match uploader {
+                Some(uploader) => self.start_avatar_upload(uploader, cx),
+                None => self.avatar_upload.decline(),
+            },
             Offer::Configure => {
                 self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
             }
@@ -547,7 +600,6 @@ impl SettingsWindow {
             }
             Offer::Busy => self.avatar_feedback = Some(self.i18n.text("upload_busy")),
         }
-        cx.notify();
     }
 
     fn start_avatar_upload(&mut self, uploader: Arc<dyn ExternalUploader>, cx: &mut Context<Self>) {
@@ -848,8 +900,16 @@ mod tests {
             "ircv3_avatar_choose_prompt",
             "ircv3_avatar_upload_hint",
             "ircv3_avatar_upload_unconfigured",
-            "ircv3_avatar_upload_confirm_title",
-            "ircv3_avatar_upload_confirm_detail",
+            "ircv3_avatar_edit_loading",
+            "ircv3_avatar_edit_hint",
+            "ircv3_avatar_edit_result",
+            "ircv3_avatar_edit_zoom_in",
+            "ircv3_avatar_edit_zoom_out",
+            "ircv3_avatar_edit_reset",
+            "ircv3_avatar_edit_upload",
+            "ircv3_avatar_edit_unsupported",
+            "ircv3_avatar_edit_too_large",
+            "ircv3_avatar_edit_unreadable",
             "ircv3_avatar_uploading",
             "ircv3_avatar_uploaded",
             "ircv3_avatar_upload_bad_url",
@@ -857,7 +917,6 @@ mod tests {
             "ircv3_avatar_upload_needs_setup",
             "ircv3_avatar_upload_reconnect",
             "ircv3_avatar_upload_cancelled",
-            "upload_confirm",
             "upload_busy",
         ] {
             for catalog in catalogs {
