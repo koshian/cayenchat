@@ -319,5 +319,6 @@
   "ircv3_avatar_exposure": "Sending shows this URL to everyone on this network, and the server may keep it. Never include passwords or access tokens.",
   "ircv3_avatar_remove_title": "Remove your avatar from the IRC server?",
   "ircv3_avatar_remove_detail": "Other users on this network will no longer see it. The URL stays in the field.",
-  "ircv3_avatar_remove_confirm": "Remove"
+  "ircv3_avatar_remove_confirm": "Remove",
+  "ircv3_avatar_unsupported": "This IRC server does not support avatars."
 }

@@ -319,5 +319,6 @@
   "ircv3_avatar_exposure": "送信すると、この URL はこのネットワークの全員に見え、サーバーに保存されることがあります。パスワードやアクセストークンは含めないでください。",
   "ircv3_avatar_remove_title": "IRC サーバーからアバターを削除しますか?",
   "ircv3_avatar_remove_detail": "このネットワークの他のユーザーには表示されなくなります。URL は欄に残ります。",
-  "ircv3_avatar_remove_confirm": "削除"
+  "ircv3_avatar_remove_confirm": "削除",
+  "ircv3_avatar_unsupported": "この IRC サーバーはアバターに対応していません。"
 }

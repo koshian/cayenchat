@@ -604,7 +604,10 @@ when an image host is set up, "Send to IRC Server" (with the exposure warning as
 connected and the draft differs from the server-confirmed URL, "Remove
 from IRC Server" (right-aligned, warning color, confirmation dialog) only
 when the server holds one, and only an in-progress or failed
-outcome; no explanatory text. `ui::ircv3_settings` checks the
+outcome; no explanatory text, except one line that the IRC server does not
+support avatars when the current connection asked for them
+(`ServerSession::metadata_requested`) and registered without
+`MetadataReady`. `ui::ircv3_settings` checks the
 draft (`media::policy::publishable_avatar_url`, the length and encoding
 rules) and asks `ChatWindow::request_own_avatar`, which starts a request in
 the server's `ServerSession::own_avatar` (`app::own_avatar::OwnAvatar`) and

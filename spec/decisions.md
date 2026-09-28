@@ -740,7 +740,12 @@ connected the draft is kept, a line says it was not sent, and Send
 remains available. Because an upload is sent at once, "Choose Image…",
 dropping and pasting an image are offered only while the server can
 receive an avatar (connected, capability negotiated); on a server without
-avatar metadata, or while disconnected, only the URL field is shown. A typed URL
+avatar metadata, or while disconnected, only the URL field is shown. When
+the current connection asked for avatar metadata (option and batch on when
+it started) and registration completed without it being enabled, the
+section says that the IRC server does not support avatars; this is an
+inference from capability negotiation, not a query, and it is not shown
+when the options were only turned on after connecting. A typed URL
 is still sent only with the button. Without an image host the URL is
 typed. A future
 standard upload service (for example if soju's `soju.im/filehost` becomes

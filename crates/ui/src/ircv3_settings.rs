@@ -340,6 +340,14 @@ impl SettingsWindow {
                 self.settings.avatar_url.clone(),
             ))
             .child(buttons)
+            .when(status.unsupported, |section| {
+                section.child(
+                    div()
+                        .ml(px(158.))
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("ircv3_avatar_unsupported")),
+                )
+            })
             .when_some(outcome, |section, (text, failed)| {
                 section.child(
                     div()
@@ -723,6 +731,9 @@ impl Render for TextTooltip {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OwnAvatarStatus {
     pub can_request: bool,
+    /// Registered after asking for avatar metadata, which the server did
+    /// not enable.
+    pub unsupported: bool,
     pub waiting: bool,
     pub confirmed: Confirmed,
     pub outcome: Option<Outcome>,
@@ -757,6 +768,7 @@ impl ChatWindow {
         let own = &session.own_avatar;
         OwnAvatarStatus {
             can_request: connected && own.can_request(),
+            unsupported: connected && session.metadata_requested && !own.ready(),
             waiting: own.waiting(),
             confirmed: own.confirmed().clone(),
             outcome: own.outcome().cloned(),
@@ -953,6 +965,7 @@ mod tests {
             "ircv3_avatar_upload_cancelled",
             "upload_busy",
             "ircv3_avatar_exposure",
+            "ircv3_avatar_unsupported",
             "ircv3_avatar_remove_title",
             "ircv3_avatar_remove_detail",
             "ircv3_avatar_remove_confirm",
@@ -1120,6 +1133,59 @@ mod own_avatar_tests {
             let id = chat.saved.servers[0].id.clone();
             chat.own_avatar_status(&id)
         })
+    }
+
+    #[gpui::test]
+    fn servers_that_never_enable_avatars_are_reported_as_unsupported(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        // A connection object only; nothing is pumped from it.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec![]);
+        config.port = port;
+        config.use_tls = false;
+        let connection = Connection::connect(config).unwrap();
+        let registered = || Event::Registered {
+            nickname: "me".into(),
+        };
+        let unsupported =
+            |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| status(chat, cx).unsupported;
+        chat.update(cx, |chat, cx| {
+            let session = chat.sessions.get_mut(&NetworkId(1)).unwrap();
+            session.irc = Some(connection);
+            // Asked for avatars, registered, never enabled.
+            session.metadata_requested = true;
+            chat.handle_events(NetworkId(1), vec![registered()], false, cx);
+        });
+        assert!(unsupported(&chat, cx));
+        // Enabled: supported.
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(NetworkId(1), vec![Event::MetadataReady], false, cx);
+        });
+        let ready = status(&chat, cx);
+        assert!(!ready.unsupported && ready.can_request);
+        // Not asked for on this connection (options change next time):
+        // nothing is claimed about the server.
+        chat.update(cx, |chat, cx| {
+            let session = chat.sessions.get_mut(&NetworkId(1)).unwrap();
+            session.own_avatar.connection_ended();
+            session.metadata_requested = false;
+            chat.handle_events(NetworkId(1), vec![registered()], false, cx);
+        });
+        assert!(!unsupported(&chat, cx));
     }
 
     #[gpui::test]

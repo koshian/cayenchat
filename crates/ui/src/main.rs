@@ -1487,6 +1487,7 @@ impl ChatWindow {
         session.manual_disconnect = false;
         session.retry_attempt = 0;
         session.active_config = Some(config.clone());
+        session.metadata_requested = config.ircv3.metadata && config.ircv3.batch;
         session.diagnostics.clear();
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
@@ -1632,6 +1633,7 @@ impl ChatWindow {
         }
         session.generation += 1;
         session.own_avatar.connection_ended();
+        session.metadata_requested = config.ircv3.metadata && config.ircv3.batch;
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
         self.state.set_status(network, ConnectionStatus::Connecting);
