@@ -355,7 +355,9 @@ this delay.
    growing it again shows the whole image, **全体に戻す** resets, and the
    result preview follows; Cancel uploads nothing; **… にアップロードして
    送信** shows progress, puts the host's URL into the field and sends it
-   (while disconnected a line says it was not sent), and the uploaded image is at most 256×256. A HEIC file is refused with the
+   (if the connection ends during the upload, a line says it was not
+   sent; while disconnected, or on a server without avatar metadata, there
+   is no **画像を選択…**, drop target or image paste), and the uploaded image is at most 256×256. A HEIC file is refused with the
    export hint.
    Switch servers during an upload: the URL goes to the server it was for.
    With no host set up there is no **画像を選択…** and no drop target; an

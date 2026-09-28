@@ -244,6 +244,9 @@ impl SettingsWindow {
         };
         let can_send = status.can_request && !draft.is_empty() && sent != Some(draft.as_str());
         let can_remove = status.can_request && sent.is_some();
+        // An uploaded image is sent at once, so images are only taken while
+        // this server can receive an avatar.
+        let can_upload = status.can_request;
         let provider = self
             .settings
             .values
@@ -262,13 +265,16 @@ impl SettingsWindow {
             .flex_wrap()
             .items_center()
             .gap_2()
-            .when(provider.is_some() && uploading.is_none(), |row| {
-                row.child(
-                    button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
-                        cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
-                    ),
-                )
-            })
+            .when(
+                can_upload && provider.is_some() && uploading.is_none(),
+                |row| {
+                    row.child(
+                        button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
+                            cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
+                        ),
+                    )
+                },
+            )
             .when_some(uploading, |row, provider| {
                 row.child(
                     self.i18n
@@ -317,7 +323,7 @@ impl SettingsWindow {
             .gap_2()
             .pt_2()
             .on_action(cx.listener(Self::paste_avatar_image))
-            .when(provider.is_some(), |section| {
+            .when(can_upload && provider.is_some(), |section| {
                 section
                     .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -415,12 +421,30 @@ impl SettingsWindow {
 /// selected server's avatar URL draft, with the same confirmation and
 /// attachment flow as chat drafts. Uploading never publishes.
 impl SettingsWindow {
+    /// Whether an avatar image can be taken now: the selected server can
+    /// receive the avatar it would be sent as.
+    fn avatar_images_accepted(&self, cx: &App) -> bool {
+        let Some(profile) = self.settings.values.selected_profile() else {
+            return false;
+        };
+        profile.ircv3.metadata
+            && self
+                .owner
+                .read(cx)
+                .is_ok_and(|chat| chat.own_avatar_status(&profile.id).can_request)
+    }
+
     fn paste_avatar_image(
         &mut self,
         _: &input::Paste,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Otherwise an image paste in the field does nothing, like in any
+        // other text field.
+        if !self.avatar_images_accepted(cx) {
+            return;
+        }
         if let Some(attachment) = clipboard_attachment(cx) {
             self.offer_avatar_image(attachment, window, cx);
         }
@@ -432,6 +456,9 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.avatar_images_accepted(cx) {
+            return;
+        }
         match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {
             Ok(attachment) => self.offer_avatar_image(attachment, window, cx),
             Err(error) => {

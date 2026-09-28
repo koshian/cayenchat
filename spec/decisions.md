@@ -737,7 +737,10 @@ or a server profile), and the returned URL replaces that server's avatar
 draft if it passes the same checks and is then sent to the server at once
 (users expect an uploaded avatar to be in use); if the server is not
 connected the draft is kept, a line says it was not sent, and Send
-remains available. A typed URL
+remains available. Because an upload is sent at once, "Choose Image…",
+dropping and pasting an image are offered only while the server can
+receive an avatar (connected, capability negotiated); on a server without
+avatar metadata, or while disconnected, only the URL field is shown. A typed URL
 is still sent only with the button. Without an image host the URL is
 typed. A future
 standard upload service (for example if soju's `soju.im/filehost` becomes
