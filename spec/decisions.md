@@ -685,8 +685,13 @@ User avatars).
 
 **Publishing our own avatar (2026-09-28).** The IRCv3 tab has, per server
 and only while that server's metadata option is on, an avatar URL field
-and explicit **Send to Server** (サーバに送信; "Publish" in code) /
-**Remove** buttons. The URL is a draft saved
+and explicit **Send to IRC Server** (IRCサーバに送信; "Publish" in code) /
+**Remove from IRC Server** (IRCサーバから削除) buttons. The section has no
+explanatory text (by the user's choice, after trying a version with an
+exposure warning and hints): Send appears only when connected with the
+capability and the typed URL differs from what the server confirmed, and
+Remove only when the server holds an avatar; a request in progress or a
+failure is the only status line. The URL is a draft saved
 with the server profile (`ServerProfile::avatar_url`, added without a
 version change, empty when absent); autosave never publishes it, and it is
 never republished on reconnect. Publish sends `METADATA * SET avatar
@@ -729,7 +734,8 @@ JPEG. The upload goes through the same `ExternalUploader` as chat images
 or a server profile), and the returned URL replaces that server's avatar
 draft if it passes the same checks and is then sent to the server at once
 (users expect an uploaded avatar to be in use); if the server is not
-connected the draft is kept and the tab says it was not sent. A typed URL
+connected the draft is kept, a line says it was not sent, and Send
+remains available. A typed URL
 is still sent only with the button. Without an image host the URL is
 typed. A future
 standard upload service (for example if soju's `soju.im/filehost` becomes

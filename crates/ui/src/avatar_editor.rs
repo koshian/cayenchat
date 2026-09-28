@@ -11,7 +11,7 @@ use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use cayenchat_media::{
     LoadError,
-    avatar_edit::{self, AVATAR_OUTPUT_SIDE, AvatarSource, Crop},
+    avatar_edit::{self, AvatarSource, Crop},
     decode::{self, Thumbnail},
 };
 use cayenchat_model::attachment::AttachmentSource;
@@ -421,9 +421,6 @@ impl SettingsWindow {
             .border_1()
             .border_color(theme.border)
             .child(result_image);
-        let out = (crop.side.round() as u32)
-            .min(AVATAR_OUTPUT_SIDE)
-            .to_string();
         let whole = editor.close_up.is_none() && crop == editor.source.initial_crop();
         Some(
             div()
@@ -434,10 +431,6 @@ impl SettingsWindow {
                 .p_2()
                 .border_1()
                 .border_color(theme.border)
-                .child(
-                    self.i18n
-                        .format("ircv3_avatar_edit_hint", &[("side", &out)]),
-                )
                 .child(
                     div().flex().gap_3().items_start().child(picture).child(
                         div().flex().flex_col().gap_1().child(result).child(

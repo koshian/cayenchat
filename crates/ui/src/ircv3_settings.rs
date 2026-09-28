@@ -222,74 +222,28 @@ impl SettingsWindow {
 impl SettingsWindow {
     /// Our own avatar on the selected server: the saved draft URL and
     /// explicit Publish / Remove, with what the server confirmed.
+    /// Our own avatar on the selected server, without explanations: the
+    /// URL field, "Choose Image…" (and dropping) when an image host is set
+    /// up, and "Send to IRC Server" / "Remove from IRC Server" when they
+    /// would change something on the connected server.
     fn render_own_avatar(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let note = |text: String| {
-            div()
-                .ml(px(158.))
-                .text_color(theme.text_secondary)
-                .child(text)
-        };
-        let section = div().flex().flex_col().gap_2().pt_2().child(
-            div()
-                .font_weight(FontWeight::BOLD)
-                .child(self.i18n.text("ircv3_avatar_heading")),
-        );
         // Experimental and behind the server's metadata opt-in.
         if !profile.ircv3.metadata {
-            return section.child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("ircv3_avatar_needs_metadata")),
-            );
+            return div();
         }
+        let theme = settings_theme::palette(cx);
         let status = self
             .owner
             .read(cx)
             .map(|chat| chat.own_avatar_status(&profile.id))
             .unwrap_or_default();
-        let has_draft = !self.settings.avatar_url.read(cx).text().trim().is_empty();
-        let server = match &status.confirmed {
-            Confirmed::Unknown => self.i18n.text("ircv3_avatar_server_unknown"),
-            Confirmed::NotSet => self.i18n.text("ircv3_avatar_server_none"),
-            Confirmed::Set(url) => self.i18n.format("ircv3_avatar_server_set", &[("url", url)]),
+        let draft = self.settings.avatar_url.read(cx).text().trim().to_owned();
+        let sent = match &status.confirmed {
+            Confirmed::Set(url) => Some(url.as_str()),
+            _ => None,
         };
-        let action_button = |id: &'static str, key: &str, primary: bool, enabled: bool| {
-            let button = settings_theme::button(id, primary, cx).child(self.i18n.text(key));
-            if enabled {
-                button
-            } else {
-                button.opacity(0.5).cursor_default()
-            }
-        };
-        let publish = action_button(
-            "ircv3-avatar-publish",
-            "ircv3_avatar_publish",
-            true,
-            status.can_request && has_draft,
-        )
-        .when(status.can_request && has_draft, |button| {
-            button.on_click(
-                cx.listener(|this, _, _, cx| this.request_own_avatar(Action::Publish, cx)),
-            )
-        });
-        let remove = action_button(
-            "ircv3-avatar-remove",
-            "ircv3_avatar_remove",
-            false,
-            status.can_request,
-        )
-        .when(status.can_request, |button| {
-            button
-                .on_click(cx.listener(|this, _, _, cx| this.request_own_avatar(Action::Remove, cx)))
-        });
-        let outcome = status
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome_text(&self.i18n, outcome));
-        // With an image host configured, an image can be dropped here,
-        // pasted into the field or chosen; its uploaded URL becomes the
-        // draft. Without one the URL is typed.
+        let can_send = status.can_request && !draft.is_empty() && sent != Some(draft.as_str());
+        let can_remove = status.can_request && sent.is_some();
         let provider = self
             .settings
             .values
@@ -299,52 +253,57 @@ impl SettingsWindow {
             .and_then(cayenchat_upload::provider)
             .map(|provider| provider.name);
         let uploading = self.avatar_upload.uploading().map(str::to_owned);
-        let upload_row = match provider {
-            Some(name) => {
-                let mut row = div().ml(px(158.)).flex().items_center().gap_2().child(
-                    action_button(
-                        "ircv3-avatar-choose",
-                        "ircv3_avatar_choose",
-                        false,
-                        uploading.is_none(),
-                    )
-                    .when(uploading.is_none(), |button| {
-                        button.on_click(
-                            cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
-                        )
-                    }),
-                );
-                if let Some(provider) = &uploading {
-                    row = row
-                        .child(
-                            self.i18n
-                                .format("ircv3_avatar_uploading", &[("provider", provider)]),
-                        )
-                        .child(
-                            settings_theme::button("ircv3-avatar-upload-cancel", false, cx)
-                                .child(self.i18n.text("cancel"))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.cancel_avatar_upload(cx)),
-                                ),
-                        );
-                }
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(row)
-                    .child(note(
-                        self.i18n
-                            .format("ircv3_avatar_upload_hint", &[("provider", name)]),
-                    ))
-                    .when(self.avatar_opening, |d| {
-                        d.child(note(self.i18n.text("ircv3_avatar_edit_loading")))
-                    })
-                    .children(self.render_avatar_editor(name, cx))
-            }
-            None => div().child(note(self.i18n.text("ircv3_avatar_upload_unconfigured"))),
+        let button = |id: &'static str, key: &str, primary: bool| {
+            settings_theme::button(id, primary, cx).child(self.i18n.text(key))
         };
-        section
+        let buttons = div()
+            .ml(px(158.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .when(provider.is_some() && uploading.is_none(), |row| {
+                row.child(
+                    button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
+                        cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
+                    ),
+                )
+            })
+            .when_some(uploading, |row, provider| {
+                row.child(
+                    self.i18n
+                        .format("ircv3_avatar_uploading", &[("provider", &provider)]),
+                )
+                .child(
+                    button("ircv3-avatar-upload-cancel", "cancel", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_avatar_upload(cx))),
+                )
+            })
+            .when(can_send, |row| {
+                row.child(
+                    button("ircv3-avatar-publish", "ircv3_avatar_publish", true).on_click(
+                        cx.listener(|this, _, _, cx| this.request_own_avatar(Action::Publish, cx)),
+                    ),
+                )
+            })
+            .when(can_remove, |row| {
+                row.child(
+                    button("ircv3-avatar-remove", "ircv3_avatar_remove", false).on_click(
+                        cx.listener(|this, _, _, cx| this.request_own_avatar(Action::Remove, cx)),
+                    ),
+                )
+            });
+        // Only what needs attention: a request in progress or a failure.
+        let outcome = status
+            .outcome
+            .as_ref()
+            .filter(|outcome| !matches!(outcome, Outcome::Published(_) | Outcome::Removed))
+            .map(|outcome| outcome_text(&self.i18n, outcome));
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .pt_2()
             .on_action(cx.listener(Self::paste_avatar_image))
             .when(provider.is_some(), |section| {
                 section
@@ -353,27 +312,16 @@ impl SettingsWindow {
                         this.drop_avatar_image(paths.paths(), window, cx)
                     }))
             })
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("ircv3_avatar_heading")),
+            )
             .child(crate::settings_field(
                 &self.i18n.text("ircv3_avatar_url"),
                 self.settings.avatar_url.clone(),
             ))
-            .child(upload_row)
-            .child(
-                div()
-                    .ml(px(158.))
-                    .text_color(theme.warning)
-                    .child(self.i18n.text("ircv3_avatar_exposure")),
-            )
-            .child(note(self.i18n.text("ircv3_avatar_publish_hint")))
-            .child(
-                div()
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .child(publish)
-                    .child(remove),
-            )
-            .child(div().ml(px(158.)).child(server))
+            .child(buttons)
             .when_some(outcome, |section, (text, failed)| {
                 section.child(
                     div()
@@ -382,13 +330,18 @@ impl SettingsWindow {
                         .child(text),
                 )
             })
-            .when(!status.can_request && !status.waiting, |section| {
-                section.child(note(self.i18n.text("ircv3_avatar_not_ready")))
-            })
             .when_some(self.avatar_feedback.clone(), |section, feedback| {
                 section.child(div().ml(px(158.)).text_color(theme.warning).child(feedback))
             })
-            .child(note(self.i18n.text("ircv3_avatar_display_note")))
+            .when(self.avatar_opening, |section| {
+                section.child(
+                    div()
+                        .ml(px(158.))
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("ircv3_avatar_edit_loading")),
+                )
+            })
+            .children(provider.and_then(|name| self.render_avatar_editor(name, cx)))
     }
 
     /// Publish or Remove, only when clicked. The draft is checked here;
@@ -913,10 +866,7 @@ mod tests {
         for key in [
             "ircv3_avatar_choose",
             "ircv3_avatar_choose_prompt",
-            "ircv3_avatar_upload_hint",
-            "ircv3_avatar_upload_unconfigured",
             "ircv3_avatar_edit_loading",
-            "ircv3_avatar_edit_hint",
             "ircv3_avatar_edit_result",
             "ircv3_avatar_edit_reset",
             "ircv3_avatar_edit_upload",

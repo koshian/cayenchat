@@ -327,19 +327,21 @@ this delay.
 11. Own avatar, with the same setup against a disposable local server (for
    example the pinned Ergo below; never a public server or real account):
    in **IRCv3**, with **ユーザーのアバター (実験的)** on, the section
-   **このサーバーでの自分のアバター** shows the URL field, the exposure
-   warning, **サーバに送信** and **削除**. Type a URL and wait for autosave: nothing
-   is sent (the transcript shows no `METADATA * SET`). While disconnected
-   both buttons are disabled with the reason shown. Connected, **サーバに送信**
-   shows the waiting line, then the server-confirmed URL; another client
-   in the channel receives it, and our own lines show the image when
-   avatars are displayed. Change the URL and send again; then **削除**
+   **このサーバーでの自分のアバター** shows the URL field and no explanatory
+   text. Type a URL and wait for autosave: nothing is sent (the transcript
+   shows no `METADATA * SET`). While disconnected neither **IRCサーバに送信**
+   nor **IRCサーバから削除** is shown. Connected, **IRCサーバに送信** shows
+   the waiting line, then disappears (the field matches what the server
+   confirmed) and **IRCサーバから削除** appears; another client in the
+   channel receives it, and our own lines show the image when avatars are
+   displayed. Edit the URL: **IRCサーバに送信** reappears; send again; then
+   **IRCサーバから削除**
    (only `METADATA * SET avatar` is sent). A URL with `user:pass@`,
    `?token=` or a private host is refused before sending; an over-long URL
    is refused by Ergo (`INVALID_VALUE`) and more than 10 changes in 2
    minutes show the rate limit with its delay. Turning **ユーザーのアバターを
    表示する** off does not change what the server holds. Reconnect: the
-   draft stays, nothing is republished, and the server line shows what the
+   draft stays, nothing is republished, and the buttons follow what the
    server kept. A user joining the channel after us gets an avatar in the
    member list about 2 s after joining. With an image host set up on
    **画像アップロード** (a test account), drop a PNG on the section, paste a
@@ -351,12 +353,11 @@ this delay.
    growing it again shows the whole image, **全体に戻す** resets, and the
    result preview follows; Cancel uploads nothing; **… にアップロードして
    送信** shows progress, puts the host's URL into the field and sends it
-   (the server line then shows it; while disconnected the tab says it was
-   not sent), and the uploaded image is at most 256×256. A HEIC file is refused with the
+   (while disconnected a line says it was not sent), and the uploaded image is at most 256×256. A HEIC file is refused with the
    export hint.
    Switch servers during an upload: the URL goes to the server it was for.
-   With no host set up, the section says to set one up and an image paste
-   explains the same.
+   With no host set up there is no **画像を選択…** and no drop target; an
+   image paste says to set up image upload.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
