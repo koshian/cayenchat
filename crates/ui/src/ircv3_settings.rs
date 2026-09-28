@@ -679,21 +679,16 @@ pub(crate) fn place_uploaded_avatar(
     Ok(shown)
 }
 
-/// A plain text tooltip in the settings palette.
+/// A plain text tooltip in the platform's tooltip style.
 struct TextTooltip(SharedString);
 
 impl Render for TextTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = settings_theme::palette(cx);
+        // Offset from the pointer like platform tooltips.
         div()
-            .max_w(px(320.))
-            .px_2()
-            .py_1()
-            .bg(theme.surface)
-            .border_1()
-            .border_color(theme.border)
-            .text_color(theme.text)
-            .child(self.0.clone())
+            .pl(px(10.))
+            .pt(px(18.))
+            .child(settings_theme::tooltip(self.0.clone(), cx))
     }
 }
 
