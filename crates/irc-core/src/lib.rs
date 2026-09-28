@@ -428,6 +428,30 @@ pub enum MemberCommand {
     Invite { channel: String },
     GiveOp { channel: String },
     Deop { channel: String },
+    Ctcp(CtcpQuery),
+}
+
+/// CTCP requests the member menu can send. Replies arrive as NOTICEs and
+/// appear as readable [`Event::ServerLine`]s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CtcpQuery {
+    Ping,
+    Time,
+    Version,
+    UserInfo,
+    ClientInfo,
+}
+
+impl CtcpQuery {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Ping => "PING",
+            Self::Time => "TIME",
+            Self::Version => "VERSION",
+            Self::UserInfo => "USERINFO",
+            Self::ClientInfo => "CLIENTINFO",
+        }
+    }
 }
 
 async fn diagnostic(events: &mpsc::Sender<Event>, started: Instant, message: impl Into<String>) {
@@ -666,7 +690,56 @@ fn member_outgoing(nickname: &str, action: MemberCommand) -> Result<Outgoing, St
             }
             checked_raw(&format!("MODE {channel} -o {nickname}"))
         }
+        MemberCommand::Ctcp(query) => {
+            let text = match query {
+                // The reply echoes the argument, so it carries the send time.
+                CtcpQuery::Ping => format!("\u{1}PING {}\u{1}", unix_millis(SystemTime::now())),
+                query => format!("\u{1}{}\u{1}", query.tag()),
+            };
+            checked_command(IrcCommand::PRIVMSG(nickname.into(), text))
+        }
     }
+}
+
+fn unix_millis(time: SystemTime) -> u128 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default()
+}
+
+/// A readable server line for a user's CTCP reply (a NOTICE to our
+/// nickname). A PING reply that echoes a send time shows the round trip.
+fn ctcp_reply(message: &IrcMessage, current_nick: &str, now: SystemTime) -> Option<String> {
+    let IrcCommand::NOTICE(target, text) = &message.command else {
+        return None;
+    };
+    let Some(Prefix::Nickname(sender, _, _)) = &message.prefix else {
+        return None;
+    };
+    let body = text.strip_prefix('\u{1}')?;
+    if !target.eq_ignore_ascii_case(current_nick) {
+        return None;
+    }
+    let body = crate::text::strip_formatting(body.strip_suffix('\u{1}').unwrap_or(body));
+    let (tag, params) = split_word(body.trim());
+    if tag.is_empty() {
+        return None;
+    }
+    let tag = tag.to_ascii_uppercase();
+    let params = if tag == "PING"
+        && let Ok(sent) = params.parse::<u128>()
+        && let Some(elapsed) = unix_millis(now).checked_sub(sent)
+        && elapsed < 24 * 60 * 60 * 1000
+    {
+        format!("{}.{:03} s", elapsed / 1000, elapsed % 1000)
+    } else {
+        params.to_owned()
+    };
+    Some(if params.is_empty() {
+        format!("CTCP {tag} reply from {sender}")
+    } else {
+        format!("CTCP {tag} reply from {sender}: {params}")
+    })
 }
 
 fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, String> {
@@ -1958,6 +2031,9 @@ fn translate_message(
     if let Some(private) = private_message(&message, current_nick, replayed, server_time) {
         return vec![private];
     }
+    if let Some(line) = ctcp_reply(&message, current_nick, SystemTime::now()) {
+        return vec![Event::ServerLine(line)];
+    }
     let mut translated = match &message.command {
         IrcCommand::Response(Response::RPL_WELCOME, args) => vec![Event::Registered {
             nickname: args
@@ -2049,6 +2125,38 @@ mod tests {
     };
 
     #[test]
+    fn ctcp_replies_to_us_become_readable_server_lines() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(1_000_000_250);
+        let reply = |line: &str| {
+            let message: IrcMessage = line.parse().unwrap();
+            ctcp_reply(&message, "alice", now)
+        };
+        assert_eq!(
+            reply(":bob!u@h NOTICE alice :\u{1}VERSION Foo 1.0 \u{2}bold\u{2}\u{1}").as_deref(),
+            Some("CTCP VERSION reply from bob: Foo 1.0 bold")
+        );
+        assert_eq!(
+            reply(":bob!u@h NOTICE Alice :\u{1}PING 1000000000\u{1}").as_deref(),
+            Some("CTCP PING reply from bob: 0.250 s")
+        );
+        assert_eq!(
+            reply(":bob!u@h NOTICE alice :\u{1}PING hello\u{1}").as_deref(),
+            Some("CTCP PING reply from bob: hello")
+        );
+        assert_eq!(
+            reply(":bob!u@h NOTICE alice :\u{1}time").as_deref(),
+            Some("CTCP TIME reply from bob")
+        );
+        assert_eq!(reply(":bob!u@h NOTICE #test :\u{1}VERSION x\u{1}"), None);
+        assert_eq!(reply(":bob!u@h PRIVMSG alice :\u{1}VERSION\u{1}"), None);
+        assert_eq!(
+            reply(":irc.example NOTICE alice :\u{1}VERSION x\u{1}"),
+            None
+        );
+        assert_eq!(reply(":bob!u@h NOTICE alice :plain"), None);
+    }
+
+    #[test]
     fn member_commands_validate_targets_and_build_expected_irc_lines() {
         let wire = |action| match member_outgoing("Alice", action).unwrap() {
             Outgoing::Raw(message) => message.to_string().trim_end().to_owned(),
@@ -2073,6 +2181,20 @@ mod tests {
             }),
             "MODE #test -o Alice"
         );
+        assert_eq!(
+            wire(MemberCommand::Ctcp(CtcpQuery::Version)),
+            "PRIVMSG Alice \u{1}VERSION\u{1}"
+        );
+        assert_eq!(
+            wire(MemberCommand::Ctcp(CtcpQuery::ClientInfo)),
+            "PRIVMSG Alice \u{1}CLIENTINFO\u{1}"
+        );
+        let ping = wire(MemberCommand::Ctcp(CtcpQuery::Ping));
+        let sent = ping
+            .strip_prefix("PRIVMSG Alice :\u{1}PING ")
+            .and_then(|rest| rest.strip_suffix('\u{1}'))
+            .unwrap();
+        assert!(sent.parse::<u128>().is_ok());
         assert!(member_outgoing("bad nick", MemberCommand::Whois).is_err());
         assert!(member_outgoing("Alice,Bob", MemberCommand::Whois).is_err());
     }
