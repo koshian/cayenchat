@@ -977,3 +977,20 @@ timeout. Older pages, gap recovery on reconnect, private-message history
 (TARGETS) and persistence are separate future work. Details in
 `architecture.md` (Recent channel history); Ergo results in
 `development.md`.
+
+## D028 — Dedicated private conversations
+
+**Status:** Accepted
+
+2026-09-28. Private messages get their own conversations instead of the
+server log. `model::Conversation` gained one concept, `ConversationKind`
+(`Channel` or `Private { peer_key }`), so the application and UI work on
+conversations and timeline items rather than IRC targets; the server log
+stays separate. The peer key is supplied by the protocol adapter (IRC:
+RFC 1459 case-mapped nickname) and scoped to one network. NOTICEs open no
+conversation (services and bots), NICK renames without ever merging two
+conversations, QUIT marks a boundary, accounts are not used, and at most
+100 private conversations exist per network. No protocol framework was
+added: IRC routing rules live in the UI's event adapter, and a future
+backend would create conversations of the same kinds with its own keys.
+Details in `architecture.md` (Conversations).

@@ -396,8 +396,9 @@ There is no application-wide bound on logs, conversations or transcripts yet;
 see `performance.md`.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
-connection status, selection, unread IDs, and active IDs. Only configured channels
-and our own JOINs create conversations (at most 1,000 per network); messages for
+connection status, selection, unread IDs, and active IDs. Only configured channels,
+our own JOINs and private messages (see Conversations) create conversations (at
+most 1,000 per network, 100 of them private); messages for
 any other channel go to the bounded server log, and member snapshots or activity
 for unknown channels are ignored, so a hostile server cannot grow memory without
 limit. The core likewise caps unfinished WHOIS replies (32 nicknames, 512
@@ -741,6 +742,9 @@ protocol:
   opaque and meaningful only within the backend and conversation it came
   from (IRC: `msgid`). It is never the application identity: many messages
   have none (no IRCv3, local echoes, activity lines).
+- `sender` is a display name. Nothing in the presentation layer treats it
+  as a unique identity; per-user state (avatars, private conversations) is
+  keyed by the adapter's folded key within one network.
 - `provenance` (`model::Provenance`): `Live`, `Replayed` (history the server
   or bouncer sent by itself: bouncer log replay, history batches nobody
   asked for) or `Requested` (history this client asked for; see Recent
@@ -757,8 +761,77 @@ sender, activity flag, text length and the first 512 text bytes, used only
 to drop history and only with a source timestamp, because fingerprints can
 collide. Keys are 64-bit hashes with a per-filter random seed. The filter is
 dropped with its conversation (reset, reconnect, removed server), so
-nothing persists or grows with the session. Server-log lines (private
-messages, numerics) retain the same fields but are not filtered.
+nothing persists or grows with the session. Server-log lines (numerics,
+server notices, private notices outside a conversation) retain the same
+fields but are not filtered.
+
+## Conversations
+
+```text
+irc-core events (ChannelMessage, PrivateMessage, OwnPrivateMessage,
+                 OutgoingAccepted, UserNickChanged, UserQuit)
+        |   ui::ChatWindow::handle_event (IRC adapter: targets, case mapping,
+        |   NOTICE policy, activity wording)
+        v
+app::AppState conversations (model::Conversation { kind, name, messages })
+        |   ConversationKind::Channel | Private { peer_key }
+        v
+Selection::Channel(ConversationId) -> the same main log, draft, previews,
+avatars, scroll state, unread/highlight and combined subwindow
+```
+
+A conversation is a channel or a private conversation; the server log is
+not a conversation (`Selection::Server`). The UI renders conversations by
+`ConversationId` and never branches on IRC target syntax to draw them; the
+kind only changes what the tree's context menu offers (Join/Part or
+Close), who the draft sends to (`send_message` for a channel,
+`send_private_message` for a peer) and that private conversations have no
+member list. Identity: `ConversationKind::Private { peer_key }`, where the
+key is the adapter's folded peer name (IRC: RFC 1459 case-mapped nickname,
+the same key avatars use) and is only compared within one network, so the
+same nickname on two servers is two conversations. `channel_id` never
+matches a private conversation, and `private_id` never a channel.
+
+IRC routing (the adapter):
+
+- A live or replayed PRIVMSG (including CTCP ACTION) from a user to our
+  nickname opens or reuses the sender's conversation, is added there and
+  not to the server log, marks it unread and, if live, highlighted, and
+  notifies unless that conversation is selected in the focused window.
+  Replayed ones (bouncer playback) go to the same conversation and never
+  notify; their sender and target are unambiguous there.
+- A private NOTICE joins an existing conversation with its sender;
+  otherwise it stays in the server log as before, because notices are
+  usually services and bots.
+- Our own messages to a nickname (the draft of a private conversation,
+  `/msg nick`, the member and WHOIS "private message" prompt) appear in
+  its conversation when the connection accepts them (`OutgoingAccepted`),
+  without an unread mark; credentials sent to NickServ/ChanServ are shown
+  as `[redacted]`, like the transcript. A PRIVMSG/NOTICE from our own
+  nickname to someone else (a bouncer relaying another client of ours, or
+  its playback) is `OwnPrivateMessage` and goes to that conversation too;
+  after our nickname changed, such old lines stay in the server log.
+- `/me` and `/msg :text` in a private conversation target the peer.
+- NICK of another user renames a conversation with them and adds an
+  activity line, unless a conversation with the new name exists (then
+  nothing is merged; the line still goes to the old one). A later user of
+  the old nickname starts a new conversation. QUIT adds an activity line
+  to the quitter's conversation, so a reused nickname's messages are
+  visibly after a boundary. Only users sharing a channel are seen to
+  change nick or quit. Accounts are not used.
+- Private conversations are usable (active) while their network is
+  registered; they are closed from the channel tree's context menu, and a
+  fresh session of their network (connect, which resets conversations to
+  the configured channels) or removing the server drops them, like channel
+  logs. Events of an old connection generation are dropped by the event
+  pump, so nothing is routed into the new session.
+- At most 100 private conversations per network; further PRIVMSGs from new
+  peers stay in the server log.
+
+A future backend adds conversations of these kinds with its own keys (for
+example a room or DM identifier) through the same `AppState` calls and
+appends timeline items with `MessageMeta`; the IRC-specific parts above
+stay in the IRC adapter.
 
 ## Recent channel history
 
@@ -879,8 +952,8 @@ marks history, however old (D022).
 Replayed messages still appear in the log (`model::Provenance::Replayed`) and
 mark their channel unread, but are neither highlighted there nor in the
 channel tree. Nothing notifies while the chat window is
-focused and the message's conversation (the server view for private messages)
-is selected. At most five notifications are shown per ten seconds so bouncer
+focused and the message's conversation (its private conversation, or the
+server view for a private notice kept in the server log) is selected. At most five notifications are shown per ten seconds so bouncer
 history playback cannot flood the desktop; the log and unread marks are
 unaffected. Showing can block (D-Bus, macOS delivery confirmation), so a
 dedicated thread does it; UI tests record notifications instead.
@@ -1019,9 +1092,9 @@ depends on an upload provider or account, and `ExternalUploader` is not used.
 
 Rows request their preview while they are drawn, so only rows the virtualized
 log lays out (the viewport plus its 400 px overdraw) cause requests; receiving
-or retaining image links fetches nothing. Only channel message rows of the
-main log preview; the combined log, the server log (diagnostics, private
-messages) and activity lines stay text-only, and link opening and selection
+or retaining image links fetches nothing. Only message rows of the main log
+(channels and private conversations) preview; the combined log, the server
+log (diagnostics) and activity lines stay text-only, and link opening and selection
 work on the text as before. A pending preview reserves a box of the full
 preview height so a finished load does not move the row. When the finished
 height differs (a wide image, or a failure that leaves only the text link),

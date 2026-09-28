@@ -265,7 +265,8 @@ Not measured or not confirmed:
 - GPU memory separately from `phys_footprint`.
 - Windows and Linux; TLS connections; sessions longer than about five
   minutes; channels with thousands of members and heavy JOIN/PART churn;
-  private-message traffic (currently routed to the server log).
+  private-message traffic (routed to the server log at the time; private
+  conversations came later and are bounded at 100 per network).
 - The 200 lines/s and maximum rates are synthetic. The fixture sends no
   JOIN/PART/QUIT churn during floods.
 
