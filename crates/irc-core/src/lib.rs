@@ -1,6 +1,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
 mod cap;
+mod history;
 mod metadata;
 mod peer_avatar;
 mod replay;
@@ -8,6 +9,7 @@ mod tags;
 pub mod text;
 
 pub use cap::Ircv3Options;
+pub use history::{HISTORY_LIMIT, HistoryMessage, MAX_HISTORY_LINES};
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 pub use peer_avatar::shareable as shareable_avatar;
 
@@ -384,6 +386,21 @@ pub enum Event {
     OwnAvatarFailed {
         request: u64,
         failure: AvatarRequestFailure,
+    },
+    /// We asked the server for `channel`'s latest history (opt-in
+    /// `draft/chathistory`). Its reply is older than every line of the
+    /// channel that arrives after this event. Exactly one
+    /// [`Event::ChannelHistory`] follows on this connection.
+    HistoryRequested {
+        channel: String,
+    },
+    /// The complete reply to our history request for `channel`, in the
+    /// server's order (oldest first). Empty when the server had nothing, the
+    /// request failed or timed out, or the capability went away; a reply
+    /// that never ended reports nothing partial.
+    ChannelHistory {
+        channel: String,
+        messages: Vec<HistoryMessage>,
     },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
@@ -1256,6 +1273,8 @@ async fn run_cancellable(
     let mut batch_negotiated = false;
     let mut metadata = metadata::MetadataState::new(wire_encoding.eq_ignore_ascii_case("UTF-8"));
     let mut metadata_enabled = false;
+    let mut history = history::HistoryRequests::default();
+    let mut history_enabled = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
     registration_progress.tick().await;
 
@@ -1416,6 +1435,17 @@ async fn run_cancellable(
                             }
                         }
                         metadata_enabled = negotiation.enabled(cap::METADATA);
+                        // chathistory went away (its own DEL, or batch): the
+                        // request being answered ends without lines.
+                        if history_enabled && !negotiation.enabled(cap::CHATHISTORY)
+                            && let Some(channel) = history.reset()
+                            && events.send(Event::ChannelHistory { channel, messages: Vec::new() }).await.is_err()
+                        {
+                            return;
+                        }
+                        let history_started = !history_enabled && negotiation.enabled(cap::CHATHISTORY);
+                        history_enabled = negotiation.enabled(cap::CHATHISTORY);
+                        history.isupport(&message);
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
                         }
@@ -1443,6 +1473,31 @@ async fn run_cancellable(
                             }
                             if events.send(Event::MetadataReady).await.is_err() {
                                 return;
+                            }
+                        }
+                        // Enabled after registration (CAP NEW): the channels
+                        // already joined get their history too.
+                        if history_started && registered {
+                            for channel in client.list_channels().unwrap_or_default() {
+                                if let Some(note) = history.enqueue(&channel) {
+                                    diagnostic(&events, started, note).await;
+                                }
+                            }
+                        }
+                        // Our history replies are consumed whole; nothing in
+                        // them is live traffic.
+                        if history_enabled {
+                            match history.observe(&message) {
+                                history::Observed::Unrelated => {}
+                                history::Observed::Consumed => continue,
+                                finished => {
+                                    if !history_finished(&events, started, finished).await
+                                        || !request_history(&client, &events, started, &mut history, registered).await
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
                             }
                         }
                         if metadata_enabled {
@@ -1498,6 +1553,22 @@ async fn run_cancellable(
                             Vec::new()
                         }));
                         let whois_reply = whois.observe(&message);
+                        if history_enabled && message.source_nickname() == Some(current_nick.as_str()) {
+                            match &message.command {
+                                IrcCommand::JOIN(channel, _, _) => {
+                                    if let Some(note) = history.enqueue(channel) {
+                                        diagnostic(&events, started, note).await;
+                                    }
+                                }
+                                IrcCommand::PART(channel, _) => history.forget(channel),
+                                _ => {}
+                            }
+                        }
+                        if let IrcCommand::KICK(channel, nickname, _) = &message.command
+                            && nickname == &current_nick
+                        {
+                            history.forget(channel);
+                        }
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
                         for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
@@ -1516,6 +1587,11 @@ async fn run_cancellable(
                         }
                         for event in lifecycle {
                             if events.send(event).await.is_err() { return; }
+                        }
+                        // After the JOIN's own events, so the channel exists
+                        // in the application before its history is asked for.
+                        if history_enabled && !request_history(&client, &events, started, &mut history, registered).await {
+                            return;
                         }
                     }
                     // irc consumes 432/433 and reports NoUsableNick because no
@@ -1573,6 +1649,15 @@ async fn run_cancellable(
                     if events.send(event).await.is_err() { return; }
                 }
             }
+            // An unanswered history request; no timer runs otherwise.
+            _ = tokio::time::sleep_until(history.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if history_enabled && history.next_deadline().is_some() => {
+                if let Some(finished) = history.tick(tokio::time::Instant::now())
+                    && (!history_finished(&events, started, finished).await
+                        || !request_history(&client, &events, started, &mut history, registered).await)
+                {
+                    return;
+                }
+            }
             // Peer avatar lookups and queries, spaced out; no timer runs
             // while none is queued or outstanding.
             _ = tokio::time::sleep_until(peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).unwrap_or_else(tokio::time::Instant::now)), if registered && peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).is_some() => {
@@ -1595,6 +1680,55 @@ async fn run_cancellable(
             }
         }
     }
+}
+
+/// Sends the next queued history request, if any may go out now, and
+/// reports it. `false` means the connection or the event channel failed.
+async fn request_history(
+    client: &Client,
+    events: &mpsc::Sender<Event>,
+    started: Instant,
+    history: &mut history::HistoryRequests,
+    registered: bool,
+) -> bool {
+    if !registered {
+        return true;
+    }
+    let Some((channel, command)) = history.next_request(tokio::time::Instant::now()) else {
+        return true;
+    };
+    if let Err(detail) = send_all(client, events, started, vec![command]).await {
+        let _ = events.send(Event::Disconnected(detail)).await;
+        return false;
+    }
+    events
+        .send(Event::HistoryRequested { channel })
+        .await
+        .is_ok()
+}
+
+/// Reports a finished history request. `false` means the event channel
+/// closed.
+async fn history_finished(
+    events: &mpsc::Sender<Event>,
+    started: Instant,
+    finished: history::Observed,
+) -> bool {
+    let history::Observed::Finished {
+        channel,
+        messages,
+        note,
+    } = finished
+    else {
+        return true;
+    };
+    if let Some(note) = note {
+        diagnostic(events, started, note).await;
+    }
+    events
+        .send(Event::ChannelHistory { channel, messages })
+        .await
+        .is_ok()
 }
 
 /// Passes metadata's avatar events through the peer avatar merge when
@@ -3479,6 +3613,231 @@ mod tests {
 @time=2011-10-19T16:40:54.000Z :irc.example NOTICE alice :tagged server line\r\n\
 :bob!u@h PRIVMSG #test :plain\r\n";
 
+    fn history_options() -> Ircv3Options {
+        Ircv3Options {
+            chathistory: true,
+            ..Ircv3Options::default()
+        }
+    }
+
+    /// Answers registration for a server offering `offer`, acknowledging
+    /// every request, then accepts the JOIN of #test.
+    fn register_with(
+        socket: &mut std::net::TcpStream,
+        lines: &mut BufReader<std::net::TcpStream>,
+        offer: &str,
+        isupport: &str,
+    ) -> Vec<String> {
+        assert_eq!(read_client_line(lines), "CAP LS 302");
+        let _nick = read_client_line(lines);
+        let _user = read_client_line(lines);
+        socket
+            .write_all(format!(":srv CAP * LS :{offer}\r\n").as_bytes())
+            .unwrap();
+        let mut requested = Vec::new();
+        loop {
+            let line = read_client_line(lines);
+            if line == "CAP END" {
+                break;
+            }
+            let name = line.strip_prefix("CAP REQ ").unwrap().to_owned();
+            socket
+                .write_all(format!(":srv CAP * ACK :{name}\r\n").as_bytes())
+                .unwrap();
+            requested.push(name);
+        }
+        socket
+            .write_all(
+                format!(":srv 001 alice :Welcome\r\n:srv 005 alice {isupport} :are supported\r\n:srv 376 alice :End\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(read_client_line(lines), "JOIN #test");
+        socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
+        requested
+    }
+
+    #[test]
+    fn chathistory_requests_the_latest_lines_on_join_and_reports_them_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "batch server-time message-tags draft/chathistory draft/event-playback",
+                "CHATHISTORY=20 MSGREFTYPES=msgid,timestamp",
+            );
+            assert_eq!(
+                requested,
+                ["message-tags", "server-time", "batch", "draft/chathistory"]
+            );
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 20"
+            );
+            // A live line arrives before the reply and is also in it.
+            socket
+                .write_all(
+                    b"@time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
+@draft/chathistory-end :srv BATCH +r1 chathistory #test\r\n\
+@batch=r1;time=2026-09-27T23:50:00.000Z;msgid=old1 :bob!u@h PRIVMSG #test :alice: old\r\n\
+@batch=r1;time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
+:srv BATCH -r1\r\n\
+@time=2026-09-27T23:59:00.000Z;msgid=after1 :bob!u@h PRIVMSG #test :after\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let events = run_fixture(plain_config(port, history_options()), |events| {
+            channel_messages(events).len() == 2
+                && events
+                    .iter()
+                    .any(|event| matches!(event, Event::ChannelHistory { .. }))
+        });
+        server.join().unwrap();
+        let requested = events
+            .iter()
+            .position(|e| matches!(e, Event::HistoryRequested { channel } if channel == "#test"))
+            .expect("request reported");
+        let joined = events
+            .iter()
+            .position(|e| matches!(e, Event::Joined { .. }))
+            .unwrap();
+        assert!(joined < requested, "the channel exists before its request");
+        let history: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::ChannelHistory { channel, messages } => Some((channel, messages)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(history.len(), 1);
+        let (channel, messages) = history[0];
+        assert_eq!(channel, "#test");
+        let lines: Vec<_> = messages
+            .iter()
+            .map(|m| (m.text.as_str(), m.msgid.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("alice: old", Some("old1")),
+                ("alice: live during request", Some("live1"))
+            ]
+        );
+        assert!(messages.iter().all(|m| m.server_time.is_some()));
+        // Reply lines never become live messages or server lines.
+        let live: Vec<_> = channel_messages(&events)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(live, ["alice: live during request", "after"]);
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("BATCH") || line.contains("old"))));
+    }
+
+    #[test]
+    fn chathistory_is_not_requested_from_servers_without_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "batch server-time message-tags",
+                "CHANTYPES=#",
+            );
+            assert!(requested.is_empty(), "{requested:?}");
+            socket
+                .write_all(b":bob!u@h PRIVMSG #test :hello\r\n")
+                .unwrap();
+            // The next thing the client sends is its QUIT, not a request.
+            assert!(read_client_line(&mut lines).starts_with("QUIT"));
+        });
+        let events = run_fixture(plain_config(port, history_options()), |events| {
+            channel_messages(events).len() == 1
+        });
+        server.join().unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::HistoryRequested { .. } | Event::ChannelHistory { .. }
+        )));
+    }
+
+    #[test]
+    fn a_reply_cut_off_by_a_disconnect_reports_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(&mut socket, &mut lines, "batch draft/chathistory", "");
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 50"
+            );
+            socket
+                .write_all(
+                    b":srv BATCH +r chathistory #test\r\n@batch=r :bob!u@h PRIVMSG #test :partial\r\n",
+                )
+                .unwrap();
+            drop(socket);
+        });
+        let (_command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let config = plain_config(port, history_options());
+        let worker = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(config, command_rx, event_tx));
+        });
+        let mut events = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match event_rx.try_recv() {
+                Ok(event) => {
+                    let end = matches!(event, Event::Disconnected(_));
+                    events.push(event);
+                    if end {
+                        break;
+                    }
+                }
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        worker.join().unwrap();
+        server.join().unwrap();
+        assert!(
+            matches!(events.last(), Some(Event::Disconnected(_))),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::HistoryRequested { .. }))
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::ChannelHistory { .. } | Event::ChannelMessage { .. }
+        )));
+    }
+
     #[test]
     fn disabled_ircv3_sends_plain_cap_end_and_ignores_tags() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3583,6 +3942,7 @@ mod tests {
             batch: false,
             metadata: false,
             peer_avatars: false,
+            chathistory: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -3675,6 +4035,7 @@ mod tests {
                 batch: false,
                 metadata: false,
                 peer_avatars: false,
+                chathistory: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();

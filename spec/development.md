@@ -762,6 +762,30 @@ minimal raw client for the other users, with per-run nicknames and
 channels and example.com URLs (nothing is fetched). Stop the server with
 Ctrl-C and delete the directory afterwards.
 
+### Recent channel history (2026-09-28)
+
+The same pinned Ergo serves the chathistory check (its default
+configuration keeps in-memory channel history and advertises
+`CHATHISTORY=1000`, `MSGREFTYPES=msgid,timestamp` and `draft/chathistory`):
+
+```sh
+CAYENCHAT_INTEROP_IRC=127.0.0.1:36667 cargo test --locked -p cayenchat-irc-core --test chathistory_interop -- --ignored --nocapture
+```
+
+Result against Ergo v2.19.1 on loopback (macOS, debug build; passed):
+`CAP REQ message-tags`, `server-time`, `batch`, then `draft/chathistory`
+after batch's ACK; one `CHATHISTORY LATEST <channel> * 50` per joined
+channel, the second only after the first reply ended; a reply of at most
+50 lines ending with the newest line, with msgid and server-time; a live
+line afterwards arriving as an ordinary live message and no history line
+arriving as live. Observed: Ergo returns our own JOIN (and other joins) as
+`HistServ` PRIVMSGs ("<nick> joined the channel") counted within the
+limit when event-playback is not negotiated, so a channel nobody spoke in
+still returns those lines; and its fakelag lets the filling client send
+about two lines a second (the test waits up to 60 s). Empty replies, FAIL,
+malformed/unended/nested batches, bounds, timeouts and stale replies are
+covered by fixtures and unit tests, not by Ergo.
+
 ### Own avatar publishing and later joiners (2026-09-28)
 
 On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace

@@ -19,6 +19,13 @@ pub use timeline::MessageMeta;
 /// Upper bound on conversations per network, so a hostile server or bouncer
 /// cannot grow memory without limit by announcing endless channel joins.
 const MAX_CONVERSATIONS_PER_NETWORK: usize = 1_000;
+/// Sequences set aside when history is requested for a conversation: the
+/// most lines one reply can add. They sit between the lines that arrived
+/// before the request and those after it, so inserting the reply keeps
+/// every log in ascending sequence order.
+pub const HISTORY_RESERVE: usize = 256;
+/// Lines kept per conversation; the oldest 1,000 go when it is exceeded.
+const MAX_RETAINED: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Selection {
@@ -84,6 +91,9 @@ pub struct AppState {
     /// Recently seen message keys per conversation, created only for
     /// conversations that receive identifiable messages.
     duplicates: HashMap<ConversationId, DuplicateFilter>,
+    /// Conversations waiting for requested history, with the first of their
+    /// reserved sequences. A reply without an entry is stale and ignored.
+    pending_history: HashMap<ConversationId, u64>,
 }
 
 /// A server as configured: its display name and auto-join channels.
@@ -229,6 +239,7 @@ impl AppState {
             next_conversation_id: 5,
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
+            pending_history: HashMap::new(),
         }
     }
 
@@ -269,6 +280,7 @@ impl AppState {
             next_conversation_id: channel_count + 1,
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
+            pending_history: HashMap::new(),
         }
     }
 
@@ -302,6 +314,7 @@ impl AppState {
             next_conversation_id: 1,
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
+            pending_history: HashMap::new(),
         };
         for config in networks {
             state.networks.push(Network {
@@ -412,6 +425,7 @@ impl AppState {
             .retain(|channel| channel.network != network);
         for id in &removed {
             self.duplicates.remove(id);
+            self.pending_history.remove(id);
             self.unread.remove(id);
             self.highlighted.remove(id);
             self.active_channels.remove(id);
@@ -476,6 +490,8 @@ impl AppState {
                     .filter(|channel| channel.network == id)
                 {
                     self.active_channels.remove(&channel.id);
+                    // A reply can only come from the connection that ended.
+                    self.pending_history.remove(&channel.id);
                     channel.members.clear();
                 }
             }
@@ -685,6 +701,76 @@ impl AppState {
         message.sequence = self.next_sequence();
         push_bounded(&mut self.conversations[position].messages, message);
         true
+    }
+
+    /// History was requested for a channel: sequences are reserved here, so
+    /// the reply lands before every line that arrives after this call.
+    pub fn history_requested(&mut self, network: NetworkId, name: &str) {
+        let Some(id) = self.channel_id(network, name) else {
+            return;
+        };
+        let start = self.next_message_sequence + 1;
+        self.next_message_sequence += HISTORY_RESERVE as u64;
+        self.pending_history.insert(id, start);
+    }
+
+    /// Inserts the reply to [`AppState::history_requested`], oldest first,
+    /// where the request was made. Lines the conversation already has
+    /// (playback, or live lines that the reply repeats) are skipped by the
+    /// duplicate filter, lines beyond [`HISTORY_RESERVE`] are dropped, and
+    /// nothing is marked unread or highlighted. A reply without a pending
+    /// request (a reset, a disconnect, another connection) changes nothing.
+    /// Returns how many lines were added.
+    pub fn insert_channel_history(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+        lines: Vec<timeline::TimelineLine>,
+    ) -> usize {
+        let Some(id) = self.channel_id(network, name) else {
+            return 0;
+        };
+        let Some(start) = self.pending_history.remove(&id) else {
+            return 0;
+        };
+        let Some(position) = self
+            .conversations
+            .iter()
+            .position(|conversation| conversation.id == id)
+        else {
+            return 0;
+        };
+        let end = start + HISTORY_RESERVE as u64;
+        let mut block = Vec::with_capacity(lines.len().min(HISTORY_RESERVE));
+        let mut next = start;
+        for line in lines {
+            if next >= end {
+                break;
+            }
+            let mut message = new_message(
+                line.sender,
+                line.text,
+                false,
+                MessageMeta {
+                    provenance: Provenance::Requested,
+                    ..line.meta
+                },
+            );
+            if (message.native_id.is_some() || message.timestamp.is_some())
+                && !self.duplicates.entry(id).or_default().admit(&message)
+            {
+                continue;
+            }
+            message.sequence = next;
+            next += 1;
+            block.push(message);
+        }
+        let added = block.len();
+        let messages = &mut self.conversations[position].messages;
+        let at = messages.partition_point(|message| message.sequence < start);
+        messages.splice(at..at, block);
+        trim_retained(messages);
+        added
     }
 
     /// Sequence of the newest message in any log. It changes whenever a
@@ -975,7 +1061,11 @@ fn mock_time(time: &str) -> TimeOfDay {
 
 fn push_bounded(messages: &mut Vec<Message>, message: Message) {
     messages.push(message);
-    if messages.len() > 2_000 {
+    trim_retained(messages);
+}
+
+fn trim_retained(messages: &mut Vec<Message>) {
+    while messages.len() > MAX_RETAINED {
         messages.drain(..1_000);
     }
 }
@@ -1614,6 +1704,168 @@ mod tests {
             false,
             meta(None, Some("m0"), Provenance::Replayed),
         ));
+    }
+
+    fn line(text: &str, millis: Option<u64>, msgid: Option<&str>) -> timeline::TimelineLine {
+        timeline::TimelineLine {
+            sender: "bob".into(),
+            text: text.into(),
+            meta: meta(millis, msgid, Provenance::Live),
+        }
+    }
+
+    #[test]
+    fn requested_history_goes_where_it_was_requested_without_unread_marks() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+        let network = NetworkId(1);
+        state.dispatch(Command::SelectChannel(ConversationId(2)));
+        state.append_channel_activity(network, "#a", "alice has joined".into());
+        state.history_requested(network, "#a");
+        // Live traffic while the request is answered, in #a and elsewhere.
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "carol",
+            "live",
+            false,
+            meta(Some(30), Some("live1"), Provenance::Live),
+        );
+        state.append_channel_message(network, "#b", "dave", "other channel", false, false);
+        state.dispatch(Command::SelectChannel(ConversationId(1)));
+        state.dispatch(Command::SelectChannel(ConversationId(2)));
+        let added = state.insert_channel_history(
+            network,
+            "#A",
+            vec![
+                line("old one", Some(10), Some("h1")),
+                line("old two", Some(20), None),
+                // The live line again: already shown, not added.
+                line("live", Some(30), Some("live1")),
+            ],
+        );
+        assert_eq!(added, 2);
+        assert_eq!(
+            texts(&state, 0),
+            ["alice has joined", "old one", "old two", "live"]
+        );
+        let messages = &state.conversations()[0].messages;
+        assert!(
+            messages
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        assert_eq!(messages[1].provenance, Provenance::Requested);
+        assert_eq!(messages[2].provenance, Provenance::Requested);
+        assert_eq!(messages[3].provenance, Provenance::Live);
+        assert!(!state.is_unread(ConversationId(1)), "history is not news");
+        // Unrelated channels are untouched, and later lines follow.
+        assert_eq!(texts(&state, 1), ["other channel"]);
+        state.append_channel_message(network, "#a", "carol", "later", false, false);
+        let messages = &state.conversations()[0].messages;
+        assert_eq!(messages.last().unwrap().text, "later");
+        assert!(
+            messages
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        // A second reply to the same request is stale.
+        assert_eq!(
+            state.insert_channel_history(network, "#a", vec![line("again", None, None)]),
+            0
+        );
+    }
+
+    #[test]
+    fn requested_history_skips_what_playback_already_delivered() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "bob",
+            "played",
+            false,
+            meta(Some(5), None, Provenance::Replayed),
+        );
+        state.history_requested(network, "#a");
+        state.insert_channel_history(
+            network,
+            "#a",
+            vec![line("played", Some(5), None), line("newer", Some(6), None)],
+        );
+        assert_eq!(texts(&state, 0), ["played", "newer"]);
+        // Playback repeating requested history later is dropped too.
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "bob",
+            "newer",
+            false,
+            meta(Some(6), None, Provenance::Replayed),
+        );
+        assert_eq!(texts(&state, 0), ["played", "newer"]);
+    }
+
+    #[test]
+    fn stale_history_replies_are_ignored() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        // Never requested.
+        assert_eq!(
+            state.insert_channel_history(network, "#a", vec![line("x", None, None)]),
+            0
+        );
+        // The connection that asked ended.
+        state.history_requested(network, "#a");
+        state.set_status(network, ConnectionStatus::Disconnected("gone".into()));
+        assert_eq!(
+            state.insert_channel_history(network, "#a", vec![line("x", None, None)]),
+            0
+        );
+        // A new session replaced the conversation.
+        state.history_requested(network, "#a");
+        state.reset_network(network, vec!["#a".into()]);
+        assert_eq!(
+            state.insert_channel_history(network, "#a", vec![line("x", None, None)]),
+            0
+        );
+        assert!(texts(&state, 0).is_empty());
+        assert!(state.pending_history.is_empty());
+    }
+
+    #[test]
+    fn requested_history_is_bounded_by_the_reserve_and_the_log_limit() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        for index in 0..MAX_RETAINED - 10 {
+            state.append_channel_message(
+                network,
+                "#a",
+                "bob",
+                &format!("live {index}"),
+                false,
+                false,
+            );
+        }
+        state.history_requested(network, "#a");
+        state.append_channel_message(network, "#a", "bob", "after", false, false);
+        let lines = (0..HISTORY_RESERVE + 50)
+            .map(|index| line(&format!("h{index}"), None, None))
+            .collect();
+        assert_eq!(
+            state.insert_channel_history(network, "#a", lines),
+            HISTORY_RESERVE
+        );
+        let messages = &state.conversations()[0].messages;
+        assert!(messages.len() <= MAX_RETAINED);
+        assert_eq!(messages.last().unwrap().text, "after");
+        assert!(
+            messages
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        let history = messages.iter().filter(|m| m.is_history()).count();
+        assert_eq!(history, HISTORY_RESERVE);
     }
 
     #[test]

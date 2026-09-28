@@ -541,6 +541,18 @@ only for conversations that received a msgid or server-time; with IRCv3 off
 nothing is allocated. Hashing is bounded to 512 text bytes per line. No
 timer, thread or render path changed, so the UI baseline was not rerun.
 
+## Recent channel history (2026-09-28)
+
+No measured hot path changed; bounds by construction. Per connection: at
+most 64 channels queued, one request outstanding (so at most one reply
+buffered: 100 lines), 8 abandoned channel names and 16 nested batch
+references; the only timer is the outstanding request's 30 s timeout, armed
+only while a request is outstanding. Per conversation: one pending
+reservation (a `u64`), at most 256 inserted lines per reply, and the
+existing 2,000-line bound applied after insertion. A reply is moved into
+the log with one `Vec::splice`; nothing is cloned. With the option off no
+state is allocated and the wire is unchanged.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The

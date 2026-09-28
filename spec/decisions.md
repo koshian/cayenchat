@@ -951,3 +951,29 @@ keys, forgotten with the conversation); a fingerprint fallback only drops
 history, never a live line, because it is not collision-free. No
 persistent deduplication and no Matrix-specific fields. Details in
 `architecture.md` (Timeline items).
+
+## D027 — Recent channel history with draft/chathistory
+
+**Status:** Accepted (experimental)
+
+2026-09-28. A per-server IRCv3 option (off by default, no settings version
+change) requests `draft/chathistory` and asks for `CHATHISTORY LATEST
+<channel> * min(50, server limit)` when we join a channel. The
+specification (ircv3-specifications `extensions/chathistory.md`, commit
+9f65105, 2026-05-14) says a client that negotiates the capability should
+no longer get automatic playback, so negotiation and requests come as one
+feature. CayenChat's own requirements, not the specification's: `batch`
+must be acknowledged first (replies are recognized by their batch), and
+`server-time` and `message-tags` (UTF-8 only) are requested with it as the
+specification's "full support". event-playback, echo-message and
+labeled-response are not needed and not requested.
+
+Replies are consumed whole in the connection worker, reported once when
+the batch ends, and inserted by the application at the point of the
+request (reserved sequences) as requested history, which never notifies,
+highlights or marks unread and is not shown in the combined subwindow.
+One request at a time, 50 lines asked, 100 kept, 64 channels queued, 30 s
+timeout. Older pages, gap recovery on reconnect, private-message history
+(TARGETS) and persistence are separate future work. Details in
+`architecture.md` (Recent channel history); Ergo results in
+`development.md`.

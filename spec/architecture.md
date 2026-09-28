@@ -502,10 +502,10 @@ other tag is retained.
 batch (opt-in per server): when enabled and offered, `batch` is requested
 with its own `CAP REQ`, on legacy encodings too because references and the
 history types are ASCII; it does not turn on `server-time` or
-`message-tags`. `draft/chathistory`, `draft/event-playback` and
-`draft/multiline` are never requested and no CHATHISTORY command is sent:
-this only receives batches that servers and bouncers send by themselves
-(soju's join backlog, ZNC playback). `replay::ReplayTracker`, the tracker
+`message-tags`. `draft/event-playback` and `draft/multiline` are never
+requested. The batch option alone sends no CHATHISTORY command (the
+separate history option below does): it only receives batches that servers
+and bouncers send by themselves (soju's join backlog, ZNC playback). `replay::ReplayTracker`, the tracker
 that already recognized history, follows them:
 
 - It keeps only the references of open history batches: `chathistory`,
@@ -743,8 +743,8 @@ protocol:
   have none (no IRCv3, local echoes, activity lines).
 - `provenance` (`model::Provenance`): `Live`, `Replayed` (history the server
   or bouncer sent by itself: bouncer log replay, history batches nobody
-  asked for) or `Requested` (history this client asked for; nothing
-  produces it yet). Only live messages notify or highlight
+  asked for) or `Requested` (history this client asked for; see Recent
+  channel history). Only live messages notify or highlight
   (`Message::is_history`).
 
 `app::timeline::DuplicateFilter` (one per conversation, created only when a
@@ -759,6 +759,83 @@ collide. Keys are 64-bit hashes with a per-filter random seed. The filter is
 dropped with its conversation (reset, reconnect, removed server), so
 nothing persists or grows with the session. Server-log lines (private
 messages, numerics) retain the same fields but are not filtered.
+
+## Recent channel history
+
+```text
+storage Ircv3Preferences::chathistory (per server, default off)
+        v
+irc-core cap: batch -> ACK -> draft/chathistory (+ server-time, message-tags on UTF-8)
+        v
+irc-core history::HistoryRequests (worker; bounded queue, one request at a time)
+        |   our JOIN -> CHATHISTORY LATEST <channel> * min(50, ISUPPORT CHATHISTORY)
+        |   Event::HistoryRequested { channel }
+        |   reply batch consumed whole -> Event::ChannelHistory { channel, messages }
+        v
+app::AppState::history_requested (reserve 256 sequences)
+app::AppState::insert_channel_history (splice at the reservation, dedupe)
+        v
+main log (same rows); not in the combined subwindow; no notification
+```
+
+Negotiation: with the per-server option on, `draft/chathistory` is
+requested only from a server that offers it and only after `batch` is
+acknowledged, because this client recognizes replies by their batch (the
+specification also allows replies without batches; CayenChat does not use
+them). The same option requests `server-time` and, on UTF-8 connections,
+`message-tags`, which the specification lists for full support (timestamps
+for display and deduplication, message IDs for deduplication); on legacy
+encodings message-tags stays off as before and deduplication falls back to
+timestamps. `draft/event-playback`, echo-message and labeled-response are
+not requested; the specification does not require them. Losing `batch`
+drops chathistory with `CAP REQ -draft/chathistory`, and a request being
+answered then ends without lines. Negotiating chathistory asks servers and
+bouncers not to play history back by themselves, so the option always
+comes with requests: every channel we join (auto-join, `/join`, and
+channels already joined when the capability arrives later with CAP NEW)
+asks for its latest lines.
+
+Requests: `CHATHISTORY LATEST <channel> * <n>`, `n` = 50 lowered by the
+server's `CHATHISTORY` ISUPPORT value (0 or absent: 50). One request is
+outstanding per connection; the next goes out when its reply ends, fails
+(`FAIL CHATHISTORY …`, 421/461 naming CHATHISTORY) or times out after
+30 s, so joining many channels queues rather than bursts (at most 64
+waiting; more are skipped with a diagnostic). PART/KICK drops a queued
+request. The only timer is the outstanding request's timeout.
+
+Replies: a `chathistory` batch whose parameter matches the outstanding
+channel (RFC 1459 case mapping) is ours. Every line in it and in batches
+nested inside it (at most 16) is consumed there: it never reaches replay
+classification, rosters, avatars, notifications or the server log. Only
+PRIVMSG and NOTICE addressed to the channel are kept (at most 100; the
+rest is counted in a diagnostic); other commands, which servers must not
+send without event-playback, are dropped rather than applied. Lines are
+reported together when the batch ends, so a batch cut off by a disconnect
+reports nothing. A reply after its timeout is swallowed (the last 8
+abandoned channels are remembered) rather than shown as live or as
+another request's reply. Other `chathistory` batches (bouncer playback)
+keep the existing replay handling. Ergo 2.19 reports events such as our
+own JOIN as `HistServ` PRIVMSGs inside the reply when event-playback is not
+negotiated; they are shown as ordinary history lines.
+
+Merge: `Event::HistoryRequested` makes `AppState` reserve 256 sequences
+after the conversation's current lines. `Event::ChannelHistory` inserts
+its lines there as `Provenance::Requested`, in the server's order, before
+every line that arrived after the request, so unrelated live lines are
+never reordered and logs stay in ascending sequence order (`LogList`
+replaces only the inserted rows). Lines the duplicate filter recognizes
+(a live line the reply repeats, bouncer playback) are skipped. Nothing is
+marked unread or highlighted, nothing notifies, and requested history is
+left out of the combined subwindow. A reply without a pending reservation
+is ignored: the reservation is dropped when the network disconnects, is
+reset or removed, and the UI already drops events of an old connection
+generation. Limitations: a live line that arrived after the request and is
+repeated in the reply without msgid or matching server-time appears twice;
+and the reply is placed after lines received before the request (for
+example our own JOIN line).
+
+Not implemented: older pages (BEFORE/scroll back), reconnect gap recovery
+(AFTER/BETWEEN), TARGETS and private-message history, persistence.
 
 ## Notifications
 

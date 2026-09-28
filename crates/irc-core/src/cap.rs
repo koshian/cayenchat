@@ -24,6 +24,9 @@ pub const BATCH: &str = "batch";
 /// The experimental metadata draft, used only for user avatars. The legacy
 /// `metadata-notify` is never requested: the draft forbids asking for both.
 pub const METADATA: &str = "draft/metadata-2";
+/// The work-in-progress chathistory extension; the unprefixed name is
+/// reserved for the final specification.
+pub const CHATHISTORY: &str = "draft/chathistory";
 
 /// Advertised capabilities kept per connection; a hostile server cannot grow
 /// the table beyond this.
@@ -50,6 +53,13 @@ pub struct Ircv3Options {
     /// Exchange avatars with other clients through KVIrc's CTCP AVATAR
     /// (experimental). Needs no capability; see `peer_avatar`.
     pub peer_avatars: bool,
+    /// Request recent channel history with `draft/chathistory`
+    /// (experimental), when the server offers it. Replies are recognized by
+    /// their batch, so the capability is requested only after `batch` is
+    /// acknowledged; `server-time` and, on UTF-8 connections,
+    /// `message-tags` (for message IDs) are requested with it, as the
+    /// specification's full support lists them.
+    pub chathistory: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,8 +83,10 @@ pub struct CapNegotiation {
     phase: Phase,
     /// Opt-in extensions still wanted, in request order.
     optional: Vec<&'static str>,
-    /// `batch` is wanted only as metadata's prerequisite.
-    batch_for_metadata_only: bool,
+    /// Extensions the user opted into directly. The others in `optional`
+    /// are wanted only for an extension that needs them, and are requested
+    /// only from a server that offers that extension.
+    explicit: Vec<&'static str>,
     sasl: Option<SaslHandshake>,
     offered: HashMap<String, Option<String>>,
     enabled: HashSet<&'static str>,
@@ -92,15 +104,25 @@ impl CapNegotiation {
     /// `server-time` values are ASCII and stay available.
     pub fn new(options: Ircv3Options, sasl: Option<crate::SaslCredentials>, utf8: bool) -> Self {
         let mut optional = Vec::new();
-        if options.message_tags && utf8 {
+        let mut explicit = Vec::new();
+        if (options.message_tags || options.chathistory) && utf8 {
             optional.push(MESSAGE_TAGS);
         }
-        if options.server_time {
+        if options.message_tags && utf8 {
+            explicit.push(MESSAGE_TAGS);
+        }
+        if options.server_time || options.chathistory {
             optional.push(SERVER_TIME);
         }
+        if options.server_time {
+            explicit.push(SERVER_TIME);
+        }
         // Batch references and the history types are ASCII, like server-time.
-        if options.batch || options.metadata {
+        if options.batch || options.metadata || options.chathistory {
             optional.push(BATCH);
+        }
+        if options.batch {
+            explicit.push(BATCH);
         }
         // draft/metadata-2 MUST be used with batch. It is requested only once
         // batch is enabled, so a server declining batch never ends up with
@@ -108,11 +130,18 @@ impl CapNegotiation {
         // worker then accepts only ASCII avatar URLs (see `metadata`).
         if options.metadata {
             optional.push(METADATA);
+            explicit.push(METADATA);
+        }
+        // Likewise chathistory: without batch its replies would look live.
+        // Its references are ASCII, so legacy encodings may use it.
+        if options.chathistory {
+            optional.push(CHATHISTORY);
+            explicit.push(CHATHISTORY);
         }
         Self {
             phase: Phase::Inactive,
             optional,
-            batch_for_metadata_only: options.metadata && !options.batch,
+            explicit,
             sasl: sasl.map(SaslHandshake::new),
             offered: HashMap::new(),
             enabled: HashSet::new(),
@@ -266,10 +295,11 @@ impl CapNegotiation {
             if self.offered.contains_key(name)
                 && !self.enabled.contains(name)
                 && !self.pending.contains(&name)
-                && (name != METADATA || self.enabled.contains(BATCH))
-                && (name != BATCH
-                    || !self.batch_for_metadata_only
-                    || self.offered.contains_key(METADATA))
+                && (!needs_batch(name) || self.enabled.contains(BATCH))
+                && (self.explicit.contains(&name)
+                    || dependents(name).iter().any(|dependent| {
+                        self.optional.contains(dependent) && self.offered.contains_key(*dependent)
+                    }))
             {
                 step.send.push(request(name));
                 self.pending.push(name);
@@ -295,28 +325,30 @@ impl CapNegotiation {
             } else {
                 step.notes.push(format!("Capability {name} enabled."));
                 if name == BATCH {
-                    // Now that batch is on, metadata may follow.
+                    // Now that batch is on, metadata and chathistory may follow.
                     self.request_optional(step);
                 }
             }
         }
     }
 
-    /// draft/metadata-2 must not outlive batch (a DEL or `ACK -batch`):
-    /// metadata is dropped at once, so nothing depends on it, and the
-    /// server is asked to disable it too. A metadata request still waiting
-    /// is forgotten; its late ACK is then ignored as unrequested.
+    /// draft/metadata-2 and draft/chathistory must not outlive batch (a DEL
+    /// or `ACK -batch`): they are dropped at once, so nothing depends on
+    /// them, and the server is asked to disable them too. A request still
+    /// waiting is forgotten; its late ACK is then ignored as unrequested.
     fn enforce_dependencies(&mut self, step: &mut CapStep) {
         if self.enabled.contains(BATCH) {
             return;
         }
-        let waiting = self.pending.contains(&METADATA);
-        if self.enabled.remove(METADATA) || waiting {
-            self.pending.retain(|cap| *cap != METADATA);
-            step.send.push(request(&format!("-{METADATA}")));
-            step.notes.push(format!(
-                "Capability {BATCH} is gone; disabling {METADATA}, which requires it."
-            ));
+        for name in [METADATA, CHATHISTORY] {
+            let waiting = self.pending.contains(&name);
+            if self.enabled.remove(name) || waiting {
+                self.pending.retain(|cap| *cap != name);
+                step.send.push(request(&format!("-{name}")));
+                step.notes.push(format!(
+                    "Capability {BATCH} is gone; disabling {name}, which requires it."
+                ));
+            }
         }
     }
 
@@ -327,6 +359,20 @@ impl CapNegotiation {
                 .push(IrcCommand::CAP(None, CapSubCommand::END, None, None));
             self.phase = Phase::Ended;
         }
+    }
+}
+
+/// Extensions whose replies only make sense inside batches.
+fn needs_batch(name: &str) -> bool {
+    name == METADATA || name == CHATHISTORY
+}
+
+/// Extensions that make this client want `name` without its own opt-in.
+fn dependents(name: &str) -> &'static [&'static str] {
+    match name {
+        BATCH => &[METADATA, CHATHISTORY],
+        SERVER_TIME | MESSAGE_TAGS => &[CHATHISTORY],
+        _ => &[],
     }
 }
 
@@ -452,6 +498,15 @@ mod tests {
             batch: false,
             metadata: false,
             peer_avatars: false,
+            chathistory: false,
+        }
+    }
+
+    fn history(utf8_tags: bool) -> Ircv3Options {
+        Ircv3Options {
+            message_tags: utf8_tags,
+            chathistory: true,
+            ..Ircv3Options::default()
         }
     }
 
@@ -909,6 +964,93 @@ mod tests {
         assert_eq!(sent(&step), ["CAP REQ batch"]);
         let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
         assert_eq!(sent(&step), ["CAP END"]);
+    }
+
+    #[test]
+    fn chathistory_brings_batch_server_time_and_message_tags_and_waits_for_batch() {
+        let mut cap = CapNegotiation::new(history(false), None, true);
+        assert_eq!(String::from(&cap.start()), "CAP LS 302");
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :batch server-time message-tags draft/chathistory draft/event-playback",
+            ))
+            .unwrap();
+        assert_eq!(
+            sent(&step),
+            [
+                "CAP REQ message-tags",
+                "CAP REQ server-time",
+                "CAP REQ batch"
+            ],
+            "event-playback is never asked for"
+        );
+        cap.observe(&line(":s CAP * ACK :message-tags")).unwrap();
+        cap.observe(&line(":s CAP * ACK :server-time")).unwrap();
+        let step = cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/chathistory"]);
+        let step = cap
+            .observe(&line(":s CAP * ACK :draft/chathistory"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(CHATHISTORY));
+
+        // A server without chathistory is asked for none of its helpers.
+        let mut cap = CapNegotiation::new(history(false), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :batch server-time message-tags"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+
+        // Batch declined: chathistory is not requested.
+        let mut cap = CapNegotiation::new(history(false), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :batch draft/chathistory"))
+            .unwrap();
+        let step = cap.observe(&line(":s CAP * NAK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(!cap.enabled(CHATHISTORY));
+
+        // chathistory declined (NAK): batch stays, nothing else happens.
+        let mut cap = CapNegotiation::new(history(false), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :batch draft/chathistory"))
+            .unwrap();
+        cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        let step = cap
+            .observe(&line(":s CAP * NAK :draft/chathistory"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(BATCH) && !cap.enabled(CHATHISTORY));
+        assert!(step.notes.iter().any(|note| note.contains("declined")));
+
+        // Legacy encodings: no message-tags, the rest as usual.
+        let mut cap = CapNegotiation::new(history(true), None, false);
+        cap.start();
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :batch server-time message-tags draft/chathistory",
+            ))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time", "CAP REQ batch"]);
+
+        // Losing batch after registration drops chathistory too.
+        let mut cap = CapNegotiation::new(history(false), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :batch draft/chathistory"))
+            .unwrap();
+        cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        cap.observe(&line(":s CAP * ACK :draft/chathistory"))
+            .unwrap();
+        cap.registered();
+        let step = cap.observe(&line(":s CAP me DEL :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ -draft/chathistory"]);
+        assert!(!cap.enabled(CHATHISTORY));
+        // Offered again later: batch first, then chathistory.
+        let step = cap.observe(&line(":s CAP me NEW :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ batch"]);
+        let step = cap.observe(&line(":s CAP me ACK :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ draft/chathistory"]);
     }
 
     #[test]

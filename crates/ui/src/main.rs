@@ -26,6 +26,7 @@ use cayenchat_app::{
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
+    timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
@@ -652,6 +653,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         // references only, nothing is downloaded unless avatars are shown.
         metadata: true,
         peer_avatars: preferences.peer_avatars,
+        chathistory: preferences.chathistory,
     }
 }
 
@@ -719,8 +721,9 @@ fn irc_message_meta(
     }
 }
 
-/// The newest `limit` conversation lines (not channel activity) across every
-/// conversation except `excluded`, oldest first, as (sequence, conversation,
+/// The newest `limit` conversation lines (not channel activity or requested
+/// history, which is context rather than news) across every conversation
+/// except `excluded`, oldest first, as (sequence, conversation,
 /// message index). Merges the conversation tails newest-first, so the cost
 /// grows with `limit` and the number of conversations, not with every
 /// retained line (with several servers there are many conversations).
@@ -732,9 +735,9 @@ fn newest_lines(
     use std::collections::BinaryHeap;
 
     fn previous_line(messages: &[cayenchat_model::Message], before: usize) -> Option<usize> {
-        messages[..before]
-            .iter()
-            .rposition(|message| !message.activity)
+        messages[..before].iter().rposition(|message| {
+            !message.activity && message.provenance != cayenchat_model::Provenance::Requested
+        })
     }
 
     // (sequence, conversation position, message index), newest on top.
@@ -2641,6 +2644,24 @@ impl ChatWindow {
                     line,
                     irc_message_meta(server_time, msgid.as_deref(), replayed),
                 );
+            }
+            Event::HistoryRequested { channel } => self.state.history_requested(network, &channel),
+            // Requested history is context, not news: no notification,
+            // highlight or unread mark.
+            Event::ChannelHistory { channel, messages } => {
+                let lines = messages
+                    .into_iter()
+                    .map(|message| TimelineLine {
+                        sender: message.sender,
+                        text: if message.notice {
+                            format!("[NOTICE] {}", message.text)
+                        } else {
+                            message.text
+                        },
+                        meta: irc_message_meta(message.server_time, message.msgid.as_deref(), true),
+                    })
+                    .collect();
+                self.state.insert_channel_history(network, &channel, lines);
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
@@ -6389,7 +6410,9 @@ mod combined_log_tests {
                     .iter()
                     .enumerate()
                     .rev()
-                    .filter(|(_, m)| !m.activity)
+                    .filter(|(_, m)| {
+                        !m.activity && m.provenance != cayenchat_model::Provenance::Requested
+                    })
                     .take(limit)
                     .map(move |(index, m)| (m.sequence, c.id, index))
             })
@@ -6423,7 +6446,11 @@ mod combined_log_tests {
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
-                provenance: Default::default(),
+                provenance: if sequence % 11 == 0 {
+                    cayenchat_model::Provenance::Requested
+                } else {
+                    cayenchat_model::Provenance::Live
+                },
             });
         }
         for excluded in [None, Some(ConversationId(2)), Some(ConversationId(4))] {
@@ -6744,6 +6771,7 @@ mod server_settings_tests {
             server_time: true,
             batch: true,
             peer_avatars: true,
+            chathistory: true,
         };
         settings
     }
@@ -7092,6 +7120,7 @@ mod pane_tests {
                 batch: true,
                 metadata: true,
                 peer_avatars: true,
+                chathistory: false,
             }
         );
         // Peer avatars alone share nothing and leave the realname unmarked.
@@ -7124,6 +7153,7 @@ mod pane_tests {
                     batch: false,
                     metadata: true,
                     peer_avatars: false,
+                    chathistory: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );
@@ -7224,6 +7254,94 @@ mod pane_tests {
                 m.timestamp
                     .is_some_and(|t| t.as_millis() == 1_790_553_511_123)
             }));
+        });
+    }
+
+    #[gpui::test]
+    fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, HistoryMessage};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let old = |text: &str, msgid: &str| HistoryMessage {
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            server_time: Some(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_000),
+            ),
+            msgid: Some(msgid.into()),
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                    Event::HistoryRequested {
+                        channel: "#b".into(),
+                    },
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "alice: live".into(),
+                        notice: false,
+                        mentioned: true,
+                        server_time: None,
+                        msgid: Some("live1".into()),
+                        replayed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "#b".into(),
+                        messages: vec![
+                            old("alice: from yesterday", "old1"),
+                            HistoryMessage {
+                                notice: true,
+                                ..old("maintenance", "old2")
+                            },
+                            old("alice: live", "live1"),
+                        ],
+                    },
+                ],
+                false,
+                cx,
+            );
+            assert_eq!(chat.notifier.shown.len(), 1, "only the live mention");
+            let b = &chat.state.conversations()[1];
+            let texts: Vec<_> = b.messages.iter().map(|m| m.text.as_str()).collect();
+            assert_eq!(
+                texts,
+                [
+                    "alice: from yesterday",
+                    "[NOTICE] maintenance",
+                    "alice: live"
+                ]
+            );
+            assert!(b.messages[0].is_history());
+            assert!(
+                chat.highlight_ranges(NetworkId(1), &b.messages[0])
+                    .is_empty()
+            );
+            // The combined log shows the live line only.
+            let rows = super::newest_lines(chat.state.conversations(), None, 10);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].0, b.messages[2].sequence);
         });
     }
 

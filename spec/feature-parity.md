@@ -7,7 +7,7 @@ Statuses: `TODO`, `PARTIAL`, `DONE`, `OUT OF SCOPE`.
 ## Current scope
 
 The app opens a separate settings window from the four-pane chat window by default and connects to one configured IRC server. An opt-in setting connects to the selected server at startup.
-History remains TODO; desktop notifications cover mentions, keywords and private messages.
+Server history is limited to recent channel history on opt-in IRCv3 servers; desktop notifications cover mentions, keywords and private messages.
 
 - DONE — native GPUI application shell and app-owned selection
 - DONE — mock conversation switching with distinct message logs
@@ -106,7 +106,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - TODO — local logs
 - TODO — searchable history
 - DONE — bounded in-memory channel and server scrollback
-- TODO — IRCv3/server history integration where available
+- PARTIAL — IRCv3/server history integration where available: recent channel history on join (`draft/chathistory`, experimental, per-server opt-in, default off; up to 50 lines, deduplicated, quiet); checked against Ergo v2.19.1; no older pages, reconnect gap recovery, private-message history or persistence
 
 ## Notifications
 
@@ -135,13 +135,13 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — shared CAP negotiation (LS 302 with continuation and values, per-capability REQ, multiline ACK, NAK, NEW/DEL, coordinated CAP END) for SASL PLAIN and opt-in extensions; public-server interoperability unverified
 - PARTIAL — message tags: per-server opt-in (default off), tags parsed and normalized, TAGMSG kept out of the chat; no tag is displayed yet, and it is not requested with legacy encodings
 - DONE — server-time: per-server opt-in (default off), independent of message tags
-- PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only, and no CHATHISTORY requests
+- PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
 - TODO — echo-message and labeled-response
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify
-- TODO — chathistory evaluation
+- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` for joined channels only (see Logging and history)
 - TODO — other capabilities based on real-world usefulness
 
 ## Appearance
