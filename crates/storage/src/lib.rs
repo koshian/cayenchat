@@ -276,6 +276,13 @@ pub struct ServerProfile {
     /// change; files without it read as empty.
     #[serde(default)]
     pub avatar_url: String,
+    /// The avatar URL we share with other clients through CTCP AVATAR
+    /// (`ircv3.peer_avatars`), empty when nothing is shared. It is set only
+    /// by an explicit "Share with Peers", never from the draft above, and
+    /// cleared when peer avatars are turned off. Added without a version
+    /// change; files without it read as empty.
+    #[serde(default)]
+    pub peer_avatar_url: String,
     /// Plaintext passwords saved by version 10 and earlier. Read only for
     /// migration into the credential store; never written back.
     #[serde(rename = "server_password", default, skip_serializing)]
@@ -310,6 +317,7 @@ impl ServerProfile {
             connect_on_startup: false,
             ircv3: Ircv3Preferences::default(),
             avatar_url: String::new(),
+            peer_avatar_url: String::new(),
             legacy_server_password: None,
             legacy_sasl_password: None,
         }
@@ -348,6 +356,10 @@ pub struct Ircv3Preferences {
     /// Request `batch`, so history batches are recognized. Added after
     /// version 15 without a version change: files without it read as off.
     pub batch: bool,
+    /// Exchange avatars with other clients through KVIrc's CTCP AVATAR
+    /// (experimental), for servers without avatar metadata. Added without a
+    /// version change: files without it read as off.
+    pub peer_avatars: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1371,11 +1383,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
@@ -1438,6 +1450,48 @@ mod tests {
         let loaded = load_from(&path).unwrap().unwrap();
         assert_eq!(loaded.servers[0].avatar_url, "");
         assert!(loaded.servers[0].ircv3.batch);
+    }
+
+    #[test]
+    fn peer_avatars_default_off_and_share_nothing_until_chosen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("irc.one.example");
+        settings.add_server("irc.two.example");
+        assert!(
+            settings
+                .servers
+                .iter()
+                .all(|server| { !server.ircv3.peer_avatars && server.peer_avatar_url.is_empty() })
+        );
+        // Per server, and separate from the draft.
+        settings.servers[0].ircv3.peer_avatars = true;
+        settings.servers[0].peer_avatar_url = "https://example.com/me.png".into();
+        settings.servers[0].avatar_url = "https://example.com/draft.png".into();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded, settings);
+        assert!(!loaded.servers[1].ircv3.peer_avatars);
+        assert_eq!(loaded.servers[1].peer_avatar_url, "");
+        // Files written before the fields existed read as off and empty.
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("peer_avatar_url");
+        old["servers"][0]["ircv3"]
+            .as_object_mut()
+            .unwrap()
+            .remove("peer_avatars");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(!loaded.servers[0].ircv3.peer_avatars);
+        assert_eq!(loaded.servers[0].peer_avatar_url, "");
+        assert_eq!(
+            loaded.servers[0].avatar_url,
+            "https://example.com/draft.png"
+        );
     }
 
     #[test]
