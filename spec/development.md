@@ -47,7 +47,9 @@ Do not claim cross-platform verification unless both platforms were actually tes
 
 ### Test coverage and test inventory
 
-`scripts/coverage.sh` measures coverage of `cargo test --workspace` with
+Step-by-step instructions for people are in `HOW_TO_TEST.md`
+(`HOW_TO_TEST.ja.md`). `scripts/coverage.sh` measures coverage of
+`cargo test --workspace` with
 [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) and lists every
 test:
 
