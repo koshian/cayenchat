@@ -629,7 +629,7 @@ only while it is on:
   avatars again. With the option off nothing is merged and metadata
   events are unchanged.
 
-Other CTCP (D026): `irc-core::ctcp::CtcpReplies` runs in the worker after
+Other CTCP (D029): `irc-core::ctcp::CtcpReplies` runs in the worker after
 `PeerAvatars` and before `translate_message`, and consumes every CTCP
 PRIVMSG or NOTICE except ACTION (and AVATAR while peer avatars are on). A
 live private request from a user is answered by `NOTICE <sender>` for PING,
@@ -638,8 +638,8 @@ CLIENTINFO; nothing else and nothing sent to a channel is answered. Each
 admitted request or reply becomes one `Event::ServerLine`
 (`CTCP VERSION request from bob`); replayed, own and misaddressed ones are
 dropped silently. Two budgets (requests; replies) each admit five per ten
-seconds and two per user, remember only admitted entries, and report the
-first refusal once.
+seconds and two per user, remember only admitted entries, and report a
+refusal at most once per ten seconds.
 
 On legacy encodings the whole line is decoded with the connection's
 charset, while metadata values are UTF-8. Avatar URLs are the only values
@@ -731,7 +731,7 @@ ui::notifier worker thread -> notify-rust
 
 `irc-core` reports a PRIVMSG or NOTICE from a user mask to our nickname as
 `PrivateMessage`; server notices stay server lines, and CTCP other than
-ACTION becomes a readable server line (D026). Private messages notify only as PRIVMSG, because private NOTICEs
+ACTION becomes a readable server line (D029). Private messages notify only as PRIVMSG, because private NOTICEs
 are usually services or bots. Mentions and keywords are separate choices.
 `irc-core` sets `mentioned` when someone else names our nickname as a whole
 word (RFC 1459 case mapping, formatting ignored), which also covers `nick:`
