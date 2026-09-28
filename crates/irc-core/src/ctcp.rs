@@ -1,4 +1,4 @@
-//! Answers to common CTCP queries (D026).
+//! Answers to common CTCP queries (D029).
 //!
 //! A PRIVMSG or NOTICE whose text starts with 0x01 is a CTCP message. ACTION
 //! stays chat, and CTCP AVATAR belongs to `peer_avatar` while peer avatars
@@ -18,7 +18,7 @@
 //! make us exceed the server's flood limit: at most five per ten seconds in
 //! total and two per user, whether answered or only shown. Past the limit
 //! requests are dropped without an answer or a line, apart from one line
-//! saying so. CTCP replies (NOTICEs) are shown under their own limit of the
+//! per ten seconds saying so. CTCP replies (NOTICEs) are shown under their own limit of the
 //! same size.
 
 use std::{
@@ -54,13 +54,13 @@ const VERSION: &str = concat!("CayenChat ", env!("CARGO_PKG_VERSION"));
 struct Budget {
     recent: VecDeque<Instant>,
     per_user: HashMap<String, VecDeque<Instant>>,
-    /// Refused since the last admission; only the first is reported.
-    refusing: bool,
+    /// When a refusal was last reported; one report per [`WINDOW`].
+    reported: Option<Instant>,
 }
 
 enum Admission {
     Admitted,
-    /// The first refusal after an admission.
+    /// A refusal to report: the first one in a window.
     Refused,
     Muted,
 }
@@ -78,13 +78,12 @@ impl Budget {
         let key = nickname_key(sender);
         let used = self.per_user.get(&key).map_or(0, VecDeque::len);
         if self.recent.len() >= MAX_PER_WINDOW || used >= MAX_PER_USER {
-            return if std::mem::replace(&mut self.refusing, true) {
-                Admission::Muted
-            } else {
-                Admission::Refused
-            };
+            if self.reported.is_some_and(|reported| fresh(&reported)) {
+                return Admission::Muted;
+            }
+            self.reported = Some(now);
+            return Admission::Refused;
         }
-        self.refusing = false;
         self.recent.push_back(now);
         self.per_user.entry(key).or_default().push_back(now);
         Admission::Admitted
@@ -137,13 +136,15 @@ impl CtcpReplies {
         if replayed || (user && same_nickname(sender, current_nick)) {
             return Some(handled);
         }
-        let to_channel = valid_channel(target);
+        // STATUSMSG (`@#chan`) reaches part of a channel; still a channel.
+        let to_channel = valid_channel(target.trim_start_matches(['~', '@', '%', '+']));
         if !to_channel && !same_nickname(target, current_nick) {
             return Some(handled);
         }
         let shown_tag = shown_tag(tag);
+        let shown_sender = plain(sender);
         let to = if to_channel {
-            format!(" to {target}")
+            format!(" to {}", plain(target))
         } else {
             String::new()
         };
@@ -156,9 +157,9 @@ impl CtcpReplies {
             Admission::Admitted => {}
             Admission::Refused => {
                 handled.events.push(Event::ServerLine(if request {
-                    format!("Too many CTCP requests; ignoring them for now (latest {shown_tag} from {sender}).")
+                    format!("Too many CTCP requests; ignoring them for now (latest {shown_tag} from {shown_sender}).")
                 } else {
-                    format!("Too many CTCP replies; hiding them for now (latest {shown_tag} from {sender}).")
+                    format!("Too many CTCP replies; hiding them for now (latest {shown_tag} from {shown_sender}).")
                 }));
                 return Some(handled);
             }
@@ -172,14 +173,14 @@ impl CtcpReplies {
                 format!(": {params}")
             };
             handled.events.push(Event::ServerLine(format!(
-                "{shown_tag} reply from {sender}{to}{params}"
+                "{shown_tag} reply from {shown_sender}{to}{params}"
             )));
             return Some(handled);
         }
-        let answer = (user && !to_channel)
+        let answer = (user && !to_channel && crate::valid_nickname(sender))
             .then(|| self.answer(tag, params))
             .flatten();
-        let line = format!("{shown_tag} request from {sender}{to}");
+        let line = format!("{shown_tag} request from {shown_sender}{to}");
         match answer {
             Some(answer) => {
                 handled.send.push(IrcCommand::NOTICE(
@@ -239,12 +240,17 @@ fn shown_tag(tag: &str) -> String {
     }
 }
 
-/// Reply parameters as plain text for the server log.
-fn shown_params(params: &str) -> String {
-    let plain: String = strip_formatting(params)
+/// Untrusted text as plain text for the server log.
+fn plain(text: &str) -> String {
+    strip_formatting(text)
         .chars()
         .filter(|ch| !ch.is_control())
-        .collect();
+        .collect()
+}
+
+/// Reply parameters as plain text for the server log, cut when long.
+fn shown_params(params: &str) -> String {
+    let plain = plain(params);
     let plain = plain.trim();
     match plain.char_indices().nth(MAX_SHOWN_CHARS) {
         Some((cut, _)) => format!("{}…", &plain[..cut]),
@@ -384,6 +390,10 @@ mod tests {
                 "CTCP VERSION request from bob to #a (not answered)",
             ),
             (
+                ":bob!u@h PRIVMSG @#a :\u{1}VERSION\u{1}",
+                "CTCP VERSION request from bob to @#a (not answered)",
+            ),
+            (
                 ":irc.example.net PRIVMSG alice :\u{1}VERSION\u{1}",
                 "CTCP VERSION request from irc.example.net (not answered)",
             ),
@@ -399,6 +409,10 @@ mod tests {
             (
                 ":bob!u@h NOTICE #a :\u{1}PING\u{1}",
                 "CTCP PING reply from bob to #a",
+            ),
+            (
+                ":b\u{2}ob!u@h NOTICE alice :\u{1}PING\u{1}",
+                "CTCP PING reply from bob",
             ),
         ];
         for (index, (text, line)) in cases.into_iter().enumerate() {
@@ -476,6 +490,12 @@ mod tests {
             lines(&refused),
             ["Too many CTCP requests; ignoring them for now (latest CTCP PING from bob)."]
         );
+        let muted = observe(&mut ctcp, ping, now).unwrap();
+        assert!(muted.send.is_empty() && muted.events.is_empty());
+        // Another user is still answered, and does not bring the line back
+        // for bob's next refused request.
+        let carol = ":carol!u@h PRIVMSG alice :\u{1}PING 1\u{1}";
+        assert_eq!(observe(&mut ctcp, carol, now).unwrap().send.len(), 1);
         let muted = observe(&mut ctcp, ping, now).unwrap();
         assert!(muted.send.is_empty() && muted.events.is_empty());
         assert_eq!(
