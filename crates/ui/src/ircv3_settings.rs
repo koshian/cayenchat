@@ -191,7 +191,8 @@ impl SettingsWindow {
                     )
                 });
         }
-        panel = panel.child(self.render_own_avatar(&profile, cx));
+        // Notes about the options above stay with them; our own avatar,
+        // which is not an option, comes last.
         if profile.encoding != TextEncoding::Utf8 {
             let encoding = [("encoding", profile.encoding.label())];
             panel = panel.child(
@@ -213,6 +214,7 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("ircv3_next_connection")),
             )
+            .child(self.render_own_avatar(&profile, cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -220,8 +222,6 @@ impl SettingsWindow {
 }
 
 impl SettingsWindow {
-    /// Our own avatar on the selected server: the saved draft URL and
-    /// explicit Publish / Remove, with what the server confirmed.
     /// Our own avatar on the selected server, without explanations: the
     /// URL field, "Choose Image…" (and dropping) when an image host is set
     /// up, and "Send to IRC Server" / "Remove from IRC Server" when they
