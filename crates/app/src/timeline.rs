@@ -99,10 +99,8 @@ impl DuplicateFilter {
     /// Records `message` and returns whether it is new. A duplicate is not
     /// recorded again.
     pub fn admit(&mut self, message: &Message) -> bool {
-        let (key, suppress) = match (&message.native_id, message.timestamp) {
-            (Some(id), _) => (self.native_key(id), true),
-            (None, Some(timestamp)) => (self.fingerprint(timestamp, message), message.is_history()),
-            (None, None) => return true,
+        let Some((key, suppress)) = self.key(message) else {
+            return true;
         };
         if self.seen.contains(&key) {
             return !suppress;
@@ -115,6 +113,24 @@ impl DuplicateFilter {
         self.order.push_back(key);
         self.seen.insert(key);
         true
+    }
+
+    /// Whether [`DuplicateFilter::admit`] would drop `message`, without
+    /// recording it.
+    pub fn contains(&self, message: &Message) -> bool {
+        self.key(message)
+            .is_some_and(|(key, suppress)| suppress && self.seen.contains(&key))
+    }
+
+    /// The message's key and whether a match suppresses it.
+    fn key(&self, message: &Message) -> Option<(u64, bool)> {
+        match (&message.native_id, message.timestamp) {
+            (Some(id), _) => Some((self.native_key(id), true)),
+            (None, Some(timestamp)) => {
+                Some((self.fingerprint(timestamp, message), message.is_history()))
+            }
+            (None, None) => None,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -199,6 +215,19 @@ mod tests {
         assert!(filter.admit(&message(None, None, "ok", Provenance::Replayed)));
         assert!(filter.admit(&message(None, None, "ok", Provenance::Replayed)));
         assert_eq!(filter.len(), before);
+    }
+
+    #[test]
+    fn contains_checks_without_recording() {
+        let mut filter = DuplicateFilter::default();
+        filter.admit(&message(Some("a1"), Some(1), "hi", Provenance::Live));
+        filter.admit(&message(None, Some(2), "ok", Provenance::Live));
+        assert!(filter.contains(&message(Some("a1"), None, "x", Provenance::Requested)));
+        assert!(filter.contains(&message(None, Some(2), "ok", Provenance::Requested)));
+        // A fingerprint never matches a live line, and unknown keys stay unknown.
+        assert!(!filter.contains(&message(None, Some(2), "ok", Provenance::Live)));
+        assert!(!filter.contains(&message(Some("a2"), None, "x", Provenance::Requested)));
+        assert_eq!(filter.len(), 2);
     }
 
     #[test]
