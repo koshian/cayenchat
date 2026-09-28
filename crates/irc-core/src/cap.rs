@@ -464,7 +464,8 @@ impl SaslHandshake {
             (
                 _,
                 IrcCommand::Response(
-                    Response::ERR_SASLFAIL
+                    Response::ERR_NICKLOCKED
+                    | Response::ERR_SASLFAIL
                     | Response::ERR_SASLTOOLONG
                     | Response::ERR_SASLABORT
                     | Response::ERR_SASLALREADY,
@@ -740,6 +741,145 @@ mod tests {
         let step = cap.observe(&line(":s CAP * ACK :server-time")).unwrap();
         assert!(step.send.is_empty());
         assert!(!cap.enabled(SERVER_TIME), "unrequested ACK is ignored");
+    }
+
+    // capability-negotiation: "The list of capabilities MUST be parsed and
+    // processed from left to right ... the last one received takes
+    // priority. Clients MUST ignore any trailing whitespace."
+    #[test]
+    fn capability_lists_are_read_left_to_right_and_the_last_value_wins() {
+        let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
+        cap.start();
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :sasl=EXTERNAL server-time sasl=PLAIN   ",
+            ))
+            .unwrap();
+        assert_eq!(
+            sent(&step),
+            ["CAP REQ sasl"],
+            "PLAIN, the later value, counts"
+        );
+        let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
+        cap.start();
+        assert!(
+            cap.observe(&line(":s CAP * LS :sasl=PLAIN sasl=EXTERNAL"))
+                .is_err(),
+            "EXTERNAL replaced PLAIN"
+        );
+    }
+
+    // capability-negotiation: "If no capabilities are available, an empty
+    // parameter MUST be sent." Older servers leave the parameter out.
+    #[test]
+    fn an_empty_capability_list_ends_negotiation() {
+        for reply in [":s CAP * LS :", ":s CAP * LS"] {
+            let mut cap = CapNegotiation::new(options(true, true), None, true);
+            cap.start();
+            let step = cap.observe(&line(reply)).unwrap();
+            assert_eq!(sent(&step), ["CAP END"], "{reply}");
+            assert!(!cap.negotiating());
+        }
+    }
+
+    // capability-negotiation: "Capability names are case-sensitive" and the
+    // full name is an opaque identifier.
+    #[test]
+    fn capability_names_are_case_sensitive() {
+        let mut cap = CapNegotiation::new(options(false, true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :Server-Time SERVER-TIME example.org/server-time",
+            ))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        cap.registered();
+        let step = cap.observe(&line(":s CAP me NEW :server-time")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time"]);
+        cap.observe(&line(":s CAP me ACK :SERVER-TIME")).unwrap();
+        assert!(
+            !cap.enabled(SERVER_TIME),
+            "a differently cased ACK is another name"
+        );
+        cap.observe(&line(":s CAP me ACK :server-time")).unwrap();
+        assert!(cap.enabled(SERVER_TIME));
+        cap.observe(&line(":s CAP me DEL :Server-Time")).unwrap();
+        assert!(cap.enabled(SERVER_TIME));
+    }
+
+    // capability-negotiation: a client changes only what it asked for;
+    // DEL of something never enabled is harmless.
+    #[test]
+    fn unrequested_acks_and_unknown_dels_change_nothing() {
+        let mut cap = CapNegotiation::new(options(false, true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :server-time message-tags batch"))
+            .unwrap();
+        let step = cap
+            .observe(&line(":s CAP * ACK :server-time message-tags batch"))
+            .unwrap();
+        assert!(cap.enabled(SERVER_TIME));
+        assert!(!cap.enabled(MESSAGE_TAGS) && !cap.enabled(BATCH));
+        assert_eq!(step.notes, ["Capability server-time enabled."]);
+        let step = cap.observe(&line(":s CAP * DEL :batch unknown")).unwrap();
+        assert!(step.notes.is_empty());
+        assert!(cap.enabled(SERVER_TIME));
+    }
+
+    fn sasl_lines(password_len: usize) -> Vec<String> {
+        let mut cap = CapNegotiation::new(
+            Ircv3Options::default(),
+            Some(SaslCredentials {
+                username: "a".into(),
+                password: "p".repeat(password_len),
+            }),
+            true,
+        );
+        cap.start();
+        cap.observe(&line(":s CAP * LS :sasl")).unwrap();
+        cap.observe(&line(":s CAP * ACK :sasl")).unwrap();
+        sent(&cap.observe(&line("AUTHENTICATE +")).unwrap())
+    }
+
+    // SASL 3.1: the response "is encoded with Base64 then split to 400-byte
+    // chunks ... If the last chunk was exactly 400 bytes long, it must also
+    // be followed by `AUTHENTICATE +`".
+    #[test]
+    fn sasl_responses_are_split_into_400_byte_chunks() {
+        // "\0a\0" plus the password: 300 bytes encode to exactly 400.
+        let exact = sasl_lines(297);
+        assert_eq!(exact.len(), 2);
+        assert_eq!(exact[0].len(), "AUTHENTICATE ".len() + 400);
+        assert_eq!(exact[1], "AUTHENTICATE +");
+        let longer = sasl_lines(298);
+        assert_eq!(longer.len(), 2);
+        assert_eq!(longer[0].len(), "AUTHENTICATE ".len() + 400);
+        assert_ne!(longer[1], "AUTHENTICATE +");
+        let two_full = sasl_lines(597);
+        assert_eq!(two_full.len(), 3);
+        assert_eq!(two_full[2], "AUTHENTICATE +");
+        let short = sasl_lines(10);
+        assert_eq!(short.len(), 1);
+        assert_ne!(short[0], "AUTHENTICATE +");
+    }
+
+    // SASL 3.1: 902 (account locked or held), 904 (failed), 905 (too long),
+    // 906 (aborted) and 907 (already authenticated) end the attempt; none of
+    // them may be retried blindly.
+    #[test]
+    fn every_sasl_failure_numeric_is_a_refusal() {
+        for numeric in ["902", "904", "905", "906", "907"] {
+            let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
+            cap.start();
+            cap.observe(&line(":s CAP * LS :sasl")).unwrap();
+            cap.observe(&line(":s CAP * ACK :sasl")).unwrap();
+            cap.observe(&line("AUTHENTICATE +")).unwrap();
+            assert!(
+                cap.observe(&line(&format!(":s {numeric} * :no"))).is_err(),
+                "{numeric}"
+            );
+        }
     }
 
     #[test]

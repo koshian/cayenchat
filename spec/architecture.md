@@ -280,7 +280,7 @@ A successful registration resets the delay; an explicit disconnect cancels pendi
 retries. Disconnect during DNS lookup or TCP/TLS setup ends the worker at once
 (the command queue is read only after the transport opens); once connected it
 sends QUIT and flushes it before closing. The core reports a terminal `Refused` event instead of `Disconnected`
-for SASL failures, a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,
+for SASL failures (902 account locked or held, 904–907), a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,
 and 464/465 during registration; the UI does not retry those automatically,
 because repeating rejected credentials risks account lockout or a server ban.
 The `irc` library consumes 432/433 and reports `NoUsableNick` because no
