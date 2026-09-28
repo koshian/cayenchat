@@ -266,6 +266,12 @@ pub struct ServerProfile {
     /// Opt-in IRCv3 features for this server (version 15), off by default.
     #[serde(default)]
     pub ircv3: Ircv3Preferences,
+    /// Draft URL of our own avatar for this server's experimental metadata
+    /// (D023). Saving it publishes nothing: only the IRCv3 tab's explicit
+    /// Publish sends it, on a connected server. Added without a version
+    /// change; files without it read as empty.
+    #[serde(default)]
+    pub avatar_url: String,
     /// Plaintext passwords saved by version 10 and earlier. Read only for
     /// migration into the credential store; never written back.
     #[serde(rename = "server_password", default, skip_serializing)]
@@ -298,6 +304,7 @@ impl ServerProfile {
             sasl_username: String::new(),
             connect_on_startup: false,
             ircv3: Ircv3Preferences::default(),
+            avatar_url: String::new(),
             legacy_server_password: None,
             legacy_sasl_password: None,
         }
@@ -1398,6 +1405,41 @@ mod tests {
         let loaded = load_from(&path).unwrap().unwrap();
         assert!(loaded.servers[0].ircv3.metadata && !loaded.servers[0].ircv3.batch);
         assert!(!loaded.servers[1].ircv3.metadata && loaded.servers[1].ircv3.batch);
+    }
+
+    #[test]
+    fn avatar_url_drafts_are_per_server_and_read_as_empty_when_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("irc.one.example");
+        settings.add_server("irc.two.example");
+        assert!(
+            settings
+                .servers
+                .iter()
+                .all(|server| server.avatar_url.is_empty())
+        );
+        settings.servers[0].avatar_url = "https://example.com/me/{size}.png".into();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded.servers[0].avatar_url,
+            "https://example.com/me/{size}.png"
+        );
+        assert_eq!(loaded.servers[1].avatar_url, "", "other server untouched");
+        // A file written before the field existed loads with no draft and
+        // keeps its other choices.
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("avatar_url");
+        old["servers"][0]["ircv3"]["metadata"] = true.into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.servers[0].avatar_url, "");
+        assert!(loaded.servers[0].ircv3.metadata);
     }
 
     #[test]
