@@ -706,6 +706,20 @@ parameter), contain no spaces or controls, be at most 400 bytes (one IRC
 line) and be ASCII on legacy encodings. `{size}` is kept as typed. Turning
 **Show user avatars** off changes nothing on the server.
 
+The avatar value is a URL because the registry defines it so and metadata
+carries only short text (Ergo: 350 bytes of key and value); IRC has no
+upload of its own. When an image host is configured on the Image Upload
+tab, an image can also be dropped on the avatar section, pasted into the
+URL field or picked with **Choose Image…**: it goes through the same
+confirmation and `ExternalUploader` as chat images
+(`app::attachments::AttachmentFlow`, whose target is generic: a chat draft
+or a server profile), and the returned URL replaces that server's avatar
+draft if it passes the same checks. Uploading never publishes; the user
+still clicks Publish. Without an image host the URL is typed. A future
+standard upload service (for example if soju's `soju.im/filehost` becomes
+an IRCv3 specification) would be another source of that URL; the
+settings section would stay as it is.
+
 **Users who join later (2026-09-28).** The draft sends a channel's
 metadata to the user who joins, not the joiner's metadata to the members
 already there, and Ergo 2.19 follows it, so a later joiner showed no

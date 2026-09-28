@@ -601,7 +601,15 @@ rules) and asks `ChatWindow::request_own_avatar`, which starts a request in
 the server's `ServerSession::own_avatar` (`app::own_avatar::OwnAvatar`) and
 queues it. That state is protocol-free: `Confirmed` (unknown, not set, a
 URL), at most one pending request with a session-wide identifier, and the
-last `Outcome`; it only changes on `MetadataReady`, `OwnAvatar`,
+last `Outcome`. With an image host configured, `ui::ircv3_settings` also
+accepts an image dropped on the section, pasted into the URL field (the
+field propagates image-only pastes like chat drafts) or chosen in the
+system file dialog, and runs it through the chat upload steps shared in
+`ui::image_upload` (`configured_uploader`, `acceptable_attachment`,
+`upload_in_background`) with its own `AttachmentFlow<String>` targeting
+the server profile ID; the confirmed URL goes into that profile's draft
+(`place_uploaded_avatar`), never published by the upload. The own-avatar
+state only changes on `MetadataReady`, `OwnAvatar`,
 `OwnAvatarFailed`, `AvatarsReset` and the end of a connection (disconnect,
 reconnect, removal), which fails a pending request and forgets what the
 server held. The settings window reads it through its owner handle and is

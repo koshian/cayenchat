@@ -341,7 +341,14 @@ this delay.
    表示する** off does not change what the server holds. Reconnect: the
    draft stays, nothing is republished, and the server line shows what the
    server kept. A user joining the channel after us gets an avatar in the
-   member list about 2 s after joining.
+   member list about 2 s after joining. With an image host set up on
+   **画像アップロード** (a test account), drop a PNG on the section, paste a
+   screenshot into the URL field and use **画像を選択…**: each asks for
+   confirmation naming the host, Cancel changes nothing, and Upload shows
+   progress and then puts the host's URL into the field without publishing.
+   Switch servers during an upload: the URL goes to the server it was for.
+   With no host set up, the section says to set one up and an image paste
+   explains the same.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
