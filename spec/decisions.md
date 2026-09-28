@@ -933,3 +933,21 @@ Known limits: KVIrc finds a CayenChat user only when a WHO reply shows it
 our realname; KVIrc accepts our answer's URL
 but applies its own image limits; users who never speak and are not
 WHOISed are not discovered; `{size}` is not shared.
+
+## D026 — Protocol-neutral message identity
+
+**Status:** Accepted
+
+2026-09-28. Retained messages carry the application's own identity (the
+arrival `sequence`), the source's timestamp and native identifier when it
+supplied them, and a provenance (`Live`, `Replayed`, `Requested`), so
+history requests, reconnect recovery and echo reconciliation can
+recognize overlap. The IRC `msgid` is stored as an opaque
+`model::NativeMessageId`, never as the universal identity: most IRC lines
+have none, and another backend (for example a future Matrix event ID) has
+its own identifier with its own scope. Logs are never re-sorted by
+timestamp. Duplicate suppression is per conversation and bounded (512
+keys, forgotten with the conversation); a fingerprint fallback only drops
+history, never a live line, because it is not collision-free. No
+persistent deduplication and no Matrix-specific fields. Details in
+`architecture.md` (Timeline items).
