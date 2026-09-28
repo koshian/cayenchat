@@ -343,6 +343,46 @@ mod tests {
     }
 
     #[test]
+    fn avatar_responses_stay_within_the_avatar_limit_whatever_the_headers_say() {
+        // Avatar URLs come from other users (metadata or CTCP AVATAR), so
+        // the headers are untrusted: the limit holds while streaming too.
+        let limits = Limits::avatar(32);
+        let max = limits.max_response_bytes;
+        let oversized = vec![0x89; max + 1];
+        let declared = |length: usize, body: Vec<u8>| Route {
+            headers: vec![
+                ("Content-Type".into(), "image/png".into()),
+                ("Content-Length".into(), length.to_string()),
+            ],
+            ..Route::image("image/png", body)
+        };
+        let server = fixture(&[
+            ("/declared", Route::image("image/png", oversized.clone())),
+            (
+                "/streamed",
+                Route {
+                    omit_length: true,
+                    ..Route::image("image/png", oversized.clone())
+                },
+            ),
+            ("/understated", declared(100, oversized.clone())),
+            ("/overstated", declared(max, vec![0x89; 10])),
+        ]);
+        assert_eq!(
+            fetch(&server, "/declared", &limits),
+            Err(LoadError::TooLarge)
+        );
+        assert_eq!(
+            fetch(&server, "/streamed", &limits),
+            Err(LoadError::TooLarge)
+        );
+        // A smaller declared length ends the body there.
+        assert_eq!(fetch(&server, "/understated", &limits).unwrap().len(), 100);
+        // A body shorter than declared is a failed transfer.
+        assert!(fetch(&server, "/overstated", &limits).is_err());
+    }
+
+    #[test]
     fn redirects_are_limited_and_every_target_is_checked() {
         let png = encode(ImageFormat::Png, 4, 4);
         let server = fixture(&[

@@ -44,6 +44,18 @@ pub struct ServerSession {
     /// option and batch were on when it started), so a server that never
     /// enabled it can be reported as not supporting avatars.
     pub metadata_requested: bool,
+    /// CTCP AVATAR on the current connection.
+    pub peer_avatars: PeerAvatarConnection,
+}
+
+/// How the current connection exchanges avatars with other clients: what
+/// it was made with (peer avatars on, realname marked) and the URL it
+/// answers queries with now, which can change while connected.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PeerAvatarConnection {
+    pub enabled: bool,
+    pub advertised: bool,
+    pub answering: Option<String>,
 }
 
 impl ServerSession {
@@ -64,7 +76,21 @@ impl ServerSession {
             generation: 0,
             own_avatar: OwnAvatar::default(),
             metadata_requested: false,
+            peer_avatars: PeerAvatarConnection::default(),
         }
+    }
+
+    /// Records what a connection starting with `config` asked for.
+    pub fn connection_starting(&mut self, config: &ConnectionConfig) {
+        self.metadata_requested = config.ircv3.metadata;
+        self.peer_avatars = PeerAvatarConnection {
+            enabled: config.ircv3.peer_avatars,
+            advertised: config.advertises_avatar(),
+            answering: config
+                .shared_avatar
+                .clone()
+                .filter(|_| config.ircv3.peer_avatars),
+        };
     }
 
     pub fn push_diagnostic(&mut self, line: String) {

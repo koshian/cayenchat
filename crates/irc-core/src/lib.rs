@@ -2,12 +2,14 @@
 
 mod cap;
 mod metadata;
+mod peer_avatar;
 mod replay;
 mod tags;
 pub mod text;
 
 pub use cap::Ircv3Options;
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
+pub use peer_avatar::shareable as shareable_avatar;
 
 use std::{
     collections::HashMap,
@@ -40,6 +42,9 @@ const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
 /// hostile server cannot grow memory by never finishing them.
 const MAX_PENDING_WHOIS: usize = 32;
 const MAX_WHOIS_ITEMS: usize = 512;
+/// The realname sent in `USER`; with a shared peer avatar it starts with
+/// KVIrc's avatar mark.
+const REALNAME: &str = "CayenChat";
 
 fn ensure_tls_crypto_provider() -> Result<(), String> {
     use rustls::crypto::CryptoProvider;
@@ -88,6 +93,11 @@ pub struct ConnectionConfig {
     pub sasl: Option<SaslCredentials>,
     /// Opt-in IRCv3 extensions; all off unless the user enabled them.
     pub ircv3: Ircv3Options,
+    /// The avatar URL shared with other clients through CTCP AVATAR, used
+    /// only with [`Ircv3Options::peer_avatars`]. When set, the realname
+    /// sent at registration carries KVIrc's avatar mark; the URL itself can
+    /// change later with [`Connection::share_avatar`].
+    pub shared_avatar: Option<String>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -108,6 +118,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("allow_plaintext_pass", &self.allow_plaintext_pass)
             .field("sasl", &self.sasl)
             .field("ircv3", &self.ircv3)
+            .field("shared_avatar", &self.shared_avatar)
             .finish()
     }
 }
@@ -129,7 +140,14 @@ impl ConnectionConfig {
             allow_plaintext_pass: false,
             sasl: None,
             ircv3: Ircv3Options::default(),
+            shared_avatar: None,
         }
+    }
+
+    /// Whether registration marks the realname as having an avatar: only
+    /// with peer exchange on and a URL explicitly shared.
+    pub fn advertises_avatar(&self) -> bool {
+        self.ircv3.peer_avatars && self.shared_avatar.is_some()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -166,9 +184,12 @@ impl ConnectionConfig {
         }
         validate_wire(&format!("NICK {}\r\n", self.nickname), &self.encoding)?;
         validate_wire(
-            &format!("USER {} 0 * :CayenChat\r\n", self.username),
+            &format!("USER {} 0 * :{REALNAME}\r\n", self.username),
             &self.encoding,
         )?;
+        if let Some(url) = &self.shared_avatar {
+            peer_avatar::shareable(url, self.encoding.eq_ignore_ascii_case("UTF-8"))?;
+        }
         if let Some(password) = &self.server_password {
             if password.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
                 return Err("Server password contains a protocol control character.".into());
@@ -544,6 +565,8 @@ enum Outgoing {
         request: u64,
         url: Option<String>,
     },
+    /// The URL answered to CTCP AVATAR queries (`None`: stop answering).
+    ShareAvatar(Option<String>),
     Quit,
 }
 
@@ -567,6 +590,10 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
             args.extend(url.clone());
             IrcMessage::from(IrcCommand::Raw("METADATA".into(), args))
         }
+        Outgoing::ShareAvatar(url) => IrcMessage::from(IrcCommand::NOTICE(
+            "*".into(),
+            format!("\u{1}AVATAR {}\u{1}", url.as_deref().unwrap_or_default()),
+        )),
         Outgoing::Quit => return Ok(()),
     };
     validate_wire(&message.to_string(), encoding)
@@ -940,6 +967,22 @@ impl Connection {
             .map_err(|error| format!("Could not queue avatar request: {error}"))
     }
 
+    /// Shares `url` with other clients through CTCP AVATAR from now on, or
+    /// stops (`None`); it has an effect only when the connection was made
+    /// with [`Ircv3Options::peer_avatars`]. The realname mark sent at
+    /// registration stays until the next connection. The URL must already
+    /// satisfy the caller's URL policy.
+    pub fn share_avatar(&self, url: Option<&str>) -> Result<(), String> {
+        if let Some(url) = url {
+            peer_avatar::shareable(url, self.encoding.eq_ignore_ascii_case("UTF-8"))?;
+        }
+        let outgoing = Outgoing::ShareAvatar(url.map(str::to_owned));
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue avatar sharing: {error}"))
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
@@ -956,7 +999,7 @@ fn library_config(config: &ConnectionConfig) -> Config {
         port: Some(config.port),
         nickname: Some(config.nickname.clone()),
         username: Some(config.username.clone()),
-        realname: Some("CayenChat".into()),
+        realname: Some(peer_avatar::realname(REALNAME, config.advertises_avatar())),
         password: config.server_password.clone(),
         channels: config.channels.clone(),
         use_tls: Some(config.use_tls),
@@ -1038,6 +1081,13 @@ async fn run_cancellable(
     let registration_user = config.username.clone();
     let auto_join_channels = config.channels.clone();
     let irc_config = library_config(&config);
+    let advertise_avatar = config.advertises_avatar();
+    let mut peers = config.ircv3.peer_avatars.then(|| {
+        peer_avatar::PeerAvatars::new(
+            wire_encoding.eq_ignore_ascii_case("UTF-8"),
+            config.shared_avatar.clone(),
+        )
+    });
     let mut negotiation = cap::CapNegotiation::new(
         config.ircv3,
         config.sasl,
@@ -1060,6 +1110,18 @@ async fn run_cancellable(
             format!(
                 "Avatar metadata with the {wire_encoding} encoding: only ASCII avatar URLs are used, because metadata values are UTF-8."
             ),
+        )
+        .await;
+    }
+    if peers.is_some() {
+        diagnostic(
+            &events,
+            started,
+            if advertise_avatar {
+                "Peer avatars (CTCP AVATAR) on; the realname marks a shared avatar."
+            } else {
+                "Peer avatars (CTCP AVATAR) on; nothing is shared."
+            },
         )
         .await;
     }
@@ -1160,7 +1222,7 @@ async fn run_cancellable(
     registration.push(IrcCommand::USER(
         registration_user,
         "0".into(),
-        "CayenChat".into(),
+        peer_avatar::realname(REALNAME, advertise_avatar),
     ));
     for command in registration {
         let message = IrcMessage::from(command);
@@ -1265,6 +1327,11 @@ async fn run_cancellable(
                             }
                         }
                     }
+                    Outgoing::ShareAvatar(url) => {
+                        if let Some(peers) = peers.as_mut() {
+                            peers.set_share(url);
+                        }
+                    }
                     Outgoing::Quit => {
                         let quit = IrcMessage::from(IrcCommand::QUIT(Some("Leaving CayenChat".into())));
                         if client.send(quit.clone()).is_ok() {
@@ -1337,7 +1404,8 @@ async fn run_cancellable(
                         // Metadata stopped (its own DEL, or batch went away):
                         // every avatar of this connection becomes unknown.
                         if metadata_enabled && !negotiation.enabled(cap::METADATA) {
-                            for event in metadata.reset().into_iter().chain([Event::AvatarsReset]) {
+                            let reset = metadata.reset().into_iter().chain([Event::AvatarsReset]).collect();
+                            for event in merged(&mut peers, reset) {
                                 if events.send(event).await.is_err() {
                                     return;
                                 }
@@ -1382,17 +1450,41 @@ async fn run_cancellable(
                                 for note in handled.notes {
                                     diagnostic(&events, started, note).await;
                                 }
-                                for event in handled.events {
+                                for event in merged(&mut peers, handled.events) {
                                     if events.send(event).await.is_err() { return; }
                                 }
                                 continue;
                             }
                         }
-                        let lifecycle = if metadata_enabled {
+                        // CTCP AVATAR and replies to our own lookups are
+                        // not chat and not server lines.
+                        let replayed = replay.replayed(&message);
+                        if let Some(peers) = peers.as_mut()
+                            && let Some(handled) = peers.observe(&message, &current_nick, &roster.last, replayed, tokio::time::Instant::now())
+                        {
+                            if let Err(detail) = send_all(&client, &events, started, handled.send).await {
+                                let _ = events.send(Event::Disconnected(detail)).await;
+                                return;
+                            }
+                            for note in handled.notes {
+                                diagnostic(&events, started, note).await;
+                            }
+                            for event in handled.events {
+                                if events.send(event).await.is_err() { return; }
+                            }
+                            continue;
+                        }
+                        // Peer avatars end before metadata's events for the
+                        // same message are merged, so a departed user's
+                        // peer avatar cannot stand in for their metadata.
+                        let mut lifecycle = peers
+                            .as_mut()
+                            .map(|peers| peers.lifecycle(&message, &roster.last, &current_nick))
+                            .unwrap_or_default();
+                        lifecycle.extend(merged(&mut peers, if metadata_enabled {
                             if let IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) = &message.command {
                                 metadata.forget_channel(channel);
                             }
-                            let replayed = replay.replayed(&message);
                             let handled = metadata.lifecycle(&message, &roster.last, &current_nick, replayed, tokio::time::Instant::now());
                             for note in handled.notes {
                                 diagnostic(&events, started, note).await;
@@ -1400,12 +1492,20 @@ async fn run_cancellable(
                             handled.events
                         } else {
                             Vec::new()
-                        };
+                        }));
                         let whois_reply = whois.observe(&message);
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
                         for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
                                 Event::Registered { nickname } | Event::NickChanged { nickname } => current_nick = nickname.clone(),
+                                // Someone speaking live may be asked about
+                                // their avatar; nobody else is.
+                                Event::ChannelMessage { sender, replayed: false, .. }
+                                | Event::PrivateMessage { sender, replayed: false, .. } => {
+                                    if let Some(note) = peers.as_mut().and_then(|peers| peers.speaker(sender, &current_nick, &roster.last)) {
+                                        diagnostic(&events, started, note).await;
+                                    }
+                                }
                                 _ => {}
                             }
                             if events.send(event).await.is_err() { return; }
@@ -1465,8 +1565,17 @@ async fn run_cancellable(
                 for note in handled.notes {
                     diagnostic(&events, started, note).await;
                 }
-                for event in handled.events {
+                for event in merged(&mut peers, handled.events) {
                     if events.send(event).await.is_err() { return; }
+                }
+            }
+            // Peer avatar lookups and queries, spaced out; no timer runs
+            // while none is queued or outstanding.
+            _ = tokio::time::sleep_until(peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).unwrap_or_else(tokio::time::Instant::now)), if registered && peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).is_some() => {
+                let handled = peers.as_mut().map(|peers| peers.tick(tokio::time::Instant::now(), &current_nick, &roster.last)).unwrap_or_default();
+                if let Err(detail) = send_all(&client, &events, started, handled.send).await {
+                    let _ = events.send(Event::Disconnected(detail)).await;
+                    return;
                 }
             }
             _ = registration_progress.tick(), if !registered && !awaiting_nick => {
@@ -1482,6 +1591,32 @@ async fn run_cancellable(
             }
         }
     }
+}
+
+/// Passes metadata's avatar events through the peer avatar merge when
+/// CTCP AVATAR exchange is on.
+fn merged(peers: &mut Option<peer_avatar::PeerAvatars>, events: Vec<Event>) -> Vec<Event> {
+    match peers {
+        Some(peers) => peers.merge_metadata(events),
+        None => events,
+    }
+}
+
+/// Sends commands the worker made itself and records them in the
+/// transcript; `Err` means the link failed.
+async fn send_all(
+    client: &Client,
+    events: &mpsc::Sender<Event>,
+    started: Instant,
+    commands: Vec<IrcCommand>,
+) -> Result<(), String> {
+    for command in commands {
+        let message = IrcMessage::from(command);
+        let line = redacted_wire_line(&message);
+        client.send(message).map_err(|error| error_chain(&error))?;
+        wire(events, started, WireDirection::Sent, line).await;
+    }
+    Ok(())
 }
 
 /// Registration replies after which the server closes the link and an
@@ -3439,6 +3574,7 @@ mod tests {
             server_time: true,
             batch: false,
             metadata: false,
+            peer_avatars: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -3525,6 +3661,7 @@ mod tests {
                 server_time: true,
                 batch: false,
                 metadata: false,
+                peer_avatars: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();
@@ -3882,6 +4019,142 @@ mod tests {
         // After withdrawal a METADATA line is ordinary server traffic again.
         assert!(events.iter().any(|event| matches!(event,
             Event::ServerLine(line) if line.contains("late.png"))));
+    }
+
+    #[test]
+    fn kvirc_peer_avatars_are_exchanged_by_url_only() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The peer's lines are what KVIrc 5.2 sends (see peer_avatar.rs).
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            // No capability is needed.
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            assert_eq!(read_client_line(&mut lines), "NICK alice");
+            let user = read_client_line(&mut lines);
+            assert!(user.starts_with("USER alice 0 * "), "{user:?}");
+            assert!(user.ends_with("\u{3}4\u{f}CayenChat"), "{user:?}");
+            socket
+                .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            // NAMES has no realname: nobody is asked about until they speak.
+            socket
+                .write_all(
+                    b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice kv @bob carol\r\n\
+:srv.example 366 alice #test :End\r\n\
+:kv!u@h PRIVMSG #test :hello\r\n\
+:kv!u@h PRIVMSG alice :\x01AVATAR\x01\r\n",
+                )
+                .unwrap();
+            let mut sent = [read_client_line(&mut lines), read_client_line(&mut lines)];
+            sent.sort();
+            assert_eq!(
+                sent,
+                [
+                    "NOTICE kv :\u{1}AVATAR https://example.com/alice.png\u{1}".to_owned(),
+                    "WHO kv".to_owned(),
+                ]
+            );
+            socket
+                .write_all(
+                    b":srv.example 352 alice #test ~kv host srv.example kv H :0 \x034\x0fKVIrc 5.2\r\n\
+:srv.example 315 alice kv :End of /WHO list.\r\n",
+                )
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "PRIVMSG kv \u{1}AVATAR\u{1}");
+            socket
+                .write_all(
+                    b":kv!u@h NOTICE alice :\x01AVATAR https://example.com/kv.png M\x01\r\n\
+:bob!u@h NOTICE #test :\x01AVATAR bob.png 20480\x01\r\n\
+:carol!u@h NOTICE alice :\x01AVATAR\x01\r\n\
+:bob!u@h PRIVMSG #test :after\r\n",
+                )
+                .unwrap();
+            // A file offer is never fetched by DCC.
+            let next = read_client_line(&mut lines);
+            assert!(
+                !next.contains("DCC") && !next.contains("bob.png"),
+                "{next:?}"
+            );
+        });
+        let mut config = plain_config(
+            port,
+            Ircv3Options {
+                peer_avatars: true,
+                ..Ircv3Options::default()
+            },
+        );
+        config.shared_avatar = Some("https://example.com/alice.png".into());
+        let events = run_fixture(config, |events| {
+            channel_messages(events).len() == 2 && !avatar_events(events).is_empty()
+        });
+        server.join().unwrap();
+        assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+        assert_eq!(
+            channel_messages(&events)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>(),
+            ["hello", "after"]
+        );
+        // Protocol traffic is neither chat nor server log.
+        for event in &events {
+            match event {
+                Event::PrivateMessage { text, .. } => panic!("private row: {text:?}"),
+                Event::ServerLine(line) => assert!(
+                    !line.contains("AVATAR") && !line.contains(" 352 ") && !line.contains(" 315 "),
+                    "{line}"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn peer_avatars_off_keeps_ctcp_avatar_as_before() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            assert_eq!(read_client_line(&mut lines), "CAP END");
+            assert_eq!(read_client_line(&mut lines), "NICK alice");
+            // No mark, even with a URL configured.
+            let user = read_client_line(&mut lines);
+            assert!(user.ends_with(" CayenChat"), "{user:?}");
+            socket
+                .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket
+                .write_all(
+                    b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice kv\r\n\
+:srv.example 366 alice #test :End\r\n\
+:kv!u@h PRIVMSG alice :\x01AVATAR\x01\r\n\
+:kv!u@h PRIVMSG #test :hello\r\n",
+                )
+                .unwrap();
+            // Nothing is answered or looked up.
+            let next = read_client_line(&mut lines);
+            assert!(next.is_empty() || next.starts_with("QUIT"), "{next:?}");
+        });
+        let mut config = plain_config(port, Ircv3Options::default());
+        config.shared_avatar = Some("https://example.com/alice.png".into());
+        let events = run_fixture(config, |events| channel_messages(events).len() == 1);
+        server.join().unwrap();
+        assert!(avatar_events(&events).is_empty());
+        assert!(events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("AVATAR"))));
     }
 
     #[test]

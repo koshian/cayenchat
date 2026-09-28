@@ -316,5 +316,13 @@
   "ircv3_avatar_remove_title": "Remove your avatar from the IRC server?",
   "ircv3_avatar_remove_detail": "Other users on this network will no longer see it. The URL stays in the field.",
   "ircv3_avatar_remove_confirm": "Remove",
-  "ircv3_avatar_unsupported": "This IRC server does not support avatars."
+  "ircv3_avatar_unsupported": "This IRC server does not support avatars.",
+  "ircv3_peer_avatars": "Peer avatars (CTCP AVATAR, experimental)",
+  "ircv3_peer_avatars_hint": "Exchange avatar URLs with other clients such as KVIrc, where the server has no avatar metadata. People who speak are looked up with WHO and asked only if they have an avatar. Nothing of yours is shared until you choose Share with Peers.",
+  "ircv3_peer_share": "Share with Peers",
+  "ircv3_peer_share_exposure": "Anyone on this network who asks gets this URL, and after reconnecting your real name shows that you have an avatar. Never include passwords or access tokens.",
+  "ircv3_peer_stop": "Stop Sharing",
+  "ircv3_peer_sharing": "Shared with peers: {url}",
+  "ircv3_peer_reconnect": "Reconnect to update the avatar mark in your real name.",
+  "ircv3_peer_size_placeholder": "Other clients do not fill in {size}; share a URL without it."
 }

@@ -47,6 +47,9 @@ pub struct Ircv3Options {
     /// `batch`, which is then requested too even if `batch` is off, but only
     /// from servers that offer metadata.
     pub metadata: bool,
+    /// Exchange avatars with other clients through KVIrc's CTCP AVATAR
+    /// (experimental). Needs no capability; see `peer_avatar`.
+    pub peer_avatars: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -447,6 +450,7 @@ mod tests {
             server_time,
             batch: false,
             metadata: false,
+            peer_avatars: false,
         }
     }
 

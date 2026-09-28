@@ -626,6 +626,7 @@ fn connection_config(
     config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.encoding = profile.encoding.label().into();
     config.ircv3 = ircv3_options(profile.ircv3);
+    config.shared_avatar = shared_peer_avatar(profile);
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         config.server_password = Some(password.expose().to_owned());
     }
@@ -650,7 +651,18 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         // Avatar metadata is always asked for when a server offers it:
         // references only, nothing is downloaded unless avatars are shown.
         metadata: true,
+        peer_avatars: preferences.peer_avatars,
     }
+}
+
+/// The URL this server shares with other clients through CTCP AVATAR: the
+/// one the user chose with "Share with Peers", while peer avatars are on
+/// and it is still acceptable.
+pub(crate) fn shared_peer_avatar(profile: &ServerProfile) -> Option<String> {
+    let url = profile.peer_avatar_url.trim();
+    let utf8 = profile.encoding == cayenchat_storage::TextEncoding::Utf8;
+    (profile.ircv3.peer_avatars && ircv3_settings::peer_avatar_url_problem(url, utf8).is_none())
+        .then(|| url.to_owned())
 }
 
 /// A connection from saved settings alone (at startup or from the channel
@@ -1406,13 +1418,22 @@ impl ChatWindow {
                 }
             };
             // IRCv3 choices apply from the next connection, reconnects and
-            // retries included; the current connection is left alone.
-            if let Some(config) = self
-                .sessions
-                .get_mut(&id)
-                .and_then(|session| session.active_config.as_mut())
-            {
-                config.ircv3 = ircv3_options(profile.ircv3);
+            // retries included; the current connection is left alone, except
+            // that the URL it answers CTCP AVATAR with follows the explicit
+            // Share / Stop Sharing at once.
+            let shared = shared_peer_avatar(profile);
+            if let Some(session) = self.sessions.get_mut(&id) {
+                if let Some(config) = session.active_config.as_mut() {
+                    config.ircv3 = ircv3_options(profile.ircv3);
+                    config.shared_avatar = shared.clone();
+                }
+                if session.peer_avatars.enabled
+                    && session.peer_avatars.answering != shared
+                    && let Some(connection) = &session.irc
+                    && connection.share_avatar(shared.as_deref()).is_ok()
+                {
+                    session.peer_avatars.answering = shared;
+                }
             }
             networks.push(NetworkConfig {
                 id,
@@ -1490,7 +1511,7 @@ impl ChatWindow {
         session.manual_disconnect = false;
         session.retry_attempt = 0;
         session.active_config = Some(config.clone());
-        session.metadata_requested = config.ircv3.metadata;
+        session.connection_starting(&config);
         session.diagnostics.clear();
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
@@ -1636,7 +1657,7 @@ impl ChatWindow {
         }
         session.generation += 1;
         session.own_avatar.connection_ended();
-        session.metadata_requested = config.ircv3.metadata;
+        session.connection_starting(&config);
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
         self.state.set_status(network, ConnectionStatus::Connecting);
@@ -6691,6 +6712,7 @@ mod server_settings_tests {
             message_tags: true,
             server_time: true,
             batch: true,
+            peer_avatars: true,
         };
         settings
     }
@@ -7013,6 +7035,7 @@ mod pane_tests {
         settings.servers[1].username = "me".into();
         settings.servers[1].ircv3.server_time = true;
         settings.servers[1].ircv3.batch = true;
+        settings.servers[1].ircv3.peer_avatars = true;
         let config = |settings: &Settings, index: usize| {
             crate::connection_config(
                 &settings.servers[index],
@@ -7037,8 +7060,12 @@ mod pane_tests {
                 server_time: true,
                 batch: true,
                 metadata: true,
+                peer_avatars: true,
             }
         );
+        // Peer avatars alone share nothing and leave the realname unmarked.
+        assert_eq!(config(&settings, 1).shared_avatar, None);
+        assert!(!config(&settings, 1).advertises_avatar());
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });
@@ -7065,6 +7092,7 @@ mod pane_tests {
                     server_time: false,
                     batch: false,
                     metadata: true,
+                    peer_avatars: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );

@@ -922,7 +922,7 @@ fn metadata_args(command: &IrcCommand) -> Vec<&str> {
 /// A numeric reply as its code and parameters. irc-proto knows some of the
 /// metadata numerics under their metadata-3.2 names and none of the newer
 /// ones, which stay `Raw`.
-fn numeric(message: &IrcMessage) -> Option<(u16, &[String])> {
+pub(crate) fn numeric(message: &IrcMessage) -> Option<(u16, &[String])> {
     match &message.command {
         IrcCommand::Response(response, args) => Some((*response as u16, args)),
         IrcCommand::Raw(command, args) if command.len() == 3 => {
