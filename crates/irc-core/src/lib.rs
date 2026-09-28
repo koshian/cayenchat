@@ -9,6 +9,7 @@ pub mod text;
 
 pub use cap::Ircv3Options;
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
+pub use peer_avatar::shareable as shareable_avatar;
 
 use std::{
     collections::HashMap,

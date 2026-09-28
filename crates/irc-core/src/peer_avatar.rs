@@ -138,7 +138,7 @@ pub(crate) fn reply_url(params: &str, utf8: bool) -> Option<String> {
 
 /// Checks a URL we are about to share: the rules for received values, one
 /// IRC line, and HTTP(S). Whether it is acceptable is the caller's policy.
-pub(crate) fn shareable(url: &str, utf8: bool) -> Result<(), String> {
+pub fn shareable(url: &str, utf8: bool) -> Result<(), String> {
     crate::publishable_avatar(url, utf8)?;
     if url.len() > MAX_PUBLISHED_AVATAR_BYTES || reply_url(url, utf8).as_deref() != Some(url) {
         return Err("Only an http or https avatar URL can be shared.".into());

@@ -930,10 +930,17 @@ pub(crate) fn avatar_url_problem(text: &str, utf8: bool) -> Option<&'static str>
 /// (which may use `{max}`), or `None`: the rules for publishing, and no
 /// `{size}`, which other clients would request literally.
 pub(crate) fn peer_avatar_url_problem(text: &str, utf8: bool) -> Option<&'static str> {
-    avatar_url_problem(text, utf8).or_else(|| {
-        text.contains(cayenchat_media::policy::AVATAR_SIZE_PLACEHOLDER)
-            .then_some("ircv3_peer_size_placeholder")
-    })
+    avatar_url_problem(text, utf8)
+        .or_else(|| {
+            text.contains(cayenchat_media::policy::AVATAR_SIZE_PLACEHOLDER)
+                .then_some("ircv3_peer_size_placeholder")
+        })
+        // The connection refuses anything else, so it is never saved.
+        .or_else(|| {
+            cayenchat_irc_core::shareable_avatar(text, utf8)
+                .is_err()
+                .then_some("ircv3_avatar_invalid")
+        })
 }
 
 /// Whether the connected server's realname mark (or peer exchange itself)
