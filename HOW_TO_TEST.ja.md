@@ -128,6 +128,126 @@ CAYENCHAT_INTEROP_IRC=127.0.0.1:36667 cargo test -p cayenchat-irc-core -- --igno
 
 終わったら Ctrl-C でサーバーを止め、ディレクトリを削除してください。
 
+## GUI の E2E テスト（Linux のみ）
+
+実際にビルドした `cayenchat` を仮想ディスプレイ上で起動し、ローカルの Ergo に
+つないで、ユーザーと同じようにマウスで操作して確かめるテストです
+（`scripts/e2e/history_gui.py`）。いまはチャンネル履歴（スクロールで古い履歴を
+読み込む、再接続で取りこぼしを回収する）を確認します。所要時間は約 2 分です。
+
+### 何をどう確かめているか
+
+アプリ本体にテスト用の仕組みは入れず、外から観測できるものだけで判定します。
+
+- **通信**：アプリと Ergo の間に置いた中継（プロキシ）が、アプリの送った
+  `CHATHISTORY` コマンドを記録します。中継は返答を一時的に止めたり、接続を
+  切ったりもできます（予期しない切断の再現）。
+- **画面のピクセル**：X サーバーから画面を取り込み、古いページを挿入する前と
+  後でメインログの領域が 1 ピクセルも変わらないことを確かめます。
+- **表示中の文字**：ログをドラッグで選択して Ctrl+C でコピーし、クリップボード
+  から読み取って、どの行がどの順で表示されているかを確かめます。
+
+各段階のスクリーンショットと、アプリ・Ergo のログが `--out` に残ります。
+
+### 必要なもの
+
+Linux 専用です（仮想ディスプレイと操作に X11 の道具を使うため）。OS の
+パッケージは Cargo では宣言できないので、ここと `.github/workflows/ci.yml` の
+`gui-e2e-linux` ジョブに同じ一覧を書いています。変えるときは両方を直してください。
+
+| 用途 | Debian/Ubuntu のパッケージ |
+| --- | --- |
+| アプリのビルド | `libxcb1-dev` `libxkbcommon-dev` `libxkbcommon-x11-dev` |
+| GPU なしでの描画（Vulkan のソフトウェア実装 lavapipe） | `mesa-vulkan-drivers`（`libvulkan1` も入ります） |
+| 仮想ディスプレイ | `xvfb` |
+| マウス・キー操作 | `xdotool` |
+| 画面の取り込み（`xwd`） | `x11-apps` |
+| クリップボードの読み取り | `xclip` |
+| Ergo のビルド | Go 1.26 以上（古い Go しかない場合は下記） |
+
+Python 3 は標準ライブラリだけを使います。
+
+```sh
+sudo apt-get install libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+  mesa-vulkan-drivers xvfb xdotool x11-apps xclip
+```
+
+### 実行する
+
+```sh
+cargo build --locked -p cayenchat-ui
+ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh /tmp/cayenchat-ergo 36667
+python3 scripts/e2e/history_gui.py --app target/debug/cayenchat \
+  --ergo-dir /tmp/cayenchat-ergo --out /tmp/cayenchat-e2e
+```
+
+- 2 行目は固定バージョンの Ergo をビルドして設定だけ行います（起動はテストが
+  行います）。`ERGO_NO_FAKELAG=1` は、テスト用の相手がチャンネルを素早く埋め
+  られるように Ergo の連投制限を外します。
+- インストール済みの Go が 1.26 より古いときは `GOTOOLCHAIN=go1.26.4` を
+  付けると、Go が必要なツールチェーンを作業ディレクトリ内に取得します。
+- 仮想ディスプレイは `:99` を使います。使用中なら `--display :98` などで変えます。
+- 終わるとテストが Ergo と仮想ディスプレイを止めます。ネットワークには出ません
+  （Ergo はループバックのみ）。
+
+### 結果の見方
+
+確認ごとに `ok: …` が出て、最後に `passed` が出れば成功です。失敗すると
+`FAILED: …` の後に理由（期待した内容と実際の値）が出て、終了コードが 1 に
+なります。`--out` の中身：
+
+- `01_joined.png`、`02_page_requested.png` … 各段階の画面（番号順）。
+  `*_selection.png` は文字を読み取るためにドラッグ選択した直後の画面です。
+- `app.log`：アプリの標準出力・標準エラー。起動しない・すぐ落ちるときに見ます。
+- `ergo.log`：Ergo のログ。
+
+CI（`gui-e2e-linux` ジョブ）では成否にかかわらず、この一式が成果物
+`gui-e2e-linux` としてアップロードされます。
+
+### root 権限なしで動かす（パッケージを入れられない環境）
+
+パッケージをシステムに入れずに、展開して使うこともできます（開発時に
+コンテナで実際にこの方法で動かしました）。
+
+```sh
+mkdir -p ~/e2e-libs/debs && cd ~/e2e-libs/debs
+apt-get download libvulkan1 mesa-vulkan-drivers xdotool libxdo3 x11-apps xclip libxmu6 \
+  libxkbcommon-x11-0 libxcb-xkb1
+for f in *.deb; do dpkg-deb -x "$f" ~/e2e-libs/root; done
+R=~/e2e-libs/root
+export PATH="$R/usr/bin:$PATH"
+export LD_LIBRARY_PATH="$R/usr/lib/x86_64-linux-gnu"
+export LIBRARY_PATH="$R/usr/lib/x86_64-linux-gnu"   # ビルド時のリンク用
+export VK_ICD_FILENAMES="$R/usr/share/vulkan/icd.d/lvp_icd.json"
+```
+
+- `apt-get download` がパッケージ一覧の版と合わず 404 になるときは、
+  `http://archive.ubuntu.com/ubuntu/pool/main/m/mesa/` などから同じ系列の
+  新しい版の `.deb` を直接取得します。
+- リンク用の `libxkbcommon.so`・`libxkbcommon-x11.so` がない（`-dev` がない）
+  ときは、`$R/usr/lib/x86_64-linux-gnu` に `.so.0` へのシンボリックリンクを作ります。
+- `ldd target/debug/cayenchat | grep "not found"` で足りないライブラリが
+  分かります。
+
+### テストを足すとき
+
+- 窓の大きさは 1000×700 に固定しています。ピクセル比較の範囲（`LOG_BOX`）と
+  操作する座標はこの大きさが前提です。
+- 「表示が変わらないこと」はピクセル比較、「何がどの順で出ているか」はコピー
+  した文字、「何を送ったか」は中継の記録で確かめるのが扱いやすいです。
+- 画面が落ち着くのを待つには `Display.settle()`（連続した取り込みが一致する
+  まで待つ）を使います。固定の待ち時間より安定します。
+- 作ったテストが本当に失敗を検出できるかは、アプリを一時的にわざと壊して
+  （例：ログ一覧を毎回リセットする）失敗することで確かめます。今のテストは
+  この方法で 2 通り確認済みです。
+
+### macOS・Windows について
+
+中継・相手役のクライアント・判定の部分は OS に依存しませんが、画面の取り込み
+と入力の再現は OS ごとに別の道具が必要です（macOS なら `screencapture` と合成
+イベント、Windows なら UI Automation など）。ログイン済みのデスクトップ
+セッションも必要です。まだ用意していません。
+
 ## うまくいかないとき
 
 - `cargo-llvm-cov is missing`：上のインストールコマンドを実行します。PATH に
@@ -136,3 +256,10 @@ CAYENCHAT_INTEROP_IRC=127.0.0.1:36667 cargo test -p cayenchat-irc-core -- --igno
   メジャーバージョンのツールを入れるか、`LLVM_COV`/`LLVM_PROFDATA` で指定します。
 - 数値がおかしいとき：スクリプトは毎回、前回の計測データを消してから実行します。
   最初からビルドし直すには `target/llvm-cov-target` を削除します。
+- E2E テストで `the chat window opened` が失敗する：アプリが起動していません。
+  `--out/app.log` を見ます。`error while loading shared libraries` なら
+  ライブラリ不足、Vulkan 関連のエラーなら `mesa-vulkan-drivers`（または
+  `VK_ICD_FILENAMES`）を確認します。
+- E2E テストで文字の確認が空（`[]`）になる：ドラッグ選択が効いていません。
+  `*_selection.png` で選択範囲が青く表示されているかを見ます。
+- Ergo のビルドで `go.mod requires go >= 1.26`：`GOTOOLCHAIN=go1.26.4` を付けます。
