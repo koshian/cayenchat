@@ -29,10 +29,11 @@ use cayenchat_app::{
     timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
-    ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, MemberCommand,
-    SaslCredentials, WhoisInfo, WireDirection, valid_channel,
+    ChannelActivityKind, Connection, ConnectionConfig, Event, HistoryMessage, Ircv3Options,
+    MemberCommand, MessageReference, OlderHistoryStatus, SaslCredentials, WhoisInfo, WireDirection,
+    valid_channel,
 };
-use cayenchat_model::{ConversationId, NetworkId, TimeOfDay};
+use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore, DarkColors,
     Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile,
@@ -720,6 +721,26 @@ fn irc_message_meta(
         ..MessageMeta::replayed(replayed)
     }
 }
+
+/// Requested history lines as timeline items: history, never news.
+fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
+    messages
+        .into_iter()
+        .map(|message| TimelineLine {
+            sender: message.sender,
+            text: if message.notice {
+                format!("[NOTICE] {}", message.text)
+            } else {
+                message.text
+            },
+            meta: irc_message_meta(message.server_time, message.msgid.as_deref(), true),
+        })
+        .collect()
+}
+
+/// Message rows between the top of the main log and the first visible row
+/// within which scrolling asks for older history.
+const OLDER_HISTORY_TRIGGER_ROWS: usize = 5;
 
 /// The newest `limit` conversation lines (not channel activity or requested
 /// history, which is context rather than news) across every conversation
@@ -2288,6 +2309,47 @@ impl ChatWindow {
             });
     }
 
+    /// The user scrolled conversation `id`'s main log so that row
+    /// `first_visible` is at its top. Close to the oldest line, one older
+    /// page is asked for; nothing is asked while the log is only open, and
+    /// nothing while a page is on its way or history has run out.
+    fn scrolled_main_log(&mut self, id: ConversationId, first_visible: usize) {
+        let near_top = self
+            .main_lists
+            .get(&Selection::Channel(id))
+            .is_some_and(|list| {
+                list.message_rows_above(first_visible) <= OLDER_HISTORY_TRIGGER_ROWS
+            });
+        if near_top && self.state.selection() == Selection::Channel(id) {
+            self.load_older_history(id);
+        }
+    }
+
+    /// Asks the conversation's connection for one older page, if one may
+    /// be asked for now.
+    fn load_older_history(&mut self, id: ConversationId) {
+        let Some(conversation) = self.state.conversations().iter().find(|c| c.id == id) else {
+            return;
+        };
+        let (network, channel) = (conversation.network, conversation.name.clone());
+        let Some(connection) = self.sessions.get(&network).and_then(|s| s.irc.as_ref()) else {
+            return;
+        };
+        let Some(page) = self.state.request_older_history(id) else {
+            return;
+        };
+        let reference = MessageReference {
+            msgid: page.native_id.map(|id| id.as_str().to_owned()),
+            time: page.timestamp.map(Timestamp::to_system_time),
+        };
+        if let Err(error) =
+            connection.request_older_history(&channel, page.request, reference, page.limit)
+        {
+            self.state.older_history_failed(id, page.request);
+            self.push_diagnostic(network, format!("Older history for {channel}: {error}"));
+        }
+    }
+
     fn start_log_selection(
         &mut self,
         channel: ConversationId,
@@ -2710,19 +2772,30 @@ impl ChatWindow {
             // Requested history is context, not news: no notification,
             // highlight or unread mark.
             Event::ChannelHistory { channel, messages } => {
-                let lines = messages
-                    .into_iter()
-                    .map(|message| TimelineLine {
-                        sender: message.sender,
-                        text: if message.notice {
-                            format!("[NOTICE] {}", message.text)
-                        } else {
-                            message.text
-                        },
-                        meta: irc_message_meta(message.server_time, message.msgid.as_deref(), true),
-                    })
-                    .collect();
-                self.state.insert_channel_history(network, &channel, lines);
+                self.state
+                    .insert_channel_history(network, &channel, history_lines(messages));
+            }
+            Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
+            // Older pages go above everything the log holds; the main log
+            // keeps its top row in place (`LogList::sync`).
+            Event::OlderChannelHistory {
+                channel,
+                request,
+                messages,
+                status,
+            } => {
+                if let Some(id) = self.state.channel_id(network, &channel) {
+                    if status == OlderHistoryStatus::Failed {
+                        self.state.older_history_failed(id, request);
+                    } else {
+                        self.state.insert_older_history(
+                            id,
+                            request,
+                            history_lines(messages),
+                            status == OlderHistoryStatus::Beginning,
+                        );
+                    }
+                }
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
@@ -4973,12 +5046,27 @@ impl ChatWindow {
             self.pane_renders += 1;
         }
         match kind {
-            PaneKind::MainLog => list(
-                self.main_lists[&self.state.selection()].state.clone(),
-                cx.processor(Self::render_main_row),
-            )
-            .size_full()
-            .into_any_element(),
+            PaneKind::MainLog => {
+                let selection = self.state.selection();
+                let main = self
+                    .main_lists
+                    .get_mut(&selection)
+                    .expect("synced before drawing");
+                if let Selection::Channel(id) = selection {
+                    let chat = cx.weak_entity();
+                    main.on_scroll(move |first_visible, cx| {
+                        let chat = chat.clone();
+                        cx.defer(move |cx| {
+                            let _ = chat.update(cx, |chat, _| {
+                                chat.scrolled_main_log(id, first_visible);
+                            });
+                        });
+                    });
+                }
+                list(main.state.clone(), cx.processor(Self::render_main_row))
+                    .size_full()
+                    .into_any_element()
+            }
             PaneKind::SubLog => list(
                 self.sub_list.state.clone(),
                 cx.processor(Self::render_sub_row),
@@ -7457,6 +7545,153 @@ mod pane_tests {
             let rows = super::newest_lines(chat.state.conversations(), None, 10);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].0, b.messages[2].sequence);
+        });
+    }
+
+    #[gpui::test]
+    fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{
+            Connection, ConnectionConfig, Event, HistoryMessage, OlderHistoryStatus,
+        };
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let at = |secs: u64| Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        let line = |text: &str, secs: u64, msgid: &str| HistoryMessage {
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            server_time: at(secs),
+            msgid: Some(msgid.into()),
+        };
+        // A connection to a local listener that never registers: requests
+        // can be queued on it, nothing reaches a server.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+        config.port = listener.local_addr().unwrap().port();
+        config.use_tls = false;
+        let connection = Connection::connect(config).unwrap();
+        let (b, main_rows) = chat.update(cx, |chat, cx| {
+            chat.sessions.get_mut(&NetworkId(1)).unwrap().irc = Some(connection);
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::HistoryAvailable(true),
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                    Event::HistoryRequested {
+                        channel: "#b".into(),
+                    },
+                    Event::ChannelHistory {
+                        channel: "#b".into(),
+                        messages: vec![line("recent", 1_790_550_000, "r1")],
+                    },
+                ],
+                false,
+                cx,
+            );
+            let b = chat.state.channel_id(NetworkId(1), "#b").unwrap();
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(b));
+            chat.sync_log_lists();
+            (
+                b,
+                chat.main_lists[&Selection::Channel(b)].state.item_count(),
+            )
+        });
+        cx.run_until_parked();
+
+        let request = chat.update(cx, |chat, _| {
+            // Far from the top, or another conversation: nothing is asked.
+            chat.scrolled_main_log(b, 40);
+            let a = chat.state.channel_id(NetworkId(1), "#a").unwrap();
+            chat.scrolled_main_log(a, 0);
+            assert!(chat.state.older_history_in_flight(b).is_none());
+            assert!(chat.state.older_history_in_flight(a).is_none());
+            // Scrolled to the top: one page is asked for, and only one.
+            chat.scrolled_main_log(b, 0);
+            let request = chat.state.older_history_in_flight(b).expect("asked");
+            chat.scrolled_main_log(b, 1);
+            assert_eq!(chat.state.older_history_in_flight(b), Some(request));
+            request
+        });
+        chat.update(cx, |chat, cx| {
+            let before = chat.notifier.shown.len();
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    // A live line while the page is on its way.
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "carol".into(),
+                        text: "live".into(),
+                        notice: false,
+                        mentioned: false,
+                        server_time: at(1_790_560_000),
+                        msgid: Some("l1".into()),
+                        replayed: false,
+                    },
+                    Event::OlderChannelHistory {
+                        channel: "#b".into(),
+                        request,
+                        messages: vec![
+                            line("alice: older mention", 1_790_540_000, "o1"),
+                            line("recent", 1_790_550_000, "r1"),
+                        ],
+                        status: OlderHistoryStatus::Beginning,
+                    },
+                ],
+                false,
+                cx,
+            );
+            assert_eq!(chat.notifier.shown.len(), before, "history never notifies");
+            let texts: Vec<_> = chat.state.conversations()[1]
+                .messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect();
+            assert_eq!(texts, ["alice: older mention", "recent", "live"]);
+            let older = &chat.state.conversations()[1].messages[0];
+            assert!(older.is_history());
+            assert!(chat.highlight_ranges(NetworkId(1), older).is_empty());
+            assert!(!chat.state.is_highlighted(b));
+            chat.sync_log_lists();
+            assert_eq!(
+                chat.main_lists[&Selection::Channel(b)].state.item_count(),
+                main_rows + 2
+            );
+            // The beginning was reached: scrolling asks nothing more.
+            chat.scrolled_main_log(b, 0);
+            assert!(chat.state.older_history_in_flight(b).is_none());
+            // A page answering an old request is ignored.
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::OlderChannelHistory {
+                    channel: "#b".into(),
+                    request,
+                    messages: vec![line("stale", 1_790_530_000, "s1")],
+                    status: OlderHistoryStatus::More,
+                }],
+                false,
+                cx,
+            );
+            assert_eq!(chat.state.conversations()[1].messages.len(), 3);
         });
     }
 

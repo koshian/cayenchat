@@ -1079,6 +1079,13 @@ impl AppState {
         })
     }
 
+    /// The older-history request of conversation `id` that is on its way.
+    pub fn older_history_in_flight(&self, id: ConversationId) -> Option<u64> {
+        self.older_history
+            .get(&id)
+            .and_then(|state| state.in_flight)
+    }
+
     /// Puts the answer to older-history request `request` before everything
     /// conversation `id` holds, oldest first, and returns how many lines
     /// were added. Lines the conversation already has near its top (a
