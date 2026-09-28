@@ -647,7 +647,9 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         message_tags: preferences.message_tags,
         server_time: preferences.server_time,
         batch: preferences.batch,
-        metadata: preferences.metadata,
+        // Avatar metadata is always asked for when a server offers it:
+        // references only, nothing is downloaded unless avatars are shown.
+        metadata: true,
     }
 }
 
@@ -1488,7 +1490,7 @@ impl ChatWindow {
         session.manual_disconnect = false;
         session.retry_attempt = 0;
         session.active_config = Some(config.clone());
-        session.metadata_requested = config.ircv3.metadata && config.ircv3.batch;
+        session.metadata_requested = config.ircv3.metadata;
         session.diagnostics.clear();
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
@@ -1634,7 +1636,7 @@ impl ChatWindow {
         }
         session.generation += 1;
         session.own_avatar.connection_ended();
-        session.metadata_requested = config.ircv3.metadata && config.ircv3.batch;
+        session.metadata_requested = config.ircv3.metadata;
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
         self.state.set_status(network, ConnectionStatus::Connecting);
@@ -5730,7 +5732,7 @@ impl ChatWindow {
                 d.bg(style.main_alt)
             })
             .child(style.time(message.time))
-            .when(!message.activity && self.avatars_shown(network), |row| {
+            .when(!message.activity && self.avatars.enabled(), |row| {
                 row.child(
                     self.avatar_slot(
                         self.state
@@ -5816,20 +5818,6 @@ impl ChatWindow {
                 }
             })
             .into_any_element()
-    }
-
-    /// Whether rows of `network` have an avatar slot: "Show user avatars"
-    /// is on and the server's avatar option is on. The option decides at
-    /// once for display; its protocol negotiation waits for the next
-    /// connection. Servers that do not use avatars show none, not even
-    /// default ones.
-    fn avatars_shown(&self, network: NetworkId) -> bool {
-        self.avatars.enabled()
-            && self
-                .sessions
-                .get(&network)
-                .and_then(|session| self.saved.profile(&session.profile_id))
-                .is_some_and(|profile| profile.ircv3.metadata)
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
@@ -5962,7 +5950,7 @@ impl ChatWindow {
         let end = range.end.min(channel.members.len());
         let start = range.start.min(end);
         let network = channel.network;
-        let avatars_shown = self.avatars_shown(network);
+        let avatars_shown = self.avatars.enabled();
         (start..end)
             .map(|index| {
                 let member = channel.members[index].clone();
@@ -6703,7 +6691,6 @@ mod server_settings_tests {
             message_tags: true,
             server_time: true,
             batch: true,
-            metadata: true,
         };
         settings
     }
@@ -7026,7 +7013,6 @@ mod pane_tests {
         settings.servers[1].username = "me".into();
         settings.servers[1].ircv3.server_time = true;
         settings.servers[1].ircv3.batch = true;
-        settings.servers[1].ircv3.metadata = true;
         let config = |settings: &Settings, index: usize| {
             crate::connection_config(
                 &settings.servers[index],
@@ -7036,7 +7022,14 @@ mod pane_tests {
             )
             .unwrap()
         };
-        assert_eq!(config(&settings, 0).ircv3, Ircv3Options::default());
+        // Avatar metadata is always asked for; the rest follows the options.
+        assert_eq!(
+            config(&settings, 0).ircv3,
+            Ircv3Options {
+                metadata: true,
+                ..Ircv3Options::default()
+            }
+        );
         assert_eq!(
             config(&settings, 1).ircv3,
             Ircv3Options {
@@ -7071,7 +7064,7 @@ mod pane_tests {
                     message_tags: true,
                     server_time: false,
                     batch: false,
-                    metadata: false,
+                    metadata: true,
                 },
                 "reconnects use the new choice; batch stays off here"
             );

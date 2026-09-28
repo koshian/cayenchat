@@ -645,7 +645,7 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
 
 **Status:** Accepted (IRC metadata: experimental)
 
-2026-09-27. Two independent settings:
+2026-09-27; revised 2026-09-28 to a single switch.
 
 - **Appearance → Show user avatars** (`Appearance::user_avatars`, off by
   default, applies live, independent of image previews). It alone decides
@@ -658,22 +658,20 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   Okabe–Ito backgrounds, a figure color from the opposite light/dark set
   (contrast ≥ 4:1), one of 4 calyx hats and 4 eyes, 512 looks in all. It is
   an SVG rasterized by GPUI; it says nothing about identity (a later user of
-  the nickname looks the same) and works for any protocol. Avatars
-  (defaults included) are drawn only for servers whose avatar option below
-  is on; turning that option off removes the column for that server at once,
-  while its negotiation still changes on the next connection.
-- **IRCv3 → User avatars (experimental)** (`Ircv3Preferences::metadata`, per
-  server, off for new and existing settings, saved by autosave and applied
-  on the next connection like the other IRCv3 options). It decides whether
-  IRC avatar references are received through `draft/metadata-2`. It
-  requires the server's batch option; the tab shows the dependency and
-  nothing turns batch on implicitly. Receiving references downloads no
-  image.
+  the nickname looks the same) and works for any protocol.
+- **IRC avatar metadata** has no switch (the first version had a per-server
+  "IRCv3 → User avatars (experimental)" option; it confused users, who
+  turned it on and saw nothing while the display setting was off, and was
+  removed): every connection asks a server that offers `draft/metadata-2`
+  for it, and for `batch` as its prerequisite even when the server's batch
+  option is off (a server that does not offer metadata gets no batch
+  request from this). Receiving references downloads no image; the IRCv3
+  tab only holds our own avatar. Files that still carry the old
+  `ircv3.metadata` field load without it.
 
-Both fields were added without a settings version change (like batch),
-read as off when absent. Showing and receiving are separate so a future
-Matrix client can use the display layer without the IRCv3 option or an
-external upload provider.
+`user_avatars` was added without a settings version change (like batch),
+read as off when absent. The display layer is protocol-independent so a
+future Matrix client can use it without an external upload provider.
 
 Specification followed: ircv3-specifications `extensions/metadata.md` at
 its last change, commit ef205ce (2026-05-07; repository head 9ff58d1,
@@ -693,8 +691,8 @@ updates, 760 in WHOIS, channel avatars and other keys (`display-name`,
 `color`, …). Details are in `architecture.md` (IRCv3 capabilities and
 User avatars).
 
-**Publishing our own avatar (2026-09-28).** The IRCv3 tab has, per server
-and only while that server's metadata option is on, an avatar URL field
+**Publishing our own avatar (2026-09-28).** The IRCv3 tab has, per server,
+an avatar URL field
 and explicit **Send to IRC Server** (IRCサーバに送信; "Publish" in code) /
 **Remove from IRC Server** (IRCサーバから削除) buttons. The section has no
 explanatory text (by the user's choice, after trying a version with an

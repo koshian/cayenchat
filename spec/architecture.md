@@ -526,10 +526,11 @@ same tracker, with the same bounds, and its `BATCH` lines appear in the
 server log as before. That compatibility handling is not a claim of batch
 support.
 
-metadata (experimental, opt-in per server, D023): `draft/metadata-2` is
-wanted only when batch is also enabled for the server, because the draft
-requires batch; the IRCv3 tab shows that dependency and never turns batch
-on by itself. It is requested with its own `CAP REQ` only after `batch` is
+metadata (experimental, D023): `draft/metadata-2` is wanted on every
+connection (`Ircv3Options::metadata` is always set by the UI; there is no
+option). The draft requires batch, so `batch` is requested too, even when
+the server's batch option is off, but only from a server that offers
+`draft/metadata-2`. Metadata is requested with its own `CAP REQ` only after `batch` is
 acknowledged (a server declining batch therefore never gets a metadata
 request) and never together with the legacy `metadata-notify`. If `batch`
 goes away (DEL or `ACK -batch`) metadata is dropped at once and
@@ -597,8 +598,8 @@ non-ASCII byte decodes differently), and non-ASCII URLs are dropped rather
 than guessed; publishing likewise accepts only ASCII URLs there. The IRCv3
 tab says so.
 
-Publishing from the UI: the IRCv3 tab shows, while the selected server's
-metadata option is on, the draft URL field (`ServerProfile::avatar_url`,
+Publishing from the UI: the IRCv3 tab shows, for the selected server, the
+draft URL field (`ServerProfile::avatar_url`,
 saved by autosave like any field and never sent by it), "Choose Image…"
 when an image host is set up, "Send to IRC Server" (with the exposure warning as its tooltip) only when
 connected and the draft differs from the server-confirmed URL, "Remove
@@ -892,9 +893,8 @@ removing a server forgets its directory. The member list shows only
 current occupancies. Bounds: 2,048 current and 512 retired entries per
 network, the oldest-ended retired entries dropped first.
 
-Display: with the setting on, and for servers whose IRCv3 avatar option is
-on (`ChatWindow::avatars_shown`; the option takes effect for display at
-once), main-log channel message rows (not activity
+Display: with the setting on (the only avatar switch, for every server),
+main-log channel message rows (not activity
 lines, the server log or the combined subwindow) and member rows get a
 fixed 16×16 slot (below the 20 px line height, so rows keep their height)
 between the time and the nickname, or before the member name. Rows ask for

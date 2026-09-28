@@ -1063,14 +1063,6 @@ async fn run_cancellable(
         )
         .await;
     }
-    if config.ircv3.metadata && !config.ircv3.batch {
-        diagnostic(
-            &events,
-            started,
-            "Avatar metadata needs message batches (batch), which are off for this server; it is not requested.",
-        )
-        .await;
-    }
     diagnostic(
         &events,
         started,
@@ -4047,58 +4039,62 @@ mod tests {
     }
 
     #[test]
-    fn metadata_is_off_by_default_and_needs_batch() {
+    fn metadata_without_batch_brings_batch_along_or_stays_off() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let server =
-            thread::spawn(move || {
-                for expected in [None, Some("CAP REQ server-time")] {
-                    let (mut socket, _) = listener.accept().unwrap();
+        let server = thread::spawn(move || {
+            for metadata in [false, true] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut lines = BufReader::new(socket.try_clone().unwrap());
+                let first = read_client_line(&mut lines);
+                if !metadata {
+                    // Everything off: the plain registration of old.
+                    assert_eq!(first, "CAP END");
+                } else {
+                    assert_eq!(first, "CAP LS 302");
                     socket
-                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .write_all(b":srv CAP * LS :batch draft/metadata-2 server-time\r\n")
                         .unwrap();
-                    let mut lines = BufReader::new(socket.try_clone().unwrap());
-                    let first = read_client_line(&mut lines);
-                    if expected.is_none() {
-                        // Everything off: the plain registration of old.
-                        assert_eq!(first, "CAP END");
-                    } else {
-                        assert_eq!(first, "CAP LS 302");
-                        socket
-                            .write_all(b":srv CAP * LS :batch draft/metadata-2 server-time\r\n")
-                            .unwrap();
-                        let requests: Vec<String> =
-                            (0..3).map(|_| read_client_line(&mut lines)).collect();
-                        assert!(
-                            requests.iter().all(|line| !line.starts_with("CAP REQ")
-                                || Some(line.as_str()) == expected),
-                            "{requests:?}"
-                        );
-                        socket
-                            .write_all(b":srv CAP * ACK :server-time\r\n")
-                            .unwrap();
-                        assert_eq!(read_client_line(&mut lines), "CAP END");
-                    }
+                    let requests: Vec<String> =
+                        (0..4).map(|_| read_client_line(&mut lines)).collect();
+                    assert!(
+                        requests.contains(&"CAP REQ server-time".to_owned()),
+                        "{requests:?}"
+                    );
+                    assert!(
+                        requests.contains(&"CAP REQ batch".to_owned()),
+                        "{requests:?}"
+                    );
+                    // Batch declined: metadata is never requested alone.
                     socket
-                        .write_all(
-                            b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n\
+                        .write_all(b":srv CAP * ACK :server-time\r\n:srv CAP * NAK :batch\r\n")
+                        .unwrap();
+                    assert_eq!(read_client_line(&mut lines), "CAP END");
+                }
+                socket
+                    .write_all(
+                        b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n\
 :srv METADATA bob avatar * :https://example.com/b.png\r\n\
 :bob!u@h PRIVMSG #test :hi\r\n",
-                        )
-                        .unwrap();
-                    loop {
-                        let next = read_client_line(&mut lines);
-                        assert!(!next.starts_with("METADATA"), "{next}");
-                        if next == "JOIN #test" {
-                            break;
-                        }
+                    )
+                    .unwrap();
+                loop {
+                    let next = read_client_line(&mut lines);
+                    assert!(!next.starts_with("METADATA"), "{next}");
+                    if next == "JOIN #test" {
+                        break;
                     }
-                    let _ = read_client_line(&mut lines);
                 }
-            });
+                let _ = read_client_line(&mut lines);
+            }
+        });
         for options in [
             Ircv3Options::default(),
-            // Metadata without batch requests neither.
+            // Metadata with batch off: batch is asked for as its
+            // prerequisite; declined, so no metadata either.
             Ircv3Options {
                 server_time: true,
                 metadata: true,

@@ -49,7 +49,7 @@ pub(crate) struct Ircv3Feature {
 }
 
 /// Features shown on the IRCv3 tab, in display order.
-pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 4] = [
+pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 3] = [
     Ircv3Feature {
         id: "ircv3-server-time",
         label_key: "ircv3_server_time",
@@ -73,18 +73,6 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 4] = [
         get: |preferences| preferences.batch,
         toggle: |preferences| preferences.batch = !preferences.batch,
         warning: |_| None,
-    },
-    // draft/metadata-2 requires batch (the specification says so); the
-    // dependency is shown, not resolved behind the user's back.
-    Ircv3Feature {
-        id: "ircv3-metadata",
-        label_key: "ircv3_metadata",
-        hint_key: "ircv3_metadata_hint",
-        get: |preferences| preferences.metadata,
-        toggle: |preferences| preferences.metadata = !preferences.metadata,
-        warning: |preferences| {
-            (preferences.metadata && !preferences.batch).then_some("ircv3_metadata_needs_batch")
-        },
     },
 ];
 
@@ -200,13 +188,6 @@ impl SettingsWindow {
                     .text_color(theme.warning)
                     .child(self.i18n.format("ircv3_legacy_encoding", &encoding)),
             );
-            if profile.ircv3.metadata {
-                panel = panel.child(
-                    div()
-                        .text_color(theme.warning)
-                        .child(self.i18n.format("ircv3_metadata_legacy", &encoding)),
-                );
-            }
         }
         panel
             .child(
@@ -227,10 +208,6 @@ impl SettingsWindow {
     /// up, and "Send to IRC Server" / "Remove from IRC Server" when they
     /// would change something on the connected server.
     fn render_own_avatar(&mut self, profile: &ServerProfile, cx: &mut Context<Self>) -> Div {
-        // Experimental and behind the server's metadata opt-in.
-        if !profile.ircv3.metadata {
-            return div();
-        }
         let theme = settings_theme::palette(cx);
         let status = self
             .owner
@@ -435,11 +412,9 @@ impl SettingsWindow {
         let Some(profile) = self.settings.values.selected_profile() else {
             return false;
         };
-        profile.ircv3.metadata
-            && self
-                .owner
-                .read(cx)
-                .is_ok_and(|chat| chat.own_avatar_status(&profile.id).can_request)
+        self.owner
+            .read(cx)
+            .is_ok_and(|chat| chat.own_avatar_status(&profile.id).can_request)
     }
 
     fn paste_avatar_image(
@@ -937,7 +912,6 @@ mod tests {
         }
         assert_eq!(settings.servers[0].avatar_url, url, "unchanged");
         // Only the draft changes: nothing about publishing is stored.
-        assert!(settings.servers.iter().all(|server| !server.ircv3.metadata));
     }
 
     #[test]
@@ -1050,27 +1024,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn metadata_shows_its_batch_dependency_without_enabling_batch() {
-        let metadata = IRCV3_FEATURES
-            .iter()
-            .find(|feature| feature.id == "ircv3-metadata")
-            .unwrap();
-        let mut preferences = Ircv3Preferences::default();
-        assert_eq!((metadata.warning)(&preferences), None, "off: no warning");
-        (metadata.toggle)(&mut preferences);
-        assert!(preferences.metadata && !preferences.batch);
-        assert_eq!(
-            (metadata.warning)(&preferences),
-            Some("ircv3_metadata_needs_batch")
-        );
-        preferences.batch = true;
-        assert_eq!((metadata.warning)(&preferences), None);
-        // Turning metadata off leaves batch as the user set it.
-        (metadata.toggle)(&mut preferences);
-        assert!(!preferences.metadata && preferences.batch);
     }
 }
 
@@ -1233,7 +1186,6 @@ mod own_avatar_tests {
         settings.appearance.user_avatars = true;
         settings.servers[0].nickname = "me".into();
         settings.servers[0].ircv3.batch = true;
-        settings.servers[0].ircv3.metadata = true;
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });

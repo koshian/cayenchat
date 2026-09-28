@@ -309,10 +309,10 @@ this delay.
    directory's access times do not change).
 10. User avatars, with a `preview-fixture` build and a local IRC fixture
    that offers `batch` and `draft/metadata-2` (never a public server): in
-   **外観**, **ユーザーのアバターを表示する** is off for new settings, and in
-   **IRCv3**, **ユーザーのアバター (実験的)** is off and, when turned on
-   without **メッセージのバッチ**, shows that batch is required (batch stays
-   off). With both IRCv3 options on, connect and have the fixture send
+   **外観**, **ユーザーのアバターを表示する** is off for new settings and is
+   the only avatar switch; the IRCv3 tab has no avatar option. Connect (the
+   transcript shows `CAP REQ batch` and `CAP REQ draft/metadata-2` even with
+   **メッセージのバッチ** off) and have the fixture send
    `METADATA <nick> avatar * :https://images.cayenchat.test/<file>`: nothing
    is downloaded and the layout is unchanged while the Appearance setting is
    off. Turn it on: 16×16 images appear before nicknames in the channel log
@@ -328,7 +328,7 @@ this delay.
    column disappears at once and no further image is read.
 11. Own avatar, with the same setup against a disposable local server (for
    example the pinned Ergo below; never a public server or real account):
-   in **IRCv3**, with **ユーザーのアバター (実験的)** on, the section
+   in **IRCv3**, the section
    **このサーバーでの自分のアバター** shows the URL field and no explanatory
    text. Type a URL and wait for autosave: nothing is sent (the transcript
    shows no `METADATA * SET`). While disconnected neither **IRCサーバに送信**
