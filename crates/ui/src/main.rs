@@ -2788,12 +2788,20 @@ impl ChatWindow {
                     if status == OlderHistoryStatus::Failed {
                         self.state.older_history_failed(id, request);
                     } else {
-                        self.state.insert_older_history(
+                        let added = self.state.insert_older_history(
                             id,
                             request,
                             history_lines(messages),
                             status == OlderHistoryStatus::Beginning,
                         );
+                        // A text selection names rows by index; keep it on
+                        // the same lines.
+                        if let Some(selection) = self.log_selection.as_mut()
+                            && selection.channel == id
+                        {
+                            selection.anchor.row += added;
+                            selection.cursor.row += added;
+                        }
                     }
                 }
             }
@@ -7273,7 +7281,7 @@ fn settings_with_channels(channels: &str) -> Settings {
 
 #[cfg(test)]
 mod pane_tests {
-    use super::{ChatWindow, Selection};
+    use super::{ChatWindow, LogPosition, LogSelection, Selection};
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
@@ -7632,6 +7640,12 @@ mod pane_tests {
             request
         });
         chat.update(cx, |chat, cx| {
+            // The user has selected text in the line that is on screen.
+            chat.log_selection = Some(LogSelection {
+                channel: b,
+                anchor: LogPosition { row: 0, byte: 0 },
+                cursor: LogPosition { row: 0, byte: 3 },
+            });
             let before = chat.notifier.shown.len();
             chat.handle_events(
                 NetworkId(1),
@@ -7671,6 +7685,12 @@ mod pane_tests {
             assert!(older.is_history());
             assert!(chat.highlight_ranges(NetworkId(1), older).is_empty());
             assert!(!chat.state.is_highlighted(b));
+            let selection = chat.log_selection.unwrap();
+            assert_eq!(
+                (selection.anchor.row, selection.cursor.row),
+                (1, 1),
+                "still on \"recent\""
+            );
             chat.sync_log_lists();
             assert_eq!(
                 chat.main_lists[&Selection::Channel(b)].state.item_count(),
