@@ -210,7 +210,8 @@ off for new and migrated settings (D018). Version 15 adds per-server IRCv3
 opt-ins (message tags and server timestamps), off for new and migrated
 settings (D022); the later batch and metadata (avatar) opt-ins are new
 fields of the same object without a version change, read as off when
-absent, and so is the Appearance `user_avatars` setting (D023). The UI keeps the
+absent, and so is the Appearance `user_avatars` setting (D023), as are the
+peer avatar option and the per-server shared URL `peer_avatar_url` (D025). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -591,6 +592,43 @@ the subset avatars need:
   Losing the capability sends `Event::AvatarsReset`. Everything lives in the
   connection's worker, so a reconnect starts empty.
 
+CTCP AVATAR (experimental, D025): `Ircv3Options::peer_avatars` needs no
+capability. `irc-core::peer_avatar::PeerAvatars` exists in the worker
+only while it is on:
+
+- Registration: `ConnectionConfig::shared_avatar` (the explicitly shared
+  URL) together with the option makes the `USER` realname
+  `\x034\x0fCayenChat` (KVIrc's avatar mark,
+  `ConnectionConfig::advertises_avatar`); otherwise it stays `CayenChat`.
+  `Connection::share_avatar(Some | None)` changes only the URL answered,
+  not the realname.
+- A private `\x01AVATAR\x01` PRIVMSG from a user is answered with
+  `NOTICE <nick> :\x01AVATAR <url>\x01` while a URL is shared (one per user
+  per minute, five per ten seconds). Every CTCP AVATAR PRIVMSG or NOTICE is
+  consumed before `translate_message`: no chat row, server line, unread
+  mark, highlight, notification or preview.
+- A CTCP AVATAR NOTICE (answer or announcement), live, from a user who
+  shares a channel with us (to us) or is in the channel it is sent to,
+  sets that user's peer avatar: an `http(s)` URL passing the metadata
+  value rules, or none (empty, file name, other scheme). The second field is
+  ignored; nothing about DCC exists.
+- Discovery: realnames in 311 (read, still collected for WHOIS) and 352
+  replies; a live `ChannelMessage` or `PrivateMessage` sender who shares a
+  channel and has nothing known queues one `WHO <nick>`; a marked realname
+  queues one `PRIVMSG <nick> :\x01AVATAR\x01` unless metadata gave an
+  avatar. Queue ≤ 32, one probe per 2 s, ≤ 4 outstanding, 30 s timeout,
+  `263` pauses 30 s; our 352/315/401 are consumed. Per-user state is
+  cleared on QUIT or leaving the last shared channel and moved on NICK
+  (a WHO in flight for the old name is absorbed unused). A select branch
+  exists only while a probe is queued or outstanding.
+- Merge: the struct keeps each user's metadata and peer reference and
+  emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);
+  metadata's own events pass through `merge_metadata`, its moves are
+  absorbed (the peer lifecycle, run first for the same message, already
+  moved or ended the user), and `AvatarsReset` is followed by the peer
+  avatars again. With the option off nothing is merged and metadata
+  events are unchanged.
+
 On legacy encodings the whole line is decoded with the connection's
 charset, while metadata values are UTF-8. Avatar URLs are the only values
 used, so the fallback is narrow: only ASCII values are accepted there (any
@@ -638,6 +676,19 @@ state only changes on `MetadataReady`, `OwnAvatar`,
 reconnect, removal), which fails a pending request and forgets what the
 server held. The settings window reads it through its owner handle and is
 redrawn only for batches containing those events.
+
+Peer sharing (D025) is shown under the same field while the server's peer
+avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),
+"Share with Peers" (tooltip: exposure warning) when the draft differs from
+it, "Stop Sharing" when one is shared, and the reconnect line from
+`ircv3_settings::peer_reconnect_needed`. Share copies the checked draft
+(`share_draft_with_peers`; `peer_avatar_url_problem` adds the `{size}`
+refusal); `toggle_feature` clears the shared URL when the option goes off.
+`ChatWindow::apply_servers` (autosave) writes `shared_peer_avatar(profile)`
+into `active_config` and, when the current connection was made with the
+option (`ServerSession::peer_avatars`, recorded by
+`connection_starting`), sends a changed URL with
+`Connection::share_avatar`. The draft never reaches it.
 
 Preferences live in `Ircv3Preferences`, one field per feature with its own
 serde default; the settings tab renders one `ircv3_settings::Ircv3Feature`
@@ -850,7 +901,8 @@ and `performance.md`.
 ## User avatars
 
 ```text
-irc-core metadata (opt-in draft/metadata-2)      a future Matrix client
+irc-core metadata (draft/metadata-2) + peer_avatar (CTCP AVATAR, opt-in)
+        |  (metadata first)                                a future Matrix client
         |  Event::UserAvatar / AvatarMoved / AvatarsReset      |
         v                                                      v
 app::avatars::AvatarDirectory  (per network: user key -> avatar reference,
@@ -870,8 +922,8 @@ RenderImage in a fixed 16×16 slot (main-log message rows, member rows)
 
 Presentation and protocol are separate. The Appearance setting "Show user
 avatars" (off by default) decides whether avatars are displayed and
-downloaded; the per-server IRCv3 opt-in decides whether IRC avatar
-references are received at all. `app::avatars` stores avatar references
+downloaded; whether IRC avatar references are received depends only on the
+server (metadata) and the per-server peer avatar option (CTCP AVATAR). `app::avatars` stores avatar references
 (for IRC, the metadata URL template) keyed by network and a
 protocol-folded user key (IRC: RFC 1459 case-mapped nickname); it knows no
 protocol and fetches nothing, and nothing is copied into retained messages

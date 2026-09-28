@@ -310,7 +310,8 @@ this delay.
 10. User avatars, with a `preview-fixture` build and a local IRC fixture
    that offers `batch` and `draft/metadata-2` (never a public server): in
    **外観**, **ユーザーのアバターを表示する** is off for new settings and is
-   the only avatar switch; the IRCv3 tab has no avatar option. Connect (the
+   the only avatar switch; the IRCv3 tab has no metadata option (its
+   **ピア間のアバター** option is D025's, step 12). Connect (the
    transcript shows `CAP REQ batch` and `CAP REQ draft/metadata-2` even with
    **メッセージのバッチ** off) and have the fixture send
    `METADATA <nick> avatar * :https://images.cayenchat.test/<file>`: nothing
@@ -366,6 +367,30 @@ this delay.
    Switch servers during an upload: the URL goes to the server it was for.
    With no host set up there is no **画像を選択…** and no drop target; an
    image paste says to set up image upload.
+12. Peer avatars (D025), against a disposable local server without
+   `draft/metadata-2` (never a public server), with a raw client or KVIrc
+   as the peer: **ピア間のアバター (CTCP AVATAR、実験的)** is off for new
+   settings; with it off, `\x01AVATAR\x01` from the peer is shown as before
+   and never answered, and the `USER` line ends in `CayenChat`. Turn it on
+   and type a URL: autosave shares nothing (no **ピアに共有中** line; a
+   query from the peer gets no NOTICE). **ピアに共有** (tooltip: the
+   exposure warning) shows **ピアに共有中: <url>**, the peer's query is now
+   answered with `NOTICE <peer> :\x01AVATAR <url>\x01`, and, while
+   connected, **実名欄のアバター表示を更新するには再接続してください。**
+   appears until reconnecting; after reconnecting the `USER` line ends in
+   `\x034\x0fCayenChat`. Editing the field or uploading an image does not
+   change the shared URL; a URL with `{size}`, credentials or a private host
+   is refused. From the peer, set the realname to `\x034\x0f…` and speak in
+   the channel: the transcript shows one `WHO <peer>`, then one
+   `PRIVMSG <peer> \x01AVATAR\x01`; answer
+   `NOTICE <me> :\x01AVATAR https://images.cayenchat.test/<file> M\x01`: with
+   **ユーザーのアバターを表示する** on, the image appears; nothing shows in
+   the chat, server log, unread marks or notifications. A file-name answer
+   (`\x01AVATAR me.png 2048\x01`) removes it and sends no DCC. Speaking
+   again asks nothing more; a user without the mark is never queried;
+   joining a large channel sends no WHO. Change the peer's nick: the avatar
+   follows; quit and reuse the nick from another client: none. **共有を停止**
+   and turning the option off stop answering at once.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
@@ -786,6 +811,36 @@ changed), so the settings window, Publish/Remove feedback and the display
 toggle were not exercised in the real window; the GPUI tests above cover
 their logic, and manual step 11 lists the check. Windows and Linux were
 not run.
+
+### Peer avatars with CTCP AVATAR (2026-09-28)
+
+On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace
+Clippy with all targets and features, and workspace tests passed. The
+performance suite was not run: no rendering or event-path code outside
+the opt-in worker state changed. Automated coverage: the realname mark
+(digits `0`–`7`, bit 2, KVIrc's color tag after it, malformed marks);
+CTCP parsing (tag case, optional closing 0x01, KVIrc's `M`/`F`/`?` field,
+`avatar.notify`'s size, empty and `""` answers, file names with `\040`,
+Windows and Unix paths, `file:`/`ftp:`, controls, legacy encodings);
+shareable URLs; answers only while sharing, per-user and total rate
+limits, no answer to channel, replayed, self or server queries; answers
+and announcements only from users present now; discovery bounds (queue,
+spacing, outstanding, timeouts, no re-ask, `263`), our WHO/315/401
+consumed and others shown; NICK, QUIT, PART and our own PART; stale
+lookups after NICK; metadata precedence, fallback and reset; settings
+defaults and files without the fields; explicit Share, draft edits and
+uploads not changing it, Stop and turning the option off; the reconnect
+line; avatar fetch limits with declared, missing, understated and
+overstated lengths; and two fixture connections through the real worker
+(one KVIrc-format exchange end to end, one with the option off) plus a
+GPUI test through `ChatWindow` (autosave shares nothing, Share answers at
+once, turning the option off stops answering).
+
+Interoperability: the fixtures reproduce KVIrc's lines as its source
+writes them (see D025); no running KVIrc was available in this
+environment (it is not installed and was not built), so interoperation
+with KVIrc itself is an assumption from its source, not a tested result.
+No GUI run was made for this change; manual step 12 lists the check.
 
 ### Native settings appearance checks (D019)
 

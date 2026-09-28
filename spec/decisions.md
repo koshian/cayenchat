@@ -666,7 +666,8 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   for it, and for `batch` as its prerequisite even when the server's batch
   option is off (a server that does not offer metadata gets no batch
   request from this). Receiving references downloads no image; the IRCv3
-  tab only holds our own avatar. Files that still carry the old
+  tab only holds our own avatar (and, since D025, the separate peer
+  avatar option). Files that still carry the old
   `ircv3.metadata` field load without it.
 
 `user_avatars` was added without a settings version change (like batch),
@@ -831,3 +832,104 @@ only relaxes the server PASS check: SASL PLAIN still requires TLS.
 Loopback or private addresses are not allowed automatically: a hostname does
 not prove the network is trusted, and plaintext credentials should never be
 sent without the user having chosen it.
+
+## D025 — Peer avatars with KVIrc's CTCP AVATAR (URL only)
+
+**Status:** Accepted (experimental)
+
+2026-09-28. Most IRC servers do not offer `draft/metadata-2`, so avatars
+(D023) only worked on a few. KVIrc has exchanged avatars between clients
+since 3.0 with CTCP AVATAR; CayenChat follows its protocol instead of
+inventing a command, so it works between CayenChat users and, where
+possible, with KVIrc users.
+
+Wire format (KVIrc 5.2 `doc_ctcp_avatar.html`; source on master,
+`KviIrcServerParser_ctcp.cpp` `parseCtcpRequestAvatar`/`parseCtcpReplyAvatar`,
+`KviIrcServerParser_numericHandlers.cpp` WHO reply,
+`KviIrcConnection.cpp` login and `libkviavatar.cpp` `avatar.notify`/`avatar.query`,
+checked 2026-09-28):
+
+- Mark: the realname starts with ETX (0x03), an ASCII digit `0`–`7` and
+  SI (0x0F); bit 2 of the digit means "has an avatar" (bits 0 and 1 are
+  KVIrc's gender). KVIrc sends `\x034\x0f<realname>` and may add its
+  nickname color tag after the mark.
+- Query: `PRIVMSG <nick> :\x01AVATAR\x01`. KVIrc sends it when a WHO
+  reply shows the mark on a user without an avatar.
+- Answer: `NOTICE <nick> :\x01AVATAR <file> <gender>\x01` with `M`, `F` or
+  `?`; without an avatar `\x01AVATAR \x01`. `avatar.notify` announces
+  `\x01AVATAR <file>[ <size>]\x01` or `\x01AVATAR\x01` by NOTICE to a
+  nickname or channel. `<file>` is an `http(s)` URL or a local file name
+  that the receiver fetches with DCC GET (spaces as `\040`).
+
+What CayenChat does:
+
+- **IRCv3 → Peer avatars (CTCP AVATAR, experimental)**
+  (`Ircv3Preferences::peer_avatars`, per server, off by default, added
+  without a version change). It turns on receiving and the possibility to
+  share; it needs no capability. Display and downloads still follow only
+  **Show user avatars**.
+- **Sharing is explicit and separate from the server.** "Share with Peers"
+  copies the current draft, after the same checks as publishing
+  (`publishable_avatar_url`, one line, ASCII on legacy encodings) and no
+  `{size}` (KVIrc would request it literally), into
+  `ServerProfile::peer_avatar_url`. Editing, autosaving or uploading the
+  draft never changes it; "Stop Sharing" clears it, and so does turning the
+  option off, so turning it on again shares nothing until chosen. "Send to
+  IRC Server" (metadata) is unchanged and independent.
+- **Advertising**: only with the option on and a URL shared, the `USER`
+  realname becomes `\x034\x0fCayenChat`. The realname is sent at
+  registration, so the mark changes only on the next connection; the tab
+  says "Reconnect to update the avatar mark in your real name." while the
+  connected server's mark (or whether peer exchange is on at all) differs
+  from the settings. The URL answered to queries follows Share/Stop at once
+  on the current connection (`Connection::share_avatar`).
+- **Answering**: a private `\x01AVATAR\x01` from a user is answered with
+  `NOTICE <nick> :\x01AVATAR <url>\x01` only while a URL is shared; no
+  gender field is sent (KVIrc reads it as unknown). At most one answer per
+  user per minute and five per ten seconds. Channel queries, replayed
+  history, our own echoes and queries while nothing is shared get no
+  answer. We never offer a file.
+- **Discovery** is bounded and targeted. NAMES carries no realname and
+  `extended-join` is not negotiated. Marks are read from WHOIS (311) and
+  WHO (352) replies, including ones the user asked for, and a user who
+  speaks live (channel or private message) while sharing a channel with us,
+  and about whom nothing is known, is looked up once with `WHO <nick>`.
+  Only users showing the mark are queried. No channel-wide WHO, no query to
+  unmarked users, no polling. Lookups and queries are deduplicated per user
+  until they leave, queued up to 32 (further ones skipped with one
+  diagnostic), sent one every 2 s with at most 4 outstanding, given up
+  after 30 s, paused 30 s by `263 RPL_TRYAGAIN`, and never re-asked after
+  a timeout. Our WHO replies, their end and `401` for our probes stay out
+  of the server log; a WHO the user types for a nickname we are looking up
+  at that moment is also absorbed (rare, accepted).
+- **Receiving**: a CTCP AVATAR NOTICE (answer or announcement) is used only
+  from a user present now, as the server names them: to us from someone
+  sharing a channel, or to a channel from one of its members; never from
+  replayed history, ourselves or a server. The first parameter must be an
+  `http://` or `https://` URL (quoted empty, empty, file names, escapes,
+  other schemes → the user has no usable avatar and a known one ends); the
+  second field (gender or size) is ignored. The URL is untrusted text like
+  a metadata value: the media layer applies the avatar URL policy, fetch
+  limits, redirects, validation, decoding limits and cache (D023). No DCC
+  GET/SEND is sent or accepted and no DCC code exists.
+- **Identity**: peer avatars follow the metadata rules — per connection,
+  moved on NICK (a lookup in flight for the old name is absorbed but not
+  used), ended on QUIT or leaving the last shared channel, reset by a
+  reconnect — and the application's occupancy policy is unchanged.
+- **Metadata wins**: `irc-core::peer_avatar` keeps both references per user
+  and reports the metadata one when present, the peer one otherwise; a
+  user with a metadata avatar is not queried. Losing metadata
+  (`AvatarsReset`) reports the peer avatars again.
+- CTCP AVATAR traffic makes no chat row, unread mark, highlight,
+  notification or preview. With the option off, CTCP AVATAR is handled
+  exactly as before (shown as server or channel lines, never answered).
+
+Interoperability: verified against wire-accurate fixtures written from
+KVIrc's source (realname mark, query, `M`-suffixed answer, empty answer,
+file-name answer, channel announcement); not tested against a running
+KVIrc. irc-proto writes our query as `PRIVMSG <nick> \x01AVATAR\x01`
+(no `:` before a single-word last parameter), which is the same message.
+Known limits: KVIrc finds a CayenChat user only when a WHO reply shows it
+our realname; KVIrc accepts our answer's URL
+but applies its own image limits; users who never speak and are not
+WHOISed are not discovered; `{size}` is not shared.
