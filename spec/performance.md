@@ -528,6 +528,19 @@ struct per server session.
   tens of seconds to appear (64 × 0.5 s ≈ 32 s), and joiners beyond 64
   pending get none until they change their avatar or rejoin.
 
+## Message identity (2026-09-28)
+
+A retained `model::Message` grew from 64 to 96 bytes (asserted by
+`model::tests::retained_message_size_stays_bounded`): the source timestamp
+(`Option<Timestamp>`, 16) and native identifier (`Option<Box<str>>`, 16; its
+text, at most 128 bytes, is on the heap only when a server sent a msgid).
+At 20,000 retained lines that is about 640 KiB more, a few percent of the
+measured 250–550 bytes per line. The duplicate filter holds at most 512
+64-bit keys per conversation (about 10 KiB with the hash set) and exists
+only for conversations that received a msgid or server-time; with IRCv3 off
+nothing is allocated. Hashing is bounded to 512 text bytes per line. No
+timer, thread or render path changed, so the UI baseline was not rerun.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The

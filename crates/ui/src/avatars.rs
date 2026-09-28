@@ -422,6 +422,7 @@ mod tests {
             notice: false,
             mentioned: false,
             server_time: None,
+            msgid: None,
             replayed: false,
         }
     }

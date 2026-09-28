@@ -426,9 +426,10 @@ irc-core::tags (read on the parsed irc message; nothing retained)
         |   replay::ReplayTracker reads BATCH and the `batch` tag
         v
 Event::{ChannelMessage, ChannelActivity, PrivateMessage}::server_time
-        |
+Event::{ChannelMessage, PrivateMessage}::msgid
+        |   ui (IRC adapter) -> app::MessageMeta
         v
-app::AppState::append_*_at -> Message::time (TimeOfDay, local HH:MM)
+app::AppState::append_*_at -> Message::{time, timestamp, native_id, provenance}
 ```
 
 Negotiation starts only when SASL or an opt-in extension is configured. With
@@ -474,19 +475,29 @@ says so; `server-time` stays available because its values are ASCII.
 
 server-time: the `time` tag (`YYYY-MM-DDThh:mm:ss.sssZ`, UTC; any number of
 fraction digits accepted, leap second clamped) is parsed without new
-dependencies into a `SystemTime` that travels only on the event. `app`
-converts it to the local time of day and stores it in the existing
-`Message::time` (`TimeOfDay`, minutes as `u16`), so retained messages keep
-their size and no timestamp strings are stored. Absent or invalid values,
-and connections that did not negotiate server-time, use the receipt time.
+dependencies into a `SystemTime`. `app` converts it to the local time of
+day for display (`Message::time`, `TimeOfDay`, minutes as `u16`) and also
+retains the full instant (`Message::timestamp`, milliseconds; see Timeline
+items). No timestamp strings are stored. Absent or invalid values, and
+connections that did not negotiate server-time, show the receipt time and
+retain no timestamp.
 The arrival sequence remains the ordering key; logs are never reordered by
 server time. Local echoes of our own messages keep local time, and an old
 timestamp neither suppresses notifications nor marks anything as history.
 Diagnostic elapsed times are unchanged. Bouncer backlog delivered as
 ordinary tagged lines, without a history batch, counts as live and can
-notify, within the notification rate limit. Limitations for later history work:
-the date and seconds are discarded, so a line from a previous day shows only
-its HH:MM, and server log lines (numerics, server notices) keep receipt time.
+notify, within the notification rate limit. The display is still HH:MM, so a
+line from a previous day shows only its time of day; server log lines
+(numerics, server notices) keep receipt time.
+
+msgid: `tags::msgid` reads the `msgid` tag with the normalized reader
+whenever a server sends it (servers send it only with message IDs
+implemented, normally with `message-tags`) and puts it on
+`ChannelMessage`/`PrivateMessage`. The application keeps it only if it is
+1–128 bytes of visible ASCII (`model::NativeMessageId`); anything else counts
+as absent rather than being truncated, which also keeps legacy-encoding
+decoding from producing a different identifier for the same message. No
+other tag is retained.
 
 batch (opt-in per server): when enabled and offered, `batch` is requested
 with its own `CAP REQ`, on legacy encodings too because references and the
@@ -696,6 +707,59 @@ row per field. A feature can later become enabled by default (a settings
 version migration) or move to another tab by moving its row, without
 touching `irc-core`, which only receives `Ircv3Options` booleans.
 
+## Timeline items
+
+```text
+IRC protocol state (irc-core: tags, replay::ReplayTracker, events)
+        |   ui::ChatWindow::handle_event (the IRC adapter today)
+        v
+app::MessageMeta { server_time, native_id, provenance }
+        |   app::AppState (conversations, timeline::DuplicateFilter)
+        v
+model::Message (retained timeline item)
+        |
+        v
+ui logs (LogList, combined subwindow, previews, avatars)
+```
+
+CayenChat's shared presentation layer is protocol-agnostic where practical,
+but protocol state and protocol-native identifiers remain owned by their
+respective backends. `model::Message` is what the logs render and knows no
+protocol:
+
+- `sequence` (`u64`) is the application's identity for a message and its
+  order key: unique for the run, never reused, assigned when the message is
+  added. Logs keep arrival order and are never re-sorted by timestamp;
+  `LogList`, the combined subwindow, previews and avatar occupancy all key on
+  it.
+- `time` (`TimeOfDay`) is presentation only: the source's time when there is
+  one, otherwise the receipt time.
+- `timestamp` (`Option<model::Timestamp>`, milliseconds since the Unix epoch)
+  is the source's own time and nothing else; receipt times are not stored,
+  so it can serve as a history reference.
+- `native_id` (`Option<model::NativeMessageId>`) is the source's identifier,
+  opaque and meaningful only within the backend and conversation it came
+  from (IRC: `msgid`). It is never the application identity: many messages
+  have none (no IRCv3, local echoes, activity lines).
+- `provenance` (`model::Provenance`): `Live`, `Replayed` (history the server
+  or bouncer sent by itself: bouncer log replay, history batches nobody
+  asked for) or `Requested` (history this client asked for; nothing
+  produces it yet). Only live messages notify or highlight
+  (`Message::is_history`).
+
+`app::timeline::DuplicateFilter` (one per conversation, created only when a
+conversation receives a message with a native identifier or timestamp)
+remembers the latest 512 keys and drops a repeated delivery before it takes
+a sequence, marks the conversation unread or notifies (the UI notifies only
+when `append_channel_message_at` returns `true`). Keys are the native
+identifier (any provenance) or, without one, a fingerprint of timestamp,
+sender, activity flag, text length and the first 512 text bytes, used only
+to drop history and only with a source timestamp, because fingerprints can
+collide. Keys are 64-bit hashes with a per-filter random seed. The filter is
+dropped with its conversation (reset, reconnect, removed server), so
+nothing persists or grows with the session. Server-log lines (private
+messages, numerics) retain the same fields but are not filtered.
+
 ## Notifications
 
 ```text
@@ -735,7 +799,7 @@ Log::Recent replaying channel logs as `:tiarra NOTICE #chan`), that belongs
 to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
 one; see batch under IRCv3 capabilities). A server-time tag alone never
 marks history, however old (D022).
-Replayed messages still appear in the log (`model::Message::replayed`) and
+Replayed messages still appear in the log (`model::Provenance::Replayed`) and
 mark their channel unread, but are neither highlighted there nor in the
 channel tree. Nothing notifies while the chat window is
 focused and the message's conversation (the server view for private messages)
