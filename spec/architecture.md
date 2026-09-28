@@ -892,7 +892,9 @@ removing a server forgets its directory. The member list shows only
 current occupancies. Bounds: 2,048 current and 512 retired entries per
 network, the oldest-ended retired entries dropped first.
 
-Display: with the setting on, main-log channel message rows (not activity
+Display: with the setting on, and for servers whose IRCv3 avatar option is
+on (`ChatWindow::avatars_shown`; the option takes effect for display at
+once), main-log channel message rows (not activity
 lines, the server log or the combined subwindow) and member rows get a
 fixed 16×16 slot (below the 20 px line height, so rows keep their height)
 between the time and the nickname, or before the member name. Rows ask for

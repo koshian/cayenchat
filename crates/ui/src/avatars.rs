@@ -370,6 +370,9 @@ mod tests {
         });
         let mut settings = crate::settings_with_channels("#a");
         settings.appearance.user_avatars = avatars;
+        // The server uses avatars (its IRCv3 option).
+        settings.servers[0].ircv3.batch = true;
+        settings.servers[0].ircv3.metadata = true;
         settings.appearance.image_previews = previews;
         let fetcher: Arc<dyn Fetcher> = fetcher.clone();
         let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -736,6 +739,40 @@ mod tests {
         set_avatars(&chat, cx, false);
         chat.read_with(cx, |chat, _| {
             assert_eq!(chat.avatars.defaults_made(), 0, "released")
+        });
+    }
+
+    #[gpui::test]
+    fn servers_with_the_avatar_option_off_show_no_avatars_at_all(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        let mut batch = roster(10);
+        batch.extend([
+            avatar("bob", Some(BOB)),
+            say("bob", "hi"),
+            say("carol", "hi"),
+        ]);
+        events(&chat, cx, batch);
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].ircv3.metadata = false;
+            chat.apply_servers(settings, cx);
+            assert!(!chat.avatars_shown(NetworkId(1)));
+            chat.avatars.lookups.set(0);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert!(chat.avatars.enabled(), "the display setting is still on");
+            assert_eq!(chat.avatars.lookups.get(), 0, "no slot, no lookup");
+        });
+        // Turned back on: shown again at once.
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].ircv3.metadata = true;
+            chat.apply_servers(settings, cx);
+            assert!(chat.avatars_shown(NetworkId(1)));
         });
     }
 

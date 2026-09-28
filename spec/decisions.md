@@ -658,7 +658,10 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   Okabe–Ito backgrounds, a figure color from the opposite light/dark set
   (contrast ≥ 4:1), one of 4 calyx hats and 4 eyes, 512 looks in all. It is
   an SVG rasterized by GPUI; it says nothing about identity (a later user of
-  the nickname looks the same) and works for any protocol.
+  the nickname looks the same) and works for any protocol. Avatars
+  (defaults included) are drawn only for servers whose avatar option below
+  is on; turning that option off removes the column for that server at once,
+  while its negotiation still changes on the next connection.
 - **IRCv3 → User avatars (experimental)** (`Ircv3Preferences::metadata`, per
   server, off for new and existing settings, saved by autosave and applied
   on the next connection like the other IRCv3 options). It decides whether

@@ -5730,7 +5730,7 @@ impl ChatWindow {
                 d.bg(style.main_alt)
             })
             .child(style.time(message.time))
-            .when(!message.activity && self.avatars.enabled(), |row| {
+            .when(!message.activity && self.avatars_shown(network), |row| {
                 row.child(
                     self.avatar_slot(
                         self.state
@@ -5816,6 +5816,20 @@ impl ChatWindow {
                 }
             })
             .into_any_element()
+    }
+
+    /// Whether rows of `network` have an avatar slot: "Show user avatars"
+    /// is on and the server's avatar option is on. The option decides at
+    /// once for display; its protocol negotiation waits for the next
+    /// connection. Servers that do not use avatars show none, not even
+    /// default ones.
+    fn avatars_shown(&self, network: NetworkId) -> bool {
+        self.avatars.enabled()
+            && self
+                .sessions
+                .get(&network)
+                .and_then(|session| self.saved.profile(&session.profile_id))
+                .is_some_and(|profile| profile.ircv3.metadata)
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
@@ -5948,6 +5962,7 @@ impl ChatWindow {
         let end = range.end.min(channel.members.len());
         let start = range.start.min(end);
         let network = channel.network;
+        let avatars_shown = self.avatars_shown(network);
         (start..end)
             .map(|index| {
                 let member = channel.members[index].clone();
@@ -5955,7 +5970,7 @@ impl ChatWindow {
                 let nickname = member
                     .trim_start_matches(['~', '&', '@', '%', '+'])
                     .to_owned();
-                let avatar = self.avatars.enabled().then(|| {
+                let avatar = avatars_shown.then(|| {
                     self.state
                         .avatars()
                         .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))

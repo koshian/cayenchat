@@ -215,6 +215,11 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
     let mut settings = settings(servers);
     settings.appearance.image_previews = images;
     settings.appearance.user_avatars = avatars;
+    // Avatars are shown only on servers whose avatar option is on.
+    for server in &mut settings.servers {
+        server.ircv3.batch = avatars;
+        server.ircv3.metadata = avatars;
+    }
     let fetcher = memory_fetcher();
     let (chat, cx) = cx.add_window_view(|window, cx| {
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
