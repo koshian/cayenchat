@@ -10,12 +10,14 @@
 //! until its rows are on screen.
 //!
 //! The avatar slot has a fixed size smaller than a text line, so an arriving
-//! image never changes a row's height, and an empty slot (loading, failed,
-//! no avatar) stays blank instead of covering the nickname. With the
-//! setting off, rows have no slot at all, nothing is looked up, fetched or
-//! decoded, and the fetcher with its idle connections is dropped.
+//! image never changes a row's height. A user without an avatar, or whose
+//! image failed, gets the client-drawn default avatar of their nickname
+//! (`default_avatar`, at most 512 distinct SVGs kept here); a loading one
+//! stays blank. With the setting off, rows have no slot at all, nothing is
+//! looked up, fetched, decoded or drawn, and the fetcher with its idle
+//! connections is dropped.
 
-use std::{cell::RefCell, sync::Arc, time::Instant};
+use std::{cell::RefCell, collections::HashMap, sync::Arc, time::Instant};
 
 use cayenchat_media::{
     Fetcher, HttpFetcher, Limits, LoadError, Thumbnail,
@@ -24,7 +26,7 @@ use cayenchat_media::{
 };
 use gpui::{Context, RenderImage, Window};
 
-use crate::ChatWindow;
+use crate::{ChatWindow, default_avatar};
 
 /// Slot size in logical pixels, below the 20 px log and member line height.
 pub const SLOT: f32 = 16.;
@@ -82,6 +84,8 @@ pub struct Avatars {
     /// Present only while avatars are shown.
     fetcher: Option<Arc<dyn Fetcher>>,
     released: RefCell<Vec<Released>>,
+    /// Default avatars by look; bounded by the 512 combinations.
+    defaults: RefCell<HashMap<default_avatar::Params, Arc<gpui::Image>>>,
     #[cfg(test)]
     fetcher_override: Option<Arc<dyn Fetcher>>,
     #[cfg(test)]
@@ -95,6 +99,7 @@ impl Avatars {
             limits: Limits::avatar(PIXELS),
             fetcher: None,
             released: RefCell::new(Vec::new()),
+            defaults: RefCell::new(HashMap::new()),
             #[cfg(test)]
             fetcher_override: None,
             #[cfg(test)]
@@ -108,12 +113,34 @@ impl Avatars {
         self.fetcher.is_some()
     }
 
+    /// The default avatar drawn for `nickname`.
+    pub fn default_for(&self, nickname: &str) -> Arc<gpui::Image> {
+        let params = default_avatar::params(nickname);
+        self.defaults
+            .borrow_mut()
+            .entry(params)
+            .or_insert_with(|| {
+                Arc::new(gpui::Image::from_bytes(
+                    gpui::ImageFormat::Svg,
+                    default_avatar::svg(params, PIXELS).into_bytes(),
+                ))
+            })
+            .clone()
+    }
+
+    /// Default avatars made so far (tests, measurements).
+    #[cfg(test)]
+    pub fn defaults_made(&self) -> usize {
+        self.defaults.borrow().len()
+    }
+
     /// Off cancels loads, forgets every record and queues the images for
     /// release once both panes have redrawn without them.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.cache.get_mut().set_enabled(enabled);
         if !enabled {
             self.fetcher = None;
+            self.defaults.get_mut().clear();
         } else if self.fetcher.is_none() {
             #[cfg(test)]
             if let Some(fetcher) = &self.fetcher_override {
@@ -670,6 +697,46 @@ mod tests {
             assert_eq!(chat.sessions[&NetworkId(1)].own_avatar.outcome(), None);
         });
         assert!(fetcher.calls().is_empty(), "nothing downloaded while off");
+    }
+
+    #[gpui::test]
+    fn users_without_an_avatar_get_the_default_one_only_while_shown(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, false, false, &fetcher);
+        let mut batch = roster(20);
+        batch.extend([
+            say("bob", "no avatar"),
+            say("carol", "no avatar either"),
+            avatar("dave", Some("https://avatars.example.com/missing")),
+            say("dave", "failed image"),
+        ]);
+        events(&chat, cx, batch);
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.avatars.defaults_made(), 0, "off: none")
+        });
+
+        set_avatars(&chat, cx, true);
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        let made = chat.read_with(cx, |chat, _| chat.avatars.defaults_made());
+        // Bob, carol, "me" and dave (failed) at least; one per look.
+        assert!((1..=512).contains(&made), "{made}");
+        chat.read_with(cx, |chat, _| {
+            let bob = chat.avatars.default_for("bob");
+            assert!(
+                Arc::ptr_eq(&bob, &chat.avatars.default_for("bob")),
+                "shared"
+            );
+        });
+        // No image is fetched for them.
+        assert!(fetcher.calls().iter().all(|url| !url.contains("bob")));
+
+        set_avatars(&chat, cx, false);
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.avatars.defaults_made(), 0, "released")
+        });
     }
 
     #[gpui::test]

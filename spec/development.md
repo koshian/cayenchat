@@ -322,8 +322,10 @@ this delay.
    and servers; the log must not jump and must keep following at the
    bottom. Change a user's nick and reuse the old nick from another client:
    the old lines keep the old image, the new user's lines show none until
-   their own avatar arrives. Turn the setting off: the column disappears at
-   once and no further image is read.
+   their own avatar arrives. Users without an avatar, and those whose image
+   failed, show a default avatar whose colors, hat and eyes match
+   `defaultAvatar.js` for the same nickname. Turn the setting off: the
+   column disappears at once and no further image is read.
 11. Own avatar, with the same setup against a disposable local server (for
    example the pinned Ergo below; never a public server or real account):
    in **IRCv3**, with **ユーザーのアバター (実験的)** on, the section

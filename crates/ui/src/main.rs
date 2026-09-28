@@ -2,6 +2,7 @@ mod account_settings;
 mod avatar_editor;
 mod avatars;
 mod decorations;
+mod default_avatar;
 mod desktop;
 mod diagnostics;
 mod image_upload;
@@ -5740,6 +5741,7 @@ impl ChatWindow {
                                 message.sequence,
                             )
                             .cloned(),
+                        &message.sender,
                         cx,
                     ),
                 )
@@ -5817,24 +5819,26 @@ impl ChatWindow {
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
-    /// is ready, otherwise blank. It never changes the row's height.
-    fn avatar_slot(&self, avatar: Option<Arc<str>>, cx: &mut Context<Self>) -> Div {
+    /// is ready, blank while it loads, and the nickname's default avatar
+    /// when there is none or it failed. It never changes the row's height.
+    fn avatar_slot(&self, avatar: Option<Arc<str>>, nickname: &str, cx: &mut Context<Self>) -> Div {
         let slot = div()
             .w(px(avatars::SLOT))
             .h(px(avatars::SLOT))
             .mt(px(2.))
             .flex_shrink_0()
             .overflow_hidden();
-        let Some(avatar) = avatar else {
-            return slot;
+        let shown = match &avatar {
+            Some(avatar) => self.avatars.lookup(avatar),
+            None => avatars::Shown::None,
         };
-        match self.avatars.lookup(&avatar) {
+        match shown {
             avatars::Shown::Image(image) => slot.child(img(image).size_full()),
             avatars::Shown::Pending => {
                 self.pump_avatars(cx);
                 slot
             }
-            avatars::Shown::None => slot,
+            avatars::Shown::None => slot.child(img(self.avatars.default_for(nickname)).size_full()),
         }
     }
 
@@ -5966,7 +5970,7 @@ impl ChatWindow {
                         row.flex()
                             .items_center()
                             .gap_1()
-                            .child(self.avatar_slot(avatar, cx))
+                            .child(self.avatar_slot(avatar, &nickname, cx))
                     })
                     .child(member)
                     .on_mouse_down(

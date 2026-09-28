@@ -899,8 +899,12 @@ between the time and the nickname, or before the member name. Rows ask for
 their avatar while they are drawn, so only visible rows plus the log's
 400 px overdraw cause requests; a large roster fetches nothing until its
 rows are on screen, and a URL shared by several users is fetched once. A
-missing, loading or failed avatar leaves the slot blank. With the setting
-off there is no slot, no lookup, no fetch and no decode; turning it off
+loading avatar leaves the slot blank; a missing or failed one shows the
+nickname's default avatar (`ui::default_avatar`: the `defaultAvatar.js`
+port, an SVG of 32 px rasterized by GPUI's `img`, kept per look in
+`ui::avatars`, at most 512, cleared when the setting is turned off). With
+the setting off there is no slot, no lookup, no fetch, no decode and no
+default avatar; turning it off
 cancels loads, drops late results (cache generation), releases the
 records and drops the HTTP agent. Released images are removed from the GPU
 atlas only after both cached panes that draw avatars (main log and member

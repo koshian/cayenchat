@@ -651,7 +651,14 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   default, applies live, independent of image previews). It alone decides
   whether avatars are displayed and their images downloaded. Off keeps the
   compact layout exactly: no avatar column, no placeholder, no taller rows,
-  no lookups, fetches or decodes.
+  no lookups, fetches or decodes. With it on, users without an avatar (or
+  whose image failed) get a client-drawn default avatar (2026-09-28),
+  ported from CayenChat's `defaultAvatar.js`: FNV-1a of the nickname's
+  first four UTF-16 code units (as shown, case included) picks one of 8
+  Okabe–Ito backgrounds, a figure color from the opposite light/dark set
+  (contrast ≥ 4:1), one of 4 calyx hats and 4 eyes, 512 looks in all. It is
+  an SVG rasterized by GPUI; it says nothing about identity (a later user of
+  the nickname looks the same) and works for any protocol.
 - **IRCv3 → User avatars (experimental)** (`Ircv3Preferences::metadata`, per
   server, off for new and existing settings, saved by autosave and applied
   on the next connection like the other IRCv3 options). It decides whether
