@@ -316,5 +316,13 @@
   "ircv3_avatar_remove_title": "IRC サーバーからアバターを削除しますか?",
   "ircv3_avatar_remove_detail": "このネットワークの他のユーザーには表示されなくなります。URL は欄に残ります。",
   "ircv3_avatar_remove_confirm": "削除",
-  "ircv3_avatar_unsupported": "この IRC サーバーはアバターに対応していません。"
+  "ircv3_avatar_unsupported": "この IRC サーバーはアバターに対応していません。",
+  "ircv3_peer_avatars": "ピア間のアバター (CTCP AVATAR、実験的)",
+  "ircv3_peer_avatars_hint": "サーバーにアバターのメタデータがない場合に、KVIrc などほかのクライアントとアバターの URL を交換します。発言した人を WHO で調べ、アバターを持つ人にだけ問い合わせます。「ピアに共有」を選ぶまで、自分のアバターは共有しません。",
+  "ircv3_peer_share": "ピアに共有",
+  "ircv3_peer_share_exposure": "問い合わせたこのネットワークの誰にでもこの URL が送られます。再接続後は、実名欄でアバターを持っていることも示されます。パスワードやアクセストークンは含めないでください。",
+  "ircv3_peer_stop": "共有を停止",
+  "ircv3_peer_sharing": "ピアに共有中: {url}",
+  "ircv3_peer_reconnect": "実名欄のアバター表示を更新するには再接続してください。",
+  "ircv3_peer_size_placeholder": "ほかのクライアントは {size} を置き換えません。{size} を含まない URL を共有してください。"
 }

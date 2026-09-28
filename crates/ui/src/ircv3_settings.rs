@@ -28,7 +28,9 @@ use crate::{
         acceptable_attachment, clipboard_attachment, configured_uploader, file_attachment,
         upload_failure_text, upload_in_background,
     },
-    input, settings_theme,
+    input,
+    session::PeerAvatarConnection,
+    settings_theme,
 };
 
 /// Server descriptions shown with a rejection are cut to this many
@@ -49,7 +51,7 @@ pub(crate) struct Ircv3Feature {
 }
 
 /// Features shown on the IRCv3 tab, in display order.
-pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 3] = [
+pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 4] = [
     Ircv3Feature {
         id: "ircv3-server-time",
         label_key: "ircv3_server_time",
@@ -74,7 +76,25 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 3] = [
         toggle: |preferences| preferences.batch = !preferences.batch,
         warning: |_| None,
     },
+    Ircv3Feature {
+        id: "ircv3-peer-avatars",
+        label_key: "ircv3_peer_avatars",
+        hint_key: "ircv3_peer_avatars_hint",
+        get: |preferences| preferences.peer_avatars,
+        toggle: |preferences| preferences.peer_avatars = !preferences.peer_avatars,
+        warning: |_| None,
+    },
 ];
+
+/// Toggles one feature of `profile`. Turning peer avatars off also stops
+/// sharing, so turning them on again shares nothing until the user chooses
+/// to.
+pub(crate) fn toggle_feature(profile: &mut ServerProfile, toggle: fn(&mut Ircv3Preferences)) {
+    toggle(&mut profile.ircv3);
+    if !profile.ircv3.peer_avatars {
+        profile.peer_avatar_url.clear();
+    }
+}
 
 impl SettingsWindow {
     pub(crate) fn render_ircv3_settings(&mut self, cx: &mut Context<Self>) -> Div {
@@ -164,7 +184,7 @@ impl SettingsWindow {
                         .child(self.i18n.text(feature.label_key))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(profile) = this.settings.values.selected_profile_mut() {
-                                toggle(&mut profile.ircv3);
+                                toggle_feature(profile, toggle);
                                 cx.notify();
                             }
                         })),
@@ -333,6 +353,9 @@ impl SettingsWindow {
                         .child(text),
                 )
             })
+            .when(profile.ircv3.peer_avatars, |section| {
+                section.child(self.render_peer_sharing(profile, &draft, &status, cx))
+            })
             .when_some(self.avatar_feedback.clone(), |section, feedback| {
                 section.child(div().ml(px(158.)).text_color(theme.warning).child(feedback))
             })
@@ -345,6 +368,92 @@ impl SettingsWindow {
                 )
             })
             .children(provider.and_then(|name| self.render_avatar_editor(name, cx)))
+    }
+
+    /// Sharing with other clients through CTCP AVATAR, separate from the
+    /// server: which URL is shared, "Share with Peers" when the draft
+    /// differs from it, "Stop Sharing", and a note when the realname mark of
+    /// the current connection no longer matches.
+    fn render_peer_sharing(
+        &self,
+        profile: &ServerProfile,
+        draft: &str,
+        status: &OwnAvatarStatus,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = settings_theme::palette(cx);
+        let shared = profile.peer_avatar_url.as_str();
+        let can_share = !draft.is_empty() && draft != shared;
+        let warning: SharedString = self.i18n.text("ircv3_peer_share_exposure").into();
+        let reconnect = peer_reconnect_needed(status, profile);
+        div()
+            .ml(px(158.))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(!shared.is_empty(), |section| {
+                section.child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.format("ircv3_peer_sharing", &[("url", shared)])),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .when(can_share, |row| {
+                        row.child(
+                            settings_theme::button("ircv3-peer-share", false, cx)
+                                .child(self.i18n.text("ircv3_peer_share"))
+                                .tooltip(move |_, cx| {
+                                    let text = warning.clone();
+                                    cx.new(|_| TextTooltip(text)).into()
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| this.share_with_peers(cx))),
+                        )
+                    })
+                    .when(!shared.is_empty(), |row| {
+                        row.child(
+                            settings_theme::button("ircv3-peer-stop", false, cx)
+                                .child(self.i18n.text("ircv3_peer_stop"))
+                                .on_click(cx.listener(|this, _, _, cx| this.stop_sharing(cx))),
+                        )
+                    }),
+            )
+            .when(reconnect, |section| {
+                section.child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("ircv3_peer_reconnect")),
+                )
+            })
+    }
+
+    /// "Share with Peers": the draft, checked, becomes the shared URL. It is
+    /// the only way a URL reaches other clients; editing the draft never
+    /// does.
+    fn share_with_peers(&mut self, cx: &mut Context<Self>) {
+        self.avatar_feedback = None;
+        let draft = self.settings.avatar_url.read(cx).text().trim().to_owned();
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        if let Err(key) = share_draft_with_peers(profile, &draft) {
+            let max = MAX_PUBLISHED_AVATAR_BYTES.to_string();
+            self.avatar_feedback = Some(self.i18n.format(key, &[("max", &max)]));
+        }
+        cx.notify();
+    }
+
+    fn stop_sharing(&mut self, cx: &mut Context<Self>) {
+        self.avatar_feedback = None;
+        if let Some(profile) = self.settings.values.selected_profile_mut() {
+            profile.peer_avatar_url.clear();
+        }
+        cx.notify();
     }
 
     fn confirm_avatar_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -705,6 +814,10 @@ impl Render for TextTooltip {
 /// What the IRCv3 tab shows about our own avatar on one server.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OwnAvatarStatus {
+    /// Registered on the server's current connection.
+    pub connected: bool,
+    /// How that connection exchanges avatars with other clients.
+    pub peer: PeerAvatarConnection,
     pub can_request: bool,
     /// Registered after asking for avatar metadata, which the server did
     /// not enable.
@@ -742,6 +855,8 @@ impl ChatWindow {
             && self.state.status(network) == Some(&ConnectionStatus::Registered);
         let own = &session.own_avatar;
         OwnAvatarStatus {
+            connected,
+            peer: session.peer_avatars.clone(),
             can_request: connected && own.can_request(),
             unsupported: connected && session.metadata_requested && !own.ready(),
             waiting: own.waiting(),
@@ -811,6 +926,38 @@ pub(crate) fn avatar_url_problem(text: &str, utf8: bool) -> Option<&'static str>
         .then_some("ircv3_avatar_invalid")
 }
 
+/// Why `text` cannot be shared with other clients, as a localization key
+/// (which may use `{max}`), or `None`: the rules for publishing, and no
+/// `{size}`, which other clients would request literally.
+pub(crate) fn peer_avatar_url_problem(text: &str, utf8: bool) -> Option<&'static str> {
+    avatar_url_problem(text, utf8).or_else(|| {
+        text.contains(cayenchat_media::policy::AVATAR_SIZE_PLACEHOLDER)
+            .then_some("ircv3_peer_size_placeholder")
+    })
+}
+
+/// Whether the connected server's realname mark (or peer exchange itself)
+/// no longer matches the settings, so a reconnect is needed to apply them.
+pub(crate) fn peer_reconnect_needed(status: &OwnAvatarStatus, profile: &ServerProfile) -> bool {
+    status.connected
+        && (status.peer.enabled != profile.ircv3.peer_avatars
+            || status.peer.advertised != crate::shared_peer_avatar(profile).is_some())
+}
+
+/// Makes `draft` the URL `profile` shares with other clients. `Err` is a
+/// localization key.
+pub(crate) fn share_draft_with_peers(
+    profile: &mut ServerProfile,
+    draft: &str,
+) -> Result<(), &'static str> {
+    let utf8 = profile.encoding == TextEncoding::Utf8;
+    if let Some(key) = peer_avatar_url_problem(draft, utf8) {
+        return Err(key);
+    }
+    profile.peer_avatar_url = draft.to_owned();
+    Ok(())
+}
+
 pub(crate) fn own_avatar_failure(failure: AvatarRequestFailure) -> Failure {
     match failure {
         AvatarRequestFailure::Unavailable => Failure::Unavailable,
@@ -874,8 +1021,107 @@ fn server_label(host: &str, port: u16, i18n: &crate::localization::Localizer) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{IRCV3_FEATURES, avatar_url_problem, place_uploaded_avatar};
+    use super::{
+        IRCV3_FEATURES, OwnAvatarStatus, avatar_url_problem, peer_avatar_url_problem,
+        peer_reconnect_needed, place_uploaded_avatar, share_draft_with_peers, toggle_feature,
+    };
+    use crate::session::PeerAvatarConnection;
     use cayenchat_storage::{Ircv3Preferences, Settings};
+
+    #[test]
+    fn peers_get_only_a_url_shared_explicitly_while_the_option_is_on() {
+        let mut settings = Settings::default();
+        let id = settings.add_server("irc.example.org").id.clone();
+        let peer = IRCV3_FEATURES
+            .iter()
+            .find(|feature| feature.id == "ircv3-peer-avatars")
+            .unwrap();
+        let profile = settings.servers.iter_mut().find(|p| p.id == id).unwrap();
+        // Off by default; a draft alone shares nothing.
+        profile.avatar_url = "https://example.com/me.png".into();
+        assert_eq!(crate::shared_peer_avatar(profile), None);
+        toggle_feature(profile, peer.toggle);
+        assert!(profile.ircv3.peer_avatars);
+        assert_eq!(crate::shared_peer_avatar(profile), None, "not shared yet");
+        // Share with Peers takes the draft; later edits and uploads of the
+        // draft do not change what peers get.
+        assert_eq!(
+            share_draft_with_peers(profile, "https://example.com/me.png"),
+            Ok(())
+        );
+        assert_eq!(
+            crate::shared_peer_avatar(profile).as_deref(),
+            Some("https://example.com/me.png")
+        );
+        profile.avatar_url = "https://example.com/other.png".into();
+        settings.selected_server = id.clone();
+        place_uploaded_avatar(&mut settings, &id, "https://i.ibb.co/x/new.png").unwrap();
+        let profile = settings.servers.iter_mut().find(|p| p.id == id).unwrap();
+        assert_eq!(profile.peer_avatar_url, "https://example.com/me.png");
+        // Unacceptable drafts are refused and keep the shared URL.
+        for (draft, key) in [
+            ("", "ircv3_avatar_empty"),
+            ("avatar.png", "ircv3_avatar_invalid"),
+            (
+                "https://example.com/{size}.png",
+                "ircv3_peer_size_placeholder",
+            ),
+            (
+                "https://me:pw@example.com/a.png",
+                "ircv3_avatar_credentials",
+            ),
+            ("http://192.168.1.2/a.png", "ircv3_avatar_blocked"),
+        ] {
+            assert_eq!(share_draft_with_peers(profile, draft), Err(key), "{draft}");
+        }
+        assert_eq!(profile.peer_avatar_url, "https://example.com/me.png");
+        // A saved value that is no longer acceptable is not shared.
+        profile.peer_avatar_url = "https://localhost/a.png".into();
+        assert_eq!(crate::shared_peer_avatar(profile), None);
+        profile.peer_avatar_url = "https://example.com/me.png".into();
+        // Turning the option off stops sharing for good: turning it on
+        // again shares nothing until chosen again.
+        toggle_feature(profile, peer.toggle);
+        assert!(profile.peer_avatar_url.is_empty());
+        toggle_feature(profile, peer.toggle);
+        assert_eq!(crate::shared_peer_avatar(profile), None);
+        // Other options leave sharing alone.
+        share_draft_with_peers(profile, "https://example.com/me.png").unwrap();
+        toggle_feature(profile, IRCV3_FEATURES[0].toggle);
+        assert_eq!(profile.peer_avatar_url, "https://example.com/me.png");
+        assert_eq!(
+            peer_avatar_url_problem("https://example.com/me.png", true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_reconnect_is_asked_for_when_the_realname_mark_would_change() {
+        let mut settings = Settings::default();
+        let profile = settings.add_server("irc.example.org");
+        let connected = |enabled: bool, advertised: bool| OwnAvatarStatus {
+            connected: true,
+            peer: PeerAvatarConnection {
+                enabled,
+                advertised,
+                answering: None,
+            },
+            ..OwnAvatarStatus::default()
+        };
+        // Disconnected: nothing to reconnect.
+        profile.ircv3.peer_avatars = true;
+        assert!(!peer_reconnect_needed(&OwnAvatarStatus::default(), profile));
+        // Connected without the option, then turned on.
+        assert!(peer_reconnect_needed(&connected(false, false), profile));
+        assert!(!peer_reconnect_needed(&connected(true, false), profile));
+        // Shared after connecting: the mark is missing until reconnecting.
+        profile.peer_avatar_url = "https://example.com/me.png".into();
+        assert!(peer_reconnect_needed(&connected(true, false), profile));
+        assert!(!peer_reconnect_needed(&connected(true, true), profile));
+        // Stopped: the mark stays until reconnecting.
+        profile.peer_avatar_url.clear();
+        assert!(peer_reconnect_needed(&connected(true, true), profile));
+    }
 
     #[test]
     fn uploaded_images_fill_the_draft_of_the_server_they_were_for() {
@@ -943,6 +1189,12 @@ mod tests {
             "ircv3_avatar_remove_title",
             "ircv3_avatar_remove_detail",
             "ircv3_avatar_remove_confirm",
+            "ircv3_peer_share",
+            "ircv3_peer_share_exposure",
+            "ircv3_peer_stop",
+            "ircv3_peer_sharing",
+            "ircv3_peer_reconnect",
+            "ircv3_peer_size_placeholder",
         ] {
             for catalog in catalogs {
                 assert!(catalog.contains(&format!("\"{key}\"")), "{key}");
@@ -1139,6 +1391,130 @@ mod own_avatar_tests {
             chat.handle_events(NetworkId(1), vec![registered()], false, cx);
         });
         assert!(!unsupported(&chat, cx));
+    }
+
+    #[gpui::test]
+    fn peers_are_answered_only_with_an_explicitly_shared_url(cx: &mut TestAppContext) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (step_tx, step_rx) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let mut send = |text: &str| socket.write_all(text.as_bytes()).unwrap();
+            assert_eq!(read_line(&mut lines), "CAP END");
+            assert_eq!(read_line(&mut lines), "NICK me");
+            // Connected with nothing shared: no mark.
+            assert!(read_line(&mut lines).ends_with(" CayenChat"));
+            send(":srv.example 001 me :Welcome\r\n:srv.example 376 me :End\r\n");
+            // A query before sharing, then a line the test waits for.
+            send(":early!u@h PRIVMSG me :\x01AVATAR\x01\r\n:early!u@h PRIVMSG me :hi\r\n");
+            // After an autosaved draft and an explicit Share.
+            step_rx.recv().unwrap();
+            send(":kv!u@h PRIVMSG me :\x01AVATAR\x01\r\n");
+            assert_eq!(
+                read_line(&mut lines),
+                format!("NOTICE kv :\x01AVATAR {URL}\x01"),
+                "the shared URL, not an answer to the early query"
+            );
+            // After turning the option off: not answered.
+            step_rx.recv().unwrap();
+            send(":kv2!u@h PRIVMSG me :\x01AVATAR\x01\r\n:kv2!u@h PRIVMSG me :still there?\r\n");
+            assert!(read_line(&mut lines).starts_with("QUIT"));
+        });
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("");
+        settings.servers[0].nickname = "me".into();
+        settings.servers[0].ircv3.peer_avatars = true;
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec![]);
+        config.port = port;
+        config.use_tls = false;
+        config.ircv3 = Ircv3Options {
+            peer_avatars: true,
+            ..Ircv3Options::default()
+        };
+        config.shared_avatar = crate::shared_peer_avatar(&settings.servers[0]);
+        assert_eq!(config.shared_avatar, None);
+        let connection = Connection::connect(config.clone()).unwrap();
+        chat.update(cx, |chat, _| {
+            let session = chat.sessions.get_mut(&NetworkId(1)).unwrap();
+            session.connection_starting(&config);
+            session.active_config = Some(config);
+            session.irc = Some(connection);
+        });
+        pump(&chat, cx, |event| {
+            matches!(event, Event::PrivateMessage { .. })
+        });
+        let answering = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                chat.sessions[&NetworkId(1)].peer_avatars.answering.clone()
+            })
+        };
+        // Autosaving a typed draft shares nothing.
+        chat.update(cx, |chat, cx| {
+            let mut next = chat.saved.clone();
+            next.servers[0].avatar_url = URL.into();
+            chat.apply_servers(next, cx);
+        });
+        assert_eq!(answering(&chat, cx), None);
+        // Share with Peers: answered from now on; the mark waits for the
+        // next connection, which will carry it.
+        chat.update(cx, |chat, cx| {
+            let mut next = chat.saved.clone();
+            super::share_draft_with_peers(&mut next.servers[0], URL).unwrap();
+            chat.apply_servers(next, cx);
+        });
+        assert_eq!(answering(&chat, cx).as_deref(), Some(URL));
+        chat.read_with(cx, |chat, _| {
+            let session = &chat.sessions[&NetworkId(1)];
+            assert!(!session.peer_avatars.advertised);
+            assert!(session.active_config.as_ref().unwrap().advertises_avatar());
+        });
+        step_tx.send(()).unwrap();
+        // The answer goes out before anything else changes.
+        pump(
+            &chat,
+            cx,
+            |event| matches!(event, Event::Wire { line, .. } if line.starts_with("NOTICE kv ")),
+        );
+        // Turning the option off stops answering at once.
+        chat.update(cx, |chat, cx| {
+            let mut next = chat.saved.clone();
+            let peer = super::IRCV3_FEATURES
+                .iter()
+                .find(|feature| feature.id == "ircv3-peer-avatars")
+                .unwrap();
+            super::toggle_feature(&mut next.servers[0], peer.toggle);
+            chat.apply_servers(next, cx);
+        });
+        assert_eq!(answering(&chat, cx), None);
+        chat.read_with(cx, |chat, _| {
+            let config = chat.sessions[&NetworkId(1)].active_config.clone().unwrap();
+            assert!(!config.ircv3.peer_avatars && config.shared_avatar.is_none());
+        });
+        step_tx.send(()).unwrap();
+        pump(
+            &chat,
+            cx,
+            |event| matches!(event, Event::PrivateMessage { text, .. } if text == "still there?"),
+        );
+        chat.update(cx, |chat, _| {
+            chat.sessions.get_mut(&NetworkId(1)).unwrap().close();
+        });
+        server.join().unwrap();
     }
 
     #[gpui::test]
