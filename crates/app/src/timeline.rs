@@ -61,6 +61,16 @@ impl MessageMeta {
     }
 }
 
+/// One incoming line with its metadata, for callers that add several at
+/// once (requested history).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineLine {
+    pub sender: String,
+    /// As shown, including any notice marker.
+    pub text: String,
+    pub meta: MessageMeta,
+}
+
 /// Remembers the most recent message keys of one conversation, so the same
 /// message delivered again (bouncer playback, requested history, reconnect
 /// recovery, later a server echo) is recognized. Bounded: the oldest key is
