@@ -293,8 +293,9 @@ closed the link, which the core reports as `Refused` so it is not retried with
 the same nick) and replaces the nickname for this session's reconnects without
 changing saved settings. Disconnect closes that server's connection. After registration a rejected
 `/nick` only produces a server line instead of dropping the connection.
-Reconnection preserves the in-memory conversation logs and drafts. A
-complete membership event reducer remains future work.
+Reconnection preserves the in-memory conversation logs and drafts, and
+with chathistory recovers what joined channels missed (see Channel
+history). A complete membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
@@ -860,9 +861,9 @@ Four behaviors look alike and are kept apart:
   (below).
 - **Older pages**: `CHATHISTORY BEFORE` when the user scrolls to the top of
   a channel's log (below).
-- **Reconnect gap recovery**: asking for what was missed while
-  disconnected. Not implemented; after a reconnect the join's LATEST
-  request is all there is.
+- **Reconnect gap recovery**: on the first join after a reconnect,
+  `CHATHISTORY LATEST` with the newest message received before the link
+  dropped asks only for what was missed (below).
 
 The last three share the per-server option, `irc-core::history`'s queue
 and the duplicate filter, and produce `Provenance::Requested` lines, which
@@ -1030,8 +1031,82 @@ bottom keeps following it. With a status or diagnostics row at the very
 top (disconnected, or the debug transcript on) the row inserted below it
 still appears below it.
 
-Not implemented: reconnect gap recovery (AFTER/BETWEEN), TARGETS and
-private-message history, persistence.
+### Reconnect gap recovery
+
+```text
+app::AppState::set_status(Disconnected), session had history
+        |   joined channel -> ResumePoint { newest native_id/timestamp,
+        |                                   256 sequences reserved at the cut }
+        v
+ui::ChatWindow::reconnect_config -> ConnectionConfig::resume_history
+        |   (the saved active_config is not changed)
+        v
+irc-core history::HistoryRequests::with_resume
+        |   our JOIN -> CHATHISTORY LATEST <channel> msgid=<id> | timestamp=<t-5 s> <n>
+        |   Event::HistoryRequested { resumed: true }
+        |   reply -> Event::ChannelHistory { messages, incomplete }
+        v
+app::AppState::history_resumed (pending = the cut's slot)
+app::AppState::insert_resumed_history (dedupe; optional gap note first)
+```
+
+When a session that had history available (`Event::HistoryAvailable`)
+ends, every channel joined at that moment gets a resume point: the newest
+line among its last 256 by source time (with its msgid), or else the last
+line with a msgid, and 256 sequences reserved right after the lines
+received so far. The reference is the source's identifier or time, never
+the displayed `HH:MM` or an arrival sequence. A channel without such a
+line gets none and simply asks for its latest lines on rejoin, as before.
+A point that was not answered is kept across further disconnects (the
+earliest cut is what needs recovering, also when an attempt rejoined and
+asked but dropped before the answer); a session that joined the channel
+without history drops it, and so do PART/KICK, closing or replacing the
+conversation (connecting from settings, a removed or edited server).
+Automatic and menu reconnects reuse the same server profile
+(`active_config`), so a point never moves to another server; at most one
+exists per conversation.
+
+The next connection receives the points in
+`ConnectionConfig::resume_history` (built per attempt by
+`ChatWindow::reconnect_config`). The worker keeps them (at most 1,024)
+and uses each for the first JOIN of its channel only, after registration
+and the JOIN itself, through the same queue as recent history (one
+request outstanding, 64 queued; many channels are paced, not burst).
+`LATEST <channel> <reference> <n>` returns the most recent `n` lines
+after the reference: recovered lines join up with the live lines that
+follow, and a long gap loses its oldest part rather than its newest. The
+reference is `msgid=` when the server accepts msgid references, else
+`timestamp=` five seconds before the line's time (clock skew between a
+network's servers; the lines that repeats are already shown and dropped
+as duplicates). With no usable reference type, capability or option the
+join asks for `LATEST *` as before and the application gives the point
+up. A failed resumed request (FAIL, timeout) falls back to one plain
+`LATEST *`.
+
+Merge: `Event::HistoryRequested { resumed: true }` makes the application
+use the point's reserved slot instead of reserving at the request, so the
+missed lines go right after the last line received before the cut and
+before our JOIN line and everything since. The existing insertion does
+the rest: duplicates of lines already shown (live lines that arrived
+after the rejoin, bouncer playback, older pages, the skew overlap) are
+skipped, nothing notifies, highlights or marks unread, and the answer is
+matched to the current connection's reservation, so a reply to an earlier
+attempt is dropped (the UI also ignores old connection generations). A
+reply with as many lines as asked for and no `draft/chathistory-end`
+(`incomplete`) may have missed older lines of the gap; one activity line
+(`Some messages sent while disconnected are not shown.`) goes first in
+the slot. Nothing is chased with further requests, and older pages cannot
+fill a gap in the middle of the log.
+
+Limitations: a second disconnect before a recovery was answered keeps
+the first cut, so lines of the second gap are placed there, before lines
+received live in between; a channel whose request was skipped because 64
+were already queued keeps its point for a later reconnect; channels
+joined with `/join` are not rejoined by reconnects (only configured ones
+are), so they are not recovered until joined again; private
+conversations are not recovered.
+
+Not implemented: TARGETS and private-message history, persistence.
 
 ## Notifications
 

@@ -574,6 +574,22 @@ conversation's 512-key filter is only read. Worker side: BEFORE shares the
 64-entry queue and single outstanding request of recent history, and the
 30 s timeout timer exists only while a request is outstanding.
 
+## Reconnect gap recovery (2026-09-28)
+
+No measured hot path changed; bounds by construction. At a disconnect the
+application scans at most the last 256 lines of each joined channel once
+and keeps one resume point per channel (a sequence, an optional msgid of
+at most 128 bytes and a timestamp), reserving 256 sequences; points are
+dropped once answered or given up, and with the conversation. The
+reconnect configuration carries at most one entry per channel; the worker
+keeps at most 1,024 and forgets each at its first join. Recovery requests
+use the recent-history queue (one outstanding, 64 queued), so many
+channels are paced one reply at a time rather than sent at once; each
+adds at most 100 lines (one note line more) through the existing
+insertion and the 2,000-line bound, and a long gap never triggers further
+requests. No timer beyond the existing 30 s per-request timeout; nothing
+remains after recovery.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The

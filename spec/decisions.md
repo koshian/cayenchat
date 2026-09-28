@@ -1086,3 +1086,40 @@ same calls from its room timeline's back-pagination and ignore the
 reference in favor of its own pagination token. Private conversations,
 reconnect gap recovery and persistence are separate future work. Details
 in `architecture.md` (Channel history).
+
+## D031 — Reconnect gap recovery
+
+**Status:** Accepted (experimental)
+
+2026-09-28. With the same per-server chathistory option (no new setting;
+off means no recovery), a channel that was joined when a connection with
+history ended asks, on its first join after the reconnect, for `CHATHISTORY
+LATEST <channel> <reference> <n>`: the most recent lines after the newest
+message received before the cut (specification as in D030).
+
+- **LATEST with a reference rather than AFTER.** Both return lines after
+  the reference; they differ only when the gap exceeds one reply. LATEST
+  keeps the newest part, which joins up with the live lines the user is
+  reading; AFTER would leave the hole next to them. One request per
+  channel; no automatic pagination through a long gap. A full reply
+  without `draft/chathistory-end` adds one activity line saying messages
+  may be missing.
+- **Reference.** msgid when the server accepts it, else the server time
+  minus 5 s for clock skew (the specification suggests 1–10 s), relying on
+  the duplicate filter for the overlap. Never display time or arrival
+  order. No reference, no recovery: the join behaves as before.
+- **Placement.** Sequences are reserved at the disconnect, so missed lines
+  go where the log was cut, before the rejoin and later live lines,
+  through the same insertion and duplicate filter as recent history; logs
+  are never re-sorted.
+- **Lifetime.** The earliest unanswered cut is kept across failed
+  attempts; a part, a reset, or a session that joined without history
+  drops it. State is one point per conversation in `app` and the list in
+  `ConnectionConfig`; the worker keeps it only until each channel's first
+  join. No timer.
+
+A Matrix backend would supply missed timeline items through the same
+insertion (its sync gap handling decides what is missing); the resume
+point's reference is IRC's concern and is not a generic sync token.
+Private-message recovery, persistence and echo-message reconciliation are
+future work. Details in `architecture.md` (Channel history).

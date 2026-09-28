@@ -107,7 +107,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - TODO — local logs
 - TODO — searchable history
 - DONE — bounded in-memory channel and server scrollback
-- PARTIAL — IRCv3/server history integration where available (`draft/chathistory`, experimental, per-server opt-in, default off): recent channel history on join (up to 50 lines) and older pages when the main log is scrolled to its top (`BEFORE`, up to 50 lines a page, msgid or timestamp reference within `MSGREFTYPES`, until the server reports the beginning or the 2,000-line log bound is reached); deduplicated, quiet, and the viewport stays on the same line; checked against Ergo v2.19.1; no reconnect gap recovery, private-message history or persistence
+- PARTIAL — IRCv3/server history integration where available (`draft/chathistory`, experimental, per-server opt-in, default off): recent channel history on join (up to 50 lines) and older pages when the main log is scrolled to its top (`BEFORE`, up to 50 lines a page, msgid or timestamp reference within `MSGREFTYPES`, until the server reports the beginning or the 2,000-line log bound is reached); deduplicated, quiet, and the viewport stays on the same line; after a reconnect, joined channels recover the most recent missed lines (up to 50, `LATEST` after the last msgid or server time, placed where the log was cut, with a quiet note when more may be missing); checked against Ergo v2.19.1; no private-message history or recovery, and no persistence
 
 ## Notifications
 
@@ -142,7 +142,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify
-- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS
+- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS
 - TODO — other capabilities based on real-world usefulness
 
 ## Appearance
