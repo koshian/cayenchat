@@ -528,14 +528,18 @@ acknowledged (a server declining batch therefore never gets a metadata
 request) and never together with the legacy `metadata-notify`. If `batch`
 goes away (DEL or `ACK -batch`) metadata is dropped at once and
 `CAP REQ -draft/metadata-2` is sent. `irc-core::metadata` implements only
-the receive side avatars need:
+the subset avatars need:
 
 - Once registered (001) or once the capability arrives later, it sends
-  `METADATA * SUB avatar` a single time; the configured JOINs follow at
-  end-of-MOTD, so channel bursts include avatars.
+  `METADATA * SUB avatar` and `METADATA * GET avatar` (our own current
+  value) a single time and reports `Event::MetadataReady`; the configured
+  JOINs follow at end-of-MOTD, so channel bursts include avatars.
 - `METADATA <target> avatar <visibility> [<value>]`, `761 RPL_KEYVALUE` and
   `766 RPL_KEYNOTSET` for users produce `Event::UserAvatar`. Other keys,
-  channel targets and `*` are ignored; no metadata map is stored. A value
+  channel targets and `*` are ignored; no metadata map is stored. A
+  numeric whose first parameter is `*` is a notification (Ergo announces
+  changes that way); one addressed to us answers our request. Values for
+  our own nickname (or `*` in an answer) also produce `Event::OwnAvatar`. A value
   that is empty, missing, longer than 2,048 bytes, or contains controls,
   whitespace or U+FFFD counts as no avatar. Metadata messages inside
   `metadata` batches are handled like any other; the batch type is not a
@@ -549,6 +553,30 @@ the receive side avatars need:
   subset produce no server-log line, chat row, unread mark, notification or
   preview; they stay in the transcript. With the capability off, a
   `METADATA` line from a server is shown in the server log as before.
+- Our own avatar: `Connection::set_own_avatar(request, Some(url) | None)`
+  queues `METADATA * SET avatar :<url>` or `METADATA * SET avatar`
+  (removal of that key only). The worker refuses it unless registered with
+  the capability (`OwnAvatarFailed { Unavailable }`) and keeps one request
+  outstanding (`Busy`). The answer is `Event::OwnAvatar { url, request:
+  Some(id) }` (the server's value, which may differ) or `OwnAvatarFailed`
+  with the `FAIL METADATA` code and description (`KEY_NOT_SET` on a removal
+  counts as removed), `RateLimited { retry_after }`, `NoReply` after 20 s
+  or `CapabilityLost`. Replies are matched by position (one request at a
+  time): a `761`/`766` for us addressed to us, or a `FAIL` naming us or the
+  key. The value is checked again here (no controls or spaces, at most 400
+  bytes, ASCII on legacy encodings).
+- Later joiners: a live JOIN (not in a history batch) of someone who
+  shares no other channel with us (judged from the rosters published
+  before it) and has no known avatar is looked up with `METADATA <nick>
+  GET avatar` after 2 s unless the server announces it first. At most 64
+  lookups are pending, 8 unanswered and two sent per second; an unanswered
+  one is abandoned after 30 s and its late answer dropped; `RATE_LIMITED`
+  retries once after the given delay and pauses all lookups; `INVALID_TARGET`
+  or a permission failure ends it. PART, KICK or QUIT from the last shared
+  channel cancels it (an answer in flight is dropped unless the user joined
+  again first, since the server's answer then describes the new
+  occupant); NICK moves it. The timer branch of the select loop exists
+  only while a sync, a request or a lookup is pending.
 - Avatars are remembered per connection for at most 2,048 users (later ones
   get none). NICK moves an avatar (`Event::AvatarMoved`); QUIT, and PART or
   KICK from the last channel shared with us (judged from the rosters
@@ -560,7 +588,24 @@ On legacy encodings the whole line is decoded with the connection's
 charset, while metadata values are UTF-8. Avatar URLs are the only values
 used, so the fallback is narrow: only ASCII values are accepted there (any
 non-ASCII byte decodes differently), and non-ASCII URLs are dropped rather
-than guessed. The IRCv3 tab says so.
+than guessed; publishing likewise accepts only ASCII URLs there. The IRCv3
+tab says so.
+
+Publishing from the UI: the IRCv3 tab shows, while the selected server's
+metadata option is on, the draft URL field (`ServerProfile::avatar_url`,
+saved by autosave like any field and never sent by it), a warning that the
+URL becomes visible to everyone on the network, Publish and Remove, what
+the server holds and the last outcome. `ui::ircv3_settings` checks the
+draft (`media::policy::publishable_avatar_url`, the length and encoding
+rules) and asks `ChatWindow::request_own_avatar`, which starts a request in
+the server's `ServerSession::own_avatar` (`app::own_avatar::OwnAvatar`) and
+queues it. That state is protocol-free: `Confirmed` (unknown, not set, a
+URL), at most one pending request with a session-wide identifier, and the
+last `Outcome`; it only changes on `MetadataReady`, `OwnAvatar`,
+`OwnAvatarFailed`, `AvatarsReset` and the end of a connection (disconnect,
+reconnect, removal), which fails a pending request and forgets what the
+server held. The settings window reads it through its owner handle and is
+redrawn only for batches containing those events.
 
 Preferences live in `Ircv3Preferences`, one field per feature with its own
 serde default; the settings tab renders one `ircv3_settings::Ircv3Feature`
@@ -809,7 +854,8 @@ capability is lost. Messages that arrived during the occupancy show it,
 also after it ended (one retired occupancy per name is kept); a later user
 of the same nickname starts a new occupancy, so historical lines of an
 earlier occupant never show the new one's image, and lines received before
-an avatar was known (including replayed history) show none. Registered and
+an avatar was known (including replayed history, and a later joiner's
+lines before the lookup answer) show none. Registered and
 Disconnected events end every occupancy of their network; resetting or
 removing a server forgets its directory. The member list shows only
 current occupancies. Bounds: 2,048 current and 512 retired entries per

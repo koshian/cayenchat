@@ -96,7 +96,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — confirmation before upload naming the provider and the public-link consequence; guidance to settings when no provider or account is configured, and to reconnect after an authentication failure
 - DONE — ImgBB external upload with progress, cancel (abandons the wait), network/auth/rejection handling; the link is inserted into the originating draft and never sent automatically
 - PARTIAL — inline previews of direct image links (PNG, JPEG, GIF and WebP, static first frame) in the main channel log, behind an Appearance setting that is off by default; bounded, HTTP(S)-only loading of public hosts. The combined log, server log and activity lines stay text-only; no video or page previews
-- PARTIAL — user avatars (small static 16×16 images) beside main-log channel messages and in the member list, behind an Appearance setting that is off by default and independent of previews; loaded only for visible rows with a separate bounded cache. IRC avatars come from the experimental metadata opt-in below; channel/network icons and publishing our own avatar are not implemented
+- PARTIAL — user avatars (small static 16×16 images) beside main-log channel messages and in the member list, behind an Appearance setting that is off by default and independent of previews; loaded only for visible rows with a separate bounded cache. IRC avatars come from the experimental metadata opt-in below, including publishing and removing our own from the IRCv3 tab; channel/network icons are not implemented
 - TODO — clipboard file references (copied files) as attachments; they paste as text today
 - OUT OF SCOPE (for now) — video/audio attachments, a transfer manager, Matrix native media
 
@@ -125,7 +125,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
-- DONE — IRCv3 tab: per-server opt-ins for server timestamps, message tags, message batches and experimental user avatars (which shows its batch requirement), naming the configured server; changes apply on the next connection
+- DONE — IRCv3 tab: per-server opt-ins for server timestamps, message tags, message batches and experimental user avatars (which shows its batch requirement), naming the configured server; changes apply on the next connection; with avatars on, an avatar URL draft and explicit Publish / Remove for the connected server
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
 
@@ -135,7 +135,7 @@ History remains TODO; desktop notifications cover mentions, keywords and private
 - PARTIAL — message tags: per-server opt-in (default off), tags parsed and normalized, TAGMSG kept out of the chat; no tag is displayed yet, and it is not requested with legacy encodings
 - DONE — server-time: per-server opt-in (default off), independent of message tags
 - PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only, and no CHATHISTORY requests
-- PARTIAL — metadata (`draft/metadata-2`, experimental, opt-in per server, default off, requires batch): receive-only subset for the user `avatar` key (SUB, METADATA/761/766, deferred SYNC with bounds); checked against local fixtures only; no other keys, channel avatars, GET/LIST/SET or `before-connect`
+- PARTIAL — metadata (`draft/metadata-2`, experimental, opt-in per server, default off, requires batch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
 - TODO — echo-message and labeled-response
 - TODO — account-related capabilities
 - TODO — extended-join

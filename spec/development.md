@@ -324,6 +324,24 @@ this delay.
    the old lines keep the old image, the new user's lines show none until
    their own avatar arrives. Turn the setting off: the column disappears at
    once and no further image is read.
+11. Own avatar, with the same setup against a disposable local server (for
+   example the pinned Ergo below; never a public server or real account):
+   in **IRCv3**, with **ユーザーのアバター (実験的)** on, the section
+   **このサーバーでの自分のアバター** shows the URL field, the exposure
+   warning, **公開** and **削除**. Type a URL and wait for autosave: nothing
+   is sent (the transcript shows no `METADATA * SET`). While disconnected
+   both buttons are disabled with the reason shown. Connected, **公開**
+   shows the waiting line, then the server-confirmed URL; another client
+   in the channel receives it, and our own lines show the image when
+   avatars are displayed. Change the URL and publish again; then **削除**
+   (only `METADATA * SET avatar` is sent). A URL with `user:pass@`,
+   `?token=` or a private host is refused before sending; an over-long URL
+   is refused by Ergo (`INVALID_VALUE`) and more than 10 changes in 2
+   minutes show the rate limit with its delay. Turning **ユーザーのアバターを
+   表示する** off does not change what the server holds. Reconnect: the
+   draft stays, nothing is republished, and the server line shows what the
+   server kept. A user joining the channel after us gets an avatar in the
+   member list about 2 s after joining.
 
 The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
 its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
@@ -668,6 +686,82 @@ user of that nickname showing none until their own avatar arrived. Not
 verified: macOS and Windows, a real IRC server, IME, HiDPI sharpness, and
 whether no image file is read while off (the file system's `relatime` made
 access times inconclusive; the GPUI tests cover it).
+
+### IRC metadata interoperability (Ergo)
+
+Independent server: Ergo v2.19.1 (tag commit
+`63c743a70644f0f19109508ade8580bf37f7d23d`, 2026-08-04). Its source
+(`irc/caps/defs.go`, `irc/metadata.go`, `irc/handlers.go`) implements
+`draft/metadata-2` by also enabling its `draft/metadata-3` code, and the
+default configuration enables metadata. Run it isolated, with a scratch
+directory for the source, Go caches, database and configuration, a
+loopback-only plaintext listener, no TLS and no accounts:
+
+```sh
+scripts/ergo-metadata-interop.sh /tmp/cayenchat-ergo 36667
+```
+
+It needs `git`, Go (1.26.4 was used, `GOTOOLCHAIN=local`, vendored
+dependencies) and `awk`; nothing is installed. Then, in another terminal:
+
+```sh
+CAYENCHAT_INTEROP_IRC=127.0.0.1:36667 cargo test --locked -p cayenchat-irc-core --test metadata_interop -- --ignored --nocapture --test-threads 1
+```
+
+The tests use CayenChat's `Connection` as the client under test and a
+minimal raw client for the other users, with per-run nicknames and
+channels and example.com URLs (nothing is fetched). Stop the server with
+Ctrl-C and delete the directory afterwards.
+
+### Own avatar publishing and later joiners (2026-09-28)
+
+On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace
+Clippy with all features and workspace tests passed with the lockfile.
+Automated coverage: per-server draft persistence and files without the
+field; no publishing from autosave or from turning display off; explicit
+publish/remove with server-confirmed outcomes, rewritten values,
+`KEY_NOT_SET` on removal, rejections under both draft and Ergo names,
+rate limits with and without a delay, timeouts, repeated clicks, capability
+loss, disconnects and stale answers; answers addressed to `*` or changes
+made elsewhere never confirming a request; command injection and length
+limits; URL policy (credentials, token-like parameters, blocked hosts);
+later joiners' lookups with the pause, deduplication, bounds, spacing,
+timeouts, `RATE_LIMITED` retry, `INVALID_TARGET`, departures, rejoin
+before the answer, NICK and replayed JOINs; a GPUI test driving a real
+`Connection` against a local fixture through `ChatWindow`; and no chat
+rows, lookups or fetches from metadata events while display is off.
+
+Interoperability against Ergo v2.19.1 (both ignored tests passed):
+negotiation (`CAP REQ batch`, then `CAP REQ draft/metadata-2`), `SUB`
+answered by `770` and `774 * *ALL 0`, our `GET` answered in a `metadata`
+batch with `766 <nick> <nick> avatar`; initial delivery of an existing
+member's avatar in a `metadata` batch after our JOIN (before NAMES) as
+`761 * <nick> avatar * <url>`; publish and change answered with `761 <nick>
+<nick> avatar * <url>` and relayed to the other member as `761 * <nick>
+…`; removal answered with `766 <nick> <nick> avatar :Key deleted` and
+relayed as `766 * <nick> …`; another member's change relayed as `761 *`;
+a user joining after us not announced (our `GET` found the avatar);
+NICK moving it and QUIT ending it; a new user of the same nickname
+without avatar answered with `766` and shown none; a 350-byte value
+refused with `FAIL METADATA INVALID_VALUE avatar :Value is too long`; the
+11th change within 2 minutes refused with `FAIL METADATA RATE_LIMITED
+<nick> avatar 113`; after reconnecting Ergo reported no avatar (no
+account) and CayenChat sent no `SET`. See D023 for the discrepancies with
+the draft this handles.
+
+Real GUI check (macOS, debug build with `preview-fixture`, isolated
+`HOME` and a prepared settings file with the local-file credential
+backend, connected to the Ergo above, `https://images.cayenchat.test/…`
+avatars read from a scratch directory): the chat window showed the
+existing member's avatar in the member list after joining, and a user
+who joined afterwards got theirs about 2 s later through the lookup; that
+user's message sent right after joining showed no avatar, as the identity
+policy requires. Only window captures were possible: this session had no
+permission to send input (macOS Accessibility was not granted, and was not
+changed), so the settings window, Publish/Remove feedback and the display
+toggle were not exercised in the real window; the GPUI tests above cover
+their logic, and manual step 11 lists the check. Windows and Linux were
+not run.
 
 ### Native settings appearance checks (D019)
 

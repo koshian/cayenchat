@@ -674,21 +674,73 @@ environment; the sources are the published repositories behind it.
 Implemented: capability negotiation (after batch, never with
 `metadata-notify`), `METADATA * SUB avatar`, the `METADATA` message,
 761/766 for the avatar key, 770–772 and `FAIL METADATA` as diagnostics,
-774 with bounded `SYNC` retries. Not implemented: GET, LIST, SET, CLEAR,
-UNSUB, SUBS, `before-connect`, MONITOR-based updates, 760 in WHOIS,
-channel avatars, other keys (`display-name`, `color`, …) and publishing
-our own avatar. Details are in `architecture.md` (IRCv3 capabilities and
+774 with bounded `SYNC` retries, `GET avatar` for ourselves once after
+subscribing and for users who join later (bounded, below), and
+`SET avatar` with or without a value to publish or remove our own avatar.
+Not implemented: LIST, CLEAR, UNSUB, SUBS, `before-connect`, MONITOR-based
+updates, 760 in WHOIS, channel avatars and other keys (`display-name`,
+`color`, …). Details are in `architecture.md` (IRCv3 capabilities and
 User avatars).
 
-Interoperability limits: checked only against local fixtures, not a real
-server. The draft does not say how a removal is announced; a `METADATA`
-line without a value (as in the earlier `metadata-notify`) or with an
-empty value removes the avatar. irc-proto 1.1.0 parses `METADATA` with the
-old metadata-3.2 client grammar and does not know 770–774, so arguments
-are read back positionally. Whether a server sends a joining user's
-metadata to existing members is unspecified; a user who joins later may
-show no avatar until they change it. Legacy encodings accept only ASCII
-avatar URLs.
+**Publishing our own avatar (2026-09-28).** The IRCv3 tab has, per server
+and only while that server's metadata option is on, an avatar URL field
+and explicit **Publish** / **Remove** buttons. The URL is a draft saved
+with the server profile (`ServerProfile::avatar_url`, added without a
+version change, empty when absent); autosave never publishes it, and it is
+never republished on reconnect. Publish sends `METADATA * SET avatar
+:<url>` on the server's current connection only when it is registered with
+the capability negotiated; Remove sends `METADATA * SET avatar` (never
+`CLEAR`, so no other key is touched). One request is outstanding per
+connection; success is shown only from the server's `761`/`766` answer,
+and `FAIL METADATA` (including `RATE_LIMITED` with its delay), a 20 s
+timeout, a disconnect or losing the capability end it as a failure.
+Requests carry session-wide identifiers so answers to earlier or abandoned
+requests never confirm a later one. What the server holds is tracked
+separately from the draft (`app::own_avatar`), from a single `METADATA *
+GET avatar` after subscribing and from changes reported for our nickname;
+changes made elsewhere are shown, not overwritten. Before sending, the URL
+must pass the avatar fetch policy without being fetched
+(`media::policy::publishable_avatar_url`: http/https, default port, public
+host, no user name or password, no token-like query or fragment
+parameter), contain no spaces or controls, be at most 400 bytes (one IRC
+line) and be ASCII on legacy encodings. `{size}` is kept as typed. Turning
+**Show user avatars** off changes nothing on the server.
+
+**Users who join later (2026-09-28).** The draft sends a channel's
+metadata to the user who joins, not the joiner's metadata to the members
+already there, and Ergo 2.19 follows it, so a later joiner showed no
+avatar. A live JOIN of a user who shares no other channel with us and has
+no known avatar schedules one `METADATA <nick> GET avatar` after 2 s,
+unless the server announces the value meanwhile. Lookups are deduplicated
+per user, at most 64 pending (further joiners are skipped with one
+diagnostic), at most 8 unanswered, at most two per second, given up after
+30 s, retried once after `RATE_LIMITED` (which also pauses all lookups),
+cancelled when the user leaves (an answer already on its way is dropped
+unless the name joined again first), moved on NICK, and never sent for
+replayed JOINs, NAMES or redraws. Everything lives in the connection's
+worker, so a reconnect, a removed server or an old connection generation
+cannot receive answers. No periodic polling exists.
+
+Interoperability: checked against Ergo v2.19.1 (commit 63c743a) built
+from source in a scratch directory with its default configuration on
+loopback (`scripts/ergo-metadata-interop.sh`,
+`crates/irc-core/tests/metadata_interop.rs`); results and observed wire
+behavior are in `development.md`. Ergo implements `draft/metadata-2` by
+enabling its `draft/metadata-3` code: it announces other users' changes
+as `761`/`766` numerics addressed to `*` instead of `METADATA` messages,
+names failures `INVALID_KEY`/`INVALID_VALUE`/`FORBIDDEN` (the draft:
+`KEY_INVALID`/`VALUE_INVALID`), answers a removal with `766` even when
+the key was not set, sends `774 * *ALL 0` after SUB, limits key plus
+value to 350 bytes without advertising `max-value-bytes`, allows 10
+changes per 2 minutes, and keeps no metadata for a user without an
+account after they disconnect. CayenChat accepts both spellings and treats
+a numeric whose first parameter is `*` as a notification, not an answer;
+`*ALL` is ignored (not in the draft). The draft does not say how a removal
+is announced; a `METADATA` line without a value (as in the earlier
+`metadata-notify`) or with an empty value removes the avatar. irc-proto
+1.1.0 parses `METADATA` with the old metadata-3.2 client grammar and does
+not know 770–774, so arguments are read back positionally. Legacy
+encodings accept (and publish) only ASCII avatar URLs.
 
 Identity policy (details in `architecture.md`): avatars are per network and
 per occupancy of a nickname, delimited by message sequence numbers, so a
