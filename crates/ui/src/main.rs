@@ -838,6 +838,8 @@ struct ChatWindow {
     startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
+    /// The native window title last set from `render`.
+    shown_title: String,
     /// Open WHOIS windows by network and lowercase nickname.
     whois_windows: HashMap<(NetworkId, String), WindowHandle<WhoisWindow>>,
     whois_replies: Vec<(NetworkId, WhoisInfo, bool)>,
@@ -1081,7 +1083,15 @@ impl ChatWindow {
             return app.into();
         };
         match self.state.selected_channel() {
-            Some(channel) => format!("{} @ {} — {app}", channel.name, network.name),
+            Some(channel) => {
+                let topic = cayenchat_irc_core::text::strip_formatting(&channel.topic);
+                let topic = topic.split_whitespace().collect::<Vec<_>>().join(" ");
+                if topic.is_empty() {
+                    format!("{} @ {} — {app}", channel.name, network.name)
+                } else {
+                    format!("{} @ {}: {topic} — {app}", channel.name, network.name)
+                }
+            }
             None => format!("{} — {app}", network.name),
         }
     }
@@ -1166,6 +1176,7 @@ impl ChatWindow {
             startup_connections,
             settings_window: None,
             window_handle: window.window_handle().downcast::<ChatWindow>(),
+            shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: false,
@@ -2847,6 +2858,7 @@ impl ChatWindow {
                 }
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
+            Event::Topic { channel, topic } => self.state.set_topic(network, &channel, &topic),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
             Event::Whois(info) => {
                 let info = *info;
@@ -4883,6 +4895,12 @@ impl Render for SettingsWindow {
 
 impl Render for ChatWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The topic can change with any server event, not only on selection.
+        let title = self.window_title();
+        if title != self.shown_title {
+            window.set_window_title(&title);
+            self.shown_title = title.clone();
+        }
         let content = self.render_chat(window, cx);
         let content = menu_bar::wrap(
             &self.menu_bar,
@@ -4892,7 +4910,7 @@ impl Render for ChatWindow {
             window,
             cx,
         );
-        decorations::window_frame(window, cx, self.window_title(), content)
+        decorations::window_frame(window, cx, title, content)
     }
 }
 
@@ -6199,7 +6217,7 @@ impl ChatWindow {
             .child(style.time(message.time))
             .child(
                 div()
-                    .w(px(162.))
+                    .w(px(240.))
                     .flex_shrink_0()
                     .flex()
                     .min_w_0()
