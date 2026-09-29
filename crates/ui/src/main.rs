@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod account_settings;
 mod avatar_editor;
 mod avatars;
@@ -5,6 +7,7 @@ mod decorations;
 mod default_avatar;
 mod desktop;
 mod diagnostics;
+mod experimental_settings;
 mod image_upload;
 mod input;
 mod ircv3_settings;
@@ -992,6 +995,7 @@ enum SettingsTab {
     Ircv3,
     ImageUpload,
     Credentials,
+    Experimental,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3192,8 +3196,34 @@ impl SettingsWindow {
         if let Ok(Some(previous)) = cayenchat_storage::load() {
             forget_removed_profiles(&previous, &settings, &store);
         }
-        cayenchat_storage::save(&settings)?;
+        let previous_logging = diagnostics::configuration();
+        diagnostics::configure(&settings.experimental)
+            .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
+        if let Err(error) = cayenchat_storage::save(&settings) {
+            let _ = diagnostics::configure(&previous_logging);
+            return Err(error);
+        }
         Ok(settings)
+    }
+
+    /// Diagnostics preferences are independent of an incomplete new server
+    /// form. Persist them alone so selecting an experimental log destination
+    /// does not wait for the user to finish a connection profile.
+    fn persist_experimental_settings(
+        &mut self,
+        experimental: &cayenchat_storage::Experimental,
+    ) -> Result<(), String> {
+        let previous_logging = diagnostics::configuration();
+        diagnostics::configure(experimental)
+            .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
+        let mut saved = cayenchat_storage::load()?.unwrap_or_default();
+        saved.experimental = experimental.clone();
+        if let Err(error) = cayenchat_storage::save(&saved) {
+            let _ = diagnostics::configure(&previous_logging);
+            return Err(error);
+        }
+        self.saved.experimental = experimental.clone();
+        Ok(())
     }
 
     fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3277,6 +3307,16 @@ impl SettingsWindow {
             .selected_profile()
             .is_some_and(|profile| profile.host.is_empty());
         if waiting {
+            if settings.experimental != self.saved.experimental {
+                match self.persist_experimental_settings(&settings.experimental) {
+                    Ok(()) => self.autosave_error = None,
+                    Err(error) => {
+                        self.autosave_error = Some(error);
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
             // Saving now would drop the server; wait until it has a host.
             let error = Some(self.i18n.text("server_required"));
             if self.autosave_error != error {
@@ -4570,10 +4610,12 @@ impl SettingsWindow {
         let theme = settings_theme::palette(cx);
         div()
             .id(id)
+            .debug_selector(move || id.into())
             .px_4()
             .py_2()
             .border_1()
             .when(tab != SettingsTab::Connection, |d| d.border_l_0())
+            .flex_shrink_0()
             .border_color(theme.border)
             .cursor_pointer()
             .when(self.tab == tab, |d| {
@@ -4608,6 +4650,7 @@ impl SettingsWindow {
         let border = theme.border;
         let tabs = div()
             .flex()
+            .flex_wrap()
             .w_full()
             .border_b_1()
             .border_color(border)
@@ -4634,6 +4677,12 @@ impl SettingsWindow {
                 "credentials-tab",
                 "credentials_tab",
                 cx,
+            ))
+            .child(self.settings_tab(
+                SettingsTab::Experimental,
+                "experimental-tab",
+                "experimental_tab",
+                cx,
             ));
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
@@ -4643,6 +4692,7 @@ impl SettingsWindow {
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
+            SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         field_traversal(div().id("settings-screen"))
             .key_context("SettingsWindow")
@@ -6551,12 +6601,19 @@ fn load_settings_at_startup() -> (Settings, Option<String>) {
         Err(error) => return (Settings::default(), Some(error)),
     };
     let i18n = Localizer::new(saved.language);
+    let logging_error = diagnostics::configure(&saved.experimental)
+        .err()
+        .map(|error| i18n.format("debug_log_error", &[("error", &error)]));
     let notice = match cayenchat_storage::migrate_legacy_secrets(&mut saved, &CredentialStore::open)
     {
         Ok(None) => None,
         Ok(Some(report)) if report.used_local_file => Some(i18n.text("legacy_migrated_local")),
         Ok(Some(_)) => Some(i18n.text("legacy_migrated")),
         Err(error) => Some(i18n.format("credential_error", &[("error", &error)])),
+    };
+    let notice = match (notice, logging_error) {
+        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
+        (notice, logging_error) => notice.or(logging_error),
     };
     (saved, notice)
 }
