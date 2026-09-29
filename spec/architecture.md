@@ -1439,3 +1439,10 @@ ACK, error or expiry; `Event::OutgoingAccepted { local_id }`,
 `OutgoingConfirmed`, `OutgoingFailed` connect it to the application, which
 keeps `ServerSession::pending_sends` and calls `AppState::confirm_message` /
 `fail_message` on the optimistic line.
+
+## account-tag (D033)
+
+`tags::account` reads the `account` tag; `irc-core` events carry it,
+`irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
+`new_message` retains it in `Message::account`. There is no per-user account
+table in this step.
