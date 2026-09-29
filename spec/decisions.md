@@ -37,7 +37,9 @@ rather than contemporary web-chat aesthetics. Its four information panes are a
 structural requirement: channels, selected-channel log, other-channel subwindow
 and user list. Follow the two-column reference arrangement: main log and subwindow
 on the left with the draft input between them; users above the channel tree on
-the right.
+the right. The bottom edge of the draft input is a drag handle that moves the
+split between the two logs (10%–90%, a double click restores an even split);
+the split is kept for the run only, not saved.
 
 This is a design direction, not a requirement for pixel-perfect reproduction.
 
