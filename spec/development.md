@@ -393,9 +393,9 @@ this delay.
    result preview follows; Cancel uploads nothing; **… にアップロードして
    送信** shows progress, puts the host's URL into the field and sends it
    (if the connection ends during the upload, a line says it was not
-   sent; while disconnected, or on a server without avatar metadata, there
-   is no **画像を選択…**, drop target or image paste; connected to a
-   server without `draft/metadata-2`, the section says
+   sent; while disconnected, or on a server without avatar metadata, the
+   image only fills the field, still with **画像を選択…**, drop and paste;
+   connected to a server without `draft/metadata-2`, the section says
    **この IRC サーバーはアバターに対応していません。**), and the uploaded image is at most 256×256. A HEIC file is refused with the
    export hint.
    Switch servers during an upload: the URL goes to the server it was for.

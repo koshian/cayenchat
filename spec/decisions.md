@@ -746,10 +746,11 @@ or a server profile), and the returned URL replaces that server's avatar
 draft if it passes the same checks and is then sent to the server at once
 (users expect an uploaded avatar to be in use); if the server is not
 connected the draft is kept, a line says it was not sent, and Send
-remains available. Because an upload is sent at once, "Choose Image…",
-dropping and pasting an image are offered only while the server can
-receive an avatar (connected, capability negotiated); on a server without
-avatar metadata, or while disconnected, only the URL field is shown. When
+remains available. "Choose Image…", dropping and pasting an image are
+offered whatever the server supports (also disconnected, or on a server
+without avatar metadata, so the URL can be shared with peers through CTCP
+AVATAR); the image is sent to the server at once only when it can receive
+an avatar (connected, capability negotiated). When
 the current connection asked for avatar metadata (option and batch on when
 it started) and registration completed without it being enabled, the
 section says that the IRC server does not support avatars; this is an
