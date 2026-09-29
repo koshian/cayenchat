@@ -6,12 +6,13 @@
 //! shared connection state.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     time::Instant,
 };
 
 use cayenchat_app::own_avatar::OwnAvatar;
 use cayenchat_irc_core::{Connection, ConnectionConfig};
+use cayenchat_model::ConversationId;
 
 /// Newest transcript lines kept per server.
 pub const DIAGNOSTIC_LIMIT: usize = 1000;
@@ -46,6 +47,10 @@ pub struct ServerSession {
     pub metadata_requested: bool,
     /// CTCP AVATAR on the current connection.
     pub peer_avatars: PeerAvatarConnection,
+    /// Our messages waiting for the server's echo (`echo-message`), by the
+    /// connection's id: the conversation, the line's sequence and whether
+    /// it is a NOTICE. The connection bounds what it tracks.
+    pub pending_sends: HashMap<u64, (ConversationId, u64, bool)>,
 }
 
 /// How the current connection exchanges avatars with other clients: what
@@ -77,11 +82,13 @@ impl ServerSession {
             own_avatar: OwnAvatar::default(),
             metadata_requested: false,
             peer_avatars: PeerAvatarConnection::default(),
+            pending_sends: HashMap::new(),
         }
     }
 
     /// Records what a connection starting with `config` asked for.
     pub fn connection_starting(&mut self, config: &ConnectionConfig) {
+        self.pending_sends.clear();
         self.metadata_requested = config.ircv3.metadata;
         self.peer_avatars = PeerAvatarConnection {
             enabled: config.ircv3.peer_avatars,

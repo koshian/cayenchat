@@ -138,7 +138,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — server-time: per-server opt-in (default off), independent of message tags
 - PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
-- TODO — echo-message and labeled-response
+- DONE — echo-message and labeled-response (IRCv3 standard, one per-server opt-in "Server-confirmed sending", default off): the message still appears at once; the server's echo confirms it in place (final text, msgid, server time), a labeled ACK/error/batch names it exactly, a rejected or unconfirmed message is drawn in the warning color; what other clients of the account send shows as before. `labeled-response` needs `batch` and `message-tags` (requested automatically, UTF-8 connections only); on a server with only `echo-message` an echo is matched by target and identical text
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify

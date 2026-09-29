@@ -1395,3 +1395,11 @@ chat drafts and other prompts retain their original styling and editing code.
 The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
+
+## Server-confirmed sending (D036)
+
+`irc-core::echo::Echoes` (worker) tracks each sent message until its echo,
+ACK, error or expiry; `Event::OutgoingAccepted { local_id }`,
+`OutgoingConfirmed`, `OutgoingFailed` connect it to the application, which
+keeps `ServerSession::pending_sends` and calls `AppState::confirm_message` /
+`fail_message` on the optimistic line.

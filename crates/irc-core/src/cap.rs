@@ -21,6 +21,10 @@ pub const SASL: &str = "sasl";
 pub const MESSAGE_TAGS: &str = "message-tags";
 pub const SERVER_TIME: &str = "server-time";
 pub const BATCH: &str = "batch";
+/// The server sends our own messages back with their final form.
+pub const ECHO_MESSAGE: &str = "echo-message";
+/// Replies to a command carry its `label`; needs `batch` and `message-tags`.
+pub const LABELED_RESPONSE: &str = "labeled-response";
 /// The experimental metadata draft, used only for user avatars. The legacy
 /// `metadata-notify` is never requested: the draft forbids asking for both.
 pub const METADATA: &str = "draft/metadata-2";
@@ -60,6 +64,11 @@ pub struct Ircv3Options {
     /// `message-tags` (for message IDs) are requested with it, as the
     /// specification's full support lists them.
     pub chathistory: bool,
+    /// Sent messages are confirmed by the server: `echo-message`, and with
+    /// `labeled-response` (and its `batch` and `message-tags`, on UTF-8
+    /// connections) exact matching of each echo to its local line. Both
+    /// capabilities are standard; the behavior change makes this opt-in.
+    pub confirmed_sending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,20 +114,24 @@ impl CapNegotiation {
     pub fn new(options: Ircv3Options, sasl: Option<crate::SaslCredentials>, utf8: bool) -> Self {
         let mut optional = Vec::new();
         let mut explicit = Vec::new();
-        if (options.message_tags || options.chathistory) && utf8 {
+        if (options.message_tags || options.chathistory || options.confirmed_sending) && utf8 {
             optional.push(MESSAGE_TAGS);
         }
         if options.message_tags && utf8 {
             explicit.push(MESSAGE_TAGS);
         }
-        if options.server_time || options.chathistory {
+        if options.server_time || options.chathistory || options.confirmed_sending {
             optional.push(SERVER_TIME);
         }
         if options.server_time {
             explicit.push(SERVER_TIME);
         }
         // Batch references and the history types are ASCII, like server-time.
-        if options.batch || options.metadata || options.chathistory {
+        if options.batch
+            || options.metadata
+            || options.chathistory
+            || (options.confirmed_sending && utf8)
+        {
             optional.push(BATCH);
         }
         if options.batch {
@@ -131,6 +144,16 @@ impl CapNegotiation {
         if options.metadata {
             optional.push(METADATA);
             explicit.push(METADATA);
+        }
+        if options.confirmed_sending {
+            optional.push(ECHO_MESSAGE);
+            explicit.push(ECHO_MESSAGE);
+            // Labels ride on message tags and their multi-message replies
+            // on batches; without both only the echo is used.
+            if utf8 {
+                optional.push(LABELED_RESPONSE);
+                explicit.push(LABELED_RESPONSE);
+            }
         }
         // Likewise chathistory: without batch its replies would look live.
         // Its references are ASCII, so legacy encodings may use it.
@@ -296,6 +319,7 @@ impl CapNegotiation {
                 && !self.enabled.contains(name)
                 && !self.pending.contains(&name)
                 && (!needs_batch(name) || self.enabled.contains(BATCH))
+                && (name != LABELED_RESPONSE || self.enabled.contains(MESSAGE_TAGS))
                 && (self.explicit.contains(&name)
                     || dependents(name).iter().any(|dependent| {
                         self.optional.contains(dependent) && self.offered.contains_key(*dependent)
@@ -324,7 +348,7 @@ impl CapNegotiation {
                 }
             } else {
                 step.notes.push(format!("Capability {name} enabled."));
-                if name == BATCH {
+                if name == BATCH || name == MESSAGE_TAGS {
                     // Now that batch is on, metadata and chathistory may follow.
                     self.request_optional(step);
                 }
@@ -340,7 +364,7 @@ impl CapNegotiation {
         if self.enabled.contains(BATCH) {
             return;
         }
-        for name in [METADATA, CHATHISTORY] {
+        for name in [METADATA, CHATHISTORY, LABELED_RESPONSE] {
             let waiting = self.pending.contains(&name);
             if self.enabled.remove(name) || waiting {
                 self.pending.retain(|cap| *cap != name);
@@ -364,14 +388,15 @@ impl CapNegotiation {
 
 /// Extensions whose replies only make sense inside batches.
 fn needs_batch(name: &str) -> bool {
-    name == METADATA || name == CHATHISTORY
+    name == METADATA || name == CHATHISTORY || name == LABELED_RESPONSE
 }
 
 /// Extensions that make this client want `name` without its own opt-in.
 fn dependents(name: &str) -> &'static [&'static str] {
     match name {
-        BATCH => &[METADATA, CHATHISTORY],
-        SERVER_TIME | MESSAGE_TAGS => &[CHATHISTORY],
+        BATCH => &[METADATA, CHATHISTORY, LABELED_RESPONSE],
+        MESSAGE_TAGS => &[CHATHISTORY, ECHO_MESSAGE, LABELED_RESPONSE],
+        SERVER_TIME => &[CHATHISTORY, ECHO_MESSAGE],
         _ => &[],
     }
 }
@@ -499,6 +524,7 @@ mod tests {
             metadata: false,
             peer_avatars: false,
             chathistory: false,
+            confirmed_sending: false,
         }
     }
 
@@ -728,6 +754,63 @@ mod tests {
 
         let mut cap = CapNegotiation::new(options(true, false), None, false);
         assert_eq!(String::from(&cap.start()), "CAP END");
+    }
+
+    #[test]
+    fn confirmed_sending_asks_for_echo_and_labels_with_their_dependencies() {
+        let sending = Ircv3Options {
+            confirmed_sending: true,
+            ..Ircv3Options::default()
+        };
+        let mut cap = CapNegotiation::new(sending, None, true);
+        assert_eq!(String::from(&cap.start()), "CAP LS 302");
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :echo-message labeled-response batch message-tags server-time",
+            ))
+            .unwrap();
+        // labeled-response waits for batch and message-tags.
+        assert_eq!(
+            sent(&step),
+            [
+                "CAP REQ message-tags",
+                "CAP REQ server-time",
+                "CAP REQ batch",
+                "CAP REQ echo-message"
+            ]
+        );
+        cap.observe(&line(":s CAP * ACK :batch")).unwrap();
+        let step = cap.observe(&line(":s CAP * ACK :message-tags")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ labeled-response"]);
+        // Losing batch drops labeled-response, not echo-message.
+        cap.observe(&line(":s CAP * ACK :labeled-response echo-message"))
+            .unwrap();
+        assert!(cap.enabled(LABELED_RESPONSE) && cap.enabled(ECHO_MESSAGE));
+        let step = cap.observe(&line(":s CAP * DEL :batch")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ -labeled-response"]);
+        assert!(cap.enabled(ECHO_MESSAGE) && !cap.enabled(LABELED_RESPONSE));
+
+        // A server with echo-message only: no labels, no helpers.
+        let mut echo_only = CapNegotiation::new(sending, None, true);
+        echo_only.start();
+        let step = echo_only
+            .observe(&line(":s CAP * LS :echo-message"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ echo-message"]);
+
+        // Legacy encodings: echo-message alone (tags carry UTF-8).
+        let mut legacy = CapNegotiation::new(sending, None, false);
+        legacy.start();
+        let step = legacy
+            .observe(&line(
+                ":s CAP * LS :echo-message labeled-response batch message-tags",
+            ))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ echo-message"]);
+
+        // Off: plain registration as before.
+        let mut off = CapNegotiation::new(Ircv3Options::default(), None, true);
+        assert_eq!(String::from(&off.start()), "CAP END");
     }
 
     #[test]

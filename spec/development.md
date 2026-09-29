@@ -1039,3 +1039,14 @@ not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.
+
+### Server-confirmed sending checks (D036)
+
+Unit tests: label uniqueness and size, labeled echo with a rewritten text,
+ACK, error numeric, FAIL, labeled batch, unlabeled matching by target and
+text, self-messages, bounds and expiry (`echo.rs`); CAP requests and
+dependency order, legacy encodings, off (`cap.rs`); fake-server flows for
+labeled echo/batch/error, echo-only and no-echo servers; app confirm/fail and
+duplicate handling; UI in-place confirmation, failure mark, disconnect with
+pending messages. No live Ergo/soju run was made. `cargo clippy --workspace
+--all-targets` fails in `crates/app` tests on master itself.

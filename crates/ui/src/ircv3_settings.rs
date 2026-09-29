@@ -51,7 +51,7 @@ pub(crate) struct Ircv3Feature {
 }
 
 /// Features shown on the IRCv3 tab, in display order.
-pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 5] = [
+pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 6] = [
     Ircv3Feature {
         id: "ircv3-server-time",
         label_key: "ircv3_server_time",
@@ -82,6 +82,14 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 5] = [
         hint_key: "ircv3_chathistory_hint",
         get: |preferences| preferences.chathistory,
         toggle: |preferences| preferences.chathistory = !preferences.chathistory,
+        warning: |_| None,
+    },
+    Ircv3Feature {
+        id: "ircv3-confirmed-sending",
+        label_key: "ircv3_confirmed_sending",
+        hint_key: "ircv3_confirmed_sending_hint",
+        get: |preferences| preferences.confirmed_sending,
+        toggle: |preferences| preferences.confirmed_sending = !preferences.confirmed_sending,
         warning: |_| None,
     },
     Ircv3Feature {
