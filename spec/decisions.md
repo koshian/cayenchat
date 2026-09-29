@@ -1146,9 +1146,18 @@ traffic).
   update it; PART, KICK, QUIT drop users who share no channel; NICK moves the
   entry (forgotten + reported under the new name); our own PART or KICK
   removes the channel from everyone; a republished member list removes users
-  who left unseen. Same nickname on two servers: separate sessions.
+  who left unseen. Same nickname on two servers: separate sessions. An entry
+  with neither an account nor a real name (for example after `ACCOUNT *`) is
+  dropped, so it does not use one of the 4096 slots.
+- **Late WHOX replies.** The reply describes the channel as it was when the
+  query went out. Nicknames that leave it meanwhile (PART, KICK, QUIT, or a
+  nick change away from the name) are remembered for that one query and their
+  354 lines are ignored, whether or not the first NAMES was published yet; a
+  rejoin, or the new name after a nick change, is accepted. The set lives and
+  dies with the query.
 - **Initial state.** account-notify only reports changes. After our own JOIN,
-  with `WHOX` in ISUPPORT, one `WHO #chan %tnar,<token>` at a time (rolling
+  with `WHOX` in ISUPPORT (the token may carry a value, `WHOX=...`; it is
+  recognized by name), one `WHO #chan %tnar,<token>` at a time (rolling
   token 1–999, at most 64 queued, 15 s without an end-of-WHO drops it, no
   timer: checked on the next line) fills account (`0` = none) and real name of
   those present. The reply (354/315 of our token) is not a server line. The
