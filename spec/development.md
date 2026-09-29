@@ -1039,3 +1039,15 @@ not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.
+
+### CHATHISTORY TARGETS checks (D034)
+
+Unit tests (`history.rs`): reply parsing and batch framing, unknown/known and
+case-duplicate peers, channel targets, invalid names, bounds (64 entries, 16
+peers, queue), FAIL and timeout, both directions of direct-message lines.
+Fake-server test: TARGETS → JOIN's LATEST → the direct message's LATEST →
+`ChannelHistory` with no live events. UI test: quiet conversation creation,
+overlap dropped, one notification only for the live line. Existing fixtures
+now expect the TARGETS request after registration. No live Ergo/soju run was
+made; `cargo clippy --workspace --all-targets` fails in `crates/app` tests on
+master itself.

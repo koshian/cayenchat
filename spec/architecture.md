@@ -1106,7 +1106,23 @@ joined with `/join` are not rejoined by reconnects (only configured ones
 are), so they are not recovered until joined again; private
 conversations are not recovered.
 
-Not implemented: TARGETS and private-message history, persistence.
+Direct-message discovery (D034): once per connection, when chathistory
+becomes available, the worker queues `CHATHISTORY TARGETS <from> <to> 16`
+ahead of the join requests (`from`: the previous disconnect, at most a week
+back, default a day; `to`: now plus 5 minutes for clock skew). The reply
+batch (`draft/chathistory-targets`) is consumed whole; nicknames (not
+channels) are deduplicated by IRC casemapping, newest first, at most 16, and
+each is queued as an ordinary `LATEST <nick> * 50` in the same bounded queue.
+The application shows such a peer's conversation when its request is sent
+and inserts the reply like channel history (provenance `Requested`: no
+unread mark, highlight or notification). The reply of a request belongs to
+the connection's worker, so a reconnect cannot receive an older
+connection's targets.
+
+Not implemented: persistence; recovery of a known private conversation
+beyond one page (it repeats `LATEST *` and relies on the duplicate filter;
+lines missed while lines arrived live are placed by arrival order);
+channels the bouncer knows but we have not joined.
 
 ## Notifications
 
