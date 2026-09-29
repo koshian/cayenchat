@@ -1123,3 +1123,35 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D032 — Real name setting and IRCv3 `setname`
+
+Status: implemented.
+
+Each server profile has a `Real name` (`ServerProfile::realname`, added
+without a settings version change; files without it read as empty). Empty or
+blank means the built-in default `CayenChat`, so existing profiles advertise
+the same identity as before. It is separate from the nickname, the `USER`
+username (ident) and the SASL account.
+
+- **Clean separation.** The setting and `ConnectionConfig::realname` hold
+  only what the user typed. KVIrc's avatar mark (D025) is added on the wire
+  by `ConnectionConfig::wire_realname` for `USER` and by the worker for
+  `SETNAME`; the mark of a connection is fixed for its lifetime, so `SETNAME`
+  keeps the registered mark and the avatar tab's "reconnect to update the
+  mark" behavior is unchanged. A confirmed `SETNAME` is shown without the
+  mark.
+- **Capability.** `setname` (IRCv3 standard) is requested whenever the CAP
+  negotiation runs for another reason (SASL or any opt-in extension) and the
+  server offers it. It never starts a negotiation on its own, and gets no
+  switch: it changes nothing until the user edits the real name.
+- **Change while connected.** The normal settings autosave applies the new
+  value: `SETNAME` is sent when the connection has `setname`; the outcome is
+  one server line (changed / not supported, "used from the next connection" /
+  rejected with the server's `FAIL SETNAME` description). There is no second
+  setting. At most four requests wait for an answer; the counter is the only
+  new state. Values with line breaks or that exceed the 512-byte line in the
+  connection's encoding are refused before sending. Length and content limits
+  beyond that are the server's (`FAIL SETNAME INVALID_REALNAME`).
+- **Not tracked.** Other users' `SETNAME` messages are consumed silently; the
+  remote realname is not stored (workstream for extended-join/WHOIS).

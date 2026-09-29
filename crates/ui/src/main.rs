@@ -30,8 +30,8 @@ use cayenchat_app::{
 };
 use cayenchat_irc_core::{
     ChannelActivityKind, Connection, ConnectionConfig, Event, HistoryMessage, HistoryResume,
-    Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, SaslCredentials, WhoisInfo,
-    WireDirection, valid_channel,
+    Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, RealNameFailure,
+    SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
@@ -116,6 +116,7 @@ struct SettingsForm {
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
     username: Entity<TextInput>,
+    realname: Entity<TextInput>,
     channels: Entity<TextInput>,
     /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
@@ -172,6 +173,12 @@ impl SettingsForm {
             username: field(
                 &i18n.text("username_placeholder"),
                 &profile.username,
+                false,
+                cx,
+            ),
+            realname: field(
+                &i18n.text("realname_placeholder"),
+                &profile.realname,
                 false,
                 cx,
             ),
@@ -342,6 +349,7 @@ impl SettingsForm {
             profile.port = port;
             profile.nickname = value(&self.nickname);
             profile.username = value(&self.username);
+            profile.realname = value(&self.realname);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
             profile.avatar_url = value(&self.avatar_url);
@@ -404,12 +412,13 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 30] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 31] {
         [
             &self.custom_host,
             &self.port,
             &self.nickname,
             &self.username,
+            &self.realname,
             &self.channels,
             &self.server_password,
             &self.sasl_username,
@@ -534,6 +543,7 @@ impl SettingsForm {
         for (field, value) in [
             (&self.nickname, &profile.nickname),
             (&self.username, &profile.username),
+            (&self.realname, &profile.realname),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
             (&self.avatar_url, &profile.avatar_url),
@@ -622,6 +632,7 @@ fn connection_config(
         return Err(i18n_error(language, "username_required"));
     }
     config.username = profile.username.clone();
+    config.realname = profile.realname.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
@@ -1452,6 +1463,7 @@ impl ChatWindow {
     /// changed host renames the server.
     fn apply_servers(&mut self, settings: Settings, cx: &mut Context<Self>) {
         let mut networks = Vec::new();
+        let mut realname_errors = Vec::new();
         for profile in settings.ordered_servers() {
             let id = match self.network_of_profile(&profile.id) {
                 Some(id) => id,
@@ -1472,6 +1484,16 @@ impl ChatWindow {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
                     config.shared_avatar = shared.clone();
+                    // A new realname is sent at once with SETNAME when the
+                    // connection has it; the server's answer says otherwise.
+                    if config.realname != profile.realname {
+                        config.realname = profile.realname.clone();
+                        if let Some(connection) = &session.irc
+                            && let Err(error) = connection.set_real_name(&profile.realname)
+                        {
+                            realname_errors.push((id, error));
+                        }
+                    }
                 }
                 if session.peer_avatars.enabled
                     && session.peer_avatars.answering != shared
@@ -1486,6 +1508,9 @@ impl ChatWindow {
                 name: profile.host.clone(),
                 channels: profile.channels(),
             });
+        }
+        for (id, error) in realname_errors {
+            self.state.append_server_message(id, error);
         }
         let stale: Vec<NetworkId> = self
             .sessions
@@ -2848,6 +2873,22 @@ impl ChatWindow {
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::RealNameChanged { realname } => {
+                let line = self
+                    .i18n
+                    .format("event_realname_changed", &[("realname", &realname)]);
+                self.state.append_server_message(network, line);
+            }
+            Event::RealNameFailed(failure) => {
+                let line = match failure {
+                    RealNameFailure::Unsupported => self.i18n.text("event_realname_unsupported"),
+                    RealNameFailure::Busy => self.i18n.text("event_realname_busy"),
+                    RealNameFailure::Rejected(reason) => self
+                        .i18n
+                        .format("event_realname_rejected", &[("reason", &reason)]),
+                };
+                self.state.append_server_message(network, line);
+            }
             Event::Whois(info) => {
                 let info = *info;
                 let key = (network, info.nickname.to_lowercase());
@@ -3079,6 +3120,7 @@ impl SettingsWindow {
             (&self.settings.custom_host, "server_host_placeholder"),
             (&self.settings.nickname, "nickname"),
             (&self.settings.username, "username_placeholder"),
+            (&self.settings.realname, "realname_placeholder"),
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
@@ -3990,6 +4032,10 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("username_hint")),
             )
+            .child(settings_field(
+                &self.i18n.text("realname"),
+                self.settings.realname.clone(),
+            ))
             .child(settings_field(
                 &self.i18n.text("auto_join_channels"),
                 self.settings.channels.clone(),
@@ -6873,6 +6919,32 @@ mod startup_tests {
                 ("irc.example.org", "bob", vec!["#b".to_owned()]),
                 ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
             ]
+        );
+    }
+
+    #[test]
+    fn the_saved_realname_is_used_for_every_connection() {
+        let mut settings = Settings::default();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "alice".into();
+        profile.username = "ident".into();
+        let language = settings.language;
+        // Unset keeps the built-in default on the wire.
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
+        assert_eq!(config.realname, "");
+        assert_eq!(config.username, "ident");
+        settings.selected_profile_mut().unwrap().realname = "Alice Liddell".into();
+        // A reconnect builds its configuration from the persisted value.
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
+        assert_eq!(config.realname, "Alice Liddell");
+        assert_eq!(config.nickname, "alice");
+        assert_eq!(config.username, "ident");
+        settings.selected_profile_mut().unwrap().realname = "two\nlines".into();
+        assert!(
+            connection_config(settings.selected_profile().unwrap(), language, None, None).is_err()
         );
     }
 

@@ -1039,3 +1039,12 @@ not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.
+
+### Real name and SETNAME checks (D032)
+
+Unit and fake-server tests cover: default/explicit/marked wire realname,
+`USER` registration, SETNAME accepted, without the capability, and rejected by
+`FAIL SETNAME`, the CAP request rule, settings migration and persistence, and
+the reconnect configuration. `cargo clippy --workspace --all-targets`
+currently fails in `crates/app` tests (`while let` lint) on master itself,
+unrelated to this change. No live Ergo/soju run was made for this change.

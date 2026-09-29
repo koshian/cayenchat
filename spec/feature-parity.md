@@ -139,6 +139,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
 - TODO — echo-message and labeled-response
+- DONE — setname (IRCv3 standard): the per-server `Real name` setting is sent in `USER`; changing it while connected sends `SETNAME` when the server enabled `setname`, otherwise it applies at the next connection. Requested only when a CAP negotiation happens anyway (SASL or another opt-in), so plain registration is unchanged. Others' SETNAME changes are not tracked
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify
