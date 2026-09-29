@@ -167,14 +167,23 @@ with empty settings every time (add the server each time then).
 
 Playground commands: `say TEXT` (bob speaks), `fill N` (N numbered lines),
 `cut [SECS]` (cut the link and refuse reconnects for SECS or until `up`),
-`up`, `sent` (the CHATHISTORY commands the client sent), `quit`.
+`up`, `delay SECS` (hold each older page's answer for SECS; 0 turns it
+off), `sent` (the CHATHISTORY commands the client sent), `quit`.
+
+Answers arrive instantly on loopback; delay them to watch a page arrive.
+`--lines` adds more lines (Ergo keeps 2048 in memory, the client keeps
+2000). For example:
+`python3 scripts/e2e/manual_history.py --ergo-dir /tmp/cayenchat-ergo --lines 1000 --page-delay 2`
 
 Things to try:
 
 - **Older pages**: after connecting, the latest 50 lines are shown.
   Scrolling up loads 50 more at a time back to `line 001`. Check that the
   lines on screen do not move when a page arrives and that nothing more is
-  asked for at the beginning (`sent`). Every seventh line wraps.
+  asked for at the beginning (`sent`). Every seventh line wraps. With
+  `--page-delay 2` the page arrives two seconds after you reach the top,
+  which makes it easy to see that the lines on screen stay put; scrolling
+  more meanwhile still sends only one request (`sent`).
 - **Gap recovery**: `say A`, `cut 5`, `say B`, `say C`. The client
   reconnects by itself after a few seconds; B and C appear right after A,
   before the rejoin line, and `say D` then follows live. `sent` shows

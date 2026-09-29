@@ -149,6 +149,9 @@ class Proxy:
         self.sent = []
         self.accepting = True
         self.hold_before = False
+        # Seconds each older page's answer is held back (by hand: to watch
+        # a page arrive); 0 forwards it at once.
+        self.page_delay = 0.0
         self.holding = False
         self.held = []
         self.links = []
@@ -182,8 +185,12 @@ class Proxy:
                     text = line.decode("utf-8", "replace")
                     with self.lock:
                         self.sent.append(text)
-                        if self.hold_before and text.startswith("CHATHISTORY BEFORE"):
-                            self.holding = True
+                        if text.startswith("CHATHISTORY BEFORE"):
+                            if self.hold_before:
+                                self.holding = True
+                            elif self.page_delay > 0 and not self.holding:
+                                self.holding = True
+                                threading.Timer(self.page_delay, self.release).start()
                     server.sendall(line + b"\r\n")
         except OSError:
             pass

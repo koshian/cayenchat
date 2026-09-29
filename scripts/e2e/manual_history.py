@@ -19,6 +19,7 @@ from history_gui import Peer, Proxy  # noqa: E402
 HELP = """commands:
   say TEXT     bob says TEXT in the channel
   fill N       bob says N numbered lines
+  delay SECS   hold each older page's answer for SECS (0: off)
   cut [SECS]   cut CayenChat's link and refuse reconnects (for SECS, or until `up`)
   up           accept connections again
   sent         CHATHISTORY commands CayenChat has sent
@@ -30,7 +31,9 @@ def main():
     parser.add_argument("--ergo-dir", required=True)
     parser.add_argument("--port", type=int, default=36668, help="where CayenChat connects")
     parser.add_argument("--channel", default="#demo")
-    parser.add_argument("--lines", type=int, default=180, help="lines bob says first")
+    parser.add_argument("--lines", type=int, default=180, help="lines bob says first (Ergo keeps 2048)")
+    parser.add_argument("--page-delay", type=float, default=0.0,
+                        help="seconds each older page's answer is held back, to watch it arrive")
     args = parser.parse_args()
 
     run = os.path.join(args.ergo_dir, "run")
@@ -57,15 +60,21 @@ def main():
 
         def fill(count):
             nonlocal counter
-            for _ in range(count):
-                counter += 1
-                wrap = " — a longer line that wraps onto a second row in the log" * 3 if counter % 7 == 0 else ""
-                say(f"line {counter:03d}{wrap}")
+            with lock:
+                for _ in range(count):
+                    counter += 1
+                    wrap = " — a longer line that wraps onto a second row in the log" * 3 if counter % 7 == 0 else ""
+                    bob.send(f"PRIVMSG {channel} :line {counter:03d}{wrap}")
+                # One round trip: Ergo has stored them all once it answers.
+                tag = f"filled{time.time_ns()}"
+                bob.send(f"PING :{tag}")
+                bob.until(lambda line: tag in line)
 
         fill(args.lines)
         if "enabled: false" not in config.split("fakelag:", 1)[1][:200]:
             print("note: fakelag is on; filling was slow (use ERGO_NO_FAKELAG=1 when configuring)")
         proxy = Proxy(("127.0.0.1", ergo_port), args.port)
+        proxy.page_delay = args.page_delay
         print(f"Ergo on 127.0.0.1:{ergo_port}; {channel} has {args.lines} lines from bob.")
         print(f"Connect CayenChat to 127.0.0.1 port {proxy.port} (no TLS), history option on, channel {channel}.")
         print(HELP)
@@ -94,6 +103,9 @@ def main():
                         proxy.accepting = True
                         print("accepting connections again")
                     threading.Thread(target=reopen, daemon=True).start()
+            elif command == "delay":
+                proxy.page_delay = float(rest or 0)
+                print(f"older pages arrive {proxy.page_delay:g} s late")
             elif command == "up":
                 proxy.accepting = True
                 print("accepting connections again")
