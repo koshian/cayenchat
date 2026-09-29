@@ -78,6 +78,8 @@ pub struct HistoryMessage {
     pub notice: bool,
     pub server_time: Option<SystemTime>,
     pub msgid: Option<String>,
+    /// The sender's services account (`account-tag`), when reported.
+    pub account: Option<String>,
 }
 
 /// A message the application holds, as a CHATHISTORY reference: its
@@ -701,6 +703,7 @@ fn history_line(message: &IrcMessage, channel: &str) -> Option<HistoryMessage> {
         // invalid one shows the receipt time.
         server_time: tags::tag_value(message, "time").and_then(tags::parse_server_time),
         msgid: tags::msgid(message).map(str::to_owned),
+        account: tags::account(message).map(str::to_owned),
     })
 }
 
@@ -1342,6 +1345,16 @@ mod tests {
             requests.observe(&parse(&format!("@batch=r :bob!u@h PRIVMSG #a :{index}")));
         }
         assert!(!finished(requests.observe(&parse(":srv BATCH -r"))).incomplete);
+    }
+
+    #[test]
+    fn history_lines_keep_the_account_they_were_sent_under() {
+        let line =
+            |text: &str| history_line(&text.parse::<IrcMessage>().unwrap(), "#test").unwrap();
+        let with =
+            line("@account=alice;time=2026-09-28T00:00:00.000Z :alice!u@h PRIVMSG #test :hi");
+        assert_eq!(with.account.as_deref(), Some("alice"));
+        assert_eq!(line(":bob!u@h PRIVMSG #test :hi").account, None);
     }
 
     #[test]

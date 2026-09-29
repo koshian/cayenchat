@@ -1395,3 +1395,10 @@ chat drafts and other prompts retain their original styling and editing code.
 The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
+
+## account-tag (D033)
+
+`tags::account` reads the `account` tag; `irc-core` events carry it,
+`irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
+`new_message` retains it in `Message::account`. There is no per-user account
+table in this step.

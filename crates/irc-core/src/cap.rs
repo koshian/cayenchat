@@ -21,6 +21,9 @@ pub const SASL: &str = "sasl";
 pub const MESSAGE_TAGS: &str = "message-tags";
 pub const SERVER_TIME: &str = "server-time";
 pub const BATCH: &str = "batch";
+/// The sender's services account on each message. Requested only when a
+/// negotiation happens anyway, and not on legacy encodings (values are UTF-8).
+pub const ACCOUNT_TAG: &str = "account-tag";
 /// The experimental metadata draft, used only for user avatars. The legacy
 /// `metadata-notify` is never requested: the draft forbids asking for both.
 pub const METADATA: &str = "draft/metadata-2";
@@ -137,6 +140,10 @@ impl CapNegotiation {
         if options.chathistory {
             optional.push(CHATHISTORY);
             explicit.push(CHATHISTORY);
+        }
+        if (sasl.is_some() || !optional.is_empty()) && utf8 {
+            optional.push(ACCOUNT_TAG);
+            explicit.push(ACCOUNT_TAG);
         }
         Self {
             phase: Phase::Inactive,
@@ -728,6 +735,26 @@ mod tests {
 
         let mut cap = CapNegotiation::new(options(true, false), None, false);
         assert_eq!(String::from(&cap.start()), "CAP END");
+    }
+
+    #[test]
+    fn account_tag_rides_along_with_negotiation_on_utf8_connections_only() {
+        let mut plain = CapNegotiation::new(Ircv3Options::default(), None, true);
+        assert_eq!(String::from(&plain.start()), "CAP END");
+
+        let mut cap = CapNegotiation::new(options(false, true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :server-time account-tag"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time", "CAP REQ account-tag"]);
+
+        let mut legacy = CapNegotiation::new(options(false, true), None, false);
+        legacy.start();
+        let step = legacy
+            .observe(&line(":s CAP * LS :server-time account-tag"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time"]);
     }
 
     #[test]

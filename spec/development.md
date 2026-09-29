@@ -1039,3 +1039,12 @@ not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.
+
+### account-tag checks (D033)
+
+Unit tests: tag parsing (`*`, empty, absent), account changing between
+messages, history lines with the tag, CAP request rule (with negotiation,
+UTF-8 only), the UI metadata mapping and `ServicesAccount` bounds; the
+`Message` size guard is now 104 bytes. `cargo clippy --workspace
+--all-targets` fails in `crates/app` tests (`while let`) on master itself. No
+live Ergo/soju run was made for this change.
