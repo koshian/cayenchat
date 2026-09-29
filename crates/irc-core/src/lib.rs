@@ -293,6 +293,35 @@ fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The tag section of a message a client sends may take 4094 bytes (IRCv3
+/// message-tags) without the leading `@` and the space after it, so 4096 as
+/// `tags::tag_bytes` counts them. It is separate from the 512 bytes of the
+/// message itself.
+const MAX_CLIENT_TAG_BYTES: usize = 4096;
+
+/// Checks a message that carries tags: the message without them against the
+/// usual 512-byte limit, its tags against their own limit, and the whole
+/// line for characters the encoding cannot hold. Tag values are UTF-8 (the
+/// worker requests tags only on UTF-8 connections).
+fn validate_tagged_wire(message: &IrcMessage, label: &str) -> Result<(), String> {
+    let mut untagged = message.clone();
+    untagged.tags = None;
+    validate_wire(&untagged.to_string(), label)?;
+    if let Some(tags) = &message.tags {
+        if tags::tag_bytes(tags) > MAX_CLIENT_TAG_BYTES {
+            return Err("Message tags exceed the 4094-byte limit.".into());
+        }
+        // The line as a whole, for encodability only: tags are not part of
+        // the 512 bytes.
+        let codec = encoding_from_whatwg_label(label)
+            .ok_or_else(|| format!("Unsupported character encoding: {label}"))?;
+        codec
+            .encode(&message.to_string(), EncoderTrap::Strict)
+            .map_err(|_| format!("Text contains a character that cannot be encoded as {label}."))?;
+    }
+    Ok(())
+}
+
 fn requires_utf8(message: &IrcMessage) -> bool {
     matches!(&message.command, IrcCommand::Response(Response::RPL_ISUPPORT, args)
         if args.iter().any(|arg| arg.split_whitespace().any(|token| token == "UTF8ONLY")))
@@ -1555,7 +1584,7 @@ async fn run_cancellable(
                         };
                         let message = echo::with_label(message, label.flatten());
                         let line = redacted_wire_line(&message);
-                        let result = validate_wire(&message.to_string(), &wire_encoding)
+                        let result = validate_tagged_wire(&message, &wire_encoding)
                             .and_then(|_| client.send(message).map_err(|error| error.to_string()));
                         let event = match result {
                             Ok(()) => {
@@ -4452,6 +4481,90 @@ mod tests {
         );
         // Only the other client's line is a live message; no duplicates.
         assert_eq!(live, ["from my phone"]);
+    }
+
+    #[test]
+    fn a_label_does_not_count_against_the_512_byte_message_limit() {
+        // A one-word text is sent without the colon: `PRIVMSG #test ` is 14
+        // bytes and CRLF 2, so 496 bytes of text fill the 512 bytes a
+        // message may have, which is also what is sent without labels. The
+        // `@label=...` tag has a limit of its own.
+        let text = "x".repeat(496);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected = text.clone();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            let sent = read_client_line(&mut lines);
+            let (tags, message) = sent.split_once(' ').expect("labeled");
+            assert!(tags.starts_with("@label="), "{tags}");
+            // The whole text arrives, in a message within its own limit
+            // (a single word is sent without the colon).
+            assert!(message.ends_with(&expected), "{message}");
+            assert!(message.len() + 2 <= 512, "{} bytes", message.len() + 2);
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", &text, false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingAccepted { .. } | Event::ServerLine(_))
+        });
+        assert!(
+            matches!(
+                event,
+                Event::OutgoingAccepted {
+                    local_id: Some(1),
+                    ..
+                }
+            ),
+            "a message that fits without a label is sent with one: {event:?}"
+        );
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+
+        // One byte more does not fit, with or without a label.
+        assert!(
+            validate_wire(&format!("PRIVMSG #test {text}x\r\n"), "UTF-8").is_err(),
+            "the message part stays limited to 512 bytes"
+        );
+    }
+
+    #[test]
+    fn tagged_messages_have_separate_limits_for_tags_and_message() {
+        let tagged = |label: &str, text: &str| {
+            echo::with_label(
+                IrcMessage::from(IrcCommand::PRIVMSG("#test".into(), text.into())),
+                Some(label.into()),
+            )
+        };
+        // A text of one word is sent without the colon, so 496 bytes fill
+        // the 512 bytes and 497 do not.
+        assert!(validate_tagged_wire(&tagged("c1", &"x".repeat(496)), "UTF-8").is_ok());
+        // The message part is limited as before, tags aside.
+        assert!(validate_tagged_wire(&tagged("c1", &"x".repeat(497)), "UTF-8").is_err());
+        // The tags are limited on their own: 4094 bytes without `@` and the
+        // space, so a value of 4094 - "label=".len() fits and one more does not.
+        let fits = "l".repeat(4094 - "label=".len());
+        assert!(validate_tagged_wire(&tagged(&fits, "hi"), "UTF-8").is_ok());
+        let too_long = "l".repeat(4094 - "label=".len() + 1);
+        assert!(
+            validate_tagged_wire(&tagged(&too_long, "hi"), "UTF-8")
+                .unwrap_err()
+                .contains("tags")
+        );
+        // A character the encoding cannot hold is still refused.
+        assert!(validate_tagged_wire(&tagged("c1", "🙂"), "ISO-2022-JP").is_err());
     }
 
     #[test]
