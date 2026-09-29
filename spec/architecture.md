@@ -695,7 +695,8 @@ upload steps shared in
 `upload_in_background`) with its own `AttachmentFlow<String>` targeting
 the server profile ID; the confirmed URL goes into that profile's draft
 (`place_uploaded_avatar`) and is sent at once through
-`ChatWindow::request_own_avatar` when that server is connected. The own-avatar
+`ChatWindow::request_own_avatar` when that server can receive it (images are
+accepted regardless). The own-avatar
 state only changes on `MetadataReady`, `OwnAvatar`,
 `OwnAvatarFailed`, `AvatarsReset` and the end of a connection (disconnect,
 reconnect, removal), which fails a pending request and forgets what the
