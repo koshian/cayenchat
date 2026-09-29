@@ -96,6 +96,15 @@ pub(crate) fn realname(base: &str, advertise: bool) -> String {
     }
 }
 
+/// A realname without KVIrc's leading mark (ETX, a digit, SI), as the user
+/// configured it.
+pub(crate) fn without_mark(realname: &str) -> &str {
+    match realname.as_bytes() {
+        [0x03, b'0'..=b'7', 0x0f, ..] => &realname[3..],
+        _ => realname,
+    }
+}
+
 /// Whether a realname starts with KVIrc's mark for an avatar.
 pub(crate) fn advertises_avatar(realname: &str) -> bool {
     match realname.as_bytes() {
@@ -782,6 +791,13 @@ mod tests {
         .unwrap();
         assert_eq!(avatars(&handled.events), [format!("kv={url}")]);
         peers
+    }
+
+    #[test]
+    fn the_mark_is_stripped_to_show_the_configured_realname() {
+        assert_eq!(without_mark(&realname("Alice", true)), "Alice");
+        assert_eq!(without_mark("Alice"), "Alice");
+        assert_eq!(without_mark("\u{3}8\u{f}Alice"), "\u{3}8\u{f}Alice");
     }
 
     #[test]

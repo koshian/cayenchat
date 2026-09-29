@@ -275,6 +275,11 @@ pub struct ServerProfile {
     /// IRC `USER` username (ident); independent of the nickname.
     #[serde(default)]
     pub username: String,
+    /// IRC real name (GECOS) sent in `USER` and by IRCv3 `SETNAME`; empty
+    /// means the built-in default. Added without a version change; files
+    /// without it read as empty.
+    #[serde(default)]
+    pub realname: String,
     #[serde(default)]
     pub channels: String,
     #[serde(default)]
@@ -328,6 +333,7 @@ impl ServerProfile {
             allow_plaintext_pass: false,
             nickname: String::new(),
             username: String::new(),
+            realname: String::new(),
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
@@ -928,6 +934,38 @@ mod tests {
         let file_text = fs::read_to_string(path).unwrap();
         assert!(!file_text.contains("server_password"));
         assert!(!file_text.contains("sasl_password"));
+    }
+
+    #[test]
+    fn realname_is_per_profile_and_absent_in_older_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // A version 15 file from before the setting existed.
+        let original = serde_json::json!({
+            "version": 15,
+            "selected_server": "custom-1",
+            "servers": [{
+                "id": "custom-1", "custom": true, "host": "irc.example.net",
+                "port": 6697, "use_tls": true, "encoding": "utf8",
+                "nickname": "alice", "username": "ident"
+            }],
+            "credential_backend": "system"
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.selected_profile().unwrap().realname, "");
+        assert_eq!(settings.selected_profile().unwrap().username, "ident");
+
+        settings.selected_profile_mut().unwrap().realname = "Alice Liddell".into();
+        settings.add_server("irc.example.org");
+        save_to(&path, &settings).unwrap();
+        let reloaded = load_from(&path).unwrap().unwrap();
+        let realnames: Vec<_> = reloaded
+            .servers
+            .iter()
+            .map(|server| server.realname.as_str())
+            .collect();
+        assert_eq!(realnames, ["Alice Liddell", ""]);
     }
 
     #[test]
