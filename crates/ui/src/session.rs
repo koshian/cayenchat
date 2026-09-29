@@ -34,6 +34,9 @@ pub struct ServerSession {
     /// Parsed IRC transcript and connection stages, bounded.
     pub diagnostics: VecDeque<String>,
     pub connection_started: Option<Instant>,
+    /// When the connection was first lost since it last registered, so a
+    /// reconnect can look for direct messages that arrived meanwhile.
+    pub disconnected_at: Option<std::time::SystemTime>,
     pub watchdog_stage: u8,
     /// Invalidates the event pump and watchdog of a replaced connection.
     pub generation: u64,
@@ -76,6 +79,7 @@ impl ServerSession {
             pending_whois: HashSet::new(),
             diagnostics: VecDeque::new(),
             connection_started: None,
+            disconnected_at: None,
             watchdog_stage: 0,
             generation: 0,
             own_avatar: OwnAvatar::default(),

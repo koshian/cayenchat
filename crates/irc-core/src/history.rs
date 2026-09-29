@@ -14,6 +14,13 @@
 //!   <limit>`, where the reference is the oldest message it holds (see
 //!   [`MessageReference`]).
 //!
+//! - once per connection, `CHATHISTORY TARGETS <from> <to> <limit>` asks which
+//!   conversations had messages in the time since the previous connection
+//!   ended (direct messages the server kept while we were away). Each
+//!   direct-message target it names gets the same `LATEST` request as a
+//!   joined channel, with the peer's nickname as target. Channel targets are
+//!   ignored: joined channels ask for their own history on join.
+//!
 //! Requests go out one at a time, so joining many channels does not burst
 //! commands. The reply is a `chathistory` batch whose single parameter is
 //! the channel; every line in it (and in batches nested inside it) is
@@ -47,6 +54,13 @@ pub const MAX_HISTORY_LINES: usize = 100;
 /// Requests waiting to be sent. Joining more channels at once skips the
 /// rest; an older page asked for while it is full fails at once.
 const MAX_QUEUED: usize = 64;
+/// Direct-message targets asked history for after one `TARGETS` reply.
+const MAX_DISCOVERED: usize = 16;
+/// Entries kept from one `TARGETS` reply (servers may return more than
+/// asked for).
+const MAX_TARGET_ENTRIES: usize = 64;
+/// The batch type of a `TARGETS` reply, as irc-proto spells it.
+const TARGETS_BATCH: &str = "DRAFT/CHATHISTORY-TARGETS";
 /// A request without a reply is given up after this long, and the next one
 /// is sent.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -126,6 +140,15 @@ pub(crate) enum Page {
     /// One page before a reference, for the application's request
     /// `request`.
     Before { request: u64 },
+    /// Which conversations had messages between `from` and `to`.
+    Targets { from: SystemTime, to: SystemTime },
+}
+
+/// One conversation named by a `TARGETS` reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryTarget {
+    pub name: String,
+    pub latest: SystemTime,
 }
 
 /// A request that ended.
@@ -134,6 +157,8 @@ pub(crate) struct Finished {
     pub channel: String,
     pub page: Page,
     pub messages: Vec<HistoryMessage>,
+    /// How many entries a `TARGETS` reply had that were kept.
+    pub targets: usize,
     /// The reply said nothing older remains (BEFORE only).
     pub end: bool,
     /// A resumed request whose reply reached its limit without the end
@@ -151,6 +176,7 @@ impl Finished {
             channel,
             page,
             messages: Vec::new(),
+            targets: 0,
             end: false,
             incomplete: false,
             failed: true,
@@ -209,6 +235,7 @@ struct Outstanding {
     limit: usize,
     nested: Vec<String>,
     messages: Vec<HistoryMessage>,
+    targets: Vec<HistoryTarget>,
     dropped: usize,
 }
 
@@ -367,6 +394,53 @@ impl HistoryRequests {
         None
     }
 
+    /// Queues one `TARGETS` request for the conversations with messages
+    /// since `since` (the previous connection's end, or a day back), ahead
+    /// of everything else. At most once per connection: the caller decides.
+    pub(crate) fn enqueue_targets(&mut self, since: SystemTime, now: SystemTime) {
+        if self.queue.len() >= MAX_QUEUED {
+            return;
+        }
+        self.queue.push_front(Queued {
+            channel: "*".into(),
+            page: Page::Targets {
+                from: since.min(now),
+                // Servers store their own clock; leave room for skew.
+                to: now + Duration::from_secs(300),
+            },
+            selector: String::new(),
+            limit: MAX_DISCOVERED,
+        });
+    }
+
+    /// The direct-message peers worth asking history for: nicknames only
+    /// (joined channels ask on join), each once whatever its case, the
+    /// newest first, at most [`MAX_DISCOVERED`].
+    pub(crate) fn direct_targets(targets: &[HistoryTarget]) -> Vec<String> {
+        let mut peers: Vec<&HistoryTarget> = targets
+            .iter()
+            .filter(|target| {
+                !crate::valid_channel(&target.name)
+                    && crate::valid_nickname(&target.name)
+                    && !target.name.contains(['!', '@'])
+            })
+            .collect();
+        peers.sort_by_key(|target| std::cmp::Reverse(target.latest));
+        let mut names: Vec<String> = Vec::new();
+        for target in peers {
+            if names.len() == MAX_DISCOVERED {
+                break;
+            }
+            if !names
+                .iter()
+                .any(|name| crate::text::same_nickname(name, &target.name))
+            {
+                names.push(target.name.clone());
+            }
+        }
+        names
+    }
+
     /// A resumed request failed: the channel still gets its latest lines,
     /// as on any join, unless the queue is full.
     fn fall_back(&mut self, finished: &Finished) {
@@ -454,20 +528,32 @@ impl HistoryRequests {
             return None;
         }
         let queued = self.queue.pop_front()?;
-        let subcommand = match queued.page {
-            Page::Latest | Page::Resume => "LATEST",
-            Page::Before { .. } => "BEFORE",
-        };
         let limit = queued.limit.min(self.limit());
-        let command = IrcCommand::Raw(
-            "CHATHISTORY".into(),
-            vec![
-                subcommand.into(),
-                queued.channel.clone(),
-                queued.selector,
-                limit.to_string(),
-            ],
-        );
+        let command = match &queued.page {
+            Page::Targets { from, to } => IrcCommand::Raw(
+                "CHATHISTORY".into(),
+                vec![
+                    "TARGETS".into(),
+                    format!("timestamp={}", tags::format_server_time(*from)),
+                    format!("timestamp={}", tags::format_server_time(*to)),
+                    limit.to_string(),
+                ],
+            ),
+            page => IrcCommand::Raw(
+                "CHATHISTORY".into(),
+                vec![
+                    if matches!(page, Page::Before { .. }) {
+                        "BEFORE"
+                    } else {
+                        "LATEST"
+                    }
+                    .into(),
+                    queued.channel.clone(),
+                    queued.selector,
+                    limit.to_string(),
+                ],
+            ),
+        };
         self.outstanding = Some(Outstanding {
             channel: queued.channel.clone(),
             page: queued.page.clone(),
@@ -477,6 +563,7 @@ impl HistoryRequests {
             limit,
             nested: Vec::new(),
             messages: Vec::new(),
+            targets: Vec::new(),
             dropped: 0,
         });
         Some((queued.channel, queued.page, command))
@@ -558,6 +645,14 @@ impl HistoryRequests {
             && (outstanding.reference.as_deref() == Some(reference)
                 || outstanding.nested.iter().any(|open| open == reference))
         {
+            if let Page::Targets { .. } = outstanding.page {
+                if let Some(target) = target_line(message)
+                    && outstanding.targets.len() < MAX_TARGET_ENTRIES
+                {
+                    outstanding.targets.push(target);
+                }
+                return Observed::Consumed;
+            }
             // Without event-playback only PRIVMSG and NOTICE may appear;
             // anything else is dropped rather than applied as live state.
             if let Some(line) = history_line(message, &outstanding.channel) {
@@ -573,6 +668,11 @@ impl HistoryRequests {
             && let Some(note) = failure(message, &outstanding.channel)
         {
             let outstanding = self.outstanding.take().expect("outstanding request");
+            let note = if matches!(outstanding.page, Page::Targets { .. }) {
+                note.replacen("History for *", "History targets", 1)
+            } else {
+                note
+            };
             let finished = Finished::failed(outstanding.channel, outstanding.page, Some(note));
             self.fall_back(&finished);
             return Observed::Finished(finished);
@@ -610,6 +710,24 @@ impl HistoryRequests {
                     outstanding.channel, outstanding.dropped
                 )
             });
+            let mut note = note;
+            if matches!(outstanding.page, Page::Targets { .. }) {
+                // Each direct-message peer asks for its latest lines like a
+                // joined channel; the caller sends them one at a time.
+                let peers = Self::direct_targets(&outstanding.targets);
+                for peer in &peers {
+                    if let Some(full) = self.enqueue(peer) {
+                        note = Some(full);
+                        break;
+                    }
+                }
+                note = note.or_else(|| {
+                    Some(format!(
+                        "History targets: {} direct-message conversation(s) asked for history.",
+                        peers.len()
+                    ))
+                });
+            }
             let incomplete = outstanding.page == Page::Resume
                 && !outstanding.end
                 && outstanding.messages.len() + outstanding.dropped >= outstanding.limit;
@@ -617,6 +735,7 @@ impl HistoryRequests {
                 channel: outstanding.channel,
                 page: outstanding.page,
                 messages: outstanding.messages,
+                targets: outstanding.targets.len(),
                 end: outstanding.end,
                 incomplete,
                 failed: false,
@@ -647,7 +766,18 @@ impl HistoryRequests {
                 return Observed::Consumed;
             }
         }
-        // irc-proto upper-cases batch types.
+        // irc-proto upper-cases batch types. A TARGETS reply's batch has no
+        // target parameter.
+        if kind == Some(TARGETS_BATCH) {
+            if let Some(outstanding) = self.outstanding.as_mut()
+                && outstanding.reference.is_none()
+                && matches!(outstanding.page, Page::Targets { .. })
+            {
+                outstanding.reference = Some(reference.to_owned());
+                return Observed::Consumed;
+            }
+            return Observed::Unrelated;
+        }
         if kind != Some("CHATHISTORY") {
             return Observed::Unrelated;
         }
@@ -676,15 +806,46 @@ impl HistoryRequests {
     }
 }
 
-/// A PRIVMSG or NOTICE from a user to `channel` in a reply.
+/// One `CHATHISTORY TARGETS <target> <timestamp>` line of a reply.
+fn target_line(message: &IrcMessage) -> Option<HistoryTarget> {
+    let IrcCommand::Raw(verb, args) = &message.command else {
+        return None;
+    };
+    if !verb.eq_ignore_ascii_case("CHATHISTORY") {
+        return None;
+    }
+    let [subcommand, name, latest, ..] = args.as_slice() else {
+        return None;
+    };
+    if !subcommand.eq_ignore_ascii_case("TARGETS") || name.is_empty() || name.len() > 64 {
+        return None;
+    }
+    Some(HistoryTarget {
+        name: name.clone(),
+        latest: tags::parse_server_time(latest)?,
+    })
+}
+
+/// A PRIVMSG or NOTICE in a reply about `channel` (a channel, or a peer's
+/// nickname for a direct-message conversation).
 fn history_line(message: &IrcMessage, channel: &str) -> Option<HistoryMessage> {
     let (target, text, notice) = match &message.command {
         IrcCommand::PRIVMSG(target, text) => (target, text, false),
         IrcCommand::NOTICE(target, text) => (target, text, true),
         _ => return None,
     };
-    if !crate::text::same_nickname(target, channel) {
-        return None;
+    if crate::valid_channel(channel) {
+        if !crate::text::same_nickname(target, channel) {
+            return None;
+        }
+    } else {
+        // A conversation with `channel`: they wrote to us (the target is
+        // us, whoever we are) or we wrote to them.
+        let from_peer = matches!(&message.prefix,
+            Some(Prefix::Nickname(nickname, _, _)) if crate::text::same_nickname(nickname, channel));
+        if !from_peer && !crate::text::same_nickname(target, channel) {
+            return None;
+        }
     }
     // CTCP other than ACTION is never chat, live or from history (D029).
     if text.starts_with('\u{1}') && crate::text::action_text(text).is_none() {
@@ -1384,5 +1545,144 @@ mod tests {
         requests.reset();
         requests.enqueue("#b");
         assert!(sent(&mut requests, now).unwrap().contains("msgid=m2"));
+    }
+
+    fn at(secs: u64) -> SystemTime {
+        std::time::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    /// Runs a TARGETS request answered with `lines` and returns what
+    /// finished, with the requests that follow drained.
+    fn discover(requests: &mut HistoryRequests, lines: &[&str]) -> (Finished, Vec<String>) {
+        let now = Instant::now();
+        requests.enqueue_targets(at(1_790_000_000), at(1_790_003_600));
+        let mut all = vec![":srv BATCH +t draft/chathistory-targets".to_owned()];
+        all.extend(lines.iter().map(|line| format!("@batch=t {line}")));
+        all.push(":srv BATCH -t".into());
+        let asked = sent(requests, now).unwrap();
+        assert_eq!(
+            asked,
+            "CHATHISTORY TARGETS timestamp=2026-09-21T14:13:20.000Z timestamp=2026-09-21T15:18:20.000Z 16",
+            "the window starts at the disconnect and leaves room for clock skew"
+        );
+        let observed = feed(
+            requests,
+            &all.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert!(
+            observed[..observed.len() - 1]
+                .iter()
+                .all(|o| matches!(o, Observed::Consumed))
+        );
+        let finished = finished(observed.into_iter().last().unwrap());
+        let mut followers = Vec::new();
+        while let Some(line) = sent(requests, now) {
+            followers.push(line);
+            requests.outstanding = None;
+        }
+        (finished, followers)
+    }
+
+    #[test]
+    fn targets_ask_for_the_latest_lines_of_unknown_direct_messages_only() {
+        let mut requests = HistoryRequests::default();
+        let (finished, followers) = discover(
+            &mut requests,
+            &[
+                "CHATHISTORY TARGETS carol 2026-09-21T10:00:00.000Z",
+                "CHATHISTORY TARGETS #chan 2026-09-21T10:30:00.000Z",
+                "CHATHISTORY TARGETS Bob 2026-09-21T10:20:00.000Z",
+                // The same peer in another case: once.
+                "CHATHISTORY TARGETS BOB 2026-09-21T10:10:00.000Z",
+                "CHATHISTORY TARGETS bad!name 2026-09-21T10:11:00.000Z",
+                "CHATHISTORY TARGETS dave not-a-time",
+            ],
+        );
+        assert_eq!(finished.targets, 5, "unparsable lines are skipped");
+        assert!(!finished.failed && finished.messages.is_empty());
+        // Newest first; the channel is not requested (a joined channel asks
+        // on join); no case duplicates.
+        assert_eq!(
+            followers,
+            [
+                "CHATHISTORY LATEST Bob * 50",
+                "CHATHISTORY LATEST carol * 50",
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_is_bounded_and_shares_the_request_queue() {
+        let mut requests = HistoryRequests::default();
+        let lines: Vec<String> = (0..80)
+            .map(|n| {
+                format!(
+                    "CHATHISTORY TARGETS peer{n} 2026-09-21T10:{:02}:00.000Z",
+                    n % 60
+                )
+            })
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (finished, followers) = discover(&mut requests, &refs);
+        assert_eq!(finished.targets, MAX_TARGET_ENTRIES);
+        assert_eq!(followers.len(), MAX_DISCOVERED);
+        // A hostile server cannot make TARGETS requests pile up: the caller
+        // asks once, and a full queue refuses another.
+        for _ in 0..MAX_QUEUED + 5 {
+            requests.enqueue_targets(at(1), at(2));
+        }
+        assert!(requests.queue.len() <= MAX_QUEUED);
+    }
+
+    #[test]
+    fn a_failed_or_unanswered_targets_request_ends_without_asking_anything() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        requests.enqueue_targets(at(1_790_000_000), at(1_790_003_600));
+        sent(&mut requests, now).unwrap();
+        let observed = requests.observe(&parse("FAIL CHATHISTORY INVALID_PARAMS TARGETS :bad"));
+        let ended = finished(observed);
+        assert!(ended.failed);
+        assert!(
+            ended
+                .note
+                .unwrap()
+                .starts_with("History targets is unavailable")
+        );
+        assert!(sent(&mut requests, now).is_none());
+
+        requests.enqueue_targets(at(1_790_000_000), at(1_790_003_600));
+        sent(&mut requests, now).unwrap();
+        let timed_out = requests.tick(now + RESPONSE_TIMEOUT).unwrap();
+        assert!(finished(timed_out).failed);
+    }
+
+    #[test]
+    fn direct_message_history_keeps_both_directions_only() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        requests.enqueue("bob");
+        assert_eq!(
+            sent(&mut requests, now).unwrap(),
+            "CHATHISTORY LATEST bob * 50"
+        );
+        let observed = feed(
+            &mut requests,
+            &[
+                ":srv BATCH +r chathistory bob",
+                "@batch=r;msgid=1;time=2026-09-21T10:00:00.000Z :bob!u@h PRIVMSG alice :hi",
+                "@batch=r;msgid=2;time=2026-09-21T10:01:00.000Z :alice!u@h PRIVMSG bob :yo",
+                "@batch=r;msgid=3 :carol!u@h PRIVMSG alice :not this conversation",
+                "@batch=r;msgid=4 :bob!u@h NOTICE alice :\u{1}VERSION\u{1}",
+                ":srv BATCH -r",
+            ],
+        );
+        let page = finished(observed.into_iter().last().unwrap());
+        let lines: Vec<_> = page
+            .messages
+            .iter()
+            .map(|m| (m.sender.as_str(), m.text.as_str()))
+            .collect();
+        assert_eq!(lines, [("bob", "hi"), ("alice", "yo")]);
     }
 }

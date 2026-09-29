@@ -146,7 +146,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — account-tag (IRCv3 standard): the sender's services account at send time is retained on each channel/private/history message (`Message::account`, not shown in the log; the WHOIS dialog keeps showing the 330 account). Requested when a CAP negotiation happens anyway, on UTF-8 connections only
 - DONE — setname (IRCv3 standard): the per-server `Real name` setting is sent in `USER`; changing it while connected sends `SETNAME` when the server enabled `setname`, otherwise it applies at the next connection. Requested only when a CAP negotiation happens anyway (SASL or another opt-in), so plain registration is unchanged. Others' SETNAME changes are not tracked
 - TODO — away-notify
-- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS
+- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); `TARGETS` once per connection finds direct-message conversations with messages since the previous disconnect (default one day, at most a week, 16 peers) and asks their latest 50 lines quietly; no AFTER/BETWEEN/AROUND, no channel discovery
 - TODO — other capabilities based on real-world usefulness
 
 ## Appearance

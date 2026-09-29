@@ -39,6 +39,10 @@ use tokio::sync::{Notify, mpsc};
 
 const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 512;
+/// How far back direct-message discovery looks without a known disconnect,
+/// and at most.
+const TARGETS_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
+const TARGETS_MAX_WINDOW: Duration = Duration::from_secs(7 * 24 * 3600);
 const USER_DISCONNECT: &str = "Disconnected by user.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
@@ -115,6 +119,11 @@ pub struct ConnectionConfig {
     /// negotiated, the first JOIN of each asks only for what came after
     /// (reconnect gap recovery); otherwise they are unused.
     pub resume_history: Vec<HistoryResume>,
+    /// With chathistory negotiated, direct-message conversations with
+    /// messages since this time are asked for once after registration
+    /// (`CHATHISTORY TARGETS`): normally when the previous connection ended.
+    /// `None` looks a day back; nothing goes further back than a week.
+    pub history_targets_since: Option<SystemTime>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -138,6 +147,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("ircv3", &self.ircv3)
             .field("shared_avatar", &self.shared_avatar)
             .field("resume_history", &self.resume_history.len())
+            .field("history_targets_since", &self.history_targets_since)
             .finish()
     }
 }
@@ -162,6 +172,7 @@ impl ConnectionConfig {
             ircv3: Ircv3Options::default(),
             shared_avatar: None,
             resume_history: Vec::new(),
+            history_targets_since: None,
         }
     }
 
@@ -1318,6 +1329,7 @@ async fn run_cancellable(
     let wire_encoding = config.encoding.clone();
     let server_password = config.server_password.clone();
     let registration_nick = config.nickname.clone();
+    let targets_since = config.history_targets_since;
     let registration_user = config.username.clone();
     let auto_join_channels = config.channels.clone();
     let irc_config = library_config(&config);
@@ -1500,6 +1512,7 @@ async fn run_cancellable(
     let mut history_enabled = false;
     let mut accounts = accounts::Accounts::default();
     let track_accounts = config.ircv3.accounts;
+    let mut targets_asked = false;
     // Last reported Event::HistoryAvailable.
     let mut history_available = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
@@ -1732,6 +1745,18 @@ async fn run_cancellable(
                             history_available = registered && history_enabled;
                             if events.send(Event::HistoryAvailable(history_available)).await.is_err() {
                                 return;
+                            }
+                            // Once per connection: which conversations had
+                            // messages while we were away. Their history
+                            // follows through the same queue.
+                            if history_available && !targets_asked {
+                                targets_asked = true;
+                                let now = SystemTime::now();
+                                let since = targets_since.unwrap_or(now - TARGETS_DEFAULT_WINDOW);
+                                history.enqueue_targets(since.max(now - TARGETS_MAX_WINDOW), now);
+                                if !request_history(&client, &events, started, &mut history, registered).await {
+                                    return;
+                                }
                             }
                         }
                         // Subscribe once registered (the draft allows it earlier
@@ -2073,7 +2098,7 @@ async fn request_history(
     let resumed = match page {
         history::Page::Latest => false,
         history::Page::Resume => true,
-        history::Page::Before { .. } => return true,
+        history::Page::Before { .. } | history::Page::Targets { .. } => return true,
     };
     events
         .send(Event::HistoryRequested { channel, resumed })
@@ -2104,6 +2129,8 @@ async fn history_finished(
             messages: finished.messages,
             status,
         },
+        // Its peers were queued when the reply ended; nothing to report.
+        history::Page::Targets { .. } => return true,
     };
     events.send(event).await.is_ok()
 }
@@ -4207,6 +4234,13 @@ mod tests {
                     .as_bytes(),
             )
             .unwrap();
+        if offer.contains("draft/chathistory") {
+            // Once per connection, as soon as registration completes.
+            assert!(read_client_line(lines).starts_with("CHATHISTORY TARGETS timestamp="),);
+            socket
+                .write_all(b":srv BATCH +tg draft/chathistory-targets\r\n:srv BATCH -tg\r\n")
+                .unwrap();
+        }
         assert_eq!(read_client_line(lines), "JOIN #test");
         socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
         requested
@@ -4417,6 +4451,117 @@ mod tests {
             e,
             Event::UserAccount { .. } | Event::UserAccountForgotten { .. }
         )));
+    }
+
+    #[test]
+    fn targets_discover_direct_messages_and_their_latest_lines_follow() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            // Registration by hand: the TARGETS reply is not empty here.
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            let _ = (read_client_line(&mut lines), read_client_line(&mut lines));
+            socket
+                .write_all(b":srv CAP * LS :batch server-time message-tags draft/chathistory\r\n")
+                .unwrap();
+            loop {
+                let line = read_client_line(&mut lines);
+                if line == "CAP END" {
+                    break;
+                }
+                let name = line.strip_prefix("CAP REQ ").unwrap();
+                socket
+                    .write_all(format!(":srv CAP * ACK :{name}\r\n").as_bytes())
+                    .unwrap();
+            }
+            socket
+                .write_all(b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n")
+                .unwrap();
+            let asked = read_client_line(&mut lines);
+            assert!(
+                asked.starts_with("CHATHISTORY TARGETS timestamp=")
+                    && asked.ends_with(" 16")
+                    && asked.matches("timestamp=").count() == 2,
+                "{asked}"
+            );
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket
+                .write_all(
+                    b":alice!u@h JOIN #test\r\n\
+:srv BATCH +t draft/chathistory-targets\r\n\
+@batch=t :srv CHATHISTORY TARGETS #test 2026-09-27T23:59:00.000Z\r\n\
+@batch=t :srv CHATHISTORY TARGETS Bob 2026-09-27T23:58:00.000Z\r\n\
+@batch=t :srv CHATHISTORY TARGETS bob 2026-09-27T23:57:00.000Z\r\n\
+:srv BATCH -t\r\n",
+                )
+                .unwrap();
+            // The channel asks on join; the direct message follows, one at a time.
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 50"
+            );
+            socket
+                .write_all(b":srv BATCH +c chathistory #test\r\n:srv BATCH -c\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "CHATHISTORY LATEST Bob * 50");
+            socket
+                .write_all(
+                    b":srv BATCH +d chathistory Bob\r\n\
+@batch=d;time=2026-09-27T23:57:00.000Z;msgid=d1 :Bob!u@h PRIVMSG alice :did you get this?\r\n\
+@batch=d;time=2026-09-27T23:58:00.000Z;msgid=d2 :alice!u@h PRIVMSG Bob :not yet\r\n\
+:srv BATCH -d\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut config = plain_config(port, history_options());
+        config.history_targets_since = Some(SystemTime::now() - Duration::from_secs(3600));
+        let events = run_fixture(config, |events| {
+            events.iter().any(
+                |event| matches!(event, Event::ChannelHistory { channel, .. } if channel == "Bob"),
+            )
+        });
+        server.join().unwrap();
+        let requested: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::HistoryRequested { channel, resumed } => Some((channel.as_str(), *resumed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requested, [("#test", false), ("Bob", false)]);
+        let dm = events
+            .iter()
+            .find_map(|event| match event {
+                Event::ChannelHistory {
+                    channel, messages, ..
+                } if channel == "Bob" => Some(messages),
+                _ => None,
+            })
+            .unwrap();
+        let lines: Vec<_> = dm
+            .iter()
+            .map(|m| (m.sender.as_str(), m.text.as_str(), m.msgid.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("Bob", "did you get this?", Some("d1")),
+                ("alice", "not yet", Some("d2"))
+            ]
+        );
+        // Discovery is history, not live traffic.
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::PrivateMessage { .. } | Event::OwnPrivateMessage { .. }
+        )));
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("TARGETS") || line.contains("BATCH") || line.contains("Bob"))));
     }
 
     /// Like [`run_fixture`], but `step` may queue commands as events arrive;

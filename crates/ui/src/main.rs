@@ -1827,7 +1827,9 @@ impl ChatWindow {
     /// was cut off in recover what they missed, if the server offers
     /// history.
     fn reconnect_config(&self, network: NetworkId) -> Option<ConnectionConfig> {
-        let mut config = self.sessions.get(&network)?.active_config.clone()?;
+        let session = self.sessions.get(&network)?;
+        let mut config = session.active_config.clone()?;
+        config.history_targets_since = session.disconnected_at;
         config.resume_history = self
             .state
             .history_resume(network)
@@ -1881,6 +1883,9 @@ impl ChatWindow {
     fn record_disconnect(&mut self, network: NetworkId, reason: String) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.connection_started = None;
+            session
+                .disconnected_at
+                .get_or_insert_with(std::time::SystemTime::now);
             session.push_diagnostic(format!("Disconnected: {reason}"));
             session.pending_whois.clear();
         }
@@ -2732,6 +2737,7 @@ impl ChatWindow {
                 self.state.end_avatars(network);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
+                    session.disconnected_at = None;
                     session.retry_attempt = 0;
                     session.own_nickname = Some(nickname.clone());
                 }
@@ -2907,6 +2913,20 @@ impl ChatWindow {
                     self.state.append_conversation_activity(id, text);
                 }
             }
+            // A peer's nickname is a direct-message conversation found by
+            // target discovery: it is shown from now on, its history follows.
+            Event::HistoryRequested {
+                channel,
+                resumed: false,
+            } if !valid_channel(&channel) => {
+                let key = cayenchat_irc_core::text::nickname_key(&channel);
+                if let Some(id) = self
+                    .state
+                    .private_conversation(network, &key, &channel, true)
+                {
+                    self.state.history_requested_for(id);
+                }
+            }
             Event::HistoryRequested {
                 channel,
                 resumed: false,
@@ -2923,12 +2943,17 @@ impl ChatWindow {
                 messages,
                 incomplete,
             } => {
-                self.state.insert_resumed_history(
-                    network,
-                    &channel,
-                    history_lines(messages),
-                    incomplete.then(|| HISTORY_GAP_NOTE.to_owned()),
-                );
+                let lines = history_lines(messages);
+                let gap = incomplete.then(|| HISTORY_GAP_NOTE.to_owned());
+                if valid_channel(&channel) {
+                    self.state
+                        .insert_resumed_history(network, &channel, lines, gap);
+                } else {
+                    let key = cayenchat_irc_core::text::nickname_key(&channel);
+                    if let Some(id) = self.state.private_id(network, &key) {
+                        self.state.insert_history_for(id, lines, gap);
+                    }
+                }
             }
             Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
             // Older pages go above everything the log holds; the main log
@@ -7920,6 +7945,118 @@ mod pane_tests {
             let rows = super::newest_lines(chat.state.conversations(), None, 10);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].0, b.messages[2].sequence);
+        });
+    }
+
+    #[gpui::test]
+    fn discovered_direct_messages_open_quietly_and_overlap_is_dropped(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, HistoryMessage};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let line = |sender: &str, text: &str, secs: u64, msgid: &str| HistoryMessage {
+            sender: sender.into(),
+            text: text.into(),
+            notice: false,
+            server_time: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            msgid: Some(msgid.into()),
+            account: None,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    // A conversation we already know, with one live line.
+                    Event::PrivateMessage {
+                        sender: "Bob".into(),
+                        text: "live".into(),
+                        notice: false,
+                        server_time: Some(
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_100),
+                        ),
+                        msgid: Some("d2".into()),
+                        account: None,
+                        replayed: false,
+                    },
+                    // Discovery: a new peer, and Bob again in another case.
+                    Event::HistoryRequested {
+                        channel: "carol".into(),
+                        resumed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "carol".into(),
+                        incomplete: false,
+                        messages: vec![
+                            line("carol", "call me", 1_790_550_000, "c1"),
+                            line("alice", "ok", 1_790_550_050, "c2"),
+                        ],
+                    },
+                    Event::HistoryRequested {
+                        channel: "BOB".into(),
+                        resumed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "BOB".into(),
+                        incomplete: false,
+                        messages: vec![
+                            line("Bob", "missed", 1_790_550_000, "d1"),
+                            line("Bob", "live", 1_790_550_100, "d2"),
+                        ],
+                    },
+                ],
+                false,
+                cx,
+            );
+            let key = |nick: &str| cayenchat_irc_core::text::nickname_key(nick);
+            let carol = chat.state.private_id(NetworkId(1), &key("carol")).unwrap();
+            let bob = chat.state.private_id(NetworkId(1), &key("bob")).unwrap();
+            let texts = |id| -> Vec<String> {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .map(|m| m.text.clone())
+                    .collect()
+            };
+            assert_eq!(texts(carol), ["call me", "ok"]);
+            // No second Bob conversation, and the repeated live line is dropped.
+            assert_eq!(
+                chat.state
+                    .conversations()
+                    .iter()
+                    .filter(|c| c.is_private())
+                    .count(),
+                2
+            );
+            // Logs keep arrival order: the reserved block sits where the
+            // request was made, after the live line that was already there.
+            assert_eq!(texts(bob), ["live", "missed"]);
+            // History is context: no unread mark, notification or highlight.
+            assert!(!chat.state.is_unread(carol));
+            assert_eq!(chat.notifier.shown.len(), 1, "only Bob's live line");
+            let messages = &chat
+                .state
+                .conversations()
+                .iter()
+                .find(|c| c.id == carol)
+                .unwrap()
+                .messages;
+            assert!(messages.iter().all(|m| m.is_history()));
         });
     }
 
