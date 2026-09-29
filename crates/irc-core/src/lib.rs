@@ -4418,6 +4418,59 @@ mod tests {
     }
 
     #[test]
+    fn a_whox_reply_that_arrives_after_a_user_left_does_not_bring_them_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "account-notify extended-join",
+                "WHOX=ct",
+            );
+            // The query goes out on our join; bob leaves before its answer,
+            // and the member list (NAMES) is not even published yet.
+            assert_eq!(read_client_line(&mut lines), "WHO #test %tnar,1");
+            socket
+                .write_all(
+                    b":bob!u@h PART #test\r\n\
+:srv 354 alice 1 bob bob-acct :Bob Builder\r\n\
+:srv 354 alice 1 carol carol-acct :Carol\r\n\
+:srv 315 alice #test :End of /WHO list\r\n\
+:srv 353 alice = #test :alice carol\r\n:srv 366 alice #test :End\r\n\
+:carol!u@h PRIVMSG #test :done\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let options = Ircv3Options {
+            accounts: true,
+            ..Ircv3Options::default()
+        };
+        let events = run_fixture(plain_config(port, options), |events| {
+            channel_messages(events).len() == 1
+        });
+        server.join().unwrap();
+        let tracked: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::UserAccount {
+                    nickname, account, ..
+                } => Some(format!("{nickname} {}", account.as_deref().unwrap_or("-"))),
+                Event::UserAccountForgotten { nickname } => Some(format!("{nickname} gone")),
+                _ => None,
+            })
+            .collect();
+        // Only carol is recorded; bob, who left first, is not resurrected.
+        assert_eq!(tracked, ["carol carol-acct"]);
+    }
+
+    #[test]
     fn user_accounts_are_not_tracked_unless_asked_for() {
         let (port, server) = {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -59,6 +59,12 @@ struct Outstanding {
     channel: String,
     token: String,
     sent: Instant,
+    /// Casemapped nicknames that left the channel (PART, KICK, QUIT, or a
+    /// nick change away from the name) since the query went out. The reply
+    /// was made before they left, so its lines about them are stale and
+    /// must not bring them back. Dropped with the query, so it is bounded
+    /// by the channel's membership changes during one WHO.
+    departed: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -87,15 +93,17 @@ fn realname_value(value: &str) -> Option<String> {
 }
 
 impl Accounts {
-    /// Reads the `WHOX` token from RPL_ISUPPORT (and its removal).
+    /// Reads the `WHOX` token from RPL_ISUPPORT (and its removal). The token
+    /// may carry a value (`WHOX=...`); it is recognized by its name.
     pub(crate) fn isupport(&mut self, message: &IrcMessage) {
         let IrcCommand::Response(Response::RPL_ISUPPORT, args) = &message.command else {
             return;
         };
         for token in args.iter().skip(1).flat_map(|arg| arg.split_whitespace()) {
-            if token.eq_ignore_ascii_case("WHOX") {
+            let name = token.split_once('=').map_or(token, |(name, _)| name);
+            if name.eq_ignore_ascii_case("WHOX") {
                 self.whox = true;
-            } else if token.eq_ignore_ascii_case("-WHOX") {
+            } else if name.eq_ignore_ascii_case("-WHOX") {
                 self.whox = false;
             }
         }
@@ -142,6 +150,16 @@ impl Accounts {
             known.realname = realname;
         }
         known.channels.extend(channels);
+        // Nothing left to keep (logged out, no real name): the entry would
+        // only use up one of the [`MAX_USERS`] slots.
+        if known.account.is_none() && known.realname.is_none() {
+            if fresh {
+                self.users.remove(&key);
+            } else {
+                self.forget(&key, events);
+            }
+            return;
+        }
         if fresh || before != (known.account.clone(), known.realname.clone()) {
             events.push(self.report(&key));
         }
@@ -179,6 +197,18 @@ impl Accounts {
             .collect()
     }
 
+    /// Notes that `nickname` left `channel` (`None`: every channel) while a
+    /// WHOX query about it is outstanding, so its late reply is not trusted
+    /// for them.
+    fn departed(&mut self, nickname: &str, channel: Option<&str>) {
+        if let Some(outstanding) = self.outstanding.as_mut()
+            && channel
+                .is_none_or(|channel| nickname_key(channel) == nickname_key(&outstanding.channel))
+        {
+            outstanding.departed.insert(nickname_key(nickname));
+        }
+    }
+
     /// Follows JOIN, PART, KICK, QUIT, NICK and ACCOUNT. `roster` is the
     /// last published membership of each joined channel.
     pub(crate) fn observe(
@@ -196,6 +226,13 @@ impl Accounts {
                 let Some(nickname) = source else {
                     return events;
                 };
+                // Joining again while the query is out: the reply is about a
+                // member who is here now.
+                if let Some(outstanding) = self.outstanding.as_mut()
+                    && nickname_key(channel) == nickname_key(&outstanding.channel)
+                {
+                    outstanding.departed.remove(&nickname_key(nickname));
+                }
                 let (account, realname) = match (account, realname) {
                     (Some(account), Some(realname)) => {
                         (Some(account_value(account)), realname_value(realname))
@@ -221,6 +258,7 @@ impl Accounts {
                 if crate::text::same_nickname(nickname, current_nick) {
                     self.forget_channel(channel, &mut events);
                 } else {
+                    self.departed(nickname, Some(channel));
                     self.leave(&nickname_key(nickname), &nickname_key(channel), &mut events);
                 }
             }
@@ -228,16 +266,25 @@ impl Accounts {
                 if crate::text::same_nickname(nickname, current_nick) {
                     self.forget_channel(channel, &mut events);
                 } else {
+                    self.departed(nickname, Some(channel));
                     self.leave(&nickname_key(nickname), &nickname_key(channel), &mut events);
                 }
             }
             IrcCommand::QUIT(_) => {
                 if let Some(nickname) = source {
+                    self.departed(nickname, None);
                     self.forget(&nickname_key(nickname), &mut events);
                 }
             }
             IrcCommand::NICK(new_nick) => {
                 if let Some(old) = source {
+                    // The old name left the channel as far as the reply is
+                    // concerned; the new one is the same person and may
+                    // appear in it.
+                    self.departed(old, None);
+                    if let Some(outstanding) = self.outstanding.as_mut() {
+                        outstanding.departed.remove(&nickname_key(new_nick));
+                    }
                     let old_key = nickname_key(old);
                     if let Some(mut known) = self.users.remove(&old_key) {
                         events.push(Event::UserAccountForgotten {
@@ -341,6 +388,7 @@ impl Accounts {
             channel,
             token,
             sent: now,
+            departed: HashSet::new(),
         });
         Some(command)
     }
@@ -359,6 +407,11 @@ impl Accounts {
                     return Some(events);
                 };
                 let channel = nickname_key(&outstanding.channel);
+                // Somebody who left after the query was made: the line
+                // describes the channel as it was, not as it is.
+                if outstanding.departed.contains(&nickname_key(nickname)) {
+                    return Some(events);
+                }
                 let account = (account != "0").then(|| account_value(account)).flatten();
                 let realname = args.get(4).and_then(|real| realname_value(real));
                 self.learn(nickname, Some(account), realname, [channel], &mut events);
@@ -623,5 +676,106 @@ mod tests {
         );
         assert!(realname_value(&long).unwrap().len() <= MAX_REALNAME_BYTES);
         assert!(account_value(&"a".repeat(200)).is_none());
+    }
+
+    /// Asks for `#a`'s accounts with one WHOX query outstanding.
+    fn asking_about_a() -> (Accounts, HashMap<String, Vec<String>>) {
+        let mut accounts = Accounts::default();
+        accounts.isupport(&line(":srv 005 me WHOX :are supported"));
+        accounts.joined("#a");
+        accounts.next_who(Instant::now()).unwrap();
+        (accounts, roster(&[("#a", &["me", "bob", "carol"])]))
+    }
+
+    #[test]
+    fn a_late_whox_reply_does_not_bring_back_a_user_who_left() {
+        for leaving in [
+            ":bob!u@h PART #a",
+            ":op!u@h KICK #a bob :out",
+            ":bob!u@h QUIT :bye",
+        ] {
+            let (mut accounts, members) = asking_about_a();
+            // Bob leaves after the query and before its answer, with no
+            // member list published yet (the first NAMES may still be due).
+            accounts.observe(&line(leaving), "me", &members);
+            let stale = accounts.observe_who(&line(":srv 354 me 1 bob bob-acct :Bob Builder"));
+            assert!(shown(stale.unwrap()).is_empty(), "{leaving}");
+            assert!(!accounts.users.contains_key("bob"), "{leaving}");
+            // Somebody who stayed is recorded as usual.
+            let kept = accounts.observe_who(&line(":srv 354 me 1 carol carol-acct :Carol"));
+            assert_eq!(
+                shown(kept.unwrap()),
+                ["carol account=carol-acct real=Carol"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_user_who_left_and_came_back_or_changed_nick_is_recorded_again() {
+        let (mut accounts, members) = asking_about_a();
+        accounts.observe(&line(":bob!u@h PART #a"), "me", &members);
+        // Joining again during the query makes the reply about him current.
+        accounts.observe(&line(":bob!u@h JOIN #a"), "me", &members);
+        let back = accounts.observe_who(&line(":srv 354 me 1 bob bob-acct :Bob Builder"));
+        assert_eq!(
+            shown(back.unwrap()),
+            ["bob account=bob-acct real=Bob Builder"]
+        );
+
+        // A nick change during the query: the old nick is gone, the new one
+        // is the same person and may appear in the reply.
+        let (mut accounts, members) = asking_about_a();
+        accounts.observe(&line(":carol!u@h NICK carla"), "me", &members);
+        let old = accounts.observe_who(&line(":srv 354 me 1 carol c-acct :Carol"));
+        assert!(shown(old.unwrap()).is_empty());
+        let new = accounts.observe_who(&line(":srv 354 me 1 carla c-acct :Carol"));
+        assert_eq!(shown(new.unwrap()), ["carla account=c-acct real=Carol"]);
+    }
+
+    #[test]
+    fn whox_is_recognized_with_or_without_a_value() {
+        for (token, expected) in [
+            ("WHOX", true),
+            ("WHOX=1", true),
+            ("whox=ct", true),
+            ("-WHOX", false),
+            ("WHOXY", false),
+            ("NOWHOX=1", false),
+        ] {
+            let mut accounts = Accounts::default();
+            accounts.isupport(&line(":srv 005 me WHOX :are supported"));
+            accounts.isupport(&line(&format!(":srv 005 me {token} :are supported")));
+            let seen = accounts.whox;
+            let mut fresh = Accounts::default();
+            fresh.isupport(&line(&format!(":srv 005 me {token} :are supported")));
+            assert_eq!(fresh.whox, expected, "{token}");
+            // Only its removal turns support off again.
+            assert_eq!(seen, token != "-WHOX", "{token}");
+        }
+    }
+
+    #[test]
+    fn an_entry_with_nothing_left_to_keep_is_dropped() {
+        let mut accounts = Accounts::default();
+        let members = roster(&[("#a", &["bob"])]);
+        // Known only by an account: logging out leaves nothing.
+        feed(&mut accounts, ":bob!u@h ACCOUNT bob-acct", &members);
+        assert_eq!(accounts.users.len(), 1);
+        assert_eq!(
+            feed(&mut accounts, ":bob!u@h ACCOUNT *", &members),
+            ["bob gone"],
+            "no account and no real name: nothing to keep"
+        );
+        assert_eq!(accounts.users.len(), 0);
+        // With a real name the entry stays, without an account.
+        feed(
+            &mut accounts,
+            ":bob!u@h JOIN #a bob-acct :Bob B",
+            &HashMap::new(),
+        );
+        assert_eq!(
+            feed(&mut accounts, ":bob!u@h ACCOUNT *", &members),
+            ["bob account=- real=Bob B"]
+        );
     }
 }
