@@ -1075,3 +1075,12 @@ consumed reply, timeout), memory bounds. CAP request tests, a fake-server test
 of the whole flow and of the feature being off, a UI test of the mirror and
 WHOIS completion. No live Ergo/soju run was made. `cargo clippy --workspace
 --all-targets` fails in `crates/app` tests on master itself.
+
+### Real name and SETNAME checks (D032)
+
+Unit and fake-server tests cover: default/explicit/marked wire realname,
+`USER` registration, SETNAME accepted, without the capability, and rejected by
+`FAIL SETNAME`, the CAP request rule, settings migration and persistence, and
+the reconnect configuration. `cargo clippy --workspace --all-targets`
+currently fails in `crates/app` tests (`while let` lint) on master itself,
+unrelated to this change. No live Ergo/soju run was made for this change.

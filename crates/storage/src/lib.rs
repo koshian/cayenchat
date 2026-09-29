@@ -118,6 +118,11 @@ impl TextEncoding {
     }
 }
 
+/// Default width in pixels of the combined log's channel name column.
+pub const DEFAULT_SUB_LOG_NAME_WIDTH: u32 = 162;
+/// Widths in pixels the user may choose for that column.
+pub const SUB_LOG_NAME_WIDTHS: std::ops::RangeInclusive<u32> = 80..=600;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -140,6 +145,10 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
+    /// Width in pixels of the channel name (and network) column of the
+    /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
+    /// without a version change; files without it read as the default.
+    pub sub_log_name_width: u32,
     pub main_log_font: String,
     pub sub_log_font: String,
     pub member_font: String,
@@ -190,6 +199,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
+            sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
             member_font: String::new(),
@@ -222,6 +232,13 @@ impl Appearance {
             if color_value(value).is_none() {
                 return Err(format!("{label} color must be #RRGGBB."));
             }
+        }
+        if !SUB_LOG_NAME_WIDTHS.contains(&self.sub_log_name_width) {
+            return Err(format!(
+                "Combined log channel name width must be {}–{} px.",
+                SUB_LOG_NAME_WIDTHS.start(),
+                SUB_LOG_NAME_WIDTHS.end()
+            ));
         }
         Ok(())
     }
@@ -258,6 +275,11 @@ pub struct ServerProfile {
     /// IRC `USER` username (ident); independent of the nickname.
     #[serde(default)]
     pub username: String,
+    /// IRC real name (GECOS) sent in `USER` and by IRCv3 `SETNAME`; empty
+    /// means the built-in default. Added without a version change; files
+    /// without it read as empty.
+    #[serde(default)]
+    pub realname: String,
     #[serde(default)]
     pub channels: String,
     #[serde(default)]
@@ -311,6 +333,7 @@ impl ServerProfile {
             allow_plaintext_pass: false,
             nickname: String::new(),
             username: String::new(),
+            realname: String::new(),
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
@@ -918,6 +941,38 @@ mod tests {
     }
 
     #[test]
+    fn realname_is_per_profile_and_absent_in_older_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // A version 15 file from before the setting existed.
+        let original = serde_json::json!({
+            "version": 15,
+            "selected_server": "custom-1",
+            "servers": [{
+                "id": "custom-1", "custom": true, "host": "irc.example.net",
+                "port": 6697, "use_tls": true, "encoding": "utf8",
+                "nickname": "alice", "username": "ident"
+            }],
+            "credential_backend": "system"
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.selected_profile().unwrap().realname, "");
+        assert_eq!(settings.selected_profile().unwrap().username, "ident");
+
+        settings.selected_profile_mut().unwrap().realname = "Alice Liddell".into();
+        settings.add_server("irc.example.org");
+        save_to(&path, &settings).unwrap();
+        let reloaded = load_from(&path).unwrap().unwrap();
+        let realnames: Vec<_> = reloaded
+            .servers
+            .iter()
+            .map(|server| server.realname.as_str())
+            .collect();
+        assert_eq!(realnames, ["Alice Liddell", ""]);
+    }
+
+    #[test]
     fn supported_profile_versions_preserve_connection_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1338,6 +1393,28 @@ mod tests {
                 .iter()
                 .all(|server| server.verify_tls_certificates)
         );
+    }
+
+    #[test]
+    fn combined_log_name_width_defaults_and_is_bounded() {
+        let mut appearance = Appearance::default();
+        assert_eq!(appearance.sub_log_name_width, DEFAULT_SUB_LOG_NAME_WIDTH);
+        let mut saved = serde_json::to_value(&appearance).unwrap();
+        saved.as_object_mut().unwrap().remove("sub_log_name_width");
+        let loaded: Appearance = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded.sub_log_name_width, DEFAULT_SUB_LOG_NAME_WIDTH);
+        for width in [*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end()] {
+            appearance.sub_log_name_width = width;
+            assert!(appearance.validate().is_ok());
+        }
+        for width in [
+            0,
+            SUB_LOG_NAME_WIDTHS.start() - 1,
+            SUB_LOG_NAME_WIDTHS.end() + 1,
+        ] {
+            appearance.sub_log_name_width = width;
+            assert!(appearance.validate().is_err());
+        }
     }
 
     #[test]
