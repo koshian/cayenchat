@@ -88,6 +88,7 @@
   "channel_event_color": "チャンネルイベント色",
   "combined_log": "全体ログ",
   "combined_log_alternate": "全体ログ交互",
+  "combined_log_name_width": "全体ログのチャンネル名幅 (px)",
   "theme": "テーマ",
   "theme_system": "システム設定",
   "theme_light": "ライト",
