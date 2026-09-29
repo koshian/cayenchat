@@ -209,6 +209,9 @@ pub struct Message {
     pub text: String,
     pub activity: bool,
     pub provenance: Provenance,
+    /// Our own message the server rejected or never confirmed. Only set
+    /// when the source confirms sends (IRC: `echo-message`).
+    pub delivery_failed: bool,
 }
 
 impl Message {

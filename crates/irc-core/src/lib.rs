@@ -3,6 +3,7 @@
 mod accounts;
 mod cap;
 mod ctcp;
+mod echo;
 mod history;
 mod metadata;
 mod peer_avatar;
@@ -293,6 +294,35 @@ fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The tag section of a message a client sends may take 4094 bytes (IRCv3
+/// message-tags) without the leading `@` and the space after it, so 4096 as
+/// `tags::tag_bytes` counts them. It is separate from the 512 bytes of the
+/// message itself.
+const MAX_CLIENT_TAG_BYTES: usize = 4096;
+
+/// Checks a message that carries tags: the message without them against the
+/// usual 512-byte limit, its tags against their own limit, and the whole
+/// line for characters the encoding cannot hold. Tag values are UTF-8 (the
+/// worker requests tags only on UTF-8 connections).
+fn validate_tagged_wire(message: &IrcMessage, label: &str) -> Result<(), String> {
+    let mut untagged = message.clone();
+    untagged.tags = None;
+    validate_wire(&untagged.to_string(), label)?;
+    if let Some(tags) = &message.tags {
+        if tags::tag_bytes(tags) > MAX_CLIENT_TAG_BYTES {
+            return Err("Message tags exceed the 4094-byte limit.".into());
+        }
+        // The line as a whole, for encodability only: tags are not part of
+        // the 512 bytes.
+        let codec = encoding_from_whatwg_label(label)
+            .ok_or_else(|| format!("Unsupported character encoding: {label}"))?;
+        codec
+            .encode(&message.to_string(), EncoderTrap::Strict)
+            .map_err(|_| format!("Text contains a character that cannot be encoded as {label}."))?;
+    }
+    Ok(())
+}
+
 fn requires_utf8(message: &IrcMessage) -> bool {
     matches!(&message.command, IrcCommand::Response(Response::RPL_ISUPPORT, args)
         if args.iter().any(|arg| arg.split_whitespace().any(|token| token == "UTF8ONLY")))
@@ -445,7 +475,12 @@ pub enum Event {
     ServerLine(String),
     /// A completed WHOIS reply, emitted at end-of-WHOIS (318).
     Whois(Box<WhoisInfo>),
+    /// `local_id`: set when the connection tracks this message for its
+    /// server echo (`echo-message`): [`Event::OutgoingConfirmed`] or
+    /// [`Event::OutgoingFailed`] with the same id follows, or the connection
+    /// ends first.
     OutgoingAccepted {
+        local_id: Option<u64>,
         channel: String,
         text: String,
         notice: bool,
@@ -535,6 +570,20 @@ pub enum Event {
         request: u64,
         messages: Vec<HistoryMessage>,
         status: OlderHistoryStatus,
+    },
+    /// The server echoed our message `local_id` back. `text` is the final
+    /// text when the server changed it (and the local line is the text
+    /// itself); `msgid` and `server_time` are what the server recorded.
+    OutgoingConfirmed {
+        local_id: u64,
+        text: Option<String>,
+        msgid: Option<String>,
+        server_time: Option<SystemTime>,
+    },
+    /// Our message `local_id` was rejected, or not confirmed in time.
+    OutgoingFailed {
+        local_id: u64,
+        reason: String,
     },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
@@ -1510,6 +1559,8 @@ async fn run_cancellable(
     let mut metadata_enabled = false;
     let mut history = history::HistoryRequests::with_resume(config.resume_history);
     let mut history_enabled = false;
+    let mut echoes = echo::Echoes::default();
+    let mut next_local_id = 0u64;
     let mut accounts = accounts::Accounts::default();
     let track_accounts = config.ircv3.accounts;
     let mut targets_asked = false;
@@ -1524,21 +1575,48 @@ async fn run_cancellable(
                 let Some(command) = command else { break; };
                 match command {
                     Outgoing::Message {target, text, display_text, notice} => {
+                        // With echo-message the local line is confirmed by
+                        // the server's echo; a label (labeled-response)
+                        // names it exactly.
+                        let shown = echo_text(&target, display_text);
+                        next_local_id += 1;
+                        let local_id = next_local_id;
+                        let label = if registered && negotiation.enabled(cap::ECHO_MESSAGE) {
+                            echoes.track(
+                                local_id,
+                                &target,
+                                notice,
+                                &text,
+                                shown != text,
+                                negotiation.enabled(cap::LABELED_RESPONSE),
+                            )
+                        } else {
+                            None
+                        };
+                        let tracked = label.is_some();
                         let message = if notice {
                             IrcMessage::from(IrcCommand::NOTICE(target.clone(), text))
                         } else {
                             IrcMessage::from(IrcCommand::PRIVMSG(target.clone(), text))
                         };
+                        let message = echo::with_label(message, label.flatten());
                         let line = redacted_wire_line(&message);
-                        let result = validate_wire(&message.to_string(), &wire_encoding)
+                        let result = validate_tagged_wire(&message, &wire_encoding)
                             .and_then(|_| client.send(message).map_err(|error| error.to_string()));
                         let event = match result {
                             Ok(()) => {
                                 wire(&events, started, WireDirection::Sent, line).await;
-                                let text = echo_text(&target, display_text);
-                                Event::OutgoingAccepted {channel: target, text, notice}
+                                Event::OutgoingAccepted {
+                                    local_id: tracked.then_some(local_id),
+                                    channel: target,
+                                    text: shown,
+                                    notice,
+                                }
                             }
-                            Err(error) => Event::ServerLine(format!("Send failed: {error}")),
+                            Err(error) => {
+                                echoes.untrack(local_id);
+                                Event::ServerLine(format!("Send failed: {error}"))
+                            }
                         };
                         if events.send(event).await.is_err() { break; }
                     }
@@ -1926,6 +2004,18 @@ async fn run_cancellable(
                                 }
                             }
                         }
+                        // Echoes, ACKs and errors of messages we sent.
+                        let mut echo_events = echoes.expire(tokio::time::Instant::now());
+                        if !negotiation.enabled(cap::ECHO_MESSAGE) && !echoes.outstanding().is_empty() {
+                            echo_events.extend(echoes.reset());
+                        }
+                        let echoed = echoes.observe(&message, &current_nick, negotiation.enabled(cap::LABELED_RESPONSE));
+                        let consumed = echoed.is_some();
+                        echo_events.extend(echoed.unwrap_or_default());
+                        for event in echo_events {
+                            if events.send(event).await.is_err() { return; }
+                        }
+                        if consumed { continue; }
                         // Our WHOX reply is not a server line.
                         if track_accounts && let Some(reply) = accounts.observe_who(&message) {
                             for event in reply {
@@ -2038,6 +2128,13 @@ async fn run_cancellable(
                     diagnostic(&events, started, note).await;
                 }
                 for event in merged(&mut peers, handled.events) {
+                    if events.send(event).await.is_err() { return; }
+                }
+            }
+            // Report an unconfirmed outgoing message even when the server
+            // sends no further lines. No timer runs while none is pending.
+            _ = tokio::time::sleep_until(echoes.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if echoes.next_deadline().is_some() => {
+                for event in echoes.expire(tokio::time::Instant::now()) {
                     if events.send(event).await.is_err() { return; }
                 }
             }
@@ -4335,6 +4432,339 @@ mod tests {
             Event::ServerLine(line) if line.contains("BATCH") || line.contains("old"))));
     }
 
+    fn sending_options() -> Ircv3Options {
+        Ircv3Options {
+            confirmed_sending: true,
+            ..Ircv3Options::default()
+        }
+    }
+
+    #[test]
+    fn labeled_messages_are_confirmed_by_their_echo_batch_and_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            assert_eq!(
+                requested,
+                [
+                    "message-tags",
+                    "server-time",
+                    "batch",
+                    "echo-message",
+                    "labeled-response"
+                ]
+            );
+            let label = |line: &str| -> String {
+                let tag = line.strip_prefix("@label=").expect("labeled").to_owned();
+                tag.split_once(' ').unwrap().0.to_owned()
+            };
+            // 1: echoed with a rewritten text and the server's id and time.
+            let first = read_client_line(&mut lines);
+            assert!(first.ends_with("PRIVMSG #test :hello  world"), "{first}");
+            let l1 = label(&first);
+            assert!(l1.len() <= 64);
+            // 2: a multi-message labeled response (batch), 3: an error.
+            let second = read_client_line(&mut lines);
+            let third = read_client_line(&mut lines);
+            let (l2, l3) = (label(&second), label(&third));
+            assert!(l1 != l2 && l2 != l3 && l1 != l3, "labels are distinct");
+            // Another client's message as us: no label, not a confirmation.
+            socket
+                .write_all(
+                    format!(
+                        "@time=2026-09-28T10:00:00.000Z :alice!u@h PRIVMSG #test :from my phone\r\n\
+@label={l1};msgid=m1;time=2026-09-28T10:00:01.000Z :alice!u@h PRIVMSG #test :hello world\r\n\
+@label={l2} :srv BATCH +b labeled-response\r\n\
+@batch=b;msgid=m2;time=2026-09-28T10:00:02.000Z :alice!u@h PRIVMSG bob :second\r\n\
+:srv BATCH -b\r\n\
+@label={l3} :srv 404 alice #closed :Cannot send to channel\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection
+            .send_message("#test", "hello  world", false)
+            .unwrap();
+        connection
+            .send_private_message("bob", "second", false)
+            .unwrap();
+        connection.send_message("#test", "third", false).unwrap();
+        let mut accepted = Vec::new();
+        let mut settled = Vec::new();
+        let mut live = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && settled.len() < 3 {
+            match connection.try_recv() {
+                Some(Event::OutgoingAccepted { local_id, .. }) => accepted.push(local_id),
+                Some(Event::OutgoingConfirmed {
+                    local_id,
+                    text,
+                    msgid,
+                    server_time,
+                }) => {
+                    assert!(server_time.is_some());
+                    settled.push(format!("{local_id} ok {text:?} {msgid:?}"));
+                }
+                Some(Event::OutgoingFailed { local_id, reason }) => {
+                    settled.push(format!("{local_id} failed {reason}"))
+                }
+                Some(Event::ChannelMessage { text, .. }) => live.push(text),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+        assert_eq!(accepted, [Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            settled,
+            [
+                "1 ok Some(\"hello world\") Some(\"m1\")",
+                "2 ok None Some(\"m2\")",
+                "3 failed Cannot send to channel"
+            ]
+        );
+        // Only the other client's line is a live message; no duplicates.
+        assert_eq!(live, ["from my phone"]);
+    }
+
+    #[test]
+    fn a_label_does_not_count_against_the_512_byte_message_limit() {
+        // A one-word text is sent without the colon: `PRIVMSG #test ` is 14
+        // bytes and CRLF 2, so 496 bytes of text fill the 512 bytes a
+        // message may have, which is also what is sent without labels. The
+        // `@label=...` tag has a limit of its own.
+        let text = "x".repeat(496);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected = text.clone();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            let sent = read_client_line(&mut lines);
+            let (tags, message) = sent.split_once(' ').expect("labeled");
+            assert!(tags.starts_with("@label="), "{tags}");
+            // The whole text arrives, in a message within its own limit
+            // (a single word is sent without the colon).
+            assert!(message.ends_with(&expected), "{message}");
+            assert!(message.len() + 2 <= 512, "{} bytes", message.len() + 2);
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", &text, false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingAccepted { .. } | Event::ServerLine(_))
+        });
+        assert!(
+            matches!(
+                event,
+                Event::OutgoingAccepted {
+                    local_id: Some(1),
+                    ..
+                }
+            ),
+            "a message that fits without a label is sent with one: {event:?}"
+        );
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+
+        // One byte more does not fit, with or without a label.
+        assert!(
+            validate_wire(&format!("PRIVMSG #test {text}x\r\n"), "UTF-8").is_err(),
+            "the message part stays limited to 512 bytes"
+        );
+    }
+
+    #[test]
+    fn tagged_messages_have_separate_limits_for_tags_and_message() {
+        let tagged = |label: &str, text: &str| {
+            echo::with_label(
+                IrcMessage::from(IrcCommand::PRIVMSG("#test".into(), text.into())),
+                Some(label.into()),
+            )
+        };
+        // A text of one word is sent without the colon, so 496 bytes fill
+        // the 512 bytes and 497 do not.
+        assert!(validate_tagged_wire(&tagged("c1", &"x".repeat(496)), "UTF-8").is_ok());
+        // The message part is limited as before, tags aside.
+        assert!(validate_tagged_wire(&tagged("c1", &"x".repeat(497)), "UTF-8").is_err());
+        // The tags are limited on their own: 4094 bytes without `@` and the
+        // space, so a value of 4094 - "label=".len() fits and one more does not.
+        let fits = "l".repeat(4094 - "label=".len());
+        assert!(validate_tagged_wire(&tagged(&fits, "hi"), "UTF-8").is_ok());
+        let too_long = "l".repeat(4094 - "label=".len() + 1);
+        assert!(
+            validate_tagged_wire(&tagged(&too_long, "hi"), "UTF-8")
+                .unwrap_err()
+                .contains("tags")
+        );
+        // A character the encoding cannot hold is still refused.
+        assert!(validate_tagged_wire(&tagged("c1", "🙂"), "ISO-2022-JP").is_err());
+    }
+
+    #[test]
+    fn withdrawing_labeled_response_keeps_echo_message_and_settles_pending_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            assert!(requested.contains(&"labeled-response".to_owned()));
+            // Sent with a label, as labeled-response was on.
+            let first = read_client_line(&mut lines);
+            assert!(first.starts_with("@label="), "{first}");
+            // The server withdraws labeled-response but keeps echo-message.
+            // Its echo of the pending message comes without a label.
+            socket
+                .write_all(
+                    b":srv CAP alice DEL :labeled-response\r\n\
+@msgid=m1;time=2026-09-28T10:00:01.000Z :alice!u@h PRIVMSG #test :still delivered\r\n",
+                )
+                .unwrap();
+            // A message sent now goes out without a label.
+            let second = read_client_line(&mut lines);
+            assert_eq!(second, "PRIVMSG #test later");
+            socket
+                .write_all(b"@msgid=m2 :alice!u@h PRIVMSG #test :later\r\n")
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection
+            .send_message("#test", "still delivered", false)
+            .unwrap();
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut sent_second = false;
+        while Instant::now() < deadline {
+            match connection.try_recv() {
+                Some(Event::OutgoingConfirmed {
+                    local_id, msgid, ..
+                }) => {
+                    seen.push(format!("confirmed {local_id} {msgid:?}"));
+                    if !sent_second {
+                        sent_second = true;
+                        connection.send_message("#test", "later", false).unwrap();
+                    } else {
+                        break;
+                    }
+                }
+                Some(Event::OutgoingFailed { local_id, .. }) => {
+                    seen.push(format!("failed {local_id}"));
+                }
+                Some(Event::ChannelMessage { text, .. }) => seen.push(format!("line {text}")),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+        // Each message is confirmed once; no echo is shown as another line.
+        assert_eq!(
+            seen,
+            [
+                "confirmed 1 Some(\"m1\")".to_owned(),
+                "confirmed 2 Some(\"m2\")".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn without_labels_an_identical_echo_confirms_and_without_echo_nothing_is_tracked() {
+        // echo-message only: no label tag on the wire, FIFO by text.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(&mut socket, &mut lines, "echo-message", "NETWORK=t");
+            assert_eq!(requested, ["echo-message"]);
+            // No label tag: labeled-response was not negotiated.
+            assert_eq!(read_client_line(&mut lines), "PRIVMSG #test hi");
+            socket
+                .write_all(b"@msgid=e1 :alice!u@h PRIVMSG #test :hi\r\n")
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", "hi", false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingConfirmed { .. })
+        });
+        assert!(matches!(
+            event,
+            Event::OutgoingConfirmed { local_id: 1, text: None, msgid: Some(ref id), .. } if id == "e1"
+        ));
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+
+        // A server without echo-message: the local line is all there is.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(&mut socket, &mut lines, "batch", "NETWORK=t");
+            assert!(requested.is_empty());
+            assert_eq!(read_client_line(&mut lines), "PRIVMSG #test hi");
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", "hi", false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingAccepted { .. })
+        });
+        assert!(matches!(
+            event,
+            Event::OutgoingAccepted { local_id: None, .. }
+        ));
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+    }
+
     #[test]
     fn user_accounts_follow_joins_account_changes_and_one_whox_query() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -5089,6 +5519,7 @@ mod tests {
             metadata: false,
             peer_avatars: false,
             chathistory: false,
+            confirmed_sending: false,
             accounts: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
@@ -5183,6 +5614,7 @@ mod tests {
                 metadata: false,
                 peer_avatars: false,
                 chathistory: false,
+                confirmed_sending: false,
                 accounts: false,
             },
         );

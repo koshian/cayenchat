@@ -287,6 +287,7 @@ impl AppState {
                             text: text.into(),
                             activity: false,
                             provenance: Provenance::Live,
+                            delivery_failed: false,
                         }
                     })
                     .collect(),
@@ -972,6 +973,68 @@ impl AppState {
         }
     }
 
+    /// The sequence of the newest message added anywhere, so a caller that
+    /// just appended one can find it again ([`AppState::confirm_message`]).
+    pub fn latest_sequence(&self) -> u64 {
+        self.next_message_sequence
+    }
+
+    /// The source confirmed our message `sequence` of conversation `id`:
+    /// its final text (when the source changed it), identifier and time
+    /// replace the local ones. The confirmed message is remembered by the
+    /// duplicate filter, so history that repeats it is dropped. Returns
+    /// `false` when the message is gone.
+    pub fn confirm_message(
+        &mut self,
+        id: ConversationId,
+        sequence: u64,
+        text: Option<String>,
+        notice: bool,
+        meta: MessageMeta,
+    ) -> bool {
+        let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        let Ok(index) = conversation
+            .messages
+            .binary_search_by_key(&sequence, |message| message.sequence)
+        else {
+            return false;
+        };
+        let message = &mut conversation.messages[index];
+        if let Some(text) = text {
+            message.text = if notice {
+                format!("[NOTICE] {text}")
+            } else {
+                text
+            };
+        }
+        message.delivery_failed = false;
+        if meta.native_id.is_some() {
+            message.native_id = meta.native_id;
+        }
+        if let Some(time) = meta.server_time {
+            message.timestamp = Timestamp::from_system_time(time);
+            message.time = display_time(Some(time));
+        }
+        let confirmed = message.clone();
+        if confirmed.native_id.is_some() || confirmed.timestamp.is_some() {
+            self.duplicates.entry(id).or_default().admit(&confirmed);
+        }
+        true
+    }
+
+    /// Marks our message `sequence` of conversation `id` as not delivered.
+    pub fn fail_message(&mut self, id: ConversationId, sequence: u64) {
+        if let Some(conversation) = self.conversations.iter_mut().find(|c| c.id == id)
+            && let Ok(index) = conversation
+                .messages
+                .binary_search_by_key(&sequence, |message| message.sequence)
+        {
+            conversation.messages[index].delivery_failed = true;
+        }
+    }
+
     /// Appends to a conversation's bounded log unless its duplicate filter
     /// recognizes the message. Only a message that is added takes a
     /// sequence.
@@ -1637,6 +1700,7 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         text,
         activity,
         provenance: meta.provenance,
+        delivery_failed: false,
     }
 }
 
@@ -3027,6 +3091,63 @@ mod tests {
         assert!(state.conversations()[0].messages.len() <= MAX_RETAINED);
         assert!(state.request_older_history(id).is_some());
         assert!(state.duplicates[&id].len() < timeline::DUPLICATE_KEYS_PER_CONVERSATION);
+    }
+
+    #[test]
+    fn a_confirmed_own_message_takes_the_servers_text_id_and_time_once() {
+        let (mut state, network, id) = paging_channel();
+        state.append_channel_message(network, "#a", "me", "hello  world", false, false);
+        let sequence = state.latest_sequence();
+        // The server collapsed the space and recorded an id and time.
+        assert!(state.confirm_message(
+            id,
+            sequence,
+            Some("hello world".into()),
+            false,
+            meta(Some(2_000_000), Some("mine1"), Provenance::Live),
+        ));
+        let sent = state.conversations()[0]
+            .messages
+            .iter()
+            .find(|m| m.sequence == sequence)
+            .unwrap()
+            .clone();
+        assert_eq!(sent.text, "hello world");
+        assert_eq!(sent.native_id.as_ref().map(|id| id.as_str()), Some("mine1"));
+        assert!(sent.timestamp.is_some() && !sent.delivery_failed);
+        // The same message arriving again as history is a duplicate.
+        let before = state.conversations()[0].messages.len();
+        let appended = state.append_channel_message_at(
+            network,
+            "#a",
+            "me",
+            "hello world",
+            false,
+            meta(Some(2_000_000), Some("mine1"), Provenance::Replayed),
+        );
+        assert!(!appended);
+        assert_eq!(state.conversations()[0].messages.len(), before);
+        // A message that is gone (trimmed) is not an error.
+        assert!(!state.confirm_message(id, 0, None, false, MessageMeta::live()));
+    }
+
+    #[test]
+    fn a_rejected_own_message_is_marked_and_a_later_confirmation_clears_it() {
+        let (mut state, network, id) = paging_channel();
+        state.append_channel_message(network, "#a", "me", "oops", false, false);
+        let sequence = state.latest_sequence();
+        state.fail_message(id, sequence);
+        let flagged = |state: &AppState| {
+            state.conversations()[0]
+                .messages
+                .iter()
+                .find(|m| m.sequence == sequence)
+                .unwrap()
+                .delivery_failed
+        };
+        assert!(flagged(&state));
+        assert!(state.confirm_message(id, sequence, None, false, MessageMeta::live()));
+        assert!(!flagged(&state));
     }
 
     fn live(state: &mut AppState, text: &str, millis: u64, msgid: Option<&str>) {

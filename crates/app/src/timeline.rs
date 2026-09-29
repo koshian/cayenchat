@@ -184,6 +184,7 @@ mod tests {
             text: text.into(),
             activity: false,
             provenance,
+            delivery_failed: false,
         }
     }
 

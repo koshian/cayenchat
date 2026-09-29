@@ -1127,6 +1127,63 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D036 — Server-confirmed sending: echo-message and labeled-response
+
+Status: implemented (IRCv3 standard capabilities, one opt-in).
+
+Specifications read: `echo-message` (the server MUST send our PRIVMSG/NOTICE
+back with the final text; clients may show a local line first and replace it)
+and `labeled-response` (needs `batch` and `message-tags`; a `label` of at most
+64 bytes, not reused until answered; single replies carry the label, several
+are a batch tagged on its start, no-reply commands get a labeled `ACK`; a
+message to ourselves is labeled only on the echo).
+
+- **One preference.** "Server-confirmed sending" (`Ircv3Preferences::
+  confirmed_sending`, per server, default off, no version change) requests
+  `echo-message`, `server-time`, and on UTF-8 connections `message-tags`,
+  `batch` and `labeled-response` (the last only after both are enabled;
+  dropped when `batch` goes). Legacy encodings get the echo alone: tags are
+  UTF-8. Off: registration and sending are unchanged.
+- **Optimistic line stays.** `Outgoing::Message` still produces
+  `Event::OutgoingAccepted` at once; with `echo-message` it carries a
+  `local_id`, and the application remembers (conversation, sequence) for it
+  (`ServerSession::pending_sends`).
+- **Matching** (`irc-core::echo::Echoes`): with labels, the echo, `ACK`,
+  4xx/5xx numeric or `FAIL` carrying our label, or any of them inside a
+  `labeled-response` batch. Labels are `c` plus a per-connection counter in
+  base 36, so one is never reused. An unlabeled own-nick message is another
+  client's and is shown as before. Without labels: the oldest pending message
+  to the same casemapped target with identical text and kind; a message the
+  server rewrote cannot be recognized and appears as a new line.
+- **`labeled-response` coming and going** (`CAP DEL`/`NEW` on a live
+  connection, `echo-message` staying): a line carrying a label is always
+  matched, so late replies to earlier labeled requests still settle them.
+  While the capability is on, an unlabeled echo matches only messages sent
+  without a label. Once it is off, it matches every pending message,
+  including those sent with a label: they are converted to the target-and-text
+  match, so their echoes are not shown twice and they are not marked failed
+  later. A labeled message the server rewrote cannot be matched after the
+  withdrawal and is reported unconfirmed when its 60 s expire.
+- **Confirmation** (`Event::OutgoingConfirmed`): the final text replaces the
+  local one only when it changed and the local line is the text itself (not a
+  CTCP ACTION or a redacted service secret); msgid and time are stored and the
+  message goes into the duplicate filter, so later history repeating it is
+  dropped.
+- **Failure.** `Event::OutgoingFailed` (labeled error, `FAIL`, no answer in
+  60 s, the capability withdrawn) or a connection that ends with the message
+  pending sets `Message::delivery_failed` (drawn in the warning color) and,
+  for a server reply, adds a server-log line. A later confirmation clears it.
+- **Bounds.** At most 32 pending messages per connection (more are sent but
+  not tracked), 16 open labeled batches, 64 pending ids in the application.
+  A timer runs only while messages are pending; their failure is reported at
+  60 seconds even if the server sends no further lines.
+- **Self-messages.** With labels only the labeled copy is the echo; the
+  delivered unlabeled copy still appears as a message from us, as it did
+  before (two lines, literally what the server sent).
+- **Not done.** No delivery marker for unconfirmed-but-not-failed lines
+  beyond the failure colour; `TAGMSG` echo; label use for other commands;
+  no live soju/Ergo check.
+
 ## D035 — Live account tracking: account-notify, extended-join, WHOX
 
 Status: implemented (IRCv3 standard capabilities; opt-in because of the WHOX

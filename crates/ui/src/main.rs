@@ -690,6 +690,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         metadata: true,
         peer_avatars: preferences.peer_avatars,
         chathistory: preferences.chathistory,
+        confirmed_sending: preferences.confirmed_sending,
         accounts: preferences.accounts,
     }
 }
@@ -3042,10 +3043,12 @@ impl ChatWindow {
                 }
             }
             Event::OutgoingAccepted {
+                local_id,
                 channel,
                 text,
                 notice,
             } => {
+                let before = self.state.latest_sequence();
                 if valid_channel(&channel) {
                     let nickname = self
                         .sessions
@@ -3063,6 +3066,53 @@ impl ChatWindow {
                             .format("event_message_queued", &[("channel", &channel)]),
                     );
                 }
+                // Confirmed sending: find the line just added again when the
+                // server's echo arrives.
+                if let Some(local_id) = local_id
+                    && self.state.latest_sequence() > before
+                {
+                    let id = if valid_channel(&channel) {
+                        self.state.channel_id(network, &channel)
+                    } else {
+                        let key = cayenchat_irc_core::text::nickname_key(&channel);
+                        self.state.private_id(network, &key)
+                    };
+                    if let (Some(id), Some(session)) = (id, self.sessions.get_mut(&network))
+                        && session.pending_sends.len() < 64
+                    {
+                        session
+                            .pending_sends
+                            .insert(local_id, (id, self.state.latest_sequence(), notice));
+                    }
+                }
+            }
+            Event::OutgoingConfirmed {
+                local_id,
+                text,
+                msgid,
+                server_time,
+            } => {
+                let pending = self
+                    .sessions
+                    .get_mut(&network)
+                    .and_then(|session| session.pending_sends.remove(&local_id));
+                if let Some((id, sequence, notice)) = pending {
+                    let meta = irc_message_meta(server_time, msgid.as_deref(), None, false);
+                    self.state.confirm_message(id, sequence, text, notice, meta);
+                }
+            }
+            Event::OutgoingFailed { local_id, reason } => {
+                let pending = self
+                    .sessions
+                    .get_mut(&network)
+                    .and_then(|session| session.pending_sends.remove(&local_id));
+                if let Some((id, sequence, _)) = pending {
+                    self.state.fail_message(id, sequence);
+                }
+                let line = self
+                    .i18n
+                    .format("event_message_failed", &[("reason", &reason)]);
+                self.state.append_server_message(network, line);
             }
             Event::NicknameRejected { nickname } => {
                 self.state.append_server_message(
@@ -3072,6 +3122,15 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
+                // What the server never confirmed is shown as not delivered.
+                let unconfirmed: Vec<_> = self
+                    .sessions
+                    .get_mut(&network)
+                    .map(|session| session.pending_sends.drain().collect())
+                    .unwrap_or_default();
+                for (_, (id, sequence, _)) in unconfirmed {
+                    self.state.fail_message(id, sequence);
+                }
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.user_accounts.clear();
                 }
@@ -6394,6 +6453,7 @@ impl ChatWindow {
                     .when(preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
+                    .when(message.delivery_failed, |d| d.text_color(theme.warning))
                     .cursor(CursorStyle::IBeam)
                     .child(styled)
                     .on_mouse_down(
@@ -7001,6 +7061,7 @@ mod combined_log_tests {
                 timestamp: None,
                 native_id: None,
                 account: None,
+                delivery_failed: false,
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
@@ -7367,6 +7428,7 @@ mod server_settings_tests {
             batch: true,
             peer_avatars: true,
             chathistory: true,
+            confirmed_sending: false,
             accounts: false,
         };
         settings
@@ -7717,6 +7779,7 @@ mod pane_tests {
                 metadata: true,
                 peer_avatars: true,
                 chathistory: false,
+                confirmed_sending: false,
                 accounts: false,
             }
         );
@@ -7751,6 +7814,7 @@ mod pane_tests {
                     metadata: true,
                     peer_avatars: false,
                     chathistory: false,
+                    confirmed_sending: false,
                     accounts: false,
                 },
                 "reconnects use the new choice; batch stays off here"
@@ -8224,6 +8288,108 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(
+        cx: &mut TestAppContext,
+    ) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let accepted = |local_id, text: &str| Event::OutgoingAccepted {
+            local_id,
+            channel: "#a".into(),
+            text: text.into(),
+            notice: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    // Shown at once, before any confirmation.
+                    accepted(Some(1), "hello  world"),
+                    accepted(Some(2), "rejected"),
+                    accepted(Some(3), "never answered"),
+                    accepted(None, "no echo-message here"),
+                ],
+                false,
+                cx,
+            );
+            let id = chat.state.channel_id(NetworkId(1), "#a").unwrap();
+            let lines = |chat: &ChatWindow| {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .map(|m| (m.text.clone(), m.delivery_failed))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(chat.sessions[&NetworkId(1)].pending_sends.len(), 3);
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::OutgoingConfirmed {
+                        local_id: 1,
+                        text: Some("hello world".into()),
+                        msgid: Some("m1".into()),
+                        server_time: None,
+                    },
+                    Event::OutgoingFailed {
+                        local_id: 2,
+                        reason: "Cannot send to channel".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            // Replaced in place, not added again.
+            assert_eq!(
+                lines(chat)
+                    .iter()
+                    .filter(|(text, _)| text.starts_with("hello"))
+                    .collect::<Vec<_>>(),
+                [&("hello world".to_owned(), false)]
+            );
+            assert!(lines(chat).contains(&("rejected".to_owned(), true)));
+            assert_eq!(chat.sessions[&NetworkId(1)].pending_sends.len(), 1);
+            // The rejection is also said in the server log.
+            assert!(
+                chat.state
+                    .server_messages(NetworkId(1))
+                    .iter()
+                    .any(|m| m.text.contains("Cannot send to channel"))
+            );
+            // A link that ends with a message unconfirmed marks it.
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(lines(chat).contains(&("never answered".to_owned(), true)));
+            assert!(lines(chat).contains(&("no echo-message here".to_owned(), false)));
+            assert!(chat.sessions[&NetworkId(1)].pending_sends.is_empty());
+        });
+    }
+
+    #[gpui::test]
     fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut TestAppContext) {
         use cayenchat_irc_core::{Event, WhoisInfo};
 
@@ -8264,8 +8430,6 @@ mod pane_tests {
             );
             let accounts = |chat: &ChatWindow| chat.sessions[&NetworkId(1)].user_accounts.clone();
             assert_eq!(accounts(chat).len(), 1, "casemapped removal");
-            // A WHOIS without a 330 or realname is completed from tracking;
-            // what the server said wins.
             let tracked = accounts(chat);
             let mut info = WhoisInfo {
                 nickname: "bob".into(),
@@ -8467,6 +8631,7 @@ mod pane_tests {
                     pm("NickServ", "This nickname is registered", true, false),
                     pm("carol", "old", false, true),
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: "BOB".into(),
                         text: "hi bob".into(),
                         notice: false,
@@ -8924,11 +9089,13 @@ mod pane_tests {
                         replayed: false,
                     },
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: channel.into(),
                         text: "reply".into(),
                         notice: false,
                     },
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: channel.into(),
                         text: "notice".into(),
                         notice: true,
