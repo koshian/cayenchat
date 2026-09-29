@@ -128,6 +128,15 @@ impl Echoes {
         self.pending.iter().map(|p| p.local_id).collect()
     }
 
+    /// When the oldest pending message runs out of time, so the worker can
+    /// report it without waiting for the server to say something. `None`
+    /// while nothing is pending: no timer runs then.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.pending
+            .front()
+            .map(|pending| pending.sent + PENDING_TTL)
+    }
+
     /// Messages whose echo did not come in time.
     pub(crate) fn expire(&mut self, now: Instant) -> Vec<Event> {
         let mut events = Vec::new();
@@ -508,6 +517,20 @@ mod tests {
         echoes.track(2, "#a", false, "x", false, true);
         assert_eq!(echoes.reset().len(), 1);
         assert!(echoes.pending.is_empty());
+    }
+
+    #[test]
+    fn next_deadline_tracks_the_oldest_pending_message() {
+        let mut echoes = Echoes::default();
+        assert_eq!(echoes.next_deadline(), None);
+        echoes.track(1, "#a", false, "one", false, true);
+        echoes.track(2, "#a", false, "two", false, true);
+        let first = echoes.next_deadline().expect("first message is pending");
+        assert_eq!(echoes.expire(first).len(), 1);
+        let second = echoes.next_deadline().expect("second message is pending");
+        assert!(second >= first);
+        assert_eq!(echoes.expire(second).len(), 1);
+        assert_eq!(echoes.next_deadline(), None);
     }
 
     #[test]

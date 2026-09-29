@@ -2078,6 +2078,13 @@ async fn run_cancellable(
                     if events.send(event).await.is_err() { return; }
                 }
             }
+            // Report an unconfirmed outgoing message even when the server
+            // sends no further lines. No timer runs while none is pending.
+            _ = tokio::time::sleep_until(echoes.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if echoes.next_deadline().is_some() => {
+                for event in echoes.expire(tokio::time::Instant::now()) {
+                    if events.send(event).await.is_err() { return; }
+                }
+            }
             // An unanswered history request; no timer runs otherwise.
             _ = tokio::time::sleep_until(history.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if history_enabled && history.next_deadline().is_some() => {
                 if let Some(history::Observed::Finished(finished)) = history.tick(tokio::time::Instant::now())

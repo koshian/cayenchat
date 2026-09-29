@@ -1175,7 +1175,8 @@ message to ourselves is labeled only on the echo).
   for a server reply, adds a server-log line. A later confirmation clears it.
 - **Bounds.** At most 32 pending messages per connection (more are sent but
   not tracked), 16 open labeled batches, 64 pending ids in the application.
-  No timers: expiry is checked when a line arrives.
+  A timer runs only while messages are pending; their failure is reported at
+  60 seconds even if the server sends no further lines.
 - **Self-messages.** With labels only the labeled copy is the echo; the
   delivered unlabeled copy still appears as a message from us, as it did
   before (two lines, literally what the server sent).
