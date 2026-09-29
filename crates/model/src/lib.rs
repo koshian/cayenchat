@@ -132,6 +132,37 @@ impl NativeMessageId {
     }
 }
 
+/// The authenticated services account a message's sender was logged in to
+/// when the message was sent (IRC: the `account` tag). It names an identity
+/// only within the network the message came from; never compare accounts of
+/// different networks. `None` means not logged in or not reported.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ServicesAccount(Box<Box<str>>);
+
+impl ServicesAccount {
+    /// Longest account name kept; a longer one is treated as absent.
+    pub const MAX_BYTES: usize = 128;
+
+    /// `None` for an empty name, the `*` placeholder ("not logged in" in
+    /// other extensions), an over-long name, or one with whitespace or
+    /// controls.
+    ///
+    /// The name is boxed twice on purpose: a thin pointer keeps
+    /// `Option<ServicesAccount>` at 8 bytes in every retained message, and
+    /// most messages have none.
+    pub fn new(name: &str) -> Option<Self> {
+        (!name.is_empty()
+            && name != "*"
+            && name.len() <= Self::MAX_BYTES
+            && !name.chars().any(|ch| ch.is_whitespace() || ch.is_control()))
+        .then(|| Self(Box::new(name.into())))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// How a message reached the client. Only live messages may notify or be
 /// highlighted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -171,6 +202,9 @@ pub struct Message {
     /// The source's own identifier (IRC: `msgid`), when it supplied a
     /// usable one.
     pub native_id: Option<NativeMessageId>,
+    /// The sender's services account when the message was sent, if the
+    /// source reported one. Not shown in the log.
+    pub account: Option<ServicesAccount>,
     pub sender: String,
     pub text: String,
     pub activity: bool,
@@ -213,6 +247,16 @@ mod tests {
     }
 
     #[test]
+    fn services_accounts_are_bounded_single_tokens() {
+        assert_eq!(ServicesAccount::new("alice").unwrap().as_str(), "alice");
+        assert!(ServicesAccount::new("").is_none());
+        assert!(ServicesAccount::new("*").is_none());
+        assert!(ServicesAccount::new("a b").is_none());
+        assert!(ServicesAccount::new(&"a".repeat(129)).is_none());
+        assert!(ServicesAccount::new(&"a".repeat(128)).is_some());
+    }
+
+    #[test]
     fn native_ids_are_opaque_bounded_visible_ascii() {
         assert_eq!(
             NativeMessageId::new("01K6ABCDEF").map(|id| id.as_str().to_owned()),
@@ -245,9 +289,10 @@ mod tests {
 
     #[test]
     fn retained_message_size_stays_bounded() {
-        // 64 bytes before timestamps and native IDs were retained; the
-        // identifier's text lives on the heap only when present.
+        // 64 bytes before timestamps and native IDs were retained, 96 with
+        // them, 104 with the services account (one thin pointer); the texts
+        // live on the heap only when present.
         println!("size_of::<Message>() = {}", std::mem::size_of::<Message>());
-        assert!(std::mem::size_of::<Message>() <= 96);
+        assert!(std::mem::size_of::<Message>() <= 104);
     }
 }

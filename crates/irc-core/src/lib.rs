@@ -368,6 +368,9 @@ pub enum Event {
         server_time: Option<SystemTime>,
         /// The server's `msgid` tag, when present and non-empty.
         msgid: Option<String>,
+        /// The sender's services account when the message was sent
+        /// (`account-tag`), when the server reports one.
+        account: Option<String>,
         /// History or a server/bouncer line rather than a live message from
         /// a user; it must not notify again.
         replayed: bool,
@@ -394,6 +397,8 @@ pub enum Event {
         server_time: Option<SystemTime>,
         /// The server's `msgid` tag, when present and non-empty.
         msgid: Option<String>,
+        /// The sender's services account (`account-tag`), when reported.
+        account: Option<String>,
         /// Replayed history (IRCv3 history batch).
         replayed: bool,
     },
@@ -2365,6 +2370,7 @@ fn private_message(
         notice,
         server_time,
         msgid: tags::msgid(message).map(str::to_owned),
+        account: tags::account(message).map(str::to_owned),
         replayed,
     })
 }
@@ -2526,6 +2532,7 @@ fn translate_message(
                     ),
                 server_time,
                 msgid: tags::msgid(&message).map(str::to_owned),
+                account: tags::account(&message).map(str::to_owned),
                 replayed,
             }]
         }
@@ -2668,6 +2675,35 @@ mod tests {
     }
 
     #[test]
+    fn account_tags_ride_along_with_channel_and_private_messages() {
+        let private =
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "me", false, None);
+        let account = |event: Option<Event>| match event {
+            Some(Event::PrivateMessage { account, .. }) => account,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            account(private("@account=alice :alice!u@h PRIVMSG me :hi")),
+            Some("alice".into())
+        );
+        // Not logged in: the tag is absent; `*` and empty values are not accounts.
+        assert_eq!(account(private(":alice!u@h PRIVMSG me :hi")), None);
+        assert_eq!(
+            account(private("@account=* :alice!u@h PRIVMSG me :hi")),
+            None
+        );
+        assert_eq!(
+            account(private("@account= :alice!u@h PRIVMSG me :hi")),
+            None
+        );
+        // The account can differ between messages of one nickname.
+        assert_eq!(
+            account(private("@account=alice2 :alice!u@h PRIVMSG me :again")),
+            Some("alice2".into())
+        );
+    }
+
+    #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
         let translate =
             |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
@@ -2679,6 +2715,7 @@ mod tests {
                 notice: false,
                 server_time: None,
                 msgid: None,
+                account: None,
                 replayed: false,
             })
         );
@@ -2690,6 +2727,7 @@ mod tests {
                 notice: true,
                 server_time: None,
                 msgid: None,
+                account: None,
                 replayed: false,
             })
         );

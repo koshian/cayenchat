@@ -748,11 +748,13 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
 fn irc_message_meta(
     server_time: Option<std::time::SystemTime>,
     msgid: Option<&str>,
+    account: Option<&str>,
     replayed: bool,
 ) -> MessageMeta {
     MessageMeta {
         server_time,
         native_id: msgid.and_then(cayenchat_model::NativeMessageId::new),
+        account: account.and_then(cayenchat_model::ServicesAccount::new),
         ..MessageMeta::replayed(replayed)
     }
 }
@@ -768,7 +770,12 @@ fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
             } else {
                 message.text
             },
-            meta: irc_message_meta(message.server_time, message.msgid.as_deref(), true),
+            meta: irc_message_meta(
+                message.server_time,
+                message.msgid.as_deref(),
+                message.account.as_deref(),
+                true,
+            ),
         })
         .collect()
 }
@@ -2754,6 +2761,7 @@ impl ChatWindow {
                 mentioned,
                 server_time,
                 msgid,
+                account,
                 replayed,
             } => {
                 // A copy of a message the conversation already has (overlapping
@@ -2764,7 +2772,7 @@ impl ChatWindow {
                     &sender,
                     &text,
                     notice,
-                    irc_message_meta(server_time, msgid.as_deref(), replayed),
+                    irc_message_meta(server_time, msgid.as_deref(), account.as_deref(), replayed),
                 ) {
                     return;
                 }
@@ -2812,9 +2820,11 @@ impl ChatWindow {
                 notice,
                 server_time,
                 msgid,
+                account,
                 replayed,
             } => {
-                let meta = irc_message_meta(server_time, msgid.as_deref(), replayed);
+                let meta =
+                    irc_message_meta(server_time, msgid.as_deref(), account.as_deref(), replayed);
                 // A PRIVMSG opens a private conversation; a NOTICE (usually
                 // services and bots) joins one only if it already exists,
                 // and otherwise stays in the server log as before.
@@ -2864,7 +2874,7 @@ impl ChatWindow {
                 msgid,
                 replayed,
             } => {
-                let meta = irc_message_meta(server_time, msgid.as_deref(), replayed);
+                let meta = irc_message_meta(server_time, msgid.as_deref(), None, replayed);
                 self.append_own_private(network, &target, &text, notice, meta);
             }
             Event::UserNickChanged { from, to } => {
@@ -6948,6 +6958,7 @@ mod combined_log_tests {
                 sequence,
                 timestamp: None,
                 native_id: None,
+                account: None,
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
@@ -7127,6 +7138,17 @@ mod startup_tests {
                 ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
             ]
         );
+    }
+
+    #[test]
+    fn irc_metadata_keeps_a_usable_account_only() {
+        let meta = |account| super::irc_message_meta(None, None, account, false);
+        assert_eq!(meta(Some("alice")).account.unwrap().as_str(), "alice");
+        assert!(meta(Some("*")).account.is_none());
+        assert!(meta(Some("")).account.is_none());
+        assert!(meta(None).account.is_none());
+        // The same account text on two networks is just two messages.
+        assert_eq!(meta(Some("alice")).account, meta(Some("alice")).account);
     }
 
     #[test]
@@ -7748,6 +7770,7 @@ mod pane_tests {
             mentioned: true,
             server_time: Some(stamp),
             msgid: Some(msgid.into()),
+            account: None,
             replayed,
         };
         chat.update(cx, |chat, cx| {
@@ -7811,6 +7834,7 @@ mod pane_tests {
                 std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_000),
             ),
             msgid: Some(msgid.into()),
+            account: None,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -7837,6 +7861,7 @@ mod pane_tests {
                         mentioned: true,
                         server_time: None,
                         msgid: Some("live1".into()),
+                        account: None,
                         replayed: false,
                     },
                     Event::ChannelHistory {
@@ -8012,6 +8037,7 @@ mod pane_tests {
             notice: false,
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
         };
         // A connection to a local listener that never registers: requests
         // can be queued on it, nothing reaches a server.
@@ -8093,6 +8119,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: at(1_790_560_000),
                         msgid: Some("l1".into()),
+                        account: None,
                         replayed: false,
                     },
                     Event::OlderChannelHistory {
@@ -8173,6 +8200,7 @@ mod pane_tests {
             mentioned: text.starts_with("alice"),
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
             replayed: false,
         };
         let history = |text: &str, secs: u64, msgid: &str| HistoryMessage {
@@ -8181,6 +8209,7 @@ mod pane_tests {
             notice: false,
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
         };
         let session = |events: Vec<Event>| {
             let mut all = vec![
@@ -8295,6 +8324,7 @@ mod pane_tests {
             notice,
             server_time: None,
             msgid: None,
+            account: None,
             replayed,
         };
         chat.update(cx, |chat, cx| {
@@ -8343,6 +8373,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8498,6 +8529,7 @@ mod pane_tests {
             mentioned,
             server_time: None,
             msgid: None,
+            account: None,
             replayed: false,
         };
         chat.update(cx, |chat, cx| {
@@ -8538,6 +8570,7 @@ mod pane_tests {
                         replayed: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -8546,6 +8579,7 @@ mod pane_tests {
                         replayed: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -8553,6 +8587,7 @@ mod pane_tests {
                         notice: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::PrivateMessage {
@@ -8561,6 +8596,7 @@ mod pane_tests {
                         notice: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8638,6 +8674,7 @@ mod pane_tests {
                     replayed: true,
                     server_time: None,
                     msgid: None,
+                    account: None,
                 }],
                 false,
                 cx,
@@ -8699,6 +8736,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::ChannelMessage {
@@ -8709,6 +8747,7 @@ mod pane_tests {
                         mentioned: true,
                         server_time: Some(old),
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8765,6 +8804,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::OutgoingAccepted {
@@ -8862,6 +8902,7 @@ mod pane_tests {
                     mentioned: false,
                     server_time: None,
                     msgid: None,
+                    account: None,
                     replayed: false,
                 },
             ]

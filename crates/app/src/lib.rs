@@ -282,6 +282,7 @@ impl AppState {
                             sequence: next_message_sequence,
                             timestamp: None,
                             native_id: None,
+                            account: None,
                             sender: sender.into(),
                             text: text.into(),
                             activity: false,
@@ -1631,6 +1632,7 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         sequence: 0,
         timestamp: meta.server_time.and_then(Timestamp::from_system_time),
         native_id: meta.native_id,
+        account: meta.account,
         sender,
         text,
         activity,
@@ -2096,6 +2098,7 @@ mod tests {
         MessageMeta {
             server_time: millis.map(|millis| UNIX_EPOCH + Duration::from_millis(millis)),
             native_id: msgid.and_then(cayenchat_model::NativeMessageId::new),
+            account: None,
             provenance,
         }
     }
