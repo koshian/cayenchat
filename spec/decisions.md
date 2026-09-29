@@ -1124,3 +1124,10 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## Text input scrolling
+
+`TextInput` is a single line drawn by GPUI. When the text is wider than the
+box it scrolls horizontally (`scroll_x`, computed in `prepaint`) so the caret
+stays visible, i.e. the end of what is being typed; painting is clipped to the
+box, and mouse and IME positions add `scroll_x`.
