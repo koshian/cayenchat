@@ -54,6 +54,10 @@ pub struct ServerSession {
     /// connection's id: the conversation, the line's sequence and whether
     /// it is a NOTICE. The connection bounds what it tracks.
     pub pending_sends: HashMap<u64, (ConversationId, u64, bool)>,
+    /// Services account and real name of the users we share a channel with,
+    /// as the connection reports them (`Event::UserAccount`), by
+    /// casemapped nickname. The connection bounds it and reports removals.
+    pub user_accounts: HashMap<String, (Option<String>, Option<String>)>,
 }
 
 /// How the current connection exchanges avatars with other clients: what
@@ -87,12 +91,14 @@ impl ServerSession {
             metadata_requested: false,
             peer_avatars: PeerAvatarConnection::default(),
             pending_sends: HashMap::new(),
+            user_accounts: HashMap::new(),
         }
     }
 
     /// Records what a connection starting with `config` asked for.
     pub fn connection_starting(&mut self, config: &ConnectionConfig) {
         self.pending_sends.clear();
+        self.user_accounts.clear();
         self.metadata_requested = config.ircv3.metadata;
         self.peer_avatars = PeerAvatarConnection {
             enabled: config.ircv3.peer_avatars,

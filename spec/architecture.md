@@ -1458,6 +1458,14 @@ keeps `ServerSession::pending_sends` and calls `AppState::confirm_message` /
 messages are pending, so an unanswered send is reported after 60 seconds even
 if no further server line arrives.
 
+## User accounts (D035)
+
+`irc-core::accounts::Accounts` sees each incoming line before translation
+(JOIN, ACCOUNT, PART, KICK, QUIT, NICK, its WHOX reply), the published member
+lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
+`UserAccountForgotten`. `ServerSession::user_accounts` mirrors them;
+`complete_whois` uses it. Active only with the "User accounts" preference.
+
 ## account-tag (D033)
 
 `tags::account` reads the `account` tag; `irc-core` events carry it,
