@@ -119,6 +119,30 @@ pub struct AppState {
     next_history_request: u64,
     /// The lowest sequence given to an older page so far.
     older_sequence_floor: u64,
+    /// Channels whose log a disconnect cut off, until the missed lines
+    /// arrive or recovery is given up.
+    resume_points: HashMap<ConversationId, ResumePoint>,
+}
+
+/// Where a disconnect cut a channel's log off: the newest message its
+/// source identified, and sequences reserved right after the lines
+/// received until then, where the missed lines go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResumePoint {
+    start: u64,
+    native_id: Option<NativeMessageId>,
+    timestamp: Option<Timestamp>,
+}
+
+/// A conversation to resume on the next connection of its network: its
+/// name for the backend (IRC: the channel) and the newest message received
+/// before the disconnect, which the missed lines follow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryResume {
+    pub conversation: ConversationId,
+    pub name: String,
+    pub native_id: Option<NativeMessageId>,
+    pub timestamp: Option<Timestamp>,
 }
 
 /// Paging back through one conversation's history.
@@ -296,6 +320,7 @@ impl AppState {
             older_history: HashMap::new(),
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
+            resume_points: HashMap::new(),
         }
     }
 
@@ -342,6 +367,7 @@ impl AppState {
             older_history: HashMap::new(),
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
+            resume_points: HashMap::new(),
         }
     }
 
@@ -380,6 +406,7 @@ impl AppState {
             older_history: HashMap::new(),
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
+            resume_points: HashMap::new(),
         };
         for config in networks {
             state.networks.push(Network {
@@ -492,6 +519,7 @@ impl AppState {
             self.duplicates.remove(id);
             self.pending_history.remove(id);
             self.older_history.remove(id);
+            self.resume_points.remove(id);
             self.unread.remove(id);
             self.highlighted.remove(id);
             self.active_channels.remove(id);
@@ -558,7 +586,8 @@ impl AppState {
                 self.active_servers.remove(&id);
                 // Paging state belongs to the session that ended; a page
                 // still on its way can no longer be accepted.
-                self.history_paging.remove(&id);
+                let could_page = self.history_paging.remove(&id);
+                self.cut_off_channels(id, could_page);
                 for channel in self
                     .conversations
                     .iter_mut()
@@ -698,6 +727,7 @@ impl AppState {
         self.duplicates.remove(&id);
         self.pending_history.remove(&id);
         self.older_history.remove(&id);
+        self.resume_points.remove(&id);
         self.unread.remove(&id);
         self.highlighted.remove(&id);
         self.active_channels.remove(&id);
@@ -831,8 +861,10 @@ impl AppState {
     pub fn parted_channel(&mut self, network: NetworkId, name: &str) {
         if let Some(id) = self.channel_id(network, name) {
             self.active_channels.remove(&id);
-            // A page asked for while joined is not accepted after leaving.
+            // A page asked for while joined is not accepted after leaving,
+            // and a channel left on purpose has nothing to recover.
             self.older_history.remove(&id);
+            self.resume_points.remove(&id);
             if let Some(channel) = self
                 .conversations
                 .iter_mut()
@@ -947,12 +979,94 @@ impl AppState {
         true
     }
 
+    /// The joined channels of `network` a disconnect just cut off. With
+    /// history available on the session that ended, each gets a resume
+    /// point from its newest identified line, unless it still has one that
+    /// was not answered (an earlier cut, possibly asked for on an attempt
+    /// that failed too: the earliest cut is the one to recover from).
+    /// Without it, the server cannot recover them, so earlier points of
+    /// channels this session joined are dropped. Channels not joined are
+    /// left alone (the session ended before rejoining them).
+    fn cut_off_channels(&mut self, network: NetworkId, could_page: bool) {
+        for position in 0..self.conversations.len() {
+            let conversation = &self.conversations[position];
+            let id = conversation.id;
+            if conversation.network != network
+                || conversation.is_private()
+                || !self.active_channels.contains(&id)
+            {
+                continue;
+            }
+            if !could_page {
+                self.resume_points.remove(&id);
+                continue;
+            }
+            if self.resume_points.contains_key(&id) {
+                continue;
+            }
+            let messages = &conversation.messages;
+            let tail = &messages[messages.len().saturating_sub(HISTORY_RESERVE)..];
+            let Some(newest) = tail
+                .iter()
+                .filter(|message| message.timestamp.is_some())
+                .max_by_key(|message| message.timestamp)
+                .or_else(|| tail.iter().rev().find(|m| m.native_id.is_some()))
+            else {
+                continue;
+            };
+            let point = ResumePoint {
+                start: self.next_message_sequence + 1,
+                native_id: newest.native_id.clone(),
+                timestamp: newest.timestamp,
+            };
+            self.next_message_sequence += HISTORY_RESERVE as u64;
+            self.resume_points.insert(id, point);
+        }
+    }
+
+    /// Conversations of `network` to resume on its next connection (see
+    /// [`HistoryResume`]).
+    pub fn history_resume(&self, network: NetworkId) -> Vec<HistoryResume> {
+        self.conversations
+            .iter()
+            .filter(|conversation| conversation.network == network)
+            .filter_map(|conversation| {
+                let point = self.resume_points.get(&conversation.id)?;
+                Some(HistoryResume {
+                    conversation: conversation.id,
+                    name: conversation.name.clone(),
+                    native_id: point.native_id.clone(),
+                    timestamp: point.timestamp,
+                })
+            })
+            .collect()
+    }
+
+    /// The missed lines of a channel cut off by a disconnect were asked for
+    /// ([`AppState::history_resume`]): they go where the cut was, before
+    /// every line received since, not where the request was made. Without
+    /// a resume point this is [`AppState::history_requested`].
+    pub fn history_resumed(&mut self, network: NetworkId, name: &str) {
+        let Some(id) = self.channel_id(network, name) else {
+            return;
+        };
+        match self.resume_points.get(&id) {
+            Some(point) => {
+                self.pending_history.insert(id, point.start);
+            }
+            None => self.history_requested(network, name),
+        }
+    }
+
     /// History was requested for a channel: sequences are reserved here, so
-    /// the reply lands before every line that arrives after this call.
+    /// the reply lands before every line that arrives after this call. A
+    /// channel cut off by a disconnect that asks for its latest lines
+    /// instead of what it missed gives up recovering.
     pub fn history_requested(&mut self, network: NetworkId, name: &str) {
         let Some(id) = self.channel_id(network, name) else {
             return;
         };
+        self.resume_points.remove(&id);
         let start = self.next_message_sequence + 1;
         self.next_message_sequence += HISTORY_RESERVE as u64;
         self.pending_history.insert(id, start);
@@ -971,12 +1085,33 @@ impl AppState {
         name: &str,
         lines: Vec<timeline::TimelineLine>,
     ) -> usize {
+        self.insert_resumed_history(network, name, lines, None)
+    }
+
+    /// Like [`AppState::insert_channel_history`]; also ends recovery of a
+    /// channel cut off by a disconnect when the reply is for its cut.
+    /// `gap_note` (an activity line) goes first, where the reply says lines
+    /// may be missing: a recovery that reached its limit.
+    pub fn insert_resumed_history(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+        lines: Vec<timeline::TimelineLine>,
+        gap_note: Option<String>,
+    ) -> usize {
         let Some(id) = self.channel_id(network, name) else {
             return 0;
         };
         let Some(start) = self.pending_history.remove(&id) else {
             return 0;
         };
+        if self
+            .resume_points
+            .get(&id)
+            .is_some_and(|point| point.start == start)
+        {
+            self.resume_points.remove(&id);
+        }
         let Some(position) = self
             .conversations
             .iter()
@@ -985,8 +1120,22 @@ impl AppState {
             return 0;
         };
         let end = start + HISTORY_RESERVE as u64;
-        let mut block = Vec::with_capacity(lines.len().min(HISTORY_RESERVE));
+        let mut block = Vec::with_capacity(lines.len().min(HISTORY_RESERVE) + 1);
         let mut next = start;
+        if let Some(note) = gap_note {
+            let mut message = new_message(
+                String::new(),
+                note,
+                true,
+                MessageMeta {
+                    provenance: Provenance::Requested,
+                    ..MessageMeta::live()
+                },
+            );
+            message.sequence = next;
+            next += 1;
+            block.push(message);
+        }
         for line in lines {
             if next >= end {
                 break;
@@ -2846,5 +2995,223 @@ mod tests {
         assert!(state.conversations()[0].messages.len() <= MAX_RETAINED);
         assert!(state.request_older_history(id).is_some());
         assert!(state.duplicates[&id].len() < timeline::DUPLICATE_KEYS_PER_CONVERSATION);
+    }
+
+    fn live(state: &mut AppState, text: &str, millis: u64, msgid: Option<&str>) {
+        state.append_channel_message_at(
+            NetworkId(1),
+            "#a",
+            "bob",
+            text,
+            false,
+            meta(Some(millis), msgid, Provenance::Live),
+        );
+    }
+
+    /// #a and #b joined on a session with history, #a with two identified
+    /// lines, then the link drops.
+    fn cut_off() -> (AppState, NetworkId, ConversationId) {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+        let network = NetworkId(1);
+        state.set_status(network, ConnectionStatus::Registered);
+        state.set_history_paging(network, true);
+        state.joined_channel(network, "#a");
+        state.joined_channel(network, "#b");
+        live(&mut state, "A0", 900, Some("m900"));
+        live(&mut state, "A", 1_000, Some("m1000"));
+        // Our own echo carries nothing identifying.
+        state.append_channel_message(network, "#a", "alice", "mine", false, false);
+        state.append_channel_message(network, "#b", "carol", "unidentified", false, false);
+        state.set_status(network, ConnectionStatus::Disconnected("gone".into()));
+        (state, network, ConversationId(1))
+    }
+
+    /// The next session rejoins #a, whose JOIN shows up before the missed
+    /// lines are asked for.
+    fn rejoin(state: &mut AppState, network: NetworkId, paging: bool) {
+        state.set_status(network, ConnectionStatus::Registered);
+        state.set_history_paging(network, paging);
+        state.joined_channel(network, "#a");
+        state.append_channel_activity_at(
+            network,
+            "#a",
+            "alice has joined".into(),
+            meta(Some(2_000), None, Provenance::Live),
+        );
+    }
+
+    #[test]
+    fn a_disconnect_records_where_each_joined_channel_was_cut_off() {
+        let (state, _, id) = cut_off();
+        let resume = state.history_resume(NetworkId(1));
+        assert_eq!(resume.len(), 1, "#b has no identified line: {resume:?}");
+        assert_eq!(resume[0].conversation, id);
+        assert_eq!(resume[0].name, "#a");
+        assert_eq!(
+            resume[0].native_id.as_ref().map(|id| id.as_str()),
+            Some("m1000")
+        );
+        assert_eq!(resume[0].timestamp.map(Timestamp::as_millis), Some(1_000));
+
+        // Legacy encodings: server time only.
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        state.set_history_paging(NetworkId(1), true);
+        state.joined_channel(NetworkId(1), "#a");
+        live(&mut state, "A", 1_000, None);
+        state.set_status(NetworkId(1), ConnectionStatus::Disconnected("gone".into()));
+        let resume = state.history_resume(NetworkId(1));
+        assert!(resume[0].native_id.is_none());
+        assert_eq!(resume[0].timestamp.map(Timestamp::as_millis), Some(1_000));
+
+        // Left on purpose, or a session without history: nothing to resume.
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        state.set_history_paging(NetworkId(1), true);
+        state.joined_channel(NetworkId(1), "#a");
+        live(&mut state, "A", 1_000, Some("m1"));
+        state.parted_channel(NetworkId(1), "#a");
+        state.set_status(NetworkId(1), ConnectionStatus::Disconnected("gone".into()));
+        assert!(state.history_resume(NetworkId(1)).is_empty());
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        state.joined_channel(NetworkId(1), "#a");
+        live(&mut state, "A", 1_000, Some("m1"));
+        state.set_status(NetworkId(1), ConnectionStatus::Disconnected("gone".into()));
+        assert!(state.history_resume(NetworkId(1)).is_empty());
+    }
+
+    #[test]
+    fn missed_lines_go_where_the_cut_was_without_duplicates_or_news() {
+        let (mut state, network, id) = cut_off();
+        rejoin(&mut state, network, true);
+        state.history_resumed(network, "#a");
+        // Live traffic, and a bouncer's own playback of a missed line,
+        // while the missed lines are on their way.
+        live(&mut state, "D", 2_100, Some("m2100"));
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "bob",
+            "C",
+            false,
+            meta(Some(1_600), Some("m1600"), Provenance::Replayed),
+        );
+        state.dispatch(Command::SelectChannel(ConversationId(2)));
+        state.dispatch(Command::SelectChannel(id));
+        let added = state.insert_resumed_history(
+            network,
+            "#a",
+            vec![
+                line("A", Some(1_000), Some("m1000")),
+                line("B", Some(1_500), Some("m1500")),
+                line("C", Some(1_600), Some("m1600")),
+                line("D", Some(2_100), Some("m2100")),
+            ],
+            None,
+        );
+        assert_eq!(added, 1, "only B is new");
+        assert_eq!(
+            texts(&state, 0),
+            ["A0", "A", "mine", "B", "alice has joined", "D", "C"]
+        );
+        assert!(ascending(&state, 0));
+        assert_eq!(
+            state.conversations()[0].messages[3].provenance,
+            Provenance::Requested
+        );
+        assert!(!state.is_unread(id), "missed lines are not news");
+        assert!(state.history_resume(network).is_empty(), "recovered");
+        // The next disconnect cuts at the newest line again.
+        state.set_status(network, ConnectionStatus::Disconnected("again".into()));
+        assert_eq!(
+            state.history_resume(network)[0]
+                .native_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("m2100")
+        );
+    }
+
+    #[test]
+    fn a_recovery_that_hit_its_limit_says_lines_may_be_missing() {
+        let (mut state, network, _) = cut_off();
+        rejoin(&mut state, network, true);
+        state.history_resumed(network, "#a");
+        state.insert_resumed_history(
+            network,
+            "#a",
+            vec![line("Y", Some(1_900), Some("m1900"))],
+            Some("Some messages sent while disconnected are not shown.".into()),
+        );
+        let messages = &state.conversations()[0].messages;
+        let note = &messages[3];
+        assert!(note.activity && note.is_history());
+        assert!(note.text.starts_with("Some messages"));
+        assert_eq!(messages[4].text, "Y");
+        assert!(ascending(&state, 0));
+    }
+
+    #[test]
+    fn results_of_an_earlier_attempt_are_not_applied_to_a_later_one() {
+        let (mut state, network, _) = cut_off();
+        // Attempt 1 rejoins and asks, then drops before the answer.
+        rejoin(&mut state, network, true);
+        state.history_resumed(network, "#a");
+        live(&mut state, "E", 2_200, Some("m2200"));
+        state.set_status(network, ConnectionStatus::Disconnected("again".into()));
+        // Its answer arriving late changes nothing.
+        let stale = vec![line("B", Some(1_500), Some("m1500"))];
+        assert_eq!(state.insert_resumed_history(network, "#a", stale, None), 0);
+        // The earliest cut is kept, not the attempt's newest line.
+        let resume = state.history_resume(network);
+        assert_eq!(
+            resume[0].native_id.as_ref().map(|id| id.as_str()),
+            Some("m1000")
+        );
+        // Attempt 2 dies before rejoining: nothing changes.
+        state.set_status(network, ConnectionStatus::Registered);
+        state.set_history_paging(network, true);
+        state.set_status(network, ConnectionStatus::Disconnected("third".into()));
+        assert_eq!(state.history_resume(network), resume);
+        // Attempt 3 gets its answer, at the original cut.
+        rejoin(&mut state, network, true);
+        state.history_resumed(network, "#a");
+        state.insert_resumed_history(
+            network,
+            "#a",
+            vec![
+                line("B", Some(1_500), Some("m1500")),
+                line("E", Some(2_200), Some("m2200")),
+            ],
+            None,
+        );
+        assert_eq!(texts(&state, 0)[..4], ["A0", "A", "mine", "B"]);
+        assert_eq!(texts(&state, 0).iter().filter(|t| **t == "E").count(), 1);
+        assert!(ascending(&state, 0));
+    }
+
+    #[test]
+    fn recovery_is_given_up_without_history_or_a_usable_reference() {
+        // The next session has no chathistory: its disconnect drops the cut.
+        let (mut state, network, _) = cut_off();
+        rejoin(&mut state, network, false);
+        state.set_status(network, ConnectionStatus::Disconnected("again".into()));
+        assert!(state.history_resume(network).is_empty());
+
+        // The server accepts no reference we have: the latest lines are
+        // asked for instead and placed as usual, after our JOIN.
+        let (mut state, network, _) = cut_off();
+        rejoin(&mut state, network, true);
+        state.history_requested(network, "#a");
+        assert!(state.history_resume(network).is_empty());
+        state.insert_channel_history(network, "#a", vec![line("B", Some(1_500), Some("m1500"))]);
+        assert_eq!(
+            texts(&state, 0),
+            ["A0", "A", "mine", "alice has joined", "B"]
+        );
+
+        // Another server configuration starts a fresh session.
+        let (mut state, network, _) = cut_off();
+        state.reset_network(network, vec!["#a".into()]);
+        assert!(state.history_resume(network).is_empty());
+        assert!(state.resume_points.is_empty());
     }
 }

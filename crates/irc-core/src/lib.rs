@@ -11,7 +11,8 @@ pub mod text;
 
 pub use cap::Ircv3Options;
 pub use history::{
-    HISTORY_LIMIT, HistoryMessage, MAX_HISTORY_LINES, MessageReference, OlderHistoryStatus,
+    HISTORY_LIMIT, HistoryMessage, HistoryResume, MAX_HISTORY_LINES, MessageReference,
+    OlderHistoryStatus,
 };
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 pub use peer_avatar::shareable as shareable_avatar;
@@ -103,6 +104,11 @@ pub struct ConnectionConfig {
     /// sent at registration carries KVIrc's avatar mark; the URL itself can
     /// change later with [`Connection::share_avatar`].
     pub shared_avatar: Option<String>,
+    /// Channels whose log was cut off when the previous connection ended,
+    /// with the newest message received before it. With chathistory
+    /// negotiated, the first JOIN of each asks only for what came after
+    /// (reconnect gap recovery); otherwise they are unused.
+    pub resume_history: Vec<HistoryResume>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -124,6 +130,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("sasl", &self.sasl)
             .field("ircv3", &self.ircv3)
             .field("shared_avatar", &self.shared_avatar)
+            .field("resume_history", &self.resume_history.len())
             .finish()
     }
 }
@@ -146,6 +153,7 @@ impl ConnectionConfig {
             sasl: None,
             ircv3: Ircv3Options::default(),
             shared_avatar: None,
+            resume_history: Vec::new(),
         }
     }
 
@@ -416,17 +424,25 @@ pub enum Event {
     /// We asked the server for `channel`'s latest history (opt-in
     /// `draft/chathistory`). Its reply is older than every line of the
     /// channel that arrives after this event. Exactly one
-    /// [`Event::ChannelHistory`] follows on this connection.
+    /// [`Event::ChannelHistory`] follows on this connection. `resumed`: only
+    /// the lines after the channel's [`HistoryResume`] reference were asked
+    /// for (reconnect gap recovery).
     HistoryRequested {
         channel: String,
+        resumed: bool,
     },
     /// The complete reply to our history request for `channel`, in the
     /// server's order (oldest first). Empty when the server had nothing, the
     /// request failed or timed out, or the capability went away; a reply
     /// that never ended reports nothing partial.
+    ///
+    /// `incomplete`: a resumed request whose reply reached its limit, so
+    /// lines between the reference and the oldest line returned may be
+    /// missing.
     ChannelHistory {
         channel: String,
         messages: Vec<HistoryMessage>,
+        incomplete: bool,
     },
     /// Whether older channel history can be asked for on this connection
     /// ([`Connection::request_older_history`]): registered with
@@ -1378,7 +1394,7 @@ async fn run_cancellable(
     let mut batch_negotiated = false;
     let mut metadata = metadata::MetadataState::new(wire_encoding.eq_ignore_ascii_case("UTF-8"));
     let mut metadata_enabled = false;
-    let mut history = history::HistoryRequests::default();
+    let mut history = history::HistoryRequests::with_resume(config.resume_history);
     let mut history_enabled = false;
     // Last reported Event::HistoryAvailable.
     let mut history_available = false;
@@ -1856,13 +1872,15 @@ async fn request_history(
     }
     // Only recent history needs its place reserved; an older page goes
     // before everything the conversation holds.
-    match page {
-        history::Page::Latest => events
-            .send(Event::HistoryRequested { channel })
-            .await
-            .is_ok(),
-        history::Page::Before { .. } => true,
-    }
+    let resumed = match page {
+        history::Page::Latest => false,
+        history::Page::Resume => true,
+        history::Page::Before { .. } => return true,
+    };
+    events
+        .send(Event::HistoryRequested { channel, resumed })
+        .await
+        .is_ok()
 }
 
 /// Reports a finished history request. `false` means the event channel
@@ -1877,9 +1895,10 @@ async fn history_finished(
     }
     let status = finished.older_status();
     let event = match finished.page {
-        history::Page::Latest => Event::ChannelHistory {
+        history::Page::Latest | history::Page::Resume => Event::ChannelHistory {
             channel: finished.channel,
             messages: finished.messages,
+            incomplete: finished.incomplete,
         },
         history::Page::Before { request } => Event::OlderChannelHistory {
             channel: finished.channel,
@@ -3963,7 +3982,7 @@ mod tests {
         server.join().unwrap();
         let requested = events
             .iter()
-            .position(|e| matches!(e, Event::HistoryRequested { channel } if channel == "#test"))
+            .position(|e| matches!(e, Event::HistoryRequested { channel, resumed: false } if channel == "#test"))
             .expect("request reported");
         let joined = events
             .iter()
@@ -3973,7 +3992,11 @@ mod tests {
         let history: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
-                Event::ChannelHistory { channel, messages } => Some((channel, messages)),
+                Event::ChannelHistory {
+                    channel,
+                    messages,
+                    incomplete: false,
+                } => Some((channel, messages)),
                 _ => None,
             })
             .collect();
@@ -4196,6 +4219,81 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e,
             Event::OlderChannelHistory { request: 7, status: OlderHistoryStatus::Failed, messages, .. }
             if messages.is_empty())));
+    }
+
+    #[test]
+    fn a_reconnect_asks_only_for_the_lines_after_the_cut() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "batch server-time message-tags draft/chathistory",
+                "CHATHISTORY=2 MSGREFTYPES=msgid,timestamp",
+            );
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test msgid=m5 2"
+            );
+            // Live traffic after our JOIN, then the missed lines (the
+            // server repeats the live one), and exactly as many as asked.
+            socket
+                .write_all(
+                    b"@time=2026-09-28T00:10:00.000Z;msgid=m8 :bob!u@h PRIVMSG #test :live
+:srv BATCH +r chathistory #test
+@batch=r;time=2026-09-28T00:05:00.000Z;msgid=m7 :bob!u@h PRIVMSG #test :missed
+@batch=r;time=2026-09-28T00:10:00.000Z;msgid=m8 :bob!u@h PRIVMSG #test :live
+:srv BATCH -r
+",
+                )
+                .unwrap();
+            assert!(read_client_line(&mut lines).starts_with("QUIT"));
+        });
+        let mut config = plain_config(port, history_options());
+        config.resume_history = vec![HistoryResume {
+            channel: "#TEST".into(),
+            after: MessageReference {
+                msgid: Some("m5".into()),
+                time: None,
+            },
+        }];
+        let events = run_fixture(config, |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, Event::ChannelHistory { .. }))
+        });
+        server.join().unwrap();
+        assert!(events.iter().any(|event| matches!(event,
+            Event::HistoryRequested { channel, resumed: true } if channel == "#test")));
+        let Some(Event::ChannelHistory {
+            messages,
+            incomplete,
+            ..
+        }) = events
+            .iter()
+            .find(|event| matches!(event, Event::ChannelHistory { .. }))
+        else {
+            unreachable!()
+        };
+        let texts: Vec<_> = messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["missed", "live"]);
+        assert!(
+            *incomplete,
+            "as many lines as asked for: more may be missing"
+        );
+        assert_eq!(
+            channel_messages(&events)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>(),
+            ["live"]
+        );
     }
 
     #[test]

@@ -29,9 +29,9 @@ use cayenchat_app::{
     timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
-    ChannelActivityKind, Connection, ConnectionConfig, Event, HistoryMessage, Ircv3Options,
-    MemberCommand, MessageReference, OlderHistoryStatus, SaslCredentials, WhoisInfo, WireDirection,
-    valid_channel,
+    ChannelActivityKind, Connection, ConnectionConfig, Event, HistoryMessage, HistoryResume,
+    Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, SaslCredentials, WhoisInfo,
+    WireDirection, valid_channel,
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
@@ -737,6 +737,10 @@ fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
         })
         .collect()
 }
+
+/// Shown where a reconnect recovered only the most recent missed lines of a
+/// channel; like other channel activity, in English.
+const HISTORY_GAP_NOTE: &str = "Some messages sent while disconnected are not shown.";
 
 /// Message rows between the top of the main log and the first visible row
 /// within which scrolling asks for older history.
@@ -1687,10 +1691,10 @@ impl ChatWindow {
     }
 
     fn start_reconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
-        let Some(session) = self.sessions.get_mut(&network) else {
+        let Some(config) = self.reconnect_config(network) else {
             return;
         };
-        let Some(config) = session.active_config.clone() else {
+        let Some(session) = self.sessions.get_mut(&network) else {
             return;
         };
         session.retry_pending = false;
@@ -1719,6 +1723,27 @@ impl ChatWindow {
             }
         }
         cx.notify();
+    }
+
+    /// The configuration of `network`'s last connection, for connecting
+    /// again with the same server and settings. Channels the last connection
+    /// was cut off in recover what they missed, if the server offers
+    /// history.
+    fn reconnect_config(&self, network: NetworkId) -> Option<ConnectionConfig> {
+        let mut config = self.sessions.get(&network)?.active_config.clone()?;
+        config.resume_history = self
+            .state
+            .history_resume(network)
+            .into_iter()
+            .map(|resume| HistoryResume {
+                channel: resume.name,
+                after: MessageReference {
+                    msgid: resume.native_id.map(|id| id.as_str().to_owned()),
+                    time: resume.timestamp.map(Timestamp::to_system_time),
+                },
+            })
+            .collect();
+        Some(config)
     }
 
     fn schedule_retry(&mut self, network: NetworkId, cx: &mut Context<Self>) {
@@ -2768,12 +2793,28 @@ impl ChatWindow {
                     self.state.append_conversation_activity(id, text);
                 }
             }
-            Event::HistoryRequested { channel } => self.state.history_requested(network, &channel),
+            Event::HistoryRequested {
+                channel,
+                resumed: false,
+            } => self.state.history_requested(network, &channel),
+            // Lines missed while disconnected go where the log was cut off.
+            Event::HistoryRequested {
+                channel,
+                resumed: true,
+            } => self.state.history_resumed(network, &channel),
             // Requested history is context, not news: no notification,
             // highlight or unread mark.
-            Event::ChannelHistory { channel, messages } => {
-                self.state
-                    .insert_channel_history(network, &channel, history_lines(messages));
+            Event::ChannelHistory {
+                channel,
+                messages,
+                incomplete,
+            } => {
+                self.state.insert_resumed_history(
+                    network,
+                    &channel,
+                    history_lines(messages),
+                    incomplete.then(|| HISTORY_GAP_NOTE.to_owned()),
+                );
             }
             Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
             // Older pages go above everything the log holds; the main log
@@ -7507,6 +7548,7 @@ mod pane_tests {
                     },
                     Event::HistoryRequested {
                         channel: "#b".into(),
+                        resumed: false,
                     },
                     Event::ChannelMessage {
                         channel: "#b".into(),
@@ -7520,6 +7562,7 @@ mod pane_tests {
                     },
                     Event::ChannelHistory {
                         channel: "#b".into(),
+                        incomplete: false,
                         messages: vec![
                             old("alice: from yesterday", "old1"),
                             HistoryMessage {
@@ -7605,9 +7648,11 @@ mod pane_tests {
                     },
                     Event::HistoryRequested {
                         channel: "#b".into(),
+                        resumed: false,
                     },
                     Event::ChannelHistory {
                         channel: "#b".into(),
+                        incomplete: false,
                         messages: vec![line("recent", 1_790_550_000, "r1")],
                     },
                 ],
@@ -7712,6 +7757,130 @@ mod pane_tests {
                 cx,
             );
             assert_eq!(chat.state.conversations()[1].messages.len(), 3);
+        });
+    }
+
+    #[gpui::test]
+    fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{ConnectionConfig, Event, HistoryMessage};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let at = |secs: u64| Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        let message = |text: &str, secs: u64, msgid: &str| Event::ChannelMessage {
+            channel: "#a".into(),
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            mentioned: text.starts_with("alice"),
+            server_time: at(secs),
+            msgid: Some(msgid.into()),
+            replayed: false,
+        };
+        let history = |text: &str, secs: u64, msgid: &str| HistoryMessage {
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            server_time: at(secs),
+            msgid: Some(msgid.into()),
+        };
+        let session = |events: Vec<Event>| {
+            let mut all = vec![
+                Event::Registered {
+                    nickname: "alice".into(),
+                },
+                Event::HistoryAvailable(true),
+                Event::Joined {
+                    channel: "#a".into(),
+                },
+            ];
+            all.extend(events);
+            all
+        };
+        chat.update(cx, |chat, cx| {
+            chat.sessions.get_mut(&NetworkId(1)).unwrap().active_config = Some(
+                ConnectionConfig::tls("irc.example".into(), "alice".into(), vec!["#a".into()]),
+            );
+            chat.handle_events(
+                NetworkId(1),
+                session(vec![
+                    message("A", 1_790_550_000, "m1"),
+                    Event::Disconnected("connection reset".into()),
+                ]),
+                false,
+                cx,
+            );
+            // The next connection resumes #a after its last line.
+            let config = chat.reconnect_config(NetworkId(1)).unwrap();
+            assert_eq!(config.resume_history.len(), 1);
+            assert_eq!(config.resume_history[0].channel, "#a");
+            assert_eq!(config.resume_history[0].after.msgid.as_deref(), Some("m1"));
+            assert_eq!(config.resume_history[0].after.time, at(1_790_550_000));
+            // The saved configuration itself is not changed.
+            assert!(
+                chat.sessions[&NetworkId(1)]
+                    .active_config
+                    .as_ref()
+                    .unwrap()
+                    .resume_history
+                    .is_empty()
+            );
+            let shown = chat.notifier.shown.len();
+            chat.handle_events(
+                NetworkId(1),
+                session(vec![
+                    Event::HistoryRequested {
+                        channel: "#a".into(),
+                        resumed: true,
+                    },
+                    message("D", 1_790_560_000, "m4"),
+                    Event::ChannelHistory {
+                        channel: "#a".into(),
+                        messages: vec![
+                            history("alice: while you were away", 1_790_555_000, "m3"),
+                            history("D", 1_790_560_000, "m4"),
+                        ],
+                        incomplete: true,
+                    },
+                ]),
+                false,
+                cx,
+            );
+            assert_eq!(
+                chat.notifier.shown.len(),
+                shown,
+                "recovered lines never notify"
+            );
+            let texts: Vec<_> = chat.state.conversations()[0]
+                .messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect();
+            assert_eq!(
+                texts,
+                [
+                    "A",
+                    super::HISTORY_GAP_NOTE,
+                    "alice: while you were away",
+                    "D"
+                ]
+            );
+            assert!(chat.state.history_resume(NetworkId(1)).is_empty());
+            assert!(
+                chat.reconnect_config(NetworkId(1))
+                    .unwrap()
+                    .resume_history
+                    .is_empty()
+            );
         });
     }
 

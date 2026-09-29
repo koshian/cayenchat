@@ -839,6 +839,21 @@ libxkbcommon-x11 extracted into a scratch directory (`LIBRARY_PATH`,
 not exercised; the viewport behavior is covered by the headless GPUI test
 with rows of different heights.
 
+### Reconnect gap recovery (2026-09-28)
+
+`chathistory_interop.rs` also has
+`reconnect_recovers_missed_lines_against_a_real_server`. Against the
+pinned Ergo v2.19.1 on loopback (Linux container, debug build; all three
+tests passed): a first session saw line A live and quit; a peer sent B
+and C; a new connection with A as its resume point sent
+`CHATHISTORY LATEST <channel> msgid=<A> 50` and got exactly B and C (plus
+HistServ quit/join lines) with `draft/chathistory-end`, and a later live
+line arrived live; a third connection resuming by timestamp only got A
+again (the 5 s skew allowance; the application drops it as a duplicate)
+followed by B, C and the later line. Reconnect timing inside the UI, the
+limit-reached note and duplicate merging are covered by unit and headless
+UI tests, not by Ergo.
+
 ### Own avatar publishing and later joiners (2026-09-28)
 
 On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace
