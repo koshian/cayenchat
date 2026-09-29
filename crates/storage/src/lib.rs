@@ -387,6 +387,10 @@ pub struct Ircv3Preferences {
     /// (experimental). Added without a version change: files without it
     /// read as off.
     pub chathistory: bool,
+    /// Follow the services accounts and real names of channel members
+    /// (`account-notify`, `extended-join`, WHOX). Added without a version
+    /// change: files without it read as off.
+    pub accounts: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1498,11 +1502,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false, "accounts": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false, "accounts": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 

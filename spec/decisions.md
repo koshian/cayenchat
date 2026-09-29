@@ -1127,6 +1127,49 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D035 — Live account tracking: account-notify, extended-join, WHOX
+
+Status: implemented (IRCv3 standard capabilities; opt-in because of the WHOX
+traffic).
+
+- **One preference.** "User accounts" (`Ircv3Preferences::accounts`, per
+  server, default off, no version change) requests `account-notify` and
+  `extended-join` when offered. Nothing else changes with it off.
+- **State.** `irc-core::accounts::Accounts` in the connection's worker:
+  casemapped nickname → account, real name and the channels shared with us;
+  an entry exists only for a user we share a channel with and know something
+  about. At most 4096 users, real names cut at 256 bytes; a reconnect starts
+  empty. The application mirrors it from `Event::UserAccount` /
+  `UserAccountForgotten` (per network session, cleared on disconnect) and uses
+  it only to complete WHOIS.
+- **Lifecycle.** extended-join JOIN and `ACCOUNT` (login, change, logout `*`)
+  update it; PART, KICK, QUIT drop users who share no channel; NICK moves the
+  entry (forgotten + reported under the new name); our own PART or KICK
+  removes the channel from everyone; a republished member list removes users
+  who left unseen. Same nickname on two servers: separate sessions. An entry
+  with neither an account nor a real name (for example after `ACCOUNT *`) is
+  dropped, so it does not use one of the 4096 slots.
+- **Late WHOX replies.** The reply describes the channel as it was when the
+  query went out. Nicknames that leave it meanwhile (PART, KICK, QUIT, or a
+  nick change away from the name) are remembered for that one query and their
+  354 lines are ignored, whether or not the first NAMES was published yet; a
+  rejoin, or the new name after a nick change, is accepted. The set lives and
+  dies with the query.
+- **Initial state.** account-notify only reports changes. After our own JOIN,
+  with `WHOX` in ISUPPORT (the token may carry a value, `WHOX=...`; it is
+  recognized by name), one `WHO #chan %tnar,<token>` at a time (rolling
+  token 1–999, at most 64 queued, 15 s without an end-of-WHO drops it, no
+  timer: checked on the next line) fills account (`0` = none) and real name of
+  those present. The reply (354/315 of our token) is not a server line. The
+  plain WHO of the specification has no account without WHOX, so servers
+  without WHOX only learn accounts from later `ACCOUNT`/JOIN lines. This
+  channel-wide WHO is why the feature is opt-in (D025's "no channel-wide WHO"
+  concerned avatar lookups).
+- **Private conversations.** Still keyed by casemapped nickname per network
+  and session; this state does not feed them. Nick-based until a redesign.
+- **Not done.** No display beyond WHOIS; `away-notify`; realname from
+  extended-join is not offered to CTCP AVATAR marks.
+
 ## D034 — CHATHISTORY TARGETS and missed direct messages
 
 Status: implemented (draft/chathistory, experimental, same per-server opt-in).

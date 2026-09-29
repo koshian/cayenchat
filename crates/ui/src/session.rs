@@ -6,7 +6,7 @@
 //! shared connection state.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     time::Instant,
 };
 
@@ -49,6 +49,10 @@ pub struct ServerSession {
     pub metadata_requested: bool,
     /// CTCP AVATAR on the current connection.
     pub peer_avatars: PeerAvatarConnection,
+    /// Services account and real name of the users we share a channel with,
+    /// as the connection reports them (`Event::UserAccount`), by
+    /// casemapped nickname. The connection bounds it and reports removals.
+    pub user_accounts: HashMap<String, (Option<String>, Option<String>)>,
 }
 
 /// How the current connection exchanges avatars with other clients: what
@@ -81,11 +85,13 @@ impl ServerSession {
             own_avatar: OwnAvatar::default(),
             metadata_requested: false,
             peer_avatars: PeerAvatarConnection::default(),
+            user_accounts: HashMap::new(),
         }
     }
 
     /// Records what a connection starting with `config` asked for.
     pub fn connection_starting(&mut self, config: &ConnectionConfig) {
+        self.user_accounts.clear();
         self.metadata_requested = config.ircv3.metadata;
         self.peer_avatars = PeerAvatarConnection {
             enabled: config.ircv3.peer_avatars,

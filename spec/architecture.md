@@ -1448,6 +1448,14 @@ The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
 
+## User accounts (D035)
+
+`irc-core::accounts::Accounts` sees each incoming line before translation
+(JOIN, ACCOUNT, PART, KICK, QUIT, NICK, its WHOX reply), the published member
+lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
+`UserAccountForgotten`. `ServerSession::user_accounts` mirrors them;
+`complete_whois` uses it. Active only with the "User accounts" preference.
+
 ## account-tag (D033)
 
 `tags::account` reads the `account` tag; `irc-core` events carry it,
