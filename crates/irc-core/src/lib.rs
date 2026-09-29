@@ -4263,6 +4263,83 @@ mod tests {
     }
 
     #[test]
+    fn withdrawing_labeled_response_keeps_echo_message_and_settles_pending_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            assert!(requested.contains(&"labeled-response".to_owned()));
+            // Sent with a label, as labeled-response was on.
+            let first = read_client_line(&mut lines);
+            assert!(first.starts_with("@label="), "{first}");
+            // The server withdraws labeled-response but keeps echo-message.
+            // Its echo of the pending message comes without a label.
+            socket
+                .write_all(
+                    b":srv CAP alice DEL :labeled-response\r\n\
+@msgid=m1;time=2026-09-28T10:00:01.000Z :alice!u@h PRIVMSG #test :still delivered\r\n",
+                )
+                .unwrap();
+            // A message sent now goes out without a label.
+            let second = read_client_line(&mut lines);
+            assert_eq!(second, "PRIVMSG #test later");
+            socket
+                .write_all(b"@msgid=m2 :alice!u@h PRIVMSG #test :later\r\n")
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection
+            .send_message("#test", "still delivered", false)
+            .unwrap();
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut sent_second = false;
+        while Instant::now() < deadline {
+            match connection.try_recv() {
+                Some(Event::OutgoingConfirmed {
+                    local_id, msgid, ..
+                }) => {
+                    seen.push(format!("confirmed {local_id} {msgid:?}"));
+                    if !sent_second {
+                        sent_second = true;
+                        connection.send_message("#test", "later", false).unwrap();
+                    } else {
+                        break;
+                    }
+                }
+                Some(Event::OutgoingFailed { local_id, .. }) => {
+                    seen.push(format!("failed {local_id}"));
+                }
+                Some(Event::ChannelMessage { text, .. }) => seen.push(format!("line {text}")),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+        // Each message is confirmed once; no echo is shown as another line.
+        assert_eq!(
+            seen,
+            [
+                "confirmed 1 Some(\"m1\")".to_owned(),
+                "confirmed 2 Some(\"m2\")".to_owned()
+            ]
+        );
+    }
+
+    #[test]
     fn without_labels_an_identical_echo_confirms_and_without_echo_nothing_is_tracked() {
         // echo-message only: no label tag on the wire, FIFO by text.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

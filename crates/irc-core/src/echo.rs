@@ -12,12 +12,21 @@
 //!    short opaque counter, never reused on a connection). The echo, a
 //!    labeled `ACK`, an error reply, or any of them inside a
 //!    `labeled-response` batch names the label. Text is not compared, so a
-//!    message the server rewrote still matches. Only labeled lines can match:
-//!    an unlabeled copy of our own nickname's message is another client's.
+//!    message the server rewrote still matches. While the capability is on,
+//!    only labeled lines match a labeled message: an unlabeled copy of our
+//!    own nickname's message is another client's.
 //! 2. Without labels, the oldest pending message to the same target
 //!    (IRC-casemapped) whose text equals the echo. A message the server
 //!    changed cannot be recognized this way and is shown as a new line;
 //!    that is the price of not having labels.
+//!
+//! `labeled-response` can come and go during a connection (`CAP DEL`/`NEW`).
+//! Labels are honored whenever a line carries one, so replies to requests
+//! made while it was on still settle them. When it is off, messages already
+//! sent with a label are matched like unlabeled ones (rule 2), so their
+//! echoes are not shown twice; one the server rewrote then cannot be matched
+//! and is reported unconfirmed when it expires. Messages sent without a label
+//! keep matching by rule 2 after the capability appears.
 //!
 //! Pending messages are bounded ([`MAX_PENDING`]) and expire after
 //! [`PENDING_TTL`] (reported as unconfirmed). Nothing outlives the
@@ -195,7 +204,6 @@ impl Echoes {
                     .as_ref()
                     .is_some_and(|k| k.to_str() == "LABELED-RESPONSE");
                 if let Some(label) = label
-                    && labeled
                     && (is_labeled
                         || self
                             .pending
@@ -233,7 +241,9 @@ impl Echoes {
                     .find(|(open, _)| open == reference)
                     .map(|(_, label)| label.clone())
             });
-        if labeled && let Some(label) = label {
+        // Replies still carry the label of a request made while
+        // `labeled-response` was on, also after the capability is gone.
+        if let Some(label) = label {
             let ours = |m: &IrcMessage| {
                 m.source_nickname()
                     .is_some_and(|nick| same_nickname(nick, current_nick))
@@ -273,17 +283,22 @@ impl Echoes {
             }
             return (!events.is_empty()).then_some(events);
         }
-        // No label: without labeled-response, the echo of one of ours.
-        if !labeled
-            && let IrcCommand::PRIVMSG(target, text) | IrcCommand::NOTICE(target, text) =
-                &message.command
+        // No label: the echo of one of ours by target and text. While
+        // labeled-response is on only messages sent without a label can be
+        // matched this way (a labeled one is echoed with its label; an
+        // unlabeled copy is another client's). Once it is off, or was never
+        // on, every pending message can: those sent with a label before the
+        // capability was withdrawn are converted to this weaker match, so
+        // their echoes are not shown twice.
+        if let IrcCommand::PRIVMSG(target, text) | IrcCommand::NOTICE(target, text) =
+            &message.command
             && message
                 .source_nickname()
                 .is_some_and(|nick| same_nickname(nick, current_nick))
         {
             let notice = matches!(message.command, IrcCommand::NOTICE(..));
             if let Some(index) = self.pending.iter().position(|pending| {
-                pending.label.is_none()
+                (pending.label.is_none() || !labeled)
                     && pending.notice == notice
                     && same_nickname(&pending.target, target)
                     && pending.text == *text
@@ -512,6 +527,89 @@ mod tests {
         assert_eq!(
             describe(echoes.observe(&line(&echo), "me", true)),
             ["1 ok = "]
+        );
+    }
+
+    #[test]
+    fn labeled_messages_still_settle_after_labeled_response_is_withdrawn() {
+        let mut echoes = Echoes::default();
+        let label = echoes
+            .track(1, "#a", false, "one", false, true)
+            .unwrap()
+            .unwrap();
+        echoes.track(2, "bob", true, "two", false, true);
+        // The capability is gone (`labeled == false`): the echoes carry no
+        // label, but they are matched by target and text, once.
+        assert_eq!(
+            describe(echoes.observe(&line("@msgid=e1 :me!u@h PRIVMSG #A :one"), "me", false)),
+            ["1 ok = e1"]
+        );
+        assert_eq!(
+            describe(echoes.observe(&line(":me!u@h NOTICE bob :two"), "me", false)),
+            ["2 ok = "]
+        );
+        assert!(echoes.pending.is_empty(), "nothing is left to fail later");
+        assert!(
+            echoes
+                .observe(&line(":me!u@h PRIVMSG #a :one"), "me", false)
+                .is_none(),
+            "a repeat is another client's line"
+        );
+        // A reply to a request made before the withdrawal can still carry
+        // its label.
+        let late = echoes
+            .track(3, "#a", false, "late", false, true)
+            .unwrap()
+            .unwrap();
+        let echo = format!("@label={late} :me!u@h PRIVMSG #a :late");
+        assert_eq!(
+            describe(echoes.observe(&line(&echo), "me", false)),
+            ["3 ok = "]
+        );
+        let _ = label;
+    }
+
+    #[test]
+    fn a_rewritten_message_after_the_withdrawal_is_not_confirmed_falsely() {
+        let mut echoes = Echoes::default();
+        echoes.track(1, "#a", false, "hello  world", false, true);
+        // Different text cannot be matched without the label: it stays
+        // pending (and is reported unconfirmed when it expires) instead of
+        // being confirmed as something it may not be.
+        assert!(
+            echoes
+                .observe(&line(":me!u@h PRIVMSG #a :hello world"), "me", false)
+                .is_none()
+        );
+        assert_eq!(echoes.outstanding(), [1]);
+    }
+
+    #[test]
+    fn unlabeled_messages_keep_matching_when_labeled_response_appears_later() {
+        let mut echoes = Echoes::default();
+        assert_eq!(
+            echoes.track(1, "#a", false, "before", false, false),
+            Some(None)
+        );
+        let label = echoes
+            .track(2, "#a", false, "after", false, true)
+            .unwrap()
+            .unwrap();
+        // Labeled-response is on now: the unlabeled message still matches an
+        // unlabeled echo, the labeled one does not (its echo has the label).
+        assert!(
+            echoes
+                .observe(&line(":me!u@h PRIVMSG #a :after"), "me", true)
+                .is_none()
+        );
+        assert_eq!(
+            describe(echoes.observe(&line(":me!u@h PRIVMSG #a :before"), "me", true)),
+            ["1 ok = "]
+        );
+        let echo = format!("@label={label} :me!u@h PRIVMSG #a :after");
+        assert_eq!(
+            describe(echoes.observe(&line(&echo), "me", true)),
+            ["2 ok = "]
         );
     }
 }
