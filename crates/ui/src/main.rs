@@ -435,7 +435,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 31] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 32] {
         [
             &self.custom_host,
             &self.port,
