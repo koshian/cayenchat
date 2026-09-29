@@ -11,10 +11,10 @@ machine.
 Then connect CayenChat to 127.0.0.1 on the proxy port (36668 by default)
 with the IRCv3 tab's history option on, and type commands here.
 """
-import argparse, os, re, subprocess, sys, threading, time
+import argparse, os, re, socket, subprocess, sys, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from history_gui import Peer, Proxy  # noqa: E402
+from history_gui import Proxy  # noqa: E402
 
 HELP = """commands:
   say TEXT     bob says TEXT in the channel
@@ -24,6 +24,69 @@ HELP = """commands:
   up           accept connections again
   sent         CHATHISTORY commands CayenChat has sent
   quit         stop Ergo and exit"""
+
+
+class Bob:
+    """The other user. A reader thread answers the server's PINGs at once,
+    so bob stays connected however long the playground idles, and bob
+    connects again (and rejoins) if the link was lost anyway."""
+
+    def __init__(self, port, channel):
+        self.port, self.channel = port, channel
+        self.lock = threading.Lock()
+        self.closing = False
+        self.connect()
+
+    def connect(self):
+        self.sock = socket.create_connection(("127.0.0.1", self.port))
+        self.file = self.sock.makefile("r", encoding="utf-8", errors="replace")
+        self.waiting = {}
+        self.alive = True
+        self.write("NICK bob")
+        self.write("USER bob 0 * :bob")
+        self.write(f"JOIN {self.channel}")
+        for line in self.file:
+            if line.startswith("PING"):
+                self.write("PONG" + line[4:].rstrip())
+            if " 366 " in line:
+                break
+        threading.Thread(target=self.read, daemon=True).start()
+
+    def write(self, line):
+        self.sock.sendall((line + "\r\n").encode())
+
+    def read(self):
+        reason = "closed by the server"
+        try:
+            for line in self.file:
+                if line.startswith("PING"):
+                    with self.lock:
+                        self.write("PONG" + line[4:].rstrip())
+                elif line.startswith("ERROR"):
+                    reason = line.strip()
+                for tag, event in list(self.waiting.items()):
+                    if tag in line:
+                        event.set()
+        except OSError as error:
+            reason = str(error)
+        self.alive = False
+        if not self.closing:
+            print(f"bob lost the connection ({reason}); the next say/fill reconnects bob", flush=True)
+
+    def send_all(self, lines):
+        """Sends `lines` and waits until Ergo has handled them."""
+        if not self.alive:
+            self.connect()
+            print("bob reconnected and rejoined", flush=True)
+        tag = f"done{time.time_ns()}"
+        event = threading.Event()
+        self.waiting[tag] = event
+        with self.lock:
+            for line in lines:
+                self.write(line)
+            self.write(f"PING :{tag}")
+        event.wait(10)
+        del self.waiting[tag]
 
 
 def main():
@@ -39,54 +102,37 @@ def main():
     run = os.path.join(args.ergo_dir, "run")
     config = open(os.path.join(run, "ircd.yaml")).read()
     ergo_port = int(re.search(r'"127\.0\.0\.1:(\d+)":', config).group(1))
+    ergo_log = os.path.join(run, "ergo.log")
     ergo = subprocess.Popen([os.path.join(args.ergo_dir, "ergo"), "run", "--conf", "ircd.yaml"], cwd=run,
-                            stdout=open(os.path.join(run, "ergo.log"), "w"), stderr=subprocess.STDOUT)
+                            stdin=subprocess.DEVNULL, stdout=open(ergo_log, "w"), stderr=subprocess.STDOUT)
+    bob = None
     try:
         time.sleep(2)
         channel = args.channel
-        bob = Peer(ergo_port, "bob")
-        lock = threading.Lock()
+        bob = Bob(ergo_port, channel)
+        counter = 0
 
         def say(text):
-            with lock:
-                bob.send(f"PRIVMSG {channel} :{text}")
-                tag = f"said{time.time_ns()}"
-                bob.send(f"PING :{tag}")
-                bob.until(lambda line: tag in line)
-
-        bob.send(f"JOIN {channel}")
-        bob.until(lambda line: " 366 " in line)
-        counter = 0
+            bob.send_all([f"PRIVMSG {channel} :{text}"])
 
         def fill(count):
             nonlocal counter
-            with lock:
-                for _ in range(count):
-                    counter += 1
-                    wrap = " — a longer line that wraps onto a second row in the log" * 3 if counter % 7 == 0 else ""
-                    bob.send(f"PRIVMSG {channel} :line {counter:03d}{wrap}")
-                # One round trip: Ergo has stored them all once it answers.
-                tag = f"filled{time.time_ns()}"
-                bob.send(f"PING :{tag}")
-                bob.until(lambda line: tag in line)
+            lines = []
+            for _ in range(count):
+                counter += 1
+                wrap = " — a longer line that wraps onto a second row in the log" * 3 if counter % 7 == 0 else ""
+                lines.append(f"PRIVMSG {channel} :line {counter:03d}{wrap}")
+            bob.send_all(lines)
 
         fill(args.lines)
         if "enabled: false" not in config.split("fakelag:", 1)[1][:200]:
-            print("note: fakelag is on; filling was slow (use ERGO_NO_FAKELAG=1 when configuring)")
+            print("note: Ergo's fakelag is on, so bob's lines trickle in (configure with ERGO_NO_FAKELAG=1)")
         proxy = Proxy(("127.0.0.1", ergo_port), args.port)
         proxy.page_delay = args.page_delay
         print(f"Ergo on 127.0.0.1:{ergo_port}; {channel} has {args.lines} lines from bob.")
         print(f"Connect CayenChat to 127.0.0.1 port {proxy.port} (no TLS), history option on, channel {channel}.")
+        print(f"Ergo's log: {ergo_log}")
         print(HELP)
-        # Keep answering the server's pings while waiting for commands.
-        def keepalive():
-            while ergo.poll() is None:
-                time.sleep(60)
-                with lock:
-                    tag = f"alive{time.time_ns()}"
-                    bob.send(f"PING :{tag}")
-                    bob.until(lambda line: tag in line)
-        threading.Thread(target=keepalive, daemon=True).start()
 
         for line in sys.stdin:
             command, _, rest = line.strip().partition(" ")
@@ -94,6 +140,9 @@ def main():
                 say(rest)
             elif command == "fill":
                 fill(int(rest or 10))
+            elif command == "delay":
+                proxy.page_delay = float(rest or 0)
+                print(f"older pages arrive {proxy.page_delay:g} s late")
             elif command == "cut":
                 proxy.cut()
                 print("link cut; reconnects are refused")
@@ -101,11 +150,8 @@ def main():
                     def reopen(seconds=float(rest)):
                         time.sleep(seconds)
                         proxy.accepting = True
-                        print("accepting connections again")
+                        print("accepting connections again", flush=True)
                     threading.Thread(target=reopen, daemon=True).start()
-            elif command == "delay":
-                proxy.page_delay = float(rest or 0)
-                print(f"older pages arrive {proxy.page_delay:g} s late")
             elif command == "up":
                 proxy.accepting = True
                 print("accepting connections again")
@@ -117,6 +163,8 @@ def main():
             elif command:
                 print(HELP)
     finally:
+        if bob:
+            bob.closing = True
         ergo.terminate()
         ergo.wait(timeout=5)
 

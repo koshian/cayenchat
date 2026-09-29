@@ -194,7 +194,10 @@ Things to try:
 - **History option off**: turn it off and reconnect; nothing is requested
   or recovered.
 
-`quit` stops Ergo. Ergo keeps history in memory only, so the playground
+bob answers the server's PINGs at once, so it stays connected however long
+the playground idles; if the link is lost anyway, a message says so and the
+next `say` or `fill` reconnects bob (Ergo's log, shown at startup, has the
+reason). `quit` stops Ergo. Ergo keeps history in memory only, so the playground
 starts empty each time.
 
 ### What it checks, and how
