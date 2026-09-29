@@ -36,6 +36,7 @@ AREA_BY_FILE = {
 AREA_BY_NAME = [
     ("chathistory", "chathistory"),
     ("history", "chathistory"),
+    ("older_page", "chathistory"),
     ("metadata", "metadata-2"),
     ("sasl", "CAP negotiation / SASL"),
     ("server_time", "message-tags / server-time / msgid"),

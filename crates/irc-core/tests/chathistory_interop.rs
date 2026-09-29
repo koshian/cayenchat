@@ -20,7 +20,8 @@ use std::{
 };
 
 use cayenchat_irc_core::{
-    Connection, ConnectionConfig, Event, HISTORY_LIMIT, HistoryMessage, Ircv3Options, WireDirection,
+    Connection, ConnectionConfig, Event, HISTORY_LIMIT, HistoryMessage, Ircv3Options,
+    MessageReference, OlderHistoryStatus, WireDirection,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -149,6 +150,26 @@ impl Client {
         }
     }
 
+    fn older_page(
+        &mut self,
+        channel: &str,
+        request: u64,
+        reference: MessageReference,
+    ) -> (Vec<HistoryMessage>, OlderHistoryStatus) {
+        self.connection
+            .request_older_history(channel, request, reference, HISTORY_LIMIT)
+            .unwrap();
+        match self.wait(
+            "older page",
+            |event| matches!(event, Event::OlderChannelHistory { request: r, .. } if *r == request),
+        ) {
+            Event::OlderChannelHistory {
+                messages, status, ..
+            } => (messages, status),
+            _ => unreachable!(),
+        }
+    }
+
     fn history(&mut self, channel: &str) -> Vec<HistoryMessage> {
         match self.wait("history reply", |event| {
             matches!(event, Event::ChannelHistory { channel: c, .. } if c.eq_ignore_ascii_case(channel))
@@ -256,4 +277,97 @@ fn recent_channel_history_against_a_real_server() {
         .filter(|event| matches!(event, Event::ChannelMessage { .. }))
         .count();
     assert_eq!(live, 1);
+}
+
+#[test]
+#[ignore = "needs a disposable local IRC server with chathistory (CAYENCHAT_INTEROP_IRC)"]
+fn older_channel_history_pages_against_a_real_server() {
+    let (host, port) = server().expect("set CAYENCHAT_INTEROP_IRC=host:port");
+    let run = suffix();
+    let channel = format!("#page{run}");
+    let mut peer = Peer::connect(&host, port, &format!("pp{run}"));
+    peer.send(&format!("JOIN {channel}"));
+    peer.expect(|line| line.contains(" 366 "));
+    // More than one page, fewer than two.
+    let total = HISTORY_LIMIT + 20;
+    for index in 0..total {
+        peer.send(&format!("PRIVMSG {channel} :line {index}"));
+    }
+    peer.send(&format!("PING :stored{run}"));
+    peer.expect(|line| line.contains(&format!("stored{run}")));
+
+    let mut client = Client::connect(&host, port, &format!("cp{run}"), vec![channel.clone()]);
+    client.wait("history available", |event| {
+        matches!(event, Event::HistoryAvailable(true))
+    });
+    let recent = client.history(&channel);
+    let oldest = recent
+        .iter()
+        .min_by_key(|m| m.server_time)
+        .expect("recent history")
+        .clone();
+
+    // One page before the oldest line, by msgid.
+    let (page, status) = client.older_page(
+        &channel,
+        1,
+        MessageReference {
+            msgid: oldest.msgid.clone(),
+            time: oldest.server_time,
+        },
+    );
+    println!("first older page: {} lines, {status:?}", page.len());
+    let texts: Vec<_> = page
+        .iter()
+        .filter(|m| m.sender != "HistServ")
+        .map(|m| m.text.clone())
+        .collect();
+    let first_recent = recent
+        .iter()
+        .find(|m| m.sender != "HistServ")
+        .map(|m| m.text.clone())
+        .unwrap();
+    let first_recent: usize = first_recent.trim_start_matches("line ").parse().unwrap();
+    let expected: Vec<_> = (0..first_recent).map(|i| format!("line {i}")).collect();
+    assert_eq!(
+        texts, expected,
+        "the page ends right before the recent lines"
+    );
+    assert!(page.iter().all(|m| m.server_time < oldest.server_time));
+    assert!(page.len() <= HISTORY_LIMIT);
+
+    // Before the page's own oldest line, by timestamp only: nothing is left.
+    let oldest = page.iter().min_by_key(|m| m.server_time).unwrap().clone();
+    let (rest, status) = client.older_page(
+        &channel,
+        2,
+        MessageReference {
+            msgid: None,
+            time: oldest.server_time,
+        },
+    );
+    println!("second older page: {} lines, {status:?}", rest.len());
+    assert!(rest.iter().all(|m| m.sender == "HistServ"), "{rest:?}");
+    let requests: Vec<_> = client
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Wire {
+                direction: WireDirection::Sent,
+                line,
+                ..
+            } if line.starts_with("CHATHISTORY BEFORE") => Some(line.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains(" msgid="), "{requests:?}");
+    assert!(requests[1].contains(" timestamp="), "{requests:?}");
+    // No history line arrived as live traffic.
+    assert!(
+        !client
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::ChannelMessage { .. }))
+    );
 }

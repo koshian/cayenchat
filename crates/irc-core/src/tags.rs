@@ -97,6 +97,23 @@ pub fn transcript_line(message: &IrcMessage) -> String {
     )
 }
 
+/// Whether `key` is present, with or without a value (flags such as
+/// `draft/chathistory-end` carry none). Oversized tag sections count as
+/// absent, like [`tag_value`].
+pub fn has_tag(message: &IrcMessage, key: &str) -> bool {
+    message.tags.as_deref().is_some_and(|tags| {
+        tag_bytes(tags) <= MAX_TAG_BYTES && tags.iter().any(|Tag(name, _)| name == key)
+    })
+}
+
+/// Formats an instant as server-time does (`YYYY-MM-DDThh:mm:ss.sssZ`,
+/// UTC, milliseconds), for CHATHISTORY `timestamp=` references.
+pub fn format_server_time(time: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(time)
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
 /// The `msgid` tag: the server's identifier for this message, opaque and
 /// compared exactly. Read whenever present, since only servers that
 /// implement message IDs send it; the application decides whether the value
@@ -342,5 +359,25 @@ mod tests {
         assert!(server_time(&invalid, true).is_none());
         let untagged = parse(":n!u@h PRIVMSG #c :hi");
         assert!(server_time(&untagged, true).is_none());
+    }
+
+    #[test]
+    fn flags_without_values_are_present_and_times_format_as_server_time() {
+        let message: IrcMessage = "@draft/chathistory-end;a=1 :srv BATCH +r chathistory #a"
+            .parse()
+            .unwrap();
+        assert!(has_tag(&message, "draft/chathistory-end"));
+        assert!(has_tag(&message, "a"));
+        assert!(!has_tag(&message, "draft/chathistory"));
+        let plain: IrcMessage = ":srv BATCH +r chathistory #a".parse().unwrap();
+        assert!(!has_tag(&plain, "draft/chathistory-end"));
+
+        let text = "2026-09-27T23:58:31.123Z";
+        let time = parse_server_time(text).unwrap();
+        assert_eq!(format_server_time(time), text);
+        assert_eq!(
+            format_server_time(SystemTime::UNIX_EPOCH),
+            "1970-01-01T00:00:00.000Z"
+        );
     }
 }

@@ -11,8 +11,8 @@ use std::{
 };
 
 use cayenchat_model::{
-    Conversation, ConversationId, ConversationKind, Message, Network, NetworkId, Provenance,
-    TimeOfDay, Timestamp,
+    Conversation, ConversationId, ConversationKind, Message, NativeMessageId, Network, NetworkId,
+    Provenance, TimeOfDay, Timestamp,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -31,6 +31,18 @@ pub const MAX_PRIVATE_CONVERSATIONS_PER_NETWORK: usize = 100;
 pub const HISTORY_RESERVE: usize = 256;
 /// Lines kept per conversation; the oldest 1,000 go when it is exceeded.
 const MAX_RETAINED: usize = 2_000;
+/// Lines asked for per older page. The backend lowers it to what its
+/// server allows.
+pub const OLDER_PAGE_LIMIT: usize = 50;
+/// Oldest lines of a conversation that an older page is checked against
+/// (and among which its reference is chosen): a page ends where the log
+/// begins, so only overlap with the top of the log is possible.
+const OLDER_PAGE_OVERLAP_WINDOW: usize = HISTORY_RESERVE;
+/// Where message sequences start. Ordinary messages count up from here;
+/// older pages, which go before everything a conversation holds, count
+/// down from it, so every log stays in ascending sequence order without
+/// renumbering what is already shown.
+const SEQUENCE_ORIGIN: u64 = 1 << 62;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Selection {
@@ -99,6 +111,40 @@ pub struct AppState {
     /// Conversations waiting for requested history, with the first of their
     /// reserved sequences. A reply without an entry is stale and ignored.
     pending_history: HashMap<ConversationId, u64>,
+    /// Networks whose backend can page back through history now.
+    history_paging: HashSet<NetworkId>,
+    /// Older-page state of conversations that asked for one this session.
+    older_history: HashMap<ConversationId, OlderHistory>,
+    /// Identifies older-page requests; never reused.
+    next_history_request: u64,
+    /// The lowest sequence given to an older page so far.
+    older_sequence_floor: u64,
+}
+
+/// Paging back through one conversation's history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct OlderHistory {
+    /// The request being answered.
+    in_flight: Option<u64>,
+    /// Nothing older can be had this session: the source said so, a page
+    /// added nothing new, or a request failed.
+    finished: bool,
+}
+
+/// One page of a conversation's older history, for its backend to ask for.
+/// Backends refer to the page by `request` when they answer
+/// ([`AppState::insert_older_history`], [`AppState::older_history_failed`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OlderHistoryRequest {
+    pub request: u64,
+    /// The conversation's oldest message that its source identified: its
+    /// native identifier and source time, whichever it has. A backend with
+    /// its own pagination state may ignore them.
+    pub native_id: Option<NativeMessageId>,
+    pub timestamp: Option<Timestamp>,
+    /// Lines wanted: [`OLDER_PAGE_LIMIT`], or less when the log is close to
+    /// its bound.
+    pub limit: usize,
 }
 
 /// A server as configured: its display name and auto-join channels.
@@ -121,7 +167,7 @@ impl AppState {
                 name: "Local friends (mock)".into(),
             },
         ];
-        let mut next_message_sequence = 0;
+        let mut next_message_sequence = SEQUENCE_ORIGIN;
         let conversations: Vec<_> = [
             (
                 1,
@@ -246,6 +292,10 @@ impl AppState {
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
             pending_history: HashMap::new(),
+            history_paging: HashSet::new(),
+            older_history: HashMap::new(),
+            next_history_request: 0,
+            older_sequence_floor: SEQUENCE_ORIGIN,
         }
     }
 
@@ -283,11 +333,15 @@ impl AppState {
             active_channels: HashSet::new(),
             active_servers: HashSet::new(),
             server_messages: HashMap::new(),
-            next_message_sequence: 0,
+            next_message_sequence: SEQUENCE_ORIGIN,
             next_conversation_id: channel_count + 1,
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
             pending_history: HashMap::new(),
+            history_paging: HashSet::new(),
+            older_history: HashMap::new(),
+            next_history_request: 0,
+            older_sequence_floor: SEQUENCE_ORIGIN,
         }
     }
 
@@ -317,11 +371,15 @@ impl AppState {
             active_servers: HashSet::new(),
             statuses: HashMap::new(),
             server_messages: HashMap::new(),
-            next_message_sequence: 0,
+            next_message_sequence: SEQUENCE_ORIGIN,
             next_conversation_id: 1,
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
             pending_history: HashMap::new(),
+            history_paging: HashSet::new(),
+            older_history: HashMap::new(),
+            next_history_request: 0,
+            older_sequence_floor: SEQUENCE_ORIGIN,
         };
         for config in networks {
             state.networks.push(Network {
@@ -433,6 +491,7 @@ impl AppState {
         for id in &removed {
             self.duplicates.remove(id);
             self.pending_history.remove(id);
+            self.older_history.remove(id);
             self.unread.remove(id);
             self.highlighted.remove(id);
             self.active_channels.remove(id);
@@ -497,6 +556,9 @@ impl AppState {
                 }
             } else if matches!(status, ConnectionStatus::Disconnected(_)) {
                 self.active_servers.remove(&id);
+                // Paging state belongs to the session that ended; a page
+                // still on its way can no longer be accepted.
+                self.history_paging.remove(&id);
                 for channel in self
                     .conversations
                     .iter_mut()
@@ -505,6 +567,7 @@ impl AppState {
                     self.active_channels.remove(&channel.id);
                     // A reply can only come from the connection that ended.
                     self.pending_history.remove(&channel.id);
+                    self.older_history.remove(&channel.id);
                     channel.members.clear();
                 }
             }
@@ -634,6 +697,7 @@ impl AppState {
         let network = self.conversations.remove(index).network;
         self.duplicates.remove(&id);
         self.pending_history.remove(&id);
+        self.older_history.remove(&id);
         self.unread.remove(&id);
         self.highlighted.remove(&id);
         self.active_channels.remove(&id);
@@ -767,6 +831,8 @@ impl AppState {
     pub fn parted_channel(&mut self, network: NetworkId, name: &str) {
         if let Some(id) = self.channel_id(network, name) {
             self.active_channels.remove(&id);
+            // A page asked for while joined is not accepted after leaving.
+            self.older_history.remove(&id);
             if let Some(channel) = self
                 .conversations
                 .iter_mut()
@@ -951,8 +1017,174 @@ impl AppState {
         added
     }
 
+    /// Whether `network`'s backend can page back through history now (IRC:
+    /// registered with `draft/chathistory`). Disconnecting turns it off.
+    pub fn set_history_paging(&mut self, network: NetworkId, available: bool) {
+        if available && self.networks.iter().any(|server| server.id == network) {
+            self.history_paging.insert(network);
+        } else {
+            self.history_paging.remove(&network);
+        }
+    }
+
+    /// Starts one older-history page for conversation `id` and returns
+    /// what the backend should ask for, or `None` when no page may be asked
+    /// for now: the network cannot page, the conversation is not a joined
+    /// channel, its recent history or another page is on its way, it
+    /// reached the beginning of what can be had, its log is full, or it
+    /// holds no message its source identified. Call it only when the user
+    /// scrolls to the top; answers come back through
+    /// [`AppState::insert_older_history`] or
+    /// [`AppState::older_history_failed`].
+    pub fn request_older_history(&mut self, id: ConversationId) -> Option<OlderHistoryRequest> {
+        let conversation = self.conversations.iter().find(|c| c.id == id)?;
+        let state = self.older_history.get(&id).copied().unwrap_or_default();
+        if !self.history_paging.contains(&conversation.network)
+            || conversation.is_private()
+            || !self.active_channels.contains(&id)
+            || self.pending_history.contains_key(&id)
+            || state.in_flight.is_some()
+            || state.finished
+            || conversation.messages.len() >= MAX_RETAINED
+        {
+            return None;
+        }
+        // The oldest line by source time near the top: recent history is
+        // placed after the lines that arrived before it was asked for (our
+        // own JOIN), so the first line is not necessarily the oldest.
+        let head =
+            &conversation.messages[..conversation.messages.len().min(OLDER_PAGE_OVERLAP_WINDOW)];
+        let oldest = head
+            .iter()
+            .filter(|message| message.timestamp.is_some())
+            .min_by_key(|message| message.timestamp)
+            .or_else(|| head.iter().find(|message| message.native_id.is_some()))?;
+        let limit = OLDER_PAGE_LIMIT.min(MAX_RETAINED - conversation.messages.len());
+        let native_id = oldest.native_id.clone();
+        let timestamp = oldest.timestamp;
+        self.next_history_request += 1;
+        let request = self.next_history_request;
+        self.older_history.insert(
+            id,
+            OlderHistory {
+                in_flight: Some(request),
+                finished: false,
+            },
+        );
+        Some(OlderHistoryRequest {
+            request,
+            native_id,
+            timestamp,
+            limit,
+        })
+    }
+
+    /// The older-history request of conversation `id` that is on its way.
+    pub fn older_history_in_flight(&self, id: ConversationId) -> Option<u64> {
+        self.older_history
+            .get(&id)
+            .and_then(|state| state.in_flight)
+    }
+
+    /// Puts the answer to older-history request `request` before everything
+    /// conversation `id` holds, oldest first, and returns how many lines
+    /// were added. Lines the conversation already has near its top (a
+    /// repeated or overlapping page, recent history, playback) or recently
+    /// received are skipped; the rest fills the log up to its bound, the
+    /// oldest lines of the page giving way. Nothing is marked unread or
+    /// highlighted and nothing already shown moves or is renumbered. An
+    /// answer to another request (a stale one: the session ended, the
+    /// channel was left, the conversation was removed) changes nothing.
+    /// `beginning` says the source has nothing older; a page that adds
+    /// nothing new ends paging as well, so the same request is not repeated.
+    pub fn insert_older_history(
+        &mut self,
+        id: ConversationId,
+        request: u64,
+        lines: Vec<timeline::TimelineLine>,
+        beginning: bool,
+    ) -> usize {
+        let Some(state) = self.older_history.get_mut(&id) else {
+            return 0;
+        };
+        if state.in_flight != Some(request) {
+            return 0;
+        }
+        state.in_flight = None;
+        let Some(position) = self.conversations.iter().position(|c| c.id == id) else {
+            return 0;
+        };
+        let messages = &self.conversations[position].messages;
+        // A temporary window over the top of the log (topmost last, so it
+        // is the last to be forgotten) catches overlap; the conversation's
+        // own filter catches lines received recently. Neither grows: older
+        // lines are not recorded in the conversation's filter, which is
+        // kept for what arrives live.
+        let mut near_top = DuplicateFilter::default();
+        for message in messages[..messages.len().min(OLDER_PAGE_OVERLAP_WINDOW)]
+            .iter()
+            .rev()
+        {
+            near_top.admit(message);
+        }
+        let recent = self.duplicates.get(&id);
+        let mut block: Vec<Message> = lines
+            .into_iter()
+            .map(|line| {
+                new_message(
+                    line.sender,
+                    line.text,
+                    false,
+                    MessageMeta {
+                        provenance: Provenance::Requested,
+                        ..line.meta
+                    },
+                )
+            })
+            .filter(|message| {
+                !recent.is_some_and(|filter| filter.contains(message)) && near_top.admit(message)
+            })
+            .collect();
+        let room = MAX_RETAINED.saturating_sub(messages.len());
+        if block.len() > room {
+            block.drain(..block.len() - room);
+        }
+        let added = block.len();
+        let first = self.older_sequence_floor - added as u64;
+        for (offset, message) in block.iter_mut().enumerate() {
+            message.sequence = first + offset as u64;
+        }
+        self.older_sequence_floor = first;
+        self.conversations[position].messages.splice(0..0, block);
+        if beginning || added == 0 {
+            self.older_history.insert(
+                id,
+                OlderHistory {
+                    in_flight: None,
+                    finished: true,
+                },
+            );
+        }
+        added
+    }
+
+    /// Older-history request `request` for conversation `id` ended without
+    /// lines (it failed, timed out, or could not be sent). Paging stops for
+    /// this session, so a failing request is not repeated on every scroll.
+    pub fn older_history_failed(&mut self, id: ConversationId, request: u64) {
+        if let Some(state) = self.older_history.get_mut(&id)
+            && state.in_flight == Some(request)
+        {
+            *state = OlderHistory {
+                in_flight: None,
+                finished: true,
+            };
+        }
+    }
+
     /// Sequence of the newest message in any log. It changes whenever a
-    /// message is added (and with it, when a bounded log drops old lines).
+    /// message is added (and with it, when a bounded log drops old lines),
+    /// except for older pages, which go before everything else.
     pub fn last_message_sequence(&self) -> u64 {
         self.next_message_sequence
     }
@@ -2277,5 +2509,342 @@ mod tests {
         state.set_avatar(network, "bob", Some("x"));
         state.sync_networks(&[]);
         assert!(state.avatars().is_empty(), "removed server");
+    }
+
+    /// #a joined on a network that can page, with our JOIN, recent history
+    /// (placed after the JOIN) and one live line.
+    fn paging_channel() -> (AppState, NetworkId, ConversationId) {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+        let network = NetworkId(1);
+        let id = ConversationId(1);
+        state.set_history_paging(network, true);
+        state.joined_channel(network, "#a");
+        state.append_channel_activity_at(
+            network,
+            "#a",
+            "alice has joined".into(),
+            meta(Some(1_000), None, Provenance::Live),
+        );
+        state.history_requested(network, "#a");
+        state.insert_channel_history(
+            network,
+            "#a",
+            vec![
+                line("h1", Some(500), Some("m500")),
+                line("h2", Some(600), Some("m600")),
+            ],
+        );
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "carol",
+            "live",
+            false,
+            meta(Some(1_100), Some("m1100"), Provenance::Live),
+        );
+        (state, network, id)
+    }
+
+    fn page(range: std::ops::Range<u64>) -> Vec<timeline::TimelineLine> {
+        range
+            .map(|n| line(&format!("p{n}"), Some(n), Some(&format!("m{n}"))))
+            .collect()
+    }
+
+    fn ascending(state: &AppState, index: usize) -> bool {
+        state.conversations()[index]
+            .messages
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    }
+
+    #[test]
+    fn older_pages_refer_to_the_oldest_line_and_go_before_everything() {
+        let (mut state, network, id) = paging_channel();
+        let before: Vec<u64> = state.conversations()[0]
+            .messages
+            .iter()
+            .map(|m| m.sequence)
+            .collect();
+        let request = state.request_older_history(id).expect("a page");
+        // Not our JOIN (first by position) but the oldest by server time.
+        assert_eq!(
+            request.native_id.as_ref().map(|id| id.as_str()),
+            Some("m500")
+        );
+        assert_eq!(request.timestamp.map(Timestamp::as_millis), Some(500));
+        assert_eq!(request.limit, OLDER_PAGE_LIMIT);
+        assert!(state.request_older_history(id).is_none(), "one at a time");
+
+        // A live line arrives while the page is on its way.
+        state.dispatch(Command::SelectChannel(ConversationId(2)));
+        state.append_channel_message(network, "#a", "dave", "meanwhile", false, false);
+        let last = state.last_message_sequence();
+        let added = state.insert_older_history(id, request.request, page(400..403), false);
+        assert_eq!(added, 3);
+        assert_eq!(
+            texts(&state, 0),
+            [
+                "p400",
+                "p401",
+                "p402",
+                "alice has joined",
+                "h1",
+                "h2",
+                "live",
+                "meanwhile"
+            ]
+        );
+        assert!(ascending(&state, 0));
+        let messages = &state.conversations()[0].messages;
+        assert!(
+            messages[..3]
+                .iter()
+                .all(|m| m.provenance == Provenance::Requested)
+        );
+        // Nothing already shown moved or was renumbered, and older pages
+        // do not count as news.
+        let after: Vec<u64> = messages[3..].iter().map(|m| m.sequence).collect();
+        assert_eq!(&after[..before.len()], before.as_slice());
+        assert_eq!(state.last_message_sequence(), last);
+        assert!(!state.is_highlighted(id));
+        let rows = state.conversations()[0].messages.len();
+
+        // The next page refers to the new oldest line and goes above it.
+        let request = state.request_older_history(id).unwrap();
+        assert_eq!(
+            request.native_id.as_ref().map(|id| id.as_str()),
+            Some("m400")
+        );
+        state.insert_older_history(id, request.request, page(390..400), false);
+        assert_eq!(texts(&state, 0)[..2], ["p390", "p391"]);
+        assert_eq!(state.conversations()[0].messages.len(), rows + 10);
+        assert!(ascending(&state, 0));
+        // Other conversations are untouched.
+        assert!(texts(&state, 1).is_empty());
+    }
+
+    #[test]
+    fn overlapping_older_pages_add_only_new_lines() {
+        let (mut state, _, id) = paging_channel();
+        let request = state.request_older_history(id).unwrap();
+        state.insert_older_history(id, request.request, page(495..500), false);
+        let request = state.request_older_history(id).unwrap();
+        // The server repeats part of the previous page, recent history
+        // (h1 = m500) and a live line, and repeats a line inside the page.
+        let mut lines = page(490..498);
+        lines.push(line("h1", Some(500), Some("m500")));
+        lines.push(line("live", Some(1_100), Some("m1100")));
+        lines.push(line("p491", Some(491), Some("m491")));
+        let added = state.insert_older_history(id, request.request, lines, false);
+        assert_eq!(added, 5);
+        assert_eq!(
+            texts(&state, 0)[..11],
+            [
+                "p490",
+                "p491",
+                "p492",
+                "p493",
+                "p494",
+                "p495",
+                "p496",
+                "p497",
+                "p498",
+                "p499",
+                "alice has joined"
+            ]
+        );
+        assert!(ascending(&state, 0));
+        // Without msgid (legacy encodings), server time, sender and text
+        // identify a history repeat of a line already shown.
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        state.set_history_paging(network, true);
+        state.joined_channel(network, "#a");
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "bob",
+            "x",
+            false,
+            meta(Some(50), None, Provenance::Live),
+        );
+        let request = state.request_older_history(id).unwrap();
+        assert!(request.native_id.is_none());
+        assert_eq!(request.timestamp.map(Timestamp::as_millis), Some(50));
+        let lines = vec![line("p40", Some(40), None), line("x", Some(50), None)];
+        assert_eq!(
+            state.insert_older_history(id, request.request, lines, false),
+            1
+        );
+        assert_eq!(texts(&state, 0), ["p40", "x"]);
+    }
+
+    #[test]
+    fn the_beginning_of_history_and_empty_pages_stop_paging_until_the_next_session() {
+        let (mut state, network, id) = paging_channel();
+        let request = state.request_older_history(id).unwrap();
+        state.insert_older_history(id, request.request, page(400..402), true);
+        assert!(
+            state.request_older_history(id).is_none(),
+            "beginning reached"
+        );
+
+        // A page with nothing new would only be asked for again.
+        let (mut state, _, id) = paging_channel();
+        let request = state.request_older_history(id).unwrap();
+        let added = state.insert_older_history(
+            id,
+            request.request,
+            vec![line("h2", Some(600), Some("m600"))],
+            false,
+        );
+        assert_eq!(added, 0);
+        assert!(state.request_older_history(id).is_none());
+
+        // A failure also stops, and a wrong answer changes nothing.
+        let (mut state, _, id) = paging_channel();
+        let request = state.request_older_history(id).unwrap();
+        state.older_history_failed(id, request.request + 1);
+        assert!(state.request_older_history(id).is_none(), "still in flight");
+        state.older_history_failed(id, request.request);
+        assert!(state.request_older_history(id).is_none());
+
+        // A new session may try again.
+        state.set_status(network, ConnectionStatus::Disconnected("gone".into()));
+        assert!(state.request_older_history(id).is_none(), "cannot page");
+        state.set_history_paging(network, true);
+        state.joined_channel(network, "#a");
+        assert!(state.request_older_history(id).is_some());
+    }
+
+    #[test]
+    fn stale_older_pages_are_ignored() {
+        let (mut state, network, id) = paging_channel();
+        let rows = state.conversations()[0].messages.len();
+
+        // The connection ended while the page was on its way.
+        let request = state.request_older_history(id).unwrap();
+        state.set_status(network, ConnectionStatus::Disconnected("gone".into()));
+        assert_eq!(
+            state.insert_older_history(id, request.request, page(1..3), false),
+            0
+        );
+        // The next session's request is not answered by the old page.
+        state.set_history_paging(network, true);
+        state.joined_channel(network, "#a");
+        let current = state.request_older_history(id).unwrap();
+        assert_ne!(current.request, request.request);
+        assert_eq!(
+            state.insert_older_history(id, request.request, page(1..3), false),
+            0
+        );
+        assert_eq!(state.conversations()[0].messages.len(), rows);
+
+        // The channel was left.
+        state.parted_channel(network, "#a");
+        assert_eq!(
+            state.insert_older_history(id, current.request, page(1..3), false),
+            0
+        );
+        assert!(state.request_older_history(id).is_none(), "not joined");
+
+        // The conversation was replaced by a fresh session.
+        state.joined_channel(network, "#a");
+        let request = state.request_older_history(id).unwrap();
+        state.reset_network(network, vec!["#a".into()]);
+        let new_id = state.channel_id(network, "#a").unwrap();
+        assert_ne!(new_id, id);
+        assert_eq!(
+            state.insert_older_history(id, request.request, page(1..3), false),
+            0
+        );
+        assert_eq!(
+            state.insert_older_history(new_id, request.request, page(1..3), false),
+            0
+        );
+        assert!(state.older_history.is_empty());
+    }
+
+    #[test]
+    fn older_pages_wait_for_recent_history_and_skip_private_or_unidentified_logs() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        let id = ConversationId(1);
+        state.joined_channel(network, "#a");
+        state.append_channel_message_at(
+            network,
+            "#a",
+            "bob",
+            "x",
+            false,
+            meta(Some(5), Some("m5"), Provenance::Live),
+        );
+        assert!(state.request_older_history(id).is_none(), "no paging yet");
+        state.set_history_paging(network, true);
+        state.history_requested(network, "#a");
+        assert!(
+            state.request_older_history(id).is_none(),
+            "recent history first"
+        );
+        state.insert_channel_history(network, "#a", Vec::new());
+        assert!(state.request_older_history(id).is_some());
+
+        // Lines without identity give nothing to refer to.
+        let mut plain = AppState::live("irc.example".into(), vec!["#a".into()]);
+        plain.set_history_paging(network, true);
+        plain.joined_channel(network, "#a");
+        plain.append_channel_message(network, "#a", "bob", "x", false, false);
+        assert!(plain.request_older_history(id).is_none());
+
+        // Private conversations are not paged yet.
+        let peer = state
+            .private_conversation(network, "bob", "bob", true)
+            .unwrap();
+        state.append_conversation_message(
+            peer,
+            "bob",
+            "hi",
+            false,
+            meta(Some(9), Some("p9"), Provenance::Live),
+            false,
+        );
+        state.set_status(network, ConnectionStatus::Registered);
+        assert!(state.request_older_history(peer).is_none());
+    }
+
+    #[test]
+    fn older_pages_stay_within_the_log_bound() {
+        let (mut state, _, id) = paging_channel();
+        let mut next = 1_000_000u64;
+        loop {
+            let Some(request) = state.request_older_history(id) else {
+                break;
+            };
+            assert!(request.limit <= OLDER_PAGE_LIMIT && request.limit > 0);
+            // A server returning more than asked for.
+            let lines = page(next - 80..next);
+            next -= 80;
+            state.insert_older_history(id, request.request, lines, false);
+            assert!(state.conversations()[0].messages.len() <= MAX_RETAINED);
+        }
+        let messages = &state.conversations()[0].messages;
+        assert_eq!(messages.len(), MAX_RETAINED, "filled, never trimmed");
+        assert!(ascending(&state, 0));
+        assert_eq!(messages.last().unwrap().text, "live", "live lines stay");
+        // Live traffic trims the oldest lines as before; paging may resume.
+        for index in 0..10 {
+            state.append_channel_message(
+                NetworkId(1),
+                "#a",
+                "bob",
+                &index.to_string(),
+                false,
+                false,
+            );
+        }
+        assert!(state.conversations()[0].messages.len() <= MAX_RETAINED);
+        assert!(state.request_older_history(id).is_some());
+        assert!(state.duplicates[&id].len() < timeline::DUPLICATE_KEYS_PER_CONVERSATION);
     }
 }

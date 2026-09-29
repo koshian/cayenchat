@@ -820,6 +820,25 @@ about two lines a second (the test waits up to 60 s). Empty replies, FAIL,
 malformed/unended/nested batches, bounds, timeouts and stale replies are
 covered by fixtures and unit tests, not by Ergo.
 
+### Older channel history pages (2026-09-28)
+
+`chathistory_interop.rs` also has
+`older_channel_history_pages_against_a_real_server` (same command as
+above; `--test-threads 1` keeps the output readable). Result against the
+pinned Ergo v2.19.1 on loopback (Linux container, debug build; both tests
+passed): after `LATEST`, `CHATHISTORY BEFORE <channel> msgid=<oldest> 50`
+returned exactly the older lines (and HistServ join lines) and its batch
+carried `draft/chathistory-end`; a following
+`BEFORE ... timestamp=<oldest>` returned an empty batch with the same tag;
+no page line arrived as live traffic. Ergo 2.19.1 needs Go 1.26 while the
+container had 1.24.7, so it was built as `scripts/ergo-metadata-interop.sh`
+does but with `GOTOOLCHAIN=go1.26.4`, which downloads that toolchain into
+the scratch `GOPATH` only. Headless UI tests there linked against a
+libxkbcommon-x11 extracted into a scratch directory (`LIBRARY_PATH`,
+`LD_LIBRARY_PATH`) rather than installed. Scrolling in a real window was
+not exercised; the viewport behavior is covered by the headless GPUI test
+with rows of different heights.
+
 ### Own avatar publishing and later joiners (2026-09-28)
 
 On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace

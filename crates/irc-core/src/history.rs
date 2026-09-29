@@ -1,16 +1,26 @@
-//! Recent channel history requested with IRCv3 `draft/chathistory`
-//! (opt-in per server, experimental).
+//! Channel history requested with IRCv3 `draft/chathistory` (opt-in per
+//! server, experimental).
 //!
-//! When we join a channel, `CHATHISTORY LATEST <channel> * <limit>` asks for
-//! its latest lines. Requests go out one at a time from a bounded queue, so
-//! joining many channels does not burst commands. The reply is a
-//! `chathistory` batch whose single parameter is the channel; every line in
-//! it (and in batches nested inside it) is consumed here, never treated as
-//! live traffic, and its PRIVMSG/NOTICE lines are buffered (bounded) until the
-//! batch ends and then reported together. A batch that never ends reports
-//! nothing, `FAIL CHATHISTORY` or a timeout ends the request, and everything
-//! lives in the connection's worker, so a reconnect starts empty and cannot
-//! receive an old connection's answer.
+//! Two kinds of request share one bounded queue and one outstanding slot:
+//!
+//! - when we join a channel, `CHATHISTORY LATEST <channel> * <limit>` asks
+//!   for its latest lines (recent history);
+//! - when the user scrolls to the top of a channel's log, the application
+//!   asks for one older page, `CHATHISTORY BEFORE <channel> <reference>
+//!   <limit>`, where the reference is the oldest message it holds (see
+//!   [`MessageReference`]).
+//!
+//! Requests go out one at a time, so joining many channels does not burst
+//! commands. The reply is a `chathistory` batch whose single parameter is
+//! the channel; every line in it (and in batches nested inside it) is
+//! consumed here, never treated as live traffic, and its PRIVMSG/NOTICE
+//! lines are buffered (bounded) until the batch ends and then reported
+//! together. A batch that never ends reports nothing, `FAIL CHATHISTORY` or
+//! a timeout ends the request, and everything lives in the connection's
+//! worker, so a reconnect starts empty and cannot receive an old
+//! connection's answer. Every older-page request ends in exactly one
+//! [`Finished`] (lines, the beginning of history, or a failure), so the
+//! application never waits for an answer that cannot come.
 //!
 //! Only negotiated `batch` makes a reply recognizable, so the capability is
 //! requested only after `batch` is acknowledged (see `cap`). The
@@ -24,13 +34,14 @@ use tokio::time::Instant;
 
 use crate::tags;
 
-/// Lines asked for per channel. The server's `CHATHISTORY` limit lowers it;
+/// Lines asked for per request. The server's `CHATHISTORY` limit lowers it;
 /// this client never asks for more.
 pub const HISTORY_LIMIT: usize = 50;
 /// Lines kept from one reply. Servers MAY return more than asked for; the
 /// rest is dropped.
 pub const MAX_HISTORY_LINES: usize = 100;
-/// Channels waiting for their request. Joining more at once skips the rest.
+/// Requests waiting to be sent. Joining more channels at once skips the
+/// rest; an older page asked for while it is full fails at once.
 const MAX_QUEUED: usize = 64;
 /// A request without a reply is given up after this long, and the next one
 /// is sent.
@@ -41,6 +52,11 @@ const MAX_ABANDONED: usize = 8;
 const MAX_NESTED: usize = 16;
 /// Longest batch reference followed.
 const MAX_REFERENCE_BYTES: usize = 64;
+/// Longest msgid used as a reference; longer ones are not kept by the
+/// application either (`model::NativeMessageId`).
+const MAX_MSGID_BYTES: usize = 128;
+/// The reply tag saying no older (for BEFORE) messages remain.
+const END_TAG: &str = "draft/chathistory-end";
 
 /// One line of requested history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +68,83 @@ pub struct HistoryMessage {
     pub msgid: Option<String>,
 }
 
+/// A message the application holds, as a CHATHISTORY reference: its
+/// `msgid` and its server time, whichever it has. The connection picks the
+/// type the server accepts (`MSGREFTYPES`), preferring msgid because it is
+/// exact; a timestamp reference skips other messages of the same
+/// millisecond.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageReference {
+    pub msgid: Option<String>,
+    pub time: Option<SystemTime>,
+}
+
+/// How an older-page request ended ([`crate::Event::OlderChannelHistory`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OlderHistoryStatus {
+    /// Lines arrived and the server did not say they were the oldest.
+    More,
+    /// The server has nothing older: an empty reply, or one marked
+    /// `draft/chathistory-end`.
+    Beginning,
+    /// Nothing can be said: the request failed, timed out, could not be
+    /// sent, or the capability went away.
+    Failed,
+}
+
+/// What a request asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Page {
+    /// The latest lines, on join.
+    Latest,
+    /// One page before a reference, for the application's request
+    /// `request`.
+    Before { request: u64 },
+}
+
+/// A request that ended.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Finished {
+    pub channel: String,
+    pub page: Page,
+    pub messages: Vec<HistoryMessage>,
+    /// The reply said nothing older remains (BEFORE only).
+    pub end: bool,
+    /// The request failed or was given up; `messages` is empty.
+    pub failed: bool,
+    pub note: Option<String>,
+}
+
+impl Finished {
+    fn failed(channel: String, page: Page, note: Option<String>) -> Self {
+        Self {
+            channel,
+            page,
+            messages: Vec::new(),
+            end: false,
+            failed: true,
+            note,
+        }
+    }
+
+    /// An older-page request that cannot be sent on this connection.
+    pub(crate) fn failed_older(channel: String, request: u64) -> Self {
+        let note = format!("Older history for {channel} is not available on this connection.");
+        Self::failed(channel, Page::Before { request }, Some(note))
+    }
+
+    /// The status reported for an older page.
+    pub(crate) fn older_status(&self) -> OlderHistoryStatus {
+        if self.failed {
+            OlderHistoryStatus::Failed
+        } else if self.end || self.messages.is_empty() {
+            OlderHistoryStatus::Beginning
+        } else {
+            OlderHistoryStatus::More
+        }
+    }
+}
+
 /// What [`HistoryRequests::observe`] did with an incoming line.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Observed {
@@ -59,31 +152,56 @@ pub(crate) enum Observed {
     Unrelated,
     /// Part of a reply; nothing else may see it.
     Consumed,
-    /// The request for `channel` ended: its lines (possibly none), or a
-    /// failure note.
-    Finished {
-        channel: String,
-        messages: Vec<HistoryMessage>,
-        note: Option<String>,
-    },
+    /// A request ended: its lines (possibly none), or a failure.
+    Finished(Finished),
+}
+
+#[derive(Debug)]
+struct Queued {
+    channel: String,
+    page: Page,
+    /// The command's arguments after `CHATHISTORY <subcommand> <channel>`.
+    selector: String,
+    limit: usize,
 }
 
 #[derive(Debug)]
 struct Outstanding {
     channel: String,
+    page: Page,
     sent: Instant,
     /// The reply batch's reference once it opened.
     reference: Option<String>,
+    /// The reply batch carried `draft/chathistory-end`.
+    end: bool,
     nested: Vec<String>,
     messages: Vec<HistoryMessage>,
     dropped: usize,
+}
+
+/// Which reference types the server accepts (`MSGREFTYPES`). Without the
+/// token a server supports both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReferenceTypes {
+    msgid: bool,
+    timestamp: bool,
+}
+
+impl Default for ReferenceTypes {
+    fn default() -> Self {
+        Self {
+            msgid: true,
+            timestamp: true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct HistoryRequests {
     /// The server's `CHATHISTORY` ISUPPORT value; 0 or absent means none.
     server_limit: Option<usize>,
-    queue: VecDeque<String>,
+    reference_types: ReferenceTypes,
+    queue: VecDeque<Queued>,
     outstanding: Option<Outstanding>,
     /// Channels of abandoned requests: a late reply is swallowed, not shown
     /// as live or as another request's reply.
@@ -93,7 +211,8 @@ pub(crate) struct HistoryRequests {
 }
 
 impl HistoryRequests {
-    /// Reads `CHATHISTORY=<n>` (and `-CHATHISTORY`) from RPL_ISUPPORT.
+    /// Reads `CHATHISTORY=<n>` and `MSGREFTYPES=<types>` (and their
+    /// removal) from RPL_ISUPPORT.
     pub(crate) fn isupport(&mut self, message: &IrcMessage) {
         let IrcCommand::Response(Response::RPL_ISUPPORT, args) = &message.command else {
             return;
@@ -102,10 +221,20 @@ impl HistoryRequests {
         for token in args.iter().skip(1).flat_map(|arg| arg.split_whitespace()) {
             if token.eq_ignore_ascii_case("-CHATHISTORY") {
                 self.server_limit = None;
-            } else if let Some((name, value)) = token.split_once('=')
-                && name.eq_ignore_ascii_case("CHATHISTORY")
-            {
-                self.server_limit = value.parse().ok();
+            } else if token.eq_ignore_ascii_case("-MSGREFTYPES") {
+                self.reference_types = ReferenceTypes::default();
+            } else if let Some((name, value)) = token.split_once('=') {
+                if name.eq_ignore_ascii_case("CHATHISTORY") {
+                    self.server_limit = value.parse().ok();
+                } else if name.eq_ignore_ascii_case("MSGREFTYPES") {
+                    // Unknown types are ignored; a list naming none of ours
+                    // leaves no usable reference.
+                    let listed = |kind: &str| value.split(',').any(|item| item == kind);
+                    self.reference_types = ReferenceTypes {
+                        msgid: listed("msgid"),
+                        timestamp: listed("timestamp"),
+                    };
+                }
             }
         }
     }
@@ -118,54 +247,158 @@ impl HistoryRequests {
         }
     }
 
-    /// Queues a request for `channel`, unless it is already queued or being
-    /// answered. Returns a note when the queue is full.
+    /// The `msgid=` or `timestamp=` selector for `reference`, preferring
+    /// msgid, within what the server accepts.
+    fn selector(&self, reference: &MessageReference) -> Option<String> {
+        let msgid = reference.msgid.as_deref().filter(|id| {
+            !id.is_empty()
+                && id.len() <= MAX_MSGID_BYTES
+                && id.bytes().all(|b| b.is_ascii_graphic())
+        });
+        if self.reference_types.msgid
+            && let Some(id) = msgid
+        {
+            return Some(format!("msgid={id}"));
+        }
+        if self.reference_types.timestamp
+            && let Some(time) = reference.time
+        {
+            return Some(format!("timestamp={}", tags::format_server_time(time)));
+        }
+        None
+    }
+
+    /// Queues a request for `channel`'s latest lines, unless one is already
+    /// queued or being answered. Returns a note when the queue is full.
     pub(crate) fn enqueue(&mut self, channel: &str) -> Option<String> {
-        let same = |name: &String| crate::text::same_nickname(name, channel);
-        if self.queue.iter().any(same)
-            || self.outstanding.as_ref().is_some_and(|o| same(&o.channel))
+        let latest = |name: &str, page: &Page| {
+            *page == Page::Latest && crate::text::same_nickname(name, channel)
+        };
+        if self
+            .queue
+            .iter()
+            .any(|queued| latest(&queued.channel, &queued.page))
+            || self
+                .outstanding
+                .as_ref()
+                .is_some_and(|o| latest(&o.channel, &o.page))
         {
             return None;
         }
         if self.queue.len() >= MAX_QUEUED {
             return Some(format!(
-                "History for {channel} was not requested: {MAX_QUEUED} channels are already waiting."
+                "History for {channel} was not requested: {MAX_QUEUED} requests are already waiting."
             ));
         }
-        self.queue.push_back(channel.to_owned());
+        self.queue.push_back(Queued {
+            channel: channel.to_owned(),
+            page: Page::Latest,
+            selector: "*".into(),
+            // Lowered to the server's limit when sent.
+            limit: HISTORY_LIMIT,
+        });
         None
     }
 
-    /// Drops a queued request for a channel we left.
-    pub(crate) fn forget(&mut self, channel: &str) {
-        self.queue
-            .retain(|name| !crate::text::same_nickname(name, channel));
+    /// Queues the application's request `request` for up to `limit` lines of
+    /// `channel` before `reference`. It goes ahead of queued recent-history
+    /// requests, because the user is waiting for it. A request that cannot
+    /// be queued ends at once.
+    pub(crate) fn enqueue_older(
+        &mut self,
+        channel: &str,
+        request: u64,
+        reference: &MessageReference,
+        limit: usize,
+    ) -> Result<(), Finished> {
+        let page = Page::Before { request };
+        let fail = |note: String| Finished::failed(channel.to_owned(), page.clone(), Some(note));
+        let Some(selector) = self.selector(reference) else {
+            return Err(fail(format!(
+                "Older history for {channel} was not requested: the server accepts no reference this client has."
+            )));
+        };
+        let older = |name: &str, page: &Page| {
+            matches!(page, Page::Before { .. }) && crate::text::same_nickname(name, channel)
+        };
+        if self
+            .queue
+            .iter()
+            .any(|queued| older(&queued.channel, &queued.page))
+            || self
+                .outstanding
+                .as_ref()
+                .is_some_and(|o| older(&o.channel, &o.page))
+        {
+            return Err(fail(format!(
+                "Older history for {channel} is already being requested."
+            )));
+        }
+        if self.queue.len() >= MAX_QUEUED {
+            return Err(fail(format!(
+                "Older history for {channel} was not requested: {MAX_QUEUED} requests are already waiting."
+            )));
+        }
+        self.queue.push_front(Queued {
+            channel: channel.to_owned(),
+            page,
+            selector,
+            limit: limit.max(1),
+        });
+        Ok(())
+    }
+
+    /// Drops queued requests for a channel we left. Older-page requests
+    /// among them end as failures.
+    pub(crate) fn forget(&mut self, channel: &str) -> Vec<Finished> {
+        let mut ended = Vec::new();
+        self.queue.retain(|queued| {
+            if !crate::text::same_nickname(&queued.channel, channel) {
+                return true;
+            }
+            if let Page::Before { .. } = queued.page {
+                ended.push(Finished::failed(
+                    queued.channel.clone(),
+                    queued.page.clone(),
+                    None,
+                ));
+            }
+            false
+        });
+        ended
     }
 
     /// The next request when none is being answered.
-    pub(crate) fn next_request(&mut self, now: Instant) -> Option<(String, IrcCommand)> {
+    pub(crate) fn next_request(&mut self, now: Instant) -> Option<(String, Page, IrcCommand)> {
         if self.outstanding.is_some() {
             return None;
         }
-        let channel = self.queue.pop_front()?;
+        let queued = self.queue.pop_front()?;
+        let subcommand = match queued.page {
+            Page::Latest => "LATEST",
+            Page::Before { .. } => "BEFORE",
+        };
+        let limit = queued.limit.min(self.limit());
         let command = IrcCommand::Raw(
             "CHATHISTORY".into(),
             vec![
-                "LATEST".into(),
-                channel.clone(),
-                "*".into(),
-                self.limit().to_string(),
+                subcommand.into(),
+                queued.channel.clone(),
+                queued.selector,
+                limit.to_string(),
             ],
         );
         self.outstanding = Some(Outstanding {
-            channel: channel.clone(),
+            channel: queued.channel.clone(),
+            page: queued.page.clone(),
             sent: now,
             reference: None,
+            end: false,
             nested: Vec::new(),
             messages: Vec::new(),
             dropped: 0,
         });
-        Some((channel, command))
+        Some((queued.channel, queued.page, command))
     }
 
     /// When the outstanding request times out; no timer runs otherwise.
@@ -186,26 +419,38 @@ impl HistoryRequests {
             self.abandoned.pop_front();
         }
         self.abandoned.push_back(outstanding.channel.clone());
-        Some(Observed::Finished {
-            note: Some(format!(
-                "History for {} was not answered within {} s.",
-                outstanding.channel,
-                RESPONSE_TIMEOUT.as_secs()
-            )),
-            channel: outstanding.channel,
-            messages: Vec::new(),
-        })
+        let note = format!(
+            "History for {} was not answered within {} s.",
+            outstanding.channel,
+            RESPONSE_TIMEOUT.as_secs()
+        );
+        Some(Observed::Finished(Finished::failed(
+            outstanding.channel,
+            outstanding.page,
+            Some(note),
+        )))
     }
 
     /// The capability went away: nothing is requested any more. Returns the
-    /// request being answered, which ends without lines.
-    pub(crate) fn reset(&mut self) -> Option<String> {
-        let outstanding = self.outstanding.take();
+    /// requests that end without lines: the one being answered and every
+    /// queued older-page request.
+    pub(crate) fn reset(&mut self) -> Vec<Finished> {
+        let mut ended: Vec<Finished> = self
+            .outstanding
+            .take()
+            .map(|o| Finished::failed(o.channel, o.page, None))
+            .into_iter()
+            .collect();
+        ended.extend(self.queue.drain(..).filter_map(|queued| {
+            matches!(queued.page, Page::Before { .. })
+                .then(|| Finished::failed(queued.channel, queued.page, None))
+        }));
         *self = Self {
             server_limit: self.server_limit,
+            reference_types: self.reference_types,
             ..Self::default()
         };
-        outstanding.map(|outstanding| outstanding.channel)
+        ended
     }
 
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
@@ -216,6 +461,7 @@ impl HistoryRequests {
                 kind.as_ref().map(|k| k.to_str()),
                 params,
                 batch_tag,
+                tags::has_tag(message, END_TAG),
             );
         }
         if let Some(reference) = batch_tag
@@ -245,11 +491,11 @@ impl HistoryRequests {
             && let Some(note) = failure(message, &outstanding.channel)
         {
             let outstanding = self.outstanding.take().expect("outstanding request");
-            return Observed::Finished {
-                channel: outstanding.channel,
-                messages: Vec::new(),
-                note: Some(note),
-            };
+            return Observed::Finished(Finished::failed(
+                outstanding.channel,
+                outstanding.page,
+                Some(note),
+            ));
         }
         Observed::Unrelated
     }
@@ -260,6 +506,7 @@ impl HistoryRequests {
         kind: Option<&str>,
         params: &Option<Vec<String>>,
         parent: Option<&str>,
+        end: bool,
     ) -> Observed {
         if let Some(reference) = reference.strip_prefix('-') {
             if let Some(index) = self.discarding.iter().position(|open| open == reference) {
@@ -283,11 +530,14 @@ impl HistoryRequests {
                     outstanding.channel, outstanding.dropped
                 )
             });
-            return Observed::Finished {
+            return Observed::Finished(Finished {
                 channel: outstanding.channel,
+                page: outstanding.page,
                 messages: outstanding.messages,
+                end: outstanding.end,
+                failed: false,
                 note,
-            };
+            });
         }
         let Some(reference) = reference.strip_prefix('+') else {
             return Observed::Unrelated;
@@ -325,6 +575,7 @@ impl HistoryRequests {
             && crate::text::same_nickname(&outstanding.channel, target)
         {
             outstanding.reference = Some(reference.to_owned());
+            outstanding.end = end;
             return Observed::Consumed;
         }
         if let Some(index) = self
@@ -420,7 +671,7 @@ mod tests {
     fn sent(requests: &mut HistoryRequests, now: Instant) -> Option<String> {
         requests
             .next_request(now)
-            .map(|(_, command)| IrcMessage::from(command).to_string().trim_end().to_owned())
+            .map(|(_, _, command)| IrcMessage::from(command).to_string().trim_end().to_owned())
     }
 
     #[test]
@@ -470,11 +721,12 @@ mod tests {
             ],
         );
         assert!(finished[..5].iter().all(|o| *o == Observed::Consumed));
-        let Observed::Finished {
+        let Observed::Finished(Finished {
             channel,
             messages,
             note,
-        } = &finished[5]
+            ..
+        }) = &finished[5]
         else {
             panic!("{finished:?}");
         };
@@ -504,7 +756,7 @@ mod tests {
             &[":srv BATCH +e chathistory #empty", ":srv BATCH -e"],
         );
         assert!(
-            matches!(&observed[1], Observed::Finished { messages, note: None, .. } if messages.is_empty())
+            matches!(&observed[1], Observed::Finished(Finished { messages, note: None, failed: false, .. }) if messages.is_empty())
         );
 
         sent(&mut requests, now);
@@ -513,14 +765,14 @@ mod tests {
             &[":srv FAIL CHATHISTORY INVALID_TARGET LATEST #fail :Messages could not be retrieved"],
         );
         assert!(
-            matches!(&observed[0], Observed::Finished { channel, note: Some(note), .. }
+            matches!(&observed[0], Observed::Finished(Finished { channel, note: Some(note), failed: true, .. })
             if channel == "#fail" && note.contains("INVALID_TARGET"))
         );
 
         sent(&mut requests, now);
         let observed = feed(&mut requests, &[":srv 421 me CHATHISTORY :Unknown command"]);
         assert!(
-            matches!(&observed[0], Observed::Finished { channel, note: Some(_), .. } if channel == "#old")
+            matches!(&observed[0], Observed::Finished(Finished { channel, note: Some(_), .. }) if channel == "#old")
         );
         // Other failures are not ours.
         requests.enqueue("#x");
@@ -592,7 +844,7 @@ mod tests {
             observed[..7].iter().all(|o| *o == Observed::Consumed),
             "{observed:?}"
         );
-        let Observed::Finished { messages, .. } = &observed[7] else {
+        let Observed::Finished(Finished { messages, .. }) = &observed[7] else {
             panic!("{observed:?}");
         };
         let texts: Vec<_> = messages.iter().map(|m| m.text.as_str()).collect();
@@ -610,7 +862,8 @@ mod tests {
             let line = format!("@batch=r :bob!u@h PRIVMSG #a :{index}");
             assert_eq!(requests.observe(&parse(&line)), Observed::Consumed);
         }
-        let Observed::Finished { messages, note, .. } = requests.observe(&parse(":srv BATCH -r"))
+        let Observed::Finished(Finished { messages, note, .. }) =
+            requests.observe(&parse(":srv BATCH -r"))
         else {
             panic!();
         };
@@ -623,11 +876,12 @@ mod tests {
         requests.observe(&parse(":srv BATCH +s chathistory #b"));
         requests.observe(&parse("@batch=s :bob!u@h PRIVMSG #b :partial"));
         assert!(requests.tick(now + RESPONSE_TIMEOUT / 2).is_none());
-        let Some(Observed::Finished {
+        let Some(Observed::Finished(Finished {
             channel,
             messages,
             note: Some(_),
-        }) = requests.tick(now + RESPONSE_TIMEOUT)
+            ..
+        })) = requests.tick(now + RESPONSE_TIMEOUT)
         else {
             panic!();
         };
@@ -656,7 +910,9 @@ mod tests {
             ],
         );
         assert!(observed[..4].iter().all(|o| *o == Observed::Consumed));
-        assert!(matches!(&observed[4], Observed::Finished { channel, .. } if channel == "#next"));
+        assert!(
+            matches!(&observed[4], Observed::Finished(Finished { channel, .. }) if channel == "#next")
+        );
     }
 
     #[test]
@@ -666,7 +922,10 @@ mod tests {
         requests.enqueue("#a");
         requests.enqueue("#b");
         sent(&mut requests, Instant::now());
-        assert_eq!(requests.reset().as_deref(), Some("#a"));
+        let ended = requests.reset();
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].channel, "#a");
+        assert_eq!(ended[0].page, Page::Latest);
         assert!(requests.next_request(Instant::now()).is_none());
         assert_eq!(requests.limit(), 10, "ISUPPORT survives");
         // A reply arriving afterwards is not ours.
@@ -687,5 +946,217 @@ mod tests {
         }
         assert!(requests.enqueue("#overflow").is_some());
         assert_eq!(requests.queue.len(), MAX_QUEUED);
+    }
+
+    fn reference(msgid: Option<&str>, secs: Option<u64>) -> MessageReference {
+        MessageReference {
+            msgid: msgid.map(str::to_owned),
+            time: secs.map(|secs| std::time::UNIX_EPOCH + Duration::from_millis(secs * 1000 + 123)),
+        }
+    }
+
+    fn finished(observed: Observed) -> Finished {
+        match observed {
+            Observed::Finished(finished) => finished,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn older_pages_ask_before_the_msgid_within_both_limits() {
+        let mut requests = HistoryRequests::default();
+        requests.isupport(&parse(
+            ":srv 005 me CHATHISTORY=20 MSGREFTYPES=timestamp,msgid :are supported",
+        ));
+        let now = Instant::now();
+        let both = reference(Some("m1"), Some(1_790_550_000));
+        requests.enqueue_older("#a", 7, &both, 100).unwrap();
+        // msgid is exact, so it is preferred whatever the server's order.
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY BEFORE #a msgid=m1 20"),
+            "the server's limit"
+        );
+        requests.observe(&parse(":srv BATCH +r chathistory #a"));
+        requests.observe(&parse(":srv BATCH -r"));
+
+        requests.isupport(&parse(":srv 005 me CHATHISTORY=0 :are supported"));
+        requests.enqueue_older("#a", 8, &both, 500).unwrap();
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY BEFORE #a msgid=m1 50"),
+            "CayenChat's own cap"
+        );
+        requests.observe(&parse(":srv BATCH +s chathistory #a"));
+        requests.observe(&parse(":srv BATCH -s"));
+
+        requests.enqueue_older("#a", 9, &both, 3).unwrap();
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY BEFORE #a msgid=m1 3"),
+            "the application's room"
+        );
+    }
+
+    #[test]
+    fn older_pages_fall_back_to_timestamps_the_server_accepts() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        let answer = |requests: &mut HistoryRequests, reference: &str| {
+            requests.observe(&parse(&format!(":srv BATCH +{reference} chathistory #a")));
+            requests.observe(&parse(&format!(":srv BATCH -{reference}")));
+        };
+        // No msgid (legacy encodings do not ask for message-tags).
+        requests
+            .enqueue_older("#a", 1, &reference(None, Some(1_790_550_000)), 50)
+            .unwrap();
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY BEFORE #a timestamp=2026-09-27T23:00:00.123Z 50")
+        );
+        answer(&mut requests, "a");
+        // An identifier unusable on the wire is not sent.
+        requests
+            .enqueue_older("#a", 2, &reference(Some("bad id"), Some(1_790_550_000)), 50)
+            .unwrap();
+        assert!(sent(&mut requests, now).unwrap().contains("timestamp="));
+        answer(&mut requests, "b");
+        // A server accepting only timestamps.
+        requests.isupport(&parse(":srv 005 me MSGREFTYPES=timestamp :are supported"));
+        requests
+            .enqueue_older("#a", 3, &reference(Some("m1"), Some(1_790_550_000)), 50)
+            .unwrap();
+        assert!(sent(&mut requests, now).unwrap().contains("timestamp="));
+        answer(&mut requests, "c");
+        // A message with only a msgid cannot be referred to there.
+        let refused = requests
+            .enqueue_older("#a", 4, &reference(Some("m1"), None), 50)
+            .unwrap_err();
+        assert_eq!(refused.page, Page::Before { request: 4 });
+        assert_eq!(refused.older_status(), OlderHistoryStatus::Failed);
+        // Nothing we know.
+        requests.isupport(&parse(":srv 005 me MSGREFTYPES=future :are supported"));
+        assert!(
+            requests
+                .enqueue_older("#a", 5, &reference(Some("m1"), Some(1)), 50)
+                .is_err()
+        );
+        // Removing the token restores both.
+        requests.isupport(&parse(":srv 005 me -MSGREFTYPES :are supported"));
+        requests
+            .enqueue_older("#a", 6, &reference(Some("m1"), None), 50)
+            .unwrap();
+        assert!(sent(&mut requests, now).unwrap().contains("msgid=m1"));
+    }
+
+    #[test]
+    fn older_pages_jump_the_join_queue_once_per_channel() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        requests.enqueue("#a");
+        requests.enqueue("#b");
+        let anchor = reference(Some("m1"), None);
+        requests.enqueue_older("#c", 1, &anchor, 50).unwrap();
+        let again = requests.enqueue_older("#C", 2, &anchor, 50).unwrap_err();
+        assert_eq!(again.page, Page::Before { request: 2 });
+        assert!(
+            sent(&mut requests, now)
+                .unwrap()
+                .starts_with("CHATHISTORY BEFORE #c")
+        );
+        // Still one per channel while it is being answered, while a LATEST
+        // for the same channel may queue beside it.
+        assert!(requests.enqueue_older("#c", 3, &anchor, 50).is_err());
+        assert!(requests.enqueue("#c").is_none());
+        assert_eq!(requests.queue.len(), 3);
+        assert!(sent(&mut requests, now).is_none(), "one at a time");
+    }
+
+    #[test]
+    fn older_page_replies_report_the_beginning_of_history() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        let anchor = reference(Some("m9"), None);
+
+        requests.enqueue_older("#a", 1, &anchor, 50).unwrap();
+        sent(&mut requests, now);
+        let observed = feed(
+            &mut requests,
+            &[
+                ":srv BATCH +r chathistory #a",
+                "@batch=r;msgid=m7;time=2026-09-27T23:50:00.000Z :bob!u@h PRIVMSG #a :seven",
+                "@batch=r;msgid=m8 :bob!u@h PRIVMSG #a :eight",
+                ":srv BATCH -r",
+            ],
+        );
+        let page = finished(observed.into_iter().last().unwrap());
+        assert_eq!(page.page, Page::Before { request: 1 });
+        assert_eq!(page.older_status(), OlderHistoryStatus::More);
+        assert_eq!(page.messages.len(), 2);
+
+        requests.enqueue_older("#a", 2, &anchor, 50).unwrap();
+        sent(&mut requests, now);
+        let observed = feed(
+            &mut requests,
+            &[
+                "@draft/chathistory-end :srv BATCH +s chathistory #a",
+                "@batch=s;msgid=m1 :bob!u@h PRIVMSG #a :first",
+                ":srv BATCH -s",
+            ],
+        );
+        let page = finished(observed.into_iter().last().unwrap());
+        assert_eq!(page.older_status(), OlderHistoryStatus::Beginning);
+        assert_eq!(page.messages.len(), 1);
+
+        requests.enqueue_older("#a", 3, &anchor, 50).unwrap();
+        sent(&mut requests, now);
+        let observed = feed(
+            &mut requests,
+            &[":srv BATCH +t chathistory #a", ":srv BATCH -t"],
+        );
+        let page = finished(observed.into_iter().last().unwrap());
+        assert_eq!(page.older_status(), OlderHistoryStatus::Beginning, "empty");
+
+        requests.enqueue_older("#a", 4, &anchor, 50).unwrap();
+        sent(&mut requests, now);
+        let page = finished(requests.observe(&parse(
+            ":srv FAIL CHATHISTORY INVALID_MSGREFTYPE BEFORE #a :msgid-based history requests are not supported",
+        )));
+        assert_eq!(page.page, Page::Before { request: 4 });
+        assert_eq!(page.older_status(), OlderHistoryStatus::Failed);
+
+        requests.enqueue_older("#a", 5, &anchor, 50).unwrap();
+        sent(&mut requests, now);
+        let Some(Observed::Finished(page)) = requests.tick(now + RESPONSE_TIMEOUT) else {
+            panic!();
+        };
+        assert_eq!(page.page, Page::Before { request: 5 });
+        assert_eq!(page.older_status(), OlderHistoryStatus::Failed);
+    }
+
+    #[test]
+    fn parting_or_losing_the_capability_ends_older_page_requests() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        let anchor = reference(Some("m1"), None);
+        requests.enqueue_older("#a", 1, &anchor, 50).unwrap();
+        requests.enqueue("#b");
+        requests.enqueue_older("#b", 2, &anchor, 50).unwrap();
+        let ended = requests.forget("#B");
+        assert_eq!(ended.len(), 1, "the LATEST is dropped silently");
+        assert_eq!(ended[0].page, Page::Before { request: 2 });
+        assert!(ended[0].failed);
+
+        requests.enqueue_older("#c", 3, &anchor, 50).unwrap();
+        sent(&mut requests, now);
+        let ended = requests.reset();
+        let pages: Vec<_> = ended.iter().map(|f| f.page.clone()).collect();
+        assert_eq!(
+            pages,
+            [Page::Before { request: 3 }, Page::Before { request: 1 }],
+            "the one being answered, then the queued one"
+        );
+        assert!(ended.iter().all(|f| f.failed && f.messages.is_empty()));
+        assert!(requests.queue.is_empty() && requests.next_deadline().is_none());
     }
 }

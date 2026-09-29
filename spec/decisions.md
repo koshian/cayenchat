@@ -976,7 +976,7 @@ highlights or marks unread and is not shown in the combined subwindow.
 One request at a time, 50 lines asked, 100 kept, 64 channels queued, 30 s
 timeout. Older pages, gap recovery on reconnect, private-message history
 (TARGETS) and persistence are separate future work. Details in
-`architecture.md` (Recent channel history); Ergo results in
+`architecture.md` (Channel history); Ergo results in
 `development.md`.
 
 ## D028 — Dedicated private conversations
@@ -1048,3 +1048,41 @@ arrive as sent, and a flood from three users got five answers, at most two
 each, one refusal line and no disconnection. Not checked against other
 servers' flood limits; ten NOTICEs per ten seconds is below the defaults of
 common servers.
+
+## D030 — Older channel history pages on scroll
+
+**Status:** Accepted (experimental)
+
+2026-09-28. With the same per-server chathistory option (no new setting),
+scrolling a channel's main log to within five rows of its oldest line asks
+for one older page, `CHATHISTORY BEFORE <channel> <reference> <n>`
+(specification: ircv3-specifications `extensions/chathistory.md`, master
+`9ff58d1`). Only a user's scroll triggers it; nothing is fetched because a
+channel is open, and there is no timer. One page per conversation at a
+time; `n` is 50 lowered by the server's `CHATHISTORY` limit and by the room
+left under the 2,000-line log bound, so the whole history is never fetched
+automatically and the bound still holds.
+
+The reference is the oldest identified line near the top; `msgid=` is
+preferred over `timestamp=` because it is exact, within the server's
+`MSGREFTYPES`. Paging ends for the session on an empty reply,
+`draft/chathistory-end`, a page adding nothing new, or a failure, so the
+same request is never repeated by scrolling; a new session resets it.
+
+Pages are prepended with sequences counted down from 2^62 while ordinary
+messages count up from it: logs stay in ascending sequence order, which
+`LogList`, previews and avatars rely on, without renumbering or re-sorting
+anything shown. The viewport keeps its top row by sequence and pixel
+offset, so row heights above it do not matter. Overlap is removed with a
+temporary filter over the top of the log plus a read-only check of the
+conversation's recent keys; older pages are not recorded in the
+conversation's 512-key filter.
+
+The application API is protocol-neutral: `request_older_history` returns a
+request number, the oldest line's native identifier and source time and a
+limit; the answer is `insert_older_history(conversation, request, lines,
+beginning)` or `older_history_failed`. A Matrix backend would answer the
+same calls from its room timeline's back-pagination and ignore the
+reference in favor of its own pagination token. Private conversations,
+reconnect gap recovery and persistence are separate future work. Details
+in `architecture.md` (Channel history).
