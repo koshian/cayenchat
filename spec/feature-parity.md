@@ -28,7 +28,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
-- PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel and network; editing only through `/topic`; the sub log shows channel names up to 240 px wide with the network name
+- PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
 - DONE — IRCnet `!` safe-channel targets in auto-join, messages, rosters, channel commands and WHOIS links; preserve the full name returned by the server

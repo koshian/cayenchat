@@ -6217,7 +6217,7 @@ impl ChatWindow {
             .child(style.time(message.time))
             .child(
                 div()
-                    .w(px(240.))
+                    .w(px(162.))
                     .flex_shrink_0()
                     .flex()
                     .min_w_0()
