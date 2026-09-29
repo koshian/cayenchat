@@ -7924,6 +7924,7 @@ mod pane_tests {
             notice: false,
             server_time: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
             msgid: Some(msgid.into()),
+            account: None,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -7941,6 +7942,7 @@ mod pane_tests {
                             std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_100),
                         ),
                         msgid: Some("d2".into()),
+                        account: None,
                         replayed: false,
                     },
                     // Discovery: a new peer, and Bob again in another case.
