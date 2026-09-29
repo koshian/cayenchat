@@ -345,6 +345,13 @@ pub enum Event {
         kind: ChannelActivityKind,
         server_time: Option<SystemTime>,
     },
+    /// The topic of a channel: on joining (`RPL_TOPIC`, `RPL_NOTOPIC`) or
+    /// when someone changes it. Empty when there is none. The line itself
+    /// also stays a [`Event::ServerLine`].
+    Topic {
+        channel: String,
+        topic: String,
+    },
     /// A PRIVMSG or NOTICE a user sent to our nickname. Server notices stay
     /// [`Event::ServerLine`]; CTCP other than ACTION is handled by `ctcp`.
     PrivateMessage {
@@ -2115,6 +2122,22 @@ impl WhoisCollector {
     }
 }
 
+/// The channel topic a server line states or changes, if it is one.
+fn topic_event(message: &IrcMessage) -> Option<Event> {
+    let (channel, topic) = match &message.command {
+        IrcCommand::Response(Response::RPL_TOPIC, args) => {
+            (args.get(1)?, args.get(2).cloned().unwrap_or_default())
+        }
+        IrcCommand::Response(Response::RPL_NOTOPIC, args) => (args.get(1)?, String::new()),
+        IrcCommand::TOPIC(channel, topic) => (channel, topic.clone().unwrap_or_default()),
+        _ => return None,
+    };
+    valid_channel(channel).then(|| Event::Topic {
+        channel: channel.clone(),
+        topic,
+    })
+}
+
 fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) -> Event {
     let tracked = client.list_users(channel);
     let known = tracked.is_some();
@@ -2379,7 +2402,11 @@ fn translate_message(
             };
             vec![names_snapshot(client, roster, channel)]
         }
-        _ => vec![Event::ServerLine(tags::untagged_line(&message))],
+        _ => {
+            let mut events = topic_event(&message).into_iter().collect::<Vec<_>>();
+            events.push(Event::ServerLine(tags::untagged_line(&message)));
+            events
+        }
     };
     if let Some(activity) = activity {
         translated.push(activity);
@@ -2421,6 +2448,31 @@ mod tests {
         net::TcpListener,
         time::Instant,
     };
+
+    #[test]
+    fn topic_lines_become_topic_events() {
+        let topic = |line: &str| topic_event(&line.parse::<IrcMessage>().unwrap());
+        let event = |channel: &str, text: &str| {
+            Some(Event::Topic {
+                channel: channel.into(),
+                topic: text.into(),
+            })
+        };
+        assert_eq!(
+            topic(":irc.example 332 me #test :Welcome, all"),
+            event("#test", "Welcome, all")
+        );
+        assert_eq!(
+            topic(":irc.example 331 me #test :No topic is set"),
+            event("#test", "")
+        );
+        assert_eq!(
+            topic(":alice!u@h TOPIC #test :New topic"),
+            event("#test", "New topic")
+        );
+        assert_eq!(topic(":alice!u@h TOPIC #test :"), event("#test", ""));
+        assert_eq!(topic(":alice!u@h PRIVMSG #test :hi"), None);
+    }
 
     #[test]
     fn member_commands_validate_targets_and_build_expected_irc_lines() {
