@@ -53,6 +53,15 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked --verbose
 
+      # Verify the release artifact too: Rust defaults to the console
+      # subsystem, and that metadata is the cause of the startup terminal.
+      - name: Verify Windows release subsystem
+        if: matrix.name == 'Windows x86_64'
+        shell: pwsh
+        run: |
+          cargo build --release --locked -p cayenchat-ui
+          ./scripts/check-windows-subsystem.ps1 target/release/cayenchat.exe
+
       # The default member is only the UI crate; test every crate so storage,
       # upload, irc-core and app also run on each platform.
       - name: Test
