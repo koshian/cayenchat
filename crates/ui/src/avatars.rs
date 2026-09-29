@@ -423,6 +423,7 @@ mod tests {
             mentioned: false,
             server_time: None,
             msgid: None,
+            account: None,
             replayed: false,
         }
     }

@@ -25,6 +25,9 @@ pub const BATCH: &str = "batch";
 pub const ACCOUNT_NOTIFY: &str = "account-notify";
 /// The account and real name in other users' `JOIN`.
 pub const EXTENDED_JOIN: &str = "extended-join";
+/// The sender's services account on each message. Requested only when a
+/// negotiation happens anyway, and not on legacy encodings (values are UTF-8).
+pub const ACCOUNT_TAG: &str = "account-tag";
 /// Change the realname on a live connection. Requested only when a
 /// negotiation happens anyway, so plain registration is unchanged.
 pub const SETNAME: &str = "setname";
@@ -156,7 +159,13 @@ impl CapNegotiation {
             optional.push(CHATHISTORY);
             explicit.push(CHATHISTORY);
         }
+        // Extensions that are asked for only when a negotiation happens
+        // anyway, so plain registration stays as it was.
         if sasl.is_some() || !optional.is_empty() {
+            if utf8 {
+                optional.push(ACCOUNT_TAG);
+                explicit.push(ACCOUNT_TAG);
+            }
             optional.push(SETNAME);
             explicit.push(SETNAME);
         }
@@ -803,6 +812,26 @@ mod tests {
         // Off: plain registration, as before.
         let mut off = CapNegotiation::new(Ircv3Options::default(), None, true);
         assert_eq!(String::from(&off.start()), "CAP END");
+    }
+
+    #[test]
+    fn account_tag_rides_along_with_negotiation_on_utf8_connections_only() {
+        let mut plain = CapNegotiation::new(Ircv3Options::default(), None, true);
+        assert_eq!(String::from(&plain.start()), "CAP END");
+
+        let mut cap = CapNegotiation::new(options(false, true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :server-time account-tag"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time", "CAP REQ account-tag"]);
+
+        let mut legacy = CapNegotiation::new(options(false, true), None, false);
+        legacy.start();
+        let step = legacy
+            .observe(&line(":s CAP * LS :server-time account-tag"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time"]);
     }
 
     #[test]

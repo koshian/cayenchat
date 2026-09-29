@@ -1439,3 +1439,10 @@ available during loading or after errors.
 lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
 `UserAccountForgotten`. `ServerSession::user_accounts` mirrors them;
 `complete_whois` uses it. Active only with the "User accounts" preference.
+
+## account-tag (D033)
+
+`tags::account` reads the `account` tag; `irc-core` events carry it,
+`irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
+`new_message` retains it in `Message::account`. There is no per-user account
+table in this step.

@@ -12,7 +12,7 @@ use std::{
     time::SystemTime,
 };
 
-use cayenchat_model::{Message, NativeMessageId, Provenance, Timestamp};
+use cayenchat_model::{Message, NativeMessageId, Provenance, ServicesAccount, Timestamp};
 
 /// Keys remembered per conversation. History deliveries overlap by at most a
 /// few hundred lines (a bouncer's join playback, one history request), so
@@ -34,6 +34,8 @@ pub struct MessageMeta {
     pub server_time: Option<SystemTime>,
     /// The source's identifier (IRC: a usable `msgid` tag).
     pub native_id: Option<NativeMessageId>,
+    /// The sender's services account when it was sent (IRC: `account` tag).
+    pub account: Option<ServicesAccount>,
     pub provenance: Provenance,
 }
 
@@ -177,6 +179,7 @@ mod tests {
             sequence: 0,
             timestamp: millis.map(Timestamp::from_millis),
             native_id: native_id.and_then(NativeMessageId::new),
+            account: None,
             sender: "alice".into(),
             text: text.into(),
             activity: false,

@@ -1161,6 +1161,31 @@ traffic).
 - **Not done.** No display beyond WHOIS; `away-notify`; realname from
   extended-join is not offered to CTCP AVATAR marks.
 
+## D033 — account-tag
+
+Status: implemented.
+
+`account-tag` (IRCv3 standard) is requested whenever the CAP negotiation runs
+for another reason (SASL or an opt-in extension) and the server offers it,
+without its own switch and never on a legacy encoding (tag values are UTF-8;
+the same reason `message-tags` is not requested there). It never starts a
+negotiation itself.
+
+- **What is kept.** Only the `account` tag, as `Event::ChannelMessage` /
+  `PrivateMessage` / `HistoryMessage::account` and then
+  `MessageMeta::account` / `Message::account` (`model::ServicesAccount`:
+  non-empty, no whitespace or controls, at most 128 bytes; `*` and empty are
+  "none"). No other tag is stored. Our own echoes carry none.
+- **Scope.** An account names an identity only inside the network of the
+  conversation that holds the message; it is never compared across networks
+  and no map from nickname to account exists, so nothing can go stale.
+- **Cost.** One thin pointer per retained message (`Message` grew from 96 to
+  104 bytes; the name is on the heap only when present).
+- **Display.** None in log lines. WHOIS already shows the services account
+  (330). History and replayed lines carry the account their server tagged.
+- **Not done.** Account changes between messages are visible only as
+  different values on later messages; live tracking is account-notify.
+
 ## D032 — Real name setting and IRCv3 `setname`
 
 Status: implemented.
