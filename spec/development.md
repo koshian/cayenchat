@@ -770,6 +770,47 @@ verified: macOS and Windows, a real IRC server, IME, HiDPI sharpness, and
 whether no image file is read while off (the file system's `relatime` made
 access times inconclusive; the GPUI tests cover it).
 
+### GUI end-to-end test (Linux)
+
+`scripts/e2e/history_gui.py` runs the real `cayenchat` binary on a virtual
+X display against the pinned Ergo, with a local proxy between them, and
+checks channel history as a user sees it. It adds no test hook to the
+application; everything is observed from outside:
+
+- **wire**: the proxy records the CHATHISTORY commands CayenChat sends
+  (LATEST on join, nothing older until scrolled, BEFORE with a new msgid
+  per page, none repeated after the beginning, LATEST with a msgid after a
+  reconnect), holds the answer to the first BEFORE, and cuts and refuses
+  the link to cause a real unexpected disconnect;
+- **pixels**: the main log pane is grabbed from the X server while that
+  answer is held and again after it was inserted; the two must be
+  identical (rows wrapping to two lines make the heights vary);
+- **text**: the log's own drag selection and Ctrl+C, read back with
+  `xclip`, show which lines are on screen and in which order (the first
+  line of the channel after paging; A, the missed B and C, our rejoin,
+  then D after the reconnect, each once).
+
+Screenshots of every step and the app and Ergo logs go to `--out`. Two
+deliberate breakages were checked to fail it: resetting the log list when
+rows are inserted above (the pixel check fails) and placing recovered lines
+where the request was made instead of at the cut (the order check fails).
+
+```sh
+cargo build --locked -p cayenchat-ui
+ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh /tmp/cayenchat-ergo 36667
+python3 scripts/e2e/history_gui.py --app target/debug/cayenchat --ergo-dir /tmp/cayenchat-ergo --out /tmp/cayenchat-e2e
+```
+
+Required packages, running without root, reading the output and adding
+checks are in `HOW_TO_TEST.md` ("GUI end-to-end test"). Operating-system
+packages cannot be declared in Cargo; that list and the `gui-e2e-linux` job
+in `.github/workflows/ci.yml` name the same packages and change together.
+It takes about two minutes. CI runs it in the `gui-e2e-linux` job and
+uploads the screenshots. It is Linux/X11 only: the driving tools are X11
+ones. The same scenario on macOS or Windows would need a logged-in desktop
+session and platform tools (for example `screencapture` and synthetic
+events on macOS); the proxy, peer and assertions would carry over.
+
 ### IRC metadata interoperability (Ergo)
 
 Independent server: Ergo v2.19.1 (tag commit
