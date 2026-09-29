@@ -655,6 +655,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         metadata: true,
         peer_avatars: preferences.peer_avatars,
         chathistory: preferences.chathistory,
+        accounts: preferences.accounts,
     }
 }
 
@@ -705,6 +706,24 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
             let _ = store.delete(&server.server_password_key());
             let _ = store.delete(&server.sasl_password_key());
         }
+    }
+}
+
+/// Fills the account and real name a WHOIS reply lacks from what the
+/// connection tracks; what the server said wins.
+fn complete_whois(
+    info: &mut WhoisInfo,
+    tracked: &std::collections::HashMap<String, (Option<String>, Option<String>)>,
+) {
+    let key = cayenchat_irc_core::text::nickname_key(&info.nickname);
+    let Some((account, realname)) = tracked.get(&key) else {
+        return;
+    };
+    if info.account.is_none() {
+        info.account = account.clone();
+    }
+    if info.realname.is_none() {
+        info.realname = realname.clone();
     }
 }
 
@@ -2848,8 +2867,28 @@ impl ChatWindow {
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::UserAccount {
+                nickname,
+                account,
+                realname,
+            } => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    session.user_accounts.insert(key, (account, realname));
+                }
+            }
+            Event::UserAccountForgotten { nickname } => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    session.user_accounts.remove(&key);
+                }
+            }
             Event::Whois(info) => {
-                let info = *info;
+                let mut info = *info;
+                // Live tracking fills what WHOIS did not report.
+                if let Some(session) = self.sessions.get(&network) {
+                    complete_whois(&mut info, &session.user_accounts);
+                }
                 let key = (network, info.nickname.to_lowercase());
                 let requested = self
                     .sessions
@@ -2896,6 +2935,9 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.user_accounts.clear();
+                }
                 self.state.end_avatars(network);
                 self.update_own_avatar(network, OwnAvatar::connection_ended);
                 self.record_disconnect(network, reason);
@@ -7024,6 +7066,7 @@ mod server_settings_tests {
             batch: true,
             peer_avatars: true,
             chathistory: true,
+            accounts: false,
         };
         settings
     }
@@ -7373,6 +7416,7 @@ mod pane_tests {
                 metadata: true,
                 peer_avatars: true,
                 chathistory: false,
+                accounts: false,
             }
         );
         // Peer avatars alone share nothing and leave the realname unmarked.
@@ -7406,6 +7450,7 @@ mod pane_tests {
                     metadata: true,
                     peer_avatars: false,
                     chathistory: false,
+                    accounts: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );
@@ -7757,6 +7802,75 @@ mod pane_tests {
                 cx,
             );
             assert_eq!(chat.state.conversations()[1].messages.len(), 3);
+        });
+    }
+
+    #[gpui::test]
+    fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, WhoisInfo};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::UserAccount {
+                        nickname: "Bob".into(),
+                        account: Some("bob-acct".into()),
+                        realname: Some("Bob Builder".into()),
+                    },
+                    Event::UserAccount {
+                        nickname: "Eve".into(),
+                        account: None,
+                        realname: None,
+                    },
+                    Event::UserAccountForgotten {
+                        nickname: "EVE".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let accounts = |chat: &ChatWindow| chat.sessions[&NetworkId(1)].user_accounts.clone();
+            assert_eq!(accounts(chat).len(), 1, "casemapped removal");
+            // A WHOIS without a 330 or realname is completed from tracking;
+            // what the server said wins.
+            let tracked = accounts(chat);
+            let mut info = WhoisInfo {
+                nickname: "bob".into(),
+                username: Some("u".into()),
+                ..WhoisInfo::default()
+            };
+            super::complete_whois(&mut info, &tracked);
+            assert_eq!(info.account.as_deref(), Some("bob-acct"));
+            assert_eq!(info.realname.as_deref(), Some("Bob Builder"));
+            let mut said = WhoisInfo {
+                nickname: "BOB".into(),
+                account: Some("server-acct".into()),
+                ..WhoisInfo::default()
+            };
+            super::complete_whois(&mut said, &tracked);
+            assert_eq!(said.account.as_deref(), Some("server-acct"));
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(accounts(chat).is_empty());
         });
     }
 

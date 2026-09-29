@@ -21,6 +21,10 @@ pub const SASL: &str = "sasl";
 pub const MESSAGE_TAGS: &str = "message-tags";
 pub const SERVER_TIME: &str = "server-time";
 pub const BATCH: &str = "batch";
+/// `ACCOUNT` messages for users sharing a channel with us.
+pub const ACCOUNT_NOTIFY: &str = "account-notify";
+/// The account and real name in other users' `JOIN`.
+pub const EXTENDED_JOIN: &str = "extended-join";
 /// The experimental metadata draft, used only for user avatars. The legacy
 /// `metadata-notify` is never requested: the draft forbids asking for both.
 pub const METADATA: &str = "draft/metadata-2";
@@ -60,6 +64,11 @@ pub struct Ircv3Options {
     /// `message-tags` (for message IDs) are requested with it, as the
     /// specification's full support lists them.
     pub chathistory: bool,
+    /// Follow the services accounts and real names of the users we share a
+    /// channel with: `account-notify` and `extended-join`, plus a WHOX query
+    /// per joined channel where the server has WHOX. Both capabilities are
+    /// standard; the query makes this opt-in.
+    pub accounts: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +140,12 @@ impl CapNegotiation {
         if options.metadata {
             optional.push(METADATA);
             explicit.push(METADATA);
+        }
+        if options.accounts {
+            optional.push(ACCOUNT_NOTIFY);
+            explicit.push(ACCOUNT_NOTIFY);
+            optional.push(EXTENDED_JOIN);
+            explicit.push(EXTENDED_JOIN);
         }
         // Likewise chathistory: without batch its replies would look live.
         // Its references are ASCII, so legacy encodings may use it.
@@ -499,6 +514,7 @@ mod tests {
             metadata: false,
             peer_avatars: false,
             chathistory: false,
+            accounts: false,
         }
     }
 
@@ -728,6 +744,34 @@ mod tests {
 
         let mut cap = CapNegotiation::new(options(true, false), None, false);
         assert_eq!(String::from(&cap.start()), "CAP END");
+    }
+
+    #[test]
+    fn user_accounts_request_account_notify_and_extended_join_when_offered() {
+        let accounts = Ircv3Options {
+            accounts: true,
+            ..Ircv3Options::default()
+        };
+        let mut cap = CapNegotiation::new(accounts, None, true);
+        assert_eq!(String::from(&cap.start()), "CAP LS 302");
+        let step = cap
+            .observe(&line(
+                ":s CAP * LS :account-notify extended-join away-notify",
+            ))
+            .unwrap();
+        assert_eq!(
+            sent(&step),
+            ["CAP REQ account-notify", "CAP REQ extended-join"]
+        );
+        // Either one alone is fine; a legacy encoding needs no exception
+        // (no tag values are involved).
+        let mut legacy = CapNegotiation::new(accounts, None, false);
+        legacy.start();
+        let step = legacy.observe(&line(":s CAP * LS :extended-join")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ extended-join"]);
+        // Off: plain registration, as before.
+        let mut off = CapNegotiation::new(Ircv3Options::default(), None, true);
+        assert_eq!(String::from(&off.start()), "CAP END");
     }
 
     #[test]

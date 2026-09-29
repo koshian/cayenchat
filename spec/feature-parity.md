@@ -139,8 +139,8 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
 - TODO — echo-message and labeled-response
-- TODO — account-related capabilities
-- TODO — extended-join
+- PARTIAL — account-related capabilities: `account-notify` and `extended-join` (IRCv3 standard, per-server opt-in "User accounts", default off) track the services account and real name of channel members and complete WHOIS; initial state through one WHOX query per joined channel where the server has WHOX; `account-tag` is separate work
+- DONE — extended-join (with the "User accounts" opt-in above)
 - TODO — away-notify
 - PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS
 - TODO — other capabilities based on real-world usefulness

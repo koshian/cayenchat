@@ -318,6 +318,8 @@
   "ircv3_avatar_remove_detail": "このネットワークの他のユーザーには表示されなくなります。URL は欄に残ります。",
   "ircv3_avatar_remove_confirm": "削除",
   "ircv3_avatar_unsupported": "この IRC サーバーはアバターに対応していません。",
+  "ircv3_accounts": "ユーザーアカウント",
+  "ircv3_accounts_hint": "チャンネルメンバーのサービスアカウントと本名を追跡し (account-notify、extended-join、WHOX)、WHOIS に表示します。参加した各チャンネルのメンバーを一度だけサーバーに問い合わせます。",
   "ircv3_chathistory": "チャンネルの最近の履歴 (実験的)",
   "ircv3_chathistory_hint": "チャンネルに参加したとき、最近の発言を最大 50 行サーバーに要求し (draft/chathistory)、通知せずに表示します。対応サーバーにはタイムスタンプとバッチも要求します。",
   "ircv3_peer_avatars": "ピア間のアバター (CTCP AVATAR、実験的)",

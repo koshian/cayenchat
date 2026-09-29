@@ -1039,3 +1039,13 @@ not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.
+
+### User account tracking checks (D035)
+
+Unit tests (`accounts.rs`): extended JOIN with account, with `*`, plain JOIN,
+ACCOUNT login/change/logout, PART/KICK/QUIT/own PART cleanup, NICK with IRC
+casemapping, republished member lists, WHOX (ISUPPORT gate, queue, token,
+consumed reply, timeout), memory bounds. CAP request tests, a fake-server test
+of the whole flow and of the feature being off, a UI test of the mirror and
+WHOIS completion. No live Ergo/soju run was made. `cargo clippy --workspace
+--all-targets` fails in `crates/app` tests on master itself.

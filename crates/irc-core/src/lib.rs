@@ -1,5 +1,6 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
+mod accounts;
 mod cap;
 mod ctcp;
 mod history;
@@ -370,6 +371,20 @@ pub enum Event {
     Names {
         channel: String,
         users: Vec<String>,
+    },
+    /// What is known about a user we share a channel with (opt-in "user
+    /// accounts"): their services account (`None`: not logged in or not
+    /// known) and real name, from `extended-join`, `account-notify` or a
+    /// WHOX reply. Sent again when either changes, also under a new
+    /// nickname; the old one is then [`Event::UserAccountForgotten`].
+    UserAccount {
+        nickname: String,
+        account: Option<String>,
+        realname: Option<String>,
+    },
+    /// The user no longer shares a channel with us: forget what was known.
+    UserAccountForgotten {
+        nickname: String,
     },
     ServerLine(String),
     /// A completed WHOIS reply, emitted at end-of-WHOIS (318).
@@ -1396,6 +1411,8 @@ async fn run_cancellable(
     let mut metadata_enabled = false;
     let mut history = history::HistoryRequests::with_resume(config.resume_history);
     let mut history_enabled = false;
+    let mut accounts = accounts::Accounts::default();
+    let track_accounts = config.ircv3.accounts;
     // Last reported Event::HistoryAvailable.
     let mut history_available = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
@@ -1585,6 +1602,7 @@ async fn run_cancellable(
                         let history_started = !history_enabled && negotiation.enabled(cap::CHATHISTORY);
                         history_enabled = negotiation.enabled(cap::CHATHISTORY);
                         history.isupport(&message);
+                        accounts.isupport(&message);
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
                         }
@@ -1738,6 +1756,24 @@ async fn run_cancellable(
                                 }
                             }
                         }
+                        // Our WHOX reply is not a server line.
+                        if track_accounts && let Some(reply) = accounts.observe_who(&message) {
+                            for event in reply {
+                                if events.send(event).await.is_err() { return; }
+                            }
+                            if let Some(command) = accounts.next_who(tokio::time::Instant::now())
+                                && let Err(detail) = send_all(&client, &events, started, vec![command]).await
+                            {
+                                let _ = events.send(Event::Disconnected(detail)).await;
+                                return;
+                            }
+                            continue;
+                        }
+                        let mut account_events = if track_accounts {
+                            accounts.observe(&message, &current_nick, &roster.last)
+                        } else {
+                            Vec::new()
+                        };
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
                         for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
@@ -1752,7 +1788,24 @@ async fn run_cancellable(
                                 }
                                 _ => {}
                             }
+                            if track_accounts {
+                                match &event {
+                                    Event::Names { channel, users } => account_events.extend(accounts.names(channel, users)),
+                                    Event::Joined { channel } => accounts.joined(channel),
+                                    _ => {}
+                                }
+                            }
                             if events.send(event).await.is_err() { return; }
+                        }
+                        for event in account_events {
+                            if events.send(event).await.is_err() { return; }
+                        }
+                        if track_accounts
+                            && let Some(command) = accounts.next_who(tokio::time::Instant::now())
+                            && let Err(detail) = send_all(&client, &events, started, vec![command]).await
+                        {
+                            let _ = events.send(Event::Disconnected(detail)).await;
+                            return;
                         }
                         for event in lifecycle {
                             if events.send(event).await.is_err() { return; }
@@ -4025,6 +4078,124 @@ mod tests {
             Event::ServerLine(line) if line.contains("BATCH") || line.contains("old"))));
     }
 
+    #[test]
+    fn user_accounts_follow_joins_account_changes_and_one_whox_query() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "account-notify extended-join",
+                "WHOX",
+            );
+            assert_eq!(requested, ["account-notify", "extended-join"]);
+            socket
+                .write_all(
+                    b":srv 353 alice = #test :alice bob carol\r\n:srv 366 alice #test :End\r\n",
+                )
+                .unwrap();
+            // Members present before us: one WHOX query, its reply consumed.
+            assert_eq!(read_client_line(&mut lines), "WHO #test %tnar,1");
+            socket
+                .write_all(
+                    b":srv 354 alice 1 bob bob-acct :Bob Builder\r\n\
+:srv 354 alice 1 carol 0 :Carol\r\n\
+:srv 315 alice #test :End of /WHO list\r\n\
+:dave!u@h JOIN #test dave-acct :Dave D\r\n\
+:bob!u@h ACCOUNT *\r\n\
+:carol!u@h ACCOUNT carol-acct\r\n\
+:carol!u@h NICK carla\r\n\
+:dave!u@h QUIT :bye\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let options = Ircv3Options {
+            accounts: true,
+            ..Ircv3Options::default()
+        };
+        let events = run_fixture(plain_config(port, options), |events| {
+            events.iter().any(
+                |e| matches!(e, Event::UserAccountForgotten { nickname } if nickname == "dave"),
+            )
+        });
+        server.join().unwrap();
+        let tracked: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::UserAccount {
+                    nickname,
+                    account,
+                    realname,
+                } => Some(format!(
+                    "{nickname} {} {}",
+                    account.as_deref().unwrap_or("-"),
+                    realname.as_deref().unwrap_or("-")
+                )),
+                Event::UserAccountForgotten { nickname } => Some(format!("{nickname} gone")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tracked,
+            [
+                "bob bob-acct Bob Builder",
+                "carol - Carol",
+                "dave dave-acct Dave D",
+                "bob - Bob Builder",
+                "carol carol-acct Carol",
+                "carol gone",
+                "carla carol-acct Carol",
+                "dave gone",
+            ]
+        );
+        // The WHOX reply and account lines are not server lines.
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("354") || line.contains("Bob Builder"))));
+    }
+
+    #[test]
+    fn user_accounts_are_not_tracked_unless_asked_for() {
+        let (port, server) = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut lines = BufReader::new(socket.try_clone().unwrap());
+                // Nothing to negotiate: registration goes without CAP.
+                assert_eq!(read_client_line(&mut lines), "CAP END");
+                let _ = (read_client_line(&mut lines), read_client_line(&mut lines));
+                socket
+                    .write_all(b":srv 001 alice :Welcome\r\n:srv 005 alice WHOX :ok\r\n:srv 376 alice :End\r\n")
+                    .unwrap();
+                assert_eq!(read_client_line(&mut lines), "JOIN #test");
+                socket
+                    .write_all(b":alice!u@h JOIN #test\r\n:bob!u@h JOIN #test b :B\r\n:bob!u@h PRIVMSG #test :hi\r\n")
+                    .unwrap();
+                // No WHO follows: the next line is the QUIT.
+                assert!(read_client_line(&mut lines).starts_with("QUIT"));
+            });
+            (port, server)
+        };
+        let events = run_fixture(plain_config(port, Ircv3Options::default()), |events| {
+            channel_messages(events).len() == 1
+        });
+        server.join().unwrap();
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            Event::UserAccount { .. } | Event::UserAccountForgotten { .. }
+        )));
+    }
+
     /// Like [`run_fixture`], but `step` may queue commands as events arrive;
     /// it returns `true` once everything expected has been received.
     fn run_fixture_driven(
@@ -4497,6 +4668,7 @@ mod tests {
             metadata: false,
             peer_avatars: false,
             chathistory: false,
+            accounts: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -4590,6 +4762,7 @@ mod tests {
                 metadata: false,
                 peer_avatars: false,
                 chathistory: false,
+                accounts: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();
