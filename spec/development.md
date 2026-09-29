@@ -1077,3 +1077,12 @@ overlap dropped, one notification only for the live line. Existing fixtures
 now expect the TARGETS request after registration. No live Ergo/soju run was
 made; `cargo clippy --workspace --all-targets` fails in `crates/app` tests on
 master itself.
+
+### Real name and SETNAME checks (D032)
+
+Unit and fake-server tests cover: default/explicit/marked wire realname,
+`USER` registration, SETNAME accepted, without the capability, and rejected by
+`FAIL SETNAME`, the CAP request rule, settings migration and persistence, and
+the reconnect configuration. `cargo clippy --workspace --all-targets`
+currently fails in `crates/app` tests (`while let` lint) on master itself,
+unrelated to this change. No live Ergo/soju run was made for this change.
