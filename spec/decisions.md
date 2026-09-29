@@ -1155,6 +1155,15 @@ message to ourselves is labeled only on the echo).
   client's and is shown as before. Without labels: the oldest pending message
   to the same casemapped target with identical text and kind; a message the
   server rewrote cannot be recognized and appears as a new line.
+- **`labeled-response` coming and going** (`CAP DEL`/`NEW` on a live
+  connection, `echo-message` staying): a line carrying a label is always
+  matched, so late replies to earlier labeled requests still settle them.
+  While the capability is on, an unlabeled echo matches only messages sent
+  without a label. Once it is off, it matches every pending message,
+  including those sent with a label: they are converted to the target-and-text
+  match, so their echoes are not shown twice and they are not marked failed
+  later. A labeled message the server rewrote cannot be matched after the
+  withdrawal and is reported unconfirmed when its 60 s expire.
 - **Confirmation** (`Event::OutgoingConfirmed`): the final text replaces the
   local one only when it changed and the local line is the text itself (not a
   CTCP ACTION or a redacted service secret); msgid and time are stored and the
