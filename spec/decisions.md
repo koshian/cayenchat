@@ -1183,6 +1183,40 @@ message to ourselves is labeled only on the echo).
   beyond the failure colour; `TAGMSG` echo; label use for other commands;
   no live soju/Ergo check.
 
+## D034 — CHATHISTORY TARGETS and missed direct messages
+
+Status: implemented (draft/chathistory, experimental, same per-server opt-in).
+
+Specification (current draft): `CHATHISTORY TARGETS <timestamp=…>
+<timestamp=…> <limit>`; the reply is a `draft/chathistory-targets` batch of
+`CHATHISTORY TARGETS <nickname | channel> <timestamp>` lines, matched on each
+target's latest message; timestamps only.
+
+- **Trigger.** Once per connection, when registration completes with
+  chathistory negotiated. No polling, no user action. `from` is when the
+  session's connection was first lost since it last registered (kept in the
+  UI's `ServerSession`), at most a week back, a day when unknown (the first
+  connection of a run); `to` is now plus 5 minutes.
+- **Bounds.** Limit 16 (lowered by the server's `CHATHISTORY`), at most 64
+  reply entries kept, at most 16 peers asked, the shared 64-request queue and
+  one outstanding request at a time. A failed or unanswered TARGETS request
+  ends silently with a diagnostic note.
+- **Selection.** Nicknames only, without `!`/`@`, once per casemapped name,
+  newest first. Channels are ignored: joined channels ask on join, and a
+  channel the bouncer has but we have not joined stays undiscovered.
+- **History of a peer.** `LATEST <nick> * 50`; reply lines are kept when the
+  peer wrote them or we wrote to the peer. The peer's conversation is created
+  when the request is sent (it exists because the server named it), keyed by
+  the IRC-casemapped nickname per network, so the same nickname on two
+  servers stays separate.
+- **Quiet.** Discovery and its history use provenance `Requested`: no unread,
+  highlight or notification.
+- **Placement.** Same reservation as channel history (D027, D031): the
+  block sits where the request was made. A known conversation that already
+  received a live line meanwhile shows the missed lines after it.
+- **Not done.** Private conversations have no resume points (repeat
+  `LATEST *` only); no account-aware identity; no live soju/Ergo check.
+
 ## D033 — account-tag
 
 Status: implemented.

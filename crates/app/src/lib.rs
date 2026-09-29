@@ -1131,7 +1131,7 @@ impl AppState {
             Some(point) => {
                 self.pending_history.insert(id, point.start);
             }
-            None => self.history_requested(network, name),
+            None => self.history_requested_for(id),
         }
     }
 
@@ -1143,6 +1143,12 @@ impl AppState {
         let Some(id) = self.channel_id(network, name) else {
             return;
         };
+        self.history_requested_for(id);
+    }
+
+    /// [`AppState::history_requested`] for any conversation, such as a
+    /// private one found by the source's target discovery.
+    pub fn history_requested_for(&mut self, id: ConversationId) {
         self.resume_points.remove(&id);
         let start = self.next_message_sequence + 1;
         self.next_message_sequence += HISTORY_RESERVE as u64;
@@ -1179,6 +1185,16 @@ impl AppState {
         let Some(id) = self.channel_id(network, name) else {
             return 0;
         };
+        self.insert_history_for(id, lines, gap_note)
+    }
+
+    /// [`AppState::insert_resumed_history`] for any conversation.
+    pub fn insert_history_for(
+        &mut self,
+        id: ConversationId,
+        lines: Vec<timeline::TimelineLine>,
+        gap_note: Option<String>,
+    ) -> usize {
         let Some(start) = self.pending_history.remove(&id) else {
             return 0;
         };

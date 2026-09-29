@@ -1077,6 +1077,18 @@ duplicate handling; UI in-place confirmation, failure mark, disconnect with
 pending messages. No live Ergo/soju run was made. `cargo clippy --workspace
 --all-targets` fails in `crates/app` tests on master itself.
 
+### CHATHISTORY TARGETS checks (D034)
+
+Unit tests (`history.rs`): reply parsing and batch framing, unknown/known and
+case-duplicate peers, channel targets, invalid names, bounds (64 entries, 16
+peers, queue), FAIL and timeout, both directions of direct-message lines.
+Fake-server test: TARGETS → JOIN's LATEST → the direct message's LATEST →
+`ChannelHistory` with no live events. UI test: quiet conversation creation,
+overlap dropped, one notification only for the live line. Existing fixtures
+now expect the TARGETS request after registration. No live Ergo/soju run was
+made; `cargo clippy --workspace --all-targets` fails in `crates/app` tests on
+master itself.
+
 ### account-tag checks (D033)
 
 Unit tests: tag parsing (`*`, empty, absent), account changing between
