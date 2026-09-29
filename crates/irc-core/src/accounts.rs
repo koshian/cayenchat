@@ -552,7 +552,6 @@ mod tests {
         );
         // One at a time.
         assert!(accounts.next_who(now).is_none());
-        let none = HashMap::new();
         let mut reply = |text: &str| accounts.observe_who(&line(text));
         // Another client's WHOX reply (other token) is not ours.
         assert!(reply(":srv 354 me 77 zed zacct :Zed").is_none());
