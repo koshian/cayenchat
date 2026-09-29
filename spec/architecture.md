@@ -1225,8 +1225,36 @@ typing replaces the saved value, and a typed value wins for the connection.
 
 The UI's stderr logger keeps `irc`, `ureq`, `rustls` and keyring crates at warning
 level even under `RUST_LOG=trace`, including the IRC library's raw PASS and
-AUTHENTICATE output. There are no crash diagnostics; the copied
-connection transcript masks credential commands as before.
+AUTHENTICATE output. The copied connection transcript masks credential commands
+as before; it is independent of the Experimental tab's debug file logging.
+
+`Settings::experimental` is an additive, serde-defaulted preference group
+(default off, no settings version change). When `debug_logging` is enabled,
+`ui::diagnostics` redirects stderr to the user's absolute `stderr_file` path
+in append mode and sets the logger to debug, retaining the sensitive-target
+filter. This includes Rust's `eprintln!` and default panic hook, not only
+`log` records. Windows uses `SetStdHandle` and retains the file handle, even
+when a GUI launch has no original stderr handle; Unix replaces descriptor 2
+with `dup2`. No console is allocated. A stderr lock serializes switches with
+Rust stderr writes. Disabling restores the original destination and the
+`RUST_LOG` level (warn by default); changing paths opens the new file before
+replacing the old destination. New Unix log files use mode 0600. There is no
+background logging thread, timer or in-memory log queue; disk writes are
+synchronous, and logs grow until disabled (no rotation).
+
+Startup applies saved logging preferences before credential migration and
+GPUI initialization. Failures are shown as a startup notice without stopping
+the app. Settings changes apply immediately through the existing save path;
+while a new server form is incomplete, experimental preferences are persisted
+independently so they do not require finishing the connection form. Opening a
+file must succeed before saving the preference, and a settings-save failure
+attempts to restore the previous output. The Experimental panel
+shows the actual active destination separately from the selected file and
+surfaces errors. A file-picker cancellation changes nothing. Tab headers wrap
+so the additional tab remains reachable in the fixed-width settings panel.
+Windows release binaries use the windows subsystem; debug builds retain the
+console for development. Native libraries that cache their own stderr
+handles are outside the Rust stderr redirection guarantee.
 
 ## Attachments and image sharing
 

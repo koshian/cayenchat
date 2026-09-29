@@ -212,6 +212,32 @@ machine before claiming support. Run from a Developer shell if needed. See
 [upstream Windows guidance](https://zed.dev/docs/development/windows).
 No Windows target/toolchain or SDK was installed during bootstrap.
 
+Windows release builds set `windows_subsystem = "windows"` in the executable
+crate, so launching the distributed exe does not create a console. Debug
+builds keep the console. See the [Rust subsystem attribute](https://doc.rust-lang.org/reference/runtime.html#the-windows_subsystem-attribute).
+
+On all platforms, **Settings → Experimental → Save debug logs (stderr)**
+selects an append-only log file through the native save dialog. The switch
+and path are saved and applied immediately, including in release builds.
+Enabling without a selected file opens the dialog; Cancel leaves it off.
+Disabling restores the original stderr destination. The logger switches to
+debug while enabled and retains its credential/IRC/HTTP target filters.
+Existing logs are preserved; users should turn logging off after diagnosis
+and review the contents before sharing them. There is no log rotation.
+
+Manual checks: select a path with spaces and Japanese characters, enable
+logging, change its path while enabled, disable it, and relaunch to verify
+persistence. Check the active destination label and appended session marker.
+Cancel the picker and try an unwritable destination: preferences must not
+claim a successful save, and an already active log must continue receiving
+stderr. On Windows, launch the release exe directly from Explorer and verify
+that neither enabling nor disabling logging opens a console. Inspect the
+PE header with `dumpbin /headers cayenchat.exe` (subsystem Windows GUI).
+The isolated subprocess tests in `ui::diagnostics` cover direct stderr,
+logger output, panic hooks, failed switches, append/re-enable and restoration;
+a Windows-only test also starts with a null standard-error handle. The Windows
+x86_64 CI job builds release and checks the PE subsystem is Windows GUI.
+
 ### Linux (not yet verified)
 
 The `ui` crate enables GPUI's `wayland` and `x11` features only for Linux. Build
