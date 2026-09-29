@@ -135,6 +135,52 @@ CAYENCHAT_INTEROP_IRC=127.0.0.1:36667 cargo test -p cayenchat-irc-core -- --igno
 （`scripts/e2e/history_gui.py`）。いまはチャンネル履歴（スクロールで古い履歴を
 読み込む、再接続で取りこぼしを回収する）を確認します。所要時間は約 2 分です。
 
+### 手でチャンネル履歴を試す（macOS・Linux）
+
+自分の画面でクライアントを動かして確かめるための遊び場です。
+`scripts/e2e/manual_history.py` がローカルの Ergo を起動し、`bob` にチャンネルを
+埋めさせ、CayenChat との間に切断を起こせる中継を置きます。コマンドで bob に
+発言させたり、接続を切ったりできます。ネットワークには出ません。
+
+```sh
+# 1. Ergo を用意（初回はビルドに少し時間がかかります）
+ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh /tmp/cayenchat-ergo 36667
+# 2. 遊び場を起動（このターミナルでコマンドを打ちます）
+python3 scripts/e2e/manual_history.py --ergo-dir /tmp/cayenchat-ergo
+# 3. 別のターミナルでクライアントを起動
+cargo run --locked -p cayenchat-ui
+```
+
+クライアントの設定でサーバーを追加します：ホスト `127.0.0.1`、ポート `36668`
+（中継。Ergo の 36667 ではありません）、TLS オフ、ニックネームは任意、チャンネル
+`#demo`。IRCv3 タブで履歴のオプションをオンにします（batch・server-time・
+message-tags はこれだけで要求されます）。普段の設定を汚したくなければ
+`cargo run --locked -p cayenchat-ui --features test-build` で起動すると、毎回空の
+設定で始まります（その場合サーバーは毎回追加します）。
+
+遊び場のコマンド：`say テキスト`（bob が発言）、`fill 数`（番号付きの行をまとめて
+発言）、`cut [秒]`（接続を切り、指定秒または `up` まで再接続を拒否）、`up`、
+`sent`（クライアントが送った CHATHISTORY コマンドの一覧）、`quit`。
+
+試し方の例：
+
+- **古い履歴の読み込み**：接続すると最新 50 行が出ます。ログを上へスクロール
+  すると 50 行ずつ読み込まれ、`line 001` まで遡れます。読み込みのたびに表示中の
+  行が動かないこと、先頭まで行ったらそれ以上要求しないこと（`sent` で確認）を
+  見ます。7 行ごとに折り返す長い行があります。
+- **取りこぼしの回収**：`say A` → `cut 5` → `say B` → `say C` と打つと、5 秒後
+  にクライアントが自動で再接続し、B と C が A の直後（再参加の行より前）に入り
+  ます。その後 `say D` がライブで続きます。`sent` に
+  `CHATHISTORY LATEST #demo msgid=… 50` が出ます。
+- **回収しきれない場合**：`cut` の後に `fill 80` で 50 行を超えて発言してから
+  `up` すると、回収は最新 50 行までで、その前に「Some messages sent while
+  disconnected are not shown.」の行が入ります。
+- **履歴オプションがオフの場合**：オプションを外して接続し直すと、履歴の要求も
+  回収も行われません。
+
+終わったら `quit` で Ergo が止まります。Ergo の履歴はメモリ上だけなので、
+遊び場を起動し直すと空から始まります。
+
 ### 何をどう確かめているか
 
 アプリ本体にテスト用の仕組みは入れず、外から観測できるものだけで判定します。

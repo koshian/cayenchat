@@ -144,7 +144,7 @@ class Proxy:
     hold the server's answers after a CHATHISTORY BEFORE, and can cut and
     refuse the link."""
 
-    def __init__(self, upstream):
+    def __init__(self, upstream, port=0):
         self.upstream = upstream
         self.sent = []
         self.accepting = True
@@ -155,7 +155,7 @@ class Proxy:
         self.lock = threading.Lock()
         self.server = socket.socket()
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server.bind(("127.0.0.1", 0))
+        self.server.bind(("127.0.0.1", port))
         self.server.listen()
         self.port = self.server.getsockname()[1]
         threading.Thread(target=self.accept, daemon=True).start()

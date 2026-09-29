@@ -141,6 +141,53 @@ keyboard like a user. It currently checks channel history (loading older
 pages by scrolling, recovering lines missed during a reconnect). It takes
 about two minutes.
 
+### Trying channel history by hand (macOS and Linux)
+
+A playground for watching the client on your own screen.
+`scripts/e2e/manual_history.py` starts the local Ergo, has `bob` fill a
+channel, and puts a proxy between CayenChat and Ergo that can cut the link.
+You type commands to make bob talk or to cut the connection. Nothing leaves
+the machine.
+
+```sh
+# 1. Prepare Ergo (the first build takes a while)
+ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh /tmp/cayenchat-ergo 36667
+# 2. Start the playground (type commands in this terminal)
+python3 scripts/e2e/manual_history.py --ergo-dir /tmp/cayenchat-ergo
+# 3. In another terminal, start the client
+cargo run --locked -p cayenchat-ui
+```
+
+Add a server in the client's settings: host `127.0.0.1`, port `36668` (the
+proxy, not Ergo's 36667), TLS off, any nickname, channel `#demo`, and turn
+on the history option in the IRCv3 tab (it requests batch, server-time and
+message-tags by itself). To keep your usual settings untouched, run
+`cargo run --locked -p cayenchat-ui --features test-build`, which starts
+with empty settings every time (add the server each time then).
+
+Playground commands: `say TEXT` (bob speaks), `fill N` (N numbered lines),
+`cut [SECS]` (cut the link and refuse reconnects for SECS or until `up`),
+`up`, `sent` (the CHATHISTORY commands the client sent), `quit`.
+
+Things to try:
+
+- **Older pages**: after connecting, the latest 50 lines are shown.
+  Scrolling up loads 50 more at a time back to `line 001`. Check that the
+  lines on screen do not move when a page arrives and that nothing more is
+  asked for at the beginning (`sent`). Every seventh line wraps.
+- **Gap recovery**: `say A`, `cut 5`, `say B`, `say C`. The client
+  reconnects by itself after a few seconds; B and C appear right after A,
+  before the rejoin line, and `say D` then follows live. `sent` shows
+  `CHATHISTORY LATEST #demo msgid=… 50`.
+- **A gap too long to recover**: after `cut`, `fill 80` and then `up`: only
+  the latest 50 are recovered, preceded by "Some messages sent while
+  disconnected are not shown."
+- **History option off**: turn it off and reconnect; nothing is requested
+  or recovered.
+
+`quit` stops Ergo. Ergo keeps history in memory only, so the playground
+starts empty each time.
+
 ### What it checks, and how
 
 The application has no test hook; everything is observed from outside.
