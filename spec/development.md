@@ -1076,3 +1076,12 @@ labeled echo/batch/error, echo-only and no-echo servers; app confirm/fail and
 duplicate handling; UI in-place confirmation, failure mark, disconnect with
 pending messages. No live Ergo/soju run was made. `cargo clippy --workspace
 --all-targets` fails in `crates/app` tests on master itself.
+
+### Real name and SETNAME checks (D032)
+
+Unit and fake-server tests cover: default/explicit/marked wire realname,
+`USER` registration, SETNAME accepted, without the capability, and rejected by
+`FAIL SETNAME`, the CAP request rule, settings migration and persistence, and
+the reconnect configuration. `cargo clippy --workspace --all-targets`
+currently fails in `crates/app` tests (`while let` lint) on master itself,
+unrelated to this change. No live Ergo/soju run was made for this change.

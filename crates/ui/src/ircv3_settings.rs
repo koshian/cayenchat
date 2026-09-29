@@ -275,16 +275,13 @@ impl SettingsWindow {
             .flex_wrap()
             .items_center()
             .gap_2()
-            .when(
-                provider.is_some() && uploading.is_none(),
-                |row| {
-                    row.child(
-                        button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
-                            cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
-                        ),
-                    )
-                },
-            )
+            .when(provider.is_some() && uploading.is_none(), |row| {
+                row.child(
+                    button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
+                        cx.listener(|this, _, window, cx| this.choose_avatar_image(window, cx)),
+                    ),
+                )
+            })
             .when_some(uploading, |row, provider| {
                 row.child(
                     self.i18n
@@ -1348,6 +1345,17 @@ mod own_avatar_tests {
         }
     }
 
+    /// Queues `/msg <peer> x` behind what was sent to the worker so far;
+    /// the test server waits for that line before it goes on.
+    fn sync_after_changes(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext, peer: &str) {
+        chat.update(cx, |chat, _| {
+            let connection = chat.sessions[&NetworkId(1)].irc.as_ref().unwrap();
+            connection
+                .send_command(&format!("/msg {peer} x"), None)
+                .unwrap();
+        });
+    }
+
     fn status(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) -> super::OwnAvatarStatus {
         chat.read_with(cx, |chat, _| {
             let id = chat.saved.servers[0].id.clone();
@@ -1427,8 +1435,12 @@ mod own_avatar_tests {
             send(":srv.example 001 me :Welcome\r\n:srv.example 376 me :End\r\n");
             // A query before sharing, then a line the test waits for.
             send(":early!u@h PRIVMSG me :\x01AVATAR\x01\r\n:early!u@h PRIVMSG me :hi\r\n");
-            // After an autosaved draft and an explicit Share.
+            // After an autosaved draft and an explicit Share. The worker
+            // takes commands and server lines in no fixed order, so the
+            // query waits for a line queued after the change: once it
+            // arrives, the change has been applied.
             step_rx.recv().unwrap();
+            while read_line(&mut lines) != "PRIVMSG sync1 x" {}
             send(":kv!u@h PRIVMSG me :\x01AVATAR\x01\r\n");
             assert_eq!(
                 read_line(&mut lines),
@@ -1437,6 +1449,7 @@ mod own_avatar_tests {
             );
             // After turning the option off: not answered.
             step_rx.recv().unwrap();
+            while read_line(&mut lines) != "PRIVMSG sync2 x" {}
             send(":kv2!u@h PRIVMSG me :\x01AVATAR\x01\r\n:kv2!u@h PRIVMSG me :still there?\r\n");
             assert!(read_line(&mut lines).starts_with("QUIT"));
         });
@@ -1498,6 +1511,7 @@ mod own_avatar_tests {
             assert!(!session.peer_avatars.advertised);
             assert!(session.active_config.as_ref().unwrap().advertises_avatar());
         });
+        sync_after_changes(&chat, cx, "sync1");
         step_tx.send(()).unwrap();
         // The answer goes out before anything else changes.
         pump(
@@ -1520,6 +1534,7 @@ mod own_avatar_tests {
             let config = chat.sessions[&NetworkId(1)].active_config.clone().unwrap();
             assert!(!config.ircv3.peer_avatars && config.shared_avatar.is_none());
         });
+        sync_after_changes(&chat, cx, "sync2");
         step_tx.send(()).unwrap();
         pump(
             &chat,

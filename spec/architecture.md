@@ -605,6 +605,13 @@ the subset avatars need:
   Losing the capability sends `Event::AvatarsReset`. Everything lives in the
   connection's worker, so a reconnect starts empty.
 
+Real name and `setname` (D032): `ConnectionConfig::realname` is the clean
+user value; `wire_realname()` adds the avatar mark for `USER`, and the worker
+adds the connection's mark to `SETNAME`. `Outgoing::SetName` is answered by
+`Event::RealNameChanged` / `Event::RealNameFailed`; the worker keeps only a
+counter (at most four) of unanswered requests. The UI applies a changed
+setting from `apply_servers`, next to the CTCP AVATAR share URL.
+
 CTCP AVATAR (experimental, D025): `Ircv3Options::peer_avatars` needs no
 capability. `irc-core::peer_avatar::PeerAvatars` exists in the worker
 only while it is on:

@@ -28,6 +28,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
+- DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
 - PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
@@ -140,6 +141,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
 - DONE — echo-message and labeled-response (IRCv3 standard, one per-server opt-in "Server-confirmed sending", default off): the message still appears at once; the server's echo confirms it in place (final text, msgid, server time), a labeled ACK/error/batch names it exactly, a rejected or unconfirmed message is drawn in the warning color; what other clients of the account send shows as before. `labeled-response` needs `batch` and `message-tags` (requested automatically, UTF-8 connections only); on a server with only `echo-message` an echo is matched by target and identical text
+- DONE — setname (IRCv3 standard): the per-server `Real name` setting is sent in `USER`; changing it while connected sends `SETNAME` when the server enabled `setname`, otherwise it applies at the next connection. Requested only when a CAP negotiation happens anyway (SASL or another opt-in), so plain registration is unchanged. Others' SETNAME changes are not tracked
 - TODO — account-related capabilities
 - TODO — extended-join
 - TODO — away-notify
