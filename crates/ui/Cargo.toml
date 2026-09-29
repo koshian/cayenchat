@@ -69,7 +69,11 @@ gpui = { workspace = true, features = ["wayland", "x11"] }
 ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
 futures-util.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
 gpui = { workspace = true, features = ["windows-manifest"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]

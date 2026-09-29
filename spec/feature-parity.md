@@ -29,7 +29,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
 - DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
-- PARTIAL — mock topic kept in application state; display/editing not implemented
+- PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
 - DONE — IRCnet `!` safe-channel targets in auto-join, messages, rosters, channel commands and WHOIS links; preserve the full name returned by the server
@@ -123,6 +123,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
 - DONE — settings open in a separate window; closing it leaves the chat window running
+- DONE — Experimental settings tab with opt-in stderr file logging, native destination picker, immediate switching, append and saved preferences; Windows release builds suppress the startup console (Windows runtime verification pending)
 - DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D021)
 - DONE — persisted channel auto-join list
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window

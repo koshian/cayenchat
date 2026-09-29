@@ -931,6 +931,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "image",
+ "libc",
  "log",
  "native-theme",
  "native-theme-derive",
@@ -942,6 +943,7 @@ dependencies = [
  "tempfile",
  "unicode-segmentation",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
