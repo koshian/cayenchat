@@ -48,9 +48,11 @@ const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
 /// hostile server cannot grow memory by never finishing them.
 const MAX_PENDING_WHOIS: usize = 32;
 const MAX_WHOIS_ITEMS: usize = 512;
-/// The realname sent in `USER`; with a shared peer avatar it starts with
-/// KVIrc's avatar mark.
+/// The realname sent in `USER` when none is configured; with a shared peer
+/// avatar it starts with KVIrc's avatar mark.
 const REALNAME: &str = "CayenChat";
+/// `SETNAME` requests waiting for an answer; a server answers each in order.
+const MAX_PENDING_SETNAME: usize = 4;
 
 fn ensure_tls_crypto_provider() -> Result<(), String> {
     use rustls::crypto::CryptoProvider;
@@ -89,6 +91,9 @@ pub struct ConnectionConfig {
     pub nickname: String,
     /// The `USER` command's username (ident), independent of the nickname.
     pub username: String,
+    /// The configured real name (GECOS); empty means the built-in default.
+    /// The avatar mark is added on the wire only, never stored here.
+    pub realname: String,
     pub channels: Vec<String>,
     pub use_tls: bool,
     pub verify_tls_certificates: bool,
@@ -118,6 +123,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("port", &self.port)
             .field("nickname", &self.nickname)
             .field("username", &self.username)
+            .field("realname", &self.realname)
             .field("channels", &self.channels)
             .field("use_tls", &self.use_tls)
             .field("verify_tls_certificates", &self.verify_tls_certificates)
@@ -143,6 +149,7 @@ impl ConnectionConfig {
             host,
             port: 6697,
             username: nickname.clone(),
+            realname: String::new(),
             nickname,
             channels,
             use_tls: true,
@@ -161,6 +168,12 @@ impl ConnectionConfig {
     /// with peer exchange on and a URL explicitly shared.
     pub fn advertises_avatar(&self) -> bool {
         self.ircv3.peer_avatars && self.shared_avatar.is_some()
+    }
+
+    /// The realname as sent in `USER` and `SETNAME`: the configured value
+    /// (or the default), with KVIrc's avatar mark when an avatar is shared.
+    pub(crate) fn wire_realname(&self) -> String {
+        peer_avatar::realname(base_realname(&self.realname), self.advertises_avatar())
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -189,6 +202,7 @@ impl ConnectionConfig {
         {
             return Err("Username must not be empty or contain spaces, controls or @.".into());
         }
+        check_realname(&self.realname)?;
         for channel in &self.channels {
             if !valid_channel(channel) {
                 return Err(format!("Invalid channel name: {channel}"));
@@ -197,7 +211,7 @@ impl ConnectionConfig {
         }
         validate_wire(&format!("NICK {}\r\n", self.nickname), &self.encoding)?;
         validate_wire(
-            &format!("USER {} 0 * :{REALNAME}\r\n", self.username),
+            &format!("USER {} 0 * :{}\r\n", self.username, self.wire_realname()),
             &self.encoding,
         )?;
         if let Some(url) = &self.shared_avatar {
@@ -234,6 +248,25 @@ impl ConnectionConfig {
         }
         Ok(())
     }
+}
+
+/// The configured realname, or the default when it is blank.
+fn base_realname(configured: &str) -> &str {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        REALNAME
+    } else {
+        configured
+    }
+}
+
+/// A realname must fit one line; the encoding and length are checked with
+/// the whole command.
+fn check_realname(value: &str) -> Result<(), String> {
+    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
+        return Err("Real name must not contain line breaks.".into());
+    }
+    Ok(())
 }
 
 fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
@@ -427,6 +460,13 @@ pub enum Event {
         url: Option<String>,
         request: Option<u64>,
     },
+    /// Our realname is now `realname` (without the avatar mark): the server
+    /// confirmed our `SETNAME`, or another client of ours changed it.
+    RealNameChanged {
+        realname: String,
+    },
+    /// Our `SETNAME` did not succeed.
+    RealNameFailed(RealNameFailure),
     /// Our request `request` to publish or remove our avatar did not
     /// succeed.
     OwnAvatarFailed {
@@ -483,6 +523,17 @@ pub enum ChannelActivityKind {
     Left { reason: Option<String> },
     Quit { reason: Option<String> },
     ModeChanged { modes: String },
+}
+
+/// Why a `SETNAME` did not change the realname.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RealNameFailure {
+    /// `setname` is not enabled on this connection, or it is not registered.
+    Unsupported,
+    /// Too many requests are still waiting for the server.
+    Busy,
+    /// `FAIL SETNAME`; carries the server's description.
+    Rejected(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -667,6 +718,9 @@ enum Outgoing {
     },
     /// The URL answered to CTCP AVATAR queries (`None`: stop answering).
     ShareAvatar(Option<String>),
+    /// Change the realname with `SETNAME`; the text is the configured value
+    /// without the avatar mark.
+    SetName(String),
     /// One page of `channel`'s history before `reference`.
     OlderHistory {
         channel: String,
@@ -705,6 +759,10 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
         Outgoing::OlderHistory { channel, .. } => IrcMessage::from(IrcCommand::Raw(
             "CHATHISTORY".into(),
             vec!["BEFORE".into(), channel.clone(), "*".into(), "1".into()],
+        )),
+        Outgoing::SetName(realname) => IrcMessage::from(IrcCommand::Raw(
+            "SETNAME".into(),
+            vec![peer_avatar::realname(base_realname(realname), true)],
         )),
         Outgoing::Quit => return Ok(()),
     };
@@ -1108,6 +1166,20 @@ impl Connection {
             .map_err(|error| format!("Could not queue avatar sharing: {error}"))
     }
 
+    /// Changes the realname on this connection with IRCv3 `SETNAME`. The
+    /// outcome arrives as [`Event::RealNameChanged`] or
+    /// [`Event::RealNameFailed`]; without `setname` the latter is immediate
+    /// and the value applies at the next connection. `Err` means the value
+    /// cannot be sent and nothing was queued.
+    pub fn set_real_name(&self, realname: &str) -> Result<(), String> {
+        check_realname(realname)?;
+        let outgoing = Outgoing::SetName(realname.to_owned());
+        validate_outgoing(&outgoing, &self.encoding)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue realname change: {error}"))
+    }
+
     /// Asks for up to `limit` lines of `channel`'s history before
     /// `reference` (the oldest message the caller holds), as request
     /// `request`. The lines, or the reason there are none, arrive as one
@@ -1152,7 +1224,7 @@ fn library_config(config: &ConnectionConfig) -> Config {
         port: Some(config.port),
         nickname: Some(config.nickname.clone()),
         username: Some(config.username.clone()),
-        realname: Some(peer_avatar::realname(REALNAME, config.advertises_avatar())),
+        realname: Some(config.wire_realname()),
         password: config.server_password.clone(),
         channels: config.channels.clone(),
         use_tls: Some(config.use_tls),
@@ -1235,6 +1307,9 @@ async fn run_cancellable(
     let auto_join_channels = config.channels.clone();
     let irc_config = library_config(&config);
     let advertise_avatar = config.advertises_avatar();
+    let registration_realname = config.wire_realname();
+    // The avatar mark is fixed for the connection, also for SETNAME.
+    let mut pending_setname = 0usize;
     let mut peers = config.ircv3.peer_avatars.then(|| {
         peer_avatar::PeerAvatars::new(
             wire_encoding.eq_ignore_ascii_case("UTF-8"),
@@ -1376,7 +1451,7 @@ async fn run_cancellable(
     registration.push(IrcCommand::USER(
         registration_user,
         "0".into(),
-        peer_avatar::realname(REALNAME, advertise_avatar),
+        registration_realname,
     ));
     for command in registration {
         let message = IrcMessage::from(command);
@@ -1489,6 +1564,34 @@ async fn run_cancellable(
                     Outgoing::ShareAvatar(url) => {
                         if let Some(peers) = peers.as_mut() {
                             peers.set_share(url);
+                        }
+                    }
+                    Outgoing::SetName(realname) => {
+                        let failure = if !registered || !negotiation.enabled(cap::SETNAME) {
+                            Some(RealNameFailure::Unsupported)
+                        } else if pending_setname >= MAX_PENDING_SETNAME {
+                            Some(RealNameFailure::Busy)
+                        } else {
+                            let message = IrcMessage::from(IrcCommand::Raw(
+                                "SETNAME".into(),
+                                vec![peer_avatar::realname(base_realname(&realname), advertise_avatar)],
+                            ));
+                            let line = redacted_wire_line(&message);
+                            match validate_wire(&message.to_string(), &wire_encoding)
+                                .and_then(|_| client.send(message).map_err(|error| error.to_string()))
+                            {
+                                Ok(()) => {
+                                    pending_setname += 1;
+                                    wire(&events, started, WireDirection::Sent, line).await;
+                                    None
+                                }
+                                Err(error) => Some(RealNameFailure::Rejected(error)),
+                            }
+                        };
+                        if let Some(failure) = failure
+                            && events.send(Event::RealNameFailed(failure)).await.is_err()
+                        {
+                            break;
                         }
                     }
                     Outgoing::OlderHistory { channel, request, reference, limit } => {
@@ -1658,6 +1761,36 @@ async fn run_cancellable(
                                     continue;
                                 }
                             }
+                        }
+                        // The server withdrew setname: waiting requests end.
+                        if pending_setname > 0 && !negotiation.enabled(cap::SETNAME) {
+                            pending_setname = 0;
+                            if events.send(Event::RealNameFailed(RealNameFailure::Unsupported)).await.is_err() {
+                                return;
+                            }
+                        }
+                        // SETNAME is never chat: ours is reported, others' are
+                        // not tracked.
+                        match &message.command {
+                            IrcCommand::Raw(verb, args) if verb == "SETNAME" => {
+                                if message.source_nickname() == Some(current_nick.as_str()) {
+                                    pending_setname = pending_setname.saturating_sub(1);
+                                    let realname = args.last().map(String::as_str).unwrap_or_default();
+                                    let event = Event::RealNameChanged {
+                                        realname: peer_avatar::without_mark(realname).to_owned(),
+                                    };
+                                    if events.send(event).await.is_err() { return; }
+                                }
+                                continue;
+                            }
+                            IrcCommand::Raw(verb, args) if verb == "FAIL" && args.first().is_some_and(|c| c == "SETNAME") => {
+                                pending_setname = pending_setname.saturating_sub(1);
+                                let detail = args.last().filter(|_| args.len() > 1).cloned().unwrap_or_default();
+                                let event = Event::RealNameFailed(RealNameFailure::Rejected(detail));
+                                if events.send(event).await.is_err() { return; }
+                                continue;
+                            }
+                            _ => {}
                         }
                         if metadata_enabled {
                             let joined = client.list_channels().unwrap_or_default();
@@ -5246,6 +5379,192 @@ mod tests {
         assert!(avatar_events(&events).is_empty());
         assert!(events.iter().any(|event| matches!(event,
             Event::ServerLine(line) if line == "CTCP AVATAR request from kv (not answered)")));
+    }
+
+    #[test]
+    fn the_configured_realname_is_registered_with_the_avatar_mark_only_on_the_wire() {
+        let mut config = plain_config(6667, Ircv3Options::default());
+        assert_eq!(
+            config.wire_realname(),
+            "CayenChat",
+            "unset keeps the default"
+        );
+        config.realname = "   ".into();
+        assert_eq!(config.wire_realname(), "CayenChat", "blank is unset");
+        config.realname = " Alice Liddell ".into();
+        assert_eq!(config.wire_realname(), "Alice Liddell");
+        config.ircv3.peer_avatars = true;
+        config.shared_avatar = Some("https://example.com/a.png".into());
+        assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice Liddell");
+        assert_eq!(
+            config.realname, " Alice Liddell ",
+            "the setting stays clean"
+        );
+        assert_eq!(
+            peer_avatar::without_mark(&config.wire_realname()),
+            "Alice Liddell"
+        );
+        assert!(config.validate().is_ok());
+        config.realname = "a\r\nQUIT".into();
+        assert!(config.validate().is_err());
+        assert!(
+            Connection::connect(config)
+                .err()
+                .is_some_and(|error| error.contains("line breaks"))
+        );
+    }
+
+    /// Serves registration with the capabilities in `offer`, then runs
+    /// `script` and quits. Returns the client's USER line.
+    fn setname_server(
+        offer: &'static str,
+        script: impl FnOnce(&mut dyn FnMut(&str), &mut BufReader<std::net::TcpStream>) + Send + 'static,
+    ) -> (u16, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let mut send = |text: &str| socket.write_all(text.as_bytes()).unwrap();
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            send(&format!(":srv CAP * LS :{offer}\r\n"));
+            let registration: Vec<String> = (0..2).map(|_| read_client_line(&mut lines)).collect();
+            let mut user = registration
+                .iter()
+                .find(|line| line.starts_with("USER "))
+                .cloned();
+            loop {
+                let line = read_client_line(&mut lines);
+                if let Some(cap) = line.strip_prefix("CAP REQ ") {
+                    send(&format!(":srv CAP * ACK :{cap}\r\n"));
+                } else if line == "CAP END" {
+                    break;
+                } else if line.starts_with("USER ") {
+                    user = Some(line);
+                }
+            }
+            send(":srv 001 alice :Welcome\r\n");
+            script(&mut send, &mut lines);
+            user.expect("USER was sent")
+        });
+        (port, server)
+    }
+
+    fn wait_for(connection: &mut Connection, want: impl Fn(&Event) -> bool) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            match connection.try_recv() {
+                Some(event) if want(&event) => return event,
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        panic!("event did not arrive");
+    }
+
+    fn setname_options() -> Ircv3Options {
+        Ircv3Options {
+            server_time: true,
+            ..Ircv3Options::default()
+        }
+    }
+
+    #[test]
+    fn setname_changes_the_realname_and_the_server_confirms_it() {
+        let (port, server) = setname_server("server-time setname", |send, lines| {
+            assert_eq!(
+                read_client_line(lines),
+                "SETNAME :\u{3}4\u{f}Bob Builder",
+                "the avatar mark of this connection is kept"
+            );
+            send(":alice!u@h SETNAME :\u{3}4\u{f}Bob Builder\r\n");
+            // Another user's change is not ours and not shown.
+            send(":bob!u@h SETNAME :Other\r\n");
+            assert_eq!(read_client_line(lines), "SETNAME \u{3}4\u{f}Again");
+            send(":alice!u@h SETNAME :\u{3}4\u{f}Again\r\n");
+            let _ = read_client_line(lines);
+        });
+        let mut config = plain_config(port, setname_options());
+        config.realname = "Alice".into();
+        config.ircv3.peer_avatars = true;
+        config.shared_avatar = Some("https://example.com/a.png".into());
+        let mut connection = Connection::connect(config).unwrap();
+        wait_for(&mut connection, |event| {
+            matches!(event, Event::Registered { .. })
+        });
+        connection.set_real_name("Bob Builder").unwrap();
+        assert_eq!(
+            wait_for(&mut connection, |event| matches!(
+                event,
+                Event::RealNameChanged { .. }
+            )),
+            Event::RealNameChanged {
+                realname: "Bob Builder".into()
+            }
+        );
+        connection.set_real_name("Again").unwrap();
+        assert_eq!(
+            wait_for(&mut connection, |event| matches!(
+                event,
+                Event::RealNameChanged { .. }
+            )),
+            Event::RealNameChanged {
+                realname: "Again".into()
+            }
+        );
+        connection.disconnect().unwrap();
+        assert_eq!(server.join().unwrap(), "USER alice 0 * \u{3}4\u{f}Alice");
+    }
+
+    #[test]
+    fn setname_without_the_capability_is_reported_at_once() {
+        let (port, server) = setname_server("server-time", |_, lines| {
+            // Nothing may reach the server; the next line is the QUIT.
+            assert!(read_client_line(lines).starts_with("QUIT"));
+        });
+        let mut config = plain_config(port, setname_options());
+        config.realname = "Alice".into();
+        let mut connection = Connection::connect(config).unwrap();
+        wait_for(&mut connection, |event| {
+            matches!(event, Event::Registered { .. })
+        });
+        connection.set_real_name("Bob").unwrap();
+        assert_eq!(
+            wait_for(&mut connection, |event| matches!(
+                event,
+                Event::RealNameFailed(_)
+            )),
+            Event::RealNameFailed(RealNameFailure::Unsupported)
+        );
+        connection.disconnect().unwrap();
+        assert_eq!(server.join().unwrap(), "USER alice 0 * Alice");
+    }
+
+    #[test]
+    fn a_rejected_setname_carries_the_servers_reason() {
+        let (port, server) = setname_server("setname", |send, lines| {
+            assert_eq!(read_client_line(lines), "SETNAME Bob");
+            send("FAIL SETNAME INVALID_REALNAME :Real name is not valid\r\n");
+            assert!(read_client_line(lines).starts_with("QUIT"));
+        });
+        let mut connection = Connection::connect(plain_config(port, setname_options())).unwrap();
+        wait_for(&mut connection, |event| {
+            matches!(event, Event::Registered { .. })
+        });
+        assert!(connection.set_real_name("a\nb").is_err());
+        connection.set_real_name("Bob").unwrap();
+        assert_eq!(
+            wait_for(&mut connection, |event| matches!(
+                event,
+                Event::RealNameFailed(_)
+            )),
+            Event::RealNameFailed(RealNameFailure::Rejected("Real name is not valid".into()))
+        );
+        connection.disconnect().unwrap();
+        assert_eq!(server.join().unwrap(), "USER alice 0 * CayenChat");
     }
 
     #[test]

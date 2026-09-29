@@ -28,6 +28,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
+- DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
 - PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
@@ -142,6 +143,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - TODO — echo-message and labeled-response
 - DONE — account-tag (IRCv3 standard): the sender's services account at send time is retained on each channel/private/history message (`Message::account`, not shown in the log; the WHOIS dialog keeps showing the 330 account). Requested when a CAP negotiation happens anyway, on UTF-8 connections only
 - TODO — account-notify (account-tag alone says nothing about users who have not spoken)
+- DONE — setname (IRCv3 standard): the per-server `Real name` setting is sent in `USER`; changing it while connected sends `SETNAME` when the server enabled `setname`, otherwise it applies at the next connection. Requested only when a CAP negotiation happens anyway (SASL or another opt-in), so plain registration is unchanged. Others' SETNAME changes are not tracked
 - TODO — extended-join
 - TODO — away-notify
 - PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS

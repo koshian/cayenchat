@@ -24,6 +24,9 @@ pub const BATCH: &str = "batch";
 /// The sender's services account on each message. Requested only when a
 /// negotiation happens anyway, and not on legacy encodings (values are UTF-8).
 pub const ACCOUNT_TAG: &str = "account-tag";
+/// Change the realname on a live connection. Requested only when a
+/// negotiation happens anyway, so plain registration is unchanged.
+pub const SETNAME: &str = "setname";
 /// The experimental metadata draft, used only for user avatars. The legacy
 /// `metadata-notify` is never requested: the draft forbids asking for both.
 pub const METADATA: &str = "draft/metadata-2";
@@ -141,9 +144,15 @@ impl CapNegotiation {
             optional.push(CHATHISTORY);
             explicit.push(CHATHISTORY);
         }
-        if (sasl.is_some() || !optional.is_empty()) && utf8 {
-            optional.push(ACCOUNT_TAG);
-            explicit.push(ACCOUNT_TAG);
+        // Extensions that are asked for only when a negotiation happens
+        // anyway, so plain registration stays as it was.
+        if sasl.is_some() || !optional.is_empty() {
+            if utf8 {
+                optional.push(ACCOUNT_TAG);
+                explicit.push(ACCOUNT_TAG);
+            }
+            optional.push(SETNAME);
+            explicit.push(SETNAME);
         }
         Self {
             phase: Phase::Inactive,
@@ -735,6 +744,30 @@ mod tests {
 
         let mut cap = CapNegotiation::new(options(true, false), None, false);
         assert_eq!(String::from(&cap.start()), "CAP END");
+    }
+
+    // setname: requested only when a negotiation happens anyway and the
+    // server offers it, so plain registration is unchanged.
+    #[test]
+    fn setname_is_requested_only_beside_other_negotiation() {
+        let mut plain = CapNegotiation::new(Ircv3Options::default(), None, true);
+        assert_eq!(String::from(&plain.start()), "CAP END");
+
+        let mut cap = CapNegotiation::new(options(false, true), None, true);
+        cap.start();
+        let step = cap
+            .observe(&line(":s CAP * LS :server-time setname"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time", "CAP REQ setname"]);
+        cap.observe(&line(":s CAP * ACK :setname")).unwrap();
+        assert!(cap.enabled(SETNAME));
+
+        let mut without = CapNegotiation::new(options(false, true), None, true);
+        without.start();
+        let step = without.observe(&line(":s CAP * LS :server-time")).unwrap();
+        assert_eq!(sent(&step), ["CAP REQ server-time"]);
+        without.observe(&line(":s CAP * ACK :server-time")).unwrap();
+        assert!(!without.enabled(SETNAME));
     }
 
     #[test]
