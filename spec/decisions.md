@@ -37,7 +37,9 @@ rather than contemporary web-chat aesthetics. Its four information panes are a
 structural requirement: channels, selected-channel log, other-channel subwindow
 and user list. Follow the two-column reference arrangement: main log and subwindow
 on the left with the draft input between them; users above the channel tree on
-the right.
+the right. The bottom edge of the draft input is a drag handle that moves the
+split between the two logs (10%–90%, a double click restores an even split);
+the split is kept for the run only, not saved.
 
 This is a design direction, not a requirement for pixel-perfect reproduction.
 
@@ -746,10 +748,11 @@ or a server profile), and the returned URL replaces that server's avatar
 draft if it passes the same checks and is then sent to the server at once
 (users expect an uploaded avatar to be in use); if the server is not
 connected the draft is kept, a line says it was not sent, and Send
-remains available. Because an upload is sent at once, "Choose Image…",
-dropping and pasting an image are offered only while the server can
-receive an avatar (connected, capability negotiated); on a server without
-avatar metadata, or while disconnected, only the URL field is shown. When
+remains available. "Choose Image…", dropping and pasting an image are
+offered whatever the server supports (also disconnected, or on a server
+without avatar metadata, so the URL can be shared with peers through CTCP
+AVATAR); the image is sent to the server at once only when it can receive
+an avatar (connected, capability negotiated). When
 the current connection asked for avatar metadata (option and batch on when
 it started) and registration completed without it being enabled, the
 section says that the IRC server does not support avatars; this is an
@@ -1155,3 +1158,10 @@ username (ident) and the SASL account.
   beyond that are the server's (`FAIL SETNAME INVALID_REALNAME`).
 - **Not tracked.** Other users' `SETNAME` messages are consumed silently; the
   remote realname is not stored (workstream for extended-join/WHOIS).
+
+## Text input scrolling
+
+`TextInput` is a single line drawn by GPUI. When the text is wider than the
+box it scrolls horizontally (`scroll_x`, computed in `prepaint`) so the caret
+stays visible, i.e. the end of what is being typed; painting is clipped to the
+box, and mouse and IME positions add `scroll_x`.

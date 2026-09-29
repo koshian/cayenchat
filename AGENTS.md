@@ -1,9 +1,11 @@
 Reply to the user in Japanese.
 
-Read the relevant files under `spec/` before working, and update them when necessary.
+Read relevant files under `spec/` before working, and update them when necessary.
 
 Do not overwrite or commit unrelated user changes.
 
-Commit completed work frequently in small, concern-specific commits. Write concise commit messages in English imperative form.
+Prefer a new worktree for each task. Do not reuse existing worktrees or branches without permission.
 
-他エージェントとの衝突回避のため、原則として新規 worktree を作成して作業する。既存 worktree/ブランチを勝手に再利用しない。
+Prefer native edit/patch tools for file changes. Do not use Python, Perl, Ruby, sed, awk, or temporary scripts merely to rewrite files.
+
+Commit completed work in small, concern-specific commits with concise English imperative messages.

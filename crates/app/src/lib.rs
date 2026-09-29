@@ -886,6 +886,19 @@ impl AppState {
         }
     }
 
+    /// Sets the topic of a joined channel (empty clears it). Topics of
+    /// channels not in the tree are ignored.
+    pub fn set_topic(&mut self, network: NetworkId, name: &str, topic: &str) {
+        if let Some(id) = self.channel_id(network, name)
+            && let Some(channel) = self
+                .conversations
+                .iter_mut()
+                .find(|channel| channel.id == id)
+        {
+            channel.topic = topic.to_owned();
+        }
+    }
+
     pub fn append_channel_message(
         &mut self,
         network: NetworkId,
