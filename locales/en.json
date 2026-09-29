@@ -88,6 +88,7 @@
   "channel_event_color": "Channel event text",
   "combined_log": "Combined log",
   "combined_log_alternate": "Combined log alternate",
+  "combined_log_name_width": "Combined log name width (px)",
   "theme": "Theme",
   "theme_system": "System",
   "theme_light": "Light",

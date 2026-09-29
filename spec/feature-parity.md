@@ -28,6 +28,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
+- DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
 - PARTIAL — mock topic kept in application state; display/editing not implemented
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
