@@ -47,12 +47,21 @@ use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
 use whois::WhoisWindow;
+
+/// The channel log's share of the log height when nothing was dragged, and
+/// the bounds of what dragging may leave to either log.
+const DEFAULT_LOG_SPLIT: f32 = 0.5;
+const LOG_SPLIT_LIMITS: (f32, f32) = (0.1, 0.9);
+/// Height of the draft row including its borders.
+const DRAFT_ROW_HEIGHT: f32 = 38.;
 
 const RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(3),
@@ -851,6 +860,13 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// Share of the two logs' height taken by the channel log; changed by
+    /// dragging the bottom edge of the draft input, kept for this run only.
+    log_split: f32,
+    log_split_dragging: bool,
+    /// Where the left column was last laid out, to turn a pointer position
+    /// into `log_split`.
+    left_column_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Pasted or dropped images on their way to the external uploader.
     attachments: AttachmentFlow,
     /// Configured image hosting provider ID (IRC external uploads).
@@ -1191,6 +1207,9 @@ impl ChatWindow {
             i18n,
             log_focus: cx.focus_handle(),
             log_selection: None,
+            log_split: DEFAULT_LOG_SPLIT,
+            log_split_dragging: false,
+            left_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
             attachments: AttachmentFlow::default(),
             uploader_override: None,
@@ -2456,6 +2475,20 @@ impl ChatWindow {
 
     fn copy_log_selection_menu(&mut self, _: &input::Copy, _: &mut Window, cx: &mut Context<Self>) {
         self.copy_selected_log(cx);
+    }
+
+    /// Moves the split so the draft row's bottom edge follows the pointer.
+    fn drag_log_split(&mut self, pointer_y: Pixels, cx: &mut Context<Self>) {
+        let Some(bounds) = self.left_column_bounds.get() else {
+            return;
+        };
+        let flexible = f32::from(bounds.size.height) - DRAFT_ROW_HEIGHT;
+        if flexible <= 0. {
+            return;
+        }
+        let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
+        self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        cx.notify();
     }
 
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
@@ -5229,19 +5262,44 @@ impl ChatWindow {
             })
             .child(panes.members.clone().cached(pane_style()));
 
-        let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
-        let sub_pane = div()
+        let mut main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
+        main_pane.style().flex_grow = Some(self.log_split * 2.);
+        // The bottom edge of the draft row is the handle between the logs;
+        // a double click restores the even split.
+        let split_handle = div()
+            .id("log-split-handle")
+            .absolute()
+            .top(px(-3.))
+            .left_0()
+            .right_0()
+            .h(px(6.))
+            .cursor(CursorStyle::ResizeUpDown)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.log_split = DEFAULT_LOG_SPLIT;
+                    } else {
+                        this.log_split_dragging = true;
+                    }
+                    cx.notify();
+                }),
+            );
+        let mut sub_pane = div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .border_t_1()
             .border_color(border)
-            .child(sub_log);
+            .child(sub_log)
+            .child(split_handle);
+        sub_pane.style().flex_grow = Some((1. - self.log_split) * 2.);
         let editor = div()
             .flex()
             .items_center()
-            .h(px(38.))
+            .h(px(DRAFT_ROW_HEIGHT))
             .flex_shrink_0()
             .px_1()
             .border_t_1()
@@ -5286,12 +5344,39 @@ impl ChatWindow {
             .when_some(self.feedback.clone(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             });
+        let column_bounds = self.left_column_bounds.clone();
         let left = div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
             .h_full()
+            .child(
+                canvas(
+                    move |bounds, _, _| column_bounds.set(Some(bounds)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.log_split_dragging {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_log_split(event.position.y, cx);
+                    } else {
+                        this.log_split_dragging = false;
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.log_split_dragging = false),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.log_split_dragging = false),
+            )
             .child(main_pane)
             .child(editor)
             .child(sub_pane);
