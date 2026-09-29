@@ -257,9 +257,6 @@ impl SettingsWindow {
         };
         let can_send = status.can_request && !draft.is_empty() && sent != Some(draft.as_str());
         let can_remove = status.can_request && sent.is_some();
-        // An uploaded image is sent at once, so images are only taken while
-        // this server can receive an avatar.
-        let can_upload = status.can_request;
         let provider = self
             .settings
             .values
@@ -279,7 +276,7 @@ impl SettingsWindow {
             .items_center()
             .gap_2()
             .when(
-                can_upload && provider.is_some() && uploading.is_none(),
+                provider.is_some() && uploading.is_none(),
                 |row| {
                     row.child(
                         button("ircv3-avatar-choose", "ircv3_avatar_choose", false).on_click(
@@ -336,7 +333,7 @@ impl SettingsWindow {
             .gap_2()
             .pt_2()
             .on_action(cx.listener(Self::paste_avatar_image))
-            .when(can_upload && provider.is_some(), |section| {
+            .when(provider.is_some(), |section| {
                 section
                     .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -531,15 +528,10 @@ impl SettingsWindow {
 /// selected server's avatar URL draft, with the same confirmation and
 /// attachment flow as chat drafts. Uploading never publishes.
 impl SettingsWindow {
-    /// Whether an avatar image can be taken now: the selected server can
-    /// receive the avatar it would be sent as.
-    fn avatar_images_accepted(&self, cx: &App) -> bool {
-        let Some(profile) = self.settings.values.selected_profile() else {
-            return false;
-        };
-        self.owner
-            .read(cx)
-            .is_ok_and(|chat| chat.own_avatar_status(&profile.id).can_request)
+    /// Whether an avatar image can be taken now: any server can have one,
+    /// connected, without avatar support or not.
+    fn avatar_images_accepted(&self) -> bool {
+        self.settings.values.selected_profile().is_some()
     }
 
     fn paste_avatar_image(
@@ -550,7 +542,7 @@ impl SettingsWindow {
     ) {
         // Otherwise an image paste in the field does nothing, like in any
         // other text field.
-        if !self.avatar_images_accepted(cx) {
+        if !self.avatar_images_accepted() {
             return;
         }
         if let Some(attachment) = clipboard_attachment(cx) {
@@ -564,7 +556,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.avatar_images_accepted(cx) {
+        if !self.avatar_images_accepted() {
             return;
         }
         match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {

@@ -403,6 +403,14 @@ impl Default for Notifications {
     }
 }
 
+/// Opt-in diagnostics. Additive defaults keep older settings compatible.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Experimental {
+    pub debug_logging: bool,
+    pub stderr_file: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -418,6 +426,7 @@ pub struct Settings {
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
     pub notifications: Notifications,
+    pub experimental: Experimental,
     /// Application-wide identity of versions 1–12, read only to migrate it
     /// into the previously selected server profile; never written back.
     #[serde(flatten, skip_serializing)]
@@ -451,6 +460,7 @@ impl Default for Settings {
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
             notifications: Notifications::default(),
+            experimental: Experimental::default(),
             legacy: LegacyIdentity::default(),
         }
     }
@@ -1212,6 +1222,30 @@ mod tests {
             assert!(error.contains(path.to_str().unwrap()));
             assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn experimental_logging_defaults_off_and_survives_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.experimental, Experimental::default());
+        settings.experimental = Experimental {
+            debug_logging: true,
+            stderr_file: Some(directory.path().join("日本語 debug.log")),
+        };
+        save_to(&path, &settings).unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().unwrap().experimental,
+            settings.experimental
+        );
+        settings.experimental.debug_logging = false;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().unwrap().experimental,
+            settings.experimental
+        );
     }
 
     #[test]

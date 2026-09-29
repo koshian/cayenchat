@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod account_settings;
 mod avatar_editor;
 mod avatars;
@@ -5,6 +7,7 @@ mod decorations;
 mod default_avatar;
 mod desktop;
 mod diagnostics;
+mod experimental_settings;
 mod image_upload;
 mod input;
 mod ircv3_settings;
@@ -47,12 +50,21 @@ use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
 use whois::WhoisWindow;
+
+/// The channel log's share of the log height when nothing was dragged, and
+/// the bounds of what dragging may leave to either log.
+const DEFAULT_LOG_SPLIT: f32 = 0.5;
+const LOG_SPLIT_LIMITS: (f32, f32) = (0.1, 0.9);
+/// Height of the draft row including its borders.
+const DRAFT_ROW_HEIGHT: f32 = 38.;
 
 const RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(3),
@@ -857,6 +869,8 @@ struct ChatWindow {
     startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
+    /// The native window title last set from `render`.
+    shown_title: String,
     /// Open WHOIS windows by network and lowercase nickname.
     whois_windows: HashMap<(NetworkId, String), WindowHandle<WhoisWindow>>,
     whois_replies: Vec<(NetworkId, WhoisInfo, bool)>,
@@ -868,6 +882,13 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// Share of the two logs' height taken by the channel log; changed by
+    /// dragging the bottom edge of the draft input, kept for this run only.
+    log_split: f32,
+    log_split_dragging: bool,
+    /// Where the left column was last laid out, to turn a pointer position
+    /// into `log_split`.
+    left_column_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Pasted or dropped images on their way to the external uploader.
     attachments: AttachmentFlow,
     /// Configured image hosting provider ID (IRC external uploads).
@@ -1011,6 +1032,7 @@ enum SettingsTab {
     Ircv3,
     ImageUpload,
     Credentials,
+    Experimental,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1100,7 +1122,15 @@ impl ChatWindow {
             return app.into();
         };
         match self.state.selected_channel() {
-            Some(channel) => format!("{} @ {} — {app}", channel.name, network.name),
+            Some(channel) => {
+                let topic = cayenchat_irc_core::text::strip_formatting(&channel.topic);
+                let topic = topic.split_whitespace().collect::<Vec<_>>().join(" ");
+                if topic.is_empty() {
+                    format!("{} @ {} — {app}", channel.name, network.name)
+                } else {
+                    format!("{} @ {}: {topic} — {app}", channel.name, network.name)
+                }
+            }
             None => format!("{} — {app}", network.name),
         }
     }
@@ -1185,6 +1215,7 @@ impl ChatWindow {
             startup_connections,
             settings_window: None,
             window_handle: window.window_handle().downcast::<ChatWindow>(),
+            shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: false,
@@ -1199,6 +1230,9 @@ impl ChatWindow {
             i18n,
             log_focus: cx.focus_handle(),
             log_selection: None,
+            log_split: DEFAULT_LOG_SPLIT,
+            log_split_dragging: false,
+            left_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
             attachments: AttachmentFlow::default(),
             uploader_override: None,
@@ -2466,6 +2500,20 @@ impl ChatWindow {
         self.copy_selected_log(cx);
     }
 
+    /// Moves the split so the draft row's bottom edge follows the pointer.
+    fn drag_log_split(&mut self, pointer_y: Pixels, cx: &mut Context<Self>) {
+        let Some(bounds) = self.left_column_bounds.get() else {
+            return;
+        };
+        let flexible = f32::from(bounds.size.height) - DRAFT_ROW_HEIGHT;
+        if flexible <= 0. {
+            return;
+        }
+        let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
+        self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        cx.notify();
+    }
+
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.push_diagnostic(line);
@@ -2866,6 +2914,7 @@ impl ChatWindow {
                 }
             }
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
+            Event::Topic { channel, topic } => self.state.set_topic(network, &channel, &topic),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
             Event::UserAccount {
                 nickname,
@@ -3234,8 +3283,34 @@ impl SettingsWindow {
         if let Ok(Some(previous)) = cayenchat_storage::load() {
             forget_removed_profiles(&previous, &settings, &store);
         }
-        cayenchat_storage::save(&settings)?;
+        let previous_logging = diagnostics::configuration();
+        diagnostics::configure(&settings.experimental)
+            .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
+        if let Err(error) = cayenchat_storage::save(&settings) {
+            let _ = diagnostics::configure(&previous_logging);
+            return Err(error);
+        }
         Ok(settings)
+    }
+
+    /// Diagnostics preferences are independent of an incomplete new server
+    /// form. Persist them alone so selecting an experimental log destination
+    /// does not wait for the user to finish a connection profile.
+    fn persist_experimental_settings(
+        &mut self,
+        experimental: &cayenchat_storage::Experimental,
+    ) -> Result<(), String> {
+        let previous_logging = diagnostics::configuration();
+        diagnostics::configure(experimental)
+            .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
+        let mut saved = cayenchat_storage::load()?.unwrap_or_default();
+        saved.experimental = experimental.clone();
+        if let Err(error) = cayenchat_storage::save(&saved) {
+            let _ = diagnostics::configure(&previous_logging);
+            return Err(error);
+        }
+        self.saved.experimental = experimental.clone();
+        Ok(())
     }
 
     fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3319,6 +3394,16 @@ impl SettingsWindow {
             .selected_profile()
             .is_some_and(|profile| profile.host.is_empty());
         if waiting {
+            if settings.experimental != self.saved.experimental {
+                match self.persist_experimental_settings(&settings.experimental) {
+                    Ok(()) => self.autosave_error = None,
+                    Err(error) => {
+                        self.autosave_error = Some(error);
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
             // Saving now would drop the server; wait until it has a host.
             let error = Some(self.i18n.text("server_required"));
             if self.autosave_error != error {
@@ -4612,10 +4697,12 @@ impl SettingsWindow {
         let theme = settings_theme::palette(cx);
         div()
             .id(id)
+            .debug_selector(move || id.into())
             .px_4()
             .py_2()
             .border_1()
             .when(tab != SettingsTab::Connection, |d| d.border_l_0())
+            .flex_shrink_0()
             .border_color(theme.border)
             .cursor_pointer()
             .when(self.tab == tab, |d| {
@@ -4650,6 +4737,7 @@ impl SettingsWindow {
         let border = theme.border;
         let tabs = div()
             .flex()
+            .flex_wrap()
             .w_full()
             .border_b_1()
             .border_color(border)
@@ -4676,6 +4764,12 @@ impl SettingsWindow {
                 "credentials-tab",
                 "credentials_tab",
                 cx,
+            ))
+            .child(self.settings_tab(
+                SettingsTab::Experimental,
+                "experimental-tab",
+                "experimental_tab",
+                cx,
             ));
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
@@ -4685,6 +4779,7 @@ impl SettingsWindow {
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
+            SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         field_traversal(div().id("settings-screen"))
             .key_context("SettingsWindow")
@@ -4925,6 +5020,12 @@ impl Render for SettingsWindow {
 
 impl Render for ChatWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The topic can change with any server event, not only on selection.
+        let title = self.window_title();
+        if title != self.shown_title {
+            window.set_window_title(&title);
+            self.shown_title = title.clone();
+        }
         let content = self.render_chat(window, cx);
         let content = menu_bar::wrap(
             &self.menu_bar,
@@ -4934,7 +5035,7 @@ impl Render for ChatWindow {
             window,
             cx,
         );
-        decorations::window_frame(window, cx, self.window_title(), content)
+        decorations::window_frame(window, cx, title, content)
     }
 }
 
@@ -5253,19 +5354,44 @@ impl ChatWindow {
             })
             .child(panes.members.clone().cached(pane_style()));
 
-        let main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
-        let sub_pane = div()
+        let mut main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
+        main_pane.style().flex_grow = Some(self.log_split * 2.);
+        // The bottom edge of the draft row is the handle between the logs;
+        // a double click restores the even split.
+        let split_handle = div()
+            .id("log-split-handle")
+            .absolute()
+            .top(px(-3.))
+            .left_0()
+            .right_0()
+            .h(px(6.))
+            .cursor(CursorStyle::ResizeUpDown)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.log_split = DEFAULT_LOG_SPLIT;
+                    } else {
+                        this.log_split_dragging = true;
+                    }
+                    cx.notify();
+                }),
+            );
+        let mut sub_pane = div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .border_t_1()
             .border_color(border)
-            .child(sub_log);
+            .child(sub_log)
+            .child(split_handle);
+        sub_pane.style().flex_grow = Some((1. - self.log_split) * 2.);
         let editor = div()
             .flex()
             .items_center()
-            .h(px(38.))
+            .h(px(DRAFT_ROW_HEIGHT))
             .flex_shrink_0()
             .px_1()
             .border_t_1()
@@ -5310,12 +5436,39 @@ impl ChatWindow {
             .when_some(self.feedback.clone(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             });
+        let column_bounds = self.left_column_bounds.clone();
         let left = div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
             .h_full()
+            .child(
+                canvas(
+                    move |bounds, _, _| column_bounds.set(Some(bounds)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.log_split_dragging {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_log_split(event.position.y, cx);
+                    } else {
+                        this.log_split_dragging = false;
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.log_split_dragging = false),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.log_split_dragging = false),
+            )
             .child(main_pane)
             .child(editor)
             .child(sub_pane);
@@ -6593,12 +6746,19 @@ fn load_settings_at_startup() -> (Settings, Option<String>) {
         Err(error) => return (Settings::default(), Some(error)),
     };
     let i18n = Localizer::new(saved.language);
+    let logging_error = diagnostics::configure(&saved.experimental)
+        .err()
+        .map(|error| i18n.format("debug_log_error", &[("error", &error)]));
     let notice = match cayenchat_storage::migrate_legacy_secrets(&mut saved, &CredentialStore::open)
     {
         Ok(None) => None,
         Ok(Some(report)) if report.used_local_file => Some(i18n.text("legacy_migrated_local")),
         Ok(Some(_)) => Some(i18n.text("legacy_migrated")),
         Err(error) => Some(i18n.format("credential_error", &[("error", &error)])),
+    };
+    let notice = match (notice, logging_error) {
+        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
+        (notice, logging_error) => notice.or(logging_error),
     };
     (saved, notice)
 }

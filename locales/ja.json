@@ -329,5 +329,15 @@
   "ircv3_peer_stop": "共有を停止",
   "ircv3_peer_sharing": "ピアに共有中: {url}",
   "ircv3_peer_reconnect": "実名欄のアバター表示を更新するには再接続してください。",
-  "ircv3_peer_size_placeholder": "ほかのクライアントは {size} を置き換えません。{size} を含まない URL を共有してください。"
+  "ircv3_peer_size_placeholder": "ほかのクライアントは {size} を置き換えません。{size} を含まない URL を共有してください。",
+  "experimental_tab": "Experimental",
+  "debug_logging": "デバッグログ（stderr）を保存する",
+  "debug_log_file": "ログファイル",
+  "debug_log_no_file": "ファイルが選択されていません",
+  "debug_log_choose": "ファイルを選択…",
+  "debug_log_active": "出力中: {path}",
+  "debug_log_inactive": "ファイルへの出力は停止中です。",
+  "debug_log_hint": "変更はすぐに反映され、次回起動時も引き継がれます。既存ファイルには追記します。有効な間はファイルが増え続けるため、調査後はオフにしてください。共有する前にログの内容を確認してください。",
+  "debug_log_error": "デバッグログを設定できませんでした: {error}",
+  "debug_log_picker_failed": "ログファイルの選択画面を開けませんでした。"
 }

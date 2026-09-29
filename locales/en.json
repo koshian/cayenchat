@@ -329,5 +329,15 @@
   "ircv3_peer_stop": "Stop Sharing",
   "ircv3_peer_sharing": "Shared with peers: {url}",
   "ircv3_peer_reconnect": "Reconnect to update the avatar mark in your real name.",
-  "ircv3_peer_size_placeholder": "Other clients do not fill in {size}; share a URL without it."
+  "ircv3_peer_size_placeholder": "Other clients do not fill in {size}; share a URL without it.",
+  "experimental_tab": "Experimental",
+  "debug_logging": "Save debug logs (stderr)",
+  "debug_log_file": "Log file",
+  "debug_log_no_file": "No file selected",
+  "debug_log_choose": "Choose file…",
+  "debug_log_active": "Writing to: {path}",
+  "debug_log_inactive": "File logging is off.",
+  "debug_log_hint": "Changes take effect immediately and are saved for the next launch. Existing files are appended to. Disable logging after troubleshooting; the file keeps growing while enabled. Review logs before sharing them.",
+  "debug_log_error": "Could not configure debug logging: {error}",
+  "debug_log_picker_failed": "Could not open the log file chooser."
 }
