@@ -125,6 +125,7 @@ struct SettingsForm {
     values: Settings,
     server_list_open: bool,
     encoding_list_open: bool,
+    ircv3_server_list_open: bool,
     custom_host: Entity<TextInput>,
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
@@ -350,6 +351,7 @@ impl SettingsForm {
             },
             server_list_open: false,
             encoding_list_open: false,
+            ircv3_server_list_open: false,
             values,
         }
     }
@@ -597,6 +599,7 @@ impl SettingsForm {
         }
         self.server_list_open = false;
         self.encoding_list_open = false;
+        self.ircv3_server_list_open = false;
     }
 }
 
