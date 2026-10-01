@@ -514,10 +514,22 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChannelActivityKind {
-    Joined { mask: Option<String> },
-    Left { reason: Option<String> },
-    Quit { reason: Option<String> },
-    ModeChanged { modes: String },
+    Joined {
+        mask: Option<String>,
+    },
+    Left {
+        reason: Option<String>,
+    },
+    Quit {
+        reason: Option<String>,
+    },
+    /// The actor's old nickname; `to` is the new one.
+    NickChanged {
+        to: String,
+    },
+    ModeChanged {
+        modes: String,
+    },
 }
 
 /// Why a `SETNAME` did not change the realname.
@@ -2518,7 +2530,7 @@ fn translate_message(
         translated.push(activity);
     }
     if let IrcCommand::QUIT(reason) = &message.command
-        && let Some(actor) = actor
+        && let Some(actor) = &actor
     {
         translated.push(Event::UserQuit {
             nickname: actor.clone(),
@@ -2533,6 +2545,20 @@ fn translate_message(
                     kind: ChannelActivityKind::Quit {
                         reason: reason.clone(),
                     },
+                    server_time,
+                }),
+        );
+    }
+    if let IrcCommand::NICK(to) = &message.command
+        && let Some(actor) = &actor
+    {
+        translated.extend(
+            changed_channels
+                .iter()
+                .map(|channel| Event::ChannelActivity {
+                    channel: channel.clone(),
+                    actor: actor.clone(),
+                    kind: ChannelActivityKind::NickChanged { to: to.clone() },
                     server_time,
                 }),
         );
@@ -3442,6 +3468,10 @@ mod tests {
                 },
             ),
             ("bob", ChannelActivityKind::Left { reason: None }),
+            (
+                "charlie",
+                ChannelActivityKind::NickChanged { to: "dave".into() },
+            ),
             (
                 "dave",
                 ChannelActivityKind::Quit {
