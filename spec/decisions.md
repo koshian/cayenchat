@@ -159,7 +159,7 @@ An offline mock must not claim to have sent a message or NOTICE.
 Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
 platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
-TLS and `irc6.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
+TLS, `irc6.ircnet.ne.jp` and `dev.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
 (since D017 the server list starts empty).
 Password saving is per server and off by default; switching it off
 immediately removes those stored values. (Where passwords are stored is now
