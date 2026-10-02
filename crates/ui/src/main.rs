@@ -7386,6 +7386,7 @@ impl ChatWindow {
                             .cloned()
                     })
                 });
+                let has_avatar = avatar.is_some();
                 div()
                     .id(("member", index))
                     .debug_selector(move || format!("member-row-{index}"))
@@ -7401,7 +7402,24 @@ impl ChatWindow {
                     })
                     // The list gives every row the height of the first, so a
                     // nickname that wrapped would overlap the next row.
-                    .child(div().flex_1().min_w_0().truncate().child(member))
+                    // Beside an avatar the row is a flex row and the name
+                    // takes what is left of it; without one the row is a
+                    // block and the name is as wide as the row.
+                    .child(
+                        div()
+                            .when(has_avatar, |name| name.flex_1())
+                            .min_w_0()
+                            .truncate()
+                            .child(member.clone()),
+                    )
+                    // A shortened name is read in full on hover.
+                    .tooltip({
+                        let full: SharedString = member.into();
+                        move |_, cx| {
+                            let full = full.clone();
+                            cx.new(|_| ircv3_settings::TextTooltip(full)).into()
+                        }
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -8711,12 +8729,9 @@ mod pane_tests {
                 cx.notify();
             });
             cx.run_until_parked();
-            let rows: Vec<_> = (0..3)
-                .map(|index| {
-                    let selector: &'static str =
-                        Box::leak(format!("member-row-{index}").into_boxed_str());
-                    cx.debug_bounds(selector).expect("row drawn")
-                })
+            let rows: Vec<_> = ["member-row-0", "member-row-1", "member-row-2"]
+                .into_iter()
+                .map(|selector| cx.debug_bounds(selector).expect("row drawn"))
                 .collect();
             for pair in rows.windows(2) {
                 assert!(
