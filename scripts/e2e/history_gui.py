@@ -24,6 +24,9 @@ import argparse, os, re, socket, struct, subprocess, sys, tempfile, threading, t
 
 WIDTH, HEIGHT = 1000, 700
 # Inside the main log pane (upper left) at this window size.
+# The menu bar is shown all the time by default, which would move the panes
+# down by 28 px and shorten the logs; the settings below hide it (as it was
+# before) so these coordinates hold. History is what this script tests.
 LOG_BOX = (0, 0, 560, 326)
 LOG_POINT = (300, 150)
 # Where message text starts in the main log: after the time and the 124 px
@@ -378,6 +381,7 @@ def main():
             file.write("""{
   "version": 15, "selected_server": "e2e", "language": "english", "theme": "light",
   "linux_display": "x11", "credential_backend": "local_file",
+  "menu_bar_auto_hide": true,
   "servers": [{"id": "e2e", "host": "127.0.0.1", "port": %d, "use_tls": false,
     "verify_tls_certificates": true, "encoding": "utf8", "nickname": "alice",
     "username": "alice", "channels": "%s", "connect_on_startup": true,

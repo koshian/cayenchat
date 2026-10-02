@@ -504,6 +504,11 @@ pub struct Settings {
     pub linux_display: LinuxDisplay,
     pub channel_number_modifier: ChannelNumberModifier,
     pub text_key_theme: TextKeyTheme,
+    /// Windows and Linux: hide the in-window menu bar until Alt, F10 or the
+    /// top edge asks for it. Off shows it all the time. Added after version
+    /// 15 without a version change; files without it read as off. macOS has
+    /// native menus and ignores it.
+    pub menu_bar_auto_hide: bool,
     pub appearance: Appearance,
     /// Reopen the main window where it was left, with its pane sizes (see
     /// [`layout`]). On by default, also for files saved before it existed.
@@ -540,6 +545,7 @@ impl Default for Settings {
             theme: ThemeMode::System,
             linux_display: LinuxDisplay::Wayland,
             channel_number_modifier: ChannelNumberModifier::Ctrl,
+            menu_bar_auto_hide: false,
             text_key_theme: TextKeyTheme::Auto,
             appearance: Appearance::default(),
             restore_window_layout: true,
@@ -2145,5 +2151,17 @@ mod tests {
         settings.text_key_theme = TextKeyTheme::Emacs;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn the_menu_bar_is_shown_unless_auto_hide_is_chosen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.menu_bar_auto_hide, "absent reads as always shown");
+        settings.menu_bar_auto_hide = true;
+        save_to(&path, &settings).unwrap();
+        assert!(load_from(&path).unwrap().unwrap().menu_bar_auto_hide);
     }
 }
