@@ -1667,6 +1667,13 @@ impl AppState {
 }
 
 fn sorted_members(mut members: Vec<String>) -> Vec<String> {
+    // Servers can pad NAMES with extra spaces; an entry without a nickname is
+    // not a member and must not become a row.
+    members.retain(|member| {
+        !member
+            .trim_start_matches(['~', '&', '@', '%', '+'])
+            .is_empty()
+    });
     // Operators first, then case-insensitively by nickname. Keys are computed
     // once per member; large channels republish their roster on every change.
     members.sort_by_cached_key(|member| {
@@ -1727,6 +1734,17 @@ fn trim_retained(messages: &mut Vec<Message>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roster_drops_entries_without_a_nickname() {
+        let mut state = AppState::live("irc.example.org".into(), vec!["#test".into()]);
+        state.set_members(
+            NetworkId(1),
+            "#test",
+            vec!["".into(), "@op".into(), "@".into(), "".into(), "bob".into()],
+        );
+        assert_eq!(state.selected_channel().unwrap().members, ["@op", "bob"]);
+    }
 
     #[test]
     fn sorts_roster_after_every_update_with_operators_first() {
