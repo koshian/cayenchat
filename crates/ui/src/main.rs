@@ -415,6 +415,7 @@ impl SettingsForm {
                 sub_log_background: value(&self.dark_sub_log_background),
                 sub_log_alternate: value(&self.dark_sub_log_alternate),
             },
+            saved_colors: self.values.appearance.saved_colors.clone(),
         };
         settings.appearance.validate()?;
         settings.notifications.keywords =

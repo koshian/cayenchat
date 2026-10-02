@@ -219,7 +219,9 @@ opt-ins (message tags and server timestamps), off for new and migrated
 settings (D022); the later batch and metadata (avatar) opt-ins are new
 fields of the same object without a version change, read as off when
 absent, and so is the Appearance `user_avatars` setting (D023), as are the
-peer avatar option and the per-server shared URL `peer_avatar_url` (D025). The UI keeps the
+peer avatar option and the per-server shared URL `peer_avatar_url` (D025),
+and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
+or repeated entries are dropped on load). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
