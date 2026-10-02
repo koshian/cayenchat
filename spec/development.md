@@ -215,6 +215,27 @@ unaffected. Link the run and the commit SHA in the PR or issue; downloading
 an artifact needs a signed-in GitHub account. It packages separately from
 `beta-release.yml` rather than sharing a reusable workflow, because the beta
 can only be exercised from `master` and must not change untested.
+
+#### Changes that need a person's confirmation
+
+Whenever an issue or PR needs someone to try it on a real machine (a Windows
+or Linux desktop the developer does not have, a monitor layout, an IME), do
+not just ask them to wait for the beta. Every time:
+
+1. Build with `Test Build` for the platform they use, from the PR branch
+   (before the merge) or from `master` when it is already merged. Use
+   `isolated=true` when their saved settings and passwords must not be
+   touched; leave it off when the check needs their existing settings (for
+   example restoring a saved window position).
+2. Comment on the issue, mentioning the reporter with `@name`, with the run
+   link, the commit SHA, the artifact name, how to start it (unzip and run;
+   a signed-in GitHub account is needed; kept for 7 days), and what to look
+   at. Ask for the environment details that matter (OS version, display
+   scale, IME) and say what is still unverified.
+3. Take the report on the issue, and rebuild with `Test Build` for each new
+   commit that needs checking again. An LLM reviewer never merges such a PR
+   before the report arrives; only a person may decide to merge without one.
+
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
 
