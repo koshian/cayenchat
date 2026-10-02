@@ -393,6 +393,7 @@ impl SettingsForm {
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
+            wrap_long_nicknames: self.values.appearance.wrap_long_nicknames,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
                 .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
@@ -4713,6 +4714,25 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("user_avatars_hint")),
             )
+            .child(
+                div()
+                    .id("wrap-long-nicknames")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.wrap_long_nicknames,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("wrap_long_nicknames"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.wrap_long_nicknames;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(settings_field(
@@ -6208,9 +6228,14 @@ struct LogStyle {
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
+    wrap_nicknames: bool,
     /// Width of the channel name column of the combined log.
     sub_name_width: f32,
 }
+
+/// Width of the main log's nickname column: nicknames of up to 15 typical
+/// characters (the longest some servers allow) fit without shortening.
+const NICK_COLUMN_WIDTH: f32 = 124.;
 
 impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
@@ -6227,6 +6252,7 @@ impl LogStyle {
                 appearance.time_font.clone().into()
             },
             alternate_rows: appearance.alternate_rows,
+            wrap_nicknames: appearance.wrap_long_nicknames,
             sub_name_width: appearance
                 .sub_log_name_width
                 .clamp(*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end())
@@ -6503,7 +6529,7 @@ impl ChatWindow {
             .when(!message.activity, |row| {
                 row.child(
                     div()
-                        .w(px(84.))
+                        .w(px(NICK_COLUMN_WIDTH))
                         .flex_shrink_0()
                         .flex()
                         .justify_end()
@@ -6512,9 +6538,9 @@ impl ChatWindow {
                         .child(
                             div()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
+                                .when(!style.wrap_nicknames, |d| {
+                                    d.overflow_hidden().whitespace_nowrap().text_ellipsis()
+                                })
                                 .child(message.sender.clone()),
                         )
                         .child(":"),
