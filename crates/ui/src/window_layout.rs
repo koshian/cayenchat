@@ -9,13 +9,21 @@
 use cayenchat_storage::layout::Layout;
 use gpui::{Bounds, Pixels, Size, WindowBounds, point, px, size};
 
-/// The bounds to open the window with, or `None` when nothing is saved or no
-/// connected display shows any of the saved rectangle.
+/// Where to open the window again.
+#[derive(Debug)]
+pub struct Restored {
+    pub bounds: WindowBounds,
+    /// Index into the displays given of the one the window goes on.
+    pub display: usize,
+}
+
+/// The bounds to open the window with and their display, or `None` when
+/// nothing is saved or no connected display shows any of the saved rectangle.
 pub fn restored_bounds(
     layout: &Layout,
     displays: &[Bounds<Pixels>],
     min: Size<Pixels>,
-) -> Option<WindowBounds> {
+) -> Option<Restored> {
     let saved = layout.window?;
     let (min_width, min_height) = (f32::from(min.width), f32::from(min.height));
     // The display showing most of the saved rectangle.
@@ -30,12 +38,13 @@ pub fn restored_bounds(
             0.
         }
     };
-    let display = displays
+    let (index, display) = displays
         .iter()
-        .map(|display| (overlap(display), display))
-        .filter(|(area, _)| *area > 0.)
+        .enumerate()
+        .map(|(index, display)| (overlap(display), index, display))
+        .filter(|(area, _, _)| *area > 0.)
         .max_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, display)| *display)?;
+        .map(|(_, index, display)| (index, *display))?;
 
     let (left, top) = (f32::from(display.left()), f32::from(display.top()));
     let (screen_width, screen_height) = (
@@ -50,10 +59,13 @@ pub fn restored_bounds(
     let x = saved.x.min(left + screen_width - width).max(left);
     let y = saved.y.min(top + screen_height - height).max(top);
     let bounds = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
-    Some(if layout.maximized {
-        WindowBounds::Maximized(bounds)
-    } else {
-        WindowBounds::Windowed(bounds)
+    Some(Restored {
+        bounds: if layout.maximized {
+            WindowBounds::Maximized(bounds)
+        } else {
+            WindowBounds::Windowed(bounds)
+        },
+        display: index,
     })
 }
 
@@ -81,8 +93,8 @@ mod tests {
         }
     }
 
-    fn windowed(bounds: Option<WindowBounds>) -> (f32, f32, f32, f32) {
-        match bounds {
+    fn windowed(restored: Option<Restored>) -> (f32, f32, f32, f32) {
+        match restored.map(|restored| restored.bounds) {
             Some(WindowBounds::Windowed(b)) | Some(WindowBounds::Maximized(b)) => (
                 f32::from(b.origin.x),
                 f32::from(b.origin.y),
@@ -97,7 +109,13 @@ mod tests {
     fn a_rectangle_that_fits_comes_back_unchanged() {
         let screens = [display(0., 0., 1920., 1080.)];
         let got = restored_bounds(&saved(100., 80., 960., 600., false), &screens, MIN());
-        assert!(matches!(got, Some(WindowBounds::Windowed(_))));
+        assert!(matches!(
+            got,
+            Some(Restored {
+                bounds: WindowBounds::Windowed(_),
+                display: 0
+            })
+        ));
         assert_eq!(windowed(got), (100., 80., 960., 600.));
     }
 
@@ -141,11 +159,14 @@ mod tests {
             display(0., 0., 1920., 1080.),
             display(-1280., 0., 1280., 1024.),
         ];
-        // Mostly on the left monitor.
+        // Mostly on the left monitor, which is named so that the window opens
+        // there rather than on the primary.
         let got = restored_bounds(&saved(-1100., 100., 960., 600., false), &screens, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(1));
         assert_eq!(windowed(got), (-1100., 100., 960., 600.));
         // Straddling, mostly on the primary: it stays within the primary.
         let got = restored_bounds(&saved(-200., 100., 960., 600., false), &screens, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(0));
         assert_eq!(windowed(got), (0., 100., 960., 600.));
         // With the left monitor gone it is brought to the primary.
         let got = restored_bounds(
@@ -159,10 +180,33 @@ mod tests {
     }
 
     #[test]
+    fn three_displays_with_one_offset_keep_the_window_where_it_was() {
+        // Primary in the middle, one to the right raised by 300 and one to
+        // the left (#125).
+        let screens = [
+            display(0., 0., 1920., 1080.),
+            display(1920., -300., 2560., 1440.),
+            display(-1920., 0., 1920., 1080.),
+        ];
+        let got = restored_bounds(&saved(2200., -250., 1200., 800., false), &screens, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(1));
+        assert_eq!(windowed(got), (2200., -250., 1200., 800.));
+        let got = restored_bounds(&saved(-1500., 300., 1000., 700., true), &screens, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(2));
+        assert_eq!(windowed(got), (-1500., 300., 1000., 700.));
+    }
+
+    #[test]
     fn maximized_keeps_the_restore_rectangle() {
         let screens = [display(0., 0., 1920., 1080.)];
         let got = restored_bounds(&saved(200., 100., 960., 600., true), &screens, MIN());
-        assert!(matches!(got, Some(WindowBounds::Maximized(_))));
+        assert!(matches!(
+            got,
+            Some(Restored {
+                bounds: WindowBounds::Maximized(_),
+                ..
+            })
+        ));
         assert_eq!(windowed(got), (200., 100., 960., 600.));
     }
 }

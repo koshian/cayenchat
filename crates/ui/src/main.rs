@@ -7730,19 +7730,26 @@ fn main() {
         } else {
             Default::default()
         };
-        let displays: Vec<_> = cx
-            .displays()
-            .iter()
-            .map(|display| display.bounds())
-            .collect();
-        let window_bounds = window_layout::restored_bounds(&layout, &displays, min_size)
-            .unwrap_or_else(|| {
-                WindowBounds::Windowed(Bounds::centered(None, size(px(960.), px(600.)), cx))
-            });
+        let displays = cx.displays();
+        let display_bounds: Vec<_> = displays.iter().map(|display| display.bounds()).collect();
+        let restored = window_layout::restored_bounds(&layout, &display_bounds, min_size);
+        // Windows opens a window on the primary display unless told which
+        // one, and replaces bounds off that display with a centered default
+        // (#125). Its displays share one desktop coordinate space, so the
+        // display chosen above is the one to name. macOS and X11 report every
+        // display at the origin, so there it would be a guess.
+        let display_id = restored
+            .as_ref()
+            .filter(|_| cfg!(target_os = "windows"))
+            .map(|restored| displays[restored.display].id());
+        let window_bounds = restored.map(|restored| restored.bounds).unwrap_or_else(|| {
+            WindowBounds::Windowed(Bounds::centered(None, size(px(960.), px(600.)), cx))
+        });
         let chat_window = cx
             .open_window(
                 WindowOptions {
                     window_bounds: Some(window_bounds),
+                    display_id,
                     window_min_size: Some(min_size),
                     titlebar: Some(TitlebarOptions {
                         title: Some("CayenChat".into()),
