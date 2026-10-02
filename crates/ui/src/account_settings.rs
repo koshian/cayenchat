@@ -25,6 +25,12 @@ impl SettingsWindow {
     /// answer when no Secret Service is running.
     pub(crate) fn probe_system_store(&mut self, cx: &mut Context<Self>) {
         self.system_store = None;
+        // Unit tests must not ask the operating system's credential store.
+        if cfg!(test) {
+            self.system_store = Some(Ok(()));
+            cx.notify();
+            return;
+        }
         let probe = cx.background_spawn(async { SystemBackend::probe() });
         cx.spawn(async move |this, cx| {
             let result = probe.await.map_err(|error| error.to_string());
