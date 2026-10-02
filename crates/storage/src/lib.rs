@@ -813,8 +813,24 @@ fn fixed_test_directory(value: Option<std::ffi::OsString>) -> Result<Option<Path
     }
     builder
         .create(&directory)
-        .map(|()| Some(directory))
-        .map_err(|error| format!("Could not create CAYENCHAT_TEST_DIR: {error}"))
+        .map_err(|error| format!("Could not create CAYENCHAT_TEST_DIR: {error}"))?;
+    // A directory that existed already keeps its permissions, and a test
+    // build keeps its credentials file here: refuse one other users can read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&directory)
+            .map_err(|error| format!("Could not check CAYENCHAT_TEST_DIR: {error}"))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "CAYENCHAT_TEST_DIR is accessible by other users (mode {:o}); run chmod 700 on it.",
+                mode & 0o777
+            ));
+        }
+    }
+    Ok(Some(directory))
 }
 
 /// A test build's configuration directory: new and empty for every launch,
@@ -2168,6 +2184,22 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o700, "readable only by the user");
+            // A directory that existed already is refused when others can
+            // read it (it would hold the credentials file), and accepted once
+            // it is private.
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+            let refused = fixed_test_directory(Some(nested.clone().into_os_string()));
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|error| error.contains("chmod 700")),
+                "{refused:?}"
+            );
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                fixed_test_directory(Some(nested.clone().into_os_string())),
+                Ok(Some(nested.clone()))
+            );
         }
     }
 

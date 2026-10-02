@@ -1161,6 +1161,9 @@ change).
   directory (settings, credentials file and `window.json`), started from the
   shell so that it inherits the variable (`open` does not pass it on), e.g.
   `CAYENCHAT_TEST_DIR=$HOME/cayenchat-preview "CayenChat Test.app/Contents/MacOS/cayenchat"`.
+  The directory is created readable only by the user; one that already exists
+  is refused (on Unix) when other users can read it, because the test build's
+  credentials file lives there (`chmod 700` it).
 - **Not remembered.** Full screen returns to the normal rectangle. The work
   area (menu bar, taskbar) is not known to GPUI, so a window may start under
   the taskbar edge the OS then adjusts.
