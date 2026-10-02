@@ -77,12 +77,14 @@ mod tests {
 
     #[gpui::test]
     fn without_an_installed_store_tests_get_a_private_in_memory_one(cx: &mut gpui::TestAppContext) {
-        // Nothing here may reach the operating system's credential store:
-        // the key below would otherwise be written to the real Keychain.
         let key = SecretKey::server_password("secrets-test-never-the-real-store");
         cx.update(|cx| {
             assert!(cx.try_global::<Credentials>().is_none());
             let first = store(cx);
+            // Checked before anything is stored or even read: if the fallback
+            // ever opened the real store, this fails without touching it
+            // (a test that wrote its key would put it in the user's Keychain).
+            assert!(first.is_memory(), "tests must not use a real store");
             assert_eq!(first.get(&key).unwrap(), None);
             first.set(&key, &Secret::new("hunter2")).unwrap();
             // The same test sees what it stored, through any handle.
