@@ -22,8 +22,6 @@ mod previews;
 mod secrets;
 mod session;
 mod settings_theme;
-// Applied to the panes by the next change (#90).
-#[allow(dead_code)]
 mod splitter;
 mod theme;
 mod whois;
@@ -67,6 +65,13 @@ use whois::WhoisWindow;
 /// The channel log's share of the log height when nothing was dragged, and
 /// the bounds of what dragging may leave to either log.
 const DEFAULT_LOG_SPLIT: f32 = 0.5;
+/// Width of the right column (members and channel tree), its limits, and the
+/// width the left column keeps.
+const DEFAULT_RIGHT_WIDTH: f32 = 240.;
+const RIGHT_WIDTH_MIN: f32 = 160.;
+const LEFT_MIN_WIDTH: f32 = 360.;
+/// Least height of the member list or the channel tree.
+const RIGHT_PANE_MIN_HEIGHT: f32 = 80.;
 const LOG_SPLIT_LIMITS: (f32, f32) = (0.1, 0.9);
 /// Height of the draft row including its borders.
 const DRAFT_ROW_HEIGHT: f32 = 38.;
@@ -936,6 +941,12 @@ struct ChatWindow {
     /// Where the left column was last laid out, to turn a pointer position
     /// into `log_split`.
     left_column_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Width of the right column (members over channel tree), set by its
+    /// splitter.
+    right_width: f32,
+    /// Height of the member list; `None` splits the right column evenly.
+    members_height: Option<f32>,
+    right_column_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Pasted or dropped images on their way to the external uploader.
     attachments: AttachmentFlow,
     /// Configured image hosting provider ID (IRC external uploads).
@@ -1285,6 +1296,9 @@ impl ChatWindow {
             log_split: DEFAULT_LOG_SPLIT,
             log_split_dragging: false,
             left_column_bounds: Rc::new(Cell::new(None)),
+            right_width: DEFAULT_RIGHT_WIDTH,
+            members_height: None,
+            right_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
             attachments: AttachmentFlow::default(),
             uploader_override: None,
@@ -5770,15 +5784,67 @@ impl ChatWindow {
             .child(main_pane)
             .child(editor)
             .child(sub_pane);
+        // The right column keeps its width inside what the window can spare,
+        // and the member list its height inside the column.
+        let right_max =
+            (f32::from(window.viewport_size().width) - LEFT_MIN_WIDTH).max(RIGHT_WIDTH_MIN);
+        let right_width = self.right_width.clamp(RIGHT_WIDTH_MIN, right_max);
+        let column_height = self
+            .right_column_bounds
+            .get()
+            .map(|bounds| f32::from(bounds.size.height));
+        let members_max = column_height.map_or(RIGHT_PANE_MIN_HEIGHT, |height| {
+            (height - RIGHT_PANE_MIN_HEIGHT).max(RIGHT_PANE_MIN_HEIGHT)
+        });
+        let members_height = self
+            .members_height
+            .map(|height| height.clamp(RIGHT_PANE_MIN_HEIGHT, members_max));
+        // Before the first drag the list takes half the column.
+        let members_size = members_height
+            .or(column_height.map(|height| height / 2.))
+            .unwrap_or(RIGHT_PANE_MIN_HEIGHT);
+        let right_split = splitter::splitter(
+            "right-split",
+            splitter::Axis::Horizontal,
+            splitter::Anchor::After,
+            right_width,
+            RIGHT_WIDTH_MIN..=right_max,
+            border,
+            cx,
+            |this: &mut Self, width, _, _| this.right_width = width,
+        );
+        let members_split = splitter::splitter(
+            "members-split",
+            splitter::Axis::Vertical,
+            splitter::Anchor::Before,
+            members_size,
+            RIGHT_PANE_MIN_HEIGHT..=members_max,
+            border,
+            cx,
+            |this: &mut Self, height, _, _| this.members_height = Some(height),
+        );
+        let right_column_bounds = self.right_column_bounds.clone();
         let right = div()
+            .relative()
             .flex()
             .flex_col()
-            .w(px(240.))
+            .w(px(right_width))
             .flex_shrink_0()
             .h_full()
-            .border_l_1()
-            .border_color(border)
-            .child(members)
+            .child(
+                canvas(
+                    move |bounds, _, _| right_column_bounds.set(Some(bounds)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            // `flex_1` gave the list a zero flex basis, which would win over
+            // a plain height.
+            .child(members.when_some(members_height, |d, height| {
+                d.flex_none().flex_basis(px(height)).h(px(height))
+            }))
+            .child(members_split)
             .child(panes.channels.clone().cached(pane_style().w_full()));
 
         let server_menu = self.server_menu.as_ref().map(|menu| {
@@ -6093,6 +6159,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::copy_diagnostics))
             .on_action(cx.listener(Self::paste_image))
             .child(left)
+            .child(right_split)
             .child(right)
             .when_some(server_menu, |d, menu| d.child(menu))
             .when_some(member_menu, |d, menu| d.child(menu))
@@ -7920,6 +7987,94 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn dragging_the_splitters_resizes_the_right_column_within_limits(cx: &mut TestAppContext) {
+        use super::{LEFT_MIN_WIDTH, RIGHT_PANE_MIN_HEIGHT, RIGHT_WIDTH_MIN};
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        cx.run_until_parked();
+        let none = Modifiers::none();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let width = f32::from(viewport.width);
+        let drag = |cx: &mut gpui::VisualTestContext, from: (f32, f32), steps: &[(f32, f32)]| {
+            let at = |(x, y): (f32, f32)| point(px(x), px(y));
+            cx.simulate_mouse_move(at(from), None, none);
+            cx.simulate_mouse_down(at(from), MouseButton::Left, none);
+            for step in steps {
+                cx.simulate_mouse_move(at(*step), MouseButton::Left, none);
+            }
+            cx.run_until_parked();
+            cx.simulate_mouse_up(at(*steps.last().unwrap()), MouseButton::Left, none);
+        };
+
+        // The handle sits just left of the 240 px column; pulling it left
+        // widens the column, and the window keeps room for the left column.
+        let handle_x = width - 240. - 2.;
+        drag(
+            cx,
+            (handle_x, 300.),
+            &[(handle_x - 10., 300.), (handle_x - 60., 300.)],
+        );
+        let widened = chat.read_with(cx, |chat, _| chat.right_width);
+        assert!((295.0..=305.0).contains(&widened), "{widened}");
+        let x = width - widened - 2.;
+        drag(cx, (x, 300.), &[(x - 10., 300.), (-500., 300.)]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.right_width),
+            width - LEFT_MIN_WIDTH
+        );
+        let x = width - (width - LEFT_MIN_WIDTH) - 2.;
+        drag(cx, (x, 300.), &[(x + 10., 300.), (width + 500., 300.)]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.right_width),
+            RIGHT_WIDTH_MIN
+        );
+
+        // The member list and channel tree share the column; the boundary
+        // starts in the middle and cannot squeeze either below its minimum.
+        assert_eq!(chat.read_with(cx, |chat, _| chat.members_height), None);
+        let column = chat
+            .read_with(cx, |chat, _| chat.right_column_bounds.get())
+            .expect("the column was laid out");
+        let (left, top, height) = (
+            f32::from(column.origin.x) + 20.,
+            f32::from(column.origin.y),
+            f32::from(column.size.height),
+        );
+        let y = top + height / 2. + 2.;
+        drag(cx, (left, y), &[(left, y + 10.), (left, y + 40.)]);
+        let members = chat
+            .read_with(cx, |chat, _| chat.members_height)
+            .expect("dragged");
+        assert!(
+            (height / 2. + 33.0..=height / 2. + 43.0).contains(&members),
+            "{members}"
+        );
+        let y = top + members + 2.;
+        // The list really is that tall: the handle sits right below it.
+        let handle = cx.debug_bounds("members-split").expect("handle drawn");
+        assert!(
+            (f32::from(handle.origin.y) - (top + members)).abs() < 1.,
+            "{handle:?} for a list of {members}"
+        );
+        drag(cx, (left, y), &[(left, y - 10.), (left, -300.)]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.members_height),
+            Some(RIGHT_PANE_MIN_HEIGHT)
+        );
+    }
 
     #[gpui::test]
     fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestAppContext) {

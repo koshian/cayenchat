@@ -8,8 +8,9 @@
 use std::{cell::Cell, ops::RangeInclusive};
 
 use gpui::{
-    AppContext, Context, CursorStyle, DragMoveEvent, ElementId, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, Rgba, StatefulInteractiveElement, Styled, Window, div, px,
+    AppContext, Context, CursorStyle, Div, DragMoveEvent, ElementId, InteractiveElement,
+    IntoElement, MouseButton, ParentElement, Render, Rgba, Stateful, StatefulInteractiveElement,
+    Styled, Window, div, px,
 };
 
 /// Which way the handle moves: `Horizontal` sits between side-by-side panes
@@ -99,7 +100,7 @@ pub fn splitter<V: 'static>(
     line: Rgba,
     cx: &mut Context<V>,
     on_resize: impl Fn(&mut V, f32, &mut Window, &mut Context<V>) + 'static,
-) -> impl IntoElement {
+) -> Stateful<Div> {
     let id: ElementId = id.into();
     let drag = Drag {
         axis,
@@ -127,7 +128,10 @@ pub fn splitter<V: 'static>(
             .cursor(CursorStyle::ResizeUpDown)
             .child(div().h(px(1.)).w_full().bg(line)),
     };
+    let selector = id.to_string();
     handle
+        // Lets tests find the handle (a no-op outside tests).
+        .debug_selector(move || selector)
         .on_mouse_down(MouseButton::Left, move |event, _, _| {
             PRESS.with(|press| press.set(Some(along(axis, event.position))));
         })
