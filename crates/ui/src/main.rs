@@ -7388,6 +7388,7 @@ impl ChatWindow {
                 });
                 div()
                     .id(("member", index))
+                    .debug_selector(move || format!("member-row-{index}"))
                     .px_2()
                     .py(px(1.))
                     .when(selected, |d| d.bg(theme.selected))
@@ -7398,7 +7399,9 @@ impl ChatWindow {
                             .gap_1()
                             .child(self.avatar_slot(avatar, &nickname, cx))
                     })
-                    .child(member)
+                    // The list gives every row the height of the first, so a
+                    // nickname that wrapped would overlap the next row.
+                    .child(div().flex_1().min_w_0().truncate().child(member))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -8657,6 +8660,73 @@ mod pane_tests {
             assert!(chat.member_menu.is_none());
             assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
         });
+    }
+
+    #[gpui::test]
+    fn member_rows_do_not_overlap(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        for avatars in [false, true] {
+            cx.update(|cx| {
+                crate::secrets::install_memory(cx);
+                cx.set_global(crate::theme::Theme::new(
+                    cayenchat_storage::ThemeMode::Light,
+                    gpui::WindowAppearance::Light,
+                    &cayenchat_storage::Appearance::default(),
+                ));
+            });
+            let mut settings = crate::settings_with_channels("#a");
+            settings.menu_bar_auto_hide = true;
+            settings.appearance.user_avatars = avatars;
+            let (chat, cx) = cx.add_window_view(|window, cx| {
+                ChatWindow::with_settings(settings.clone(), None, window, cx)
+            });
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(
+                    NetworkId(1),
+                    vec![
+                        Event::Registered {
+                            nickname: "me".into(),
+                        },
+                        Event::Joined {
+                            channel: "#a".into(),
+                        },
+                        Event::Names {
+                            channel: "#a".into(),
+                            // The middle one is too long for the list and
+                            // has places where a line could break.
+                            users: vec![
+                                "@op".into(),
+                                "a-very-long-nickname-that-does-not-fit|in[the]narrow-list".into(),
+                                "bob".into(),
+                            ],
+                        },
+                    ],
+                    false,
+                    cx,
+                );
+                let channel = chat.state.conversations()[0].id;
+                chat.state
+                    .dispatch(cayenchat_app::Command::SelectChannel(channel));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let rows: Vec<_> = (0..3)
+                .map(|index| {
+                    let selector: &'static str =
+                        Box::leak(format!("member-row-{index}").into_boxed_str());
+                    cx.debug_bounds(selector).expect("row drawn")
+                })
+                .collect();
+            for pair in rows.windows(2) {
+                assert!(
+                    pair[0].bottom() <= pair[1].top(),
+                    "avatars {avatars}: {:?} overlaps {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
     }
 
     #[gpui::test]
