@@ -10,6 +10,7 @@ mod diagnostics;
 mod experimental_settings;
 mod image_upload;
 mod input;
+mod input_history;
 mod ircv3_settings;
 mod localization;
 mod log_list;
@@ -104,6 +105,8 @@ actions!(
         CompleteNickname,
         SendMessage,
         Notice,
+        HistoryPrevious,
+        HistoryNext,
         OpenSettings,
         Disconnect,
         Reconnect,
@@ -901,6 +904,8 @@ struct ChatWindow {
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
+    /// Sent drafts recalled with Up/Down in the draft input.
+    input_history: input_history::InputHistory,
     /// One row per server whose nickname was rejected during registration,
     /// in the order the rejections arrived.
     nick_prompts: Vec<NickPrompt>,
@@ -1249,6 +1254,7 @@ impl ChatWindow {
             member_menu: None,
             channel_menu: None,
             member_prompt: None,
+            input_history: Default::default(),
             nick_prompts: Vec::new(),
             startup_connections,
             settings_window: None,
@@ -3235,6 +3241,7 @@ impl ChatWindow {
         };
         self.feedback = match result {
             Ok(()) => {
+                self.input_history.record(&text);
                 input.update(cx, |input, cx| input.clear_after_send(cx));
                 None
             }
@@ -3242,6 +3249,36 @@ impl ChatWindow {
         };
         cx.notify();
         window.refresh();
+    }
+
+    /// Replaces the draft with an older (`older`) or newer sent draft.
+    fn recall_history(&mut self, older: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.inputs[&self.state.selection()].clone();
+        if input.read(cx).is_composing() || !input.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        let current = input.read(cx).text().to_owned();
+        let recalled = if older {
+            self.input_history.previous(&current)
+        } else {
+            self.input_history.next(&current)
+        };
+        if let Some(text) = recalled {
+            input.update(cx, |input, cx| input.set_text(&text, cx));
+        }
+    }
+
+    fn history_previous(
+        &mut self,
+        _: &HistoryPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.recall_history(true, window, cx);
+    }
+
+    fn history_next(&mut self, _: &HistoryNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.recall_history(false, window, cx);
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
@@ -5947,6 +5984,8 @@ impl ChatWindow {
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::notice))
+            .on_action(cx.listener(Self::history_previous))
+            .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::open_settings))
             .when(self.can_disconnect_selected(), |d| {
                 d.on_action(cx.listener(Self::disconnect_action))
@@ -6839,6 +6878,8 @@ fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding>
         KeyBinding::new("tab", CompleteNickname, Some("ChatWindow > TextInput")),
         KeyBinding::new("enter", SendMessage, Some("ChatWindow > TextInput")),
         KeyBinding::new("ctrl-enter", Notice, Some("ChatWindow > TextInput")),
+        KeyBinding::new("up", HistoryPrevious, Some("ChatWindow > TextInput")),
+        KeyBinding::new("down", HistoryNext, Some("ChatWindow > TextInput")),
         KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
         KeyBinding::new("shift-tab", FocusPreviousField, Some("SettingsWindow")),
         KeyBinding::new("secondary-,", OpenSettings, None),

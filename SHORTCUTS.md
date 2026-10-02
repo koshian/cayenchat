@@ -18,6 +18,7 @@
 | First through tenth server | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | Send a channel message (`PRIVMSG`) | `Enter` | `Enter` |
 | Send as IRC `NOTICE` | `Ctrl+Enter` | `Ctrl+Enter` |
+| Recall an older / newer sent draft (last 20, this session only) | `Up` / `Down` | `Up` / `Down` |
 | Open connection settings | `Cmd+,` | `Ctrl+,` |
 | Show/hide connection diagnostics | `Cmd+Shift+D` | `Ctrl+Shift+D` |
 | Copy connection diagnostics | `Cmd+Shift+L` | `Ctrl+Shift+L` |
