@@ -159,6 +159,12 @@ The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
 
+`ui::color_picker::ColorPicker` is a saturation/brightness square, a hue bar
+and a `#RRGGBB` field that follow each other (GPUI has no color picker). It
+emits `ColorChanged` when the user picks or types a complete color;
+`set_color` shows a color the owner changed without emitting. Greys keep the
+hue the bar had.
+
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
 ## Current implementation

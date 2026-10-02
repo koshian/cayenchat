@@ -3,6 +3,9 @@
 mod account_settings;
 mod avatar_editor;
 mod avatars;
+// Used by the appearance settings in a later change (#83).
+#[allow(dead_code)]
+mod color_picker;
 mod decorations;
 mod default_avatar;
 mod desktop;
