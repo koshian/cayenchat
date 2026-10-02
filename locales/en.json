@@ -107,6 +107,7 @@
   "channel_number_modifier_super": "Super+1..0",
   "channel_number_modifier_hint": "Modifier for jumping to the first through tenth channel. Choose Alt or Super when the desktop uses Ctrl+number for workspaces. Server numbers stay Ctrl+Alt+1..0.",
   "keyboard": "Keyboard",
+  "menu_bar_auto_hide": "Hide the menu bar until Alt or F10",
   "text_key_theme": "Draft editing keys",
   "text_key_theme_auto": "Follow GTK",
   "text_key_theme_standard": "Standard",

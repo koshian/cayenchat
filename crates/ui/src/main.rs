@@ -1275,7 +1275,11 @@ impl ChatWindow {
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: false,
-            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
+            menu_bar: {
+                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
+                bar.set_always(!saved.menu_bar_auto_hide);
+                bar
+            },
             appearance: saved.appearance.clone(),
             theme_mode: saved.theme,
             image_provider: saved.image_upload.provider.clone(),
@@ -3687,6 +3691,8 @@ impl SettingsWindow {
         let language_changed = previous.language != saved.language;
         let shortcuts = ShortcutPrefs::from(&saved);
         let shortcuts_changed = ShortcutPrefs::from(&previous) != shortcuts;
+        let menu_bar_changed = previous.menu_bar_auto_hide != saved.menu_bar_auto_hide;
+        let menu_bar_always = !saved.menu_bar_auto_hide;
         let provider = saved.image_upload.provider.clone();
         let rules = notification_rules(&saved.notifications);
         let _ = self.owner.update(cx, |owner, window, cx| {
@@ -3694,6 +3700,10 @@ impl SettingsWindow {
             owner.notification_rules = rules;
             if shortcuts_changed {
                 apply_shortcuts(shortcuts, cx);
+            }
+            if menu_bar_changed {
+                owner.menu_bar.set_always(menu_bar_always);
+                cx.notify();
             }
             if appearance_changed {
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
@@ -4877,6 +4887,25 @@ impl SettingsWindow {
                 ))
                 .child(hint("text_key_theme_hint"))
             })
+            .child(
+                div()
+                    .id("menu-bar-auto-hide")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.menu_bar_auto_hide,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("menu_bar_auto_hide"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.menu_bar_auto_hide;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -5307,6 +5336,9 @@ fn preview_element(
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
+        // Follows the checkbox at once, before it is saved.
+        self.menu_bar
+            .set_always(!self.settings.values.menu_bar_auto_hide);
         let content = self.render_settings(cx).into_any_element();
         let content = menu_bar::wrap(
             &self.menu_bar,

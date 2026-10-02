@@ -15,6 +15,9 @@ const REVEAL_ANIMATION: Duration = Duration::from_millis(140);
 
 #[derive(Default)]
 pub struct MenuBar {
+    /// The bar is on screen all the time (the default). `visible` then only
+    /// says that it is being used from the keyboard or an open menu.
+    always: bool,
     visible: bool,
     active: usize,
     open: bool,
@@ -125,8 +128,18 @@ impl MenuBar {
         true
     }
 
+    /// Shows the bar all the time (`true`) or only on request (`false`).
+    pub fn set_always(&mut self, always: bool) {
+        self.always = always;
+    }
+
+    /// Whether the bar takes room on screen.
+    fn shown(&self) -> bool {
+        self.visible || self.always
+    }
+
     pub fn height(&self) -> Pixels {
-        px(if self.visible && !cfg!(target_os = "macos") {
+        px(if self.shown() && !cfg!(target_os = "macos") {
             HEIGHT
         } else {
             0.
@@ -250,10 +263,15 @@ fn wrap_in_window<V: 'static>(
         .bg(theme.surface)
         .border_b_1()
         .border_color(theme.border);
-    if state.visible {
-        // The initial frame has no rendered dispatch tree. Alt can reveal the
-        // menu only after it has been painted, when availability queries are safe.
-        let enabled = enabled_items(&menus, window, cx);
+    if state.shown() {
+        // The initial frame has no rendered dispatch tree, and a bar that is
+        // always shown is drawn in it. Availability is therefore asked only
+        // while a menu is open, which needs a click or key after painting.
+        let enabled = if state.open {
+            enabled_items(&menus, window, cx)
+        } else {
+            Vec::new()
+        };
         for (index, menu) in menus.iter().enumerate() {
             let mut label = div()
                 .id(("menu-heading", index))
@@ -262,7 +280,9 @@ fn wrap_in_window<V: 'static>(
                 .h_full()
                 .cursor_pointer()
                 .hover(|d| d.bg(theme.hover_strong))
-                .when(state.active == index, |d| d.bg(theme.selected))
+                .when(state.visible && state.active == index, |d| {
+                    d.bg(theme.selected)
+                })
                 .child(menu.name.clone())
                 .on_mouse_down(
                     MouseButton::Left,
@@ -270,6 +290,9 @@ fn wrap_in_window<V: 'static>(
                         let state = access(this);
                         state.alt_candidate = false;
                         state.hover_reveal = false;
+                        // Using the bar by mouse also lets the keyboard
+                        // move around it, as when it was revealed.
+                        state.visible = true;
                         state.open = state.active != index || !state.open;
                         state.active = index;
                         state.selected = None;
@@ -345,11 +368,17 @@ fn wrap_in_window<V: 'static>(
                 reveal_on_hover(state.hover_generation, access, window, cx);
             }
         }));
-    let bar = bar.with_animation(
-        ("window-menu-reveal", state.reveals),
-        Animation::new(REVEAL_ANIMATION).with_easing(ease_out_quint()),
-        |bar, delta| bar.h(px(HEIGHT * delta)),
-    );
+    // A bar that is always there does not slide in (and cannot stop half way).
+    let bar = if state.always {
+        bar.into_any_element()
+    } else {
+        bar.with_animation(
+            ("window-menu-reveal", state.reveals),
+            Animation::new(REVEAL_ANIMATION).with_easing(ease_out_quint()),
+            |bar, delta| bar.h(px(HEIGHT * delta)),
+        )
+        .into_any_element()
+    };
     div()
         .id("window-menu-root")
         .relative()
@@ -368,7 +397,7 @@ fn wrap_in_window<V: 'static>(
                 cx.notify();
             }),
         )
-        .when(state.visible, |d| d.child(bar))
+        .when(state.shown(), |d| d.child(bar))
         .child(
             div()
                 .flex_1()
@@ -384,7 +413,7 @@ fn wrap_in_window<V: 'static>(
                     }
                 })),
         )
-        .when(!state.visible, |d| d.child(hot_zone))
+        .when(!state.shown(), |d| d.child(hot_zone))
         .into_any_element()
 }
 
@@ -444,6 +473,97 @@ fn reveal_on_hover<V: 'static>(
 mod tests {
     use super::{MenuBar, Modifiers};
     use gpui::px;
+
+    #[gpui::test]
+    fn an_always_shown_bar_is_drawn_on_the_first_frame_and_opens_by_click(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{
+            Context, Focusable, IntoElement, Menu, MenuItem, MouseButton, Render, Window, div,
+            prelude::*,
+        };
+
+        struct View {
+            menu: MenuBar,
+            input: gpui::Entity<crate::input::TextInput>,
+        }
+        impl Render for View {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let content = div()
+                    .key_context("ChatWindow")
+                    .child(self.input.clone())
+                    .on_action(|_: &crate::CopyDiagnostics, _, _| {})
+                    .into_any_element();
+                super::wrap_in_window(
+                    &self.menu,
+                    vec![
+                        Menu {
+                            name: "View".into(),
+                            items: vec![MenuItem::action(
+                                "Copy diagnostics",
+                                crate::CopyDiagnostics,
+                            )],
+                        }
+                        .owned(),
+                    ],
+                    content,
+                    |this| &mut this.menu,
+                    window,
+                    cx,
+                )
+            }
+        }
+
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ))
+        });
+        // The first frame has no dispatch tree: drawing the bar must not ask
+        // which actions are available (that used to panic on startup).
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| crate::input::TextInput::new_live("Draft", cx));
+            window.focus(&input.focus_handle(cx));
+            let mut menu = MenuBar::new_in_window(window, cx, |this: &mut View| &mut this.menu);
+            menu.set_always(true);
+            View { menu, input }
+        });
+        let state = |cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                (view.menu.shown(), view.menu.visible, view.menu.open)
+            })
+        };
+        assert_eq!(state(cx), (true, false, false));
+
+        // Clicking the heading opens its menu; Escape closes it, and the bar
+        // stays.
+        let at = gpui::point(px(10.), px(10.));
+        cx.simulate_mouse_move(at, None, Modifiers::default());
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(state(cx), (true, true, true));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(state(cx), (true, false, false));
+
+        // Alt only moves keyboard use in and out; the bar never goes away.
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        cx.simulate_modifiers_change(alt);
+        cx.simulate_modifiers_change(Modifiers::default());
+        assert_eq!(state(cx), (true, true, false));
+        cx.simulate_modifiers_change(alt);
+        cx.simulate_modifiers_change(Modifiers::default());
+        assert_eq!(state(cx), (true, false, false));
+
+        // Auto-hide restores the old behaviour: no room until asked.
+        view.update(cx, |view, _| view.menu.set_always(false));
+        assert!(!state(cx).0);
+    }
 
     #[gpui::test]
     fn first_render_and_alt_reveal_use_a_ready_dispatch_tree(cx: &mut gpui::TestAppContext) {
