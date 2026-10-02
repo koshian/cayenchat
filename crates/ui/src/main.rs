@@ -12,9 +12,7 @@ mod experimental_settings;
 mod image_upload;
 mod input;
 mod input_history;
-// Used by the shortcuts tab (#118).
 mod ircv3_settings;
-#[allow(dead_code)]
 mod key_recorder;
 mod localization;
 mod log_list;
@@ -27,6 +25,7 @@ mod previews;
 mod secrets;
 mod session;
 mod settings_theme;
+mod shortcut_settings;
 mod shortcuts;
 mod splitter;
 mod theme;
@@ -1108,6 +1107,7 @@ enum SettingsTab {
     Connection,
     Appearance,
     Keyboard,
+    Shortcuts,
     Notifications,
     Ircv3,
     ImageUpload,
@@ -1142,6 +1142,8 @@ struct SettingsWindow {
     tab: SettingsTab,
     font_picker: Option<FontTarget>,
     color_picker: Option<OpenColorPicker>,
+    /// A key being recorded for a shortcut (the Shortcuts tab).
+    shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
     /// The system's font names, listed when the font list is first opened.
     fonts: Vec<String>,
     i18n: Localizer,
@@ -3656,6 +3658,7 @@ impl SettingsWindow {
             tab: SettingsTab::Connection,
             font_picker: None,
             color_picker: None,
+            shortcut_recording: None,
             fonts: Vec::new(),
             i18n,
             system_store: None,
@@ -5436,6 +5439,8 @@ impl SettingsWindow {
         if self.tab != tab {
             self.feedback = None;
             self.avatar_feedback = None;
+            // A key being recorded does not wait on another tab.
+            self.shortcut_recording = None;
         }
         self.tab = tab;
     }
@@ -5454,6 +5459,7 @@ impl SettingsWindow {
             .when(!cfg!(target_os = "macos"), |d| {
                 d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
             })
+            .child(self.settings_tab(SettingsTab::Shortcuts, "shortcuts-tab", "shortcuts_tab", cx))
             .child(self.settings_tab(
                 SettingsTab::Notifications,
                 "notifications-tab",
@@ -5483,6 +5489,7 @@ impl SettingsWindow {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
+            SettingsTab::Shortcuts => self.render_shortcut_settings(cx).into_any_element(),
             SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
