@@ -259,6 +259,7 @@ mod tests {
     #[gpui::test]
     fn shortcuts_are_changed_by_keys(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,

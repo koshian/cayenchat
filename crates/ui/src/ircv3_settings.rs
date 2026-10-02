@@ -1393,6 +1393,7 @@ mod own_avatar_tests {
     #[gpui::test]
     fn servers_that_never_enable_avatars_are_reported_as_unsupported(cx: &mut TestAppContext) {
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -1482,6 +1483,7 @@ mod own_avatar_tests {
         });
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -1609,6 +1611,7 @@ mod own_avatar_tests {
         });
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
