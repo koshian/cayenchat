@@ -181,7 +181,8 @@ editing UI (#118). `ui::key_recorder::record` takes the next keystroke of the
 application for itself (it reaches no shortcut and no text field) until its
 subscription is dropped: a usable combination is returned as kept in settings,
 Escape cancels (so Escape cannot be assigned), a bare character is refused, and
-Ctrl+Alt that produced text is refused on Windows (AltGr typing a letter);
+so is a combination that types a character (Option+letter on macOS,
+Ctrl+Alt+letter on Windows, where it is AltGr);
 keystrokes that are part of an IME composition pass through. `describe` turns a
 kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
 Shift), e.g. `Cmd+Shift+]` for `cmd-}`; the shifted symbols are mapped back for

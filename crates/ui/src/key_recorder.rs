@@ -10,7 +10,7 @@
 
 use gpui::{App, Context, Keystroke, Subscription, Window};
 
-use crate::shortcuts::usable_key;
+use crate::shortcuts::{types_text_on, usable_key};
 
 /// What a pressed key comes to while recording.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,14 +29,14 @@ pub enum Rejection {
     /// A letter, digit or symbol with no Ctrl, Alt or Cmd/Win held would
     /// stop that character from being typed.
     NeedsModifier,
-    /// Ctrl+Alt that produced a character: on Windows that is AltGr typing a
-    /// letter of the layout, so assigning it would take the letter away.
+    /// Option+letter on macOS (it types `å` and the like) or Ctrl+Alt+letter
+    /// on Windows (AltGr): assigning it would take that character away.
     TypesText,
 }
 
 /// What a keystroke means to a recording, or `None` to keep waiting (a
 /// keystroke that only makes part of a character, as an IME does).
-/// `altgr` is whether Ctrl+Alt with text is AltGr on this system (Windows).
+/// `altgr` is whether Ctrl+Alt is AltGr on this system (Windows).
 pub fn captured(keystroke: &Keystroke, altgr: bool) -> Option<Recorded> {
     if keystroke.is_ime_in_progress() {
         return None;
@@ -45,7 +45,9 @@ pub fn captured(keystroke: &Keystroke, altgr: bool) -> Option<Recorded> {
     if keystroke.key == "escape" && !modifiers.modified() {
         return Some(Recorded::Cancelled);
     }
-    if altgr && modifiers.control && modifiers.alt && keystroke.key_char.is_some() {
+    // Option+letter on macOS, and Ctrl+Alt+letter where that is AltGr: the
+    // combinations that type a character.
+    if types_text_on(keystroke, cfg!(target_os = "macos"), altgr) {
         return Some(Recorded::Rejected(Rejection::TypesText));
     }
     let key = keystroke.unparse();
@@ -239,23 +241,42 @@ mod tests {
 
     #[test]
     fn altgr_typing_is_refused_where_altgr_exists() {
-        // Ctrl+Alt+N typing "ń" on a Polish layout: key_char is the text.
+        // Ctrl+Alt+N typing "ń" on a Polish layout (the text comes with it,
+        // but even without it the combination is how that letter is typed).
         let typed = Keystroke {
             key_char: Some("ń".into()),
             ..press("ctrl-alt-n")
         };
-        assert_eq!(
-            captured(&typed, true),
-            Some(Recorded::Rejected(Rejection::TypesText))
-        );
-        // Where Ctrl+Alt is not AltGr, or when no text was produced, it is a key.
+        for keystroke in [&typed, &press("ctrl-alt-n")] {
+            assert_eq!(
+                captured(keystroke, true),
+                Some(Recorded::Rejected(Rejection::TypesText))
+            );
+        }
+        // Where Ctrl+Alt is not AltGr, it is an ordinary combination.
         assert_eq!(
             captured(&typed, false),
             Some(Recorded::Key("ctrl-alt-n".into()))
         );
+        // A named key with Ctrl+Alt types nothing, AltGr or not.
         assert_eq!(
-            captured(&press("ctrl-alt-n"), true),
-            Some(Recorded::Key("ctrl-alt-n".into()))
+            captured(&press("ctrl-alt-pageup"), true),
+            Some(Recorded::Key("ctrl-alt-pageup".into()))
+        );
+    }
+
+    #[test]
+    fn option_letter_is_refused_on_macos_only() {
+        let option_a = captured(&press("alt-a"), false);
+        if cfg!(target_os = "macos") {
+            assert_eq!(option_a, Some(Recorded::Rejected(Rejection::TypesText)));
+        } else {
+            assert_eq!(option_a, Some(Recorded::Key("alt-a".into())));
+        }
+        // With Cmd (or Ctrl) held it types nothing.
+        assert_eq!(
+            captured(&press("ctrl-alt-a"), false),
+            Some(Recorded::Key("ctrl-alt-a".into()))
         );
     }
 
