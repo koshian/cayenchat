@@ -185,8 +185,9 @@ so is a combination that types a character (Option+letter on macOS,
 Ctrl+Alt+letter on Windows, where it is AltGr);
 keystrokes that are part of an IME composition pass through. `describe` turns a
 kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
-Shift), e.g. `Cmd+Shift+]` for `cmd-}`; the shifted symbols are mapped back for
-a US or JIS keyboard, as a label only.
+Shift); a symbol is shown as the character that arrives (`Cmd+}` for `cmd-}`),
+not mapped back to a key, which would be wrong on layouts that place symbols
+differently (JIS).
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.

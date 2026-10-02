@@ -75,28 +75,20 @@ pub fn record<V: 'static>(
     })
 }
 
-/// A label for a key as kept in settings, such as `Cmd+Shift+]` for `cmd-}`.
-/// Shows what to press: the modifiers in a fixed order, the key by its name.
+/// A label for a key as kept in settings, such as `Cmd+}` for `cmd-}`: the
+/// modifiers in a fixed order, then the key by its name.
 ///
-/// A symbol that macOS reports as the shifted character with Shift cleared is
-/// labelled with Shift and the key it is on, for a US or JIS keyboard. That is
-/// only the label (other layouts may show a symbol they do not type with
-/// Shift); matching always uses the key as kept.
+/// A symbol is shown as the character that arrives. On macOS that is the
+/// shifted character with Shift cleared (Cmd+Shift+] is labelled `Cmd+}`),
+/// which is right whatever the layout; guessing which key it is on would be
+/// wrong on layouts that place symbols differently (JIS, for one).
 pub fn describe(key: &str) -> String {
     let Ok(keystroke) = Keystroke::parse(key) else {
         return key.to_owned();
     };
     let modifiers = &keystroke.modifiers;
-    let mut shift = modifiers.shift;
-    let mut name = keystroke.key.clone();
-    if cfg!(target_os = "macos")
-        && !shift
-        && modifiers.platform
-        && let Some(base) = unshifted_symbol(&name)
-    {
-        shift = true;
-        name = base.to_owned();
-    }
+    let shift = modifiers.shift;
+    let name = keystroke.key.clone();
     // The order the shortcut tables use (SHORTCUTS.md): Cmd, Ctrl, Opt, Shift.
     let mut parts: Vec<String> = Vec::new();
     if modifiers.platform {
@@ -130,34 +122,6 @@ pub fn describe(key: &str) -> String {
     }
     parts.push(key_name(&name));
     parts.join("+")
-}
-
-/// The key a shifted symbol is on, for a US or JIS keyboard.
-fn unshifted_symbol(shifted: &str) -> Option<&'static str> {
-    Some(match shifted {
-        "{" => "[",
-        "}" => "]",
-        "|" => "\\",
-        ":" => ";",
-        "\"" => "'",
-        "<" => ",",
-        ">" => ".",
-        "?" => "/",
-        "~" => "`",
-        "_" => "-",
-        "+" => "=",
-        "!" => "1",
-        "@" => "2",
-        "#" => "3",
-        "$" => "4",
-        "%" => "5",
-        "^" => "6",
-        "&" => "7",
-        "*" => "8",
-        "(" => "9",
-        ")" => "0",
-        _ => return None,
-    })
 }
 
 fn key_name(key: &str) -> String {
@@ -295,9 +259,10 @@ mod tests {
     fn labels_show_what_to_press() {
         #[cfg(target_os = "macos")]
         {
-            // macOS reports Cmd+Shift+] as `cmd-}`; the label says what was pressed.
-            assert_eq!(describe("cmd-}"), "Cmd+Shift+]");
-            assert_eq!(describe("cmd-{"), "Cmd+Shift+[");
+            // macOS reports Cmd+Shift+] as `cmd-}`; the label is the symbol
+            // that arrives, which holds on any layout.
+            assert_eq!(describe("cmd-}"), "Cmd+}");
+            assert_eq!(describe("cmd-{"), "Cmd+{");
             assert_eq!(describe("cmd-["), "Cmd+[");
             assert_eq!(describe("ctrl-alt-up"), "Ctrl+Opt+Up");
             assert_eq!(describe("cmd-alt-left"), "Cmd+Opt+Left");
