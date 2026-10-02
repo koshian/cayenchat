@@ -29,7 +29,7 @@ use cayenchat_app::{
     AppState, Command, ConnectionStatus, MessageMeta, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
-    own_avatar::OwnAvatar,
+    own_avatar::{Confirmed, OwnAvatar},
     timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
@@ -1311,6 +1311,21 @@ impl ChatWindow {
     fn is_own_nickname(&self, network: NetworkId, nickname: &str) -> bool {
         self.own_nickname(network)
             .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
+    }
+
+    /// Our own avatar on `network`, shown for our nickname instead of asking
+    /// anyone for it: the one the server confirmed, else the one shared with
+    /// peers. Read at draw time, so every row follows a change at once.
+    fn own_avatar_for(&self, network: NetworkId, nickname: &str) -> Option<Arc<str>> {
+        if !self.is_own_nickname(network, nickname) {
+            return None;
+        }
+        let session = self.sessions.get(&network)?;
+        if let Confirmed::Set(url) = session.own_avatar.confirmed() {
+            return Some(url.as_str().into());
+        }
+        let profile = self.saved.profile(&session.profile_id)?;
+        shared_peer_avatar(profile).map(|url| url.as_str().into())
     }
 
     /// Byte ranges of mentions of our nickname and of keywords in a channel
@@ -6511,8 +6526,8 @@ impl ChatWindow {
             })
             .child(style.time(message.time))
             .when(!message.activity && self.avatars.enabled(), |row| {
-                row.child(
-                    self.avatar_slot(
+                row.child(self.avatar_slot(
+                    self.own_avatar_for(network, &message.sender).or_else(|| {
                         self.state
                             .avatars()
                             .for_message(
@@ -6520,11 +6535,11 @@ impl ChatWindow {
                                 &cayenchat_irc_core::text::nickname_key(&message.sender),
                                 message.sequence,
                             )
-                            .cloned(),
-                        &message.sender,
-                        cx,
-                    ),
-                )
+                            .cloned()
+                    }),
+                    &message.sender,
+                    cx,
+                ))
             })
             .when(!message.activity, |row| {
                 row.child(
@@ -6738,10 +6753,12 @@ impl ChatWindow {
                     .trim_start_matches(['~', '&', '@', '%', '+'])
                     .to_owned();
                 let avatar = avatars_shown.then(|| {
-                    self.state
-                        .avatars()
-                        .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
-                        .cloned()
+                    self.own_avatar_for(network, &nickname).or_else(|| {
+                        self.state
+                            .avatars()
+                            .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
+                            .cloned()
+                    })
                 });
                 div()
                     .id(("member", index))
