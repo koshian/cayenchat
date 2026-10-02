@@ -171,8 +171,10 @@ bindings remain for layouts where [ and ] need Option (German, for example).
 The navigation shortcuts are named actions (`ui::shortcuts::ACTIONS`: id,
 command, per-platform default keys). The `keybindings` setting (action id →
 key, #114) replaces an action's keys; unknown actions and unusable keys (an
-empty string, a chord, a bare letter, a modifier alone) are ignored, leaving
-the defaults. A key is kept as GPUI reports it when pressed, which is not
+empty string, a chord, a bare letter, a modifier alone, and a combination that
+types a character: Option+letter on macOS, Ctrl+Alt+letter on Windows, where it
+is AltGr) are ignored, leaving the defaults. Clashes between what the user
+changed and other actions or fixed shortcuts are logged at startup. A key is kept as GPUI reports it when pressed, which is not
 always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
 that two actions, or an action and a fixed shortcut, would share, for the
 editing UI (#118). `ui::key_recorder::record` takes the next keystroke of the
@@ -299,19 +301,24 @@ the UI validates the saved selected profile and connects without opening setting
 invalid saved connection details open settings with feedback. Only explicitly
 saved credentials are available at startup. The macOS
 application menu and Command+, open that window;
-Windows/Linux use Ctrl+, or an in-window menu bar revealed by pressing Alt alone,
+Windows/Linux use Ctrl+, or an in-window menu bar that is shown all the time by
+default (users found a hidden bar hard to discover, issue #60). The Keyboard tab
+has "Hide the menu bar until Alt or F10" (`menu_bar_auto_hide`, off by default,
+added without a version change): then the bar is revealed by pressing Alt alone,
 by F10, or by resting the pointer for 0.4 s in a 6 px strip at the top of the
 content. Alt alone is commonly an IME on/off key, in which case the IME consumes
 it and the app never sees it, so F10 and hover are the reliable routes. A
 hover-revealed bar slides in and hides again once the pointer moves more than
 12 px below it, unless a menu is open. Hover reveal is not a Windows/GNOME
-convention (it resembles macOS full-screen menus).
+convention (it resembles macOS full-screen menus). A bar that is always shown
+has no slide-in animation (a frozen animation was one suspected cause of a
+half-drawn bar, issue #87) and Alt/F10 only move keyboard use in and out of it.
 The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
 and preserves input focus for editing commands. Alt chords do not toggle it;
 selecting an action or clicking outside dismisses it. Action availability is
-queried only after the menu is revealed: GPUI has no rendered dispatch tree
-during the first frame, so querying it while the initially hidden menu renders
-would panic on startup. macOS retains native menus.
+queried only while a menu is open: GPUI has no rendered dispatch tree during
+the first frame, so querying it while the bar renders (now always, unless
+auto-hidden) would panic on startup. macOS retains native menus.
 Passwords persist per server only when password saving is on for that server,
 and only through the credential store (see Credentials below); turning saving
 off immediately removes stored values. TLS certificate verification

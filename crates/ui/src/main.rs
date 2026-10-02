@@ -1315,7 +1315,11 @@ impl ChatWindow {
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: false,
-            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
+            menu_bar: {
+                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
+                bar.set_always(!saved.menu_bar_auto_hide);
+                bar
+            },
             appearance: saved.appearance.clone(),
             theme_mode: saved.theme,
             image_provider: saved.image_upload.provider.clone(),
@@ -3641,7 +3645,11 @@ impl SettingsWindow {
         }));
         let saved = settings.values.clone();
         let mut this = Self {
-            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
+            menu_bar: {
+                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
+                bar.set_always(!saved.menu_bar_auto_hide);
+                bar
+            },
             owner,
             settings,
             feedback: None,
@@ -3842,6 +3850,8 @@ impl SettingsWindow {
         let restore_layout = saved.restore_window_layout;
         let shortcuts = ShortcutPrefs::from(&saved);
         let shortcuts_changed = ShortcutPrefs::from(&previous) != shortcuts;
+        let menu_bar_changed = previous.menu_bar_auto_hide != saved.menu_bar_auto_hide;
+        let menu_bar_always = !saved.menu_bar_auto_hide;
         let provider = saved.image_upload.provider.clone();
         let rules = notification_rules(&saved.notifications);
         let _ = self.owner.update(cx, |owner, window, cx| {
@@ -3849,6 +3859,10 @@ impl SettingsWindow {
             owner.notification_rules = rules;
             if shortcuts_changed {
                 apply_shortcuts(shortcuts, cx);
+            }
+            if menu_bar_changed {
+                owner.menu_bar.set_always(menu_bar_always);
+                cx.notify();
             }
             if layout_changed {
                 owner.restore_layout = restore_layout;
@@ -5247,6 +5261,28 @@ impl SettingsWindow {
                 ))
                 .child(hint("text_key_theme_hint"))
             })
+            .child(
+                div()
+                    .id("menu-bar-auto-hide")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.menu_bar_auto_hide,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("menu_bar_auto_hide"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let hide = !this.settings.values.menu_bar_auto_hide;
+                        this.settings.values.menu_bar_auto_hide = hide;
+                        // This window's own bar follows at once, before the
+                        // setting is saved.
+                        this.menu_bar.set_always(!hide);
+                        cx.notify();
+                    })),
+            )
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -7381,6 +7417,18 @@ impl From<&Settings> for ShortcutPrefs {
 /// Replaces every key binding, so changed key preferences apply without
 /// restarting.
 fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
+    // Keys the user changed can end up shared with another action or a fixed
+    // shortcut (a hand-edited settings file, or before the shortcuts tab can
+    // warn). Both bindings are kept, as before, and the clash is reported.
+    if !prefs.overrides.is_empty() {
+        let fixed = fixed_bindings(prefs.channel_modifier);
+        for conflict in shortcuts::conflicts(&prefs.overrides, &fixed) {
+            eprintln!(
+                "CayenChat: the shortcut {} is taken by more than one action: {:?}",
+                conflict.key, conflict.owners
+            );
+        }
+    }
     cx.set_global(prefs);
     rebind_shortcuts(cx);
 }
