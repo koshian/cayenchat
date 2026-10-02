@@ -7386,12 +7386,17 @@ fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding>
         // Decided in #72: the bracket keys need no arrow keys (HHKB) and
         // avoid Ctrl+Option (VoiceOver) and Ctrl+Left/Right (Spaces). The more
         // frequent channel move is the shorter key; the server, one level up,
-        // adds Shift. Cmd+Shift+[ / ] were the active-channel keys (`Cmd+{`):
-        // active channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down.
+        // adds Shift. Cmd+Shift+[ / ] were the active-channel keys: active
+        // channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down.
         navigation_binding("cmd-[", Command::PreviousChannel),
         navigation_binding("cmd-]", Command::NextChannel),
-        navigation_binding("cmd-shift-[", Command::PreviousServer),
-        navigation_binding("cmd-shift-]", Command::NextServer),
+        // Written `cmd-{` and `cmd-}`, not `cmd-shift-[`: with Shift held on a
+        // key whose shifted character is not a letter, GPUI's macOS backend
+        // delivers the shifted character with `shift` cleared
+        // (`parse_keystroke` in platform/mac/events.rs), so Cmd+Shift+[ arrives
+        // as `cmd-{`. A `cmd-shift-[` binding would never fire.
+        navigation_binding("cmd-{", Command::PreviousServer),
+        navigation_binding("cmd-}", Command::NextServer),
         navigation_binding("ctrl-up", Command::PreviousChannel),
         navigation_binding("ctrl-down", Command::NextChannel),
         navigation_binding("cmd-alt-left", Command::PreviousActiveServer),
@@ -10461,8 +10466,12 @@ mod navigation_binding_tests {
         // Decided in #72.
         assert_eq!(command_for("cmd-["), Some(Command::PreviousChannel));
         assert_eq!(command_for("cmd-]"), Some(Command::NextChannel));
-        assert_eq!(command_for("cmd-shift-["), Some(Command::PreviousServer));
-        assert_eq!(command_for("cmd-shift-]"), Some(Command::NextServer));
+        // Pressing Cmd+Shift+[ on macOS arrives as `cmd-{` (see the bindings),
+        // so that is what must be bound; `cmd-shift-[` never arrives.
+        assert_eq!(command_for("cmd-{"), Some(Command::PreviousServer));
+        assert_eq!(command_for("cmd-}"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-shift-["), None);
+        assert_eq!(command_for("cmd-shift-]"), None);
         // The arrow-based keys stay.
         assert_eq!(command_for("ctrl-up"), Some(Command::PreviousChannel));
         assert_eq!(command_for("ctrl-right"), Some(Command::NextServer));

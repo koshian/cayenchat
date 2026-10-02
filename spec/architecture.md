@@ -164,7 +164,10 @@ On macOS Cmd+[ / Cmd+] move to the previous / next channel and Cmd+Shift+[ /
 Cmd+Shift+] to the previous / next server (decided in #72, which is the source
 for shortcut design; Windows/Linux keys without arrows are still open there).
 Cmd+{ / Cmd+} used to be the active-channel keys and are now the server keys;
-active channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down.
+active channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down. The server keys are
+bound as `cmd-{` / `cmd-}` because that is how GPUI's macOS backend reports
+Cmd+Shift+[ / ] (the shifted character, with Shift cleared); the arrow-key
+bindings remain for layouts where [ and ] need Option (German, for example).
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
