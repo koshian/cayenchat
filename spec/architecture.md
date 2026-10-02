@@ -303,6 +303,9 @@ group. The member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
+The server context menu also offers Join channel… (sends `/join <name>`) and
+Change nickname… (`NICK`), each asking in the small prompt the member menu
+uses and enabled only while registered; typed `/join` and `/nick` are unchanged.
 The core merges WHOIS numerics (311–319, 330, 301 while pending, and other
 WHOIS-only lines) per nickname and emits one `Whois` event at end-of-WHOIS (318);
 the raw lines still reach the server log. The UI opens a separate WHOIS window
