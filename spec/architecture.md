@@ -126,13 +126,15 @@ other than the selected one, with a direct jump to the source conversation. Its
 channel/server labels are single-line and ellipsize within their column. Channel
 messages have an application arrival sequence so the combined subwindow shows
 the actual latest line last even when several channels receive messages within
-the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares
+the same displayed minute. Channel activity (JOIN, PART, QUIT, NICK and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
 a nickname column regardless of the UI language, does not mark the channel
 unread, and appears only in its channel's main log, never in the combined
-subwindow. QUIT is logged only in channels whose last published roster contained
-the quitting nickname. Activity text uses configurable green (`#007D00`) by
-default. The main log keeps separate scroll positions for each server or
+subwindow. QUIT and NICK (ours included) are logged only in channels whose last
+published roster contained the nickname. Activity text uses configurable green (`#007D00`) by
+default. The main log's nickname column fits 15 typical characters; longer
+nicknames end in an ellipsis, or wrap when the Appearance setting is on. The
+main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.
 Both logs, the user list and the channel tree are virtualized (GPUI `list` /
@@ -154,10 +156,16 @@ replace only the rows whose messages appeared or disappeared, so switching
 channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
-scoped to the focused draft. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+scoped to the focused draft; Up/Down there recall the last 20 sent drafts
+(in memory only, shared by all conversations). Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
+
+Pane boundaries use `ui::splitter`: a thin handle that turns pointer drags
+into a pane size within the owner's minimum and maximum, measured from where
+the button went down (GPUI starts a drag only after a small movement). The
+owner stores the size; the handle draws and measures nothing else.
 
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
@@ -301,8 +309,15 @@ PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
 group. The member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
+`Connection::send_member_modes` gives or takes op/voice for several members,
+as `MODE <channel> +ooo a b c` lines of at most the server's announced
+`MODES` (ISUPPORT, read by the worker; 3 when absent, never more than 12) and
+a bounded length, validating everything before queuing anything.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
+The server context menu also offers Join channel… (sends `/join <name>`) and
+Change nickname… (`NICK`), each asking in the small prompt the member menu
+uses and enabled only while registered; typed `/join` and `/nick` are unchanged.
 The core merges WHOIS numerics (311–319, 330, 301 while pending, and other
 WHOIS-only lines) per nickname and emits one `Whois` event at end-of-WHOIS (318);
 the raw lines still reach the server log. The UI opens a separate WHOIS window
@@ -586,6 +601,11 @@ the subset avatars need:
   time): a `761`/`766` for us addressed to us, or a `FAIL` naming us or the
   key. The value is checked again here (no controls or spaces, at most 400
   bytes, ASCII on legacy encodings).
+- Showing our own avatar: rows by our current nickname (main log and member
+  list) use the avatar the server confirmed on this connection, else the URL
+  shared with peers, read at draw time; no lookup or CTCP request to
+  ourselves is made, and a change shows on every row at once. The unpublished
+  draft is never shown.
 - Later joiners: a live JOIN (not in a history batch) of someone who
   shares no other channel with us (judged from the rosters published
   before it) and has no known avatar is looked up with `METADATA <nick>
@@ -1114,7 +1134,23 @@ joined with `/join` are not rejoined by reconnects (only configured ones
 are), so they are not recovered until joined again; private
 conversations are not recovered.
 
-Not implemented: TARGETS and private-message history, persistence.
+Direct-message discovery (D034): once per connection, when chathistory
+becomes available, the worker queues `CHATHISTORY TARGETS <from> <to> 16`
+ahead of the join requests (`from`: the previous disconnect, at most a week
+back, default a day; `to`: now plus 5 minutes for clock skew). The reply
+batch (`draft/chathistory-targets`) is consumed whole; nicknames (not
+channels) are deduplicated by IRC casemapping, newest first, at most 16, and
+each is queued as an ordinary `LATEST <nick> * 50` in the same bounded queue.
+The application shows such a peer's conversation when its request is sent
+and inserts the reply like channel history (provenance `Requested`: no
+unread mark, highlight or notification). The reply of a request belongs to
+the connection's worker, so a reconnect cannot receive an older
+connection's targets.
+
+Not implemented: persistence; recovery of a known private conversation
+beyond one page (it repeats `LATEST *` and relies on the duplicate filter;
+lines missed while lines arrived live are placed by arrival order);
+channels the bouncer knows but we have not joined.
 
 ## Notifications
 
@@ -1431,3 +1467,28 @@ chat drafts and other prompts retain their original styling and editing code.
 The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
+
+## Server-confirmed sending (D036)
+
+`irc-core::echo::Echoes` (worker) tracks each sent message until its echo,
+ACK, error or expiry; `Event::OutgoingAccepted { local_id }`,
+`OutgoingConfirmed`, `OutgoingFailed` connect it to the application, which
+keeps `ServerSession::pending_sends` and calls `AppState::confirm_message` /
+`fail_message` on the optimistic line. The worker schedules expiry only while
+messages are pending, so an unanswered send is reported after 60 seconds even
+if no further server line arrives.
+
+## User accounts (D035)
+
+`irc-core::accounts::Accounts` sees each incoming line before translation
+(JOIN, ACCOUNT, PART, KICK, QUIT, NICK, its WHOX reply), the published member
+lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
+`UserAccountForgotten`. `ServerSession::user_accounts` mirrors them;
+`complete_whois` uses it. Active only with the "User accounts" preference.
+
+## account-tag (D033)
+
+`tags::account` reads the `account` tag; `irc-core` events carry it,
+`irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
+`new_message` retains it in `Message::account`. There is no per-user account
+table in this step.
