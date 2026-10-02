@@ -1150,6 +1150,14 @@ change).
   window is shrunk to that display and moved onto it as far as it fits, and
   never below the minimum window size. With no overlap (a monitor unplugged,
   a resolution change) the window opens in its usual centered place.
+  On Windows that display is also passed as the window's display: GPUI
+  otherwise creates the window on the primary display and replaces bounds
+  off it with a centered default size, so a window left on another monitor
+  came back on the primary (#125). macOS and X11 report every display at the
+  origin, so the display is not named there. With displays at different
+  scale factors the position may still be off, because GPUI converts the
+  bounds with the scale of the display the window is first created on; this
+  was not verified on Windows.
 - **When.** Moves and resizes, pane drags, closing the window and quitting the
   application (Cmd+Q does not ask the window to close) write it, after a 0.5 s
   pause for moves and drags. The window's bounds are noted as they change, so
