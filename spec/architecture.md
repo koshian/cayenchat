@@ -586,6 +586,11 @@ the subset avatars need:
   time): a `761`/`766` for us addressed to us, or a `FAIL` naming us or the
   key. The value is checked again here (no controls or spaces, at most 400
   bytes, ASCII on legacy encodings).
+- Showing our own avatar: rows by our current nickname (main log and member
+  list) use the avatar the server confirmed on this connection, else the URL
+  shared with peers, read at draw time; no lookup or CTCP request to
+  ourselves is made, and a change shows on every row at once. The unpublished
+  draft is never shown.
 - Later joiners: a live JOIN (not in a history batch) of someone who
   shares no other channel with us (judged from the rosters published
   before it) and has no known avatar is looked up with `METADATA <nick>
