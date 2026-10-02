@@ -128,6 +128,36 @@ pub fn types_text_on(keystroke: &Keystroke, macos: bool, windows: bool) -> bool 
             || (windows && modifiers.alt && modifiers.control))
 }
 
+/// Why a usable key is still better avoided, for a warning next to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Caution {
+    /// Ctrl+Option is how VoiceOver is operated on macOS.
+    VoiceOver,
+    /// Ctrl+Alt is AltGr on some Windows layouts.
+    AltGr,
+}
+
+/// The caution for `keystroke` on the system `macos` / `windows` name, if any.
+pub fn caution_on(keystroke: &Keystroke, macos: bool, windows: bool) -> Option<Caution> {
+    let modifiers = &keystroke.modifiers;
+    if macos && modifiers.control && modifiers.alt {
+        Some(Caution::VoiceOver)
+    } else if windows && modifiers.control && modifiers.alt && !modifiers.platform {
+        Some(Caution::AltGr)
+    } else {
+        None
+    }
+}
+
+/// [`caution_on`] for the system this is running on.
+pub fn caution(keystroke: &Keystroke) -> Option<Caution> {
+    caution_on(
+        keystroke,
+        cfg!(target_os = "macos"),
+        cfg!(target_os = "windows"),
+    )
+}
+
 /// A key a user may give an action, or `None`. One keystroke (no chords),
 /// parsed as GPUI parses a binding, carrying a modifier or being a function
 /// key: a bare letter would take the characters out of the draft, and a
@@ -363,6 +393,43 @@ mod tests {
         assert!(usable_key("cmd-}").is_some());
         assert!(usable_key("alt-shift-space").is_some());
         assert!(usable_key("home").is_none());
+    }
+
+    #[test]
+    fn ctrl_option_and_ctrl_alt_carry_a_caution_where_they_are_taken() {
+        let ctrl_alt_up = Keystroke::parse("ctrl-alt-up").unwrap();
+        let cmd_ctrl_alt = Keystroke::parse("cmd-ctrl-alt-up").unwrap();
+        let ctrl_up = Keystroke::parse("ctrl-up").unwrap();
+        assert_eq!(
+            caution_on(&ctrl_alt_up, true, false),
+            Some(Caution::VoiceOver)
+        );
+        assert_eq!(caution_on(&ctrl_alt_up, false, true), Some(Caution::AltGr));
+        assert_eq!(
+            caution_on(&ctrl_alt_up, false, false),
+            None,
+            "Linux: no AltGr clash"
+        );
+        assert_eq!(
+            caution_on(&cmd_ctrl_alt, true, false),
+            Some(Caution::VoiceOver)
+        );
+        assert_eq!(
+            caution_on(&cmd_ctrl_alt, false, true),
+            None,
+            "Win held: not AltGr"
+        );
+        assert_eq!(caution_on(&ctrl_up, true, true), None);
+        // The shipped defaults carry no caution except where #72 has not
+        // decided (Windows' Ctrl+Alt+PageUp/PageDown).
+        for action in ACTIONS {
+            for key in action.defaults {
+                let keystroke = Keystroke::parse(key).unwrap();
+                if cfg!(target_os = "macos") {
+                    assert_eq!(caution(&keystroke), None, "{} {key}", action.id);
+                }
+            }
+        }
     }
 
     #[test]

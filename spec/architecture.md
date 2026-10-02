@@ -188,6 +188,14 @@ kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
 Shift); a symbol is shown as the character that arrives (`Cmd+}` for `cmd-}`),
 not mapped back to a key, which would be wrong on layouts that place symbols
 differently (JIS).
+The Shortcuts tab of the settings window (`ui::shortcut_settings`, #118) lists
+the actions with their current keys. Change records the next key pressed
+(Escape cancels; a refused key keeps recording and says why); Reset restores
+one action, Reset all every action; a changed action is bold. Choosing an
+action's only default again removes the override. A ⚠ tooltip warns of a key
+shared with another action or a fixed shortcut, and of combinations better
+avoided (`shortcuts::caution`: Ctrl+Opt on macOS may be taken by VoiceOver,
+Ctrl+Alt on Windows/Linux by AltGr); nothing is blocked.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
