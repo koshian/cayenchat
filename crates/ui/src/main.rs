@@ -7389,8 +7389,9 @@ impl ChatWindow {
                             .cloned()
                     })
                 });
-                div()
-                    .id(("member", index))
+                let has_avatar = avatar.is_some();
+                exclusive_row(div().id(("member", index)))
+                    .debug_selector(move || format!("member-row-{index}"))
                     .px_2()
                     .py(px(1.))
                     .when(selected, |d| d.bg(theme.selected))
@@ -7401,7 +7402,26 @@ impl ChatWindow {
                             .gap_1()
                             .child(self.avatar_slot(avatar, &nickname, cx))
                     })
-                    .child(member)
+                    // The list gives every row the height of the first, so a
+                    // nickname that wrapped would overlap the next row.
+                    // Beside an avatar the row is a flex row and the name
+                    // takes what is left of it; without one the row is a
+                    // block and the name is as wide as the row.
+                    .child(
+                        div()
+                            .when(has_avatar, |name| name.flex_1())
+                            .min_w_0()
+                            .truncate()
+                            .child(member.clone()),
+                    )
+                    // A shortened name is read in full on hover.
+                    .tooltip({
+                        let full: SharedString = member.into();
+                        move |_, cx| {
+                            let full = full.clone();
+                            cx.new(|_| ircv3_settings::TextTooltip(full)).into()
+                        }
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -7463,6 +7483,15 @@ impl ChatWindow {
             })
             .collect()
     }
+}
+
+/// Makes a row of a list the only one under the pointer when it is on the
+/// line between two rows. GPUI counts a bounds' lower and right edges as
+/// inside it, so the line shared by two rows is inside both, and both would
+/// be hovered (and colored) at once, while a click reaches only the one in
+/// front. Scrolling still passes through to the list.
+fn exclusive_row<E: InteractiveElement>(row: E) -> E {
+    row.block_mouse_except_scroll()
 }
 
 fn navigation_binding(key: &str, command: Command) -> KeyBinding {
@@ -8660,6 +8689,122 @@ mod pane_tests {
             assert!(chat.member_menu.is_none());
             assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
         });
+    }
+
+    use gpui::{Context, IntoElement, Window, div, prelude::*, px};
+
+    /// Two rows one above the other, each noting whether it is hovered.
+    struct TwoRows {
+        hovered: std::rc::Rc<std::cell::Cell<[bool; 2]>>,
+        exclusive: bool,
+    }
+
+    impl gpui::Render for TwoRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let row = |index: usize| {
+                let hovered = self.hovered.clone();
+                let row = div()
+                    .id(("row", index))
+                    .h(px(22.))
+                    .on_hover(move |on, _, _| {
+                        let mut now = hovered.get();
+                        now[index] = *on;
+                        hovered.set(now);
+                    });
+                if self.exclusive {
+                    super::exclusive_row(row)
+                } else {
+                    row
+                }
+            };
+            div().size_full().child(row(0)).child(row(1))
+        }
+    }
+
+    #[gpui::test]
+    fn only_one_row_is_hovered_on_the_line_between_two(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, point};
+
+        for (exclusive, expected) in [(false, [true, true]), (true, [false, true])] {
+            let hovered = std::rc::Rc::new(std::cell::Cell::new([false; 2]));
+            let (_view, cx) = cx.add_window_view(|_, _| TwoRows {
+                hovered: hovered.clone(),
+                exclusive,
+            });
+            cx.run_until_parked();
+            // Rows are 22 px tall: the line at 22 belongs to both.
+            cx.simulate_mouse_move(point(px(10.), px(22.)), None, Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(hovered.get(), expected, "exclusive: {exclusive}");
+            // Inside a row, only that row.
+            cx.simulate_mouse_move(point(px(10.), px(11.)), None, Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(hovered.get(), [true, false], "exclusive: {exclusive}");
+        }
+    }
+
+    #[gpui::test]
+    fn member_rows_do_not_overlap(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        for avatars in [false, true] {
+            cx.update(|cx| {
+                crate::secrets::install_memory(cx);
+                cx.set_global(crate::theme::Theme::new(
+                    cayenchat_storage::ThemeMode::Light,
+                    gpui::WindowAppearance::Light,
+                    &cayenchat_storage::Appearance::default(),
+                ));
+            });
+            let mut settings = crate::settings_with_channels("#a");
+            settings.menu_bar_auto_hide = true;
+            settings.appearance.user_avatars = avatars;
+            let (chat, cx) = cx.add_window_view(|window, cx| {
+                ChatWindow::with_settings(settings.clone(), None, window, cx)
+            });
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(
+                    NetworkId(1),
+                    vec![
+                        Event::Registered {
+                            nickname: "me".into(),
+                        },
+                        Event::Joined {
+                            channel: "#a".into(),
+                        },
+                        Event::Names {
+                            channel: "#a".into(),
+                            // The middle one is too long for the list and
+                            // has places where a line could break.
+                            users: vec![
+                                "@op".into(),
+                                "a-very-long-nickname-that-does-not-fit|in[the]narrow-list".into(),
+                                "bob".into(),
+                            ],
+                        },
+                    ],
+                    false,
+                    cx,
+                );
+                let channel = chat.state.conversations()[0].id;
+                chat.state
+                    .dispatch(cayenchat_app::Command::SelectChannel(channel));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let rows: Vec<_> = ["member-row-0", "member-row-1", "member-row-2"]
+                .into_iter()
+                .map(|selector| cx.debug_bounds(selector).expect("row drawn"))
+                .collect();
+            for pair in rows.windows(2) {
+                assert!(
+                    pair[0].bottom() <= pair[1].top(),
+                    "avatars {avatars}: {:?} overlaps {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
     }
 
     #[gpui::test]
