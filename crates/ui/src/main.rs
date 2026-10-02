@@ -21,6 +21,9 @@ mod previews;
 mod secrets;
 mod session;
 mod settings_theme;
+// Applied to the panes by the next change (#90).
+#[allow(dead_code)]
+mod splitter;
 mod theme;
 mod whois;
 
