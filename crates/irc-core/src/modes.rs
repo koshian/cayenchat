@@ -40,8 +40,9 @@ impl MemberMode {
     }
 }
 
-/// The `MODES=<n>` value of an `RPL_ISUPPORT` line (`None` for other lines
-/// and for `MODES` without a number, which also means no fixed limit).
+/// The `MODES=<n>` value of an `RPL_ISUPPORT` line. `None` for other lines
+/// and for `MODES` without a usable number (a bare `MODES` means the server
+/// sets no fixed limit); either way the default per-line count applies.
 pub(crate) fn announced_limit(message: &Message) -> Option<usize> {
     let Command::Response(Response::RPL_ISUPPORT, args) = &message.command else {
         return None;
@@ -71,15 +72,16 @@ pub(crate) fn effective_limit(announced: usize) -> usize {
     }
 }
 
-/// `MODE <channel> +ooo a b c` lines, as many as needed so no line has more
-/// than `per_line` modes or an over-long parameter list. Nicknames repeat
-/// at most once; their order is kept.
+/// The parameters of `MODE <channel> +ooo a b c` commands (`[channel, "+ooo",
+/// "a", "b", "c"]`), as many commands as needed so none has more than
+/// `per_line` modes or an over-long parameter list. Nicknames repeat at most
+/// once; their order is kept.
 pub(crate) fn mode_lines(
     channel: &str,
     mode: MemberMode,
     nicknames: &[String],
     per_line: usize,
-) -> Vec<String> {
+) -> Vec<Vec<String>> {
     let per_line = per_line.max(1);
     let mut unique: Vec<&str> = Vec::new();
     for nickname in nicknames {
@@ -93,15 +95,12 @@ pub(crate) fn mode_lines(
     let mut lines = Vec::new();
     let mut group: Vec<&str> = Vec::new();
     let mut bytes = 0;
-    let mut flush = |group: &mut Vec<&str>, lines: &mut Vec<String>| {
+    let flush = |group: &mut Vec<&str>, lines: &mut Vec<Vec<String>>| {
         if !group.is_empty() {
             let flags = mode.flag().to_string().repeat(group.len());
-            lines.push(format!(
-                "MODE {channel} {}{flags} {}",
-                mode.sign(),
-                group.join(" ")
-            ));
-            group.clear();
+            let mut args = vec![channel.to_owned(), format!("{}{flags}", mode.sign())];
+            args.extend(group.drain(..).map(str::to_owned));
+            lines.push(args);
         }
     };
     for nickname in unique {
@@ -124,18 +123,31 @@ mod tests {
         names.iter().map(|name| (*name).to_owned()).collect()
     }
 
+    /// The commands as they go on the wire.
+    fn wire(lines: Vec<Vec<String>>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|args| format!("MODE {}", args.join(" ")))
+            .collect()
+    }
+
     #[test]
     fn groups_nicknames_by_the_per_line_limit() {
         assert_eq!(
-            mode_lines("#c", MemberMode::Op, &nicks(&["a", "b", "c", "d", "e"]), 3),
+            wire(mode_lines(
+                "#c",
+                MemberMode::Op,
+                &nicks(&["a", "b", "c", "d", "e"]),
+                3
+            )),
             ["MODE #c +ooo a b c", "MODE #c +oo d e"]
         );
         assert_eq!(
-            mode_lines("#c", MemberMode::Devoice, &nicks(&["a"]), 3),
+            wire(mode_lines("#c", MemberMode::Devoice, &nicks(&["a"]), 3)),
             ["MODE #c -v a"]
         );
         assert_eq!(
-            mode_lines("#c", MemberMode::Voice, &nicks(&["a", "b"]), 1),
+            wire(mode_lines("#c", MemberMode::Voice, &nicks(&["a", "b"]), 1)),
             ["MODE #c +v a", "MODE #c +v b"]
         );
         assert!(mode_lines("#c", MemberMode::Op, &[], 3).is_empty());
@@ -144,7 +156,12 @@ mod tests {
     #[test]
     fn repeated_nicknames_are_sent_once() {
         assert_eq!(
-            mode_lines("#c", MemberMode::Deop, &nicks(&["Al", "bo", "AL"]), 4),
+            wire(mode_lines(
+                "#c",
+                MemberMode::Deop,
+                &nicks(&["Al", "bo", "AL"]),
+                4
+            )),
             ["MODE #c -oo Al bo"]
         );
     }
@@ -157,7 +174,7 @@ mod tests {
             .collect();
         let lines = mode_lines("#c", MemberMode::Op, &names, 12);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines.iter().all(|line| line.len() < 450));
+        assert!(wire(lines).iter().all(|line| line.len() < 450));
     }
 
     #[test]

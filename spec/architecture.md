@@ -322,7 +322,9 @@ IRC commands; private-message composition sends directly to the selected nick.
 `Connection::send_member_modes` gives or takes op/voice for several members,
 as `MODE <channel> +ooo a b c` lines of at most the server's announced
 `MODES` (ISUPPORT, read by the worker; 3 when absent, never more than 12) and
-a bounded length, validating everything before queuing anything.
+a bounded length, validating everything and checking that the queue has room
+for every line before queuing anything. NAMES entries without a nickname
+(servers padding with spaces) are dropped from rosters in `names_snapshot`.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
 The server context menu also offers Join channel… (sends `/join <name>`) and
