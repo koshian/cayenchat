@@ -229,21 +229,31 @@ can only be exercised from `master` and must not change untested.
 
 Whenever an issue or PR needs someone to try it on a real machine (a Windows
 or Linux desktop the developer does not have, a monitor layout, an IME), do
-not just ask them to wait for the beta. Every time:
+not just ask them to wait for the beta. In this order, every time:
 
-1. Build with `Test Build` for the platform they use, from the PR branch
-   (before the merge) or from `master` when it is already merged. Use
-   `isolated=true` when their saved settings and passwords must not be
+1. **Get the review to pass first.** Read every review and comment on the PR
+   and answer each point (a fix, or a reason for not making it), then ask for
+   a re-review. A review that approves "except for the real-machine check" has
+   not passed until its suggestions are dealt with. Nobody is called before
+   this: a person would test code that is still going to change, and the build
+   would have to be made again. Building with `Test Build` early only to see
+   that it packages is fine; do not announce it.
+2. Build with `Test Build` for the platform they use, from the PR branch
+   (before the merge) or from `master` when it is already merged by a person.
+   Use `isolated=true` when their saved settings and passwords must not be
    touched; leave it off when the check needs their existing settings (for
    example restoring a saved window position).
-2. Comment on the issue, mentioning the reporter with `@name`, with the run
+3. Comment on the issue, mentioning the reporter with `@name`, with the run
    link, the commit SHA, the artifact name, how to start it (unzip and run;
    a signed-in GitHub account is needed; kept for 7 days), and what to look
    at. Ask for the environment details that matter (OS version, display
    scale, IME) and say what is still unverified.
-3. Take the report on the issue, and rebuild with `Test Build` for each new
-   commit that needs checking again. An LLM reviewer never merges such a PR
-   before the report arrives; only a person may decide to merge without one.
+4. Take the report on the issue, and rebuild with `Test Build` for each new
+   commit that needs checking again (and, if the change was reviewed again,
+   only after that review has passed too). An LLM reviewer never merges such a
+   PR before the report arrives; only a person may decide to merge without
+   one. The old rule that the reviewer merges without waiting for the reporter
+   (#60) no longer applies.
 
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
