@@ -302,7 +302,7 @@ this delay.
    or Cmd+, on macOS; use Ctrl+, on Windows/Linux. With new settings (the
    test build always starts with new settings) verify the server list says no
    servers are registered, the main log explains how to add one, and the
-   drop-down offers IRCnet, IRCnet (IPv6) and another server.
+   drop-down offers IRCnet, IRCnet (IPv6), IRCnet (dev) and another server.
 2. Add IRCnet and a blank server from the drop-down, assign different hosts and
    encodings, and verify both are listed in the order added. Switch among them
    to check that host, port, TLS, and encoding values remain independent.

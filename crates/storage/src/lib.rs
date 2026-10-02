@@ -28,7 +28,7 @@ pub struct ServerPreset {
     pub host: &'static str,
 }
 
-pub const PRESETS: [ServerPreset; 2] = [
+pub const PRESETS: [ServerPreset; 3] = [
     ServerPreset {
         name: "IRCnet",
         host: "irc.ircnet.ne.jp",
@@ -36,6 +36,10 @@ pub const PRESETS: [ServerPreset; 2] = [
     ServerPreset {
         name: "IRCnet (IPv6)",
         host: "irc6.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "IRCnet (dev)",
+        host: "dev.ircnet.ne.jp",
     },
 ];
 
@@ -1183,6 +1187,7 @@ mod tests {
         assert!(settings.selected_profile().is_none());
         let added = settings.add_server(PRESETS[1].host);
         assert_eq!(added.host, "irc6.ircnet.ne.jp");
+        assert!(PRESETS.iter().any(|p| p.host == "dev.ircnet.ne.jp"));
         assert!(
             added.id.starts_with("custom-"),
             "a fresh ID, not a preset's"
