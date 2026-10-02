@@ -831,7 +831,7 @@ pub(crate) fn place_uploaded_avatar(
 }
 
 /// A plain text tooltip in the platform's tooltip style.
-struct TextTooltip(SharedString);
+pub(crate) struct TextTooltip(pub(crate) SharedString);
 
 impl Render for TextTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
