@@ -291,19 +291,24 @@ the UI validates the saved selected profile and connects without opening setting
 invalid saved connection details open settings with feedback. Only explicitly
 saved credentials are available at startup. The macOS
 application menu and Command+, open that window;
-Windows/Linux use Ctrl+, or an in-window menu bar revealed by pressing Alt alone,
+Windows/Linux use Ctrl+, or an in-window menu bar that is shown all the time by
+default (users found a hidden bar hard to discover, issue #60). The Keyboard tab
+has "Hide the menu bar until Alt or F10" (`menu_bar_auto_hide`, off by default,
+added without a version change): then the bar is revealed by pressing Alt alone,
 by F10, or by resting the pointer for 0.4 s in a 6 px strip at the top of the
 content. Alt alone is commonly an IME on/off key, in which case the IME consumes
 it and the app never sees it, so F10 and hover are the reliable routes. A
 hover-revealed bar slides in and hides again once the pointer moves more than
 12 px below it, unless a menu is open. Hover reveal is not a Windows/GNOME
-convention (it resembles macOS full-screen menus).
+convention (it resembles macOS full-screen menus). A bar that is always shown
+has no slide-in animation (a frozen animation was one suspected cause of a
+half-drawn bar, issue #87) and Alt/F10 only move keyboard use in and out of it.
 The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
 and preserves input focus for editing commands. Alt chords do not toggle it;
 selecting an action or clicking outside dismisses it. Action availability is
-queried only after the menu is revealed: GPUI has no rendered dispatch tree
-during the first frame, so querying it while the initially hidden menu renders
-would panic on startup. macOS retains native menus.
+queried only while a menu is open: GPUI has no rendered dispatch tree during
+the first frame, so querying it while the bar renders (now always, unless
+auto-hidden) would panic on startup. macOS retains native menus.
 Passwords persist per server only when password saving is on for that server,
 and only through the credential store (see Credentials below); turning saving
 off immediately removes stored values. TLS certificate verification
@@ -350,7 +355,12 @@ history). A complete membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
-group. The member context menu routes Whois, invite and +o/-o through validated
+group. The member list selects members like a file list: click chooses one,
+Cmd/Ctrl-click adds or removes one, Shift-click chooses the range from the
+member clicked last. The choice is kept by nickname for one channel (it
+follows roster updates and starts empty in another channel), and a
+right-click on a member outside the choice replaces it with that member. The
+member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
 `Connection::send_member_modes` gives or takes op/voice for several members,
 as `MODE <channel> +ooo a b c` lines of at most the server's announced
