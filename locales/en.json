@@ -131,6 +131,7 @@
   "reset_confirm_title": "Restore defaults?",
   "reset_confirm_detail": "Every setting on this tab returns to its default.",
   "shortcut_press": "Press the new keys (Esc to cancel)",
+  "shortcut_press_replaces": "Press the new keys (replaces the current ones; Esc to cancel)",
   "shortcut_needs_modifier": "Hold Ctrl, Alt or Cmd with the key",
   "shortcut_types_text": "These keys type a character",
   "shortcut_conflict_action": "Also used by: {other}",

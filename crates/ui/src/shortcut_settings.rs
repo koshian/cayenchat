@@ -87,6 +87,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Stops a recording when this window is no longer the active one: the
+    /// recording takes keys of the whole application, so one pressed in
+    /// another window would otherwise be recorded here.
+    pub(crate) fn window_activation_changed(&mut self, active: bool, cx: &mut Context<Self>) {
+        if !active && self.shortcut_recording.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// What the recording came to. A refused key keeps recording, with the
     /// reason shown; a key or Escape ends it.
     pub(crate) fn shortcut_recorded(
@@ -170,6 +179,10 @@ impl SettingsWindow {
                                 .text_color(theme.text_secondary)
                                 .child(match recording.notice {
                                     Some(key) => self.i18n.text(key),
+                                    // A new key replaces every key the action has now.
+                                    None if shortcuts::keys(action, overrides).len() > 1 => {
+                                        self.i18n.text("shortcut_press_replaces")
+                                    }
                                     None => self.i18n.text("shortcut_press"),
                                 })
                         }
@@ -304,5 +317,18 @@ mod tests {
         let reset_all = cx.debug_bounds("reset-defaults").unwrap().center();
         cx.simulate_click(reset_all, gpui::Modifiers::default());
         assert!(overrides(&form, cx).is_empty());
+
+        // Leaving the window ends a recording, so keys pressed elsewhere are
+        // not taken. This goes through the window's own activation change, so
+        // it also fails if that is no longer observed.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        form.update(cx, |form, cx| {
+            form.toggle_shortcut_recording("next_channel", cx)
+        });
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_some()));
+        cx.deactivate_window();
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_none()));
     }
 }

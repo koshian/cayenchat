@@ -131,6 +131,7 @@
   "reset_confirm_title": "デフォルトに戻しますか?",
   "reset_confirm_detail": "このタブの設定がすべてデフォルトに戻ります。",
   "shortcut_press": "新しいキーを押してください(Esc で取り消し)",
+  "shortcut_press_replaces": "新しいキーを押してください(今のキーと置き換え。Esc で取り消し)",
   "shortcut_needs_modifier": "Ctrl・Alt・Cmd と一緒に押してください",
   "shortcut_types_text": "文字の入力に使われる組み合わせです",
   "shortcut_conflict_action": "{other} と重複しています",
