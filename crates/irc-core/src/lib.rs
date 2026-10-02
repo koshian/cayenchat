@@ -1229,16 +1229,20 @@ impl Connection {
             .load(std::sync::atomic::Ordering::Relaxed);
         let lines = modes::mode_lines(channel, mode, nicknames, modes::effective_limit(announced));
         let outgoing = lines
-            .iter()
-            .map(|line| {
+            .into_iter()
+            .map(|args| {
                 // Sent as given: parsing "+vv" into modes and back would
                 // write it as "+v+v".
-                let args = line.split(' ').skip(1).map(str::to_owned).collect();
                 let outgoing = checked_command(IrcCommand::Raw("MODE".into(), args))?;
                 validate_outgoing(&outgoing, &self.encoding)?;
                 Ok(outgoing)
             })
             .collect::<Result<Vec<_>, String>>()?;
+        // Everything or nothing: this thread is the only sender, so room that
+        // exists now stays until the lines are queued.
+        if self.commands.capacity() < outgoing.len() {
+            return Err("The connection is busy; try again in a moment.".into());
+        }
         for outgoing in outgoing {
             self.commands
                 .try_send(outgoing)
@@ -2502,6 +2506,9 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
     let mut users: Vec<String> = tracked
         .unwrap_or_default()
         .iter()
+        // Servers may pad NAMES with extra spaces, which the client library
+        // splits into users without a nickname.
+        .filter(|user| !user.get_nickname().is_empty())
         .map(|user| {
             let prefix = match user.highest_access_level() {
                 AccessLevel::Owner => "~",
@@ -3131,6 +3138,32 @@ mod tests {
     }
 
     #[test]
+    fn member_modes_are_not_sent_in_part_when_the_queue_is_nearly_full() {
+        // Room for two commands; three are needed (one mode per line).
+        let (commands, mut queued) = mpsc::channel(2);
+        let (_event_tx, events) = mpsc::channel(1);
+        let connection = Connection {
+            commands,
+            cancel: Arc::new(Notify::new()),
+            events: Some(Events(events)),
+            encoding: "UTF-8".into(),
+            modes_per_line: Arc::new(AtomicUsize::new(1)),
+        };
+        let names = ["a", "b", "c"].map(str::to_owned).to_vec();
+        assert!(
+            connection
+                .send_member_modes("#t", MemberMode::Op, &names)
+                .is_err()
+        );
+        assert!(queued.try_recv().is_err(), "not even the first line went");
+        // With enough room the same request goes through whole.
+        connection
+            .send_member_modes("#t", MemberMode::Op, &names[..2])
+            .unwrap();
+        assert!(queued.try_recv().is_ok() && queued.try_recv().is_ok());
+    }
+
+    #[test]
     fn taken_events_can_be_awaited_until_the_worker_ends() {
         let (commands, _) = mpsc::channel(1);
         let (event_tx, events) = mpsc::channel(1);
@@ -3626,7 +3659,7 @@ mod tests {
                 }
             }
             socket.write_all(
-                b":alice!u@h JOIN #test\r\n:alice!u@h JOIN #other\r\n:server 353 alice = #other :alice\r\n:server 366 alice #other :End of NAMES\r\n:alice!u@h PRIVMSG #test :hello\r\n:server 353 alice = #test :@alice bob\r\n:server 366 alice #test :End of NAMES\r\n:charlie!u@h JOIN #test\r\n:alice!u@h MODE #test +o charlie\r\n:bob!u@h PART #test\r\n:charlie!u@h NICK dave\r\n:dave!u@h QUIT :bye\r\n"
+                b":alice!u@h JOIN #test\r\n:alice!u@h JOIN #other\r\n:server 353 alice = #other :alice\r\n:server 366 alice #other :End of NAMES\r\n:alice!u@h PRIVMSG #test :hello\r\n:server 353 alice = #test :@alice  bob \r\n:server 366 alice #test :End of NAMES\r\n:charlie!u@h JOIN #test\r\n:alice!u@h MODE #test +o charlie\r\n:bob!u@h PART #test\r\n:charlie!u@h NICK dave\r\n:dave!u@h QUIT :bye\r\n"
             ).unwrap();
             let mut outgoing = Vec::new();
             while outgoing.len() < 7 {
@@ -3693,6 +3726,11 @@ mod tests {
                             channel != "#other"
                                 || !activities.iter().any(|(actor, _)| actor == "charlie"),
                             "#other roster republished for an unrelated user"
+                        );
+                        // Extra spaces in NAMES must not become members.
+                        assert!(
+                            users.iter().all(|user| !display_nickname(user).is_empty()),
+                            "empty roster entry in {users:?}"
                         );
                         rosters.push(users.clone());
                         seen_names |= channel == "#test"
