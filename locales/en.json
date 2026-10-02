@@ -99,6 +99,8 @@
   "theme_system": "System",
   "theme_light": "Light",
   "theme_dark": "Dark",
+  "palette_save": "Save to palette",
+  "palette_remove_hint": "Click to use, right-click to remove",
   "colors_light": "Light theme",
   "colors_dark": "Dark theme",
   "channel_number_modifier": "Channel number keys",

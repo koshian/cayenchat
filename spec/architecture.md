@@ -171,7 +171,12 @@ owner stores the size; the handle draws and measures nothing else.
 and a `#RRGGBB` field that follow each other (GPUI has no color picker). It
 emits `ColorChanged` when the user picks or types a complete color;
 `set_color` shows a color the owner changed without emitting. Greys keep the
-hue the bar had. Each picker acts only on its own drags: GPUI delivers a
+hue the bar had. In the Appearance settings, the swatch beside each color
+field opens one picker below its row (one at a time) together with the saved
+palette: picking writes the field, typing in the field moves the picker, a
+palette color is applied by a click and removed by a right-click, and "Save to
+palette" adds the picked color (24 at most, no repeats). Each picker acts only
+on its own drags: GPUI delivers a
 drag's moves to every element that listens for that drag type, so the drag
 carries the picker's entity id.
 
