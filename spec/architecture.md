@@ -190,7 +190,9 @@ not mapped back to a key, which would be wrong on layouts that place symbols
 differently (JIS).
 The Shortcuts tab of the settings window (`ui::shortcut_settings`, #118) lists
 the actions with their current keys. Change records the next key pressed
-(Escape cancels; a refused key keeps recording and says why); Reset restores
+(Escape cancels; a refused key keeps recording and says why; the recording ends
+when the tab or the window is left, because it takes the keys of the whole
+application; for an action with several keys it says the new key replaces them); Reset restores
 one action, Reset all every action; a changed action is bold. Choosing an
 action's only default again removes the override. A ⚠ tooltip warns of a key
 shared with another action or a fixed shortcut, and of combinations better

@@ -129,6 +129,7 @@
   "shortcut_reset": "Reset",
   "shortcut_reset_all": "Reset all",
   "shortcut_press": "Press the new keys (Esc to cancel)",
+  "shortcut_press_replaces": "Press the new key (replaces the current keys; Esc to cancel)",
   "shortcut_needs_modifier": "Hold Ctrl, Alt or Cmd with the key",
   "shortcut_types_text": "These keys type a character",
   "shortcut_conflict_action": "Also used by: {other}",
