@@ -175,7 +175,15 @@ empty string, a chord, a bare letter, a modifier alone) are ignored, leaving
 the defaults. A key is kept as GPUI reports it when pressed, which is not
 always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
 that two actions, or an action and a fixed shortcut, would share, for the
-editing UI (#118).
+editing UI (#118). `ui::key_recorder::record` takes the next keystroke of the
+application for itself (it reaches no shortcut and no text field) until its
+subscription is dropped: a usable combination is returned as kept in settings,
+Escape cancels (so Escape cannot be assigned), a bare character is refused, and
+Ctrl+Alt that produced text is refused on Windows (AltGr typing a letter);
+keystrokes that are part of an IME composition pass through. `describe` turns a
+kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
+Shift), e.g. `Cmd+Shift+]` for `cmd-}`; the shifted symbols are mapped back for
+a US or JIS keyboard, as a label only.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.

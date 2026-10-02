@@ -12,7 +12,10 @@ mod experimental_settings;
 mod image_upload;
 mod input;
 mod input_history;
+// Used by the shortcuts tab (#118).
 mod ircv3_settings;
+#[allow(dead_code)]
+mod key_recorder;
 mod localization;
 mod log_list;
 mod member_selection;
