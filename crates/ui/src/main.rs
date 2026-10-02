@@ -125,6 +125,7 @@ struct SettingsForm {
     values: Settings,
     server_list_open: bool,
     encoding_list_open: bool,
+    language_list_open: bool,
     custom_host: Entity<TextInput>,
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
@@ -350,6 +351,7 @@ impl SettingsForm {
             },
             server_list_open: false,
             encoding_list_open: false,
+            language_list_open: false,
             values,
         }
     }
@@ -597,6 +599,7 @@ impl SettingsForm {
         }
         self.server_list_open = false;
         self.encoding_list_open = false;
+        self.language_list_open = false;
     }
 }
 
@@ -3881,27 +3884,52 @@ impl SettingsWindow {
         let server_fields = profile
             .as_ref()
             .map(|profile| self.render_server_fields(profile, cx));
-        let mut language_selector = div().flex().gap_1();
-        for (index, language) in [Language::System, Language::Japanese, Language::English]
-            .into_iter()
-            .enumerate()
-        {
-            language_selector = language_selector.child(
-                div()
-                    .id(("language-option", index))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .when(self.settings.values.language == language, |d| {
-                        d.bg(theme.selected)
-                    })
-                    .child(self.i18n.preference_label(language))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_language(language, window, cx)
-                    })),
-            );
+        let mut language_selector = div().flex().flex_col().child(
+            div()
+                .id("language-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!(
+                    "{}  ▾",
+                    self.i18n.preference_label(self.settings.values.language)
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.language_list_open = !this.settings.language_list_open;
+                    this.settings.server_list_open = false;
+                    this.settings.encoding_list_open = false;
+                    cx.notify();
+                })),
+        );
+        if self.settings.language_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            for (index, language) in [Language::System, Language::Japanese, Language::English]
+                .into_iter()
+                .enumerate()
+            {
+                menu = menu.child(
+                    div()
+                        .id(("language-option", index))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .when(self.settings.values.language == language, |d| {
+                            d.bg(theme.selected)
+                        })
+                        .child(self.i18n.preference_label(language))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.settings.language_list_open = false;
+                            this.select_language(language, window, cx)
+                        })),
+                );
+            }
+            language_selector = language_selector.child(menu);
         }
         let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
@@ -3924,6 +3952,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.server_list_open = !this.settings.server_list_open;
                     this.settings.encoding_list_open = false;
+                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -4120,6 +4149,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.encoding_list_open = !this.settings.encoding_list_open;
                     this.settings.server_list_open = false;
+                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
