@@ -154,7 +154,8 @@ replace only the rows whose messages appeared or disappeared, so switching
 channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
-scoped to the focused draft. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+scoped to the focused draft; Up/Down there recall the last 20 sent drafts
+(in memory only, shared by all conversations). Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
