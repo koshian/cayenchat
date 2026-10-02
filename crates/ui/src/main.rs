@@ -2074,15 +2074,47 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Gives or takes op or voice for every member the open menu acts on.
+    /// The members of a group menu who are still chosen, now. The menu keeps
+    /// the nicknames it was opened with, but while it is open someone may have
+    /// left and someone else taken the nickname; the choice is trimmed with
+    /// every roster, so a newcomer is not among the chosen.
+    fn menu_group_now(&self, menu: &MemberMenu) -> Vec<String> {
+        let Some(id) = self.state.channel_id(menu.network, &menu.channel) else {
+            return Vec::new();
+        };
+        let Some(conversation) = self.state.conversations().iter().find(|c| c.id == id) else {
+            return Vec::new();
+        };
+        let chosen = self
+            .member_selection
+            .nicknames(id, &conversation.members)
+            .iter()
+            .map(|nickname| cayenchat_irc_core::text::nickname_key(nickname))
+            .collect::<Vec<_>>();
+        menu.group
+            .iter()
+            .filter(|nickname| {
+                chosen.contains(&cayenchat_irc_core::text::nickname_key(nickname.as_str()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Gives or takes op or voice for every member the open menu acts on, as
+    /// chosen at the moment of the click.
     fn member_modes(&mut self, mode: cayenchat_irc_core::MemberMode, cx: &mut Context<Self>) {
         let Some(menu) = self.member_menu.take() else {
             return;
         };
-        self.feedback = self
-            .registered_connection(menu.network)
-            .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &menu.group))
-            .err();
+        let group = self.menu_group_now(&menu);
+        // Nobody left to act on: nothing is sent.
+        self.feedback = if group.is_empty() {
+            None
+        } else {
+            self.registered_connection(menu.network)
+                .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &group))
+                .err()
+        };
         cx.notify();
     }
 
@@ -8665,6 +8697,39 @@ mod pane_tests {
             cx.run_until_parked();
         }
         assert!(chosen(&chat, cx).is_empty());
+
+        // The same while a group menu is open: it keeps the nicknames it was
+        // opened with, but what it acts on is who is still chosen when an item
+        // is clicked.
+        let bob = point(px(width - 240. + 30.), px(22. * 2. + 11.));
+        cx.simulate_mouse_move(alice, None, none);
+        cx.simulate_mouse_down(alice, MouseButton::Left, none);
+        cx.simulate_mouse_up(alice, MouseButton::Left, none);
+        let secondary = Modifiers::secondary_key();
+        cx.simulate_mouse_move(bob, None, secondary);
+        cx.simulate_mouse_down(bob, MouseButton::Left, secondary);
+        cx.simulate_mouse_up(bob, MouseButton::Left, secondary);
+        cx.simulate_mouse_move(bob, None, none);
+        cx.simulate_mouse_down(bob, MouseButton::Right, none);
+        cx.run_until_parked();
+        let (menu_group, now) = chat.read_with(cx, |chat, _| {
+            let menu = chat.member_menu.as_ref().expect("group menu open");
+            (menu.group.clone(), chat.menu_group_now(menu))
+        });
+        assert_eq!(menu_group, ["alice", "bob"]);
+        assert_eq!(now, ["alice", "bob"]);
+        for users in [&["@op", "bob"][..], &["@op", "alice", "bob"][..]] {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(NetworkId(1), vec![names(users)], false, cx)
+            });
+            cx.run_until_parked();
+        }
+        let (menu_group, now) = chat.read_with(cx, |chat, _| {
+            let menu = chat.member_menu.as_ref().expect("the menu stays open");
+            (menu.group.clone(), chat.menu_group_now(menu))
+        });
+        assert_eq!(menu_group, ["alice", "bob"], "opened with both");
+        assert_eq!(now, ["bob"], "the newcomer named alice is not acted on");
     }
 
     #[gpui::test]

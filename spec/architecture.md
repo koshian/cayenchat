@@ -354,7 +354,10 @@ follows roster updates and starts empty in another channel), and a
 right-click on a member outside the choice replaces it with that member. A right-click on one
 of two or more chosen members opens a menu for the whole choice (its size, then
 +o, -o, +v, -v), which `Connection::send_member_modes` sends in as many `MODE`
-lines as the server's limit needs; on one member it is the usual menu. The
+lines as the server's limit needs; on one member it is the usual menu. What it
+acts on is who is still chosen when an item is clicked, not the nicknames it
+was opened with (someone may have left meanwhile and a namesake taken the
+nickname). The
 member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
 `Connection::send_member_modes` gives or takes op/voice for several members,
