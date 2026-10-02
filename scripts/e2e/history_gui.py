@@ -24,7 +24,9 @@ import argparse, os, re, socket, struct, subprocess, sys, tempfile, threading, t
 
 WIDTH, HEIGHT = 1000, 700
 # Inside the main log pane (upper left) at this window size.
-LOG_BOX = (0, 0, 560, 326)
+# The menu bar (28 px, shown all the time by default) sits above the panes.
+MENU_BAR = 28
+LOG_BOX = (0, MENU_BAR, 560, 326)
 LOG_POINT = (300, 150)
 # Where message text starts in the main log: after the time and the 124 px
 # nickname column.
