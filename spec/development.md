@@ -199,6 +199,22 @@ GitHub workflows default to a read-only token and check out without persisted
 credentials; only the beta `publish` job gets `contents: write` to move the tag and
 upload the release. Actions are pinned to commit SHAs (with the version in a
 comment) and Dependabot proposes pin updates weekly.
+
+To let a reporter try a change before it is merged, run the manual
+`Test Build` workflow (`.github/workflows/test-build.yml`) from the Actions
+tab or with
+`gh workflow run test-build.yml -f ref=<branch or SHA> -f platform=windows-x86_64`
+(`all`, `windows-x86_64`, `windows-arm64`, `linux-x86_64` or `macos-arm64`).
+It packages that ref like the beta does and keeps each package as a workflow
+artifact for 7 days, named `cayenchat-test-<short SHA>-<platform>` (`.zip`, or
+`.deb` on Linux) and downloaded as that file; the macOS bundle is
+`CayenChat Test.app`. `isolated=true` builds with the `test-build` feature, so
+the reporter's own settings and passwords are not used (suffix `-isolated`).
+It only has a read-only token and publishes nothing, so the beta is
+unaffected. Link the run and the commit SHA in the PR or issue; downloading
+an artifact needs a signed-in GitHub account. It packages separately from
+`beta-release.yml` rather than sharing a reusable workflow, because the beta
+can only be exercised from `master` and must not change untested.
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
 
