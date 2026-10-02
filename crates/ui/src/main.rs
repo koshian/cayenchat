@@ -24,6 +24,7 @@ mod previews;
 mod secrets;
 mod session;
 mod settings_theme;
+mod shortcuts;
 mod splitter;
 mod theme;
 mod whois;
@@ -7354,10 +7355,12 @@ fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
 
 /// Saved key preferences, kept so a desktop key-theme change can rebind
 /// without the settings window.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ShortcutPrefs {
     channel_modifier: ChannelNumberModifier,
     text_keys: TextKeyTheme,
+    /// Navigation keys the user changed (action id → key).
+    overrides: shortcuts::Overrides,
 }
 
 impl Global for ShortcutPrefs {}
@@ -7367,6 +7370,7 @@ impl From<&Settings> for ShortcutPrefs {
         Self {
             channel_modifier: settings.channel_number_modifier,
             text_keys: settings.text_key_theme,
+            overrides: settings.keybindings.clone(),
         }
     }
 }
@@ -7381,7 +7385,7 @@ fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
 fn rebind_shortcuts(cx: &mut App) {
     let prefs = cx
         .try_global::<ShortcutPrefs>()
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let emacs = match prefs.text_keys {
         TextKeyTheme::Auto => desktop::current(cx).emacs_keys,
@@ -7390,7 +7394,7 @@ fn rebind_shortcuts(cx: &mut App) {
     };
     cx.clear_key_bindings();
     input::bind_keys(emacs, cx);
-    cx.bind_keys(shortcut_bindings(prefs.channel_modifier));
+    cx.bind_keys(shortcut_bindings(prefs.channel_modifier, &prefs.overrides));
 }
 
 /// Standard Tab / Shift+Tab movement between settings fields (tab stops).
@@ -7400,8 +7404,21 @@ fn field_traversal<E: InteractiveElement>(element: E) -> E {
         .on_action(|_: &FocusPreviousField, window, _| window.focus_prev())
 }
 
+/// Every application shortcut: the fixed ones and the navigation actions with
+/// what the user changed (see `shortcuts`).
+fn shortcut_bindings(
+    channel_modifier: ChannelNumberModifier,
+    overrides: &shortcuts::Overrides,
+) -> Vec<KeyBinding> {
+    let mut bindings = fixed_bindings(channel_modifier);
+    bindings.extend(shortcuts::bindings(overrides));
+    bindings
+}
+
+/// The shortcuts that cannot be changed: sending, completion, settings, the
+/// numbered channels and servers.
 #[cfg_attr(target_os = "macos", allow(unused_variables))]
-fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
+fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
     let mut bindings = vec![
         // Chat-only: settings fields keep the platform's Tab traversal and
         // are never captured by chat commands.
@@ -7416,42 +7433,8 @@ fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding>
         KeyBinding::new("secondary-shift-d", ToggleDebug, None),
         KeyBinding::new("secondary-shift-l", CopyDiagnostics, None),
         KeyBinding::new("secondary-c", CopyLogSelection, Some("MainLog")),
-        navigation_binding("ctrl-tab", Command::NextUnreadChannel),
-        navigation_binding("ctrl-shift-tab", Command::PreviousUnreadChannel),
         KeyBinding::new("secondary-q", Quit, None),
     ];
-
-    #[cfg(target_os = "macos")]
-    bindings.extend([
-        navigation_binding("alt-space", Command::NextUnreadChannel),
-        navigation_binding("alt-shift-space", Command::PreviousUnreadChannel),
-        navigation_binding("alt-tab", Command::PreviousSelectedChannel),
-        navigation_binding("cmd-up", Command::PreviousActiveChannel),
-        navigation_binding("cmd-down", Command::NextActiveChannel),
-        navigation_binding("cmd-alt-up", Command::PreviousActiveChannel),
-        navigation_binding("cmd-alt-down", Command::NextActiveChannel),
-        navigation_binding("cmd-{", Command::PreviousActiveChannel),
-        navigation_binding("cmd-}", Command::NextActiveChannel),
-        navigation_binding("ctrl-up", Command::PreviousChannel),
-        navigation_binding("ctrl-down", Command::NextChannel),
-        navigation_binding("cmd-alt-left", Command::PreviousActiveServer),
-        navigation_binding("cmd-alt-right", Command::NextActiveServer),
-        navigation_binding("ctrl-left", Command::PreviousServer),
-        navigation_binding("ctrl-right", Command::NextServer),
-    ]);
-
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    bindings.extend([
-        navigation_binding("alt-left", Command::PreviousSelectedChannel),
-        navigation_binding("ctrl-pageup", Command::PreviousActiveChannel),
-        navigation_binding("ctrl-pagedown", Command::NextActiveChannel),
-        navigation_binding("alt-up", Command::PreviousChannel),
-        navigation_binding("alt-down", Command::NextChannel),
-        navigation_binding("ctrl-alt-pageup", Command::PreviousActiveServer),
-        navigation_binding("ctrl-alt-pagedown", Command::NextActiveServer),
-        navigation_binding("alt-pageup", Command::PreviousServer),
-        navigation_binding("alt-pagedown", Command::NextServer),
-    ]);
 
     for index in 0..10 {
         let digit = (index + 1) % 10;
@@ -10566,7 +10549,10 @@ mod field_traversal_tests {
                 cx,
             );
             crate::input::bind_keys(false, cx);
-            cx.bind_keys(shortcut_bindings(ChannelNumberModifier::Ctrl));
+            cx.bind_keys(shortcut_bindings(
+                ChannelNumberModifier::Ctrl,
+                &Default::default(),
+            ));
         });
     }
 
@@ -10625,5 +10611,84 @@ mod field_traversal_tests {
         cx.simulate_keystrokes("tab");
         assert_eq!(view.read_with(cx, |view, _| view.completions), 1);
         assert!(cx.update(|window, cx| view.read(cx).draft.focus_handle(cx).is_focused(window)));
+    }
+}
+
+#[cfg(test)]
+mod navigation_binding_tests {
+    use super::{Navigate, shortcut_bindings};
+    use cayenchat_app::Command;
+    use cayenchat_storage::ChannelNumberModifier;
+
+    /// The navigation command a typed key combination runs, and that no other
+    /// navigation binding takes the same keys.
+    #[cfg(target_os = "macos")]
+    fn command_for(keys: &str) -> Option<Command> {
+        let typed = gpui::Keystroke::parse(keys).unwrap();
+        let bindings = shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
+        let matching: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.match_keystrokes(&[typed.clone()]) == Some(false))
+            .collect();
+        assert!(
+            matching.len() <= 1,
+            "{keys} is bound {} times",
+            matching.len()
+        );
+        matching.first().and_then(|binding| {
+            binding
+                .action()
+                .as_any()
+                .downcast_ref::<Navigate>()
+                .map(|navigate| navigate.command)
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_bracket_keys_move_between_channels_and_servers() {
+        // Decided in #72.
+        assert_eq!(command_for("cmd-["), Some(Command::PreviousChannel));
+        assert_eq!(command_for("cmd-]"), Some(Command::NextChannel));
+        // Pressing Cmd+Shift+[ on macOS arrives as `cmd-{` (see the bindings),
+        // so that is what must be bound; `cmd-shift-[` never arrives.
+        assert_eq!(command_for("cmd-{"), Some(Command::PreviousServer));
+        assert_eq!(command_for("cmd-}"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-shift-["), None);
+        assert_eq!(command_for("cmd-shift-]"), None);
+        // The arrow-based keys stay.
+        assert_eq!(command_for("ctrl-up"), Some(Command::PreviousChannel));
+        assert_eq!(command_for("ctrl-right"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-up"), Some(Command::PreviousActiveChannel));
+        assert_eq!(
+            command_for("cmd-alt-down"),
+            Some(Command::NextActiveChannel)
+        );
+    }
+
+    #[test]
+    fn no_two_navigation_bindings_share_keys() {
+        for modifier in [
+            ChannelNumberModifier::Ctrl,
+            ChannelNumberModifier::Alt,
+            ChannelNumberModifier::Super,
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            for binding in shortcut_bindings(modifier, &Default::default()) {
+                if binding
+                    .action()
+                    .as_any()
+                    .downcast_ref::<Navigate>()
+                    .is_none()
+                {
+                    continue;
+                }
+                let keys = format!("{:?}", binding.keystrokes());
+                assert!(
+                    seen.insert(keys.clone()),
+                    "{keys} is bound twice ({modifier:?})"
+                );
+            }
+        }
     }
 }

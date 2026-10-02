@@ -10,10 +10,10 @@
 | 次の未読チャンネル | `Ctrl+Tab` または `Opt+Space` | `Ctrl+Tab` |
 | 前の未読チャンネル | `Ctrl+Shift+Tab` または `Opt+Shift+Space` | `Ctrl+Shift+Tab` |
 | 直前に選択したチャンネル | `Opt+Tab` | `Alt+Left` |
-| 前後のアクティブなチャンネル | `Cmd+Up/Down`、`Cmd+Opt+Up/Down`、`Cmd+{/}` | `Ctrl+PageUp/PageDown` |
-| 前後のチャンネル | `Ctrl+Up/Down` | `Alt+Up/Down` |
+| 前後のアクティブなチャンネル | `Cmd+Up/Down`、`Cmd+Opt+Up/Down` | `Ctrl+PageUp/PageDown` |
+| 前後のチャンネル | `Cmd+[` / `Cmd+]`、`Ctrl+Up/Down` | `Alt+Up/Down` |
 | 前後のアクティブなサーバー | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
-| 前後のサーバー | `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
+| 前後のサーバー | `Cmd+Shift+[` / `Cmd+Shift+]`、`Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
 | 1～10番目のチャンネル | `Cmd+1..9, 0` | `Ctrl+1..9, 0`（変更可） |
 | 1～10番目のサーバー | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | チャンネル発言（`PRIVMSG`）を送信 | `Enter` | `Enter` |

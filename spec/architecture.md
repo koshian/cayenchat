@@ -160,6 +160,22 @@ scoped to the focused draft; Up/Down there recall the last 20 sent drafts
 (in memory only, shared by all conversations, but browsing ends when the
 conversation changes). Commands that carry credentials (to NickServ or
 ChanServ, `/oper`, `/pass`, and `/raw` forms of those) are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+On macOS Cmd+[ / Cmd+] move to the previous / next channel and Cmd+Shift+[ /
+Cmd+Shift+] to the previous / next server (decided in #72, which is the source
+for shortcut design; Windows/Linux keys without arrows are still open there).
+Cmd+{ / Cmd+} used to be the active-channel keys and are now the server keys;
+active channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down. The server keys are
+bound as `cmd-{` / `cmd-}` because that is how GPUI's macOS backend reports
+Cmd+Shift+[ / ] (the shifted character, with Shift cleared); the arrow-key
+bindings remain for layouts where [ and ] need Option (German, for example).
+The navigation shortcuts are named actions (`ui::shortcuts::ACTIONS`: id,
+command, per-platform default keys). The `keybindings` setting (action id →
+key, #114) replaces an action's keys; unknown actions and unusable keys (an
+empty string, a chord, a bare letter, a modifier alone) are ignored, leaving
+the defaults. A key is kept as GPUI reports it when pressed, which is not
+always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
+that two actions, or an action and a fixed shortcut, would share, for the
+editing UI (#118).
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
