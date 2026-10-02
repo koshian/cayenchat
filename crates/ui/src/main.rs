@@ -5420,6 +5420,7 @@ impl SettingsWindow {
         tab: SettingsTab,
         id: &'static str,
         label_key: &str,
+        nav_focused: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let theme = settings_theme::palette(cx);
@@ -5431,7 +5432,10 @@ impl SettingsWindow {
             .px_3()
             .py_2()
             .border_l_2()
-            .border_color(if selected {
+            // The indicator takes the link color while Up/Down act on the list.
+            .border_color(if selected && nav_focused {
+                theme.link.into()
+            } else if selected {
                 theme.text.into()
             } else {
                 gpui::transparent_black()
@@ -5529,8 +5533,9 @@ impl SettingsWindow {
         self.tab = tab;
     }
 
-    fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
+        let nav_focused = self.nav_focus.is_focused(window);
         let mut tabs = Self::settings_tabs();
         let experimental = tabs.pop();
         let mut nav = div()
@@ -5550,12 +5555,12 @@ impl SettingsWindow {
             .border_color(theme.border)
             .overflow_y_scroll();
         for (tab, id, label_key) in tabs {
-            nav = nav.child(self.settings_tab(tab, id, label_key, cx));
+            nav = nav.child(self.settings_tab(tab, id, label_key, nav_focused, cx));
         }
         // Experimental stands apart from the ordinary settings.
         nav = nav.child(div().flex_1().min_h_4());
         if let Some((tab, id, label_key)) = experimental {
-            nav = nav.child(self.settings_tab(tab, id, label_key, cx));
+            nav = nav.child(self.settings_tab(tab, id, label_key, nav_focused, cx));
         }
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
@@ -5757,7 +5762,7 @@ fn preview_element(
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
-        let content = self.render_settings(cx).into_any_element();
+        let content = self.render_settings(window, cx).into_any_element();
         let content = menu_bar::wrap(
             &self.menu_bar,
             cx.get_menus().unwrap_or_default(),

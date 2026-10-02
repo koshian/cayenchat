@@ -294,28 +294,28 @@ mod tests {
             let center = cx.debug_bounds("reset-defaults").unwrap().center();
             cx.simulate_click(center, gpui::Modifiers::default());
         };
+        // A reset clears the feedback line; a click that does nothing leaves it.
+        let marked = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| form.feedback.is_some())
+        };
         form.update(cx, |form, cx| {
-            form.settings.values.notifications.private_messages = false;
+            form.feedback = Some("marker".into());
             cx.notify();
         });
         cx.run_until_parked();
         click(cx);
-        assert!(form.read_with(cx, |form, _| {
-            form.settings.values.notifications.private_messages
-        }));
+        assert!(
+            marked(&form, cx),
+            "nothing differs, so the click is ignored"
+        );
 
-        // Changing a value a second time leaves nothing to restore.
-        form.update(cx, |form, cx| {
-            form.settings.values.notifications.private_messages = true;
-            cx.notify();
-        });
-        cx.run_until_parked();
         form.update(cx, |form, cx| {
             form.settings.values.notifications.mentions = false;
             cx.notify();
         });
         cx.run_until_parked();
         click(cx);
+        assert!(!marked(&form, cx));
         assert!(form.read_with(cx, |form, _| form.settings.values.notifications.mentions));
     }
 
