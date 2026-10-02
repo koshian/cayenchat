@@ -28,7 +28,7 @@ pub struct ServerPreset {
     pub host: &'static str,
 }
 
-pub const PRESETS: [ServerPreset; 2] = [
+pub const PRESETS: [ServerPreset; 3] = [
     ServerPreset {
         name: "IRCnet",
         host: "irc.ircnet.ne.jp",
@@ -36,6 +36,10 @@ pub const PRESETS: [ServerPreset; 2] = [
     ServerPreset {
         name: "IRCnet (IPv6)",
         host: "irc6.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "IRCnet (dev)",
+        host: "dev.ircnet.ne.jp",
     },
 ];
 
@@ -145,6 +149,10 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
+    /// Wrap nicknames too long for the main log's nickname column onto more
+    /// lines instead of ending them with an ellipsis. Added after version 15
+    /// without a version change; files without it read as off.
+    pub wrap_long_nicknames: bool,
     /// Width in pixels of the channel name (and network) column of the
     /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
     /// without a version change; files without it read as the default.
@@ -206,6 +214,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
+            wrap_long_nicknames: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -433,6 +442,13 @@ pub struct Ircv3Preferences {
     /// (experimental). Added without a version change: files without it
     /// read as off.
     pub chathistory: bool,
+    /// Server-confirmed sending: `echo-message` and `labeled-response`.
+    /// Added without a version change: files without it read as off.
+    pub confirmed_sending: bool,
+    /// Follow the services accounts and real names of channel members
+    /// (`account-notify`, `extended-join`, WHOX). Added without a version
+    /// change: files without it read as off.
+    pub accounts: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1223,6 +1239,7 @@ mod tests {
         assert!(settings.selected_profile().is_none());
         let added = settings.add_server(PRESETS[1].host);
         assert_eq!(added.host, "irc6.ircnet.ne.jp");
+        assert!(PRESETS.iter().any(|p| p.host == "dev.ircnet.ne.jp"));
         assert!(
             added.id.starts_with("custom-"),
             "a fresh ID, not a preset's"
@@ -1491,6 +1508,19 @@ mod tests {
     }
 
     #[test]
+    fn wrapping_long_nicknames_is_off_when_absent() {
+        let mut appearance = Appearance::default();
+        assert!(!appearance.wrap_long_nicknames);
+        appearance.wrap_long_nicknames = true;
+        let mut saved = serde_json::to_value(&appearance).unwrap();
+        let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
+        assert!(loaded.wrap_long_nicknames);
+        saved.as_object_mut().unwrap().remove("wrap_long_nicknames");
+        let loaded: Appearance = serde_json::from_value(saved).unwrap();
+        assert!(!loaded.wrap_long_nicknames);
+    }
+
+    #[test]
     fn combined_log_name_width_defaults_and_is_bounded() {
         let mut appearance = Appearance::default();
         assert_eq!(appearance.sub_log_name_width, DEFAULT_SUB_LOG_NAME_WIDTH);
@@ -1597,11 +1627,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
