@@ -132,7 +132,9 @@ a nickname column regardless of the UI language, does not mark the channel
 unread, and appears only in its channel's main log, never in the combined
 subwindow. QUIT is logged only in channels whose last published roster contained
 the quitting nickname. Activity text uses configurable green (`#007D00`) by
-default. The main log keeps separate scroll positions for each server or
+default. The main log's nickname column fits 15 typical characters; longer
+nicknames end in an ellipsis, or wrap when the Appearance setting is on. The
+main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.
 Both logs, the user list and the channel tree are virtualized (GPUI `list` /
