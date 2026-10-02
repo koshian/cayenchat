@@ -10,7 +10,7 @@
 
 use gpui::{App, Context, Keystroke, Subscription, Window};
 
-use crate::shortcuts::{types_text_on, usable_key};
+use crate::shortcuts::{types_text_on, usable_key_on};
 
 /// What a pressed key comes to while recording.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,8 +36,9 @@ pub enum Rejection {
 
 /// What a keystroke means to a recording, or `None` to keep waiting (a
 /// keystroke that only makes part of a character, as an IME does).
-/// `altgr` is whether Ctrl+Alt is AltGr on this system (Windows).
-pub fn captured(keystroke: &Keystroke, altgr: bool) -> Option<Recorded> {
+/// `macos` and `windows` say which system the keys are for, which decides the
+/// combinations that type a character (Option+letter; Ctrl+Alt+letter, AltGr).
+pub fn captured(keystroke: &Keystroke, macos: bool, windows: bool) -> Option<Recorded> {
     if keystroke.is_ime_in_progress() {
         return None;
     }
@@ -45,13 +46,11 @@ pub fn captured(keystroke: &Keystroke, altgr: bool) -> Option<Recorded> {
     if keystroke.key == "escape" && !modifiers.modified() {
         return Some(Recorded::Cancelled);
     }
-    // Option+letter on macOS, and Ctrl+Alt+letter where that is AltGr: the
-    // combinations that type a character.
-    if types_text_on(keystroke, cfg!(target_os = "macos"), altgr) {
+    if types_text_on(keystroke, macos, windows) {
         return Some(Recorded::Rejected(Rejection::TypesText));
     }
     let key = keystroke.unparse();
-    Some(match usable_key(&key) {
+    Some(match usable_key_on(&key, macos, windows) {
         Some(_) => Recorded::Key(key),
         None => Recorded::Rejected(Rejection::NeedsModifier),
     })
@@ -67,7 +66,11 @@ pub fn record<V: 'static>(
 ) -> Subscription {
     let view = cx.weak_entity();
     cx.intercept_keystrokes(move |event, window, cx: &mut App| {
-        let Some(recorded) = captured(&event.keystroke, cfg!(target_os = "windows")) else {
+        let Some(recorded) = captured(
+            &event.keystroke,
+            cfg!(target_os = "macos"),
+            cfg!(target_os = "windows"),
+        ) else {
             return;
         };
         cx.stop_propagation();
@@ -162,41 +165,49 @@ mod tests {
         Keystroke::parse(source).unwrap().with_simulated_ime()
     }
 
+    /// What is recorded on a system where no combination types a character.
+    fn captured_anywhere(keystroke: &Keystroke) -> Option<Recorded> {
+        captured(keystroke, false, false)
+    }
+
     #[test]
     fn a_modified_key_is_recorded_in_the_form_that_is_kept() {
         // The platform key is spelled as the platform does (`cmd` on macOS,
         // `super` on Linux, `win` on Windows): the kept form is what
         // `unparse` makes of the keystroke.
         assert_eq!(
-            captured(&press("cmd-}"), false),
+            captured_anywhere(&press("cmd-}")),
             Some(Recorded::Key(press("cmd-}").unparse()))
         );
         // Spelled another way, it is kept in the canonical order.
         assert_eq!(
-            captured(&press("ctrl-alt-n"), false),
-            captured(&press("alt-ctrl-n"), false)
+            captured_anywhere(&press("ctrl-alt-n")),
+            captured_anywhere(&press("alt-ctrl-n"))
         );
         assert_eq!(
-            captured(&press("f5"), false),
+            captured_anywhere(&press("f5")),
             Some(Recorded::Key("f5".into()))
         );
         assert_eq!(
-            captured(&press("alt-shift-space"), false),
+            captured_anywhere(&press("alt-shift-space")),
             Some(Recorded::Key("alt-shift-space".into()))
         );
     }
 
     #[test]
     fn escape_cancels_and_a_bare_key_is_refused() {
-        assert_eq!(captured(&press("escape"), false), Some(Recorded::Cancelled));
+        assert_eq!(
+            captured_anywhere(&press("escape")),
+            Some(Recorded::Cancelled)
+        );
         // With a modifier Escape is just a key (and usable).
         assert_eq!(
-            captured(&press("cmd-escape"), false),
+            captured_anywhere(&press("cmd-escape")),
             Some(Recorded::Key(press("cmd-escape").unparse()))
         );
         for bare in ["a", "shift-a", "1", "home", "space"] {
             assert_eq!(
-                captured(&press(bare), false),
+                captured_anywhere(&press(bare)),
                 Some(Recorded::Rejected(Rejection::NeedsModifier)),
                 "{bare}"
             );
@@ -213,33 +224,36 @@ mod tests {
         };
         for keystroke in [&typed, &press("ctrl-alt-n")] {
             assert_eq!(
-                captured(keystroke, true),
+                captured(keystroke, false, true),
                 Some(Recorded::Rejected(Rejection::TypesText))
             );
         }
         // Where Ctrl+Alt is not AltGr, it is an ordinary combination.
         assert_eq!(
-            captured(&typed, false),
+            captured(&typed, false, false),
             Some(Recorded::Key("ctrl-alt-n".into()))
         );
         // A named key with Ctrl+Alt types nothing, AltGr or not.
         assert_eq!(
-            captured(&press("ctrl-alt-pageup"), true),
+            captured(&press("ctrl-alt-pageup"), false, true),
             Some(Recorded::Key("ctrl-alt-pageup".into()))
         );
     }
 
     #[test]
     fn option_letter_is_refused_on_macos_only() {
-        let option_a = captured(&press("alt-a"), false);
-        if cfg!(target_os = "macos") {
-            assert_eq!(option_a, Some(Recorded::Rejected(Rejection::TypesText)));
-        } else {
-            assert_eq!(option_a, Some(Recorded::Key("alt-a".into())));
-        }
-        // With Cmd (or Ctrl) held it types nothing.
+        let option_a = press("alt-a");
         assert_eq!(
-            captured(&press("ctrl-alt-a"), false),
+            captured(&option_a, true, false),
+            Some(Recorded::Rejected(Rejection::TypesText))
+        );
+        assert_eq!(
+            captured(&option_a, false, false),
+            Some(Recorded::Key("alt-a".into()))
+        );
+        // With Ctrl held it types nothing on macOS.
+        assert_eq!(
+            captured(&press("ctrl-alt-a"), true, false),
             Some(Recorded::Key("ctrl-alt-a".into()))
         );
     }
@@ -252,7 +266,7 @@ mod tests {
             key: "a".into(),
             key_char: None,
         };
-        assert_eq!(captured(&composing, false), None);
+        assert_eq!(captured_anywhere(&composing), None);
     }
 
     #[test]
@@ -310,7 +324,7 @@ mod tests {
 
         cx.update(|cx| {
             cx.bind_keys([KeyBinding::new(
-                "ctrl-alt-n",
+                "ctrl-alt-pageup",
                 crate::CopyDiagnostics,
                 Some("Probe"),
             )]);
@@ -328,7 +342,7 @@ mod tests {
         let fired = |cx: &mut gpui::VisualTestContext| probe.read_with(cx, |p, _| p.shortcut_fired);
 
         // Not recording: the shortcut works.
-        cx.simulate_keystrokes("ctrl-alt-n");
+        cx.simulate_keystrokes("ctrl-alt-pageup");
         assert_eq!(fired(cx), 1);
 
         // Recording: the key is recorded and its shortcut does not run.
@@ -337,7 +351,7 @@ mod tests {
                 probe.recorded.push(recorded);
             }));
         });
-        cx.simulate_keystrokes("ctrl-alt-n");
+        cx.simulate_keystrokes("ctrl-alt-pageup");
         assert_eq!(fired(cx), 1, "the key was taken, not run");
         cx.simulate_keystrokes("a");
         cx.simulate_keystrokes("escape");
@@ -345,7 +359,7 @@ mod tests {
         assert_eq!(
             recorded,
             [
-                Recorded::Key("ctrl-alt-n".into()),
+                Recorded::Key("ctrl-alt-pageup".into()),
                 Recorded::Rejected(Rejection::NeedsModifier),
                 Recorded::Cancelled,
             ]
@@ -353,7 +367,7 @@ mod tests {
 
         // Done recording (the subscription is dropped): keys work again.
         probe.update(cx, |probe, _| probe.subscription = None);
-        cx.simulate_keystrokes("ctrl-alt-n");
+        cx.simulate_keystrokes("ctrl-alt-pageup");
         assert_eq!(fired(cx), 2);
         assert_eq!(probe.read_with(cx, |p, _| p.recorded.len()), 3);
     }

@@ -128,26 +128,22 @@ pub fn types_text_on(keystroke: &Keystroke, macos: bool, windows: bool) -> bool 
             || (windows && modifiers.alt && modifiers.control))
 }
 
-/// [`types_text_on`] for the system this is running on.
-pub fn types_text(keystroke: &Keystroke) -> bool {
-    types_text_on(
-        keystroke,
-        cfg!(target_os = "macos"),
-        cfg!(target_os = "windows"),
-    )
-}
-
 /// A key a user may give an action, or `None`. One keystroke (no chords),
 /// parsed as GPUI parses a binding, carrying a modifier or being a function
 /// key: a bare letter would take the characters out of the draft, and a
 /// modifier on its own is not a key. A combination that types a character
-/// ([`types_text`]) is not usable either.
+/// ([`types_text_on`], for the system this runs on) is not usable either.
 pub fn usable_key(key: &str) -> Option<Keystroke> {
+    usable_key_on(key, cfg!(target_os = "macos"), cfg!(target_os = "windows"))
+}
+
+/// [`usable_key`] for the given systems, as [`types_text_on`].
+pub fn usable_key_on(key: &str, macos: bool, windows: bool) -> Option<Keystroke> {
     if key.is_empty() || key.chars().any(char::is_whitespace) {
         return None;
     }
     let keystroke = Keystroke::parse(key).ok()?;
-    if types_text(&keystroke) {
+    if types_text_on(&keystroke, macos, windows) {
         return None;
     }
     let modifier_alone = matches!(
