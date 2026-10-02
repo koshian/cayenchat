@@ -177,7 +177,17 @@ is AltGr) are ignored, leaving the defaults. Clashes between what the user
 changed and other actions or fixed shortcuts are logged at startup. A key is kept as GPUI reports it when pressed, which is not
 always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
 that two actions, or an action and a fixed shortcut, would share, for the
-editing UI (#118).
+editing UI (#118). `ui::key_recorder::record` takes the next keystroke of the
+application for itself (it reaches no shortcut and no text field) until its
+subscription is dropped: a usable combination is returned as kept in settings,
+Escape cancels (so Escape cannot be assigned), a bare character is refused, and
+so is a combination that types a character (Option+letter on macOS,
+Ctrl+Alt+letter on Windows, where it is AltGr);
+keystrokes that are part of an IME composition pass through. `describe` turns a
+kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
+Shift); a symbol is shown as the character that arrives (`Cmd+}` for `cmd-}`),
+not mapped back to a key, which would be wrong on layouts that place symbols
+differently (JIS).
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
