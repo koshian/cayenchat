@@ -91,6 +91,7 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
         ChannelActivityKind::Joined { mask } => with_detail(actor, "has joined", mask),
         ChannelActivityKind::Left { reason } => with_detail(actor, "has left", reason),
         ChannelActivityKind::Quit { reason } => with_detail(actor, "has quit", reason),
+        ChannelActivityKind::NickChanged { to } => format!("{actor} is now known as {to}"),
         ChannelActivityKind::ModeChanged { modes } => {
             format!("{actor} has changed mode: {modes}")
         }
@@ -7157,6 +7158,13 @@ mod log_tests {
                 },
             ),
             "kaeru has quit (bye)"
+        );
+        assert_eq!(
+            channel_activity_text(
+                "kaeru",
+                ChannelActivityKind::NickChanged { to: "tepeu".into() },
+            ),
+            "kaeru is now known as tepeu"
         );
         assert_eq!(
             channel_activity_text(

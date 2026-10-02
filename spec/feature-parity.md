@@ -49,7 +49,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — CTCP AVATAR (KVIrc protocol, experimental, per-server opt-in): realname mark when sharing, answers to private queries with an explicitly shared URL, bounded WHO/realname discovery and queries to marked users; URL only (no DCC); checked against wire fixtures from KVIrc's source, not a running KVIrc
 - PARTIAL — local receive/send timestamps; with the per-server server-time opt-in, incoming channel messages, activity and private messages show the server's time (local HH:MM, receipt-time fallback); server log lines and dates are not shown
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
-- PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT and channel MODE activity in English regardless of UI language, while other membership details remain pending
+- PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log switches channels on double-click
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
