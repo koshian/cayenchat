@@ -1158,8 +1158,9 @@ change).
   keeps the file.
 - **Trying it.** A test build starts empty on every launch, so it cannot show
   a restore. `CAYENCHAT_TEST_DIR=<absolute path>` makes it use and keep that
-  directory (settings, credentials file and `window.json`), e.g.
-  `CAYENCHAT_TEST_DIR=$HOME/cayenchat-preview open "CayenChat Test.app"`.
+  directory (settings, credentials file and `window.json`), started from the
+  shell so that it inherits the variable (`open` does not pass it on), e.g.
+  `CAYENCHAT_TEST_DIR=$HOME/cayenchat-preview "CayenChat Test.app/Contents/MacOS/cayenchat"`.
 - **Not remembered.** Full screen returns to the normal rectangle. The work
   area (menu bar, taskbar) is not known to GPUI, so a window may start under
   the taskbar edge the OS then adjusts.
