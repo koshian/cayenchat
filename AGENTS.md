@@ -13,3 +13,6 @@ Prefer native edit/patch tools for file changes. Do not use Python, Perl, Ruby, 
 Run the project's standard formatter before committing.
 
 Commit completed work in small, concern-specific commits with concise English imperative messages.
+
+Use relative paths for files under the current working directory.
+Do not unnecessarily access files outside the working directory.
