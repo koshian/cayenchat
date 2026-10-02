@@ -306,6 +306,12 @@ with the user's consent. Keys use stable internal IDs, never nicknames,
 hostnames or display names. `Secret`, `ConnectionConfig` and `SaslCredentials`
 redact their `Debug` output; credential errors carry sanitized text only.
 
+The UI reads the store only from a GPUI global that startup installs before
+any window opens; a missing global panics instead of opening the system store.
+Tests install an in-memory store, and while it is installed, switching
+backends opens another in-memory store and the system store probe succeeds
+without asking the operating system (2026-10-02, #115).
+
 On macOS the system backend keeps every secret in one Keychain item and every
 backend value is cached for the process (2026-09-27). Separate items made the
 legacy Keychain ask for the login password once per secret on each connect and

@@ -4030,7 +4030,7 @@ impl SettingsWindow {
         }
         if store.kind() == CredentialBackendKind::System {
             // Secure storage needs no plaintext warning, but it must work.
-            match cayenchat_storage::credentials::SystemBackend::probe() {
+            match secrets::system_probe(cx)() {
                 Ok(()) => {
                     if let Some(profile) = self.settings.values.selected_profile_mut() {
                         profile.remember_passwords = true;
@@ -8534,6 +8534,7 @@ mod pane_tests {
         use gpui::{Modifiers, MouseButton, point, px};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8659,6 +8660,7 @@ mod pane_tests {
         use gpui::{Modifiers, MouseButton, point, px};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8760,6 +8762,7 @@ mod pane_tests {
         use crate::color_picker::{ColorChanged, format_hex};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8868,6 +8871,7 @@ mod pane_tests {
         use gpui::{Modifiers, MouseButton, point, px};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8957,6 +8961,7 @@ mod pane_tests {
         use gpui::{Modifiers, MouseButton, point, px};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9048,6 +9053,7 @@ mod pane_tests {
         use super::{MemberPromptKind, ServerMenu};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9096,6 +9102,7 @@ mod pane_tests {
         use cayenchat_irc_core::Ircv3Options;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9190,6 +9197,7 @@ mod pane_tests {
     #[gpui::test]
     fn disconnect_is_offered_only_while_there_is_something_to_stop(cx: &mut TestAppContext) {
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9218,6 +9226,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9283,6 +9292,7 @@ mod pane_tests {
         use cayenchat_irc_core::{Event, HistoryMessage};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9375,6 +9385,7 @@ mod pane_tests {
         use cayenchat_irc_core::{Event, HistoryMessage};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9489,6 +9500,7 @@ mod pane_tests {
         };
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9652,6 +9664,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9752,6 +9765,7 @@ mod pane_tests {
         use cayenchat_irc_core::{Event, WhoisInfo};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9819,6 +9833,7 @@ mod pane_tests {
         use cayenchat_irc_core::{ConnectionConfig, Event, HistoryMessage};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9945,6 +9960,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10149,6 +10165,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10328,6 +10345,7 @@ mod pane_tests {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10411,6 +10429,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10506,6 +10525,7 @@ mod pane_tests {
         use std::time::Duration;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10611,6 +10631,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10689,6 +10710,7 @@ mod pane_tests {
     fn starts_without_servers_and_shows_one_once_added(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -10724,6 +10746,7 @@ mod pane_tests {
     fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
