@@ -992,6 +992,10 @@ struct MemberMenu {
 enum MemberPromptKind {
     PrivateMessage,
     Invite,
+    /// Join a channel; the prompt is about the server, not a member.
+    Join,
+    /// Change our own nickname on the server.
+    Nick,
 }
 
 /// Another nickname for a server that rejected `rejected` (432/433) during
@@ -2108,6 +2112,24 @@ impl ChatWindow {
         self.show_member_prompt(menu.network, menu.nickname, kind, menu.position, window, cx);
     }
 
+    /// Opens a server-level prompt (join a channel, change nickname) where the
+    /// server menu was.
+    fn open_server_prompt(
+        &mut self,
+        kind: MemberPromptKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.server_menu.take() else {
+            return;
+        };
+        let nickname = self
+            .own_nickname(menu.network)
+            .unwrap_or_default()
+            .to_owned();
+        self.show_member_prompt(menu.network, nickname, kind, menu.position, window, cx);
+    }
+
     fn show_member_prompt(
         &mut self,
         network: NetworkId,
@@ -2119,7 +2141,8 @@ impl ChatWindow {
     ) {
         let placeholder = self.i18n.text(match kind {
             MemberPromptKind::PrivateMessage => "member_message_placeholder",
-            MemberPromptKind::Invite => "member_channel_placeholder",
+            MemberPromptKind::Invite | MemberPromptKind::Join => "member_channel_placeholder",
+            MemberPromptKind::Nick => "nickname",
         });
         let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
         let viewport = window.viewport_size();
@@ -2314,6 +2337,16 @@ impl ChatWindow {
                         channel: value.trim().to_owned(),
                     },
                 ),
+                MemberPromptKind::Join if value.trim().is_empty() => {
+                    Err(self.i18n.text("channel_join_required"))
+                }
+                MemberPromptKind::Join => {
+                    connection.send_command(&format!("/join {}", value.trim()), None)
+                }
+                MemberPromptKind::Nick if value.trim().is_empty() => {
+                    Err(self.i18n.text("nickname_change_required"))
+                }
+                MemberPromptKind::Nick => connection.change_nickname(value.trim()),
             },
             Err(error) => Err(error),
         };
@@ -5751,6 +5784,7 @@ impl ChatWindow {
             let session = self.sessions.get(&network);
             let connected = session.is_some_and(|session| session.irc.is_some());
             let can_disconnect = self.can_disconnect(network);
+            let registered = self.registered_connection(network).is_ok();
             // A server not connected in this run offers Connect, not Reconnect.
             let connect_key = if session.is_some_and(ServerSession::used) {
                 "reconnect"
@@ -5797,6 +5831,30 @@ impl ChatWindow {
                                 )
                         })
                         .when(!can_disconnect, |d| d.text_color(theme.text_muted)),
+                )
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .children(
+                    [
+                        (MemberPromptKind::Join, "server_menu_join"),
+                        (MemberPromptKind::Nick, "server_menu_nick"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (kind, key))| {
+                        div()
+                            .id(("server-menu-prompt", index))
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .when(registered, |d| {
+                                d.cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover_strong))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_server_prompt(kind, window, cx)
+                                    }))
+                            })
+                            .when(!registered, |d| d.text_color(theme.text_muted))
+                    }),
                 )
         });
         let channel_menu = self.channel_menu.as_ref().map(|menu| {
@@ -5931,6 +5989,8 @@ impl ChatWindow {
                 match prompt.kind {
                     MemberPromptKind::PrivateMessage => "member_message_title",
                     MemberPromptKind::Invite => "member_invite_title",
+                    MemberPromptKind::Join => "channel_join_title",
+                    MemberPromptKind::Nick => "nickname_change_title",
                 },
                 &[("nickname", &prompt.nickname)],
             );
@@ -7857,6 +7917,42 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestAppContext) {
+        use super::{MemberPromptKind, ServerMenu};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        for kind in [MemberPromptKind::Join, MemberPromptKind::Nick] {
+            chat.update_in(cx, |chat, window, cx| {
+                chat.server_menu = Some(ServerMenu {
+                    position: gpui::point(gpui::px(10.), gpui::px(10.)),
+                    network: NetworkId(1),
+                });
+                chat.open_server_prompt(kind, window, cx);
+                assert!(chat.server_menu.is_none());
+                let prompt = chat.member_prompt.as_ref().expect("prompt opened");
+                assert_eq!(prompt.network, NetworkId(1));
+                prompt
+                    .input
+                    .update(cx, |input, cx| input.set_text("#b", cx));
+                chat.submit_member_prompt(window, cx);
+                // Not connected: kept open with the reason.
+                assert!(chat.member_prompt.is_some());
+                assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
+            });
+        }
+    }
 
     #[gpui::test]
     fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAppContext) {
