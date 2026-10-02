@@ -231,6 +231,16 @@ Whenever an issue or PR needs someone to try it on a real machine (a Windows
 or Linux desktop the developer does not have, a monitor layout, an IME), do
 not just ask them to wait for the beta. Every time:
 
+0. **Do not call a person until the review has passed.** Read every review and
+   comment on the PR first and answer each point (a fix, or a reason for not
+   making it), then ask for a re-review. Mentioning the reporter or the owner
+   with `@name`, posting a Test Build for them to try, or asking for a check
+   before the review has passed is a mistake: they would test code that is
+   still going to change, and the build has to be made again. Building with
+   `Test Build` early only to see that it packages is fine; do not announce it.
+   A review that approves "except for the real-machine check" has not passed
+   until its suggestions are dealt with. The old rule that the reviewer merges
+   without waiting for the reporter (#60) no longer applies.
 1. Build with `Test Build` for the platform they use, from the PR branch
    (before the merge) or from `master` when it is already merged. Use
    `isolated=true` when their saved settings and passwords must not be

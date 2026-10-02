@@ -2,6 +2,8 @@ Reply to the user in Japanese.
 
 Read relevant files under `spec/` before working, and update them when necessary.
 
+Before asking anyone to try a change (an `@mention`, or a Test Build posted for them), read and answer every review on the PR; a person is called only after the review has passed. See "Changes that need a person's confirmation" in `spec/development.md`.
+
 Do not overwrite or commit unrelated user changes. Keep PR diffs minimal and avoid unnecessary changes outside the task scope.
 
 Create a new worktree under `./.worktrees/` for each task. Do not reuse existing worktrees or branches without permission.
