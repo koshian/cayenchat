@@ -113,8 +113,6 @@ impl MemberSelection {
 
     /// The chosen members of `conversation` that are still in `members`, as
     /// plain nicknames in list order.
-    // Acts on the choice in the MODE menu (#80).
-    #[allow(dead_code)]
     pub fn nicknames(&self, conversation: ConversationId, members: &[String]) -> Vec<String> {
         if self.conversation != Some(conversation) {
             return Vec::new();

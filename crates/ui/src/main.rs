@@ -1014,6 +1014,10 @@ struct MemberMenu {
     network: NetworkId,
     nickname: String,
     channel: String,
+    /// The chosen members when the menu was opened on one of two or more
+    /// chosen members: it then acts on all of them (and `nickname` is the one
+    /// clicked). Empty for a menu about one member.
+    group: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -2062,6 +2066,18 @@ impl ChatWindow {
         self.feedback = self
             .registered_connection(menu.network)
             .and_then(|connection| connection.send_member_command(&menu.nickname, command))
+            .err();
+        cx.notify();
+    }
+
+    /// Gives or takes op or voice for every member the open menu acts on.
+    fn member_modes(&mut self, mode: cayenchat_irc_core::MemberMode, cx: &mut Context<Self>) {
+        let Some(menu) = self.member_menu.take() else {
+            return;
+        };
+        self.feedback = self
+            .registered_connection(menu.network)
+            .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &menu.group))
             .err();
         cx.notify();
     }
@@ -6321,6 +6337,43 @@ impl ChatWindow {
                 .border_color(border)
                 .shadow_md();
             let enabled = self.registered_connection(menu.network).is_ok();
+            if !menu.group.is_empty() {
+                use cayenchat_irc_core::MemberMode;
+                popup = popup
+                    .child(div().px_2().py_1().text_color(theme.text_secondary).child(
+                        self.i18n.format(
+                            "member_group_title",
+                            &[("count", &menu.group.len().to_string())],
+                        ),
+                    ))
+                    .child(div().my_1().border_t_1().border_color(theme.separator));
+                for (index, (mode, key)) in [
+                    (MemberMode::Op, "member_give_op"),
+                    (MemberMode::Deop, "member_deop"),
+                    (MemberMode::Voice, "member_give_voice"),
+                    (MemberMode::Devoice, "member_devoice"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    popup = popup.child(
+                        div()
+                            .id(("member-group-action", index))
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover_strong))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.member_modes(mode, cx)
+                                    }))
+                            })
+                            .when(!enabled, |d| d.text_color(theme.text_muted)),
+                    );
+                }
+                return popup;
+            }
             for (index, (choice, key)) in [
                 (MemberMenuChoice::Whois, "member_whois"),
                 (MemberMenuChoice::PrivateMessage, "member_private_message"),
@@ -7262,6 +7315,17 @@ impl ChatWindow {
                             if !selected {
                                 this.click_member(index, member_selection::Click::Only);
                             }
+                            // On one of several chosen members the menu acts
+                            // on all of them.
+                            let group = this
+                                .state
+                                .selected_channel()
+                                .map(|channel| {
+                                    this.member_selection
+                                        .nicknames(channel.id, &channel.members)
+                                })
+                                .filter(|chosen| chosen.len() >= 2)
+                                .unwrap_or_default();
                             let viewport = window.viewport_size();
                             this.server_menu = None;
                             this.channel_menu = None;
@@ -7280,6 +7344,7 @@ impl ChatWindow {
                                 network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
+                                group,
                             });
                             cx.stop_propagation();
                             cx.notify();
@@ -8457,6 +8522,16 @@ mod pane_tests {
         right_click(cx, row(3));
         assert_eq!(chosen(&chat, cx), ["alice", "carol"]);
         assert!(chat.read_with(cx, |chat, _| chat.member_menu.is_some()));
+        // On one of several chosen members the menu acts on all of them.
+        let group = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                chat.member_menu.as_ref().map(|menu| menu.group.clone())
+            })
+        };
+        assert_eq!(
+            group(&chat, cx),
+            Some(vec!["alice".to_owned(), "carol".to_owned()])
+        );
         right_click(cx, row(2));
         assert_eq!(chosen(&chat, cx), ["bob"]);
         assert_eq!(
@@ -8466,6 +8541,24 @@ mod pane_tests {
                 .map(|menu| menu.nickname.clone())),
             Some("bob".to_owned())
         );
+        // On a member who was not chosen it is the menu for that one member.
+        assert_eq!(group(&chat, cx), Some(Vec::new()));
+        // A single chosen member is not a group either.
+        click(cx, row(1), none);
+        right_click(cx, row(1));
+        assert_eq!(group(&chat, cx), Some(Vec::new()));
+
+        // Choosing a mode closes the menu; without a connection it says so
+        // and sends nothing.
+        click(cx, row(1), none);
+        click(cx, row(3), Modifiers::secondary_key());
+        right_click(cx, row(3));
+        assert_eq!(group(&chat, cx).map(|group| group.len()), Some(2));
+        chat.update(cx, |chat, cx| {
+            chat.member_modes(cayenchat_irc_core::MemberMode::Op, cx);
+            assert!(chat.member_menu.is_none());
+            assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
+        });
     }
 
     #[gpui::test]
