@@ -89,8 +89,32 @@ impl MemberSelection {
             && self.chosen.contains(&nickname_key(nickname(entry)))
     }
 
+    /// Forgets chosen members who are no longer in `members`. Called with
+    /// every new roster: nicknames are reused, so a member who left (or
+    /// changed nickname) must not stay chosen for whoever takes the nickname
+    /// next, who would then receive whatever is done to the choice.
+    pub fn retain_present(&mut self, conversation: ConversationId, members: &[String]) {
+        if self.conversation != Some(conversation) {
+            return;
+        }
+        let present: Vec<String> = members
+            .iter()
+            .map(|member| nickname_key(nickname(member)))
+            .collect();
+        self.chosen.retain(|key| present.contains(key));
+        if self
+            .anchor
+            .as_ref()
+            .is_some_and(|anchor| !present.contains(anchor))
+        {
+            self.anchor = None;
+        }
+    }
+
     /// The chosen members of `conversation` that are still in `members`, as
     /// plain nicknames in list order.
+    // Acts on the choice in the MODE menu (#80).
+    #[allow(dead_code)]
     pub fn nicknames(&self, conversation: ConversationId, members: &[String]) -> Vec<String> {
         if self.conversation != Some(conversation) {
             return Vec::new();
@@ -101,10 +125,6 @@ impl MemberSelection {
             .filter(|name| self.chosen.contains(&nickname_key(name)))
             .map(str::to_owned)
             .collect()
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::default();
     }
 }
 
@@ -180,8 +200,47 @@ mod tests {
             selection.nicknames(A, &members).is_empty(),
             "A was replaced"
         );
-        selection.clear();
-        assert!(selection.nicknames(B, &members).is_empty());
+    }
+
+    #[test]
+    fn a_member_who_leaves_is_forgotten_even_if_the_nickname_comes_back() {
+        let (mut selection, members) = (MemberSelection::default(), roster());
+        selection.click(A, &members, 2, Click::Only); // alice
+        selection.click(A, &members, 3, Click::Toggle); // Bob
+        // alice quits; the roster no longer has her.
+        let without_alice: Vec<String> = members
+            .iter()
+            .filter(|member| nickname(member) != "alice")
+            .cloned()
+            .collect();
+        selection.retain_present(A, &without_alice);
+        // Someone else takes the nickname: not chosen.
+        selection.retain_present(A, &members);
+        assert!(!selection.contains(A, "alice"));
+        assert_eq!(selection.nicknames(A, &members), ["Bob"], "Bob stays");
+        // A nickname change is a leave as well as a join: the old name is
+        // forgotten and the new one is not chosen.
+        let renamed = ["@op", "+voiced", "alice", "Robert", "carol"]
+            .map(str::to_owned)
+            .to_vec();
+        selection.retain_present(A, &renamed);
+        assert!(selection.nicknames(A, &renamed).is_empty());
+        assert!(!selection.contains(A, "Robert"));
+        // Other conversations' rosters do not touch this choice.
+        selection.click(A, &members, 0, Click::Only);
+        selection.retain_present(B, &[]);
+        assert_eq!(selection.nicknames(A, &members), ["op"]);
+    }
+
+    #[test]
+    fn a_range_cannot_start_from_a_member_who_left() {
+        let (mut selection, members) = (MemberSelection::default(), roster());
+        selection.click(A, &members, 1, Click::Only); // voiced is the anchor
+        let without: Vec<String> = members[2..].to_vec();
+        selection.retain_present(A, &without);
+        // With the anchor gone, a range is the clicked member alone.
+        selection.click(A, &without, 1, Click::Range);
+        assert_eq!(selection.nicknames(A, &without), ["Bob"]);
     }
 
     #[test]

@@ -3,8 +3,6 @@
 mod account_settings;
 mod avatar_editor;
 mod avatars;
-// Used by the appearance settings in a later change (#83).
-#[allow(dead_code)]
 mod color_picker;
 mod decorations;
 mod default_avatar;
@@ -1114,6 +1112,15 @@ enum FontTarget {
     Time,
 }
 
+/// The color picker open under one color row of the appearance settings.
+struct OpenColorPicker {
+    /// The `#RRGGBB` field the picker edits.
+    field: Entity<TextInput>,
+    picker: Entity<color_picker::ColorPicker>,
+    /// Keep the picker and the field in step while this exists.
+    _subscriptions: Vec<Subscription>,
+}
+
 struct SettingsWindow {
     menu_bar: menu_bar::MenuBar,
     owner: WindowHandle<ChatWindow>,
@@ -1121,6 +1128,8 @@ struct SettingsWindow {
     feedback: Option<String>,
     tab: SettingsTab,
     font_picker: Option<FontTarget>,
+    color_picker: Option<OpenColorPicker>,
+    /// The system's font names, listed when the font list is first opened.
     fonts: Vec<String>,
     i18n: Localizer,
     /// Result of probing the system credential store; `None` while checking.
@@ -3097,7 +3106,18 @@ impl ChatWindow {
                     }
                 }
             }
-            Event::Names { channel, users } => self.state.set_members(network, &channel, users),
+            Event::Names { channel, users } => {
+                self.state.set_members(network, &channel, users);
+                // Whoever left (or renamed) is no longer chosen, so a later
+                // user of that nickname is not.
+                if let Some(id) = self.state.channel_id(network, &channel)
+                    && let Some(conversation) =
+                        self.state.conversations().iter().find(|c| c.id == id)
+                {
+                    self.member_selection
+                        .retain_present(id, &conversation.members);
+                }
+            }
             Event::Topic { channel, topic } => self.state.set_topic(network, &channel, &topic),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
             Event::UserAccount {
@@ -3508,9 +3528,6 @@ impl SettingsWindow {
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
-        let mut fonts = window.text_system().all_font_names();
-        fonts.sort_unstable();
-        fonts.dedup();
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
@@ -3544,7 +3561,8 @@ impl SettingsWindow {
             feedback: None,
             tab: SettingsTab::Connection,
             font_picker: None,
-            fonts,
+            color_picker: None,
+            fonts: Vec::new(),
             i18n,
             system_store: None,
             upload_token,
@@ -4579,6 +4597,187 @@ impl SettingsWindow {
         }
     }
 
+    /// One `#RRGGBB` field with a swatch that opens the color picker for it.
+    fn color_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
+        let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
+        let open = self
+            .color_picker
+            .as_ref()
+            .is_some_and(|open| open.field == *input);
+        let target = input.clone();
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child(input.clone()))
+            .child(
+                div()
+                    .id(("color-swatch", input.entity_id().as_u64() as usize))
+                    .w(px(24.))
+                    .h(px(24.))
+                    .flex_shrink_0()
+                    .border_1()
+                    .border_color(if open { theme.text } else { theme.border })
+                    .bg(rgb(swatch))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_color_picker(&target, cx);
+                    })),
+            )
+    }
+
+    /// A color setting with its light-theme and dark-theme values side by
+    /// side; the picker for either opens below the row.
+    fn color_pair(
+        &self,
+        label: &str,
+        light: &Entity<TextInput>,
+        dark: &Entity<TextInput>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let picker_here = self
+            .color_picker
+            .as_ref()
+            .is_some_and(|open| open.field == *light || open.field == *dark);
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
+                    .child(self.color_input(light, cx))
+                    .child(self.color_input(dark, cx)),
+            )
+            .when(picker_here, |d| d.child(self.render_color_panel(cx)))
+    }
+
+    /// Opens the color picker for `field`, or closes it when it is open for
+    /// that field already.
+    fn toggle_color_picker(&mut self, field: &Entity<TextInput>, cx: &mut Context<Self>) {
+        if self
+            .color_picker
+            .as_ref()
+            .is_some_and(|open| open.field == *field)
+        {
+            self.color_picker = None;
+            cx.notify();
+            return;
+        }
+        let initial = color_value(field.read(cx).text()).unwrap_or(0xFFFFFF);
+        let picker = cx.new(|cx| color_picker::ColorPicker::new(initial, cx));
+        // What is picked goes into the field; what is typed in the field
+        // moves the picker.
+        let into_field = cx.subscribe(
+            &picker,
+            |this, _, event: &color_picker::ColorChanged, cx| {
+                if let Some(open) = &this.color_picker {
+                    let text = color_picker::format_hex(event.0);
+                    open.field.update(cx, |field, cx| field.set_text(&text, cx));
+                }
+            },
+        );
+        let into_picker = cx.observe(field, |this, field, cx| {
+            if let Some(open) = &this.color_picker
+                && let Some(color) = color_picker::parse_hex(field.read(cx).text())
+                && open.field == field
+                && open.picker.read(cx).color() != color
+            {
+                open.picker
+                    .update(cx, |picker, cx| picker.set_color(color, cx));
+            }
+        });
+        self.color_picker = Some(OpenColorPicker {
+            field: field.clone(),
+            picker,
+            _subscriptions: vec![into_field, into_picker],
+        });
+        cx.notify();
+    }
+
+    /// Puts a palette color into the open field and picker.
+    fn apply_palette_color(&mut self, color: &str, cx: &mut Context<Self>) {
+        let (Some(open), Some(rgb)) = (&self.color_picker, color_value(color)) else {
+            return;
+        };
+        open.picker
+            .update(cx, |picker, cx| picker.set_color(rgb, cx));
+        open.field.update(cx, |field, cx| field.set_text(color, cx));
+    }
+
+    /// The picker and the saved palette, under the row being edited.
+    fn render_color_panel(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let Some(open) = &self.color_picker else {
+            return div();
+        };
+        let current = color_picker::format_hex(open.picker.read(cx).color());
+        let saved = &self.settings.values.appearance.saved_colors;
+        let can_save =
+            saved.len() < cayenchat_storage::MAX_SAVED_COLORS && !saved.contains(&current);
+        let mut palette = div().flex().flex_wrap().gap_1().w(px(220.));
+        for (index, color) in saved.iter().enumerate() {
+            let Some(rgb) = color_value(color) else {
+                continue;
+            };
+            let (apply, remove) = (color.clone(), color.clone());
+            let hint: SharedString = self.i18n.text("palette_remove_hint").into();
+            palette = palette.child(
+                div()
+                    .id(("palette-color", index))
+                    .size(px(22.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(gpui::rgb(rgb))
+                    .cursor_pointer()
+                    .tooltip(move |_, cx| {
+                        let text = hint.clone();
+                        cx.new(|_| ircv3_settings::TextTooltip(text)).into()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.apply_palette_color(&apply, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, _, _, cx| {
+                            this.settings.values.appearance.remove_saved_color(&remove);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+        div()
+            .ml(px(158.))
+            .flex()
+            .gap_4()
+            .child(open.picker.clone())
+            .child(
+                div().flex().flex_col().gap_2().child(palette).child(
+                    settings_theme::button("palette-save", false, cx)
+                        .when(!can_save, |button| button.opacity(0.5).cursor_default())
+                        .child(self.i18n.text("palette_save"))
+                        .when(can_save, |button| {
+                            button.on_click(cx.listener(move |this, _, _, cx| {
+                                let color = this.color_picker.as_ref().map(|open| {
+                                    color_picker::format_hex(open.picker.read(cx).color())
+                                });
+                                if let Some(color) = color {
+                                    let _ = this.settings.values.appearance.save_color(&color);
+                                }
+                                cx.notify();
+                            }))
+                        }),
+                ),
+            )
+    }
+
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
@@ -4598,12 +4797,22 @@ impl SettingsWindow {
                         .border_color(theme.border)
                         .cursor_pointer()
                         .child(self.i18n.text("choose_font"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.font_picker = if this.font_picker == Some(target) {
                                 None
                             } else {
                                 Some(target)
                             };
+                            // Listing the system's fonts takes a while (many
+                            // seconds in a debug build), so it waits until a
+                            // list is wanted instead of slowing every opening
+                            // of the settings window.
+                            if this.font_picker.is_some() && this.fonts.is_empty() {
+                                let mut fonts = window.text_system().all_font_names();
+                                fonts.sort_unstable();
+                                fonts.dedup();
+                                this.fonts = fonts;
+                            }
                             cx.notify();
                         })),
                 ),
@@ -4707,43 +4916,43 @@ impl SettingsWindow {
                     .child(div().flex_1().child(self.i18n.text("colors_light")))
                     .child(div().flex_1().child(self.i18n.text("colors_dark"))),
             )
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("member_list_background"),
                 &self.settings.member_list_background,
                 &self.settings.dark_member_list_background,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("channel_log"),
                 &self.settings.main_log_background,
                 &self.settings.dark_main_log_background,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("channel_log_alternate"),
                 &self.settings.main_log_alternate,
                 &self.settings.dark_main_log_alternate,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("channel_event_color"),
                 &self.settings.channel_event_color,
                 &self.settings.dark_channel_event_color,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("highlight_color"),
                 &self.settings.highlight_color,
                 &self.settings.dark_highlight_color,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("combined_log"),
                 &self.settings.sub_log_background,
                 &self.settings.dark_sub_log_background,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("combined_log_alternate"),
                 &self.settings.sub_log_alternate,
                 &self.settings.dark_sub_log_alternate,
@@ -5186,38 +5395,6 @@ fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
         .gap_2()
         .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
         .child(div().flex_1().min_w_0().child(input))
-}
-
-fn color_input(input: &Entity<TextInput>, cx: &App) -> Div {
-    let theme = theme::current(cx);
-    let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
-    div()
-        .flex()
-        .flex_1()
-        .min_w_0()
-        .items_center()
-        .gap_2()
-        .child(div().flex_1().min_w_0().child(input.clone()))
-        .child(
-            div()
-                .w(px(24.))
-                .h(px(24.))
-                .flex_shrink_0()
-                .border_1()
-                .border_color(theme.border)
-                .bg(rgb(swatch)),
-        )
-}
-
-/// A color setting with its light-theme and dark-theme values side by side.
-fn color_pair(label: &str, light: &Entity<TextInput>, dark: &Entity<TextInput>, cx: &App) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
-        .child(color_input(light, cx))
-        .child(color_input(dark, cx))
 }
 
 fn default_time_font() -> &'static str {
@@ -8144,6 +8321,165 @@ mod pane_tests {
                 .map(|menu| menu.nickname.clone())),
             Some("bob".to_owned())
         );
+    }
+
+    #[gpui::test]
+    fn a_member_who_leaves_stays_unchosen_when_the_nickname_is_taken_again(
+        cx: &mut TestAppContext,
+    ) {
+        use cayenchat_irc_core::Event;
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let names = |users: &[&str]| Event::Names {
+            channel: "#a".into(),
+            users: users.iter().map(|user| (*user).to_owned()).collect(),
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    names(&["@op", "alice", "bob"]),
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let chosen = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .nicknames(channel.id, &channel.members)
+            })
+        };
+        let width = f32::from(cx.update(|window, _| window.viewport_size()).width);
+        // Rows are 22 px tall; the second row is alice.
+        let alice = point(px(width - 240. + 30.), px(22. + 11.));
+        let none = Modifiers::none();
+        cx.simulate_mouse_move(alice, None, none);
+        cx.simulate_mouse_down(alice, MouseButton::Left, none);
+        cx.simulate_mouse_up(alice, MouseButton::Left, none);
+        cx.run_until_parked();
+        assert_eq!(chosen(&chat, cx), ["alice"]);
+
+        // She quits, and someone else uses the nickname: not chosen.
+        for users in [&["@op", "bob"][..], &["@op", "alice", "bob"][..]] {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(NetworkId(1), vec![names(users)], false, cx)
+            });
+            cx.run_until_parked();
+        }
+        assert!(chosen(&chat, cx).is_empty());
+    }
+
+    #[gpui::test]
+    fn the_color_picker_and_palette_edit_the_color_fields(cx: &mut TestAppContext) {
+        use crate::color_picker::{ColorChanged, format_hex};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx
+            .add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            let mut form = super::SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = super::SettingsTab::Appearance;
+            form
+        });
+        let field = form.read_with(cx, |form, _| form.settings.main_log_background.clone());
+        let text =
+            |cx: &mut gpui::VisualTestContext| field.read_with(cx, |f, _| f.text().to_owned());
+        let before = text(cx);
+
+        // Opening the picker for a field starts from that field's color;
+        // opening it again closes it.
+        form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
+        cx.run_until_parked();
+        let picker = form
+            .read_with(cx, |form, _| {
+                form.color_picker.as_ref().map(|open| open.picker.clone())
+            })
+            .expect("open");
+        assert_eq!(
+            format_hex(picker.read_with(cx, |p, _| p.color())),
+            before.to_uppercase()
+        );
+
+        // Picking writes the color into the field.
+        picker.update(cx, |_, cx| cx.emit(ColorChanged(0xAA0000)));
+        cx.run_until_parked();
+        assert_eq!(text(cx), "#AA0000");
+        // Typing in the field moves the picker.
+        field.update(cx, |field, cx| field.set_text("#112233", cx));
+        cx.run_until_parked();
+        assert_eq!(picker.read_with(cx, |p, _| p.color()), 0x112233);
+
+        // The palette keeps colors, applies one, and forgets one.
+        let palette = |form: &gpui::Entity<super::SettingsWindow>,
+                       cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                form.settings.values.appearance.saved_colors.clone()
+            })
+        };
+        form.update(cx, |form, cx| {
+            let _ = form.settings.values.appearance.save_color("#112233");
+            let _ = form.settings.values.appearance.save_color("#FFEE00");
+            form.apply_palette_color("#FFEE00", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(palette(&form, cx), ["#112233", "#FFEE00"]);
+        assert_eq!(text(cx), "#FFEE00");
+        assert_eq!(picker.read_with(cx, |p, _| p.color()), 0xFFEE00);
+        form.update(cx, |form, _| {
+            form.settings
+                .values
+                .appearance
+                .remove_saved_color("#112233")
+        });
+        assert_eq!(palette(&form, cx), ["#FFEE00"]);
+
+        // The field is what gets saved, palette included.
+        let saved = form
+            .update(cx, |form, cx| form.settings.snapshot(cx))
+            .unwrap();
+        assert_eq!(saved.appearance.main_log_background, "#FFEE00");
+        assert_eq!(saved.appearance.saved_colors, ["#FFEE00"]);
+
+        // The same swatch closes it; another field's swatch moves it.
+        let other = form.read_with(cx, |form, _| form.settings.dark_main_log_background.clone());
+        form.update(cx, |form, cx| form.toggle_color_picker(&other, cx));
+        assert!(
+            form.read_with(cx, |form, _| form.color_picker.as_ref().unwrap().field
+                == other)
+        );
+        form.update(cx, |form, cx| form.toggle_color_picker(&other, cx));
+        assert!(form.read_with(cx, |form, _| form.color_picker.is_none()));
     }
 
     #[gpui::test]
