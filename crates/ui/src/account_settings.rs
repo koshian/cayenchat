@@ -1,9 +1,6 @@
 //! Settings tabs for credential storage and IRC image upload accounts.
 
-use cayenchat_storage::{
-    CredentialBackendKind, CredentialStore, Secret, SecretKey, Settings,
-    credentials::{self, SystemBackend},
-};
+use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings, credentials};
 use gpui::{prelude::*, *};
 
 use crate::{SettingsWindow, secrets, settings_theme};
@@ -25,7 +22,8 @@ impl SettingsWindow {
     /// answer when no Secret Service is running.
     pub(crate) fn probe_system_store(&mut self, cx: &mut Context<Self>) {
         self.system_store = None;
-        let probe = cx.background_spawn(async { SystemBackend::probe() });
+        let probe = secrets::system_probe(cx);
+        let probe = cx.background_spawn(async move { probe() });
         cx.spawn(async move |this, cx| {
             let result = probe.await.map_err(|error| error.to_string());
             let _ = this.update(cx, |this, cx| {
@@ -46,7 +44,7 @@ impl SettingsWindow {
             return;
         }
         if kind == CredentialBackendKind::System {
-            match SystemBackend::probe() {
+            match secrets::system_probe(cx)() {
                 Ok(()) => self.switch_credential_backend(kind, cx),
                 Err(error) => {
                     self.system_store = Some(Err(error.to_string()));
@@ -81,7 +79,7 @@ impl SettingsWindow {
     /// Moves saved secrets to the new backend and records the choice.
     fn switch_credential_backend(&mut self, kind: CredentialBackendKind, cx: &mut Context<Self>) {
         let from = secrets::store(cx);
-        let to = CredentialStore::open(kind);
+        let to = secrets::open(kind, cx);
         let mut saved = match cayenchat_storage::load() {
             Ok(saved) => saved.unwrap_or_else(|| self.settings.values.clone()),
             Err(error) => {

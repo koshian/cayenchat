@@ -126,13 +126,15 @@ other than the selected one, with a direct jump to the source conversation. Its
 channel/server labels are single-line and ellipsize within their column. Channel
 messages have an application arrival sequence so the combined subwindow shows
 the actual latest line last even when several channels receive messages within
-the same displayed minute. Channel activity (JOIN, PART, QUIT and MODE) shares
+the same displayed minute. Channel activity (JOIN, PART, QUIT, NICK and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
 a nickname column regardless of the UI language, does not mark the channel
 unread, and appears only in its channel's main log, never in the combined
-subwindow. QUIT is logged only in channels whose last published roster contained
-the quitting nickname. Activity text uses configurable green (`#007D00`) by
-default. The main log keeps separate scroll positions for each server or
+subwindow. QUIT and NICK (ours included) are logged only in channels whose last
+published roster contained the nickname. Activity text uses configurable green (`#007D00`) by
+default. The main log's nickname column fits 15 typical characters; longer
+nicknames end in an ellipsis, or wrap when the Appearance setting is on. The
+main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.
 Both logs, the user list and the channel tree are virtualized (GPUI `list` /
@@ -154,10 +156,79 @@ replace only the rows whose messages appeared or disappeared, so switching
 channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
-scoped to the focused draft. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+scoped to the focused draft; Up/Down there recall the last 20 sent drafts
+(in memory only, shared by all conversations, but browsing ends when the
+conversation changes). Commands that carry credentials (to NickServ or
+ChanServ, `/oper`, `/pass`, and `/raw` forms of those) are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+On macOS Cmd+[ / Cmd+] move to the previous / next channel and Cmd+Shift+[ /
+Cmd+Shift+] to the previous / next server (decided in #72, which is the source
+for shortcut design; Windows/Linux keys without arrows are still open there).
+Cmd+{ / Cmd+} used to be the active-channel keys and are now the server keys;
+active channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down. The server keys are
+bound as `cmd-{` / `cmd-}` because that is how GPUI's macOS backend reports
+Cmd+Shift+[ / ] (the shifted character, with Shift cleared); the arrow-key
+bindings remain for layouts where [ and ] need Option (German, for example).
+The navigation shortcuts are named actions (`ui::shortcuts::ACTIONS`: id,
+command, per-platform default keys). The `keybindings` setting (action id →
+key, #114) replaces an action's keys; unknown actions and unusable keys (an
+empty string, a chord, a bare letter, a modifier alone, and a combination that
+types a character: Option+letter on macOS, Ctrl+Alt+letter on Windows, where it
+is AltGr) are ignored, leaving the defaults. Clashes between what the user
+changed and other actions or fixed shortcuts are logged at startup. A key is kept as GPUI reports it when pressed, which is not
+always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
+that two actions, or an action and a fixed shortcut, would share, for the
+editing UI (#118). `ui::key_recorder::record` takes the next keystroke of the
+application for itself (it reaches no shortcut and no text field) until its
+subscription is dropped: a usable combination is returned as kept in settings,
+Escape cancels (so Escape cannot be assigned), a bare character is refused, and
+so is a combination that types a character (Option+letter on macOS,
+Ctrl+Alt+letter on Windows, where it is AltGr);
+keystrokes that are part of an IME composition pass through. `describe` turns a
+kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
+Shift); a symbol is shown as the character that arrives (`Cmd+}` for `cmd-}`),
+not mapped back to a key, which would be wrong on layouts that place symbols
+differently (JIS).
+The Shortcuts tab of the settings window (`ui::shortcut_settings`, #118) lists
+the actions with their current keys. Change records the next key pressed
+(Escape cancels; a refused key keeps recording and says why); Reset restores
+one action, Reset all every action; a changed action is bold. Choosing an
+action's only default again removes the override. A ⚠ tooltip warns of a key
+shared with another action or a fixed shortcut, and of combinations better
+avoided (`shortcuts::caution`: Ctrl+Opt on macOS may be taken by VoiceOver,
+Ctrl+Alt on Windows/Linux by AltGr); nothing is blocked.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
+
+The window's position and size, whether it is maximized, and the pane sizes
+are saved to `window.json` (D037) and restored at startup by
+`ui::window_layout`, which fits the saved rectangle to the connected displays.
+
+Pane boundaries use `ui::splitter`: a thin handle that turns pointer drags
+into a pane size within the owner's minimum and maximum, measured from where
+the button went down (GPUI starts a drag only after a small movement). The
+owner stores the size; the handle draws and measures nothing else. The chat
+window uses it for the boundary between the left column and the right column
+(members over channel tree; 160 px at least, and the left column keeps 360 px)
+and for the one between the member list and the channel tree (80 px at least
+each; an even split until first dragged). The boundary between the two logs
+keeps its own handle, which also moves it with the pointer within limits and
+resets on a double click. Sizes are saved and restored (D037).
+
+`ui::color_picker::ColorPicker` is a saturation/brightness square, a hue bar
+and a `#RRGGBB` field that follow each other (GPUI has no color picker). It
+emits `ColorChanged` when the user picks or types a complete color;
+`set_color` shows a color the owner changed without emitting. Greys keep the
+hue the bar had. In the Appearance settings, the swatch beside each color
+field opens one picker below its row (one at a time) together with the saved
+palette: picking writes the field, typing in the field moves the picker, a
+palette color is applied by a click and removed by a right-click, and "Save to
+palette" adds the picked color (24 at most, no repeats). There the picker has
+no `#RRGGBB` field of its own (the row has one) and closes when the settings
+tab changes. Each picker acts only
+on its own drags: GPUI delivers a
+drag's moves to every element that listens for that drag type, so the drag
+carries the picker's entity id.
 
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
@@ -211,7 +282,9 @@ opt-ins (message tags and server timestamps), off for new and migrated
 settings (D022); the later batch and metadata (avatar) opt-ins are new
 fields of the same object without a version change, read as off when
 absent, and so is the Appearance `user_avatars` setting (D023), as are the
-peer avatar option and the per-server shared URL `peer_avatar_url` (D025). The UI keeps the
+peer avatar option and the per-server shared URL `peer_avatar_url` (D025),
+and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
+or repeated entries are dropped on load). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -240,19 +313,24 @@ the UI validates the saved selected profile and connects without opening setting
 invalid saved connection details open settings with feedback. Only explicitly
 saved credentials are available at startup. The macOS
 application menu and Command+, open that window;
-Windows/Linux use Ctrl+, or an in-window menu bar revealed by pressing Alt alone,
+Windows/Linux use Ctrl+, or an in-window menu bar that is shown all the time by
+default (users found a hidden bar hard to discover, issue #60). The Keyboard tab
+has "Hide the menu bar until Alt or F10" (`menu_bar_auto_hide`, off by default,
+added without a version change): then the bar is revealed by pressing Alt alone,
 by F10, or by resting the pointer for 0.4 s in a 6 px strip at the top of the
 content. Alt alone is commonly an IME on/off key, in which case the IME consumes
 it and the app never sees it, so F10 and hover are the reliable routes. A
 hover-revealed bar slides in and hides again once the pointer moves more than
 12 px below it, unless a menu is open. Hover reveal is not a Windows/GNOME
-convention (it resembles macOS full-screen menus).
+convention (it resembles macOS full-screen menus). A bar that is always shown
+has no slide-in animation (a frozen animation was one suspected cause of a
+half-drawn bar, issue #87) and Alt/F10 only move keyboard use in and out of it.
 The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
 and preserves input focus for editing commands. Alt chords do not toggle it;
 selecting an action or clicking outside dismisses it. Action availability is
-queried only after the menu is revealed: GPUI has no rendered dispatch tree
-during the first frame, so querying it while the initially hidden menu renders
-would panic on startup. macOS retains native menus.
+queried only while a menu is open: GPUI has no rendered dispatch tree during
+the first frame, so querying it while the bar renders (now always, unless
+auto-hidden) would panic on startup. macOS retains native menus.
 Passwords persist per server only when password saving is on for that server,
 and only through the credential store (see Credentials below); turning saving
 off immediately removes stored values. TLS certificate verification
@@ -299,10 +377,30 @@ history). A complete membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
-group. The member context menu routes Whois, invite and +o/-o through validated
+group. The member list selects members like a file list: click chooses one,
+Cmd/Ctrl-click adds or removes one, Shift-click chooses the range from the
+member clicked last. The choice is kept by nickname for one channel (it
+follows roster updates and starts empty in another channel), and a
+right-click on a member outside the choice replaces it with that member. A right-click on one
+of two or more chosen members opens a menu for the whole choice (its size, then
++o, -o, +v, -v), which `Connection::send_member_modes` sends in as many `MODE`
+lines as the server's limit needs; on one member it is the usual menu. What it
+acts on is who is still chosen when an item is clicked, not the nicknames it
+was opened with (someone may have left meanwhile and a namesake taken the
+nickname). The
+member context menu routes Whois, invite and +o/-o through validated
 IRC commands; private-message composition sends directly to the selected nick.
+`Connection::send_member_modes` gives or takes op/voice for several members,
+as `MODE <channel> +ooo a b c` lines of at most the server's announced
+`MODES` (ISUPPORT, read by the worker; 3 when absent, never more than 12) and
+a bounded length, validating everything and checking that the queue has room
+for every line before queuing anything. NAMES entries without a nickname
+(servers padding with spaces) are dropped from rosters in `names_snapshot`.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
+The server context menu also offers Join channel… (sends `/join <name>`) and
+Change nickname… (`NICK`), each asking in the small prompt the member menu
+uses and enabled only while registered; typed `/join` and `/nick` are unchanged.
 The core merges WHOIS numerics (311–319, 330, 301 while pending, and other
 WHOIS-only lines) per nickname and emits one `Whois` event at end-of-WHOIS (318);
 the raw lines still reach the server log. The UI opens a separate WHOIS window
@@ -586,6 +684,11 @@ the subset avatars need:
   time): a `761`/`766` for us addressed to us, or a `FAIL` naming us or the
   key. The value is checked again here (no controls or spaces, at most 400
   bytes, ASCII on legacy encodings).
+- Showing our own avatar: rows by our current nickname (main log and member
+  list) use the avatar the server confirmed on this connection, else the URL
+  shared with peers, read at draw time; no lookup or CTCP request to
+  ourselves is made, and a change shows on every row at once. The unpublished
+  draft is never shown.
 - Later joiners: a live JOIN (not in a history batch) of someone who
   shares no other channel with us (judged from the rosters published
   before it) and has no known avatar is looked up with `METADATA <nick>
@@ -1114,7 +1217,23 @@ joined with `/join` are not rejoined by reconnects (only configured ones
 are), so they are not recovered until joined again; private
 conversations are not recovered.
 
-Not implemented: TARGETS and private-message history, persistence.
+Direct-message discovery (D034): once per connection, when chathistory
+becomes available, the worker queues `CHATHISTORY TARGETS <from> <to> 16`
+ahead of the join requests (`from`: the previous disconnect, at most a week
+back, default a day; `to`: now plus 5 minutes for clock skew). The reply
+batch (`draft/chathistory-targets`) is consumed whole; nicknames (not
+channels) are deduplicated by IRC casemapping, newest first, at most 16, and
+each is queued as an ordinary `LATEST <nick> * 50` in the same bounded queue.
+The application shows such a peer's conversation when its request is sent
+and inserts the reply like channel history (provenance `Requested`: no
+unread mark, highlight or notification). The reply of a request belongs to
+the connection's worker, so a reconnect cannot receive an older
+connection's targets.
+
+Not implemented: persistence; recovery of a known private conversation
+beyond one page (it repeats `LATEST *` and relies on the duplicate filter;
+lines missed while lines arrived live are placed by arrival order);
+channels the bouncer knows but we have not joined.
 
 ## Notifications
 
@@ -1431,3 +1550,28 @@ chat drafts and other prompts retain their original styling and editing code.
 The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
+
+## Server-confirmed sending (D036)
+
+`irc-core::echo::Echoes` (worker) tracks each sent message until its echo,
+ACK, error or expiry; `Event::OutgoingAccepted { local_id }`,
+`OutgoingConfirmed`, `OutgoingFailed` connect it to the application, which
+keeps `ServerSession::pending_sends` and calls `AppState::confirm_message` /
+`fail_message` on the optimistic line. The worker schedules expiry only while
+messages are pending, so an unanswered send is reported after 60 seconds even
+if no further server line arrives.
+
+## User accounts (D035)
+
+`irc-core::accounts::Accounts` sees each incoming line before translation
+(JOIN, ACCOUNT, PART, KICK, QUIT, NICK, its WHOX reply), the published member
+lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
+`UserAccountForgotten`. `ServerSession::user_accounts` mirrors them;
+`complete_whois` uses it. Active only with the "User accounts" preference.
+
+## account-tag (D033)
+
+`tags::account` reads the `account` tag; `irc-core` events carry it,
+`irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
+`new_message` retains it in `Message::account`. There is no per-user account
+table in this step.

@@ -384,6 +384,7 @@ mod tests {
     ) -> (Entity<ChatWindow>, &'a mut VisualTestContext) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -429,6 +430,7 @@ mod tests {
                     mentioned: false,
                     server_time: None,
                     msgid: None,
+                    account: None,
                     replayed: false,
                 }],
                 false,
@@ -580,6 +582,7 @@ mod tests {
                     mentioned: false,
                     server_time: None,
                     msgid: None,
+                    account: None,
                     replayed: false,
                 }],
                 false,
@@ -642,6 +645,7 @@ mod tests {
                     mentioned: false,
                     server_time: None,
                     msgid: None,
+                    account: None,
                     replayed: false,
                 }],
                 false,

@@ -199,6 +199,22 @@ GitHub workflows default to a read-only token and check out without persisted
 credentials; only the beta `publish` job gets `contents: write` to move the tag and
 upload the release. Actions are pinned to commit SHAs (with the version in a
 comment) and Dependabot proposes pin updates weekly.
+
+To let a reporter try a change before it is merged, run the manual
+`Test Build` workflow (`.github/workflows/test-build.yml`) from the Actions
+tab or with
+`gh workflow run test-build.yml -f ref=<branch or SHA> -f platform=windows-x86_64`
+(`all`, `windows-x86_64`, `windows-arm64`, `linux-x86_64` or `macos-arm64`).
+It packages that ref like the beta does and keeps each package as a workflow
+artifact for 7 days, named `cayenchat-test-<short SHA>-<platform>` (`.zip`, or
+`.deb` on Linux) and downloaded as that file; the macOS bundle is
+`CayenChat Test.app`. `isolated=true` builds with the `test-build` feature, so
+the reporter's own settings and passwords are not used (suffix `-isolated`).
+It only has a read-only token and publishes nothing, so the beta is
+unaffected. Link the run and the commit SHA in the PR or issue; downloading
+an artifact needs a signed-in GitHub account. It packages separately from
+`beta-release.yml` rather than sharing a reusable workflow, because the beta
+can only be exercised from `master` and must not change untested.
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
 
@@ -302,7 +318,7 @@ this delay.
    or Cmd+, on macOS; use Ctrl+, on Windows/Linux. With new settings (the
    test build always starts with new settings) verify the server list says no
    servers are registered, the main log explains how to add one, and the
-   drop-down offers IRCnet, IRCnet (IPv6) and another server.
+   drop-down offers IRCnet, IRCnet (IPv6), IRCnet (dev) and another server.
 2. Add IRCnet and a blank server from the drop-down, assign different hosts and
    encodings, and verify both are listed in the order added. Switch among them
    to check that host, port, TLS, and encoding values remain independent.
@@ -1065,6 +1081,49 @@ not embedded OS controls; buttons, checkboxes and selectors are not focusable
 and accessibility is unchanged. New Windows/Linux native
 reader behavior requires real desktop testing. System-only accent/font changes
 are not watched continuously; reopening settings refreshes them.
+
+### Server-confirmed sending checks (D036)
+
+Unit tests: label uniqueness and size, labeled echo with a rewritten text,
+ACK, error numeric, FAIL, labeled batch, unlabeled matching by target and
+text, self-messages, bounds, expiry and its next deadline (`echo.rs`); CAP
+requests and dependency order, legacy encodings, off (`cap.rs`); fake-server
+flows for
+labeled echo/batch/error, echo-only and no-echo servers; app confirm/fail and
+duplicate handling; UI in-place confirmation, failure mark, disconnect with
+pending messages. No live Ergo/soju run was made.
+
+### User account tracking checks (D035)
+
+Unit tests (`accounts.rs`): extended JOIN with account, with `*`, plain JOIN,
+ACCOUNT login/change/logout, PART/KICK/QUIT/own PART cleanup, NICK with IRC
+casemapping, republished member lists, WHOX (ISUPPORT gate, queue, token,
+consumed reply, timeout), memory bounds. CAP request tests, a fake-server test
+of the whole flow and of the feature being off, a UI test of the mirror and
+WHOIS completion. No live Ergo/soju run was made.
+
+`cargo clippy --workspace --all-targets` fails in `crates/app` tests on master itself.
+
+### CHATHISTORY TARGETS checks (D034)
+
+Unit tests (`history.rs`): reply parsing and batch framing, unknown/known and
+case-duplicate peers, channel targets, invalid names, bounds (64 entries, 16
+peers, queue), FAIL and timeout, both directions of direct-message lines.
+Fake-server test: TARGETS → JOIN's LATEST → the direct message's LATEST →
+`ChannelHistory` with no live events. UI test: quiet conversation creation,
+overlap dropped, one notification only for the live line. Existing fixtures
+now expect the TARGETS request after registration. No live Ergo/soju run was
+made; `cargo clippy --workspace --all-targets` fails in `crates/app` tests on
+master itself.
+
+### account-tag checks (D033)
+
+Unit tests: tag parsing (`*`, empty, absent), account changing between
+messages, history lines with the tag, CAP request rule (with negotiation,
+UTF-8 only), the UI metadata mapping and `ServicesAccount` bounds; the
+`Message` size guard is now 104 bytes. `cargo clippy --workspace
+--all-targets` fails in `crates/app` tests (`while let`) on master itself. No
+live Ergo/soju run was made for this change.
 
 ### Real name and SETNAME checks (D032)
 

@@ -159,7 +159,7 @@ An offline mock must not claim to have sent a message or NOTICE.
 Keep the four-pane chat window open and show connection settings in a separate
 window at startup and from the menu. Persist versioned preferences in `CayenChat/settings.json` under the
 platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
-TLS and `irc6.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
+TLS, `irc6.ircnet.ne.jp` and `dev.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
 (since D017 the server list starts empty).
 Password saving is per server and off by default; switching it off
 immediately removes those stored values. (Where passwords are stored is now
@@ -305,6 +305,12 @@ the system store is unavailable, since those passwords were already plaintext
 with the user's consent. Keys use stable internal IDs, never nicknames,
 hostnames or display names. `Secret`, `ConnectionConfig` and `SaslCredentials`
 redact their `Debug` output; credential errors carry sanitized text only.
+
+The UI reads the store only from a GPUI global that startup installs before
+any window opens; a missing global panics instead of opening the system store.
+Tests install an in-memory store, and while it is installed, switching
+backends opens another in-memory store and the system store probe succeeds
+without asking the operating system (2026-10-02, #115).
 
 On macOS the system backend keeps every secret in one Keychain item and every
 backend value is cached for the process (2026-09-27). Separate items made the
@@ -1126,6 +1132,216 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D037 — Window position, size and pane sizes are remembered
+
+Status: implemented (issues #57 and #64).
+
+The main window reopens where it was left, with its pane sizes, unless the
+user switches it off ("Restore window position and size at startup",
+`restore_window_layout`, on by default, added without a settings version
+change).
+
+- **Own file.** The layout is in `window.json` beside `settings.json` (a test
+  build's own directory), not in the settings: it is written on every move or
+  resize, so keeping it apart means it never races the settings window's
+  autosave, and a damaged or unknown-version file reads as "nothing saved"
+  instead of blocking startup. It holds the window's normal rectangle in
+  logical pixels in desktop coordinates (negative on a display left of or
+  above the primary), whether it was maximized, the right column's width, the
+  member list's height and the logs' split. Writes go through a temporary
+  file and a rename.
+- **Displays.** At startup the saved rectangle is used only where it still
+  overlaps a connected display: the display showing most of it decides, the
+  window is shrunk to that display and moved onto it as far as it fits, and
+  never below the minimum window size. With no overlap (a monitor unplugged,
+  a resolution change) the window opens in its usual centered place.
+  On Windows that display is also passed as the window's display: GPUI
+  otherwise creates the window on the primary display and replaces bounds
+  off it with a centered default size, so a window left on another monitor
+  came back on the primary (#125). macOS and X11 report every display at the
+  origin, so the display is not named there. With displays at different
+  scale factors the position may still be off, because GPUI converts the
+  bounds with the scale of the display the window is first created on; this
+  was not verified on Windows.
+- **When.** Moves and resizes, pane drags, closing the window and quitting the
+  application (Cmd+Q does not ask the window to close) write it, after a 0.5 s
+  pause for moves and drags. The window's bounds are noted as they change, so
+  quitting can write without a window at hand. Turning the setting on writes
+  the current layout at once; turning it off stops writing and reading but
+  keeps the file.
+- **Trying it.** A test build starts empty on every launch, so it cannot show
+  a restore. `CAYENCHAT_TEST_DIR=<absolute path>` makes it use and keep that
+  directory (settings, credentials file and `window.json`), started from the
+  shell so that it inherits the variable (`open` does not pass it on), e.g.
+  `CAYENCHAT_TEST_DIR=$HOME/cayenchat-preview "CayenChat Test.app/Contents/MacOS/cayenchat"`.
+  The directory is created readable only by the user; one that already exists
+  is refused (on Unix) when other users can read it, because the test build's
+  credentials file lives there (`chmod 700` it).
+- **Not remembered.** Full screen returns to the normal rectangle. The work
+  area (menu bar, taskbar) is not known to GPUI, so a window may start under
+  the taskbar edge the OS then adjusts.
+- Tests never write the real file: the path is supplied at startup and
+  without one nothing is written.
+
+## D036 — Server-confirmed sending: echo-message and labeled-response
+
+Status: implemented (IRCv3 standard capabilities, one opt-in).
+
+Specifications read: `echo-message` (the server MUST send our PRIVMSG/NOTICE
+back with the final text; clients may show a local line first and replace it)
+and `labeled-response` (needs `batch` and `message-tags`; a `label` of at most
+64 bytes, not reused until answered; single replies carry the label, several
+are a batch tagged on its start, no-reply commands get a labeled `ACK`; a
+message to ourselves is labeled only on the echo).
+
+- **One preference.** "Server-confirmed sending" (`Ircv3Preferences::
+  confirmed_sending`, per server, default off, no version change) requests
+  `echo-message`, `server-time`, and on UTF-8 connections `message-tags`,
+  `batch` and `labeled-response` (the last only after both are enabled;
+  dropped when `batch` goes). Legacy encodings get the echo alone: tags are
+  UTF-8. Off: registration and sending are unchanged.
+- **Optimistic line stays.** `Outgoing::Message` still produces
+  `Event::OutgoingAccepted` at once; with `echo-message` it carries a
+  `local_id`, and the application remembers (conversation, sequence) for it
+  (`ServerSession::pending_sends`).
+- **Matching** (`irc-core::echo::Echoes`): with labels, the echo, `ACK`,
+  4xx/5xx numeric or `FAIL` carrying our label, or any of them inside a
+  `labeled-response` batch. Labels are `c` plus a per-connection counter in
+  base 36, so one is never reused. An unlabeled own-nick message is another
+  client's and is shown as before. Without labels: the oldest pending message
+  to the same casemapped target with identical text and kind; a message the
+  server rewrote cannot be recognized and appears as a new line.
+- **`labeled-response` coming and going** (`CAP DEL`/`NEW` on a live
+  connection, `echo-message` staying): a line carrying a label is always
+  matched, so late replies to earlier labeled requests still settle them.
+  While the capability is on, an unlabeled echo matches only messages sent
+  without a label. Once it is off, it matches every pending message,
+  including those sent with a label: they are converted to the target-and-text
+  match, so their echoes are not shown twice and they are not marked failed
+  later. A labeled message the server rewrote cannot be matched after the
+  withdrawal and is reported unconfirmed when its 60 s expire.
+- **Confirmation** (`Event::OutgoingConfirmed`): the final text replaces the
+  local one only when it changed and the local line is the text itself (not a
+  CTCP ACTION or a redacted service secret); msgid and time are stored and the
+  message goes into the duplicate filter, so later history repeating it is
+  dropped.
+- **Failure.** `Event::OutgoingFailed` (labeled error, `FAIL`, no answer in
+  60 s, the capability withdrawn) or a connection that ends with the message
+  pending sets `Message::delivery_failed` (drawn in the warning color) and,
+  for a server reply, adds a server-log line. A later confirmation clears it.
+- **Bounds.** At most 32 pending messages per connection (more are sent but
+  not tracked), 16 open labeled batches, 64 pending ids in the application.
+  A timer runs only while messages are pending; their failure is reported at
+  60 seconds even if the server sends no further lines.
+- **Self-messages.** With labels only the labeled copy is the echo; the
+  delivered unlabeled copy still appears as a message from us, as it did
+  before (two lines, literally what the server sent).
+- **Not done.** No delivery marker for unconfirmed-but-not-failed lines
+  beyond the failure colour; `TAGMSG` echo; label use for other commands;
+  no live soju/Ergo check.
+
+## D035 — Live account tracking: account-notify, extended-join, WHOX
+
+Status: implemented (IRCv3 standard capabilities; opt-in because of the WHOX
+traffic).
+
+- **One preference.** "User accounts" (`Ircv3Preferences::accounts`, per
+  server, default off, no version change) requests `account-notify` and
+  `extended-join` when offered. Nothing else changes with it off.
+- **State.** `irc-core::accounts::Accounts` in the connection's worker:
+  casemapped nickname → account, real name and the channels shared with us;
+  an entry exists only for a user we share a channel with and know something
+  about. At most 4096 users, real names cut at 256 bytes; a reconnect starts
+  empty. The application mirrors it from `Event::UserAccount` /
+  `UserAccountForgotten` (per network session, cleared on disconnect) and uses
+  it only to complete WHOIS.
+- **Lifecycle.** extended-join JOIN and `ACCOUNT` (login, change, logout `*`)
+  update it; PART, KICK, QUIT drop users who share no channel; NICK moves the
+  entry (forgotten + reported under the new name); our own PART or KICK
+  removes the channel from everyone; a republished member list removes users
+  who left unseen. Same nickname on two servers: separate sessions. An entry
+  with neither an account nor a real name (for example after `ACCOUNT *`) is
+  dropped, so it does not use one of the 4096 slots.
+- **Late WHOX replies.** The reply describes the channel as it was when the
+  query went out. Nicknames that leave it meanwhile (PART, KICK, QUIT, or a
+  nick change away from the name) are remembered for that one query and their
+  354 lines are ignored, whether or not the first NAMES was published yet; a
+  rejoin, or the new name after a nick change, is accepted. The set lives and
+  dies with the query.
+- **Initial state.** account-notify only reports changes. After our own JOIN,
+  with `WHOX` in ISUPPORT (the token may carry a value, `WHOX=...`; it is
+  recognized by name), one `WHO #chan %tnar,<token>` at a time (rolling
+  token 1–999, at most 64 queued, 15 s without an end-of-WHO drops it, no
+  timer: checked on the next line) fills account (`0` = none) and real name of
+  those present. The reply (354/315 of our token) is not a server line. The
+  plain WHO of the specification has no account without WHOX, so servers
+  without WHOX only learn accounts from later `ACCOUNT`/JOIN lines. This
+  channel-wide WHO is why the feature is opt-in (D025's "no channel-wide WHO"
+  concerned avatar lookups).
+- **Private conversations.** Still keyed by casemapped nickname per network
+  and session; this state does not feed them. Nick-based until a redesign.
+- **Not done.** No display beyond WHOIS; `away-notify`; realname from
+  extended-join is not offered to CTCP AVATAR marks.
+
+## D034 — CHATHISTORY TARGETS and missed direct messages
+
+Status: implemented (draft/chathistory, experimental, same per-server opt-in).
+
+Specification (current draft): `CHATHISTORY TARGETS <timestamp=…>
+<timestamp=…> <limit>`; the reply is a `draft/chathistory-targets` batch of
+`CHATHISTORY TARGETS <nickname | channel> <timestamp>` lines, matched on each
+target's latest message; timestamps only.
+
+- **Trigger.** Once per connection, when registration completes with
+  chathistory negotiated. No polling, no user action. `from` is when the
+  session's connection was first lost since it last registered (kept in the
+  UI's `ServerSession`), at most a week back, a day when unknown (the first
+  connection of a run); `to` is now plus 5 minutes.
+- **Bounds.** Limit 16 (lowered by the server's `CHATHISTORY`), at most 64
+  reply entries kept, at most 16 peers asked, the shared 64-request queue and
+  one outstanding request at a time. A failed or unanswered TARGETS request
+  ends silently with a diagnostic note.
+- **Selection.** Nicknames only, without `!`/`@`, once per casemapped name,
+  newest first. Channels are ignored: joined channels ask on join, and a
+  channel the bouncer has but we have not joined stays undiscovered.
+- **History of a peer.** `LATEST <nick> * 50`; reply lines are kept when the
+  peer wrote them or we wrote to the peer. The peer's conversation is created
+  when the request is sent (it exists because the server named it), keyed by
+  the IRC-casemapped nickname per network, so the same nickname on two
+  servers stays separate.
+- **Quiet.** Discovery and its history use provenance `Requested`: no unread,
+  highlight or notification.
+- **Placement.** Same reservation as channel history (D027, D031): the
+  block sits where the request was made. A known conversation that already
+  received a live line meanwhile shows the missed lines after it.
+- **Not done.** Private conversations have no resume points (repeat
+  `LATEST *` only); no account-aware identity; no live soju/Ergo check.
+
+## D033 — account-tag
+
+Status: implemented.
+
+`account-tag` (IRCv3 standard) is requested whenever the CAP negotiation runs
+for another reason (SASL or an opt-in extension) and the server offers it,
+without its own switch and never on a legacy encoding (tag values are UTF-8;
+the same reason `message-tags` is not requested there). It never starts a
+negotiation itself.
+
+- **What is kept.** Only the `account` tag, as `Event::ChannelMessage` /
+  `PrivateMessage` / `HistoryMessage::account` and then
+  `MessageMeta::account` / `Message::account` (`model::ServicesAccount`:
+  non-empty, no whitespace or controls, at most 128 bytes; `*` and empty are
+  "none"). No other tag is stored. Our own echoes carry none.
+- **Scope.** An account names an identity only inside the network of the
+  conversation that holds the message; it is never compared across networks
+  and no map from nickname to account exists, so nothing can go stale.
+- **Cost.** One thin pointer per retained message (`Message` grew from 96 to
+  104 bytes; the name is on the heap only when present).
+- **Display.** None in log lines. WHOIS already shows the services account
+  (330). History and replayed lines carry the account their server tagged.
+- **Not done.** Account changes between messages are visible only as
+  different values on later messages; live tracking is account-notify.
 
 ## D032 — Real name setting and IRCv3 `setname`
 

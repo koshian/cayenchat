@@ -3,6 +3,7 @@
 mod account_settings;
 mod avatar_editor;
 mod avatars;
+mod color_picker;
 mod decorations;
 mod default_avatar;
 mod desktop;
@@ -10,9 +11,12 @@ mod diagnostics;
 mod experimental_settings;
 mod image_upload;
 mod input;
+mod input_history;
 mod ircv3_settings;
+mod key_recorder;
 mod localization;
 mod log_list;
+mod member_selection;
 mod menu_bar;
 mod notifier;
 #[cfg(test)]
@@ -21,14 +25,18 @@ mod previews;
 mod secrets;
 mod session;
 mod settings_theme;
+mod shortcut_settings;
+mod shortcuts;
+mod splitter;
 mod theme;
 mod whois;
+mod window_layout;
 
 use cayenchat_app::{
     AppState, Command, ConnectionStatus, MessageMeta, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
-    own_avatar::OwnAvatar,
+    own_avatar::{Confirmed, OwnAvatar},
     timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
@@ -63,6 +71,15 @@ use whois::WhoisWindow;
 /// The channel log's share of the log height when nothing was dragged, and
 /// the bounds of what dragging may leave to either log.
 const DEFAULT_LOG_SPLIT: f32 = 0.5;
+/// Pause after the last move or resize before the window layout is written.
+const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(500);
+/// Width of the right column (members and channel tree), its limits, and the
+/// width the left column keeps.
+const DEFAULT_RIGHT_WIDTH: f32 = 240.;
+const RIGHT_WIDTH_MIN: f32 = 160.;
+const LEFT_MIN_WIDTH: f32 = 360.;
+/// Least height of the member list or the channel tree.
+const RIGHT_PANE_MIN_HEIGHT: f32 = 80.;
 const LOG_SPLIT_LIMITS: (f32, f32) = (0.1, 0.9);
 /// Height of the draft row including its borders.
 const DRAFT_ROW_HEIGHT: f32 = 38.;
@@ -91,6 +108,7 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
         ChannelActivityKind::Joined { mask } => with_detail(actor, "has joined", mask),
         ChannelActivityKind::Left { reason } => with_detail(actor, "has left", reason),
         ChannelActivityKind::Quit { reason } => with_detail(actor, "has quit", reason),
+        ChannelActivityKind::NickChanged { to } => format!("{actor} is now known as {to}"),
         ChannelActivityKind::ModeChanged { modes } => {
             format!("{actor} has changed mode: {modes}")
         }
@@ -103,6 +121,8 @@ actions!(
         CompleteNickname,
         SendMessage,
         Notice,
+        HistoryPrevious,
+        HistoryNext,
         OpenSettings,
         Disconnect,
         Reconnect,
@@ -125,6 +145,8 @@ struct SettingsForm {
     values: Settings,
     server_list_open: bool,
     encoding_list_open: bool,
+    language_list_open: bool,
+    ircv3_server_list_open: bool,
     custom_host: Entity<TextInput>,
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
@@ -350,6 +372,8 @@ impl SettingsForm {
             },
             server_list_open: false,
             encoding_list_open: false,
+            language_list_open: false,
+            ircv3_server_list_open: false,
             values,
         }
     }
@@ -385,6 +409,7 @@ impl SettingsForm {
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
+            wrap_long_nicknames: self.values.appearance.wrap_long_nicknames,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
                 .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
@@ -403,6 +428,7 @@ impl SettingsForm {
                 sub_log_background: value(&self.dark_sub_log_background),
                 sub_log_alternate: value(&self.dark_sub_log_alternate),
             },
+            saved_colors: self.values.appearance.saved_colors.clone(),
         };
         settings.appearance.validate()?;
         settings.notifications.keywords =
@@ -597,6 +623,8 @@ impl SettingsForm {
         }
         self.server_list_open = false;
         self.encoding_list_open = false;
+        self.language_list_open = false;
+        self.ircv3_server_list_open = false;
     }
 }
 
@@ -690,6 +718,8 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         metadata: true,
         peer_avatars: preferences.peer_avatars,
         chathistory: preferences.chathistory,
+        confirmed_sending: preferences.confirmed_sending,
+        accounts: preferences.accounts,
     }
 }
 
@@ -743,16 +773,36 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
     }
 }
 
+/// Fills the account and real name a WHOIS reply lacks from what the
+/// connection tracks; what the server said wins.
+fn complete_whois(
+    info: &mut WhoisInfo,
+    tracked: &std::collections::HashMap<String, (Option<String>, Option<String>)>,
+) {
+    let key = cayenchat_irc_core::text::nickname_key(&info.nickname);
+    let Some((account, realname)) = tracked.get(&key) else {
+        return;
+    };
+    if info.account.is_none() {
+        info.account = account.clone();
+    }
+    if info.realname.is_none() {
+        info.realname = realname.clone();
+    }
+}
+
 /// What the IRC adapter knows about an incoming message besides its text:
 /// server-time, a usable `msgid`, and whether it is replayed history.
 fn irc_message_meta(
     server_time: Option<std::time::SystemTime>,
     msgid: Option<&str>,
+    account: Option<&str>,
     replayed: bool,
 ) -> MessageMeta {
     MessageMeta {
         server_time,
         native_id: msgid.and_then(cayenchat_model::NativeMessageId::new),
+        account: account.and_then(cayenchat_model::ServicesAccount::new),
         ..MessageMeta::replayed(replayed)
     }
 }
@@ -768,7 +818,12 @@ fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
             } else {
                 message.text
             },
-            meta: irc_message_meta(message.server_time, message.msgid.as_deref(), true),
+            meta: irc_message_meta(
+                message.server_time,
+                message.msgid.as_deref(),
+                message.account.as_deref(),
+                true,
+            ),
         })
         .collect()
 }
@@ -867,12 +922,24 @@ struct ChatWindow {
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
+    /// Members chosen in the member list of the selected channel.
+    member_selection: member_selection::MemberSelection,
+    /// Sent drafts recalled with Up/Down in the draft input.
+    input_history: input_history::InputHistory,
     /// One row per server whose nickname was rejected during registration,
     /// in the order the rejections arrived.
     nick_prompts: Vec<NickPrompt>,
     startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
+    /// Remember where the window and its panes were left (a setting), and
+    /// the file that is written to. `None` writes nothing: tests, and the
+    /// moment before startup supplies the path.
+    restore_layout: bool,
+    layout_file: Option<std::path::PathBuf>,
+    layout_save: Option<Task<()>>,
+    /// Where the window was last seen, for writing the layout without it.
+    window_bounds: Option<WindowBounds>,
     /// The native window title last set from `render`.
     shown_title: String,
     /// Open WHOIS windows by network and lowercase nickname.
@@ -893,6 +960,12 @@ struct ChatWindow {
     /// Where the left column was last laid out, to turn a pointer position
     /// into `log_split`.
     left_column_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Width of the right column (members over channel tree), set by its
+    /// splitter.
+    right_width: f32,
+    /// Height of the member list; `None` splits the right column evenly.
+    members_height: Option<f32>,
+    right_column_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Pasted or dropped images on their way to the external uploader.
     attachments: AttachmentFlow,
     /// Configured image hosting provider ID (IRC external uploads).
@@ -946,12 +1019,20 @@ struct MemberMenu {
     network: NetworkId,
     nickname: String,
     channel: String,
+    /// The chosen members when the menu was opened on one of two or more
+    /// chosen members: it then acts on all of them (and `nickname` is the one
+    /// clicked). Empty for a menu about one member.
+    group: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
 enum MemberPromptKind {
     PrivateMessage,
     Invite,
+    /// Join a channel; the prompt is about the server, not a member.
+    Join,
+    /// Change our own nickname on the server.
+    Nick,
 }
 
 /// Another nickname for a server that rejected `rejected` (432/433) during
@@ -1032,6 +1113,7 @@ enum SettingsTab {
     Connection,
     Appearance,
     Keyboard,
+    Shortcuts,
     Notifications,
     Ircv3,
     ImageUpload,
@@ -1049,6 +1131,15 @@ enum FontTarget {
     Time,
 }
 
+/// The color picker open under one color row of the appearance settings.
+struct OpenColorPicker {
+    /// The `#RRGGBB` field the picker edits.
+    field: Entity<TextInput>,
+    picker: Entity<color_picker::ColorPicker>,
+    /// Keep the picker and the field in step while this exists.
+    _subscriptions: Vec<Subscription>,
+}
+
 struct SettingsWindow {
     menu_bar: menu_bar::MenuBar,
     owner: WindowHandle<ChatWindow>,
@@ -1056,6 +1147,10 @@ struct SettingsWindow {
     feedback: Option<String>,
     tab: SettingsTab,
     font_picker: Option<FontTarget>,
+    color_picker: Option<OpenColorPicker>,
+    /// A key being recorded for a shortcut (the Shortcuts tab).
+    shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
+    /// The system's font names, listed when the font list is first opened.
     fonts: Vec<String>,
     i18n: Localizer,
     /// Result of probing the system credential store; `None` while checking.
@@ -1198,7 +1293,7 @@ impl ChatWindow {
             inputs.insert(key, cx.new(|cx| TextInput::new_live(&placeholder, cx)));
         }
         window.focus(&inputs[&state.selection()].focus_handle(cx));
-        let this = Self {
+        let mut this = Self {
             state,
             main_lists: HashMap::new(),
             sub_list: LogList::new(),
@@ -1215,15 +1310,25 @@ impl ChatWindow {
             member_menu: None,
             channel_menu: None,
             member_prompt: None,
+            member_selection: Default::default(),
+            input_history: Default::default(),
             nick_prompts: Vec::new(),
             startup_connections,
             settings_window: None,
             window_handle: window.window_handle().downcast::<ChatWindow>(),
+            restore_layout: saved.restore_window_layout,
+            layout_file: None,
+            layout_save: None,
+            window_bounds: None,
             shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: false,
-            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
+            menu_bar: {
+                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
+                bar.set_always(!saved.menu_bar_auto_hide);
+                bar
+            },
             appearance: saved.appearance.clone(),
             theme_mode: saved.theme,
             image_provider: saved.image_upload.provider.clone(),
@@ -1237,6 +1342,9 @@ impl ChatWindow {
             log_split: DEFAULT_LOG_SPLIT,
             log_split_dragging: false,
             left_column_bounds: Rc::new(Cell::new(None)),
+            right_width: DEFAULT_RIGHT_WIDTH,
+            members_height: None,
+            right_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
             attachments: AttachmentFlow::default(),
             uploader_override: None,
@@ -1257,7 +1365,95 @@ impl ChatWindow {
             this.window_active = window.is_window_active();
         })
         .detach();
+        // Moving or resizing the window, and closing it, keep the layout.
+        // The window's bounds are noted as they change so that the layout can
+        // also be written where no window is at hand: when the application
+        // quits (Cmd+Q) without the window being asked to close.
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.note_window_bounds(window);
+            this.schedule_layout_save(cx);
+        })
+        .detach();
+        let view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = view.update(cx, |this, _| {
+                this.note_window_bounds(window);
+                this.save_layout_now();
+            });
+            true
+        });
+        cx.on_app_quit(|this, _| {
+            this.save_layout_now();
+            async {}
+        })
+        .detach();
+        this.note_window_bounds(window);
         this
+    }
+
+    /// Remembers where the window is, for the next layout write.
+    fn note_window_bounds(&mut self, window: &Window) {
+        self.window_bounds = Some(window.window_bounds());
+    }
+
+    /// Takes over the pane sizes of a saved layout. They are clamped when
+    /// drawn, so values from a larger window or another display are safe.
+    fn apply_layout(&mut self, layout: &cayenchat_storage::layout::Layout) {
+        if let Some(width) = layout.right_width {
+            self.right_width = width;
+        }
+        self.members_height = layout.members_height.or(self.members_height);
+        if let Some(split) = layout.log_split {
+            self.log_split = split.clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        }
+    }
+
+    /// Writes the layout shortly after the last change; a drag changes it
+    /// many times a second.
+    fn schedule_layout_save(&mut self, cx: &mut Context<Self>) {
+        if !self.restore_layout || self.layout_file.is_none() {
+            return;
+        }
+        self.layout_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LAYOUT_SAVE_DELAY).await;
+            let _ = this.update(cx, |this, _| this.save_layout_now());
+        }));
+    }
+
+    /// Writes the window's position and size (as last noted) and the pane
+    /// sizes now. A failure only means the layout is not remembered, so it
+    /// is not shown.
+    fn save_layout_now(&mut self) {
+        self.layout_save = None;
+        let (true, Some(path), Some(window_bounds)) = (
+            self.restore_layout,
+            self.layout_file.as_ref(),
+            self.window_bounds,
+        ) else {
+            return;
+        };
+        let (bounds, maximized) = match window_bounds {
+            WindowBounds::Windowed(bounds) => (bounds, false),
+            WindowBounds::Maximized(bounds) => (bounds, true),
+            // Leaving full screen returns to the normal rectangle.
+            WindowBounds::Fullscreen(bounds) => (bounds, false),
+        };
+        let layout = cayenchat_storage::layout::Layout {
+            window: Some(cayenchat_storage::layout::WindowRect {
+                x: f32::from(bounds.origin.x),
+                y: f32::from(bounds.origin.y),
+                width: f32::from(bounds.size.width),
+                height: f32::from(bounds.size.height),
+            }),
+            maximized,
+            right_width: Some(self.right_width),
+            members_height: self.members_height,
+            log_split: Some(self.log_split),
+            ..Default::default()
+        };
+        if let Err(error) = cayenchat_storage::layout::save_layout_to(path, &layout) {
+            eprintln!("CayenChat: {error}");
+        }
     }
 
     /// Our current nickname on `network`.
@@ -1270,6 +1466,21 @@ impl ChatWindow {
     fn is_own_nickname(&self, network: NetworkId, nickname: &str) -> bool {
         self.own_nickname(network)
             .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
+    }
+
+    /// Our own avatar on `network`, shown for our nickname instead of asking
+    /// anyone for it: the one the server confirmed, else the one shared with
+    /// peers. Read at draw time, so every row follows a change at once.
+    fn own_avatar_for(&self, network: NetworkId, nickname: &str) -> Option<Arc<str>> {
+        if !self.is_own_nickname(network, nickname) {
+            return None;
+        }
+        let session = self.sessions.get(&network)?;
+        if let Confirmed::Set(url) = session.own_avatar.confirmed() {
+            return Some(url.as_str().into());
+        }
+        let profile = self.saved.profile(&session.profile_id)?;
+        shared_peer_avatar(profile).map(|url| url.as_str().into())
     }
 
     /// Byte ranges of mentions of our nickname and of keywords in a channel
@@ -1801,7 +2012,9 @@ impl ChatWindow {
     /// was cut off in recover what they missed, if the server offers
     /// history.
     fn reconnect_config(&self, network: NetworkId) -> Option<ConnectionConfig> {
-        let mut config = self.sessions.get(&network)?.active_config.clone()?;
+        let session = self.sessions.get(&network)?;
+        let mut config = session.active_config.clone()?;
+        config.history_targets_since = session.disconnected_at;
         config.resume_history = self
             .state
             .history_resume(network)
@@ -1855,6 +2068,9 @@ impl ChatWindow {
     fn record_disconnect(&mut self, network: NetworkId, reason: String) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.connection_started = None;
+            session
+                .disconnected_at
+                .get_or_insert_with(std::time::SystemTime::now);
             session.push_diagnostic(format!("Disconnected: {reason}"));
             session.pending_whois.clear();
         }
@@ -1883,6 +2099,50 @@ impl ChatWindow {
             .registered_connection(menu.network)
             .and_then(|connection| connection.send_member_command(&menu.nickname, command))
             .err();
+        cx.notify();
+    }
+
+    /// The members of a group menu who are still chosen, now. The menu keeps
+    /// the nicknames it was opened with, but while it is open someone may have
+    /// left and someone else taken the nickname; the choice is trimmed with
+    /// every roster, so a newcomer is not among the chosen.
+    fn menu_group_now(&self, menu: &MemberMenu) -> Vec<String> {
+        let Some(id) = self.state.channel_id(menu.network, &menu.channel) else {
+            return Vec::new();
+        };
+        let Some(conversation) = self.state.conversations().iter().find(|c| c.id == id) else {
+            return Vec::new();
+        };
+        let chosen = self
+            .member_selection
+            .nicknames(id, &conversation.members)
+            .iter()
+            .map(|nickname| cayenchat_irc_core::text::nickname_key(nickname))
+            .collect::<Vec<_>>();
+        menu.group
+            .iter()
+            .filter(|nickname| {
+                chosen.contains(&cayenchat_irc_core::text::nickname_key(nickname.as_str()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Gives or takes op or voice for every member the open menu acts on, as
+    /// chosen at the moment of the click.
+    fn member_modes(&mut self, mode: cayenchat_irc_core::MemberMode, cx: &mut Context<Self>) {
+        let Some(menu) = self.member_menu.take() else {
+            return;
+        };
+        let group = self.menu_group_now(&menu);
+        // Nobody left to act on: nothing is sent.
+        self.feedback = if group.is_empty() {
+            None
+        } else {
+            self.registered_connection(menu.network)
+                .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &group))
+                .err()
+        };
         cx.notify();
     }
 
@@ -2047,6 +2307,29 @@ impl ChatWindow {
         self.show_member_prompt(menu.network, menu.nickname, kind, menu.position, window, cx);
     }
 
+    /// Opens a server-level prompt (join a channel, change nickname) where the
+    /// server menu was.
+    fn open_server_prompt(
+        &mut self,
+        kind: MemberPromptKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.server_menu.take() else {
+            return;
+        };
+        // The nickname in use, else the one the profile would connect with.
+        let nickname = self
+            .own_nickname(menu.network)
+            .map(str::to_owned)
+            .or_else(|| {
+                let session = self.sessions.get(&menu.network)?;
+                Some(self.saved.profile(&session.profile_id)?.nickname.clone())
+            })
+            .unwrap_or_default();
+        self.show_member_prompt(menu.network, nickname, kind, menu.position, window, cx);
+    }
+
     fn show_member_prompt(
         &mut self,
         network: NetworkId,
@@ -2058,9 +2341,19 @@ impl ChatWindow {
     ) {
         let placeholder = self.i18n.text(match kind {
             MemberPromptKind::PrivateMessage => "member_message_placeholder",
-            MemberPromptKind::Invite => "member_channel_placeholder",
+            MemberPromptKind::Invite | MemberPromptKind::Join => "member_channel_placeholder",
+            MemberPromptKind::Nick => "nickname",
         });
-        let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
+        // A new nickname starts from the current one, all selected, so a
+        // small change is a small edit and typing replaces it.
+        let initial = match kind {
+            MemberPromptKind::Nick => nickname.as_str(),
+            _ => "",
+        };
+        let input = cx.new(|cx| TextInput::new_field(&placeholder, initial, false, cx));
+        if matches!(kind, MemberPromptKind::Nick) {
+            input.update(cx, |input, cx| input.select_everything(cx));
+        }
         let viewport = window.viewport_size();
         self.feedback = None;
         self.member_prompt = Some(MemberPrompt {
@@ -2253,6 +2546,16 @@ impl ChatWindow {
                         channel: value.trim().to_owned(),
                     },
                 ),
+                MemberPromptKind::Join if value.trim().is_empty() => {
+                    Err(self.i18n.text("channel_join_required"))
+                }
+                MemberPromptKind::Join => {
+                    connection.send_command(&format!("/join {}", value.trim()), None)
+                }
+                MemberPromptKind::Nick if value.trim().is_empty() => {
+                    Err(self.i18n.text("nickname_change_required"))
+                }
+                MemberPromptKind::Nick => connection.change_nickname(value.trim()),
             },
             Err(error) => Err(error),
         };
@@ -2529,7 +2832,18 @@ impl ChatWindow {
         }
         let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
         self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        self.schedule_layout_save(cx);
         cx.notify();
+    }
+
+    /// Applies a click on row `index` of the selected channel's member list.
+    fn click_member(&mut self, index: usize, click: member_selection::Click) {
+        let Some(channel) = self.state.selected_channel() else {
+            return;
+        };
+        let (conversation, members) = (channel.id, channel.members.clone());
+        self.member_selection
+            .click(conversation, &members, index, click);
     }
 
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
@@ -2706,6 +3020,7 @@ impl ChatWindow {
                 self.state.end_avatars(network);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
+                    session.disconnected_at = None;
                     session.retry_attempt = 0;
                     session.own_nickname = Some(nickname.clone());
                 }
@@ -2748,6 +3063,7 @@ impl ChatWindow {
                 mentioned,
                 server_time,
                 msgid,
+                account,
                 replayed,
             } => {
                 // A copy of a message the conversation already has (overlapping
@@ -2758,7 +3074,7 @@ impl ChatWindow {
                     &sender,
                     &text,
                     notice,
-                    irc_message_meta(server_time, msgid.as_deref(), replayed),
+                    irc_message_meta(server_time, msgid.as_deref(), account.as_deref(), replayed),
                 ) {
                     return;
                 }
@@ -2806,9 +3122,11 @@ impl ChatWindow {
                 notice,
                 server_time,
                 msgid,
+                account,
                 replayed,
             } => {
-                let meta = irc_message_meta(server_time, msgid.as_deref(), replayed);
+                let meta =
+                    irc_message_meta(server_time, msgid.as_deref(), account.as_deref(), replayed);
                 // A PRIVMSG opens a private conversation; a NOTICE (usually
                 // services and bots) joins one only if it already exists,
                 // and otherwise stays in the server log as before.
@@ -2858,7 +3176,7 @@ impl ChatWindow {
                 msgid,
                 replayed,
             } => {
-                let meta = irc_message_meta(server_time, msgid.as_deref(), replayed);
+                let meta = irc_message_meta(server_time, msgid.as_deref(), None, replayed);
                 self.append_own_private(network, &target, &text, notice, meta);
             }
             Event::UserNickChanged { from, to } => {
@@ -2878,6 +3196,20 @@ impl ChatWindow {
                     self.state.append_conversation_activity(id, text);
                 }
             }
+            // A peer's nickname is a direct-message conversation found by
+            // target discovery: it is shown from now on, its history follows.
+            Event::HistoryRequested {
+                channel,
+                resumed: false,
+            } if !valid_channel(&channel) => {
+                let key = cayenchat_irc_core::text::nickname_key(&channel);
+                if let Some(id) = self
+                    .state
+                    .private_conversation(network, &key, &channel, true)
+                {
+                    self.state.history_requested_for(id);
+                }
+            }
             Event::HistoryRequested {
                 channel,
                 resumed: false,
@@ -2894,12 +3226,17 @@ impl ChatWindow {
                 messages,
                 incomplete,
             } => {
-                self.state.insert_resumed_history(
-                    network,
-                    &channel,
-                    history_lines(messages),
-                    incomplete.then(|| HISTORY_GAP_NOTE.to_owned()),
-                );
+                let lines = history_lines(messages);
+                let gap = incomplete.then(|| HISTORY_GAP_NOTE.to_owned());
+                if valid_channel(&channel) {
+                    self.state
+                        .insert_resumed_history(network, &channel, lines, gap);
+                } else {
+                    let key = cayenchat_irc_core::text::nickname_key(&channel);
+                    if let Some(id) = self.state.private_id(network, &key) {
+                        self.state.insert_history_for(id, lines, gap);
+                    }
+                }
             }
             Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
             // Older pages go above everything the log holds; the main log
@@ -2931,9 +3268,36 @@ impl ChatWindow {
                     }
                 }
             }
-            Event::Names { channel, users } => self.state.set_members(network, &channel, users),
+            Event::Names { channel, users } => {
+                self.state.set_members(network, &channel, users);
+                // Whoever left (or renamed) is no longer chosen, so a later
+                // user of that nickname is not.
+                if let Some(id) = self.state.channel_id(network, &channel)
+                    && let Some(conversation) =
+                        self.state.conversations().iter().find(|c| c.id == id)
+                {
+                    self.member_selection
+                        .retain_present(id, &conversation.members);
+                }
+            }
             Event::Topic { channel, topic } => self.state.set_topic(network, &channel, &topic),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::UserAccount {
+                nickname,
+                account,
+                realname,
+            } => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    session.user_accounts.insert(key, (account, realname));
+                }
+            }
+            Event::UserAccountForgotten { nickname } => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    session.user_accounts.remove(&key);
+                }
+            }
             Event::RealNameChanged { realname } => {
                 let line = self
                     .i18n
@@ -2951,7 +3315,11 @@ impl ChatWindow {
                 self.state.append_server_message(network, line);
             }
             Event::Whois(info) => {
-                let info = *info;
+                let mut info = *info;
+                // Live tracking fills what WHOIS did not report.
+                if let Some(session) = self.sessions.get(&network) {
+                    complete_whois(&mut info, &session.user_accounts);
+                }
                 let key = (network, info.nickname.to_lowercase());
                 let requested = self
                     .sessions
@@ -2968,10 +3336,12 @@ impl ChatWindow {
                 }
             }
             Event::OutgoingAccepted {
+                local_id,
                 channel,
                 text,
                 notice,
             } => {
+                let before = self.state.latest_sequence();
                 if valid_channel(&channel) {
                     let nickname = self
                         .sessions
@@ -2989,6 +3359,53 @@ impl ChatWindow {
                             .format("event_message_queued", &[("channel", &channel)]),
                     );
                 }
+                // Confirmed sending: find the line just added again when the
+                // server's echo arrives.
+                if let Some(local_id) = local_id
+                    && self.state.latest_sequence() > before
+                {
+                    let id = if valid_channel(&channel) {
+                        self.state.channel_id(network, &channel)
+                    } else {
+                        let key = cayenchat_irc_core::text::nickname_key(&channel);
+                        self.state.private_id(network, &key)
+                    };
+                    if let (Some(id), Some(session)) = (id, self.sessions.get_mut(&network))
+                        && session.pending_sends.len() < 64
+                    {
+                        session
+                            .pending_sends
+                            .insert(local_id, (id, self.state.latest_sequence(), notice));
+                    }
+                }
+            }
+            Event::OutgoingConfirmed {
+                local_id,
+                text,
+                msgid,
+                server_time,
+            } => {
+                let pending = self
+                    .sessions
+                    .get_mut(&network)
+                    .and_then(|session| session.pending_sends.remove(&local_id));
+                if let Some((id, sequence, notice)) = pending {
+                    let meta = irc_message_meta(server_time, msgid.as_deref(), None, false);
+                    self.state.confirm_message(id, sequence, text, notice, meta);
+                }
+            }
+            Event::OutgoingFailed { local_id, reason } => {
+                let pending = self
+                    .sessions
+                    .get_mut(&network)
+                    .and_then(|session| session.pending_sends.remove(&local_id));
+                if let Some((id, sequence, _)) = pending {
+                    self.state.fail_message(id, sequence);
+                }
+                let line = self
+                    .i18n
+                    .format("event_message_failed", &[("reason", &reason)]);
+                self.state.append_server_message(network, line);
             }
             Event::NicknameRejected { nickname } => {
                 self.state.append_server_message(
@@ -2998,6 +3415,18 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
+                // What the server never confirmed is shown as not delivered.
+                let unconfirmed: Vec<_> = self
+                    .sessions
+                    .get_mut(&network)
+                    .map(|session| session.pending_sends.drain().collect())
+                    .unwrap_or_default();
+                for (_, (id, sequence, _)) in unconfirmed {
+                    self.state.fail_message(id, sequence);
+                }
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.user_accounts.clear();
+                }
                 self.state.end_avatars(network);
                 self.update_own_avatar(network, OwnAvatar::connection_ended);
                 self.record_disconnect(network, reason);
@@ -3092,6 +3521,7 @@ impl ChatWindow {
         };
         self.feedback = match result {
             Ok(()) => {
+                self.input_history.record(&text);
                 input.update(cx, |input, cx| input.clear_after_send(cx));
                 None
             }
@@ -3099,6 +3529,43 @@ impl ChatWindow {
         };
         cx.notify();
         window.refresh();
+    }
+
+    /// Replaces the draft with an older (`older`) or newer sent draft.
+    fn recall_history(&mut self, older: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self.state.selection();
+        let input = self.inputs[&selection].clone();
+        if input.read(cx).is_composing() || !input.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        // Each conversation has its own input; browsing never crosses them.
+        let scope = match selection {
+            Selection::Channel(id) => u64::from(id.0),
+            Selection::Server(id) => (1 << 32) + u64::from(id.0),
+            Selection::None => u64::MAX,
+        };
+        let current = input.read(cx).text().to_owned();
+        let recalled = if older {
+            self.input_history.previous(scope, &current)
+        } else {
+            self.input_history.next(scope, &current)
+        };
+        if let Some(text) = recalled {
+            input.update(cx, |input, cx| input.set_text(&text, cx));
+        }
+    }
+
+    fn history_previous(
+        &mut self,
+        _: &HistoryPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.recall_history(true, window, cx);
+    }
+
+    fn history_next(&mut self, _: &HistoryNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.recall_history(false, window, cx);
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
@@ -3223,9 +3690,6 @@ impl SettingsWindow {
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
-        let mut fonts = window.text_system().all_font_names();
-        fonts.sort_unstable();
-        fonts.dedup();
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
@@ -3253,13 +3717,19 @@ impl SettingsWindow {
         }));
         let saved = settings.values.clone();
         let mut this = Self {
-            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
+            menu_bar: {
+                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
+                bar.set_always(!saved.menu_bar_auto_hide);
+                bar
+            },
             owner,
             settings,
             feedback: None,
             tab: SettingsTab::Connection,
             font_picker: None,
-            fonts,
+            color_picker: None,
+            shortcut_recording: None,
+            fonts: Vec::new(),
             i18n,
             system_store: None,
             upload_token,
@@ -3449,8 +3919,12 @@ impl SettingsWindow {
         let appearance_changed =
             previous.appearance != saved.appearance || previous.theme != saved.theme;
         let language_changed = previous.language != saved.language;
+        let layout_changed = previous.restore_window_layout != saved.restore_window_layout;
+        let restore_layout = saved.restore_window_layout;
         let shortcuts = ShortcutPrefs::from(&saved);
         let shortcuts_changed = ShortcutPrefs::from(&previous) != shortcuts;
+        let menu_bar_changed = previous.menu_bar_auto_hide != saved.menu_bar_auto_hide;
+        let menu_bar_always = !saved.menu_bar_auto_hide;
         let provider = saved.image_upload.provider.clone();
         let rules = notification_rules(&saved.notifications);
         let _ = self.owner.update(cx, |owner, window, cx| {
@@ -3458,6 +3932,16 @@ impl SettingsWindow {
             owner.notification_rules = rules;
             if shortcuts_changed {
                 apply_shortcuts(shortcuts, cx);
+            }
+            if menu_bar_changed {
+                owner.menu_bar.set_always(menu_bar_always);
+                cx.notify();
+            }
+            if layout_changed {
+                owner.restore_layout = restore_layout;
+                // Turning it on remembers where the window is right away.
+                owner.note_window_bounds(window);
+                owner.save_layout_now();
             }
             if appearance_changed {
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
@@ -3546,7 +4030,7 @@ impl SettingsWindow {
         }
         if store.kind() == CredentialBackendKind::System {
             // Secure storage needs no plaintext warning, but it must work.
-            match cayenchat_storage::credentials::SystemBackend::probe() {
+            match secrets::system_probe(cx)() {
                 Ok(()) => {
                     if let Some(profile) = self.settings.values.selected_profile_mut() {
                         profile.remember_passwords = true;
@@ -3745,27 +4229,52 @@ impl SettingsWindow {
         let server_fields = profile
             .as_ref()
             .map(|profile| self.render_server_fields(profile, cx));
-        let mut language_selector = div().flex().gap_1();
-        for (index, language) in [Language::System, Language::Japanese, Language::English]
-            .into_iter()
-            .enumerate()
-        {
-            language_selector = language_selector.child(
-                div()
-                    .id(("language-option", index))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .when(self.settings.values.language == language, |d| {
-                        d.bg(theme.selected)
-                    })
-                    .child(self.i18n.preference_label(language))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_language(language, window, cx)
-                    })),
-            );
+        let mut language_selector = div().flex().flex_col().child(
+            div()
+                .id("language-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!(
+                    "{}  ▾",
+                    self.i18n.preference_label(self.settings.values.language)
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.language_list_open = !this.settings.language_list_open;
+                    this.settings.server_list_open = false;
+                    this.settings.encoding_list_open = false;
+                    cx.notify();
+                })),
+        );
+        if self.settings.language_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            for (index, language) in [Language::System, Language::Japanese, Language::English]
+                .into_iter()
+                .enumerate()
+            {
+                menu = menu.child(
+                    div()
+                        .id(("language-option", index))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .when(self.settings.values.language == language, |d| {
+                            d.bg(theme.selected)
+                        })
+                        .child(self.i18n.preference_label(language))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.settings.language_list_open = false;
+                            this.select_language(language, window, cx)
+                        })),
+                );
+            }
+            language_selector = language_selector.child(menu);
         }
         let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
@@ -3788,6 +4297,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.server_list_open = !this.settings.server_list_open;
                     this.settings.encoding_list_open = false;
+                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -3984,6 +4494,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.encoding_list_open = !this.settings.encoding_list_open;
                     this.settings.server_list_open = false;
+                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -4267,6 +4778,189 @@ impl SettingsWindow {
         }
     }
 
+    /// One `#RRGGBB` field with a swatch that opens the color picker for it.
+    fn color_input(&self, input: &Entity<TextInput>, cx: &mut Context<Self>) -> Div {
+        let theme = theme::current(cx);
+        let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
+        let open = self
+            .color_picker
+            .as_ref()
+            .is_some_and(|open| open.field == *input);
+        let target = input.clone();
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child(input.clone()))
+            .child(
+                div()
+                    .id(("color-swatch", input.entity_id().as_u64() as usize))
+                    .w(px(24.))
+                    .h(px(24.))
+                    .flex_shrink_0()
+                    .border_1()
+                    .border_color(if open { theme.text } else { theme.border })
+                    .bg(rgb(swatch))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_color_picker(&target, cx);
+                    })),
+            )
+    }
+
+    /// A color setting with its light-theme and dark-theme values side by
+    /// side; the picker for either opens below the row.
+    fn color_pair(
+        &self,
+        label: &str,
+        light: &Entity<TextInput>,
+        dark: &Entity<TextInput>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let picker_here = self
+            .color_picker
+            .as_ref()
+            .is_some_and(|open| open.field == *light || open.field == *dark);
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
+                    .child(self.color_input(light, cx))
+                    .child(self.color_input(dark, cx)),
+            )
+            .when(picker_here, |d| d.child(self.render_color_panel(cx)))
+    }
+
+    /// Opens the color picker for `field`, or closes it when it is open for
+    /// that field already.
+    fn toggle_color_picker(&mut self, field: &Entity<TextInput>, cx: &mut Context<Self>) {
+        if self
+            .color_picker
+            .as_ref()
+            .is_some_and(|open| open.field == *field)
+        {
+            self.color_picker = None;
+            cx.notify();
+            return;
+        }
+        let initial = color_value(field.read(cx).text()).unwrap_or(0xFFFFFF);
+        // The row's own field shows the color as text, so the picker's is
+        // not drawn a second time.
+        let picker = cx.new(|cx| color_picker::ColorPicker::new(initial, cx).without_hex_field());
+        // What is picked goes into the field; what is typed in the field
+        // moves the picker.
+        let into_field = cx.subscribe(
+            &picker,
+            |this, _, event: &color_picker::ColorChanged, cx| {
+                if let Some(open) = &this.color_picker {
+                    let text = color_picker::format_hex(event.0);
+                    open.field.update(cx, |field, cx| field.set_text(&text, cx));
+                }
+            },
+        );
+        let into_picker = cx.observe(field, |this, field, cx| {
+            if let Some(open) = &this.color_picker
+                && let Some(color) = color_picker::parse_hex(field.read(cx).text())
+                && open.field == field
+                && open.picker.read(cx).color() != color
+            {
+                open.picker
+                    .update(cx, |picker, cx| picker.set_color(color, cx));
+            }
+        });
+        self.color_picker = Some(OpenColorPicker {
+            field: field.clone(),
+            picker,
+            _subscriptions: vec![into_field, into_picker],
+        });
+        cx.notify();
+    }
+
+    /// Puts a palette color into the open field and picker.
+    fn apply_palette_color(&mut self, color: &str, cx: &mut Context<Self>) {
+        let (Some(open), Some(rgb)) = (&self.color_picker, color_value(color)) else {
+            return;
+        };
+        open.picker
+            .update(cx, |picker, cx| picker.set_color(rgb, cx));
+        open.field.update(cx, |field, cx| field.set_text(color, cx));
+    }
+
+    /// The picker and the saved palette, under the row being edited.
+    fn render_color_panel(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let Some(open) = &self.color_picker else {
+            return div();
+        };
+        let current = color_picker::format_hex(open.picker.read(cx).color());
+        let saved = &self.settings.values.appearance.saved_colors;
+        let can_save =
+            saved.len() < cayenchat_storage::MAX_SAVED_COLORS && !saved.contains(&current);
+        let mut palette = div().flex().flex_wrap().gap_1().w(px(220.));
+        for (index, color) in saved.iter().enumerate() {
+            let Some(rgb) = color_value(color) else {
+                continue;
+            };
+            let (apply, remove) = (color.clone(), color.clone());
+            let hint: SharedString = self.i18n.text("palette_remove_hint").into();
+            palette = palette.child(
+                div()
+                    .id(("palette-color", index))
+                    .size(px(22.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(gpui::rgb(rgb))
+                    .cursor_pointer()
+                    .tooltip(move |_, cx| {
+                        let text = hint.clone();
+                        cx.new(|_| ircv3_settings::TextTooltip(text)).into()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.apply_palette_color(&apply, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, _, _, cx| {
+                            this.settings.values.appearance.remove_saved_color(&remove);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+        div()
+            .ml(px(158.))
+            .flex()
+            .gap_4()
+            .child(open.picker.clone())
+            .child(
+                div().flex().flex_col().gap_2().child(palette).child(
+                    settings_theme::button("palette-save", false, cx)
+                        .when(!can_save, |button| button.opacity(0.5).cursor_default())
+                        .child(self.i18n.text("palette_save"))
+                        .when(can_save, |button| {
+                            button.on_click(cx.listener(move |this, _, _, cx| {
+                                let color = this.color_picker.as_ref().map(|open| {
+                                    color_picker::format_hex(open.picker.read(cx).color())
+                                });
+                                if let Some(color) = color {
+                                    let _ = this.settings.values.appearance.save_color(&color);
+                                }
+                                cx.notify();
+                            }))
+                        }),
+                ),
+            )
+    }
+
     fn font_field(&self, target: FontTarget, label: &str, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let input = self.font_input(target);
@@ -4286,12 +4980,22 @@ impl SettingsWindow {
                         .border_color(theme.border)
                         .cursor_pointer()
                         .child(self.i18n.text("choose_font"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.font_picker = if this.font_picker == Some(target) {
                                 None
                             } else {
                                 Some(target)
                             };
+                            // Listing the system's fonts takes a while (many
+                            // seconds in a debug build), so it waits until a
+                            // list is wanted instead of slowing every opening
+                            // of the settings window.
+                            if this.font_picker.is_some() && this.fonts.is_empty() {
+                                let mut fonts = window.text_system().all_font_names();
+                                fonts.sort_unstable();
+                                fonts.dedup();
+                                this.fonts = fonts;
+                            }
                             cx.notify();
                         })),
                 ),
@@ -4395,43 +5099,43 @@ impl SettingsWindow {
                     .child(div().flex_1().child(self.i18n.text("colors_light")))
                     .child(div().flex_1().child(self.i18n.text("colors_dark"))),
             )
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("member_list_background"),
                 &self.settings.member_list_background,
                 &self.settings.dark_member_list_background,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("channel_log"),
                 &self.settings.main_log_background,
                 &self.settings.dark_main_log_background,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("channel_log_alternate"),
                 &self.settings.main_log_alternate,
                 &self.settings.dark_main_log_alternate,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("channel_event_color"),
                 &self.settings.channel_event_color,
                 &self.settings.dark_channel_event_color,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("highlight_color"),
                 &self.settings.highlight_color,
                 &self.settings.dark_highlight_color,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("combined_log"),
                 &self.settings.sub_log_background,
                 &self.settings.dark_sub_log_background,
                 cx,
             ))
-            .child(color_pair(
+            .child(self.color_pair(
                 &self.i18n.text("combined_log_alternate"),
                 &self.settings.sub_log_alternate,
                 &self.settings.dark_sub_log_alternate,
@@ -4505,6 +5209,44 @@ impl SettingsWindow {
                     .ml(px(158.))
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("user_avatars_hint")),
+            )
+            .child(
+                div()
+                    .id("wrap-long-nicknames")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.wrap_long_nicknames,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("wrap_long_nicknames"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.wrap_long_nicknames;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("restore-window-layout")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.restore_window_layout,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("restore_window_layout"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.restore_window_layout;
+                        *value = !*value;
+                        cx.notify();
+                    })),
             )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
@@ -4595,6 +5337,28 @@ impl SettingsWindow {
                 ))
                 .child(hint("text_key_theme_hint"))
             })
+            .child(
+                div()
+                    .id("menu-bar-auto-hide")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.menu_bar_auto_hide,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("menu_bar_auto_hide"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let hide = !this.settings.values.menu_bar_auto_hide;
+                        this.settings.values.menu_bar_auto_hide = hide;
+                        // This window's own bar follows at once, before the
+                        // setting is saved.
+                        this.menu_bar.set_always(!hide);
+                        cx.notify();
+                    })),
+            )
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -4748,6 +5512,10 @@ impl SettingsWindow {
         if self.tab != tab {
             self.feedback = None;
             self.avatar_feedback = None;
+            // A key being recorded does not wait on another tab.
+            self.shortcut_recording = None;
+            // A picker open under a color row does not wait for a return.
+            self.color_picker = None;
         }
         self.tab = tab;
     }
@@ -4766,6 +5534,7 @@ impl SettingsWindow {
             .when(!cfg!(target_os = "macos"), |d| {
                 d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
             })
+            .child(self.settings_tab(SettingsTab::Shortcuts, "shortcuts-tab", "shortcuts_tab", cx))
             .child(self.settings_tab(
                 SettingsTab::Notifications,
                 "notifications-tab",
@@ -4795,6 +5564,7 @@ impl SettingsWindow {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
+            SettingsTab::Shortcuts => self.render_shortcut_settings(cx).into_any_element(),
             SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),
@@ -4855,38 +5625,6 @@ fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
         .gap_2()
         .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
         .child(div().flex_1().min_w_0().child(input))
-}
-
-fn color_input(input: &Entity<TextInput>, cx: &App) -> Div {
-    let theme = theme::current(cx);
-    let swatch = color_value(input.read(cx).text()).unwrap_or(0xffffff);
-    div()
-        .flex()
-        .flex_1()
-        .min_w_0()
-        .items_center()
-        .gap_2()
-        .child(div().flex_1().min_w_0().child(input.clone()))
-        .child(
-            div()
-                .w(px(24.))
-                .h(px(24.))
-                .flex_shrink_0()
-                .border_1()
-                .border_color(theme.border)
-                .bg(rgb(swatch)),
-        )
-}
-
-/// A color setting with its light-theme and dark-theme values side by side.
-fn color_pair(label: &str, light: &Entity<TextInput>, dark: &Entity<TextInput>, cx: &App) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
-        .child(color_input(light, cx))
-        .child(color_input(dark, cx))
 }
 
 fn default_time_font() -> &'static str {
@@ -5391,6 +6129,7 @@ impl ChatWindow {
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
                     if event.click_count >= 2 {
                         this.log_split = DEFAULT_LOG_SPLIT;
+                        this.schedule_layout_save(cx);
                     } else {
                         this.log_split_dragging = true;
                     }
@@ -5492,15 +6231,73 @@ impl ChatWindow {
             .child(main_pane)
             .child(editor)
             .child(sub_pane);
+        // The right column keeps its width inside what the window can spare,
+        // and the member list its height inside the column.
+        let right_max =
+            (f32::from(window.viewport_size().width) - LEFT_MIN_WIDTH).max(RIGHT_WIDTH_MIN);
+        let right_width = self.right_width.clamp(RIGHT_WIDTH_MIN, right_max);
+        let column_height = self
+            .right_column_bounds
+            .get()
+            .map(|bounds| f32::from(bounds.size.height));
+        let members_max = column_height.map_or(RIGHT_PANE_MIN_HEIGHT, |height| {
+            (height - RIGHT_PANE_MIN_HEIGHT).max(RIGHT_PANE_MIN_HEIGHT)
+        });
+        let members_height = self
+            .members_height
+            .map(|height| height.clamp(RIGHT_PANE_MIN_HEIGHT, members_max));
+        // Before the first drag the list takes half the column.
+        let members_size = members_height
+            .or(column_height.map(|height| height / 2.))
+            .unwrap_or(RIGHT_PANE_MIN_HEIGHT);
+        let right_split = splitter::splitter(
+            "right-split",
+            splitter::Axis::Horizontal,
+            splitter::Anchor::After,
+            right_width,
+            RIGHT_WIDTH_MIN..=right_max,
+            border,
+            cx,
+            |this: &mut Self, width, _, cx| {
+                this.right_width = width;
+                this.schedule_layout_save(cx);
+            },
+        );
+        let members_split = splitter::splitter(
+            "members-split",
+            splitter::Axis::Vertical,
+            splitter::Anchor::Before,
+            members_size,
+            RIGHT_PANE_MIN_HEIGHT..=members_max,
+            border,
+            cx,
+            |this: &mut Self, height, _, cx| {
+                this.members_height = Some(height);
+                this.schedule_layout_save(cx);
+            },
+        );
+        let right_column_bounds = self.right_column_bounds.clone();
         let right = div()
+            .relative()
             .flex()
             .flex_col()
-            .w(px(240.))
+            .w(px(right_width))
             .flex_shrink_0()
             .h_full()
-            .border_l_1()
-            .border_color(border)
-            .child(members)
+            .child(
+                canvas(
+                    move |bounds, _, _| right_column_bounds.set(Some(bounds)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            // `flex_1` gave the list a zero flex basis, which would win over
+            // a plain height.
+            .child(members.when_some(members_height, |d, height| {
+                d.flex_none().flex_basis(px(height)).h(px(height))
+            }))
+            .child(members_split)
             .child(panes.channels.clone().cached(pane_style().w_full()));
 
         let server_menu = self.server_menu.as_ref().map(|menu| {
@@ -5509,6 +6306,7 @@ impl ChatWindow {
             let session = self.sessions.get(&network);
             let connected = session.is_some_and(|session| session.irc.is_some());
             let can_disconnect = self.can_disconnect(network);
+            let registered = self.registered_connection(network).is_ok();
             // A server not connected in this run offers Connect, not Reconnect.
             let connect_key = if session.is_some_and(ServerSession::used) {
                 "reconnect"
@@ -5555,6 +6353,30 @@ impl ChatWindow {
                                 )
                         })
                         .when(!can_disconnect, |d| d.text_color(theme.text_muted)),
+                )
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .children(
+                    [
+                        (MemberPromptKind::Join, "server_menu_join"),
+                        (MemberPromptKind::Nick, "server_menu_nick"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (kind, key))| {
+                        div()
+                            .id(("server-menu-prompt", index))
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .when(registered, |d| {
+                                d.cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover_strong))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_server_prompt(kind, window, cx)
+                                    }))
+                            })
+                            .when(!registered, |d| d.text_color(theme.text_muted))
+                    }),
                 )
         });
         let channel_menu = self.channel_menu.as_ref().map(|menu| {
@@ -5621,6 +6443,43 @@ impl ChatWindow {
                 .border_color(border)
                 .shadow_md();
             let enabled = self.registered_connection(menu.network).is_ok();
+            if !menu.group.is_empty() {
+                use cayenchat_irc_core::MemberMode;
+                popup = popup
+                    .child(div().px_2().py_1().text_color(theme.text_secondary).child(
+                        self.i18n.format(
+                            "member_group_title",
+                            &[("count", &menu.group.len().to_string())],
+                        ),
+                    ))
+                    .child(div().my_1().border_t_1().border_color(theme.separator));
+                for (index, (mode, key)) in [
+                    (MemberMode::Op, "member_give_op"),
+                    (MemberMode::Deop, "member_deop"),
+                    (MemberMode::Voice, "member_give_voice"),
+                    (MemberMode::Devoice, "member_devoice"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    popup = popup.child(
+                        div()
+                            .id(("member-group-action", index))
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover_strong))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.member_modes(mode, cx)
+                                    }))
+                            })
+                            .when(!enabled, |d| d.text_color(theme.text_muted)),
+                    );
+                }
+                return popup;
+            }
             for (index, (choice, key)) in [
                 (MemberMenuChoice::Whois, "member_whois"),
                 (MemberMenuChoice::PrivateMessage, "member_private_message"),
@@ -5689,6 +6548,8 @@ impl ChatWindow {
                 match prompt.kind {
                     MemberPromptKind::PrivateMessage => "member_message_title",
                     MemberPromptKind::Invite => "member_invite_title",
+                    MemberPromptKind::Join => "channel_join_title",
+                    MemberPromptKind::Nick => "nickname_change_title",
                 },
                 &[("nickname", &prompt.nickname)],
             );
@@ -5698,7 +6559,11 @@ impl ChatWindow {
                     ((viewport.height - px(140.)) / 2.).max(px(0.)),
                 )
             });
-            let submit = self.i18n.text("member_submit");
+            let submit = self.i18n.text(match prompt.kind {
+                MemberPromptKind::Join => "channel_join",
+                MemberPromptKind::Nick => "nickname_change_submit",
+                MemberPromptKind::PrivateMessage | MemberPromptKind::Invite => "member_submit",
+            });
             div()
                 .id("member-prompt")
                 .absolute()
@@ -5777,6 +6642,8 @@ impl ChatWindow {
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::notice))
+            .on_action(cx.listener(Self::history_previous))
+            .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::open_settings))
             .when(self.can_disconnect_selected(), |d| {
                 d.on_action(cx.listener(Self::disconnect_action))
@@ -5786,6 +6653,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::copy_diagnostics))
             .on_action(cx.listener(Self::paste_image))
             .child(left)
+            .child(right_split)
             .child(right)
             .when_some(server_menu, |d, menu| d.child(menu))
             .when_some(member_menu, |d, menu| d.child(menu))
@@ -5999,9 +6867,14 @@ struct LogStyle {
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
+    wrap_nicknames: bool,
     /// Width of the channel name column of the combined log.
     sub_name_width: f32,
 }
+
+/// Width of the main log's nickname column: nicknames of up to 15 typical
+/// characters (the longest some servers allow) fit without shortening.
+const NICK_COLUMN_WIDTH: f32 = 124.;
 
 impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
@@ -6018,6 +6891,7 @@ impl LogStyle {
                 appearance.time_font.clone().into()
             },
             alternate_rows: appearance.alternate_rows,
+            wrap_nicknames: appearance.wrap_long_nicknames,
             sub_name_width: appearance
                 .sub_log_name_width
                 .clamp(*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end())
@@ -6276,8 +7150,8 @@ impl ChatWindow {
             })
             .child(style.time(message.time))
             .when(!message.activity && self.avatars.enabled(), |row| {
-                row.child(
-                    self.avatar_slot(
+                row.child(self.avatar_slot(
+                    self.own_avatar_for(network, &message.sender).or_else(|| {
                         self.state
                             .avatars()
                             .for_message(
@@ -6285,16 +7159,16 @@ impl ChatWindow {
                                 &cayenchat_irc_core::text::nickname_key(&message.sender),
                                 message.sequence,
                             )
-                            .cloned(),
-                        &message.sender,
-                        cx,
-                    ),
-                )
+                            .cloned()
+                    }),
+                    &message.sender,
+                    cx,
+                ))
             })
             .when(!message.activity, |row| {
                 row.child(
                     div()
-                        .w(px(84.))
+                        .w(px(NICK_COLUMN_WIDTH))
                         .flex_shrink_0()
                         .flex()
                         .justify_end()
@@ -6303,9 +7177,9 @@ impl ChatWindow {
                         .child(
                             div()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
+                                .when(!style.wrap_nicknames, |d| {
+                                    d.overflow_hidden().whitespace_nowrap().text_ellipsis()
+                                })
                                 .child(message.sender.clone()),
                         )
                         .child(":"),
@@ -6317,6 +7191,7 @@ impl ChatWindow {
                     .when(preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
+                    .when(message.delivery_failed, |d| d.text_color(theme.warning))
                     .cursor(CursorStyle::IBeam)
                     .child(styled)
                     .on_mouse_down(
@@ -6493,25 +7368,30 @@ impl ChatWindow {
         let end = range.end.min(channel.members.len());
         let start = range.start.min(end);
         let network = channel.network;
+        let conversation = channel.id;
         let avatars_shown = self.avatars.enabled();
         (start..end)
             .map(|index| {
                 let member = channel.members[index].clone();
+                let selected = self.member_selection.contains(conversation, &member);
                 let channel = channel.name.clone();
                 let nickname = member
                     .trim_start_matches(['~', '&', '@', '%', '+'])
                     .to_owned();
                 let avatar = avatars_shown.then(|| {
-                    self.state
-                        .avatars()
-                        .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
-                        .cloned()
+                    self.own_avatar_for(network, &nickname).or_else(|| {
+                        self.state
+                            .avatars()
+                            .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))
+                            .cloned()
+                    })
                 });
                 div()
                     .id(("member", index))
                     .px_2()
                     .py(px(1.))
-                    .hover(|d| d.bg(theme.hover))
+                    .when(selected, |d| d.bg(theme.selected))
+                    .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
                     .when_some(avatar, |row, avatar| {
                         row.flex()
                             .items_center()
@@ -6520,8 +7400,38 @@ impl ChatWindow {
                     })
                     .child(member)
                     .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            let click = if event.modifiers.secondary() {
+                                member_selection::Click::Toggle
+                            } else if event.modifiers.shift {
+                                member_selection::Click::Range
+                            } else {
+                                member_selection::Click::Only
+                            };
+                            this.click_member(index, click);
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            // A menu for a member outside the chosen ones
+                            // acts on that member alone.
+                            if !selected {
+                                this.click_member(index, member_selection::Click::Only);
+                            }
+                            // On one of several chosen members the menu acts
+                            // on all of them.
+                            let group = this
+                                .state
+                                .selected_channel()
+                                .map(|channel| {
+                                    this.member_selection
+                                        .nicknames(channel.id, &channel.members)
+                                })
+                                .filter(|chosen| chosen.len() >= 2)
+                                .unwrap_or_default();
                             let viewport = window.viewport_size();
                             this.server_menu = None;
                             this.channel_menu = None;
@@ -6540,6 +7450,7 @@ impl ChatWindow {
                                 network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
+                                group,
                             });
                             cx.stop_propagation();
                             cx.notify();
@@ -6614,10 +7525,12 @@ fn app_menus(debug_enabled: bool, i18n: &Localizer) -> Vec<Menu> {
 
 /// Saved key preferences, kept so a desktop key-theme change can rebind
 /// without the settings window.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ShortcutPrefs {
     channel_modifier: ChannelNumberModifier,
     text_keys: TextKeyTheme,
+    /// Navigation keys the user changed (action id → key).
+    overrides: shortcuts::Overrides,
 }
 
 impl Global for ShortcutPrefs {}
@@ -6627,6 +7540,7 @@ impl From<&Settings> for ShortcutPrefs {
         Self {
             channel_modifier: settings.channel_number_modifier,
             text_keys: settings.text_key_theme,
+            overrides: settings.keybindings.clone(),
         }
     }
 }
@@ -6634,6 +7548,18 @@ impl From<&Settings> for ShortcutPrefs {
 /// Replaces every key binding, so changed key preferences apply without
 /// restarting.
 fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
+    // Keys the user changed can end up shared with another action or a fixed
+    // shortcut (a hand-edited settings file, or before the shortcuts tab can
+    // warn). Both bindings are kept, as before, and the clash is reported.
+    if !prefs.overrides.is_empty() {
+        let fixed = fixed_bindings(prefs.channel_modifier);
+        for conflict in shortcuts::conflicts(&prefs.overrides, &fixed) {
+            eprintln!(
+                "CayenChat: the shortcut {} is taken by more than one action: {:?}",
+                conflict.key, conflict.owners
+            );
+        }
+    }
     cx.set_global(prefs);
     rebind_shortcuts(cx);
 }
@@ -6641,7 +7567,7 @@ fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
 fn rebind_shortcuts(cx: &mut App) {
     let prefs = cx
         .try_global::<ShortcutPrefs>()
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let emacs = match prefs.text_keys {
         TextKeyTheme::Auto => desktop::current(cx).emacs_keys,
@@ -6650,7 +7576,7 @@ fn rebind_shortcuts(cx: &mut App) {
     };
     cx.clear_key_bindings();
     input::bind_keys(emacs, cx);
-    cx.bind_keys(shortcut_bindings(prefs.channel_modifier));
+    cx.bind_keys(shortcut_bindings(prefs.channel_modifier, &prefs.overrides));
 }
 
 /// Standard Tab / Shift+Tab movement between settings fields (tab stops).
@@ -6660,56 +7586,37 @@ fn field_traversal<E: InteractiveElement>(element: E) -> E {
         .on_action(|_: &FocusPreviousField, window, _| window.focus_prev())
 }
 
+/// Every application shortcut: the fixed ones and the navigation actions with
+/// what the user changed (see `shortcuts`).
+fn shortcut_bindings(
+    channel_modifier: ChannelNumberModifier,
+    overrides: &shortcuts::Overrides,
+) -> Vec<KeyBinding> {
+    let mut bindings = fixed_bindings(channel_modifier);
+    bindings.extend(shortcuts::bindings(overrides));
+    bindings
+}
+
+/// The shortcuts that cannot be changed: sending, completion, settings, the
+/// numbered channels and servers.
 #[cfg_attr(target_os = "macos", allow(unused_variables))]
-fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
+fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
     let mut bindings = vec![
         // Chat-only: settings fields keep the platform's Tab traversal and
         // are never captured by chat commands.
         KeyBinding::new("tab", CompleteNickname, Some("ChatWindow > TextInput")),
         KeyBinding::new("enter", SendMessage, Some("ChatWindow > TextInput")),
         KeyBinding::new("ctrl-enter", Notice, Some("ChatWindow > TextInput")),
+        KeyBinding::new("up", HistoryPrevious, Some("ChatWindow > TextInput")),
+        KeyBinding::new("down", HistoryNext, Some("ChatWindow > TextInput")),
         KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
         KeyBinding::new("shift-tab", FocusPreviousField, Some("SettingsWindow")),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-shift-d", ToggleDebug, None),
         KeyBinding::new("secondary-shift-l", CopyDiagnostics, None),
         KeyBinding::new("secondary-c", CopyLogSelection, Some("MainLog")),
-        navigation_binding("ctrl-tab", Command::NextUnreadChannel),
-        navigation_binding("ctrl-shift-tab", Command::PreviousUnreadChannel),
         KeyBinding::new("secondary-q", Quit, None),
     ];
-
-    #[cfg(target_os = "macos")]
-    bindings.extend([
-        navigation_binding("alt-space", Command::NextUnreadChannel),
-        navigation_binding("alt-shift-space", Command::PreviousUnreadChannel),
-        navigation_binding("alt-tab", Command::PreviousSelectedChannel),
-        navigation_binding("cmd-up", Command::PreviousActiveChannel),
-        navigation_binding("cmd-down", Command::NextActiveChannel),
-        navigation_binding("cmd-alt-up", Command::PreviousActiveChannel),
-        navigation_binding("cmd-alt-down", Command::NextActiveChannel),
-        navigation_binding("cmd-{", Command::PreviousActiveChannel),
-        navigation_binding("cmd-}", Command::NextActiveChannel),
-        navigation_binding("ctrl-up", Command::PreviousChannel),
-        navigation_binding("ctrl-down", Command::NextChannel),
-        navigation_binding("cmd-alt-left", Command::PreviousActiveServer),
-        navigation_binding("cmd-alt-right", Command::NextActiveServer),
-        navigation_binding("ctrl-left", Command::PreviousServer),
-        navigation_binding("ctrl-right", Command::NextServer),
-    ]);
-
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    bindings.extend([
-        navigation_binding("alt-left", Command::PreviousSelectedChannel),
-        navigation_binding("ctrl-pageup", Command::PreviousActiveChannel),
-        navigation_binding("ctrl-pagedown", Command::NextActiveChannel),
-        navigation_binding("alt-up", Command::PreviousChannel),
-        navigation_binding("alt-down", Command::NextChannel),
-        navigation_binding("ctrl-alt-pageup", Command::PreviousActiveServer),
-        navigation_binding("ctrl-alt-pagedown", Command::NextActiveServer),
-        navigation_binding("alt-pageup", Command::PreviousServer),
-        navigation_binding("alt-pagedown", Command::NextServer),
-    ]);
 
     for index in 0..10 {
         let digit = (index + 1) % 10;
@@ -6815,12 +7722,35 @@ fn main() {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
+        // Where the window was left, when that is remembered and a connected
+        // display still shows it; otherwise the usual place.
+        let min_size = size(px(720.), px(420.));
+        let layout = if saved.restore_window_layout {
+            cayenchat_storage::layout::load_layout()
+        } else {
+            Default::default()
+        };
+        let displays = cx.displays();
+        let display_bounds: Vec<_> = displays.iter().map(|display| display.bounds()).collect();
+        let restored = window_layout::restored_bounds(&layout, &display_bounds, min_size);
+        // Windows opens a window on the primary display unless told which
+        // one, and replaces bounds off that display with a centered default
+        // (#125). Its displays share one desktop coordinate space, so the
+        // display chosen above is the one to name. macOS and X11 report every
+        // display at the origin, so there it would be a guess.
+        let display_id = restored
+            .as_ref()
+            .filter(|_| cfg!(target_os = "windows"))
+            .map(|restored| displays[restored.display].id());
+        let window_bounds = restored.map(|restored| restored.bounds).unwrap_or_else(|| {
+            WindowBounds::Windowed(Bounds::centered(None, size(px(960.), px(600.)), cx))
+        });
         let chat_window = cx
             .open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(720.), px(420.))),
+                    window_bounds: Some(window_bounds),
+                    display_id,
+                    window_min_size: Some(min_size),
                     titlebar: Some(TitlebarOptions {
                         title: Some("CayenChat".into()),
                         ..Default::default()
@@ -6836,6 +7766,8 @@ fn main() {
         // connect.
         let settings_for = chat_window
             .update(cx, |chat, window, cx| {
+                chat.layout_file = cayenchat_storage::layout::layout_path().ok();
+                chat.apply_layout(&layout);
                 cx.set_menus(app_menus(false, &chat.i18n));
                 let startup = std::mem::take(&mut chat.startup_connections);
                 let mut settings_for = startup.is_empty().then(|| chat.selected_profile_id());
@@ -6923,6 +7855,8 @@ mod combined_log_tests {
                 sequence,
                 timestamp: None,
                 native_id: None,
+                account: None,
+                delivery_failed: false,
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
@@ -6985,6 +7919,13 @@ mod log_tests {
                 },
             ),
             "kaeru has quit (bye)"
+        );
+        assert_eq!(
+            channel_activity_text(
+                "kaeru",
+                ChannelActivityKind::NickChanged { to: "tepeu".into() },
+            ),
+            "kaeru is now known as tepeu"
         );
         assert_eq!(
             channel_activity_text(
@@ -7102,6 +8043,17 @@ mod startup_tests {
                 ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
             ]
         );
+    }
+
+    #[test]
+    fn irc_metadata_keeps_a_usable_account_only() {
+        let meta = |account| super::irc_message_meta(None, None, account, false);
+        assert_eq!(meta(Some("alice")).account.unwrap().as_str(), "alice");
+        assert!(meta(Some("*")).account.is_none());
+        assert!(meta(Some("")).account.is_none());
+        assert!(meta(None).account.is_none());
+        // The same account text on two networks is just two messages.
+        assert_eq!(meta(Some("alice")).account, meta(Some("alice")).account);
     }
 
     #[test]
@@ -7278,6 +8230,8 @@ mod server_settings_tests {
             batch: true,
             peer_avatars: true,
             chathistory: true,
+            confirmed_sending: false,
+            accounts: false,
         };
         settings
     }
@@ -7582,10 +8536,580 @@ mod pane_tests {
     use gpui::{Focusable, TestAppContext};
 
     #[gpui::test]
+    fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        // A menu bar above the panes would move the rows clicked below.
+        let mut settings = crate::settings_with_channels("#a");
+        settings.menu_bar_auto_hide = true;
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let members = ["@op", "alice", "bob", "carol"].map(String::from).to_vec();
+            chat.state.set_members(NetworkId(1), "#a", members);
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // The member list is the top of the 240 px column at the right edge;
+        // its rows are 22 px tall (a 20 px line and 1 px padding each side).
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let x = f32::from(viewport.width) - 240. + 30.;
+        let row = |index: usize| point(px(x), px(22. * index as f32 + 11.));
+        let none = Modifiers::none();
+        let chosen = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .nicknames(channel.id, &channel.members)
+            })
+        };
+        let click = |cx: &mut gpui::VisualTestContext, at, modifiers| {
+            cx.simulate_mouse_move(at, None, modifiers);
+            cx.simulate_mouse_down(at, MouseButton::Left, modifiers);
+            cx.simulate_mouse_up(at, MouseButton::Left, modifiers);
+            cx.run_until_parked();
+        };
+
+        click(cx, row(1), none);
+        assert_eq!(chosen(&chat, cx), ["alice"]);
+        click(cx, row(3), Modifiers::secondary_key());
+        assert_eq!(chosen(&chat, cx), ["alice", "carol"]);
+        // The range starts at the member clicked last (carol).
+        click(cx, row(0), Modifiers::shift());
+        assert_eq!(chosen(&chat, cx), ["op", "alice", "bob", "carol"]);
+        click(cx, row(2), none);
+        assert_eq!(chosen(&chat, cx), ["bob"]);
+        click(cx, row(0), Modifiers::shift());
+        assert_eq!(chosen(&chat, cx), ["op", "alice", "bob"]);
+
+        // A menu on a chosen member keeps the group; on another member it
+        // acts on that member alone.
+        click(cx, row(1), none);
+        click(cx, row(3), Modifiers::secondary_key());
+        let right_click = |cx: &mut gpui::VisualTestContext, at| {
+            cx.simulate_mouse_move(at, None, none);
+            cx.simulate_mouse_down(at, MouseButton::Right, none);
+            cx.run_until_parked();
+        };
+        right_click(cx, row(3));
+        assert_eq!(chosen(&chat, cx), ["alice", "carol"]);
+        assert!(chat.read_with(cx, |chat, _| chat.member_menu.is_some()));
+        // On one of several chosen members the menu acts on all of them.
+        let group = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                chat.member_menu.as_ref().map(|menu| menu.group.clone())
+            })
+        };
+        assert_eq!(
+            group(&chat, cx),
+            Some(vec!["alice".to_owned(), "carol".to_owned()])
+        );
+        right_click(cx, row(2));
+        assert_eq!(chosen(&chat, cx), ["bob"]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat
+                .member_menu
+                .as_ref()
+                .map(|menu| menu.nickname.clone())),
+            Some("bob".to_owned())
+        );
+        // On a member who was not chosen it is the menu for that one member.
+        assert_eq!(group(&chat, cx), Some(Vec::new()));
+        // A single chosen member is not a group either.
+        click(cx, row(1), none);
+        right_click(cx, row(1));
+        assert_eq!(group(&chat, cx), Some(Vec::new()));
+
+        // Choosing a mode closes the menu; without a connection it says so
+        // and sends nothing.
+        click(cx, row(1), none);
+        click(cx, row(3), Modifiers::secondary_key());
+        right_click(cx, row(3));
+        assert_eq!(group(&chat, cx).map(|group| group.len()), Some(2));
+        chat.update(cx, |chat, cx| {
+            chat.member_modes(cayenchat_irc_core::MemberMode::Op, cx);
+            assert!(chat.member_menu.is_none());
+            assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
+        });
+    }
+
+    #[gpui::test]
+    fn a_member_who_leaves_stays_unchosen_when_the_nickname_is_taken_again(
+        cx: &mut TestAppContext,
+    ) {
+        use cayenchat_irc_core::Event;
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.menu_bar_auto_hide = true;
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let names = |users: &[&str]| Event::Names {
+            channel: "#a".into(),
+            users: users.iter().map(|user| (*user).to_owned()).collect(),
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    names(&["@op", "alice", "bob"]),
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let chosen = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .nicknames(channel.id, &channel.members)
+            })
+        };
+        let width = f32::from(cx.update(|window, _| window.viewport_size()).width);
+        // Rows are 22 px tall; the second row is alice.
+        let alice = point(px(width - 240. + 30.), px(22. + 11.));
+        let none = Modifiers::none();
+        cx.simulate_mouse_move(alice, None, none);
+        cx.simulate_mouse_down(alice, MouseButton::Left, none);
+        cx.simulate_mouse_up(alice, MouseButton::Left, none);
+        cx.run_until_parked();
+        assert_eq!(chosen(&chat, cx), ["alice"]);
+
+        // She quits, and someone else uses the nickname: not chosen.
+        for users in [&["@op", "bob"][..], &["@op", "alice", "bob"][..]] {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(NetworkId(1), vec![names(users)], false, cx)
+            });
+            cx.run_until_parked();
+        }
+        assert!(chosen(&chat, cx).is_empty());
+
+        // The same while a group menu is open: it keeps the nicknames it was
+        // opened with, but what it acts on is who is still chosen when an item
+        // is clicked.
+        let bob = point(px(width - 240. + 30.), px(22. * 2. + 11.));
+        cx.simulate_mouse_move(alice, None, none);
+        cx.simulate_mouse_down(alice, MouseButton::Left, none);
+        cx.simulate_mouse_up(alice, MouseButton::Left, none);
+        let secondary = Modifiers::secondary_key();
+        cx.simulate_mouse_move(bob, None, secondary);
+        cx.simulate_mouse_down(bob, MouseButton::Left, secondary);
+        cx.simulate_mouse_up(bob, MouseButton::Left, secondary);
+        cx.simulate_mouse_move(bob, None, none);
+        cx.simulate_mouse_down(bob, MouseButton::Right, none);
+        cx.run_until_parked();
+        let (menu_group, now) = chat.read_with(cx, |chat, _| {
+            let menu = chat.member_menu.as_ref().expect("group menu open");
+            (menu.group.clone(), chat.menu_group_now(menu))
+        });
+        assert_eq!(menu_group, ["alice", "bob"]);
+        assert_eq!(now, ["alice", "bob"]);
+        for users in [&["@op", "bob"][..], &["@op", "alice", "bob"][..]] {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(NetworkId(1), vec![names(users)], false, cx)
+            });
+            cx.run_until_parked();
+        }
+        let (menu_group, now) = chat.read_with(cx, |chat, _| {
+            let menu = chat.member_menu.as_ref().expect("the menu stays open");
+            (menu.group.clone(), chat.menu_group_now(menu))
+        });
+        assert_eq!(menu_group, ["alice", "bob"], "opened with both");
+        assert_eq!(now, ["bob"], "the newcomer named alice is not acted on");
+    }
+
+    #[gpui::test]
+    fn the_color_picker_and_palette_edit_the_color_fields(cx: &mut TestAppContext) {
+        use crate::color_picker::{ColorChanged, format_hex};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx
+            .add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            let mut form = super::SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = super::SettingsTab::Appearance;
+            form
+        });
+        let field = form.read_with(cx, |form, _| form.settings.main_log_background.clone());
+        let text =
+            |cx: &mut gpui::VisualTestContext| field.read_with(cx, |f, _| f.text().to_owned());
+        let before = text(cx);
+
+        // Opening the picker for a field starts from that field's color;
+        // opening it again closes it.
+        form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
+        cx.run_until_parked();
+        let picker = form
+            .read_with(cx, |form, _| {
+                form.color_picker.as_ref().map(|open| open.picker.clone())
+            })
+            .expect("open");
+        assert_eq!(
+            format_hex(picker.read_with(cx, |p, _| p.color())),
+            before.to_uppercase()
+        );
+
+        // Picking writes the color into the field.
+        picker.update(cx, |_, cx| cx.emit(ColorChanged(0xAA0000)));
+        cx.run_until_parked();
+        assert_eq!(text(cx), "#AA0000");
+        // Typing in the field moves the picker.
+        field.update(cx, |field, cx| field.set_text("#112233", cx));
+        cx.run_until_parked();
+        assert_eq!(picker.read_with(cx, |p, _| p.color()), 0x112233);
+
+        // The palette keeps colors, applies one, and forgets one.
+        let palette = |form: &gpui::Entity<super::SettingsWindow>,
+                       cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                form.settings.values.appearance.saved_colors.clone()
+            })
+        };
+        form.update(cx, |form, cx| {
+            let _ = form.settings.values.appearance.save_color("#112233");
+            let _ = form.settings.values.appearance.save_color("#FFEE00");
+            form.apply_palette_color("#FFEE00", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(palette(&form, cx), ["#112233", "#FFEE00"]);
+        assert_eq!(text(cx), "#FFEE00");
+        assert_eq!(picker.read_with(cx, |p, _| p.color()), 0xFFEE00);
+        form.update(cx, |form, _| {
+            form.settings
+                .values
+                .appearance
+                .remove_saved_color("#112233")
+        });
+        assert_eq!(palette(&form, cx), ["#FFEE00"]);
+
+        // The field is what gets saved, palette included.
+        let saved = form
+            .update(cx, |form, cx| form.settings.snapshot(cx))
+            .unwrap();
+        assert_eq!(saved.appearance.main_log_background, "#FFEE00");
+        assert_eq!(saved.appearance.saved_colors, ["#FFEE00"]);
+
+        // The same swatch closes it; another field's swatch moves it.
+        let other = form.read_with(cx, |form, _| form.settings.dark_main_log_background.clone());
+        form.update(cx, |form, cx| form.toggle_color_picker(&other, cx));
+        assert!(
+            form.read_with(cx, |form, _| form.color_picker.as_ref().unwrap().field
+                == other)
+        );
+        form.update(cx, |form, cx| form.toggle_color_picker(&other, cx));
+        assert!(form.read_with(cx, |form, _| form.color_picker.is_none()));
+
+        // Leaving the tab closes an open picker; coming back finds it closed.
+        form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
+        assert!(form.read_with(cx, |form, _| form.color_picker.is_some()));
+        form.update(cx, |form, _| form.show_tab(super::SettingsTab::Connection));
+        assert!(form.read_with(cx, |form, _| form.color_picker.is_none()));
+        // The picker opened here has no field of its own (the row has one),
+        // and still follows what is typed in the row.
+        form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
+        let picker = form
+            .read_with(cx, |form, _| {
+                form.color_picker.as_ref().map(|open| open.picker.clone())
+            })
+            .expect("open");
+        assert!(!picker.read_with(cx, |picker, _| picker.shows_hex_field()));
+        field.update(cx, |field, cx| field.set_text("#123456", cx));
+        cx.run_until_parked();
+        assert_eq!(picker.read_with(cx, |picker, _| picker.color()), 0x123456);
+    }
+
+    #[gpui::test]
+    fn dragging_the_splitters_resizes_the_right_column_within_limits(cx: &mut TestAppContext) {
+        use super::{LEFT_MIN_WIDTH, RIGHT_PANE_MIN_HEIGHT, RIGHT_WIDTH_MIN};
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        cx.run_until_parked();
+        let none = Modifiers::none();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let width = f32::from(viewport.width);
+        let drag = |cx: &mut gpui::VisualTestContext, from: (f32, f32), steps: &[(f32, f32)]| {
+            let at = |(x, y): (f32, f32)| point(px(x), px(y));
+            cx.simulate_mouse_move(at(from), None, none);
+            cx.simulate_mouse_down(at(from), MouseButton::Left, none);
+            for step in steps {
+                cx.simulate_mouse_move(at(*step), MouseButton::Left, none);
+            }
+            cx.run_until_parked();
+            cx.simulate_mouse_up(at(*steps.last().unwrap()), MouseButton::Left, none);
+        };
+
+        // The handle sits just left of the 240 px column; pulling it left
+        // widens the column, and the window keeps room for the left column.
+        let handle_x = width - 240. - 2.;
+        drag(
+            cx,
+            (handle_x, 300.),
+            &[(handle_x - 10., 300.), (handle_x - 60., 300.)],
+        );
+        let widened = chat.read_with(cx, |chat, _| chat.right_width);
+        assert!((295.0..=305.0).contains(&widened), "{widened}");
+        let x = width - widened - 2.;
+        drag(cx, (x, 300.), &[(x - 10., 300.), (-500., 300.)]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.right_width),
+            width - LEFT_MIN_WIDTH
+        );
+        let x = width - (width - LEFT_MIN_WIDTH) - 2.;
+        drag(cx, (x, 300.), &[(x + 10., 300.), (width + 500., 300.)]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.right_width),
+            RIGHT_WIDTH_MIN
+        );
+
+        // The member list and channel tree share the column; the boundary
+        // starts in the middle and cannot squeeze either below its minimum.
+        assert_eq!(chat.read_with(cx, |chat, _| chat.members_height), None);
+        let column = chat
+            .read_with(cx, |chat, _| chat.right_column_bounds.get())
+            .expect("the column was laid out");
+        let (left, top, height) = (
+            f32::from(column.origin.x) + 20.,
+            f32::from(column.origin.y),
+            f32::from(column.size.height),
+        );
+        let y = top + height / 2. + 2.;
+        drag(cx, (left, y), &[(left, y + 10.), (left, y + 40.)]);
+        let members = chat
+            .read_with(cx, |chat, _| chat.members_height)
+            .expect("dragged");
+        assert!(
+            (height / 2. + 33.0..=height / 2. + 43.0).contains(&members),
+            "{members}"
+        );
+        let y = top + members + 2.;
+        // The list really is that tall: the handle sits right below it.
+        let handle = cx.debug_bounds("members-split").expect("handle drawn");
+        assert!(
+            (f32::from(handle.origin.y) - (top + members)).abs() < 1.,
+            "{handle:?} for a list of {members}"
+        );
+        drag(cx, (left, y), &[(left, y - 10.), (left, -300.)]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.members_height),
+            Some(RIGHT_PANE_MIN_HEIGHT)
+        );
+    }
+
+    #[gpui::test]
+    fn the_window_layout_is_saved_after_changes_and_applied_at_startup(cx: &mut TestAppContext) {
+        use super::{DEFAULT_LOG_SPLIT, DEFAULT_RIGHT_WIDTH, LAYOUT_SAVE_DELAY, LOG_SPLIT_LIMITS};
+        use cayenchat_storage::layout::{Layout, load_layout_from};
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        cx.run_until_parked();
+        // Tests never write the user's real layout file: the path is given
+        // here, and without one nothing is written.
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("window.json");
+        // Saving needs no window at hand, as when the application quits.
+        let save =
+            |cx: &mut gpui::VisualTestContext| chat.update(cx, |chat, _| chat.save_layout_now());
+        save(cx);
+        assert!(!file.exists(), "no path, no file");
+
+        // Applying a saved layout takes over the pane sizes; a split from
+        // damage is held within limits.
+        chat.update(cx, |chat, _| {
+            chat.layout_file = Some(file.clone());
+            chat.apply_layout(&Layout {
+                right_width: Some(300.),
+                members_height: Some(200.),
+                log_split: Some(5.0),
+                ..Layout::default()
+            });
+            assert_eq!(chat.right_width, 300.);
+            assert_eq!(chat.members_height, Some(200.));
+            assert_eq!(chat.log_split, LOG_SPLIT_LIMITS.1);
+            chat.apply_layout(&Layout::default());
+            assert_eq!(chat.right_width, 300., "nothing saved leaves it alone");
+            chat.right_width = DEFAULT_RIGHT_WIDTH;
+            chat.members_height = None;
+            chat.log_split = DEFAULT_LOG_SPLIT;
+        });
+
+        // Saving records the window and the pane sizes.
+        save(cx);
+        let saved = load_layout_from(&file);
+        assert!(saved.window.is_some());
+        assert_eq!(saved.right_width, Some(DEFAULT_RIGHT_WIDTH));
+        assert_eq!(saved.members_height, None);
+        assert_eq!(saved.log_split, Some(DEFAULT_LOG_SPLIT));
+
+        // A resize is noted, so a later write without the window has it.
+        cx.simulate_resize(gpui::size(px(1111.), px(777.)));
+        cx.run_until_parked();
+        save(cx);
+        let resized = load_layout_from(&file).window.expect("window saved");
+        assert_eq!((resized.width, resized.height), (1111., 777.));
+
+        // Switched off, nothing is written.
+        std::fs::remove_file(&file).unwrap();
+        chat.update(cx, |chat, _| chat.restore_layout = false);
+        save(cx);
+        assert!(!file.exists());
+        chat.update(cx, |chat, _| chat.restore_layout = true);
+
+        // Dragging the splitter writes it shortly after the last move.
+        let none = Modifiers::none();
+        let width = f32::from(cx.update(|window, _| window.viewport_size()).width);
+        let handle = point(px(width - DEFAULT_RIGHT_WIDTH - 2.), px(300.));
+        cx.simulate_mouse_move(handle, None, none);
+        cx.simulate_mouse_down(handle, MouseButton::Left, none);
+        for step in [10., 60.] {
+            cx.simulate_mouse_move(
+                point(handle.x - px(step), handle.y),
+                MouseButton::Left,
+                none,
+            );
+        }
+        cx.run_until_parked();
+        cx.simulate_mouse_up(handle, MouseButton::Left, none);
+        assert!(!file.exists(), "not before the pause is over");
+        cx.executor().advance_clock(LAYOUT_SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let dragged = load_layout_from(&file);
+        let widened = dragged.right_width.expect("saved after the drag");
+        assert!((295.0..=305.0).contains(&widened), "{widened}");
+    }
+
+    #[gpui::test]
+    fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestAppContext) {
+        use super::{MemberPromptKind, ServerMenu};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.servers[0].nickname = "alice".into();
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        for kind in [MemberPromptKind::Join, MemberPromptKind::Nick] {
+            chat.update_in(cx, |chat, window, cx| {
+                chat.server_menu = Some(ServerMenu {
+                    position: gpui::point(gpui::px(10.), gpui::px(10.)),
+                    network: NetworkId(1),
+                });
+                chat.open_server_prompt(kind, window, cx);
+                assert!(chat.server_menu.is_none());
+                let prompt = chat.member_prompt.as_ref().expect("prompt opened");
+                assert_eq!(prompt.network, NetworkId(1));
+                // A new nickname starts from the current one; a channel from nothing.
+                let initial = prompt.input.read(cx).text().to_owned();
+                match kind {
+                    MemberPromptKind::Nick => {
+                        let saved = chat.saved.servers[0].nickname.clone();
+                        assert!(!saved.is_empty());
+                        assert_eq!(initial, saved);
+                    }
+                    _ => assert_eq!(initial, ""),
+                }
+                let prompt = chat.member_prompt.as_ref().expect("prompt opened");
+                prompt
+                    .input
+                    .update(cx, |input, cx| input.set_text("#b", cx));
+                chat.submit_member_prompt(window, cx);
+                // Not connected: kept open with the reason.
+                assert!(chat.member_prompt.is_some());
+                assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
+            });
+        }
+    }
+
+    #[gpui::test]
     fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Ircv3Options;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -7627,6 +9151,8 @@ mod pane_tests {
                 metadata: true,
                 peer_avatars: true,
                 chathistory: false,
+                confirmed_sending: false,
+                accounts: false,
             }
         );
         // Peer avatars alone share nothing and leave the realname unmarked.
@@ -7660,6 +9186,8 @@ mod pane_tests {
                     metadata: true,
                     peer_avatars: false,
                     chathistory: false,
+                    confirmed_sending: false,
+                    accounts: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );
@@ -7676,6 +9204,7 @@ mod pane_tests {
     #[gpui::test]
     fn disconnect_is_offered_only_while_there_is_something_to_stop(cx: &mut TestAppContext) {
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -7704,6 +9233,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -7723,6 +9253,7 @@ mod pane_tests {
             mentioned: true,
             server_time: Some(stamp),
             msgid: Some(msgid.into()),
+            account: None,
             replayed,
         };
         chat.update(cx, |chat, cx| {
@@ -7768,6 +9299,7 @@ mod pane_tests {
         use cayenchat_irc_core::{Event, HistoryMessage};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -7786,6 +9318,7 @@ mod pane_tests {
                 std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_000),
             ),
             msgid: Some(msgid.into()),
+            account: None,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -7812,6 +9345,7 @@ mod pane_tests {
                         mentioned: true,
                         server_time: None,
                         msgid: Some("live1".into()),
+                        account: None,
                         replayed: false,
                     },
                     Event::ChannelHistory {
@@ -7854,12 +9388,126 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn discovered_direct_messages_open_quietly_and_overlap_is_dropped(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, HistoryMessage};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let line = |sender: &str, text: &str, secs: u64, msgid: &str| HistoryMessage {
+            sender: sender.into(),
+            text: text.into(),
+            notice: false,
+            server_time: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            msgid: Some(msgid.into()),
+            account: None,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    // A conversation we already know, with one live line.
+                    Event::PrivateMessage {
+                        sender: "Bob".into(),
+                        text: "live".into(),
+                        notice: false,
+                        server_time: Some(
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_100),
+                        ),
+                        msgid: Some("d2".into()),
+                        account: None,
+                        replayed: false,
+                    },
+                    // Discovery: a new peer, and Bob again in another case.
+                    Event::HistoryRequested {
+                        channel: "carol".into(),
+                        resumed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "carol".into(),
+                        incomplete: false,
+                        messages: vec![
+                            line("carol", "call me", 1_790_550_000, "c1"),
+                            line("alice", "ok", 1_790_550_050, "c2"),
+                        ],
+                    },
+                    Event::HistoryRequested {
+                        channel: "BOB".into(),
+                        resumed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "BOB".into(),
+                        incomplete: false,
+                        messages: vec![
+                            line("Bob", "missed", 1_790_550_000, "d1"),
+                            line("Bob", "live", 1_790_550_100, "d2"),
+                        ],
+                    },
+                ],
+                false,
+                cx,
+            );
+            let key = |nick: &str| cayenchat_irc_core::text::nickname_key(nick);
+            let carol = chat.state.private_id(NetworkId(1), &key("carol")).unwrap();
+            let bob = chat.state.private_id(NetworkId(1), &key("bob")).unwrap();
+            let texts = |id| -> Vec<String> {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .map(|m| m.text.clone())
+                    .collect()
+            };
+            assert_eq!(texts(carol), ["call me", "ok"]);
+            // No second Bob conversation, and the repeated live line is dropped.
+            assert_eq!(
+                chat.state
+                    .conversations()
+                    .iter()
+                    .filter(|c| c.is_private())
+                    .count(),
+                2
+            );
+            // Logs keep arrival order: the reserved block sits where the
+            // request was made, after the live line that was already there.
+            assert_eq!(texts(bob), ["live", "missed"]);
+            // History is context: no unread mark, notification or highlight.
+            assert!(!chat.state.is_unread(carol));
+            assert_eq!(chat.notifier.shown.len(), 1, "only Bob's live line");
+            let messages = &chat
+                .state
+                .conversations()
+                .iter()
+                .find(|c| c.id == carol)
+                .unwrap()
+                .messages;
+            assert!(messages.iter().all(|m| m.is_history()));
+        });
+    }
+
+    #[gpui::test]
     fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         use cayenchat_irc_core::{
             Connection, ConnectionConfig, Event, HistoryMessage, OlderHistoryStatus,
         };
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -7877,6 +9525,7 @@ mod pane_tests {
             notice: false,
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
         };
         // A connection to a local listener that never registers: requests
         // can be queued on it, nothing reaches a server.
@@ -7958,6 +9607,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: at(1_790_560_000),
                         msgid: Some("l1".into()),
+                        account: None,
                         replayed: false,
                     },
                     Event::OlderChannelHistory {
@@ -8015,10 +9665,182 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(
+        cx: &mut TestAppContext,
+    ) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let accepted = |local_id, text: &str| Event::OutgoingAccepted {
+            local_id,
+            channel: "#a".into(),
+            text: text.into(),
+            notice: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    // Shown at once, before any confirmation.
+                    accepted(Some(1), "hello  world"),
+                    accepted(Some(2), "rejected"),
+                    accepted(Some(3), "never answered"),
+                    accepted(None, "no echo-message here"),
+                ],
+                false,
+                cx,
+            );
+            let id = chat.state.channel_id(NetworkId(1), "#a").unwrap();
+            let lines = |chat: &ChatWindow| {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .map(|m| (m.text.clone(), m.delivery_failed))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(chat.sessions[&NetworkId(1)].pending_sends.len(), 3);
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::OutgoingConfirmed {
+                        local_id: 1,
+                        text: Some("hello world".into()),
+                        msgid: Some("m1".into()),
+                        server_time: None,
+                    },
+                    Event::OutgoingFailed {
+                        local_id: 2,
+                        reason: "Cannot send to channel".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            // Replaced in place, not added again.
+            assert_eq!(
+                lines(chat)
+                    .iter()
+                    .filter(|(text, _)| text.starts_with("hello"))
+                    .collect::<Vec<_>>(),
+                [&("hello world".to_owned(), false)]
+            );
+            assert!(lines(chat).contains(&("rejected".to_owned(), true)));
+            assert_eq!(chat.sessions[&NetworkId(1)].pending_sends.len(), 1);
+            // The rejection is also said in the server log.
+            assert!(
+                chat.state
+                    .server_messages(NetworkId(1))
+                    .iter()
+                    .any(|m| m.text.contains("Cannot send to channel"))
+            );
+            // A link that ends with a message unconfirmed marks it.
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(lines(chat).contains(&("never answered".to_owned(), true)));
+            assert!(lines(chat).contains(&("no echo-message here".to_owned(), false)));
+            assert!(chat.sessions[&NetworkId(1)].pending_sends.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, WhoisInfo};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::UserAccount {
+                        nickname: "Bob".into(),
+                        account: Some("bob-acct".into()),
+                        realname: Some("Bob Builder".into()),
+                    },
+                    Event::UserAccount {
+                        nickname: "Eve".into(),
+                        account: None,
+                        realname: None,
+                    },
+                    Event::UserAccountForgotten {
+                        nickname: "EVE".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let accounts = |chat: &ChatWindow| chat.sessions[&NetworkId(1)].user_accounts.clone();
+            assert_eq!(accounts(chat).len(), 1, "casemapped removal");
+            let tracked = accounts(chat);
+            let mut info = WhoisInfo {
+                nickname: "bob".into(),
+                username: Some("u".into()),
+                ..WhoisInfo::default()
+            };
+            super::complete_whois(&mut info, &tracked);
+            assert_eq!(info.account.as_deref(), Some("bob-acct"));
+            assert_eq!(info.realname.as_deref(), Some("Bob Builder"));
+            let mut said = WhoisInfo {
+                nickname: "BOB".into(),
+                account: Some("server-acct".into()),
+                ..WhoisInfo::default()
+            };
+            super::complete_whois(&mut said, &tracked);
+            assert_eq!(said.account.as_deref(), Some("server-acct"));
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(accounts(chat).is_empty());
+        });
+    }
+
+    #[gpui::test]
     fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppContext) {
         use cayenchat_irc_core::{ConnectionConfig, Event, HistoryMessage};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8038,6 +9860,7 @@ mod pane_tests {
             mentioned: text.starts_with("alice"),
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
             replayed: false,
         };
         let history = |text: &str, secs: u64, msgid: &str| HistoryMessage {
@@ -8046,6 +9869,7 @@ mod pane_tests {
             notice: false,
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
         };
         let session = |events: Vec<Event>| {
             let mut all = vec![
@@ -8143,6 +9967,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8160,6 +9985,7 @@ mod pane_tests {
             notice,
             server_time: None,
             msgid: None,
+            account: None,
             replayed,
         };
         chat.update(cx, |chat, cx| {
@@ -8186,6 +10012,7 @@ mod pane_tests {
                     pm("NickServ", "This nickname is registered", true, false),
                     pm("carol", "old", false, true),
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: "BOB".into(),
                         text: "hi bob".into(),
                         notice: false,
@@ -8208,6 +10035,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8344,6 +10172,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8363,6 +10192,7 @@ mod pane_tests {
             mentioned,
             server_time: None,
             msgid: None,
+            account: None,
             replayed: false,
         };
         chat.update(cx, |chat, cx| {
@@ -8403,6 +10233,7 @@ mod pane_tests {
                         replayed: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -8411,6 +10242,7 @@ mod pane_tests {
                         replayed: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -8418,6 +10250,7 @@ mod pane_tests {
                         notice: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::PrivateMessage {
@@ -8426,6 +10259,7 @@ mod pane_tests {
                         notice: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8503,6 +10337,7 @@ mod pane_tests {
                     replayed: true,
                     server_time: None,
                     msgid: None,
+                    account: None,
                 }],
                 false,
                 cx,
@@ -8517,6 +10352,7 @@ mod pane_tests {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8564,6 +10400,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::ChannelMessage {
@@ -8574,6 +10411,7 @@ mod pane_tests {
                         mentioned: true,
                         server_time: Some(old),
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8598,6 +10436,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8630,14 +10469,17 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: channel.into(),
                         text: "reply".into(),
                         notice: false,
                     },
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: channel.into(),
                         text: "notice".into(),
                         notice: true,
@@ -8690,6 +10532,7 @@ mod pane_tests {
         use std::time::Duration;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8727,6 +10570,7 @@ mod pane_tests {
                     mentioned: false,
                     server_time: None,
                     msgid: None,
+                    account: None,
                     replayed: false,
                 },
             ]
@@ -8794,6 +10638,7 @@ mod pane_tests {
         use cayenchat_irc_core::Event;
 
         cx.update(|cx| {
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8872,6 +10717,7 @@ mod pane_tests {
     fn starts_without_servers_and_shows_one_once_added(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -8907,6 +10753,7 @@ mod pane_tests {
     fn typing_reuses_panes_and_new_messages_redraw_them(cx: &mut TestAppContext) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
             cx.set_global(crate::theme::Theme::new(
                 cayenchat_storage::ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -9003,7 +10850,10 @@ mod field_traversal_tests {
                 cx,
             );
             crate::input::bind_keys(false, cx);
-            cx.bind_keys(shortcut_bindings(ChannelNumberModifier::Ctrl));
+            cx.bind_keys(shortcut_bindings(
+                ChannelNumberModifier::Ctrl,
+                &Default::default(),
+            ));
         });
     }
 
@@ -9062,5 +10912,84 @@ mod field_traversal_tests {
         cx.simulate_keystrokes("tab");
         assert_eq!(view.read_with(cx, |view, _| view.completions), 1);
         assert!(cx.update(|window, cx| view.read(cx).draft.focus_handle(cx).is_focused(window)));
+    }
+}
+
+#[cfg(test)]
+mod navigation_binding_tests {
+    use super::{Navigate, shortcut_bindings};
+    use cayenchat_app::Command;
+    use cayenchat_storage::ChannelNumberModifier;
+
+    /// The navigation command a typed key combination runs, and that no other
+    /// navigation binding takes the same keys.
+    #[cfg(target_os = "macos")]
+    fn command_for(keys: &str) -> Option<Command> {
+        let typed = gpui::Keystroke::parse(keys).unwrap();
+        let bindings = shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
+        let matching: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.match_keystrokes(&[typed.clone()]) == Some(false))
+            .collect();
+        assert!(
+            matching.len() <= 1,
+            "{keys} is bound {} times",
+            matching.len()
+        );
+        matching.first().and_then(|binding| {
+            binding
+                .action()
+                .as_any()
+                .downcast_ref::<Navigate>()
+                .map(|navigate| navigate.command)
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_bracket_keys_move_between_channels_and_servers() {
+        // Decided in #72.
+        assert_eq!(command_for("cmd-["), Some(Command::PreviousChannel));
+        assert_eq!(command_for("cmd-]"), Some(Command::NextChannel));
+        // Pressing Cmd+Shift+[ on macOS arrives as `cmd-{` (see the bindings),
+        // so that is what must be bound; `cmd-shift-[` never arrives.
+        assert_eq!(command_for("cmd-{"), Some(Command::PreviousServer));
+        assert_eq!(command_for("cmd-}"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-shift-["), None);
+        assert_eq!(command_for("cmd-shift-]"), None);
+        // The arrow-based keys stay.
+        assert_eq!(command_for("ctrl-up"), Some(Command::PreviousChannel));
+        assert_eq!(command_for("ctrl-right"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-up"), Some(Command::PreviousActiveChannel));
+        assert_eq!(
+            command_for("cmd-alt-down"),
+            Some(Command::NextActiveChannel)
+        );
+    }
+
+    #[test]
+    fn no_two_navigation_bindings_share_keys() {
+        for modifier in [
+            ChannelNumberModifier::Ctrl,
+            ChannelNumberModifier::Alt,
+            ChannelNumberModifier::Super,
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            for binding in shortcut_bindings(modifier, &Default::default()) {
+                if binding
+                    .action()
+                    .as_any()
+                    .downcast_ref::<Navigate>()
+                    .is_none()
+                {
+                    continue;
+                }
+                let keys = format!("{:?}", binding.keystrokes());
+                assert!(
+                    seen.insert(keys.clone()),
+                    "{keys} is bound twice ({modifier:?})"
+                );
+            }
+        }
     }
 }

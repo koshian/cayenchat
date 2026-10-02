@@ -2,7 +2,7 @@
 //! live in the [`credentials`] store.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -10,6 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 pub mod credentials;
+pub mod layout;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -28,7 +29,7 @@ pub struct ServerPreset {
     pub host: &'static str,
 }
 
-pub const PRESETS: [ServerPreset; 2] = [
+pub const PRESETS: [ServerPreset; 3] = [
     ServerPreset {
         name: "IRCnet",
         host: "irc.ircnet.ne.jp",
@@ -36,6 +37,10 @@ pub const PRESETS: [ServerPreset; 2] = [
     ServerPreset {
         name: "IRCnet (IPv6)",
         host: "irc6.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "IRCnet (dev)",
+        host: "dev.ircnet.ne.jp",
     },
 ];
 
@@ -145,6 +150,10 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
+    /// Wrap nicknames too long for the main log's nickname column onto more
+    /// lines instead of ending them with an ellipsis. Added after version 15
+    /// without a version change; files without it read as off.
+    pub wrap_long_nicknames: bool,
     /// Width in pixels of the channel name (and network) column of the
     /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
     /// without a version change; files without it read as the default.
@@ -158,7 +167,14 @@ pub struct Appearance {
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
+    /// Colors the user saved to pick again, as `#RRGGBB` in the order added.
+    /// At most [`MAX_SAVED_COLORS`], without repeats. Added after version 15
+    /// without a version change; files without it read as empty.
+    pub saved_colors: Vec<String>,
 }
+
+/// Colors the palette holds.
+pub const MAX_SAVED_COLORS: usize = 24;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -199,6 +215,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
+            wrap_long_nicknames: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -207,11 +224,50 @@ impl Default for Appearance {
             input_font: String::new(),
             time_font: String::new(),
             dark: DarkColors::default(),
+            saved_colors: Vec::new(),
         }
     }
 }
 
 impl Appearance {
+    /// Saves `color` (`#RRGGBB`, any case) to the palette. A color already
+    /// saved is not added again.
+    pub fn save_color(&mut self, color: &str) -> Result<(), String> {
+        let color = color.trim().to_ascii_uppercase();
+        if color_value(&color).is_none() {
+            return Err("Palette color must be #RRGGBB.".into());
+        }
+        if self.saved_colors.contains(&color) {
+            return Ok(());
+        }
+        if self.saved_colors.len() >= MAX_SAVED_COLORS {
+            return Err(format!(
+                "The palette holds at most {MAX_SAVED_COLORS} colors."
+            ));
+        }
+        self.saved_colors.push(color);
+        Ok(())
+    }
+
+    pub fn remove_saved_color(&mut self, color: &str) {
+        self.saved_colors
+            .retain(|saved| !saved.eq_ignore_ascii_case(color.trim()));
+    }
+
+    /// Drops palette entries that are not colors or repeat, and any beyond
+    /// the limit, so a hand-edited file cannot keep the settings from loading.
+    fn clean_palette(&mut self) {
+        let mut kept: Vec<String> = Vec::new();
+        for color in &self.saved_colors {
+            let color = color.trim().to_ascii_uppercase();
+            if color_value(&color).is_some() && !kept.contains(&color) {
+                kept.push(color);
+            }
+        }
+        kept.truncate(MAX_SAVED_COLORS);
+        self.saved_colors = kept;
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for (label, value) in [
             ("Member list", &self.member_list_background),
@@ -387,6 +443,13 @@ pub struct Ircv3Preferences {
     /// (experimental). Added without a version change: files without it
     /// read as off.
     pub chathistory: bool,
+    /// Server-confirmed sending: `echo-message` and `labeled-response`.
+    /// Added without a version change: files without it read as off.
+    pub confirmed_sending: bool,
+    /// Follow the services accounts and real names of channel members
+    /// (`account-notify`, `extended-join`, WHOX). Added without a version
+    /// change: files without it read as off.
+    pub accounts: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -441,9 +504,25 @@ pub struct Settings {
     pub linux_display: LinuxDisplay,
     pub channel_number_modifier: ChannelNumberModifier,
     pub text_key_theme: TextKeyTheme,
+    /// Windows and Linux: hide the in-window menu bar until Alt, F10 or the
+    /// top edge asks for it. Off shows it all the time. Added after version
+    /// 15 without a version change; files without it read as off. macOS has
+    /// native menus and ignores it.
+    pub menu_bar_auto_hide: bool,
     pub appearance: Appearance,
+    /// Reopen the main window where it was left, with its pane sizes (see
+    /// [`layout`]). On by default, also for files saved before it existed.
+    pub restore_window_layout: bool,
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
+    /// Navigation shortcuts the user changed: action id → the key as GPUI
+    /// reports it when pressed (for example `cmd-}`). An action that is not
+    /// listed has its platform defaults. Entries for unknown actions, or keys
+    /// that cannot be used, are ignored when the shortcuts are built, so a
+    /// damaged or hand-edited file never stops the application from starting.
+    /// Added after version 15 without a version change; files without it read
+    /// as empty.
+    pub keybindings: BTreeMap<String, String>,
     pub notifications: Notifications,
     pub experimental: Experimental,
     /// Application-wide identity of versions 1–12, read only to migrate it
@@ -474,10 +553,13 @@ impl Default for Settings {
             theme: ThemeMode::System,
             linux_display: LinuxDisplay::Wayland,
             channel_number_modifier: ChannelNumberModifier::Ctrl,
+            menu_bar_auto_hide: false,
             text_key_theme: TextKeyTheme::Auto,
             appearance: Appearance::default(),
+            restore_window_layout: true,
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
+            keybindings: BTreeMap::new(),
             notifications: Notifications::default(),
             experimental: Experimental::default(),
             legacy: LegacyIdentity::default(),
@@ -559,6 +641,7 @@ impl Settings {
     }
 
     fn normalize(mut self) -> Self {
+        self.appearance.clean_palette();
         if self.version <= 7
             && self
                 .appearance
@@ -721,13 +804,61 @@ pub fn settings_path() -> Result<PathBuf, String> {
     }
 }
 
+/// The directory `CAYENCHAT_TEST_DIR` names for a test build, created
+/// readable only by the user when it is missing. `None` when it is unset or
+/// empty. It is for trying what must survive a restart (the window layout,
+/// the settings) in a build that otherwise starts empty every time; it also
+/// holds that build's credentials file, so it should be a directory of its
+/// own.
+#[cfg(any(test, feature = "test-build"))]
+fn fixed_test_directory(value: Option<std::ffi::OsString>) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let directory = PathBuf::from(value);
+    if !directory.is_absolute() {
+        return Err("CAYENCHAT_TEST_DIR must be an absolute path.".into());
+    }
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(&directory)
+        .map_err(|error| format!("Could not create CAYENCHAT_TEST_DIR: {error}"))?;
+    // A directory that existed already keeps its permissions, and a test
+    // build keeps its credentials file here: refuse one other users can read.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&directory)
+            .map_err(|error| format!("Could not check CAYENCHAT_TEST_DIR: {error}"))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "CAYENCHAT_TEST_DIR is accessible by other users (mode {:o}); run chmod 700 on it.",
+                mode & 0o777
+            ));
+        }
+    }
+    Ok(Some(directory))
+}
+
 /// A test build's configuration directory: new and empty for every launch,
-/// under the system temporary directory, readable only by the user.
+/// under the system temporary directory, readable only by the user. Unless
+/// `CAYENCHAT_TEST_DIR` names a directory, which is then used and kept.
 #[cfg(feature = "test-build")]
 pub fn test_build_directory() -> Result<PathBuf, String> {
     static DIRECTORY: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
     DIRECTORY
         .get_or_init(|| {
+            if let Some(fixed) = fixed_test_directory(std::env::var_os("CAYENCHAT_TEST_DIR"))? {
+                return Ok(fixed);
+            }
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_millis())
@@ -1176,6 +1307,7 @@ mod tests {
         assert!(settings.selected_profile().is_none());
         let added = settings.add_server(PRESETS[1].host);
         assert_eq!(added.host, "irc6.ircnet.ne.jp");
+        assert!(PRESETS.iter().any(|p| p.host == "dev.ircnet.ne.jp"));
         assert!(
             added.id.starts_with("custom-"),
             "a fresh ID, not a preset's"
@@ -1392,6 +1524,71 @@ mod tests {
     }
 
     #[test]
+    fn saved_palette_colors_round_trip_and_are_bounded() {
+        let mut appearance = Appearance::default();
+        assert!(appearance.saved_colors.is_empty());
+        appearance.save_color(" #ff8800 ").unwrap();
+        appearance.save_color("#FF8800").unwrap();
+        appearance.save_color("#00aa00").unwrap();
+        assert_eq!(
+            appearance.saved_colors,
+            ["#FF8800", "#00AA00"],
+            "no repeats"
+        );
+        assert!(appearance.save_color("orange").is_err());
+        assert!(appearance.save_color("#12345").is_err());
+        appearance.remove_saved_color("#ff8800");
+        assert_eq!(appearance.saved_colors, ["#00AA00"]);
+        for n in 0..MAX_SAVED_COLORS {
+            let _ = appearance.save_color(&format!("#{n:06X}"));
+        }
+        assert_eq!(appearance.saved_colors.len(), MAX_SAVED_COLORS);
+        assert!(appearance.save_color("#ABCDEF").is_err(), "full");
+        assert!(appearance.save_color("#00AA00").is_ok(), "already there");
+        assert!(appearance.validate().is_ok());
+    }
+
+    #[test]
+    fn palette_is_empty_when_absent_and_cleaned_when_edited_by_hand() {
+        let dir = std::env::temp_dir().join(format!("cayenchat-palette-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        let mut value = serde_json::to_value(&settings).unwrap();
+        value["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("saved_colors");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.appearance.saved_colors.is_empty());
+
+        settings.appearance.saved_colors = vec![
+            "#aabbcc".into(),
+            "nonsense".into(),
+            "#AABBCC".into(),
+            "#112233".into(),
+        ];
+        fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.appearance.saved_colors, ["#AABBCC", "#112233"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wrapping_long_nicknames_is_off_when_absent() {
+        let mut appearance = Appearance::default();
+        assert!(!appearance.wrap_long_nicknames);
+        appearance.wrap_long_nicknames = true;
+        let mut saved = serde_json::to_value(&appearance).unwrap();
+        let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
+        assert!(loaded.wrap_long_nicknames);
+        saved.as_object_mut().unwrap().remove("wrap_long_nicknames");
+        let loaded: Appearance = serde_json::from_value(saved).unwrap();
+        assert!(!loaded.wrap_long_nicknames);
+    }
+
+    #[test]
     fn combined_log_name_width_defaults_and_is_bounded() {
         let mut appearance = Appearance::default();
         assert_eq!(appearance.sub_log_name_width, DEFAULT_SUB_LOG_NAME_WIDTH);
@@ -1498,11 +1695,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
@@ -1979,6 +2176,88 @@ mod tests {
     }
 
     #[test]
+    fn changed_shortcuts_are_saved_by_action_and_absent_means_the_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(
+            settings.keybindings.is_empty(),
+            "absent reads as no changes"
+        );
+        settings
+            .keybindings
+            .insert("next_channel".into(), "cmd-}".into());
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.keybindings["next_channel"], "cmd-}");
+        // Unknown entries are kept as they are: they mean something to a
+        // newer version, and the application ignores them when binding.
+        fs::write(
+            &path,
+            r#"{"version":15,"selected_server":"","servers":[],"keybindings":{"later_action":"ctrl-x"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.keybindings["later_action"], "ctrl-x");
+    }
+
+    #[test]
+    fn a_test_build_can_keep_its_directory_between_launches() {
+        use std::ffi::OsString;
+
+        assert_eq!(fixed_test_directory(None), Ok(None));
+        assert_eq!(fixed_test_directory(Some(OsString::new())), Ok(None));
+        assert!(fixed_test_directory(Some("relative/dir".into())).is_err());
+        let base = tempfile::tempdir().unwrap();
+        let nested = base.path().join("a").join("b");
+        let made = fixed_test_directory(Some(nested.clone().into_os_string())).unwrap();
+        assert_eq!(made, Some(nested.clone()));
+        assert!(nested.is_dir());
+        // Using it again keeps what is in it.
+        fs::write(nested.join("window.json"), "kept").unwrap();
+        fixed_test_directory(Some(nested.clone().into_os_string())).unwrap();
+        assert_eq!(
+            fs::read_to_string(nested.join("window.json")).unwrap(),
+            "kept"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "readable only by the user");
+            // A directory that existed already is refused when others can
+            // read it (it would hold the credentials file), and accepted once
+            // it is private.
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+            let refused = fixed_test_directory(Some(nested.clone().into_os_string()));
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|error| error.contains("chmod 700")),
+                "{refused:?}"
+            );
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                fixed_test_directory(Some(nested.clone().into_os_string())),
+                Ok(Some(nested.clone()))
+            );
+        }
+    }
+
+    #[test]
+    fn the_window_layout_is_restored_unless_switched_off() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(settings.restore_window_layout, "absent reads as on");
+        settings.restore_window_layout = false;
+        save_to(&path, &settings).unwrap();
+        assert!(!load_from(&path).unwrap().unwrap().restore_window_layout);
+    }
+
+    #[test]
     fn channel_number_modifier_defaults_to_ctrl_and_round_trips() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1999,5 +2278,17 @@ mod tests {
         settings.text_key_theme = TextKeyTheme::Emacs;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn the_menu_bar_is_shown_unless_auto_hide_is_chosen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.menu_bar_auto_hide, "absent reads as always shown");
+        settings.menu_bar_auto_hide = true;
+        save_to(&path, &settings).unwrap();
+        assert!(load_from(&path).unwrap().unwrap().menu_bar_auto_hide);
     }
 }

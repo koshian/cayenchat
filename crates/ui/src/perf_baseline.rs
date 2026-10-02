@@ -92,6 +92,7 @@ fn incoming(sequence: usize, images: bool) -> [Event; 2] {
             mentioned: false,
             server_time: None,
             msgid: None,
+            account: None,
             replayed: false,
         },
     ]
@@ -207,6 +208,7 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
         crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+        crate::secrets::install_memory(cx);
         cx.set_global(crate::theme::Theme::new(
             cayenchat_storage::ThemeMode::Light,
             gpui::WindowAppearance::Light,

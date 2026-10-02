@@ -212,6 +212,11 @@ impl TextInput {
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_everything(cx);
+    }
+
+    /// Selects the whole text, so typing replaces it.
+    pub fn select_everything(&mut self, cx: &mut Context<Self>) {
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx)
     }
@@ -1263,9 +1268,9 @@ mod tests {
     fn application_shortcuts_parse() {
         use cayenchat_storage::ChannelNumberModifier;
         for modifier in [ChannelNumberModifier::Alt, ChannelNumberModifier::Super] {
-            assert!(crate::shortcut_bindings(modifier).len() >= 30);
+            assert!(crate::shortcut_bindings(modifier, &Default::default()).len() >= 30);
         }
-        let bindings = crate::shortcut_bindings(ChannelNumberModifier::Ctrl);
+        let bindings = crate::shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
         assert!(bindings.len() >= 30);
         let settings = bindings
             .iter()

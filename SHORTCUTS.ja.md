@@ -10,14 +10,15 @@
 | 次の未読チャンネル | `Ctrl+Tab` または `Opt+Space` | `Ctrl+Tab` |
 | 前の未読チャンネル | `Ctrl+Shift+Tab` または `Opt+Shift+Space` | `Ctrl+Shift+Tab` |
 | 直前に選択したチャンネル | `Opt+Tab` | `Alt+Left` |
-| 前後のアクティブなチャンネル | `Cmd+Up/Down`、`Cmd+Opt+Up/Down`、`Cmd+{/}` | `Ctrl+PageUp/PageDown` |
-| 前後のチャンネル | `Ctrl+Up/Down` | `Alt+Up/Down` |
+| 前後のアクティブなチャンネル | `Cmd+Up/Down`、`Cmd+Opt+Up/Down` | `Ctrl+PageUp/PageDown` |
+| 前後のチャンネル | `Cmd+[` / `Cmd+]`、`Ctrl+Up/Down` | `Alt+Up/Down` |
 | 前後のアクティブなサーバー | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
-| 前後のサーバー | `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
+| 前後のサーバー | `Cmd+Shift+[` / `Cmd+Shift+]`、`Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
 | 1～10番目のチャンネル | `Cmd+1..9, 0` | `Ctrl+1..9, 0`（変更可） |
 | 1～10番目のサーバー | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | チャンネル発言（`PRIVMSG`）を送信 | `Enter` | `Enter` |
 | IRC `NOTICE` を送信 | `Ctrl+Enter` | `Ctrl+Enter` |
+| 送信済み入力を古い方 / 新しい方へ呼び出す(直近20件、起動中のみ) | `Up` / `Down` | `Up` / `Down` |
 | 接続設定を開く | `Cmd+,` | `Ctrl+,` |
 | 接続診断を表示・非表示 | `Cmd+Shift+D` | `Ctrl+Shift+D` |
 | 接続診断をコピー | `Cmd+Shift+L` | `Ctrl+Shift+L` |
