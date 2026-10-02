@@ -2,7 +2,7 @@
 //! live in the [`credentials`] store.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -515,6 +515,14 @@ pub struct Settings {
     pub restore_window_layout: bool,
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
+    /// Navigation shortcuts the user changed: action id → the key as GPUI
+    /// reports it when pressed (for example `cmd-}`). An action that is not
+    /// listed has its platform defaults. Entries for unknown actions, or keys
+    /// that cannot be used, are ignored when the shortcuts are built, so a
+    /// damaged or hand-edited file never stops the application from starting.
+    /// Added after version 15 without a version change; files without it read
+    /// as empty.
+    pub keybindings: BTreeMap<String, String>,
     pub notifications: Notifications,
     pub experimental: Experimental,
     /// Application-wide identity of versions 1–12, read only to migrate it
@@ -551,6 +559,7 @@ impl Default for Settings {
             restore_window_layout: true,
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
+            keybindings: BTreeMap::new(),
             notifications: Notifications::default(),
             experimental: Experimental::default(),
             legacy: LegacyIdentity::default(),
@@ -2164,6 +2173,33 @@ mod tests {
 
         settings.appearance.dark.sub_log_alternate = "gray".into();
         assert!(settings.appearance.validate().is_err());
+    }
+
+    #[test]
+    fn changed_shortcuts_are_saved_by_action_and_absent_means_the_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(
+            settings.keybindings.is_empty(),
+            "absent reads as no changes"
+        );
+        settings
+            .keybindings
+            .insert("next_channel".into(), "cmd-}".into());
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.keybindings["next_channel"], "cmd-}");
+        // Unknown entries are kept as they are: they mean something to a
+        // newer version, and the application ignores them when binding.
+        fs::write(
+            &path,
+            r#"{"version":15,"selected_server":"","servers":[],"keybindings":{"later_action":"ctrl-x"}}"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.keybindings["later_action"], "ctrl-x");
     }
 
     #[test]
