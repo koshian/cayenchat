@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cargo deb --no-build
+          cargo deb --no-build --variant test
           mv target/debian/*.deb "$PACKAGE.deb"
 
       - name: Upload package

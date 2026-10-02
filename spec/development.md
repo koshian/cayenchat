@@ -208,7 +208,11 @@ tab or with
 It packages that ref like the beta does and keeps each package as a workflow
 artifact for 7 days, named `cayenchat-test-<short SHA>-<platform>` (`.zip`, or
 `.deb` on Linux) and downloaded as that file; the macOS bundle is
-`CayenChat Test.app`. `isolated=true` builds with the `test-build` feature, so
+`CayenChat Test.app`. The `.deb` is the package `cayenchat-test` (the `test`
+variant in `crates/ui/Cargo.toml`) with `Conflicts: cayenchat`. It installs the
+same paths as the regular package (`/usr/bin/cayenchat`, the desktop file and
+`/usr/share/cayenchat/locales`), so it cannot coexist with it: installing one
+asks to remove the other instead of silently overwriting it. `isolated=true` builds with the `test-build` feature, so
 the reporter's own settings and passwords are not used (suffix `-isolated`).
 It only has a read-only token and publishes nothing, so the beta is
 unaffected. Link the run and the commit SHA in the PR or issue; downloading

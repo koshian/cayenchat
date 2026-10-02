@@ -17,6 +17,12 @@ assets = [
   ["../../assets/icons/cayenchat.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
 ]
 
+# `cargo deb --variant test` (the Test Build workflow). It installs the same
+# paths, so it conflicts with the regular package instead of overwriting it.
+[package.metadata.deb.variants.test]
+name = "cayenchat-test"
+conflicts = "cayenchat"
+
 [[bin]]
 name = "cayenchat"
 path = "src/main.rs"
