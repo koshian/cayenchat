@@ -10,6 +10,7 @@ mod diagnostics;
 mod experimental_settings;
 mod image_upload;
 mod input;
+mod input_history;
 mod ircv3_settings;
 mod localization;
 mod log_list;
@@ -91,6 +92,7 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
         ChannelActivityKind::Joined { mask } => with_detail(actor, "has joined", mask),
         ChannelActivityKind::Left { reason } => with_detail(actor, "has left", reason),
         ChannelActivityKind::Quit { reason } => with_detail(actor, "has quit", reason),
+        ChannelActivityKind::NickChanged { to } => format!("{actor} is now known as {to}"),
         ChannelActivityKind::ModeChanged { modes } => {
             format!("{actor} has changed mode: {modes}")
         }
@@ -103,6 +105,8 @@ actions!(
         CompleteNickname,
         SendMessage,
         Notice,
+        HistoryPrevious,
+        HistoryNext,
         OpenSettings,
         Disconnect,
         Reconnect,
@@ -125,6 +129,8 @@ struct SettingsForm {
     values: Settings,
     server_list_open: bool,
     encoding_list_open: bool,
+    language_list_open: bool,
+    ircv3_server_list_open: bool,
     custom_host: Entity<TextInput>,
     port: Entity<TextInput>,
     nickname: Entity<TextInput>,
@@ -350,6 +356,8 @@ impl SettingsForm {
             },
             server_list_open: false,
             encoding_list_open: false,
+            language_list_open: false,
+            ircv3_server_list_open: false,
             values,
         }
     }
@@ -598,6 +606,8 @@ impl SettingsForm {
         }
         self.server_list_open = false;
         self.encoding_list_open = false;
+        self.language_list_open = false;
+        self.ircv3_server_list_open = false;
     }
 }
 
@@ -691,6 +701,8 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         metadata: true,
         peer_avatars: preferences.peer_avatars,
         chathistory: preferences.chathistory,
+        confirmed_sending: preferences.confirmed_sending,
+        accounts: preferences.accounts,
     }
 }
 
@@ -744,16 +756,36 @@ fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &Credent
     }
 }
 
+/// Fills the account and real name a WHOIS reply lacks from what the
+/// connection tracks; what the server said wins.
+fn complete_whois(
+    info: &mut WhoisInfo,
+    tracked: &std::collections::HashMap<String, (Option<String>, Option<String>)>,
+) {
+    let key = cayenchat_irc_core::text::nickname_key(&info.nickname);
+    let Some((account, realname)) = tracked.get(&key) else {
+        return;
+    };
+    if info.account.is_none() {
+        info.account = account.clone();
+    }
+    if info.realname.is_none() {
+        info.realname = realname.clone();
+    }
+}
+
 /// What the IRC adapter knows about an incoming message besides its text:
 /// server-time, a usable `msgid`, and whether it is replayed history.
 fn irc_message_meta(
     server_time: Option<std::time::SystemTime>,
     msgid: Option<&str>,
+    account: Option<&str>,
     replayed: bool,
 ) -> MessageMeta {
     MessageMeta {
         server_time,
         native_id: msgid.and_then(cayenchat_model::NativeMessageId::new),
+        account: account.and_then(cayenchat_model::ServicesAccount::new),
         ..MessageMeta::replayed(replayed)
     }
 }
@@ -769,7 +801,12 @@ fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
             } else {
                 message.text
             },
-            meta: irc_message_meta(message.server_time, message.msgid.as_deref(), true),
+            meta: irc_message_meta(
+                message.server_time,
+                message.msgid.as_deref(),
+                message.account.as_deref(),
+                true,
+            ),
         })
         .collect()
 }
@@ -868,6 +905,8 @@ struct ChatWindow {
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
+    /// Sent drafts recalled with Up/Down in the draft input.
+    input_history: input_history::InputHistory,
     /// One row per server whose nickname was rejected during registration,
     /// in the order the rejections arrived.
     nick_prompts: Vec<NickPrompt>,
@@ -1216,6 +1255,7 @@ impl ChatWindow {
             member_menu: None,
             channel_menu: None,
             member_prompt: None,
+            input_history: Default::default(),
             nick_prompts: Vec::new(),
             startup_connections,
             settings_window: None,
@@ -1802,7 +1842,9 @@ impl ChatWindow {
     /// was cut off in recover what they missed, if the server offers
     /// history.
     fn reconnect_config(&self, network: NetworkId) -> Option<ConnectionConfig> {
-        let mut config = self.sessions.get(&network)?.active_config.clone()?;
+        let session = self.sessions.get(&network)?;
+        let mut config = session.active_config.clone()?;
+        config.history_targets_since = session.disconnected_at;
         config.resume_history = self
             .state
             .history_resume(network)
@@ -1856,6 +1898,9 @@ impl ChatWindow {
     fn record_disconnect(&mut self, network: NetworkId, reason: String) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.connection_started = None;
+            session
+                .disconnected_at
+                .get_or_insert_with(std::time::SystemTime::now);
             session.push_diagnostic(format!("Disconnected: {reason}"));
             session.pending_whois.clear();
         }
@@ -2707,6 +2752,7 @@ impl ChatWindow {
                 self.state.end_avatars(network);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
+                    session.disconnected_at = None;
                     session.retry_attempt = 0;
                     session.own_nickname = Some(nickname.clone());
                 }
@@ -2749,6 +2795,7 @@ impl ChatWindow {
                 mentioned,
                 server_time,
                 msgid,
+                account,
                 replayed,
             } => {
                 // A copy of a message the conversation already has (overlapping
@@ -2759,7 +2806,7 @@ impl ChatWindow {
                     &sender,
                     &text,
                     notice,
-                    irc_message_meta(server_time, msgid.as_deref(), replayed),
+                    irc_message_meta(server_time, msgid.as_deref(), account.as_deref(), replayed),
                 ) {
                     return;
                 }
@@ -2807,9 +2854,11 @@ impl ChatWindow {
                 notice,
                 server_time,
                 msgid,
+                account,
                 replayed,
             } => {
-                let meta = irc_message_meta(server_time, msgid.as_deref(), replayed);
+                let meta =
+                    irc_message_meta(server_time, msgid.as_deref(), account.as_deref(), replayed);
                 // A PRIVMSG opens a private conversation; a NOTICE (usually
                 // services and bots) joins one only if it already exists,
                 // and otherwise stays in the server log as before.
@@ -2859,7 +2908,7 @@ impl ChatWindow {
                 msgid,
                 replayed,
             } => {
-                let meta = irc_message_meta(server_time, msgid.as_deref(), replayed);
+                let meta = irc_message_meta(server_time, msgid.as_deref(), None, replayed);
                 self.append_own_private(network, &target, &text, notice, meta);
             }
             Event::UserNickChanged { from, to } => {
@@ -2879,6 +2928,20 @@ impl ChatWindow {
                     self.state.append_conversation_activity(id, text);
                 }
             }
+            // A peer's nickname is a direct-message conversation found by
+            // target discovery: it is shown from now on, its history follows.
+            Event::HistoryRequested {
+                channel,
+                resumed: false,
+            } if !valid_channel(&channel) => {
+                let key = cayenchat_irc_core::text::nickname_key(&channel);
+                if let Some(id) = self
+                    .state
+                    .private_conversation(network, &key, &channel, true)
+                {
+                    self.state.history_requested_for(id);
+                }
+            }
             Event::HistoryRequested {
                 channel,
                 resumed: false,
@@ -2895,12 +2958,17 @@ impl ChatWindow {
                 messages,
                 incomplete,
             } => {
-                self.state.insert_resumed_history(
-                    network,
-                    &channel,
-                    history_lines(messages),
-                    incomplete.then(|| HISTORY_GAP_NOTE.to_owned()),
-                );
+                let lines = history_lines(messages);
+                let gap = incomplete.then(|| HISTORY_GAP_NOTE.to_owned());
+                if valid_channel(&channel) {
+                    self.state
+                        .insert_resumed_history(network, &channel, lines, gap);
+                } else {
+                    let key = cayenchat_irc_core::text::nickname_key(&channel);
+                    if let Some(id) = self.state.private_id(network, &key) {
+                        self.state.insert_history_for(id, lines, gap);
+                    }
+                }
             }
             Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
             // Older pages go above everything the log holds; the main log
@@ -2935,6 +3003,22 @@ impl ChatWindow {
             Event::Names { channel, users } => self.state.set_members(network, &channel, users),
             Event::Topic { channel, topic } => self.state.set_topic(network, &channel, &topic),
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::UserAccount {
+                nickname,
+                account,
+                realname,
+            } => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    session.user_accounts.insert(key, (account, realname));
+                }
+            }
+            Event::UserAccountForgotten { nickname } => {
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                    session.user_accounts.remove(&key);
+                }
+            }
             Event::RealNameChanged { realname } => {
                 let line = self
                     .i18n
@@ -2952,7 +3036,11 @@ impl ChatWindow {
                 self.state.append_server_message(network, line);
             }
             Event::Whois(info) => {
-                let info = *info;
+                let mut info = *info;
+                // Live tracking fills what WHOIS did not report.
+                if let Some(session) = self.sessions.get(&network) {
+                    complete_whois(&mut info, &session.user_accounts);
+                }
                 let key = (network, info.nickname.to_lowercase());
                 let requested = self
                     .sessions
@@ -2969,10 +3057,12 @@ impl ChatWindow {
                 }
             }
             Event::OutgoingAccepted {
+                local_id,
                 channel,
                 text,
                 notice,
             } => {
+                let before = self.state.latest_sequence();
                 if valid_channel(&channel) {
                     let nickname = self
                         .sessions
@@ -2990,6 +3080,53 @@ impl ChatWindow {
                             .format("event_message_queued", &[("channel", &channel)]),
                     );
                 }
+                // Confirmed sending: find the line just added again when the
+                // server's echo arrives.
+                if let Some(local_id) = local_id
+                    && self.state.latest_sequence() > before
+                {
+                    let id = if valid_channel(&channel) {
+                        self.state.channel_id(network, &channel)
+                    } else {
+                        let key = cayenchat_irc_core::text::nickname_key(&channel);
+                        self.state.private_id(network, &key)
+                    };
+                    if let (Some(id), Some(session)) = (id, self.sessions.get_mut(&network))
+                        && session.pending_sends.len() < 64
+                    {
+                        session
+                            .pending_sends
+                            .insert(local_id, (id, self.state.latest_sequence(), notice));
+                    }
+                }
+            }
+            Event::OutgoingConfirmed {
+                local_id,
+                text,
+                msgid,
+                server_time,
+            } => {
+                let pending = self
+                    .sessions
+                    .get_mut(&network)
+                    .and_then(|session| session.pending_sends.remove(&local_id));
+                if let Some((id, sequence, notice)) = pending {
+                    let meta = irc_message_meta(server_time, msgid.as_deref(), None, false);
+                    self.state.confirm_message(id, sequence, text, notice, meta);
+                }
+            }
+            Event::OutgoingFailed { local_id, reason } => {
+                let pending = self
+                    .sessions
+                    .get_mut(&network)
+                    .and_then(|session| session.pending_sends.remove(&local_id));
+                if let Some((id, sequence, _)) = pending {
+                    self.state.fail_message(id, sequence);
+                }
+                let line = self
+                    .i18n
+                    .format("event_message_failed", &[("reason", &reason)]);
+                self.state.append_server_message(network, line);
             }
             Event::NicknameRejected { nickname } => {
                 self.state.append_server_message(
@@ -2999,6 +3136,18 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Refused(reason) => {
+                // What the server never confirmed is shown as not delivered.
+                let unconfirmed: Vec<_> = self
+                    .sessions
+                    .get_mut(&network)
+                    .map(|session| session.pending_sends.drain().collect())
+                    .unwrap_or_default();
+                for (_, (id, sequence, _)) in unconfirmed {
+                    self.state.fail_message(id, sequence);
+                }
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.user_accounts.clear();
+                }
                 self.state.end_avatars(network);
                 self.update_own_avatar(network, OwnAvatar::connection_ended);
                 self.record_disconnect(network, reason);
@@ -3093,6 +3242,7 @@ impl ChatWindow {
         };
         self.feedback = match result {
             Ok(()) => {
+                self.input_history.record(&text);
                 input.update(cx, |input, cx| input.clear_after_send(cx));
                 None
             }
@@ -3100,6 +3250,36 @@ impl ChatWindow {
         };
         cx.notify();
         window.refresh();
+    }
+
+    /// Replaces the draft with an older (`older`) or newer sent draft.
+    fn recall_history(&mut self, older: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.inputs[&self.state.selection()].clone();
+        if input.read(cx).is_composing() || !input.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        let current = input.read(cx).text().to_owned();
+        let recalled = if older {
+            self.input_history.previous(&current)
+        } else {
+            self.input_history.next(&current)
+        };
+        if let Some(text) = recalled {
+            input.update(cx, |input, cx| input.set_text(&text, cx));
+        }
+    }
+
+    fn history_previous(
+        &mut self,
+        _: &HistoryPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.recall_history(true, window, cx);
+    }
+
+    fn history_next(&mut self, _: &HistoryNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.recall_history(false, window, cx);
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
@@ -3746,27 +3926,52 @@ impl SettingsWindow {
         let server_fields = profile
             .as_ref()
             .map(|profile| self.render_server_fields(profile, cx));
-        let mut language_selector = div().flex().gap_1();
-        for (index, language) in [Language::System, Language::Japanese, Language::English]
-            .into_iter()
-            .enumerate()
-        {
-            language_selector = language_selector.child(
-                div()
-                    .id(("language-option", index))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .when(self.settings.values.language == language, |d| {
-                        d.bg(theme.selected)
-                    })
-                    .child(self.i18n.preference_label(language))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_language(language, window, cx)
-                    })),
-            );
+        let mut language_selector = div().flex().flex_col().child(
+            div()
+                .id("language-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!(
+                    "{}  ▾",
+                    self.i18n.preference_label(self.settings.values.language)
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.language_list_open = !this.settings.language_list_open;
+                    this.settings.server_list_open = false;
+                    this.settings.encoding_list_open = false;
+                    cx.notify();
+                })),
+        );
+        if self.settings.language_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            for (index, language) in [Language::System, Language::Japanese, Language::English]
+                .into_iter()
+                .enumerate()
+            {
+                menu = menu.child(
+                    div()
+                        .id(("language-option", index))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .when(self.settings.values.language == language, |d| {
+                            d.bg(theme.selected)
+                        })
+                        .child(self.i18n.preference_label(language))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.settings.language_list_open = false;
+                            this.select_language(language, window, cx)
+                        })),
+                );
+            }
+            language_selector = language_selector.child(menu);
         }
         let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
@@ -3789,6 +3994,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.server_list_open = !this.settings.server_list_open;
                     this.settings.encoding_list_open = false;
+                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -3985,6 +4191,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.encoding_list_open = !this.settings.encoding_list_open;
                     this.settings.server_list_open = false;
+                    this.settings.language_list_open = false;
                     cx.notify();
                 })),
         );
@@ -5797,6 +6004,8 @@ impl ChatWindow {
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::notice))
+            .on_action(cx.listener(Self::history_previous))
+            .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::open_settings))
             .when(self.can_disconnect_selected(), |d| {
                 d.on_action(cx.listener(Self::disconnect_action))
@@ -6343,6 +6552,7 @@ impl ChatWindow {
                     .when(preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
+                    .when(message.delivery_failed, |d| d.text_color(theme.warning))
                     .cursor(CursorStyle::IBeam)
                     .child(styled)
                     .on_mouse_down(
@@ -6694,6 +6904,8 @@ fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding>
         KeyBinding::new("tab", CompleteNickname, Some("ChatWindow > TextInput")),
         KeyBinding::new("enter", SendMessage, Some("ChatWindow > TextInput")),
         KeyBinding::new("ctrl-enter", Notice, Some("ChatWindow > TextInput")),
+        KeyBinding::new("up", HistoryPrevious, Some("ChatWindow > TextInput")),
+        KeyBinding::new("down", HistoryNext, Some("ChatWindow > TextInput")),
         KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
         KeyBinding::new("shift-tab", FocusPreviousField, Some("SettingsWindow")),
         KeyBinding::new("secondary-,", OpenSettings, None),
@@ -6949,6 +7161,8 @@ mod combined_log_tests {
                 sequence,
                 timestamp: None,
                 native_id: None,
+                account: None,
+                delivery_failed: false,
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
@@ -7011,6 +7225,13 @@ mod log_tests {
                 },
             ),
             "kaeru has quit (bye)"
+        );
+        assert_eq!(
+            channel_activity_text(
+                "kaeru",
+                ChannelActivityKind::NickChanged { to: "tepeu".into() },
+            ),
+            "kaeru is now known as tepeu"
         );
         assert_eq!(
             channel_activity_text(
@@ -7128,6 +7349,17 @@ mod startup_tests {
                 ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
             ]
         );
+    }
+
+    #[test]
+    fn irc_metadata_keeps_a_usable_account_only() {
+        let meta = |account| super::irc_message_meta(None, None, account, false);
+        assert_eq!(meta(Some("alice")).account.unwrap().as_str(), "alice");
+        assert!(meta(Some("*")).account.is_none());
+        assert!(meta(Some("")).account.is_none());
+        assert!(meta(None).account.is_none());
+        // The same account text on two networks is just two messages.
+        assert_eq!(meta(Some("alice")).account, meta(Some("alice")).account);
     }
 
     #[test]
@@ -7304,6 +7536,8 @@ mod server_settings_tests {
             batch: true,
             peer_avatars: true,
             chathistory: true,
+            confirmed_sending: false,
+            accounts: false,
         };
         settings
     }
@@ -7653,6 +7887,8 @@ mod pane_tests {
                 metadata: true,
                 peer_avatars: true,
                 chathistory: false,
+                confirmed_sending: false,
+                accounts: false,
             }
         );
         // Peer avatars alone share nothing and leave the realname unmarked.
@@ -7686,6 +7922,8 @@ mod pane_tests {
                     metadata: true,
                     peer_avatars: false,
                     chathistory: false,
+                    confirmed_sending: false,
+                    accounts: false,
                 },
                 "reconnects use the new choice; batch stays off here"
             );
@@ -7749,6 +7987,7 @@ mod pane_tests {
             mentioned: true,
             server_time: Some(stamp),
             msgid: Some(msgid.into()),
+            account: None,
             replayed,
         };
         chat.update(cx, |chat, cx| {
@@ -7812,6 +8051,7 @@ mod pane_tests {
                 std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_000),
             ),
             msgid: Some(msgid.into()),
+            account: None,
         };
         chat.update(cx, |chat, cx| {
             chat.handle_events(
@@ -7838,6 +8078,7 @@ mod pane_tests {
                         mentioned: true,
                         server_time: None,
                         msgid: Some("live1".into()),
+                        account: None,
                         replayed: false,
                     },
                     Event::ChannelHistory {
@@ -7880,6 +8121,118 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn discovered_direct_messages_open_quietly_and_overlap_is_dropped(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, HistoryMessage};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let line = |sender: &str, text: &str, secs: u64, msgid: &str| HistoryMessage {
+            sender: sender.into(),
+            text: text.into(),
+            notice: false,
+            server_time: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            msgid: Some(msgid.into()),
+            account: None,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    // A conversation we already know, with one live line.
+                    Event::PrivateMessage {
+                        sender: "Bob".into(),
+                        text: "live".into(),
+                        notice: false,
+                        server_time: Some(
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_100),
+                        ),
+                        msgid: Some("d2".into()),
+                        account: None,
+                        replayed: false,
+                    },
+                    // Discovery: a new peer, and Bob again in another case.
+                    Event::HistoryRequested {
+                        channel: "carol".into(),
+                        resumed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "carol".into(),
+                        incomplete: false,
+                        messages: vec![
+                            line("carol", "call me", 1_790_550_000, "c1"),
+                            line("alice", "ok", 1_790_550_050, "c2"),
+                        ],
+                    },
+                    Event::HistoryRequested {
+                        channel: "BOB".into(),
+                        resumed: false,
+                    },
+                    Event::ChannelHistory {
+                        channel: "BOB".into(),
+                        incomplete: false,
+                        messages: vec![
+                            line("Bob", "missed", 1_790_550_000, "d1"),
+                            line("Bob", "live", 1_790_550_100, "d2"),
+                        ],
+                    },
+                ],
+                false,
+                cx,
+            );
+            let key = |nick: &str| cayenchat_irc_core::text::nickname_key(nick);
+            let carol = chat.state.private_id(NetworkId(1), &key("carol")).unwrap();
+            let bob = chat.state.private_id(NetworkId(1), &key("bob")).unwrap();
+            let texts = |id| -> Vec<String> {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .map(|m| m.text.clone())
+                    .collect()
+            };
+            assert_eq!(texts(carol), ["call me", "ok"]);
+            // No second Bob conversation, and the repeated live line is dropped.
+            assert_eq!(
+                chat.state
+                    .conversations()
+                    .iter()
+                    .filter(|c| c.is_private())
+                    .count(),
+                2
+            );
+            // Logs keep arrival order: the reserved block sits where the
+            // request was made, after the live line that was already there.
+            assert_eq!(texts(bob), ["live", "missed"]);
+            // History is context: no unread mark, notification or highlight.
+            assert!(!chat.state.is_unread(carol));
+            assert_eq!(chat.notifier.shown.len(), 1, "only Bob's live line");
+            let messages = &chat
+                .state
+                .conversations()
+                .iter()
+                .find(|c| c.id == carol)
+                .unwrap()
+                .messages;
+            assert!(messages.iter().all(|m| m.is_history()));
+        });
+    }
+
+    #[gpui::test]
     fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         use cayenchat_irc_core::{
             Connection, ConnectionConfig, Event, HistoryMessage, OlderHistoryStatus,
@@ -7903,6 +8256,7 @@ mod pane_tests {
             notice: false,
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
         };
         // A connection to a local listener that never registers: requests
         // can be queued on it, nothing reaches a server.
@@ -7984,6 +8338,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: at(1_790_560_000),
                         msgid: Some("l1".into()),
+                        account: None,
                         replayed: false,
                     },
                     Event::OlderChannelHistory {
@@ -8041,6 +8396,175 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(
+        cx: &mut TestAppContext,
+    ) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let accepted = |local_id, text: &str| Event::OutgoingAccepted {
+            local_id,
+            channel: "#a".into(),
+            text: text.into(),
+            notice: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    // Shown at once, before any confirmation.
+                    accepted(Some(1), "hello  world"),
+                    accepted(Some(2), "rejected"),
+                    accepted(Some(3), "never answered"),
+                    accepted(None, "no echo-message here"),
+                ],
+                false,
+                cx,
+            );
+            let id = chat.state.channel_id(NetworkId(1), "#a").unwrap();
+            let lines = |chat: &ChatWindow| {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .map(|m| (m.text.clone(), m.delivery_failed))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(chat.sessions[&NetworkId(1)].pending_sends.len(), 3);
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::OutgoingConfirmed {
+                        local_id: 1,
+                        text: Some("hello world".into()),
+                        msgid: Some("m1".into()),
+                        server_time: None,
+                    },
+                    Event::OutgoingFailed {
+                        local_id: 2,
+                        reason: "Cannot send to channel".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            // Replaced in place, not added again.
+            assert_eq!(
+                lines(chat)
+                    .iter()
+                    .filter(|(text, _)| text.starts_with("hello"))
+                    .collect::<Vec<_>>(),
+                [&("hello world".to_owned(), false)]
+            );
+            assert!(lines(chat).contains(&("rejected".to_owned(), true)));
+            assert_eq!(chat.sessions[&NetworkId(1)].pending_sends.len(), 1);
+            // The rejection is also said in the server log.
+            assert!(
+                chat.state
+                    .server_messages(NetworkId(1))
+                    .iter()
+                    .any(|m| m.text.contains("Cannot send to channel"))
+            );
+            // A link that ends with a message unconfirmed marks it.
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(lines(chat).contains(&("never answered".to_owned(), true)));
+            assert!(lines(chat).contains(&("no echo-message here".to_owned(), false)));
+            assert!(chat.sessions[&NetworkId(1)].pending_sends.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{Event, WhoisInfo};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::UserAccount {
+                        nickname: "Bob".into(),
+                        account: Some("bob-acct".into()),
+                        realname: Some("Bob Builder".into()),
+                    },
+                    Event::UserAccount {
+                        nickname: "Eve".into(),
+                        account: None,
+                        realname: None,
+                    },
+                    Event::UserAccountForgotten {
+                        nickname: "EVE".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let accounts = |chat: &ChatWindow| chat.sessions[&NetworkId(1)].user_accounts.clone();
+            assert_eq!(accounts(chat).len(), 1, "casemapped removal");
+            let tracked = accounts(chat);
+            let mut info = WhoisInfo {
+                nickname: "bob".into(),
+                username: Some("u".into()),
+                ..WhoisInfo::default()
+            };
+            super::complete_whois(&mut info, &tracked);
+            assert_eq!(info.account.as_deref(), Some("bob-acct"));
+            assert_eq!(info.realname.as_deref(), Some("Bob Builder"));
+            let mut said = WhoisInfo {
+                nickname: "BOB".into(),
+                account: Some("server-acct".into()),
+                ..WhoisInfo::default()
+            };
+            super::complete_whois(&mut said, &tracked);
+            assert_eq!(said.account.as_deref(), Some("server-acct"));
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("gone".into())],
+                false,
+                cx,
+            );
+            assert!(accounts(chat).is_empty());
+        });
+    }
+
+    #[gpui::test]
     fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppContext) {
         use cayenchat_irc_core::{ConnectionConfig, Event, HistoryMessage};
 
@@ -8064,6 +8588,7 @@ mod pane_tests {
             mentioned: text.starts_with("alice"),
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
             replayed: false,
         };
         let history = |text: &str, secs: u64, msgid: &str| HistoryMessage {
@@ -8072,6 +8597,7 @@ mod pane_tests {
             notice: false,
             server_time: at(secs),
             msgid: Some(msgid.into()),
+            account: None,
         };
         let session = |events: Vec<Event>| {
             let mut all = vec![
@@ -8186,6 +8712,7 @@ mod pane_tests {
             notice,
             server_time: None,
             msgid: None,
+            account: None,
             replayed,
         };
         chat.update(cx, |chat, cx| {
@@ -8212,6 +8739,7 @@ mod pane_tests {
                     pm("NickServ", "This nickname is registered", true, false),
                     pm("carol", "old", false, true),
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: "BOB".into(),
                         text: "hi bob".into(),
                         notice: false,
@@ -8234,6 +8762,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8389,6 +8918,7 @@ mod pane_tests {
             mentioned,
             server_time: None,
             msgid: None,
+            account: None,
             replayed: false,
         };
         chat.update(cx, |chat, cx| {
@@ -8429,6 +8959,7 @@ mod pane_tests {
                         replayed: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -8437,6 +8968,7 @@ mod pane_tests {
                         replayed: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                     },
                     Event::PrivateMessage {
                         sender: "carol".into(),
@@ -8444,6 +8976,7 @@ mod pane_tests {
                         notice: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::PrivateMessage {
@@ -8452,6 +8985,7 @@ mod pane_tests {
                         notice: true,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8529,6 +9063,7 @@ mod pane_tests {
                     replayed: true,
                     server_time: None,
                     msgid: None,
+                    account: None,
                 }],
                 false,
                 cx,
@@ -8590,6 +9125,7 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::ChannelMessage {
@@ -8600,6 +9136,7 @@ mod pane_tests {
                         mentioned: true,
                         server_time: Some(old),
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                 ],
@@ -8656,14 +9193,17 @@ mod pane_tests {
                         mentioned: false,
                         server_time: None,
                         msgid: None,
+                        account: None,
                         replayed: false,
                     },
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: channel.into(),
                         text: "reply".into(),
                         notice: false,
                     },
                     Event::OutgoingAccepted {
+                        local_id: None,
                         channel: channel.into(),
                         text: "notice".into(),
                         notice: true,
@@ -8753,6 +9293,7 @@ mod pane_tests {
                     mentioned: false,
                     server_time: None,
                     msgid: None,
+                    account: None,
                     replayed: false,
                 },
             ]

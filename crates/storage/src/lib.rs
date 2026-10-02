@@ -28,7 +28,7 @@ pub struct ServerPreset {
     pub host: &'static str,
 }
 
-pub const PRESETS: [ServerPreset; 2] = [
+pub const PRESETS: [ServerPreset; 3] = [
     ServerPreset {
         name: "IRCnet",
         host: "irc.ircnet.ne.jp",
@@ -36,6 +36,10 @@ pub const PRESETS: [ServerPreset; 2] = [
     ServerPreset {
         name: "IRCnet (IPv6)",
         host: "irc6.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "IRCnet (dev)",
+        host: "dev.ircnet.ne.jp",
     },
 ];
 
@@ -392,6 +396,13 @@ pub struct Ircv3Preferences {
     /// (experimental). Added without a version change: files without it
     /// read as off.
     pub chathistory: bool,
+    /// Server-confirmed sending: `echo-message` and `labeled-response`.
+    /// Added without a version change: files without it read as off.
+    pub confirmed_sending: bool,
+    /// Follow the services accounts and real names of channel members
+    /// (`account-notify`, `extended-join`, WHOX). Added without a version
+    /// change: files without it read as off.
+    pub accounts: bool,
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
@@ -1181,6 +1192,7 @@ mod tests {
         assert!(settings.selected_profile().is_none());
         let added = settings.add_server(PRESETS[1].host);
         assert_eq!(added.host, "irc6.ircnet.ne.jp");
+        assert!(PRESETS.iter().any(|p| p.host == "dev.ircnet.ne.jp"));
         assert!(
             added.id.starts_with("custom-"),
             "a fresh ID, not a preset's"
@@ -1516,11 +1528,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 

@@ -18,6 +18,7 @@
 | 1～10番目のサーバー | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | チャンネル発言（`PRIVMSG`）を送信 | `Enter` | `Enter` |
 | IRC `NOTICE` を送信 | `Ctrl+Enter` | `Ctrl+Enter` |
+| 送信済み入力を古い方 / 新しい方へ呼び出す(直近20件、起動中のみ) | `Up` / `Down` | `Up` / `Down` |
 | 接続設定を開く | `Cmd+,` | `Ctrl+,` |
 | 接続診断を表示・非表示 | `Cmd+Shift+D` | `Ctrl+Shift+D` |
 | 接続診断をコピー | `Cmd+Shift+L` | `Ctrl+Shift+L` |

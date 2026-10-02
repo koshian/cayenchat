@@ -51,7 +51,7 @@ pub(crate) struct Ircv3Feature {
 }
 
 /// Features shown on the IRCv3 tab, in display order.
-pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 5] = [
+pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
     Ircv3Feature {
         id: "ircv3-server-time",
         label_key: "ircv3_server_time",
@@ -82,6 +82,22 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 5] = [
         hint_key: "ircv3_chathistory_hint",
         get: |preferences| preferences.chathistory,
         toggle: |preferences| preferences.chathistory = !preferences.chathistory,
+        warning: |_| None,
+    },
+    Ircv3Feature {
+        id: "ircv3-confirmed-sending",
+        label_key: "ircv3_confirmed_sending",
+        hint_key: "ircv3_confirmed_sending_hint",
+        get: |preferences| preferences.confirmed_sending,
+        toggle: |preferences| preferences.confirmed_sending = !preferences.confirmed_sending,
+        warning: |_| None,
+    },
+    Ircv3Feature {
+        id: "ircv3-accounts",
+        label_key: "ircv3_accounts",
+        hint_key: "ircv3_accounts_hint",
+        get: |preferences| preferences.accounts,
+        toggle: |preferences| preferences.accounts = !preferences.accounts,
         warning: |_| None,
     },
     Ircv3Feature {
@@ -130,33 +146,52 @@ impl SettingsWindow {
         };
 
         // Which server is being configured, and a way to pick another.
-        let mut servers = div().flex().flex_wrap().gap_1();
-        for (index, server) in self.settings.values.ordered_servers().enumerate() {
-            let id = server.id.clone();
-            let selected = id == profile.id;
-            servers = servers.child(
-                div()
-                    .id(("ircv3-server", index))
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
-                    .cursor_pointer()
-                    .when(selected, |d| {
-                        d.bg(theme.selected).font_weight(FontWeight::BOLD)
-                    })
-                    .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
-                    .child(server_label(&server.host, server.port, &self.i18n))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_server(id.clone(), cx)),
-                    ),
-            );
+        let mut servers = div().flex().flex_col().child(
+            div()
+                .id("ircv3-server-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!(
+                    "{}  ▾",
+                    server_label(&profile.host, profile.port, &self.i18n)
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.ircv3_server_list_open = !this.settings.ircv3_server_list_open;
+                    cx.notify();
+                })),
+        );
+        if self.settings.ircv3_server_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            for (index, server) in self.settings.values.ordered_servers().enumerate() {
+                let id = server.id.clone();
+                menu = menu.child(
+                    div()
+                        .id(("ircv3-server", index))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .when(id == profile.id, |d| d.bg(theme.selected))
+                        .child(server_label(&server.host, server.port, &self.i18n))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.settings.ircv3_server_list_open = false;
+                            this.select_server(id.clone(), cx)
+                        })),
+                );
+            }
+            servers = servers.child(menu);
         }
         panel = panel
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap_2()
                     .child(
                         div()

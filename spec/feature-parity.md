@@ -49,7 +49,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — CTCP AVATAR (KVIrc protocol, experimental, per-server opt-in): realname mark when sharing, answers to private queries with an explicitly shared URL, bounded WHO/realname discovery and queries to marked users; URL only (no DCC); checked against wire fixtures from KVIrc's source, not a running KVIrc
 - PARTIAL — local receive/send timestamps; with the per-server server-time opt-in, incoming channel messages, activity and private messages show the server's time (local HH:MM, receipt-time fallback); server log lines and dates are not shown
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
-- PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT and channel MODE activity in English regardless of UI language, while other membership details remain pending
+- PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log switches channels on double-click
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
@@ -140,12 +140,13 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — server-time: per-server opt-in (default off), independent of message tags
 - PARTIAL — batch (opt-in per server, default off): receives batches and recognizes `chathistory`/`znc.in/playback` history (including nested batches) so it does not notify; checked against local fixtures only; the batch option itself sends no CHATHISTORY requests
 - PARTIAL — metadata (`draft/metadata-2`, experimental, requested whenever offered, with batch as its prerequisite; display follows the single "Show user avatars" switch): the user `avatar` key only — SUB, METADATA/761/766, deferred SYNC, bounded GET lookups for users who join later, and explicit SET to publish or remove our own avatar with server-confirmed feedback; checked against Ergo v2.19.1 and local fixtures; no other keys, channel avatars, LIST/CLEAR, MONITOR or `before-connect`
-- TODO — echo-message and labeled-response
+- DONE — echo-message and labeled-response (IRCv3 standard, one per-server opt-in "Server-confirmed sending", default off): the message still appears at once; the server's echo confirms it in place (final text, msgid, server time), a labeled ACK/error/batch names it exactly, a rejected or unconfirmed message is drawn in the warning color; what other clients of the account send shows as before. `labeled-response` needs `batch` and `message-tags` (requested automatically, UTF-8 connections only); on a server with only `echo-message` an echo is matched by target and identical text
+- PARTIAL — account-related capabilities: `account-notify` and `extended-join` (IRCv3 standard, per-server opt-in "User accounts", default off) track the services account and real name of channel members and complete WHOIS; initial state through one WHOX query per joined channel where the server has WHOX; `account-tag` is separate work
+- DONE — extended-join (with the "User accounts" opt-in above)
+- DONE — account-tag (IRCv3 standard): the sender's services account at send time is retained on each channel/private/history message (`Message::account`, not shown in the log; the WHOIS dialog keeps showing the 330 account). Requested when a CAP negotiation happens anyway, on UTF-8 connections only
 - DONE — setname (IRCv3 standard): the per-server `Real name` setting is sent in `USER`; changing it while connected sends `SETNAME` when the server enabled `setname`, otherwise it applies at the next connection. Requested only when a CAP negotiation happens anyway (SASL or another opt-in), so plain registration is unchanged. Others' SETNAME changes are not tracked
-- TODO — account-related capabilities
-- TODO — extended-join
 - TODO — away-notify
-- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); no AFTER/BETWEEN/AROUND/TARGETS
+- PARTIAL — chathistory (`draft/chathistory`, experimental, per-server opt-in): `LATEST` on join (with a reference after a reconnect) and `BEFORE` on scroll, for joined channels only (see Logging and history); `TARGETS` once per connection finds direct-message conversations with messages since the previous disconnect (default one day, at most a week, 16 peers) and asks their latest 50 lines quietly; no AFTER/BETWEEN/AROUND, no channel discovery
 - TODO — other capabilities based on real-world usefulness
 
 ## Appearance

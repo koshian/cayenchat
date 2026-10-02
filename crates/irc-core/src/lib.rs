@@ -1,7 +1,9 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
+mod accounts;
 mod cap;
 mod ctcp;
+mod echo;
 mod history;
 mod metadata;
 mod peer_avatar;
@@ -38,6 +40,10 @@ use tokio::sync::{Notify, mpsc};
 
 const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 512;
+/// How far back direct-message discovery looks without a known disconnect,
+/// and at most.
+const TARGETS_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
+const TARGETS_MAX_WINDOW: Duration = Duration::from_secs(7 * 24 * 3600);
 const USER_DISCONNECT: &str = "Disconnected by user.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
@@ -114,6 +120,11 @@ pub struct ConnectionConfig {
     /// negotiated, the first JOIN of each asks only for what came after
     /// (reconnect gap recovery); otherwise they are unused.
     pub resume_history: Vec<HistoryResume>,
+    /// With chathistory negotiated, direct-message conversations with
+    /// messages since this time are asked for once after registration
+    /// (`CHATHISTORY TARGETS`): normally when the previous connection ended.
+    /// `None` looks a day back; nothing goes further back than a week.
+    pub history_targets_since: Option<SystemTime>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -137,6 +148,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("ircv3", &self.ircv3)
             .field("shared_avatar", &self.shared_avatar)
             .field("resume_history", &self.resume_history.len())
+            .field("history_targets_since", &self.history_targets_since)
             .finish()
     }
 }
@@ -161,6 +173,7 @@ impl ConnectionConfig {
             ircv3: Ircv3Options::default(),
             shared_avatar: None,
             resume_history: Vec::new(),
+            history_targets_since: None,
         }
     }
 
@@ -281,6 +294,35 @@ fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The tag section of a message a client sends may take 4094 bytes (IRCv3
+/// message-tags) without the leading `@` and the space after it, so 4096 as
+/// `tags::tag_bytes` counts them. It is separate from the 512 bytes of the
+/// message itself.
+const MAX_CLIENT_TAG_BYTES: usize = 4096;
+
+/// Checks a message that carries tags: the message without them against the
+/// usual 512-byte limit, its tags against their own limit, and the whole
+/// line for characters the encoding cannot hold. Tag values are UTF-8 (the
+/// worker requests tags only on UTF-8 connections).
+fn validate_tagged_wire(message: &IrcMessage, label: &str) -> Result<(), String> {
+    let mut untagged = message.clone();
+    untagged.tags = None;
+    validate_wire(&untagged.to_string(), label)?;
+    if let Some(tags) = &message.tags {
+        if tags::tag_bytes(tags) > MAX_CLIENT_TAG_BYTES {
+            return Err("Message tags exceed the 4094-byte limit.".into());
+        }
+        // The line as a whole, for encodability only: tags are not part of
+        // the 512 bytes.
+        let codec = encoding_from_whatwg_label(label)
+            .ok_or_else(|| format!("Unsupported character encoding: {label}"))?;
+        codec
+            .encode(&message.to_string(), EncoderTrap::Strict)
+            .map_err(|_| format!("Text contains a character that cannot be encoded as {label}."))?;
+    }
+    Ok(())
+}
+
 fn requires_utf8(message: &IrcMessage) -> bool {
     matches!(&message.command, IrcCommand::Response(Response::RPL_ISUPPORT, args)
         if args.iter().any(|arg| arg.split_whitespace().any(|token| token == "UTF8ONLY")))
@@ -357,6 +399,9 @@ pub enum Event {
         server_time: Option<SystemTime>,
         /// The server's `msgid` tag, when present and non-empty.
         msgid: Option<String>,
+        /// The sender's services account when the message was sent
+        /// (`account-tag`), when the server reports one.
+        account: Option<String>,
         /// History or a server/bouncer line rather than a live message from
         /// a user; it must not notify again.
         replayed: bool,
@@ -383,6 +428,8 @@ pub enum Event {
         server_time: Option<SystemTime>,
         /// The server's `msgid` tag, when present and non-empty.
         msgid: Option<String>,
+        /// The sender's services account (`account-tag`), when reported.
+        account: Option<String>,
         /// Replayed history (IRCv3 history batch).
         replayed: bool,
     },
@@ -411,10 +458,29 @@ pub enum Event {
         channel: String,
         users: Vec<String>,
     },
+    /// What is known about a user we share a channel with (opt-in "user
+    /// accounts"): their services account (`None`: not logged in or not
+    /// known) and real name, from `extended-join`, `account-notify` or a
+    /// WHOX reply. Sent again when either changes, also under a new
+    /// nickname; the old one is then [`Event::UserAccountForgotten`].
+    UserAccount {
+        nickname: String,
+        account: Option<String>,
+        realname: Option<String>,
+    },
+    /// The user no longer shares a channel with us: forget what was known.
+    UserAccountForgotten {
+        nickname: String,
+    },
     ServerLine(String),
     /// A completed WHOIS reply, emitted at end-of-WHOIS (318).
     Whois(Box<WhoisInfo>),
+    /// `local_id`: set when the connection tracks this message for its
+    /// server echo (`echo-message`): [`Event::OutgoingConfirmed`] or
+    /// [`Event::OutgoingFailed`] with the same id follows, or the connection
+    /// ends first.
     OutgoingAccepted {
+        local_id: Option<u64>,
         channel: String,
         text: String,
         notice: bool,
@@ -505,6 +571,20 @@ pub enum Event {
         messages: Vec<HistoryMessage>,
         status: OlderHistoryStatus,
     },
+    /// The server echoed our message `local_id` back. `text` is the final
+    /// text when the server changed it (and the local line is the text
+    /// itself); `msgid` and `server_time` are what the server recorded.
+    OutgoingConfirmed {
+        local_id: u64,
+        text: Option<String>,
+        msgid: Option<String>,
+        server_time: Option<SystemTime>,
+    },
+    /// Our message `local_id` was rejected, or not confirmed in time.
+    OutgoingFailed {
+        local_id: u64,
+        reason: String,
+    },
     Disconnected(String),
     /// The server rejected credentials or this configuration. Terminal like
     /// `Disconnected`, but reconnecting with the same settings would only be
@@ -514,10 +594,22 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChannelActivityKind {
-    Joined { mask: Option<String> },
-    Left { reason: Option<String> },
-    Quit { reason: Option<String> },
-    ModeChanged { modes: String },
+    Joined {
+        mask: Option<String>,
+    },
+    Left {
+        reason: Option<String>,
+    },
+    Quit {
+        reason: Option<String>,
+    },
+    /// The actor's old nickname; `to` is the new one.
+    NickChanged {
+        to: String,
+    },
+    ModeChanged {
+        modes: String,
+    },
 }
 
 /// Why a `SETNAME` did not change the realname.
@@ -1298,6 +1390,7 @@ async fn run_cancellable(
     let wire_encoding = config.encoding.clone();
     let server_password = config.server_password.clone();
     let registration_nick = config.nickname.clone();
+    let targets_since = config.history_targets_since;
     let registration_user = config.username.clone();
     let auto_join_channels = config.channels.clone();
     let irc_config = library_config(&config);
@@ -1478,6 +1571,11 @@ async fn run_cancellable(
     let mut metadata_enabled = false;
     let mut history = history::HistoryRequests::with_resume(config.resume_history);
     let mut history_enabled = false;
+    let mut echoes = echo::Echoes::default();
+    let mut next_local_id = 0u64;
+    let mut accounts = accounts::Accounts::default();
+    let track_accounts = config.ircv3.accounts;
+    let mut targets_asked = false;
     // Last reported Event::HistoryAvailable.
     let mut history_available = false;
     let mut registration_progress = tokio::time::interval(Duration::from_secs(10));
@@ -1489,21 +1587,48 @@ async fn run_cancellable(
                 let Some(command) = command else { break; };
                 match command {
                     Outgoing::Message {target, text, display_text, notice} => {
+                        // With echo-message the local line is confirmed by
+                        // the server's echo; a label (labeled-response)
+                        // names it exactly.
+                        let shown = echo_text(&target, display_text);
+                        next_local_id += 1;
+                        let local_id = next_local_id;
+                        let label = if registered && negotiation.enabled(cap::ECHO_MESSAGE) {
+                            echoes.track(
+                                local_id,
+                                &target,
+                                notice,
+                                &text,
+                                shown != text,
+                                negotiation.enabled(cap::LABELED_RESPONSE),
+                            )
+                        } else {
+                            None
+                        };
+                        let tracked = label.is_some();
                         let message = if notice {
                             IrcMessage::from(IrcCommand::NOTICE(target.clone(), text))
                         } else {
                             IrcMessage::from(IrcCommand::PRIVMSG(target.clone(), text))
                         };
+                        let message = echo::with_label(message, label.flatten());
                         let line = redacted_wire_line(&message);
-                        let result = validate_wire(&message.to_string(), &wire_encoding)
+                        let result = validate_tagged_wire(&message, &wire_encoding)
                             .and_then(|_| client.send(message).map_err(|error| error.to_string()));
                         let event = match result {
                             Ok(()) => {
                                 wire(&events, started, WireDirection::Sent, line).await;
-                                let text = echo_text(&target, display_text);
-                                Event::OutgoingAccepted {channel: target, text, notice}
+                                Event::OutgoingAccepted {
+                                    local_id: tracked.then_some(local_id),
+                                    channel: target,
+                                    text: shown,
+                                    notice,
+                                }
                             }
-                            Err(error) => Event::ServerLine(format!("Send failed: {error}")),
+                            Err(error) => {
+                                echoes.untrack(local_id);
+                                Event::ServerLine(format!("Send failed: {error}"))
+                            }
                         };
                         if events.send(event).await.is_err() { break; }
                     }
@@ -1695,6 +1820,7 @@ async fn run_cancellable(
                         let history_started = !history_enabled && negotiation.enabled(cap::CHATHISTORY);
                         history_enabled = negotiation.enabled(cap::CHATHISTORY);
                         history.isupport(&message);
+                        accounts.isupport(&message);
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
                         }
@@ -1709,6 +1835,18 @@ async fn run_cancellable(
                             history_available = registered && history_enabled;
                             if events.send(Event::HistoryAvailable(history_available)).await.is_err() {
                                 return;
+                            }
+                            // Once per connection: which conversations had
+                            // messages while we were away. Their history
+                            // follows through the same queue.
+                            if history_available && !targets_asked {
+                                targets_asked = true;
+                                let now = SystemTime::now();
+                                let since = targets_since.unwrap_or(now - TARGETS_DEFAULT_WINDOW);
+                                history.enqueue_targets(since.max(now - TARGETS_MAX_WINDOW), now);
+                                if !request_history(&client, &events, started, &mut history, registered).await {
+                                    return;
+                                }
                             }
                         }
                         // Subscribe once registered (the draft allows it earlier
@@ -1878,6 +2016,36 @@ async fn run_cancellable(
                                 }
                             }
                         }
+                        // Echoes, ACKs and errors of messages we sent.
+                        let mut echo_events = echoes.expire(tokio::time::Instant::now());
+                        if !negotiation.enabled(cap::ECHO_MESSAGE) && !echoes.outstanding().is_empty() {
+                            echo_events.extend(echoes.reset());
+                        }
+                        let echoed = echoes.observe(&message, &current_nick, negotiation.enabled(cap::LABELED_RESPONSE));
+                        let consumed = echoed.is_some();
+                        echo_events.extend(echoed.unwrap_or_default());
+                        for event in echo_events {
+                            if events.send(event).await.is_err() { return; }
+                        }
+                        if consumed { continue; }
+                        // Our WHOX reply is not a server line.
+                        if track_accounts && let Some(reply) = accounts.observe_who(&message) {
+                            for event in reply {
+                                if events.send(event).await.is_err() { return; }
+                            }
+                            if let Some(command) = accounts.next_who(tokio::time::Instant::now())
+                                && let Err(detail) = send_all(&client, &events, started, vec![command]).await
+                            {
+                                let _ = events.send(Event::Disconnected(detail)).await;
+                                return;
+                            }
+                            continue;
+                        }
+                        let mut account_events = if track_accounts {
+                            accounts.observe(&message, &current_nick, &roster.last)
+                        } else {
+                            Vec::new()
+                        };
                         let server_time = tags::server_time(&message, negotiation.enabled(cap::SERVER_TIME));
                         for event in translate_message(&client, &mut roster, &mut replay, &current_nick, message, server_time, batch_negotiated).into_iter().chain(whois_reply.map(|info| Event::Whois(Box::new(info)))) {
                             match &event {
@@ -1892,7 +2060,24 @@ async fn run_cancellable(
                                 }
                                 _ => {}
                             }
+                            if track_accounts {
+                                match &event {
+                                    Event::Names { channel, users } => account_events.extend(accounts.names(channel, users)),
+                                    Event::Joined { channel } => accounts.joined(channel),
+                                    _ => {}
+                                }
+                            }
                             if events.send(event).await.is_err() { return; }
+                        }
+                        for event in account_events {
+                            if events.send(event).await.is_err() { return; }
+                        }
+                        if track_accounts
+                            && let Some(command) = accounts.next_who(tokio::time::Instant::now())
+                            && let Err(detail) = send_all(&client, &events, started, vec![command]).await
+                        {
+                            let _ = events.send(Event::Disconnected(detail)).await;
+                            return;
                         }
                         for event in lifecycle {
                             if events.send(event).await.is_err() { return; }
@@ -1958,6 +2143,13 @@ async fn run_cancellable(
                     if events.send(event).await.is_err() { return; }
                 }
             }
+            // Report an unconfirmed outgoing message even when the server
+            // sends no further lines. No timer runs while none is pending.
+            _ = tokio::time::sleep_until(echoes.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if echoes.next_deadline().is_some() => {
+                for event in echoes.expire(tokio::time::Instant::now()) {
+                    if events.send(event).await.is_err() { return; }
+                }
+            }
             // An unanswered history request; no timer runs otherwise.
             _ = tokio::time::sleep_until(history.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if history_enabled && history.next_deadline().is_some() => {
                 if let Some(history::Observed::Finished(finished)) = history.tick(tokio::time::Instant::now())
@@ -2015,7 +2207,7 @@ async fn request_history(
     let resumed = match page {
         history::Page::Latest => false,
         history::Page::Resume => true,
-        history::Page::Before { .. } => return true,
+        history::Page::Before { .. } | history::Page::Targets { .. } => return true,
     };
     events
         .send(Event::HistoryRequested { channel, resumed })
@@ -2046,6 +2238,8 @@ async fn history_finished(
             messages: finished.messages,
             status,
         },
+        // Its peers were queued when the reply ended; nothing to report.
+        history::Page::Targets { .. } => return true,
     };
     events.send(event).await.is_ok()
 }
@@ -2338,6 +2532,7 @@ fn private_message(
         notice,
         server_time,
         msgid: tags::msgid(message).map(str::to_owned),
+        account: tags::account(message).map(str::to_owned),
         replayed,
     })
 }
@@ -2499,6 +2694,7 @@ fn translate_message(
                     ),
                 server_time,
                 msgid: tags::msgid(&message).map(str::to_owned),
+                account: tags::account(&message).map(str::to_owned),
                 replayed,
             }]
         }
@@ -2518,7 +2714,7 @@ fn translate_message(
         translated.push(activity);
     }
     if let IrcCommand::QUIT(reason) = &message.command
-        && let Some(actor) = actor
+        && let Some(actor) = &actor
     {
         translated.push(Event::UserQuit {
             nickname: actor.clone(),
@@ -2533,6 +2729,20 @@ fn translate_message(
                     kind: ChannelActivityKind::Quit {
                         reason: reason.clone(),
                     },
+                    server_time,
+                }),
+        );
+    }
+    if let IrcCommand::NICK(to) = &message.command
+        && let Some(actor) = &actor
+    {
+        translated.extend(
+            changed_channels
+                .iter()
+                .map(|channel| Event::ChannelActivity {
+                    channel: channel.clone(),
+                    actor: actor.clone(),
+                    kind: ChannelActivityKind::NickChanged { to: to.clone() },
                     server_time,
                 }),
         );
@@ -2641,6 +2851,35 @@ mod tests {
     }
 
     #[test]
+    fn account_tags_ride_along_with_channel_and_private_messages() {
+        let private =
+            |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "me", false, None);
+        let account = |event: Option<Event>| match event {
+            Some(Event::PrivateMessage { account, .. }) => account,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            account(private("@account=alice :alice!u@h PRIVMSG me :hi")),
+            Some("alice".into())
+        );
+        // Not logged in: the tag is absent; `*` and empty values are not accounts.
+        assert_eq!(account(private(":alice!u@h PRIVMSG me :hi")), None);
+        assert_eq!(
+            account(private("@account=* :alice!u@h PRIVMSG me :hi")),
+            None
+        );
+        assert_eq!(
+            account(private("@account= :alice!u@h PRIVMSG me :hi")),
+            None
+        );
+        // The account can differ between messages of one nickname.
+        assert_eq!(
+            account(private("@account=alice2 :alice!u@h PRIVMSG me :again")),
+            Some("alice2".into())
+        );
+    }
+
+    #[test]
     fn private_messages_come_only_from_users_to_our_nickname() {
         let translate =
             |line: &str| private_message(&line.parse::<IrcMessage>().unwrap(), "Me", false, None);
@@ -2652,6 +2891,7 @@ mod tests {
                 notice: false,
                 server_time: None,
                 msgid: None,
+                account: None,
                 replayed: false,
             })
         );
@@ -2663,6 +2903,7 @@ mod tests {
                 notice: true,
                 server_time: None,
                 msgid: None,
+                account: None,
                 replayed: false,
             })
         );
@@ -3443,6 +3684,10 @@ mod tests {
             ),
             ("bob", ChannelActivityKind::Left { reason: None }),
             (
+                "charlie",
+                ChannelActivityKind::NickChanged { to: "dave".into() },
+            ),
+            (
                 "dave",
                 ChannelActivityKind::Quit {
                     reason: Some("bye".into()),
@@ -4116,6 +4361,13 @@ mod tests {
                     .as_bytes(),
             )
             .unwrap();
+        if offer.contains("draft/chathistory") {
+            // Once per connection, as soon as registration completes.
+            assert!(read_client_line(lines).starts_with("CHATHISTORY TARGETS timestamp="),);
+            socket
+                .write_all(b":srv BATCH +tg draft/chathistory-targets\r\n:srv BATCH -tg\r\n")
+                .unwrap();
+        }
         assert_eq!(read_client_line(lines), "JOIN #test");
         socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
         requested
@@ -4208,6 +4460,621 @@ mod tests {
         assert_eq!(live, ["alice: live during request", "after"]);
         assert!(!events.iter().any(|event| matches!(event,
             Event::ServerLine(line) if line.contains("BATCH") || line.contains("old"))));
+    }
+
+    fn sending_options() -> Ircv3Options {
+        Ircv3Options {
+            confirmed_sending: true,
+            ..Ircv3Options::default()
+        }
+    }
+
+    #[test]
+    fn labeled_messages_are_confirmed_by_their_echo_batch_and_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            assert_eq!(
+                requested,
+                [
+                    "message-tags",
+                    "server-time",
+                    "batch",
+                    "echo-message",
+                    "labeled-response"
+                ]
+            );
+            let label = |line: &str| -> String {
+                let tag = line.strip_prefix("@label=").expect("labeled").to_owned();
+                tag.split_once(' ').unwrap().0.to_owned()
+            };
+            // 1: echoed with a rewritten text and the server's id and time.
+            let first = read_client_line(&mut lines);
+            assert!(first.ends_with("PRIVMSG #test :hello  world"), "{first}");
+            let l1 = label(&first);
+            assert!(l1.len() <= 64);
+            // 2: a multi-message labeled response (batch), 3: an error.
+            let second = read_client_line(&mut lines);
+            let third = read_client_line(&mut lines);
+            let (l2, l3) = (label(&second), label(&third));
+            assert!(l1 != l2 && l2 != l3 && l1 != l3, "labels are distinct");
+            // Another client's message as us: no label, not a confirmation.
+            socket
+                .write_all(
+                    format!(
+                        "@time=2026-09-28T10:00:00.000Z :alice!u@h PRIVMSG #test :from my phone\r\n\
+@label={l1};msgid=m1;time=2026-09-28T10:00:01.000Z :alice!u@h PRIVMSG #test :hello world\r\n\
+@label={l2} :srv BATCH +b labeled-response\r\n\
+@batch=b;msgid=m2;time=2026-09-28T10:00:02.000Z :alice!u@h PRIVMSG bob :second\r\n\
+:srv BATCH -b\r\n\
+@label={l3} :srv 404 alice #closed :Cannot send to channel\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection
+            .send_message("#test", "hello  world", false)
+            .unwrap();
+        connection
+            .send_private_message("bob", "second", false)
+            .unwrap();
+        connection.send_message("#test", "third", false).unwrap();
+        let mut accepted = Vec::new();
+        let mut settled = Vec::new();
+        let mut live = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && settled.len() < 3 {
+            match connection.try_recv() {
+                Some(Event::OutgoingAccepted { local_id, .. }) => accepted.push(local_id),
+                Some(Event::OutgoingConfirmed {
+                    local_id,
+                    text,
+                    msgid,
+                    server_time,
+                }) => {
+                    assert!(server_time.is_some());
+                    settled.push(format!("{local_id} ok {text:?} {msgid:?}"));
+                }
+                Some(Event::OutgoingFailed { local_id, reason }) => {
+                    settled.push(format!("{local_id} failed {reason}"))
+                }
+                Some(Event::ChannelMessage { text, .. }) => live.push(text),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+        assert_eq!(accepted, [Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            settled,
+            [
+                "1 ok Some(\"hello world\") Some(\"m1\")",
+                "2 ok None Some(\"m2\")",
+                "3 failed Cannot send to channel"
+            ]
+        );
+        // Only the other client's line is a live message; no duplicates.
+        assert_eq!(live, ["from my phone"]);
+    }
+
+    #[test]
+    fn a_label_does_not_count_against_the_512_byte_message_limit() {
+        // A one-word text is sent without the colon: `PRIVMSG #test ` is 14
+        // bytes and CRLF 2, so 496 bytes of text fill the 512 bytes a
+        // message may have, which is also what is sent without labels. The
+        // `@label=...` tag has a limit of its own.
+        let text = "x".repeat(496);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected = text.clone();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            let sent = read_client_line(&mut lines);
+            let (tags, message) = sent.split_once(' ').expect("labeled");
+            assert!(tags.starts_with("@label="), "{tags}");
+            // The whole text arrives, in a message within its own limit
+            // (a single word is sent without the colon).
+            assert!(message.ends_with(&expected), "{message}");
+            assert!(message.len() + 2 <= 512, "{} bytes", message.len() + 2);
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", &text, false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingAccepted { .. } | Event::ServerLine(_))
+        });
+        assert!(
+            matches!(
+                event,
+                Event::OutgoingAccepted {
+                    local_id: Some(1),
+                    ..
+                }
+            ),
+            "a message that fits without a label is sent with one: {event:?}"
+        );
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+
+        // One byte more does not fit, with or without a label.
+        assert!(
+            validate_wire(&format!("PRIVMSG #test {text}x\r\n"), "UTF-8").is_err(),
+            "the message part stays limited to 512 bytes"
+        );
+    }
+
+    #[test]
+    fn tagged_messages_have_separate_limits_for_tags_and_message() {
+        let tagged = |label: &str, text: &str| {
+            echo::with_label(
+                IrcMessage::from(IrcCommand::PRIVMSG("#test".into(), text.into())),
+                Some(label.into()),
+            )
+        };
+        // A text of one word is sent without the colon, so 496 bytes fill
+        // the 512 bytes and 497 do not.
+        assert!(validate_tagged_wire(&tagged("c1", &"x".repeat(496)), "UTF-8").is_ok());
+        // The message part is limited as before, tags aside.
+        assert!(validate_tagged_wire(&tagged("c1", &"x".repeat(497)), "UTF-8").is_err());
+        // The tags are limited on their own: 4094 bytes without `@` and the
+        // space, so a value of 4094 - "label=".len() fits and one more does not.
+        let fits = "l".repeat(4094 - "label=".len());
+        assert!(validate_tagged_wire(&tagged(&fits, "hi"), "UTF-8").is_ok());
+        let too_long = "l".repeat(4094 - "label=".len() + 1);
+        assert!(
+            validate_tagged_wire(&tagged(&too_long, "hi"), "UTF-8")
+                .unwrap_err()
+                .contains("tags")
+        );
+        // A character the encoding cannot hold is still refused.
+        assert!(validate_tagged_wire(&tagged("c1", "🙂"), "ISO-2022-JP").is_err());
+    }
+
+    #[test]
+    fn withdrawing_labeled_response_keeps_echo_message_and_settles_pending_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "echo-message labeled-response batch message-tags server-time",
+                "NETWORK=t",
+            );
+            assert!(requested.contains(&"labeled-response".to_owned()));
+            // Sent with a label, as labeled-response was on.
+            let first = read_client_line(&mut lines);
+            assert!(first.starts_with("@label="), "{first}");
+            // The server withdraws labeled-response but keeps echo-message.
+            // Its echo of the pending message comes without a label.
+            socket
+                .write_all(
+                    b":srv CAP alice DEL :labeled-response\r\n\
+@msgid=m1;time=2026-09-28T10:00:01.000Z :alice!u@h PRIVMSG #test :still delivered\r\n",
+                )
+                .unwrap();
+            // A message sent now goes out without a label.
+            let second = read_client_line(&mut lines);
+            assert_eq!(second, "PRIVMSG #test later");
+            socket
+                .write_all(b"@msgid=m2 :alice!u@h PRIVMSG #test :later\r\n")
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection
+            .send_message("#test", "still delivered", false)
+            .unwrap();
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut sent_second = false;
+        while Instant::now() < deadline {
+            match connection.try_recv() {
+                Some(Event::OutgoingConfirmed {
+                    local_id, msgid, ..
+                }) => {
+                    seen.push(format!("confirmed {local_id} {msgid:?}"));
+                    if !sent_second {
+                        sent_second = true;
+                        connection.send_message("#test", "later", false).unwrap();
+                    } else {
+                        break;
+                    }
+                }
+                Some(Event::OutgoingFailed { local_id, .. }) => {
+                    seen.push(format!("failed {local_id}"));
+                }
+                Some(Event::ChannelMessage { text, .. }) => seen.push(format!("line {text}")),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+        // Each message is confirmed once; no echo is shown as another line.
+        assert_eq!(
+            seen,
+            [
+                "confirmed 1 Some(\"m1\")".to_owned(),
+                "confirmed 2 Some(\"m2\")".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn without_labels_an_identical_echo_confirms_and_without_echo_nothing_is_tracked() {
+        // echo-message only: no label tag on the wire, FIFO by text.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(&mut socket, &mut lines, "echo-message", "NETWORK=t");
+            assert_eq!(requested, ["echo-message"]);
+            // No label tag: labeled-response was not negotiated.
+            assert_eq!(read_client_line(&mut lines), "PRIVMSG #test hi");
+            socket
+                .write_all(b"@msgid=e1 :alice!u@h PRIVMSG #test :hi\r\n")
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", "hi", false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingConfirmed { .. })
+        });
+        assert!(matches!(
+            event,
+            Event::OutgoingConfirmed { local_id: 1, text: None, msgid: Some(ref id), .. } if id == "e1"
+        ));
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+
+        // A server without echo-message: the local line is all there is.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(&mut socket, &mut lines, "batch", "NETWORK=t");
+            assert!(requested.is_empty());
+            assert_eq!(read_client_line(&mut lines), "PRIVMSG #test hi");
+            let _ = read_client_line(&mut lines);
+        });
+        let mut connection = Connection::connect(plain_config(port, sending_options())).unwrap();
+        wait_for(&mut connection, |e| matches!(e, Event::Joined { .. }));
+        connection.send_message("#test", "hi", false).unwrap();
+        let event = wait_for(&mut connection, |e| {
+            matches!(e, Event::OutgoingAccepted { .. })
+        });
+        assert!(matches!(
+            event,
+            Event::OutgoingAccepted { local_id: None, .. }
+        ));
+        connection.disconnect().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn user_accounts_follow_joins_account_changes_and_one_whox_query() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            let requested = register_with(
+                &mut socket,
+                &mut lines,
+                "account-notify extended-join",
+                "WHOX",
+            );
+            assert_eq!(requested, ["account-notify", "extended-join"]);
+            socket
+                .write_all(
+                    b":srv 353 alice = #test :alice bob carol\r\n:srv 366 alice #test :End\r\n",
+                )
+                .unwrap();
+            // Members present before us: one WHOX query, its reply consumed.
+            assert_eq!(read_client_line(&mut lines), "WHO #test %tnar,1");
+            socket
+                .write_all(
+                    b":srv 354 alice 1 bob bob-acct :Bob Builder\r\n\
+:srv 354 alice 1 carol 0 :Carol\r\n\
+:srv 315 alice #test :End of /WHO list\r\n\
+:dave!u@h JOIN #test dave-acct :Dave D\r\n\
+:bob!u@h ACCOUNT *\r\n\
+:carol!u@h ACCOUNT carol-acct\r\n\
+:carol!u@h NICK carla\r\n\
+:dave!u@h QUIT :bye\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let options = Ircv3Options {
+            accounts: true,
+            ..Ircv3Options::default()
+        };
+        let events = run_fixture(plain_config(port, options), |events| {
+            events.iter().any(
+                |e| matches!(e, Event::UserAccountForgotten { nickname } if nickname == "dave"),
+            )
+        });
+        server.join().unwrap();
+        let tracked: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::UserAccount {
+                    nickname,
+                    account,
+                    realname,
+                } => Some(format!(
+                    "{nickname} {} {}",
+                    account.as_deref().unwrap_or("-"),
+                    realname.as_deref().unwrap_or("-")
+                )),
+                Event::UserAccountForgotten { nickname } => Some(format!("{nickname} gone")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tracked,
+            [
+                "bob bob-acct Bob Builder",
+                "carol - Carol",
+                "dave dave-acct Dave D",
+                "bob - Bob Builder",
+                "carol carol-acct Carol",
+                "carol gone",
+                "carla carol-acct Carol",
+                "dave gone",
+            ]
+        );
+        // The WHOX reply and account lines are not server lines.
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("354") || line.contains("Bob Builder"))));
+    }
+
+    #[test]
+    fn a_whox_reply_that_arrives_after_a_user_left_does_not_bring_them_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            register_with(
+                &mut socket,
+                &mut lines,
+                "account-notify extended-join",
+                "WHOX=ct",
+            );
+            // The query goes out on our join; bob leaves before its answer,
+            // and the member list (NAMES) is not even published yet.
+            assert_eq!(read_client_line(&mut lines), "WHO #test %tnar,1");
+            socket
+                .write_all(
+                    b":bob!u@h PART #test\r\n\
+:srv 354 alice 1 bob bob-acct :Bob Builder\r\n\
+:srv 354 alice 1 carol carol-acct :Carol\r\n\
+:srv 315 alice #test :End of /WHO list\r\n\
+:srv 353 alice = #test :alice carol\r\n:srv 366 alice #test :End\r\n\
+:carol!u@h PRIVMSG #test :done\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let options = Ircv3Options {
+            accounts: true,
+            ..Ircv3Options::default()
+        };
+        let events = run_fixture(plain_config(port, options), |events| {
+            channel_messages(events).len() == 1
+        });
+        server.join().unwrap();
+        let tracked: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::UserAccount {
+                    nickname, account, ..
+                } => Some(format!("{nickname} {}", account.as_deref().unwrap_or("-"))),
+                Event::UserAccountForgotten { nickname } => Some(format!("{nickname} gone")),
+                _ => None,
+            })
+            .collect();
+        // Only carol is recorded; bob, who left first, is not resurrected.
+        assert_eq!(tracked, ["carol carol-acct"]);
+    }
+
+    #[test]
+    fn user_accounts_are_not_tracked_unless_asked_for() {
+        let (port, server) = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut lines = BufReader::new(socket.try_clone().unwrap());
+                // Nothing to negotiate: registration goes without CAP.
+                assert_eq!(read_client_line(&mut lines), "CAP END");
+                let _ = (read_client_line(&mut lines), read_client_line(&mut lines));
+                socket
+                    .write_all(b":srv 001 alice :Welcome\r\n:srv 005 alice WHOX :ok\r\n:srv 376 alice :End\r\n")
+                    .unwrap();
+                assert_eq!(read_client_line(&mut lines), "JOIN #test");
+                socket
+                    .write_all(b":alice!u@h JOIN #test\r\n:bob!u@h JOIN #test b :B\r\n:bob!u@h PRIVMSG #test :hi\r\n")
+                    .unwrap();
+                // No WHO follows: the next line is the QUIT.
+                assert!(read_client_line(&mut lines).starts_with("QUIT"));
+            });
+            (port, server)
+        };
+        let events = run_fixture(plain_config(port, Ircv3Options::default()), |events| {
+            channel_messages(events).len() == 1
+        });
+        server.join().unwrap();
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            Event::UserAccount { .. } | Event::UserAccountForgotten { .. }
+        )));
+    }
+
+    #[test]
+    fn targets_discover_direct_messages_and_their_latest_lines_follow() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut lines = BufReader::new(socket.try_clone().unwrap());
+            // Registration by hand: the TARGETS reply is not empty here.
+            assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+            let _ = (read_client_line(&mut lines), read_client_line(&mut lines));
+            socket
+                .write_all(b":srv CAP * LS :batch server-time message-tags draft/chathistory\r\n")
+                .unwrap();
+            loop {
+                let line = read_client_line(&mut lines);
+                if line == "CAP END" {
+                    break;
+                }
+                let name = line.strip_prefix("CAP REQ ").unwrap();
+                socket
+                    .write_all(format!(":srv CAP * ACK :{name}\r\n").as_bytes())
+                    .unwrap();
+            }
+            socket
+                .write_all(b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n")
+                .unwrap();
+            let asked = read_client_line(&mut lines);
+            assert!(
+                asked.starts_with("CHATHISTORY TARGETS timestamp=")
+                    && asked.ends_with(" 16")
+                    && asked.matches("timestamp=").count() == 2,
+                "{asked}"
+            );
+            assert_eq!(read_client_line(&mut lines), "JOIN #test");
+            socket
+                .write_all(
+                    b":alice!u@h JOIN #test\r\n\
+:srv BATCH +t draft/chathistory-targets\r\n\
+@batch=t :srv CHATHISTORY TARGETS #test 2026-09-27T23:59:00.000Z\r\n\
+@batch=t :srv CHATHISTORY TARGETS Bob 2026-09-27T23:58:00.000Z\r\n\
+@batch=t :srv CHATHISTORY TARGETS bob 2026-09-27T23:57:00.000Z\r\n\
+:srv BATCH -t\r\n",
+                )
+                .unwrap();
+            // The channel asks on join; the direct message follows, one at a time.
+            assert_eq!(
+                read_client_line(&mut lines),
+                "CHATHISTORY LATEST #test * 50"
+            );
+            socket
+                .write_all(b":srv BATCH +c chathistory #test\r\n:srv BATCH -c\r\n")
+                .unwrap();
+            assert_eq!(read_client_line(&mut lines), "CHATHISTORY LATEST Bob * 50");
+            socket
+                .write_all(
+                    b":srv BATCH +d chathistory Bob\r\n\
+@batch=d;time=2026-09-27T23:57:00.000Z;msgid=d1 :Bob!u@h PRIVMSG alice :did you get this?\r\n\
+@batch=d;time=2026-09-27T23:58:00.000Z;msgid=d2 :alice!u@h PRIVMSG Bob :not yet\r\n\
+:srv BATCH -d\r\n",
+                )
+                .unwrap();
+            let _ = read_client_line(&mut lines);
+        });
+        let mut config = plain_config(port, history_options());
+        config.history_targets_since = Some(SystemTime::now() - Duration::from_secs(3600));
+        let events = run_fixture(config, |events| {
+            events.iter().any(
+                |event| matches!(event, Event::ChannelHistory { channel, .. } if channel == "Bob"),
+            )
+        });
+        server.join().unwrap();
+        let requested: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::HistoryRequested { channel, resumed } => Some((channel.as_str(), *resumed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requested, [("#test", false), ("Bob", false)]);
+        let dm = events
+            .iter()
+            .find_map(|event| match event {
+                Event::ChannelHistory {
+                    channel, messages, ..
+                } if channel == "Bob" => Some(messages),
+                _ => None,
+            })
+            .unwrap();
+        let lines: Vec<_> = dm
+            .iter()
+            .map(|m| (m.sender.as_str(), m.text.as_str(), m.msgid.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("Bob", "did you get this?", Some("d1")),
+                ("alice", "not yet", Some("d2"))
+            ]
+        );
+        // Discovery is history, not live traffic.
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Event::PrivateMessage { .. } | Event::OwnPrivateMessage { .. }
+        )));
+        assert!(!events.iter().any(|event| matches!(event,
+            Event::ServerLine(line) if line.contains("TARGETS") || line.contains("BATCH") || line.contains("Bob"))));
     }
 
     /// Like [`run_fixture`], but `step` may queue commands as events arrive;
@@ -4682,6 +5549,8 @@ mod tests {
             metadata: false,
             peer_avatars: false,
             chathistory: false,
+            confirmed_sending: false,
+            accounts: false,
         };
         let events = run_fixture(plain_config(port, options), |events| {
             channel_messages(events).len() == 3
@@ -4775,6 +5644,8 @@ mod tests {
                 metadata: false,
                 peer_avatars: false,
                 chathistory: false,
+                confirmed_sending: false,
+                accounts: false,
             },
         );
         config.encoding = "ISO-2022-JP".into();
