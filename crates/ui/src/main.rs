@@ -7387,8 +7387,7 @@ impl ChatWindow {
                     })
                 });
                 let has_avatar = avatar.is_some();
-                div()
-                    .id(("member", index))
+                exclusive_row(div().id(("member", index)))
                     .debug_selector(move || format!("member-row-{index}"))
                     .px_2()
                     .py(px(1.))
@@ -7481,6 +7480,15 @@ impl ChatWindow {
             })
             .collect()
     }
+}
+
+/// Makes a row of a list the only one under the pointer when it is on the
+/// line between two rows. GPUI counts a bounds' lower and right edges as
+/// inside it, so the line shared by two rows is inside both, and both would
+/// be hovered (and colored) at once, while a click reaches only the one in
+/// front. Scrolling still passes through to the list.
+fn exclusive_row<E: InteractiveElement>(row: E) -> E {
+    row.block_mouse_except_scroll()
 }
 
 fn navigation_binding(key: &str, command: Command) -> KeyBinding {
@@ -8678,6 +8686,58 @@ mod pane_tests {
             assert!(chat.member_menu.is_none());
             assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
         });
+    }
+
+    use gpui::{Context, IntoElement, Window, div, prelude::*, px};
+
+    /// Two rows one above the other, each noting whether it is hovered.
+    struct TwoRows {
+        hovered: std::rc::Rc<std::cell::Cell<[bool; 2]>>,
+        exclusive: bool,
+    }
+
+    impl gpui::Render for TwoRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let row = |index: usize| {
+                let hovered = self.hovered.clone();
+                let row = div()
+                    .id(("row", index))
+                    .h(px(22.))
+                    .on_hover(move |on, _, _| {
+                        let mut now = hovered.get();
+                        now[index] = *on;
+                        hovered.set(now);
+                    });
+                if self.exclusive {
+                    super::exclusive_row(row)
+                } else {
+                    row
+                }
+            };
+            div().size_full().child(row(0)).child(row(1))
+        }
+    }
+
+    #[gpui::test]
+    fn only_one_row_is_hovered_on_the_line_between_two(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, point};
+
+        for (exclusive, expected) in [(false, [true, true]), (true, [false, true])] {
+            let hovered = std::rc::Rc::new(std::cell::Cell::new([false; 2]));
+            let (_view, cx) = cx.add_window_view(|_, _| TwoRows {
+                hovered: hovered.clone(),
+                exclusive,
+            });
+            cx.run_until_parked();
+            // Rows are 22 px tall: the line at 22 belongs to both.
+            cx.simulate_mouse_move(point(px(10.), px(22.)), None, Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(hovered.get(), expected, "exclusive: {exclusive}");
+            // Inside a row, only that row.
+            cx.simulate_mouse_move(point(px(10.), px(11.)), None, Modifiers::none());
+            cx.run_until_parked();
+            assert_eq!(hovered.get(), [true, false], "exclusive: {exclusive}");
+        }
     }
 
     #[gpui::test]
