@@ -935,6 +935,8 @@ struct ChatWindow {
     restore_layout: bool,
     layout_file: Option<std::path::PathBuf>,
     layout_save: Option<Task<()>>,
+    /// Where the window was last seen, for writing the layout without it.
+    window_bounds: Option<WindowBounds>,
     /// The native window title last set from `render`.
     shown_title: String,
     /// Open WHOIS windows by network and lowercase nickname.
@@ -1281,7 +1283,7 @@ impl ChatWindow {
             inputs.insert(key, cx.new(|cx| TextInput::new_live(&placeholder, cx)));
         }
         window.focus(&inputs[&state.selection()].focus_handle(cx));
-        let this = Self {
+        let mut this = Self {
             state,
             main_lists: HashMap::new(),
             sub_list: LogList::new(),
@@ -1307,6 +1309,7 @@ impl ChatWindow {
             restore_layout: saved.restore_window_layout,
             layout_file: None,
             layout_save: None,
+            window_bounds: None,
             shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
@@ -1353,14 +1356,34 @@ impl ChatWindow {
         })
         .detach();
         // Moving or resizing the window, and closing it, keep the layout.
-        cx.observe_window_bounds(window, |this, _, cx| this.schedule_layout_save(cx))
-            .detach();
+        // The window's bounds are noted as they change so that the layout can
+        // also be written where no window is at hand: when the application
+        // quits (Cmd+Q) without the window being asked to close.
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.note_window_bounds(window);
+            this.schedule_layout_save(cx);
+        })
+        .detach();
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
-            let _ = view.update(cx, |this, _| this.save_layout_now(window));
+            let _ = view.update(cx, |this, _| {
+                this.note_window_bounds(window);
+                this.save_layout_now();
+            });
             true
         });
+        cx.on_app_quit(|this, _| {
+            this.save_layout_now();
+            async {}
+        })
+        .detach();
+        this.note_window_bounds(window);
         this
+    }
+
+    /// Remembers where the window is, for the next layout write.
+    fn note_window_bounds(&mut self, window: &Window) {
+        self.window_bounds = Some(window.window_bounds());
     }
 
     /// Takes over the pane sizes of a saved layout. They are clamped when
@@ -1381,26 +1404,25 @@ impl ChatWindow {
         if !self.restore_layout || self.layout_file.is_none() {
             return;
         }
-        let Some(handle) = self.window_handle else {
-            return;
-        };
-        let window: AnyWindowHandle = handle.into();
         self.layout_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LAYOUT_SAVE_DELAY).await;
-            let _ = cx.update_window(window, |_, window, cx| {
-                this.update(cx, |this, _| this.save_layout_now(window))
-            });
+            let _ = this.update(cx, |this, _| this.save_layout_now());
         }));
     }
 
-    /// Writes the window's position and size and the pane sizes now. A
-    /// failure only means the layout is not remembered, so it is not shown.
-    fn save_layout_now(&mut self, window: &Window) {
+    /// Writes the window's position and size (as last noted) and the pane
+    /// sizes now. A failure only means the layout is not remembered, so it
+    /// is not shown.
+    fn save_layout_now(&mut self) {
         self.layout_save = None;
-        let (true, Some(path)) = (self.restore_layout, self.layout_file.as_ref()) else {
+        let (true, Some(path), Some(window_bounds)) = (
+            self.restore_layout,
+            self.layout_file.as_ref(),
+            self.window_bounds,
+        ) else {
             return;
         };
-        let (bounds, maximized) = match window.window_bounds() {
+        let (bounds, maximized) = match window_bounds {
             WindowBounds::Windowed(bounds) => (bounds, false),
             WindowBounds::Maximized(bounds) => (bounds, true),
             // Leaving full screen returns to the normal rectangle.
@@ -3863,7 +3885,8 @@ impl SettingsWindow {
             if layout_changed {
                 owner.restore_layout = restore_layout;
                 // Turning it on remembers where the window is right away.
-                owner.save_layout_now(window);
+                owner.note_window_bounds(window);
+                owner.save_layout_now();
             }
             if appearance_changed {
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
@@ -8798,9 +8821,9 @@ mod pane_tests {
         // here, and without one nothing is written.
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("window.json");
-        let save = |cx: &mut gpui::VisualTestContext| {
-            chat.update_in(cx, |chat, window, _| chat.save_layout_now(window))
-        };
+        // Saving needs no window at hand, as when the application quits.
+        let save =
+            |cx: &mut gpui::VisualTestContext| chat.update(cx, |chat, _| chat.save_layout_now());
         save(cx);
         assert!(!file.exists(), "no path, no file");
 
@@ -8831,6 +8854,13 @@ mod pane_tests {
         assert_eq!(saved.right_width, Some(DEFAULT_RIGHT_WIDTH));
         assert_eq!(saved.members_height, None);
         assert_eq!(saved.log_split, Some(DEFAULT_LOG_SPLIT));
+
+        // A resize is noted, so a later write without the window has it.
+        cx.simulate_resize(gpui::size(px(1111.), px(777.)));
+        cx.run_until_parked();
+        save(cx);
+        let resized = load_layout_from(&file).window.expect("window saved");
+        assert_eq!((resized.width, resized.height), (1111., 777.));
 
         // Switched off, nothing is written.
         std::fs::remove_file(&file).unwrap();

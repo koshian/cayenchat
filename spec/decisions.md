@@ -1150,9 +1150,20 @@ change).
   window is shrunk to that display and moved onto it as far as it fits, and
   never below the minimum window size. With no overlap (a monitor unplugged,
   a resolution change) the window opens in its usual centered place.
-- **When.** Moves and resizes, pane drags and closing write it, after a 0.5 s
-  pause for drags. Turning the setting on writes the current layout at once;
-  turning it off stops writing and reading but keeps the file.
+- **When.** Moves and resizes, pane drags, closing the window and quitting the
+  application (Cmd+Q does not ask the window to close) write it, after a 0.5 s
+  pause for moves and drags. The window's bounds are noted as they change, so
+  quitting can write without a window at hand. Turning the setting on writes
+  the current layout at once; turning it off stops writing and reading but
+  keeps the file.
+- **Trying it.** A test build starts empty on every launch, so it cannot show
+  a restore. `CAYENCHAT_TEST_DIR=<absolute path>` makes it use and keep that
+  directory (settings, credentials file and `window.json`), started from the
+  shell so that it inherits the variable (`open` does not pass it on), e.g.
+  `CAYENCHAT_TEST_DIR=$HOME/cayenchat-preview "CayenChat Test.app/Contents/MacOS/cayenchat"`.
+  The directory is created readable only by the user; one that already exists
+  is refused (on Unix) when other users can read it, because the test build's
+  credentials file lives there (`chmod 700` it).
 - **Not remembered.** Full screen returns to the normal rectangle. The work
   area (menu bar, taskbar) is not known to GPUI, so a window may start under
   the taskbar edge the OS then adjusts.
