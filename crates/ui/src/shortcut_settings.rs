@@ -248,3 +248,77 @@ impl SettingsWindow {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Entity, Keystroke};
+
+    use super::{Recorded, SettingsWindow, shortcuts};
+    use crate::SettingsTab;
+
+    #[gpui::test]
+    fn shortcuts_are_changed_by_keys(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx.add_window(|window, cx| {
+            crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            let mut form = SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = SettingsTab::Shortcuts;
+            form
+        });
+        cx.run_until_parked();
+        let overrides = |form: &Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| form.settings.values.keybindings.clone())
+        };
+        let key = Keystroke::parse("cmd-ctrl-j").unwrap().unparse();
+
+        // Press the key after choosing Change: it is kept for that action.
+        form.update(cx, |form, cx| {
+            form.toggle_shortcut_recording("next_channel", cx)
+        });
+        cx.simulate_keystrokes("a");
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_some()));
+        cx.simulate_keystrokes("cmd-ctrl-j");
+        assert_eq!(overrides(&form, cx)["next_channel"], key);
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_none()));
+
+        // Escape cancels and changes nothing.
+        form.update(cx, |form, cx| {
+            form.toggle_shortcut_recording("previous_channel", cx)
+        });
+        cx.simulate_keystrokes("escape");
+        assert_eq!(overrides(&form, cx).len(), 1);
+
+        // Sharing a key with another action is warned about on both.
+        form.update(cx, |form, cx| {
+            form.shortcut_recorded("previous_channel", Recorded::Key(key.clone()), cx)
+        });
+        let warned = |form: &Entity<SettingsWindow>, id: &str, cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                let action = shortcuts::ACTIONS.iter().find(|a| a.id == id).unwrap();
+                !form.shortcut_warnings(action).is_empty()
+            })
+        };
+        assert!(warned(&form, "next_channel", cx));
+        assert!(warned(&form, "previous_channel", cx));
+        assert!(!warned(&form, "next_server", cx));
+
+        // Undo one, then all.
+        form.update(cx, |form, cx| {
+            form.settings.values.keybindings.remove("previous_channel");
+            cx.notify();
+        });
+        assert!(!warned(&form, "next_channel", cx));
+        let reset_all = cx.debug_bounds("shortcut-reset-all").unwrap().center();
+        cx.simulate_click(reset_all, gpui::Modifiers::default());
+        assert!(overrides(&form, cx).is_empty());
+    }
+}
