@@ -3534,7 +3534,11 @@ impl SettingsWindow {
         }));
         let saved = settings.values.clone();
         let mut this = Self {
-            menu_bar: menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar),
+            menu_bar: {
+                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
+                bar.set_always(!saved.menu_bar_auto_hide);
+                bar
+            },
             owner,
             settings,
             feedback: None,
@@ -5134,8 +5138,11 @@ impl SettingsWindow {
                     ))
                     .child(self.i18n.text("menu_bar_auto_hide"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.menu_bar_auto_hide;
-                        *value = !*value;
+                        let hide = !this.settings.values.menu_bar_auto_hide;
+                        this.settings.values.menu_bar_auto_hide = hide;
+                        // This window's own bar follows at once, before the
+                        // setting is saved.
+                        this.menu_bar.set_always(!hide);
                         cx.notify();
                     })),
             )
@@ -5537,9 +5544,6 @@ fn preview_element(
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
-        // Follows the checkbox at once, before it is saved.
-        self.menu_bar
-            .set_always(!self.settings.values.menu_bar_auto_hide);
         let content = self.render_settings(cx).into_any_element();
         let content = menu_bar::wrap(
             &self.menu_bar,
