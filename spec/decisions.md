@@ -1133,6 +1133,42 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D038 — Settings: category list on the left, one reset per tab
+
+Status: implemented (#134, #135).
+
+The horizontal tabs wrapped onto two rows once there were nine of them, which
+broke the joined tab/body border. The settings window now has a fixed-width
+category list on the left (Experimental apart at the bottom) and the selected
+category's page on the right, scrolling by itself; the window opens wider
+(900 px, minimum 760 px). `SettingsTab` and the pages are unchanged. The list
+takes focus (a tab stop) when a category is clicked; Up/Down move through it
+and select as they go, except while a shortcut key is being recorded.
+
+Every page starts with its heading and a "Restore Defaults" button at the
+right, so the reset range is the page. The rule is one tab, one reset over
+exactly what the tab shows; the button is disabled while all of it already
+has its default (`settings_reset.rs`, comparing the form's snapshot with
+`Settings::default()`). A reset is saved and applied by the ordinary autosave.
+It asks first only for Appearance (colors and fonts are many, hand-picked
+choices); the others are a few switches.
+
+- **Appearance** (theme, colors, row/preview/avatar/layout switches, fonts,
+  combined-log name width, Linux display): the saved color palette is the
+  user's own data and is kept.
+- **Keyboard**: channel-number modifier, text key theme, menu bar auto-hide.
+- **Shortcuts**: clears every override. The per-action "Reset" stays; the old
+  "Reset all" at the bottom became this button.
+- **Notifications**, **Experimental**: their defaults (keywords emptied,
+  logging off and no file).
+- **IRCv3**: the selected server's opt-ins only (it is per server, and the
+  page names it); peer avatar sharing stops with it. Our own avatar URL is
+  data, not an option, and stays.
+- **Image Upload**: provider None. The account token is a credential and is
+  kept; Disconnect stays its own button.
+- **Connection** and **Credentials** have none: the former holds the user's
+  servers (and the language), the latter moves saved secrets between stores.
+
 ## D037 — Window position, size and pane sizes are remembered
 
 Status: implemented (issues #57 and #64).

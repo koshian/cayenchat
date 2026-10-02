@@ -5,7 +5,7 @@
 use gpui::{prelude::*, *};
 
 use crate::{
-    SettingsWindow, account_settings,
+    SettingsTab, SettingsWindow, account_settings,
     ircv3_settings::TextTooltip,
     key_recorder::{self, Recorded, Rejection},
     settings_theme,
@@ -220,32 +220,17 @@ impl SettingsWindow {
 
     pub(crate) fn render_shortcut_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        let any_changed = !self.settings.values.keybindings.is_empty();
-        let mut panel = account_settings::panel(cx).child(
-            div()
-                .text_size(px(20.))
-                .font_weight(FontWeight::BOLD)
-                .child(self.i18n.text("shortcuts_tab")),
-        );
+        let mut panel = account_settings::panel(cx).child(self.tab_heading(
+            SettingsTab::Shortcuts,
+            "shortcuts_tab",
+            cx,
+        ));
         for (index, action) in shortcuts::ACTIONS.iter().enumerate() {
             panel = panel.child(self.shortcut_row(index, action, cx));
         }
-        panel
-            .when(any_changed, |panel| {
-                panel.child(
-                    settings_theme::button("shortcut-reset-all", false, cx)
-                        .debug_selector(|| "shortcut-reset-all".into())
-                        .child(self.i18n.text("shortcut_reset_all"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.settings.values.keybindings.clear();
-                            this.shortcut_recording = None;
-                            cx.notify();
-                        })),
-                )
-            })
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
+        panel.when_some(self.status_message(), |d, feedback| {
+            d.child(div().text_color(theme.warning).child(feedback))
+        })
     }
 }
 
@@ -253,9 +238,7 @@ impl SettingsWindow {
 mod tests {
     use gpui::{Entity, Keystroke};
 
-    use super::{Recorded, SettingsWindow, shortcuts};
-    use crate::SettingsTab;
-
+    use super::{Recorded, SettingsTab, SettingsWindow, shortcuts};
     #[gpui::test]
     fn shortcuts_are_changed_by_keys(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -318,7 +301,7 @@ mod tests {
             cx.notify();
         });
         assert!(!warned(&form, "next_channel", cx));
-        let reset_all = cx.debug_bounds("shortcut-reset-all").unwrap().center();
+        let reset_all = cx.debug_bounds("reset-defaults").unwrap().center();
         cx.simulate_click(reset_all, gpui::Modifiers::default());
         assert!(overrides(&form, cx).is_empty());
     }

@@ -22,7 +22,7 @@ use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, SettingsWindow,
+    ChatWindow, SettingsTab, SettingsWindow,
     account_settings::panel,
     image_upload::{
         acceptable_attachment, clipboard_attachment, configured_uploader, file_attachment,
@@ -130,12 +130,7 @@ impl SettingsWindow {
                 .child(self.i18n.text(key))
         };
         let mut panel = panel(cx)
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("ircv3_tab")),
-            )
+            .child(self.tab_heading(SettingsTab::Ircv3, "ircv3_tab", cx))
             .child(
                 div()
                     .text_color(theme.text_secondary)
