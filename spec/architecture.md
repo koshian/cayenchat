@@ -157,7 +157,9 @@ channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft; Up/Down there recall the last 20 sent drafts
-(in memory only, shared by all conversations). Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+(in memory only, shared by all conversations, but browsing ends when the
+conversation changes). Commands that carry credentials (to NickServ or
+ChanServ, `/oper`, `/pass`, and `/raw` forms of those) are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
