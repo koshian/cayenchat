@@ -157,7 +157,9 @@ channels keeps the measured heights of lines shown before and after. Channel
 navigation commands are independent of GPUI. The UI binds macOS shortcuts from the
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft; Up/Down there recall the last 20 sent drafts
-(in memory only, shared by all conversations). Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+(in memory only, shared by all conversations, but browsing ends when the
+conversation changes). Commands that carry credentials (to NickServ or
+ChanServ, `/oper`, `/pass`, and `/raw` forms of those) are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
@@ -165,7 +167,21 @@ adding servers or media.
 Pane boundaries use `ui::splitter`: a thin handle that turns pointer drags
 into a pane size within the owner's minimum and maximum, measured from where
 the button went down (GPUI starts a drag only after a small movement). The
-owner stores the size; the handle draws and measures nothing else.
+owner stores the size; the handle draws and measures nothing else. The chat
+window uses it for the boundary between the left column and the right column
+(members over channel tree; 160 px at least, and the left column keeps 360 px)
+and for the one between the member list and the channel tree (80 px at least
+each; an even split until first dragged). The boundary between the two logs
+keeps its own handle, which also moves it with the pointer within limits and
+resets on a double click. Sizes are not saved yet (issue #57).
+
+`ui::color_picker::ColorPicker` is a saturation/brightness square, a hue bar
+and a `#RRGGBB` field that follow each other (GPUI has no color picker). It
+emits `ColorChanged` when the user picks or types a complete color;
+`set_color` shows a color the owner changed without emitting. Greys keep the
+hue the bar had. Each picker acts only on its own drags: GPUI delivers a
+drag's moves to every element that listens for that drag type, so the drag
+carries the picker's entity id.
 
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
@@ -219,7 +235,9 @@ opt-ins (message tags and server timestamps), off for new and migrated
 settings (D022); the later batch and metadata (avatar) opt-ins are new
 fields of the same object without a version change, read as off when
 absent, and so is the Appearance `user_avatars` setting (D023), as are the
-peer avatar option and the per-server shared URL `peer_avatar_url` (D025). The UI keeps the
+peer avatar option and the per-server shared URL `peer_avatar_url` (D025),
+and the Appearance `saved_colors` palette (up to 24 `#RRGGBB` colors; invalid
+or repeated entries are dropped on load). The UI keeps the
 effective colors in a GPUI global `Theme`: System follows the appearance GPUI
 reports (macOS/Windows appearance, or the XDG desktop portal color scheme on
 Linux) and switches live when it changes. Native title bars on macOS and Windows
@@ -317,7 +335,9 @@ IRC commands; private-message composition sends directly to the selected nick.
 `Connection::send_member_modes` gives or takes op/voice for several members,
 as `MODE <channel> +ooo a b c` lines of at most the server's announced
 `MODES` (ISUPPORT, read by the worker; 3 when absent, never more than 12) and
-a bounded length, validating everything before queuing anything.
+a bounded length, validating everything and checking that the queue has room
+for every line before queuing anything. NAMES entries without a nickname
+(servers padding with spaces) are dropped from rosters in `names_snapshot`.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
 The server context menu also offers Join channel… (sends `/join <name>`) and

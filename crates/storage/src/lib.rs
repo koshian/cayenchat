@@ -166,7 +166,14 @@ pub struct Appearance {
     /// Pane colors used while the dark theme is active; the flat fields above
     /// are the light theme's.
     pub dark: DarkColors,
+    /// Colors the user saved to pick again, as `#RRGGBB` in the order added.
+    /// At most [`MAX_SAVED_COLORS`], without repeats. Added after version 15
+    /// without a version change; files without it read as empty.
+    pub saved_colors: Vec<String>,
 }
+
+/// Colors the palette holds.
+pub const MAX_SAVED_COLORS: usize = 24;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -216,11 +223,50 @@ impl Default for Appearance {
             input_font: String::new(),
             time_font: String::new(),
             dark: DarkColors::default(),
+            saved_colors: Vec::new(),
         }
     }
 }
 
 impl Appearance {
+    /// Saves `color` (`#RRGGBB`, any case) to the palette. A color already
+    /// saved is not added again.
+    pub fn save_color(&mut self, color: &str) -> Result<(), String> {
+        let color = color.trim().to_ascii_uppercase();
+        if color_value(&color).is_none() {
+            return Err("Palette color must be #RRGGBB.".into());
+        }
+        if self.saved_colors.contains(&color) {
+            return Ok(());
+        }
+        if self.saved_colors.len() >= MAX_SAVED_COLORS {
+            return Err(format!(
+                "The palette holds at most {MAX_SAVED_COLORS} colors."
+            ));
+        }
+        self.saved_colors.push(color);
+        Ok(())
+    }
+
+    pub fn remove_saved_color(&mut self, color: &str) {
+        self.saved_colors
+            .retain(|saved| !saved.eq_ignore_ascii_case(color.trim()));
+    }
+
+    /// Drops palette entries that are not colors or repeat, and any beyond
+    /// the limit, so a hand-edited file cannot keep the settings from loading.
+    fn clean_palette(&mut self) {
+        let mut kept: Vec<String> = Vec::new();
+        for color in &self.saved_colors {
+            let color = color.trim().to_ascii_uppercase();
+            if color_value(&color).is_some() && !kept.contains(&color) {
+                kept.push(color);
+            }
+        }
+        kept.truncate(MAX_SAVED_COLORS);
+        self.saved_colors = kept;
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for (label, value) in [
             ("Member list", &self.member_list_background),
@@ -575,6 +621,7 @@ impl Settings {
     }
 
     fn normalize(mut self) -> Self {
+        self.appearance.clean_palette();
         if self.version <= 7
             && self
                 .appearance
@@ -1406,6 +1453,58 @@ mod tests {
                 .iter()
                 .all(|server| server.verify_tls_certificates)
         );
+    }
+
+    #[test]
+    fn saved_palette_colors_round_trip_and_are_bounded() {
+        let mut appearance = Appearance::default();
+        assert!(appearance.saved_colors.is_empty());
+        appearance.save_color(" #ff8800 ").unwrap();
+        appearance.save_color("#FF8800").unwrap();
+        appearance.save_color("#00aa00").unwrap();
+        assert_eq!(
+            appearance.saved_colors,
+            ["#FF8800", "#00AA00"],
+            "no repeats"
+        );
+        assert!(appearance.save_color("orange").is_err());
+        assert!(appearance.save_color("#12345").is_err());
+        appearance.remove_saved_color("#ff8800");
+        assert_eq!(appearance.saved_colors, ["#00AA00"]);
+        for n in 0..MAX_SAVED_COLORS {
+            let _ = appearance.save_color(&format!("#{n:06X}"));
+        }
+        assert_eq!(appearance.saved_colors.len(), MAX_SAVED_COLORS);
+        assert!(appearance.save_color("#ABCDEF").is_err(), "full");
+        assert!(appearance.save_color("#00AA00").is_ok(), "already there");
+        assert!(appearance.validate().is_ok());
+    }
+
+    #[test]
+    fn palette_is_empty_when_absent_and_cleaned_when_edited_by_hand() {
+        let dir = std::env::temp_dir().join(format!("cayenchat-palette-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let mut settings = Settings::default();
+        let mut value = serde_json::to_value(&settings).unwrap();
+        value["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("saved_colors");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.appearance.saved_colors.is_empty());
+
+        settings.appearance.saved_colors = vec![
+            "#aabbcc".into(),
+            "nonsense".into(),
+            "#AABBCC".into(),
+            "#112233".into(),
+        ];
+        fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.appearance.saved_colors, ["#AABBCC", "#112233"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

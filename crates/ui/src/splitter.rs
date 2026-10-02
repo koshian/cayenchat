@@ -8,8 +8,9 @@
 use std::{cell::Cell, ops::RangeInclusive};
 
 use gpui::{
-    AppContext, Context, CursorStyle, DragMoveEvent, ElementId, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, Rgba, StatefulInteractiveElement, Styled, Window, div, px,
+    AppContext, Context, CursorStyle, Div, DragMoveEvent, ElementId, InteractiveElement,
+    IntoElement, MouseButton, ParentElement, Render, Rgba, Stateful, StatefulInteractiveElement,
+    Styled, Window, div, px,
 };
 
 /// Which way the handle moves: `Horizontal` sits between side-by-side panes
@@ -72,7 +73,7 @@ thread_local! {
 }
 
 /// The view GPUI draws at the pointer while dragging: nothing.
-struct NoGhost;
+pub(crate) struct NoGhost;
 
 impl Render for NoGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -99,7 +100,7 @@ pub fn splitter<V: 'static>(
     line: Rgba,
     cx: &mut Context<V>,
     on_resize: impl Fn(&mut V, f32, &mut Window, &mut Context<V>) + 'static,
-) -> impl IntoElement {
+) -> Stateful<Div> {
     let id: ElementId = id.into();
     let drag = Drag {
         axis,
@@ -127,7 +128,10 @@ pub fn splitter<V: 'static>(
             .cursor(CursorStyle::ResizeUpDown)
             .child(div().h(px(1.)).w_full().bg(line)),
     };
+    let selector = id.to_string();
     handle
+        // Lets tests find the handle (a no-op outside tests).
+        .debug_selector(move || selector)
         .on_mouse_down(MouseButton::Left, move |event, _, _| {
             PRESS.with(|press| press.set(Some(along(axis, event.position))));
         })
@@ -154,8 +158,12 @@ pub fn splitter<V: 'static>(
                     drag.anchor,
                     &limits,
                 );
-                on_resize(view, new, window, cx);
-                cx.notify();
+                // Pinned at a limit the size does not change, and neither
+                // should the window be redrawn for every pointer move.
+                if new != size {
+                    on_resize(view, new, window, cx);
+                    cx.notify();
+                }
             }),
         )
 }
@@ -236,6 +244,13 @@ mod tests {
         cx.simulate_mouse_move(at(900.), gpui::MouseButton::Left, gpui::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(panes.read_with(cx, |panes, _| panes.width), 300.);
+        // Staying beyond the limit reports nothing more.
+        let pinned = panes.read_with(cx, |panes, _| panes.resizes);
+        for x in [950., 1000., 1500.] {
+            cx.simulate_mouse_move(at(x), gpui::MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+        }
+        assert_eq!(panes.read_with(cx, |panes, _| panes.resizes), pinned);
         cx.simulate_mouse_move(at(0.), gpui::MouseButton::Left, gpui::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(panes.read_with(cx, |panes, _| panes.width), 120.);
