@@ -1127,6 +1127,38 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D037 — Window position, size and pane sizes are remembered
+
+Status: implemented (issues #57 and #64).
+
+The main window reopens where it was left, with its pane sizes, unless the
+user switches it off ("Restore window position and size at startup",
+`restore_window_layout`, on by default, added without a settings version
+change).
+
+- **Own file.** The layout is in `window.json` beside `settings.json` (a test
+  build's own directory), not in the settings: it is written on every move or
+  resize, so keeping it apart means it never races the settings window's
+  autosave, and a damaged or unknown-version file reads as "nothing saved"
+  instead of blocking startup. It holds the window's normal rectangle in
+  logical pixels in desktop coordinates (negative on a display left of or
+  above the primary), whether it was maximized, the right column's width, the
+  member list's height and the logs' split. Writes go through a temporary
+  file and a rename.
+- **Displays.** At startup the saved rectangle is used only where it still
+  overlaps a connected display: the display showing most of it decides, the
+  window is shrunk to that display and moved onto it as far as it fits, and
+  never below the minimum window size. With no overlap (a monitor unplugged,
+  a resolution change) the window opens in its usual centered place.
+- **When.** Moves and resizes, pane drags and closing write it, after a 0.5 s
+  pause for drags. Turning the setting on writes the current layout at once;
+  turning it off stops writing and reading but keeps the file.
+- **Not remembered.** Full screen returns to the normal rectangle. The work
+  area (menu bar, taskbar) is not known to GPUI, so a window may start under
+  the taskbar edge the OS then adjusts.
+- Tests never write the real file: the path is supplied at startup and
+  without one nothing is written.
+
 ## D036 — Server-confirmed sending: echo-message and labeled-response
 
 Status: implemented (IRCv3 standard capabilities, one opt-in).

@@ -164,6 +164,10 @@ The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
 
+The window's position and size, whether it is maximized, and the pane sizes
+are saved to `window.json` (D037) and restored at startup by
+`ui::window_layout`, which fits the saved rectangle to the connected displays.
+
 Pane boundaries use `ui::splitter`: a thin handle that turns pointer drags
 into a pane size within the owner's minimum and maximum, measured from where
 the button went down (GPUI starts a drag only after a small movement). The
@@ -173,7 +177,7 @@ window uses it for the boundary between the left column and the right column
 and for the one between the member list and the channel tree (80 px at least
 each; an even split until first dragged). The boundary between the two logs
 keeps its own handle, which also moves it with the pointer within limits and
-resets on a double click. Sizes are not saved yet (issue #57).
+resets on a double click. Sizes are saved and restored (D037).
 
 `ui::color_picker::ColorPicker` is a saturation/brightness square, a hue bar
 and a `#RRGGBB` field that follow each other (GPUI has no color picker). It
