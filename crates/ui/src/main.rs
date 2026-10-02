@@ -3309,15 +3309,22 @@ impl ChatWindow {
 
     /// Replaces the draft with an older (`older`) or newer sent draft.
     fn recall_history(&mut self, older: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.inputs[&self.state.selection()].clone();
+        let selection = self.state.selection();
+        let input = self.inputs[&selection].clone();
         if input.read(cx).is_composing() || !input.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
+        // Each conversation has its own input; browsing never crosses them.
+        let scope = match selection {
+            Selection::Channel(id) => u64::from(id.0),
+            Selection::Server(id) => (1 << 32) + u64::from(id.0),
+            Selection::None => u64::MAX,
+        };
         let current = input.read(cx).text().to_owned();
         let recalled = if older {
-            self.input_history.previous(&current)
+            self.input_history.previous(scope, &current)
         } else {
-            self.input_history.next(&current)
+            self.input_history.next(scope, &current)
         };
         if let Some(text) = recalled {
             input.update(cx, |input, cx| input.set_text(&text, cx));
