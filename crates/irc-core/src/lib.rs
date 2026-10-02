@@ -6,6 +6,7 @@ mod ctcp;
 mod echo;
 mod history;
 mod metadata;
+mod modes;
 mod peer_avatar;
 mod replay;
 mod tags;
@@ -17,12 +18,13 @@ pub use history::{
     OlderHistoryStatus,
 };
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
+pub use modes::MemberMode;
 pub use peer_avatar::shareable as shareable_avatar;
 
 use std::{
     collections::HashMap,
     fmt,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -1083,6 +1085,8 @@ pub struct Connection {
     /// `None` after [`Connection::take_events`].
     events: Option<Events>,
     encoding: String,
+    /// The server's announced `MODES` limit; 0 until one is seen.
+    modes_per_line: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for Connection {
@@ -1102,6 +1106,8 @@ impl Connection {
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
         let cancel = Arc::new(Notify::new());
         let worker_cancel = cancel.clone();
+        let modes_per_line = Arc::new(AtomicUsize::new(0));
+        let worker_modes = modes_per_line.clone();
         thread::Builder::new()
             .name("cayenchat-irc".into())
             .spawn(move || {
@@ -1116,6 +1122,7 @@ impl Connection {
                             command_rx,
                             event_tx,
                             worker_cancel,
+                            worker_modes,
                         )),
                         Err(error) => {
                             let _ = event_tx.blocking_send(Event::Disconnected(error.to_string()));
@@ -1134,6 +1141,7 @@ impl Connection {
             cancel,
             events: Some(Events(events)),
             encoding,
+            modes_per_line,
         })
     }
 
@@ -1196,6 +1204,47 @@ impl Connection {
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue member command: {error}"))
+    }
+
+    /// Gives or takes op or voice for several members of `channel` at once.
+    /// Lines are split to the server's announced `MODES` limit (3 when it
+    /// announced none). Everything is validated before anything is queued.
+    pub fn send_member_modes(
+        &self,
+        channel: &str,
+        mode: MemberMode,
+        nicknames: &[String],
+    ) -> Result<(), String> {
+        if !valid_channel(channel) {
+            return Err("Invalid mode channel.".into());
+        }
+        if nicknames.is_empty() {
+            return Err("Select at least one member.".into());
+        }
+        if let Some(bad) = nicknames.iter().find(|nick| !valid_nickname(nick)) {
+            return Err(format!("Invalid nickname: {bad}"));
+        }
+        let announced = self
+            .modes_per_line
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let lines = modes::mode_lines(channel, mode, nicknames, modes::effective_limit(announced));
+        let outgoing = lines
+            .iter()
+            .map(|line| {
+                // Sent as given: parsing "+vv" into modes and back would
+                // write it as "+v+v".
+                let args = line.split(' ').skip(1).map(str::to_owned).collect();
+                let outgoing = checked_command(IrcCommand::Raw("MODE".into(), args))?;
+                validate_outgoing(&outgoing, &self.encoding)?;
+                Ok(outgoing)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        for outgoing in outgoing {
+            self.commands
+                .try_send(outgoing)
+                .map_err(|error| format!("Could not queue member command: {error}"))?;
+        }
+        Ok(())
     }
 
     pub fn send_command(&self, line: &str, selected_channel: Option<&str>) -> Result<(), String> {
@@ -1327,7 +1376,14 @@ async fn run(
     commands: mpsc::Receiver<Outgoing>,
     events: mpsc::Sender<Event>,
 ) {
-    run_cancellable(config, commands, events, Arc::new(Notify::new())).await
+    run_cancellable(
+        config,
+        commands,
+        events,
+        Arc::new(Notify::new()),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await
 }
 
 async fn run_cancellable(
@@ -1335,6 +1391,7 @@ async fn run_cancellable(
     mut commands: mpsc::Receiver<Outgoing>,
     events: mpsc::Sender<Event>,
     cancel: Arc<Notify>,
+    modes_per_line: Arc<AtomicUsize>,
 ) {
     let started = Instant::now();
     let host = config.host.clone();
@@ -1820,6 +1877,7 @@ async fn run_cancellable(
                         let history_started = !history_enabled && negotiation.enabled(cap::CHATHISTORY);
                         history_enabled = negotiation.enabled(cap::CHATHISTORY);
                         history.isupport(&message);
+                        modes::observe(&message, &modes_per_line);
                         accounts.isupport(&message);
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
@@ -3028,6 +3086,7 @@ mod tests {
             cancel: Arc::new(Notify::new()),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
+            modes_per_line: Arc::new(AtomicUsize::new(0)),
         };
         assert!(!connection.is_closed());
         assert!(matches!(
@@ -3035,6 +3094,40 @@ mod tests {
             Some(Event::Diagnostic { .. })
         ));
         assert!(connection.is_closed());
+    }
+
+    #[test]
+    fn member_modes_are_split_to_the_announced_limit_and_validated_first() {
+        let (commands, mut queued) = mpsc::channel(8);
+        let (_event_tx, events) = mpsc::channel(1);
+        let connection = Connection {
+            commands,
+            cancel: Arc::new(Notify::new()),
+            events: Some(Events(events)),
+            encoding: "UTF-8".into(),
+            modes_per_line: Arc::new(AtomicUsize::new(2)),
+        };
+        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        connection
+            .send_member_modes("#t", MemberMode::Voice, &names(&["a", "b", "c"]))
+            .unwrap();
+        let mut sent = Vec::new();
+        while let Ok(Outgoing::Raw(message)) = queued.try_recv() {
+            sent.push(message.to_string().trim_end().to_owned());
+        }
+        assert_eq!(sent, ["MODE #t +vv a b", "MODE #t +v c"]);
+        for (channel, list) in [
+            ("#t", names(&["a", "bad nick"])),
+            ("#t", names(&[])),
+            ("nochannel", names(&["a"])),
+        ] {
+            assert!(
+                connection
+                    .send_member_modes(channel, MemberMode::Op, &list)
+                    .is_err()
+            );
+        }
+        assert!(queued.try_recv().is_err(), "nothing queued on error");
     }
 
     #[test]
@@ -3046,6 +3139,7 @@ mod tests {
             cancel: Arc::new(Notify::new()),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
+            modes_per_line: Arc::new(AtomicUsize::new(0)),
         };
         let mut events = connection.take_events().unwrap();
         assert!(connection.take_events().is_none());
