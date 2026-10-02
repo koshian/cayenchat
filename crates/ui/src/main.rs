@@ -4735,7 +4735,9 @@ impl SettingsWindow {
             return;
         }
         let initial = color_value(field.read(cx).text()).unwrap_or(0xFFFFFF);
-        let picker = cx.new(|cx| color_picker::ColorPicker::new(initial, cx));
+        // The row's own field shows the color as text, so the picker's is
+        // not drawn a second time.
+        let picker = cx.new(|cx| color_picker::ColorPicker::new(initial, cx).without_hex_field());
         // What is picked goes into the field; what is typed in the field
         // moves the picker.
         let into_field = cx.subscribe(
@@ -5371,6 +5373,8 @@ impl SettingsWindow {
         if self.tab != tab {
             self.feedback = None;
             self.avatar_feedback = None;
+            // A picker open under a color row does not wait for a return.
+            self.color_picker = None;
         }
         self.tab = tab;
     }
@@ -8403,6 +8407,24 @@ mod pane_tests {
         );
         form.update(cx, |form, cx| form.toggle_color_picker(&other, cx));
         assert!(form.read_with(cx, |form, _| form.color_picker.is_none()));
+
+        // Leaving the tab closes an open picker; coming back finds it closed.
+        form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
+        assert!(form.read_with(cx, |form, _| form.color_picker.is_some()));
+        form.update(cx, |form, _| form.show_tab(super::SettingsTab::Connection));
+        assert!(form.read_with(cx, |form, _| form.color_picker.is_none()));
+        // The picker opened here has no field of its own (the row has one),
+        // and still follows what is typed in the row.
+        form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
+        let picker = form
+            .read_with(cx, |form, _| {
+                form.color_picker.as_ref().map(|open| open.picker.clone())
+            })
+            .expect("open");
+        assert!(!picker.read_with(cx, |picker, _| picker.shows_hex_field()));
+        field.update(cx, |field, cx| field.set_text("#123456", cx));
+        cx.run_until_parked();
+        assert_eq!(picker.read_with(cx, |picker, _| picker.color()), 0x123456);
     }
 
     #[gpui::test]

@@ -7,7 +7,8 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{
     AppContext, Bounds, Context, Entity, EntityId, EventEmitter, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, StatefulInteractiveElement,
-    Styled, Window, canvas, div, hsla, linear_color_stop, linear_gradient, px, rgb,
+    Styled, Window, canvas, div, hsla, linear_color_stop, linear_gradient, prelude::FluentBuilder,
+    px, rgb,
 };
 
 use crate::{input::TextInput, splitter::NoGhost};
@@ -91,6 +92,8 @@ struct Dragging(Handle, EntityId);
 pub struct ColorPicker {
     hsv: Hsv,
     hex: Entity<TextInput>,
+    /// Whether the `#RRGGBB` field is drawn under the controls.
+    show_hex: bool,
     square: Rc<Cell<Bounds<Pixels>>>,
     bar: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -114,13 +117,26 @@ impl ColorPicker {
         Self {
             hsv: Hsv::from_rgb(initial),
             hex,
+            show_hex: true,
             square: Rc::default(),
             bar: Rc::default(),
         }
     }
 
+    /// Hides the picker's own `#RRGGBB` field, for an owner that already
+    /// shows the color as text (the field still follows the picker and still
+    /// moves it; it is only not drawn).
+    pub fn without_hex_field(mut self) -> Self {
+        self.show_hex = false;
+        self
+    }
+
     pub fn color(&self) -> u32 {
         self.hsv.to_rgb()
+    }
+
+    pub fn shows_hex_field(&self) -> bool {
+        self.show_hex
     }
 
     /// Shows `color` without announcing it, for when the owner changed it.
@@ -298,7 +314,7 @@ impl Render for ColorPicker {
                         },
                     )),
             )
-            .child(self.hex.clone())
+            .when(self.show_hex, |d| d.child(self.hex.clone()))
     }
 }
 
