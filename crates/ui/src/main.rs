@@ -8406,7 +8406,9 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = crate::settings_with_channels("#a");
+        // A menu bar above the panes would move the rows clicked below.
+        let mut settings = crate::settings_with_channels("#a");
+        settings.menu_bar_auto_hide = true;
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });
@@ -8501,7 +8503,8 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = crate::settings_with_channels("#a");
+        let mut settings = crate::settings_with_channels("#a");
+        settings.menu_bar_auto_hide = true;
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });
