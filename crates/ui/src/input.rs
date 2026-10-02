@@ -212,6 +212,11 @@ impl TextInput {
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_everything(cx);
+    }
+
+    /// Selects the whole text, so typing replaces it.
+    pub fn select_everything(&mut self, cx: &mut Context<Self>) {
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx)
     }

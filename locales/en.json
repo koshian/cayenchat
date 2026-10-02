@@ -53,6 +53,7 @@
   "channel_join_title": "Join a channel",
   "channel_join_required": "Enter a channel name.",
   "nickname_change_title": "Change nickname",
+  "nickname_change_submit": "Change",
   "nickname_change_required": "Enter a nickname.",
   "member_submit": "Send",
   "conversation_close": "Close",

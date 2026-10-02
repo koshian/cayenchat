@@ -53,6 +53,7 @@
   "channel_join_title": "チャンネルに参加",
   "channel_join_required": "チャンネル名を入力してください。",
   "nickname_change_title": "ニックネームを変更",
+  "nickname_change_submit": "変更",
   "nickname_change_required": "ニックネームを入力してください。",
   "member_submit": "送信",
   "conversation_close": "閉じる",
