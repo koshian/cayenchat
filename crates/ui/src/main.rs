@@ -3697,6 +3697,9 @@ impl SettingsWindow {
         for field in settings.text_fields() {
             subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
         }
+        subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
+            this.window_activation_changed(window.is_window_active(), cx)
+        }));
         // Typed passwords are stored once their field loses focus.
         for field in [&settings.server_password, &settings.sasl_password] {
             let handle = field.read(cx).focus_handle(cx);
