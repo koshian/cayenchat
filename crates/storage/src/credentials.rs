@@ -155,6 +155,11 @@ impl std::error::Error for CredentialError {}
 /// A place secrets are kept. Implementations must not log secret values.
 pub trait CredentialBackend: Send + Sync {
     fn kind(&self) -> CredentialBackendKind;
+    /// Whether secrets live only in this process's memory (tests), so that
+    /// nothing reaches the operating system or the disk.
+    fn is_memory(&self) -> bool {
+        false
+    }
     fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError>;
     fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError>;
     /// Removes the secret; a missing secret is not an error.
@@ -192,6 +197,12 @@ impl CredentialStore {
 
     pub fn kind(&self) -> CredentialBackendKind {
         self.backend.kind()
+    }
+
+    /// Whether this store keeps secrets in memory only. Tests check it before
+    /// storing anything, so a test cannot reach a real store unnoticed.
+    pub fn is_memory(&self) -> bool {
+        self.backend.is_memory()
     }
 
     pub fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
@@ -768,6 +779,10 @@ impl MemoryBackend {
 impl CredentialBackend for MemoryBackend {
     fn kind(&self) -> CredentialBackendKind {
         self.kind
+    }
+
+    fn is_memory(&self) -> bool {
+        true
     }
 
     fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
