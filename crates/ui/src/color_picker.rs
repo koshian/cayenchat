@@ -135,6 +135,8 @@ impl ColorPicker {
         self.hsv.to_rgb()
     }
 
+    /// Whether the `#RRGGBB` field is drawn (tests).
+    #[cfg(test)]
     pub fn shows_hex_field(&self) -> bool {
         self.show_hex
     }
