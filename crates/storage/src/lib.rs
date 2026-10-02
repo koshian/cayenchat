@@ -10,6 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 pub mod credentials;
+pub mod layout;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -504,6 +505,9 @@ pub struct Settings {
     pub channel_number_modifier: ChannelNumberModifier,
     pub text_key_theme: TextKeyTheme,
     pub appearance: Appearance,
+    /// Reopen the main window where it was left, with its pane sizes (see
+    /// [`layout`]). On by default, also for files saved before it existed.
+    pub restore_window_layout: bool,
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
     pub notifications: Notifications,
@@ -538,6 +542,7 @@ impl Default for Settings {
             channel_number_modifier: ChannelNumberModifier::Ctrl,
             text_key_theme: TextKeyTheme::Auto,
             appearance: Appearance::default(),
+            restore_window_layout: true,
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
             notifications: Notifications::default(),
@@ -2105,6 +2110,18 @@ mod tests {
 
         settings.appearance.dark.sub_log_alternate = "gray".into();
         assert!(settings.appearance.validate().is_err());
+    }
+
+    #[test]
+    fn the_window_layout_is_restored_unless_switched_off() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(settings.restore_window_layout, "absent reads as on");
+        settings.restore_window_layout = false;
+        save_to(&path, &settings).unwrap();
+        assert!(!load_from(&path).unwrap().unwrap().restore_window_layout);
     }
 
     #[test]

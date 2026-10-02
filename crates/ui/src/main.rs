@@ -28,6 +28,7 @@ mod settings_theme;
 mod splitter;
 mod theme;
 mod whois;
+mod window_layout;
 
 use cayenchat_app::{
     AppState, Command, ConnectionStatus, MessageMeta, NetworkConfig, Selection,
@@ -68,6 +69,8 @@ use whois::WhoisWindow;
 /// The channel log's share of the log height when nothing was dragged, and
 /// the bounds of what dragging may leave to either log.
 const DEFAULT_LOG_SPLIT: f32 = 0.5;
+/// Pause after the last move or resize before the window layout is written.
+const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(500);
 /// Width of the right column (members and channel tree), its limits, and the
 /// width the left column keeps.
 const DEFAULT_RIGHT_WIDTH: f32 = 240.;
@@ -925,6 +928,12 @@ struct ChatWindow {
     startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
+    /// Remember where the window and its panes were left (a setting), and
+    /// the file that is written to. `None` writes nothing: tests, and the
+    /// moment before startup supplies the path.
+    restore_layout: bool,
+    layout_file: Option<std::path::PathBuf>,
+    layout_save: Option<Task<()>>,
     /// The native window title last set from `render`.
     shown_title: String,
     /// Open WHOIS windows by network and lowercase nickname.
@@ -1282,6 +1291,9 @@ impl ChatWindow {
             startup_connections,
             settings_window: None,
             window_handle: window.window_handle().downcast::<ChatWindow>(),
+            restore_layout: saved.restore_window_layout,
+            layout_file: None,
+            layout_save: None,
             shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
@@ -1323,7 +1335,76 @@ impl ChatWindow {
             this.window_active = window.is_window_active();
         })
         .detach();
+        // Moving or resizing the window, and closing it, keep the layout.
+        cx.observe_window_bounds(window, |this, _, cx| this.schedule_layout_save(cx))
+            .detach();
+        let view = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = view.update(cx, |this, _| this.save_layout_now(window));
+            true
+        });
         this
+    }
+
+    /// Takes over the pane sizes of a saved layout. They are clamped when
+    /// drawn, so values from a larger window or another display are safe.
+    fn apply_layout(&mut self, layout: &cayenchat_storage::layout::Layout) {
+        if let Some(width) = layout.right_width {
+            self.right_width = width;
+        }
+        self.members_height = layout.members_height.or(self.members_height);
+        if let Some(split) = layout.log_split {
+            self.log_split = split.clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        }
+    }
+
+    /// Writes the layout shortly after the last change; a drag changes it
+    /// many times a second.
+    fn schedule_layout_save(&mut self, cx: &mut Context<Self>) {
+        if !self.restore_layout || self.layout_file.is_none() {
+            return;
+        }
+        let Some(handle) = self.window_handle else {
+            return;
+        };
+        let window: AnyWindowHandle = handle.into();
+        self.layout_save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LAYOUT_SAVE_DELAY).await;
+            let _ = cx.update_window(window, |_, window, cx| {
+                this.update(cx, |this, _| this.save_layout_now(window))
+            });
+        }));
+    }
+
+    /// Writes the window's position and size and the pane sizes now. A
+    /// failure only means the layout is not remembered, so it is not shown.
+    fn save_layout_now(&mut self, window: &Window) {
+        self.layout_save = None;
+        let (true, Some(path)) = (self.restore_layout, self.layout_file.as_ref()) else {
+            return;
+        };
+        let (bounds, maximized) = match window.window_bounds() {
+            WindowBounds::Windowed(bounds) => (bounds, false),
+            WindowBounds::Maximized(bounds) => (bounds, true),
+            // Leaving full screen returns to the normal rectangle.
+            WindowBounds::Fullscreen(bounds) => (bounds, false),
+        };
+        let layout = cayenchat_storage::layout::Layout {
+            window: Some(cayenchat_storage::layout::WindowRect {
+                x: f32::from(bounds.origin.x),
+                y: f32::from(bounds.origin.y),
+                width: f32::from(bounds.size.width),
+                height: f32::from(bounds.size.height),
+            }),
+            maximized,
+            right_width: Some(self.right_width),
+            members_height: self.members_height,
+            log_split: Some(self.log_split),
+            ..Default::default()
+        };
+        if let Err(error) = cayenchat_storage::layout::save_layout_to(path, &layout) {
+            eprintln!("CayenChat: {error}");
+        }
     }
 
     /// Our current nickname on `network`.
@@ -2658,6 +2739,7 @@ impl ChatWindow {
         }
         let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
         self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
+        self.schedule_layout_save(cx);
         cx.notify();
     }
 
@@ -3720,6 +3802,8 @@ impl SettingsWindow {
         let appearance_changed =
             previous.appearance != saved.appearance || previous.theme != saved.theme;
         let language_changed = previous.language != saved.language;
+        let layout_changed = previous.restore_window_layout != saved.restore_window_layout;
+        let restore_layout = saved.restore_window_layout;
         let shortcuts = ShortcutPrefs::from(&saved);
         let shortcuts_changed = ShortcutPrefs::from(&previous) != shortcuts;
         let provider = saved.image_upload.provider.clone();
@@ -3729,6 +3813,11 @@ impl SettingsWindow {
             owner.notification_rules = rules;
             if shortcuts_changed {
                 apply_shortcuts(shortcuts, cx);
+            }
+            if layout_changed {
+                owner.restore_layout = restore_layout;
+                // Turning it on remembers where the window is right away.
+                owner.save_layout_now(window);
             }
             if appearance_changed {
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
@@ -4823,6 +4912,25 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(
+                div()
+                    .id("restore-window-layout")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.restore_window_layout,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("restore_window_layout"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.restore_window_layout;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(settings_field(
@@ -5708,6 +5816,7 @@ impl ChatWindow {
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
                     if event.click_count >= 2 {
                         this.log_split = DEFAULT_LOG_SPLIT;
+                        this.schedule_layout_save(cx);
                     } else {
                         this.log_split_dragging = true;
                     }
@@ -5836,7 +5945,10 @@ impl ChatWindow {
             RIGHT_WIDTH_MIN..=right_max,
             border,
             cx,
-            |this: &mut Self, width, _, _| this.right_width = width,
+            |this: &mut Self, width, _, cx| {
+                this.right_width = width;
+                this.schedule_layout_save(cx);
+            },
         );
         let members_split = splitter::splitter(
             "members-split",
@@ -5846,7 +5958,10 @@ impl ChatWindow {
             RIGHT_PANE_MIN_HEIGHT..=members_max,
             border,
             cx,
-            |this: &mut Self, height, _, _| this.members_height = Some(height),
+            |this: &mut Self, height, _, cx| {
+                this.members_height = Some(height);
+                this.schedule_layout_save(cx);
+            },
         );
         let right_column_bounds = self.right_column_bounds.clone();
         let right = div()
@@ -7229,12 +7344,28 @@ fn main() {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(960.), px(600.)), cx);
+        // Where the window was left, when that is remembered and a connected
+        // display still shows it; otherwise the usual place.
+        let min_size = size(px(720.), px(420.));
+        let layout = if saved.restore_window_layout {
+            cayenchat_storage::layout::load_layout()
+        } else {
+            Default::default()
+        };
+        let displays: Vec<_> = cx
+            .displays()
+            .iter()
+            .map(|display| display.bounds())
+            .collect();
+        let window_bounds = window_layout::restored_bounds(&layout, &displays, min_size)
+            .unwrap_or_else(|| {
+                WindowBounds::Windowed(Bounds::centered(None, size(px(960.), px(600.)), cx))
+            });
         let chat_window = cx
             .open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(720.), px(420.))),
+                    window_bounds: Some(window_bounds),
+                    window_min_size: Some(min_size),
                     titlebar: Some(TitlebarOptions {
                         title: Some("CayenChat".into()),
                         ..Default::default()
@@ -7250,6 +7381,8 @@ fn main() {
         // connect.
         let settings_for = chat_window
             .update(cx, |chat, window, cx| {
+                chat.layout_file = cayenchat_storage::layout::layout_path().ok();
+                chat.apply_layout(&layout);
                 cx.set_menus(app_menus(false, &chat.i18n));
                 let startup = std::mem::take(&mut chat.startup_connections);
                 let mut settings_for = startup.is_empty().then(|| chat.selected_profile_id());
@@ -8103,6 +8236,92 @@ mod pane_tests {
             chat.read_with(cx, |chat, _| chat.members_height),
             Some(RIGHT_PANE_MIN_HEIGHT)
         );
+    }
+
+    #[gpui::test]
+    fn the_window_layout_is_saved_after_changes_and_applied_at_startup(cx: &mut TestAppContext) {
+        use super::{DEFAULT_LOG_SPLIT, DEFAULT_RIGHT_WIDTH, LAYOUT_SAVE_DELAY, LOG_SPLIT_LIMITS};
+        use cayenchat_storage::layout::{Layout, load_layout_from};
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        cx.run_until_parked();
+        // Tests never write the user's real layout file: the path is given
+        // here, and without one nothing is written.
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("window.json");
+        let save = |cx: &mut gpui::VisualTestContext| {
+            chat.update_in(cx, |chat, window, _| chat.save_layout_now(window))
+        };
+        save(cx);
+        assert!(!file.exists(), "no path, no file");
+
+        // Applying a saved layout takes over the pane sizes; a split from
+        // damage is held within limits.
+        chat.update(cx, |chat, _| {
+            chat.layout_file = Some(file.clone());
+            chat.apply_layout(&Layout {
+                right_width: Some(300.),
+                members_height: Some(200.),
+                log_split: Some(5.0),
+                ..Layout::default()
+            });
+            assert_eq!(chat.right_width, 300.);
+            assert_eq!(chat.members_height, Some(200.));
+            assert_eq!(chat.log_split, LOG_SPLIT_LIMITS.1);
+            chat.apply_layout(&Layout::default());
+            assert_eq!(chat.right_width, 300., "nothing saved leaves it alone");
+            chat.right_width = DEFAULT_RIGHT_WIDTH;
+            chat.members_height = None;
+            chat.log_split = DEFAULT_LOG_SPLIT;
+        });
+
+        // Saving records the window and the pane sizes.
+        save(cx);
+        let saved = load_layout_from(&file);
+        assert!(saved.window.is_some());
+        assert_eq!(saved.right_width, Some(DEFAULT_RIGHT_WIDTH));
+        assert_eq!(saved.members_height, None);
+        assert_eq!(saved.log_split, Some(DEFAULT_LOG_SPLIT));
+
+        // Switched off, nothing is written.
+        std::fs::remove_file(&file).unwrap();
+        chat.update(cx, |chat, _| chat.restore_layout = false);
+        save(cx);
+        assert!(!file.exists());
+        chat.update(cx, |chat, _| chat.restore_layout = true);
+
+        // Dragging the splitter writes it shortly after the last move.
+        let none = Modifiers::none();
+        let width = f32::from(cx.update(|window, _| window.viewport_size()).width);
+        let handle = point(px(width - DEFAULT_RIGHT_WIDTH - 2.), px(300.));
+        cx.simulate_mouse_move(handle, None, none);
+        cx.simulate_mouse_down(handle, MouseButton::Left, none);
+        for step in [10., 60.] {
+            cx.simulate_mouse_move(
+                point(handle.x - px(step), handle.y),
+                MouseButton::Left,
+                none,
+            );
+        }
+        cx.run_until_parked();
+        cx.simulate_mouse_up(handle, MouseButton::Left, none);
+        assert!(!file.exists(), "not before the pause is over");
+        cx.executor().advance_clock(LAYOUT_SAVE_DELAY * 2);
+        cx.run_until_parked();
+        let dragged = load_layout_from(&file);
+        let widened = dragged.right_width.expect("saved after the drag");
+        assert!((295.0..=305.0).contains(&widened), "{widened}");
     }
 
     #[gpui::test]
