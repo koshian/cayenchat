@@ -198,9 +198,12 @@ mod tests {
 
     #[test]
     fn a_modified_key_is_recorded_in_the_form_that_is_kept() {
+        // The platform key is spelled as the platform does (`cmd` on macOS,
+        // `super` on Linux, `win` on Windows): the kept form is what
+        // `unparse` makes of the keystroke.
         assert_eq!(
             captured(&press("cmd-}"), false),
-            Some(Recorded::Key("cmd-}".into()))
+            Some(Recorded::Key(press("cmd-}").unparse()))
         );
         // Spelled another way, it is kept in the canonical order.
         assert_eq!(
@@ -223,7 +226,7 @@ mod tests {
         // With a modifier Escape is just a key (and usable).
         assert_eq!(
             captured(&press("cmd-escape"), false),
-            Some(Recorded::Key("cmd-escape".into()))
+            Some(Recorded::Key(press("cmd-escape").unparse()))
         );
         for bare in ["a", "shift-a", "1", "home", "space"] {
             assert_eq!(
