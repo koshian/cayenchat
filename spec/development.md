@@ -232,11 +232,10 @@ not just ask them to wait for the beta. Every time:
    a signed-in GitHub account is needed; kept for 7 days), and what to look
    at. Ask for the environment details that matter (OS version, display
    scale, IME) and say what is still unverified.
-3. Take the report on the issue. The reviewer may merge once the review is
-   satisfied, without waiting for the reporter, when the reporter can only
-   verify on a build that includes the change (the policy in #60); follow up
-   with a fix if the report shows a problem. Rebuild with `Test Build` for
-   each new commit that needs checking again.
+3. Take the report on the issue, and rebuild with `Test Build` for each new
+   commit that needs checking again. An LLM reviewer never merges such a PR
+   before the report arrives; only a person may decide to merge without one.
+
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
 
