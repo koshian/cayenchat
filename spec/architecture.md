@@ -162,6 +162,11 @@ The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
 
+Pane boundaries use `ui::splitter`: a thin handle that turns pointer drags
+into a pane size within the owner's minimum and maximum, measured from where
+the button went down (GPUI starts a drag only after a small movement). The
+owner stores the size; the handle draws and measures nothing else.
+
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
 ## Current implementation
