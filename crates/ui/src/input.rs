@@ -1268,9 +1268,9 @@ mod tests {
     fn application_shortcuts_parse() {
         use cayenchat_storage::ChannelNumberModifier;
         for modifier in [ChannelNumberModifier::Alt, ChannelNumberModifier::Super] {
-            assert!(crate::shortcut_bindings(modifier).len() >= 30);
+            assert!(crate::shortcut_bindings(modifier, &Default::default()).len() >= 30);
         }
-        let bindings = crate::shortcut_bindings(ChannelNumberModifier::Ctrl);
+        let bindings = crate::shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
         assert!(bindings.len() >= 30);
         let settings = bindings
             .iter()

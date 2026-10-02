@@ -168,6 +168,14 @@ active channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down. The server keys are
 bound as `cmd-{` / `cmd-}` because that is how GPUI's macOS backend reports
 Cmd+Shift+[ / ] (the shifted character, with Shift cleared); the arrow-key
 bindings remain for layouts where [ and ] need Option (German, for example).
+The navigation shortcuts are named actions (`ui::shortcuts::ACTIONS`: id,
+command, per-platform default keys). The `keybindings` setting (action id →
+key, #114) replaces an action's keys; unknown actions and unusable keys (an
+empty string, a chord, a bare letter, a modifier alone) are ignored, leaving
+the defaults. A key is kept as GPUI reports it when pressed, which is not
+always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
+that two actions, or an action and a fixed shortcut, would share, for the
+editing UI (#118).
 The performance measures above, the current resource bounds and the
 measurement baseline are listed in `spec/performance.md`; keep them when
 adding servers or media.
