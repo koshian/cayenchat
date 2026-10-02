@@ -72,7 +72,7 @@ thread_local! {
 }
 
 /// The view GPUI draws at the pointer while dragging: nothing.
-struct NoGhost;
+pub(crate) struct NoGhost;
 
 impl Render for NoGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

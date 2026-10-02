@@ -167,6 +167,14 @@ into a pane size within the owner's minimum and maximum, measured from where
 the button went down (GPUI starts a drag only after a small movement). The
 owner stores the size; the handle draws and measures nothing else.
 
+`ui::color_picker::ColorPicker` is a saturation/brightness square, a hue bar
+and a `#RRGGBB` field that follow each other (GPUI has no color picker). It
+emits `ColorChanged` when the user picks or types a complete color;
+`set_color` shows a color the owner changed without emitting. Greys keep the
+hue the bar had. Each picker acts only on its own drags: GPUI delivers a
+drag's moves to every element that listens for that drag type, so the drag
+carries the picker's entity id.
+
 The visual treatment should follow `spec/project.md`: compact, direct, and Chocoa-like rather than resembling a modern consumer messenger.
 
 ## Current implementation
