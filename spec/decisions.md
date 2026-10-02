@@ -1127,6 +1127,54 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D037 — Next / Previous keys without arrows
+
+Status: proposed (issue #72, sub-issue #84); implemented by #85 and #86.
+
+Navigation gets a letter pair beside the arrow and Page keys, for keyboards
+where arrows sit on a layer (HHKB): **N = next, P = previous**. Existing
+arrow, Page, Tab and number shortcuts stay as they are.
+
+Current keys that the new ones must not collide with (SHORTCUTS.md): Tab
+(nick completion), Ctrl/Opt+Tab and Opt+Space (unread), Up/Down (draft
+history, issue #62), Ctrl+Up/Down, Alt+Up/Down, Cmd+Up/Down,
+Ctrl+PageUp/PageDown, Alt+PageUp/PageDown, Ctrl+Alt+PageUp/PageDown,
+Cmd+Opt+arrows, digits with Cmd/Ctrl/Alt, Ctrl+Shift+D/L/Tab, and the macOS
+Control editing keys in the draft (Ctrl+A/B/D/E/F/H/K/W). Ctrl+N, Ctrl+P and
+Ctrl+Shift+N/P are not bound today.
+
+Decision:
+
+| Where | Keys | Effect |
+| --- | --- | --- |
+| Draft input focused | `Ctrl+P` / `Ctrl+N` | Older / newer sent draft (the same as Up/Down). Never navigation: they are the Emacs "previous/next line" keys, so the draft keeps them. |
+| Anywhere | macOS `Ctrl+Opt+P/N`, Windows/Linux `Alt+P/N` | Previous / next channel |
+| Anywhere | the same with `Shift` | Previous / next server |
+| Anywhere | macOS `Cmd+Opt+P/N`, Windows/Linux `Ctrl+Shift+P/N` | Previous / next unread channel |
+| Channel tree or member list focused | plain `P` / `N` | Move the selection up / down; `Enter` opens it |
+
+- The global keys always carry a modifier that the draft never uses for
+  typing, so they work with the draft focused; Opt on macOS and Alt on
+  Windows/Linux produce no text in the draft here because the binding is
+  matched first. Plain `P`/`N` exist only on a focused list, never in the
+  draft or in settings fields.
+- **AltGr.** Windows delivers AltGr as `Ctrl+Alt`, and layouts such as
+  Polish type letters with AltGr+key. The new bindings therefore never use
+  `Ctrl+Alt`: unread uses `Ctrl+Shift+P/N` on Windows/Linux, and `Alt+P/N`
+  (left Alt, no Ctrl) is not matched by an AltGr press, which carries Ctrl.
+  The existing `Ctrl+Alt+1..9` and `Ctrl+Alt+PageUp/PageDown` share the
+  problem for digits and are not changed here; whether to ignore them while
+  AltGr is down (if GPUI can tell the two apart) is a separate question.
+- "Active channel/server" variants keep only their current keys; the letter
+  pair covers channel, server and unread, which is what the issue lists.
+- Windows `Alt+letter` does not open menus here (the in-window menu bar
+  reacts to Alt alone and F10 only, and Alt chords do not toggle it).
+- Rejected: plain `N`/`P` globally (steals typing), `Ctrl+N/P` globally
+  (Emacs line keys, draft history), `Cmd+N/P` on macOS (conventionally
+  New/Print), and `Ctrl+Alt+P/N` on Windows/Linux (AltGr, above).
+- Lists cannot take keyboard focus yet; making them focusable is the first
+  step of #86.
+
 ## D036 — Server-confirmed sending: echo-message and labeled-response
 
 Status: implemented (IRCv3 standard capabilities, one opt-in).
@@ -1317,46 +1365,6 @@ username (ident) and the SASL account.
   beyond that are the server's (`FAIL SETNAME INVALID_REALNAME`).
 - **Not tracked.** Other users' `SETNAME` messages are consumed silently; the
   remote realname is not stored (workstream for extended-join/WHOIS).
-
-## D033 — Next / Previous keys without arrows
-
-Status: proposed (issue #72, sub-issue #84); implemented by #85 and #86.
-
-Navigation gets a letter pair beside the arrow and Page keys, for keyboards
-where arrows sit on a layer (HHKB): **N = next, P = previous**. Existing
-arrow, Page, Tab and number shortcuts stay as they are.
-
-Current keys that the new ones must not collide with (SHORTCUTS.md): Tab
-(nick completion), Ctrl/Opt+Tab and Opt+Space (unread), Up/Down (draft
-history, issue #62), Ctrl+Up/Down, Alt+Up/Down, Cmd+Up/Down,
-Ctrl+PageUp/PageDown, Alt+PageUp/PageDown, Ctrl+Alt+PageUp/PageDown,
-Cmd+Opt+arrows, digits with Cmd/Ctrl/Alt, and the macOS Control editing keys
-in the draft (Ctrl+A/B/D/E/F/H/K/W). Ctrl+N and Ctrl+P are not bound today.
-
-Decision:
-
-| Where | Keys | Effect |
-| --- | --- | --- |
-| Draft input focused | `Ctrl+P` / `Ctrl+N` | Older / newer sent draft (the same as Up/Down). Never navigation: they are the Emacs "previous/next line" keys, so the draft keeps them. |
-| Anywhere | macOS `Ctrl+Opt+P/N`, Windows/Linux `Alt+P/N` | Previous / next channel |
-| Anywhere | the same with `Shift` | Previous / next server |
-| Anywhere | macOS `Cmd+Opt+P/N`, Windows/Linux `Ctrl+Alt+P/N` | Previous / next unread channel |
-| Channel tree or member list focused | plain `P` / `N` | Move the selection up / down; `Enter` opens it |
-
-- The global keys always carry a modifier that the draft never uses for
-  typing, so they work with the draft focused; Opt on macOS and Alt on
-  Windows/Linux produce no text in the draft here because the binding is
-  matched first. Plain `P`/`N` exist only on a focused list, never in the
-  draft or in settings fields.
-- "Active channel/server" variants keep only their current keys; the letter
-  pair covers channel, server and unread, which is what the issue lists.
-- Windows `Alt+letter` does not open menus here (the in-window menu bar
-  reacts to Alt alone and F10 only, and Alt chords do not toggle it).
-- Rejected: plain `N`/`P` globally (steals typing), `Ctrl+N/P` globally
-  (Emacs line keys, draft history), and `Cmd+N/P` on macOS (conventionally
-  New/Print).
-- Lists cannot take keyboard focus yet; making them focusable is the first
-  step of #86.
 
 ## Text input scrolling
 
