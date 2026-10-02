@@ -423,6 +423,7 @@ mod tests {
             mentioned: false,
             server_time: None,
             msgid: None,
+            account: None,
             replayed: false,
         }
     }
@@ -698,6 +699,46 @@ mod tests {
             assert_eq!(chat.sessions[&NetworkId(1)].own_avatar.outcome(), None);
         });
         assert!(fetcher.calls().is_empty(), "nothing downloaded while off");
+    }
+
+    #[gpui::test]
+    fn our_own_messages_use_our_own_avatar_without_a_lookup(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), None, "none set");
+        });
+        events(
+            &chat,
+            cx,
+            vec![
+                Event::MetadataReady,
+                Event::OwnAvatar {
+                    url: Some(BOB.into()),
+                    request: None,
+                },
+                say("me", "hello"),
+            ],
+        );
+        chat.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(
+                chat.own_avatar_for(NetworkId(1), "me").as_deref(),
+                Some(BOB)
+            );
+            assert_eq!(
+                chat.own_avatar_for(NetworkId(1), "ME").as_deref(),
+                Some(BOB)
+            );
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "bob"), None);
+            assert!(chat.state.avatars().current(NetworkId(1), "me").is_none());
+        });
+        assert!(
+            fetcher.calls().iter().any(|url| url.contains("bob")),
+            "{:?}",
+            fetcher.calls()
+        );
     }
 
     #[gpui::test]

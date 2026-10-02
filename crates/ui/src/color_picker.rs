@@ -5,12 +5,12 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    AppContext, Bounds, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
+    AppContext, Bounds, Context, Entity, EntityId, EventEmitter, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, StatefulInteractiveElement,
     Styled, Window, canvas, div, hsla, linear_color_stop, linear_gradient, px, rgb,
 };
 
-use crate::input::TextInput;
+use crate::{input::TextInput, splitter::NoGhost};
 
 /// Side of the saturation/brightness square, and length of the hue bar.
 const SIZE: f32 = 160.;
@@ -83,17 +83,10 @@ enum Handle {
     Bar,
 }
 
-/// What a drag carries: which control is being dragged.
-struct Dragging(Handle);
-
-/// The view GPUI draws at the pointer while dragging: nothing.
-struct NoGhost;
-
-impl Render for NoGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
+/// What a drag carries: which control of which picker is being dragged. GPUI
+/// hands a drag's moves to every element listening for this type, so a picker
+/// has to check that the drag is its own.
+struct Dragging(Handle, EntityId);
 
 pub struct ColorPicker {
     hsv: Hsv,
@@ -206,6 +199,7 @@ impl Render for ColorPicker {
         let no_black = hsla(0., 0., 0., 0.);
         let black = hsla(0., 0., 0., 1.);
         let (square, bar) = (self.square.clone(), self.bar.clone());
+        let owner = cx.entity_id();
         let hue_stops = (0..6).map(|sector| {
             let from = Hsv {
                 h: sector as f32 * 60.,
@@ -259,10 +253,13 @@ impl Render for ColorPicker {
                             this.pick(Handle::Square, event.position, cx)
                         }),
                     )
-                    .on_drag(Dragging(Handle::Square), |_, _, _, cx| cx.new(|_| NoGhost))
+                    .on_drag(Dragging(Handle::Square, owner), |_, _, _, cx| {
+                        cx.new(|_| NoGhost)
+                    })
                     .on_drag_move(cx.listener(
-                        |this, event: &gpui::DragMoveEvent<Dragging>, _, cx| {
-                            if event.drag(cx).0 == Handle::Square {
+                        move |this, event: &gpui::DragMoveEvent<Dragging>, _, cx| {
+                            let drag = event.drag(cx);
+                            if drag.0 == Handle::Square && drag.1 == owner {
                                 this.pick(Handle::Square, event.event.position, cx);
                             }
                         },
@@ -289,10 +286,13 @@ impl Render for ColorPicker {
                             this.pick(Handle::Bar, event.position, cx)
                         }),
                     )
-                    .on_drag(Dragging(Handle::Bar), |_, _, _, cx| cx.new(|_| NoGhost))
+                    .on_drag(Dragging(Handle::Bar, owner), |_, _, _, cx| {
+                        cx.new(|_| NoGhost)
+                    })
                     .on_drag_move(cx.listener(
-                        |this, event: &gpui::DragMoveEvent<Dragging>, _, cx| {
-                            if event.drag(cx).0 == Handle::Bar {
+                        move |this, event: &gpui::DragMoveEvent<Dragging>, _, cx| {
+                            let drag = event.drag(cx);
+                            if drag.0 == Handle::Bar && drag.1 == owner {
                                 this.pick(Handle::Bar, event.event.position, cx);
                             }
                         },
@@ -374,6 +374,46 @@ mod tests {
         });
         cx.run_until_parked();
         (host, cx)
+    }
+
+    struct Pair(Entity<ColorPicker>, Entity<ColorPicker>);
+
+    impl Render for Pair {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().flex().child(self.0.clone()).child(self.1.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn dragging_one_picker_leaves_the_other_alone(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let (pair, cx) = cx.add_window_view(|_, cx| {
+            Pair(
+                cx.new(|cx| ColorPicker::new(0xFF0000, cx)),
+                cx.new(|cx| ColorPicker::new(0x0000FF, cx)),
+            )
+        });
+        cx.run_until_parked();
+        let (first, second) = pair.read_with(cx, |pair, _| (pair.0.clone(), pair.1.clone()));
+        let at = |x: f32, y: f32| gpui::point(px(x), px(y));
+        let none = gpui::Modifiers::none();
+        cx.simulate_mouse_move(at(80., 40.), None, none);
+        cx.simulate_mouse_down(at(80., 40.), MouseButton::Left, none);
+        cx.simulate_mouse_move(at(90., 50.), MouseButton::Left, none);
+        cx.simulate_mouse_move(at(130., 100.), MouseButton::Left, none);
+        cx.run_until_parked();
+        assert_ne!(first.read_with(cx, |p, _| p.color()), 0xFF0000, "dragged");
+        assert_eq!(
+            second.read_with(cx, |p, _| p.color()),
+            0x0000FF,
+            "untouched"
+        );
     }
 
     #[gpui::test]

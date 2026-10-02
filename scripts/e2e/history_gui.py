@@ -26,6 +26,9 @@ WIDTH, HEIGHT = 1000, 700
 # Inside the main log pane (upper left) at this window size.
 LOG_BOX = (0, 0, 560, 326)
 LOG_POINT = (300, 150)
+# Where message text starts in the main log: after the time and the 124 px
+# nickname column.
+TEXT_X = 185
 CHANNEL = "#e2e"
 LINES = 180
 
@@ -120,11 +123,11 @@ class Display:
         self.run("xclip", "-selection", "clipboard", "-i", "/dev/null", check=False)
         x0, y0, x1, y1 = LOG_BOX
         # Press on the first row's text, drag to the end of the last one.
-        self.xdo("mousemove", str(x0 + 145), str(y0 + 14))
+        self.xdo("mousemove", str(x0 + TEXT_X), str(y0 + 14))
         time.sleep(0.2)
         self.xdo("mousedown", "1")
         for step in range(1, 11):
-            self.xdo("mousemove", str(x0 + 145 + (x1 - x0 - 150) * step // 10), str(y0 + 14 + (y1 - 8 - 14 - y0) * step // 10))
+            self.xdo("mousemove", str(x0 + TEXT_X + (x1 - x0 - TEXT_X - 5) * step // 10), str(y0 + 14 + (y1 - 8 - 14 - y0) * step // 10))
             time.sleep(0.08)
         self.xdo("mouseup", "1")
         time.sleep(0.3)

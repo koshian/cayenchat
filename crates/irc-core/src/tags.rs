@@ -122,6 +122,13 @@ pub fn msgid(message: &IrcMessage) -> Option<&str> {
     tag_value(message, "msgid")
 }
 
+/// The sender's services account from the `account` tag (`account-tag`),
+/// absent when the sender was not logged in. Scoped to the connection's
+/// network; not an identity across networks.
+pub fn account(message: &IrcMessage) -> Option<&str> {
+    tag_value(message, "account").filter(|value| *value != "*")
+}
+
 /// The `time` tag as an instant, when server-time is enabled on this
 /// connection. Absent or invalid values yield `None` so callers fall back to
 /// the receipt time.
