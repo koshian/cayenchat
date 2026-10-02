@@ -336,13 +336,16 @@ mod tests {
         assert!(overrides(&form, cx).is_empty());
 
         // Leaving the window ends a recording, so keys pressed elsewhere are
-        // not taken; becoming active again changes nothing.
+        // not taken. This goes through the window's own activation change, so
+        // it also fails if that is no longer observed.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
         form.update(cx, |form, cx| {
-            form.toggle_shortcut_recording("next_channel", cx);
-            form.window_activation_changed(true, cx);
-            assert!(form.shortcut_recording.is_some());
-            form.window_activation_changed(false, cx);
-            assert!(form.shortcut_recording.is_none());
+            form.toggle_shortcut_recording("next_channel", cx)
         });
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_some()));
+        cx.deactivate_window();
+        assert!(form.read_with(cx, |form, _| form.shortcut_recording.is_none()));
     }
 }

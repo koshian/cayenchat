@@ -129,7 +129,7 @@
   "shortcut_reset": "元に戻す",
   "shortcut_reset_all": "すべて元に戻す",
   "shortcut_press": "新しいキーを押してください(Esc で取り消し)",
-  "shortcut_press_replaces": "新しいキーを押してください(今のキーはすべて置き換わります。Esc で取り消し)",
+  "shortcut_press_replaces": "新しいキーを押してください(置き換え。Esc で取り消し)",
   "shortcut_needs_modifier": "Ctrl・Alt・Cmd と一緒に押してください",
   "shortcut_types_text": "文字の入力に使われる組み合わせです",
   "shortcut_conflict_action": "{other} と重複しています",
