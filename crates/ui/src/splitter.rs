@@ -154,8 +154,12 @@ pub fn splitter<V: 'static>(
                     drag.anchor,
                     &limits,
                 );
-                on_resize(view, new, window, cx);
-                cx.notify();
+                // Pinned at a limit the size does not change, and neither
+                // should the window be redrawn for every pointer move.
+                if new != size {
+                    on_resize(view, new, window, cx);
+                    cx.notify();
+                }
             }),
         )
 }
@@ -236,6 +240,13 @@ mod tests {
         cx.simulate_mouse_move(at(900.), gpui::MouseButton::Left, gpui::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(panes.read_with(cx, |panes, _| panes.width), 300.);
+        // Staying beyond the limit reports nothing more.
+        let pinned = panes.read_with(cx, |panes, _| panes.resizes);
+        for x in [950., 1000., 1500.] {
+            cx.simulate_mouse_move(at(x), gpui::MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+        }
+        assert_eq!(panes.read_with(cx, |panes, _| panes.resizes), pinned);
         cx.simulate_mouse_move(at(0.), gpui::MouseButton::Left, gpui::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(panes.read_with(cx, |panes, _| panes.width), 120.);
