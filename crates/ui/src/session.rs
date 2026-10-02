@@ -6,12 +6,13 @@
 //! shared connection state.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     time::Instant,
 };
 
 use cayenchat_app::own_avatar::OwnAvatar;
 use cayenchat_irc_core::{Connection, ConnectionConfig};
+use cayenchat_model::ConversationId;
 
 /// Newest transcript lines kept per server.
 pub const DIAGNOSTIC_LIMIT: usize = 1000;
@@ -34,6 +35,9 @@ pub struct ServerSession {
     /// Parsed IRC transcript and connection stages, bounded.
     pub diagnostics: VecDeque<String>,
     pub connection_started: Option<Instant>,
+    /// When the connection was first lost since it last registered, so a
+    /// reconnect can look for direct messages that arrived meanwhile.
+    pub disconnected_at: Option<std::time::SystemTime>,
     pub watchdog_stage: u8,
     /// Invalidates the event pump and watchdog of a replaced connection.
     pub generation: u64,
@@ -46,6 +50,14 @@ pub struct ServerSession {
     pub metadata_requested: bool,
     /// CTCP AVATAR on the current connection.
     pub peer_avatars: PeerAvatarConnection,
+    /// Our messages waiting for the server's echo (`echo-message`), by the
+    /// connection's id: the conversation, the line's sequence and whether
+    /// it is a NOTICE. The connection bounds what it tracks.
+    pub pending_sends: HashMap<u64, (ConversationId, u64, bool)>,
+    /// Services account and real name of the users we share a channel with,
+    /// as the connection reports them (`Event::UserAccount`), by
+    /// casemapped nickname. The connection bounds it and reports removals.
+    pub user_accounts: HashMap<String, (Option<String>, Option<String>)>,
 }
 
 /// How the current connection exchanges avatars with other clients: what
@@ -72,16 +84,21 @@ impl ServerSession {
             pending_whois: HashSet::new(),
             diagnostics: VecDeque::new(),
             connection_started: None,
+            disconnected_at: None,
             watchdog_stage: 0,
             generation: 0,
             own_avatar: OwnAvatar::default(),
             metadata_requested: false,
             peer_avatars: PeerAvatarConnection::default(),
+            pending_sends: HashMap::new(),
+            user_accounts: HashMap::new(),
         }
     }
 
     /// Records what a connection starting with `config` asked for.
     pub fn connection_starting(&mut self, config: &ConnectionConfig) {
+        self.pending_sends.clear();
+        self.user_accounts.clear();
         self.metadata_requested = config.ircv3.metadata;
         self.peer_avatars = PeerAvatarConnection {
             enabled: config.ircv3.peer_avatars,

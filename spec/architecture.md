@@ -1114,7 +1114,23 @@ joined with `/join` are not rejoined by reconnects (only configured ones
 are), so they are not recovered until joined again; private
 conversations are not recovered.
 
-Not implemented: TARGETS and private-message history, persistence.
+Direct-message discovery (D034): once per connection, when chathistory
+becomes available, the worker queues `CHATHISTORY TARGETS <from> <to> 16`
+ahead of the join requests (`from`: the previous disconnect, at most a week
+back, default a day; `to`: now plus 5 minutes for clock skew). The reply
+batch (`draft/chathistory-targets`) is consumed whole; nicknames (not
+channels) are deduplicated by IRC casemapping, newest first, at most 16, and
+each is queued as an ordinary `LATEST <nick> * 50` in the same bounded queue.
+The application shows such a peer's conversation when its request is sent
+and inserts the reply like channel history (provenance `Requested`: no
+unread mark, highlight or notification). The reply of a request belongs to
+the connection's worker, so a reconnect cannot receive an older
+connection's targets.
+
+Not implemented: persistence; recovery of a known private conversation
+beyond one page (it repeats `LATEST *` and relies on the duplicate filter;
+lines missed while lines arrived live are placed by arrival order);
+channels the bouncer knows but we have not joined.
 
 ## Notifications
 
@@ -1431,3 +1447,28 @@ chat drafts and other prompts retain their original styling and editing code.
 The app's saved theme mode remains authoritative. OS reads happen outside
 rendering; non-macOS readers run in the background, with the existing palette
 available during loading or after errors.
+
+## Server-confirmed sending (D036)
+
+`irc-core::echo::Echoes` (worker) tracks each sent message until its echo,
+ACK, error or expiry; `Event::OutgoingAccepted { local_id }`,
+`OutgoingConfirmed`, `OutgoingFailed` connect it to the application, which
+keeps `ServerSession::pending_sends` and calls `AppState::confirm_message` /
+`fail_message` on the optimistic line. The worker schedules expiry only while
+messages are pending, so an unanswered send is reported after 60 seconds even
+if no further server line arrives.
+
+## User accounts (D035)
+
+`irc-core::accounts::Accounts` sees each incoming line before translation
+(JOIN, ACCOUNT, PART, KICK, QUIT, NICK, its WHOX reply), the published member
+lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
+`UserAccountForgotten`. `ServerSession::user_accounts` mirrors them;
+`complete_whois` uses it. Active only with the "User accounts" preference.
+
+## account-tag (D033)
+
+`tags::account` reads the `account` tag; `irc-core` events carry it,
+`irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
+`new_message` retains it in `Message::account`. There is no per-user account
+table in this step.
