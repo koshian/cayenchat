@@ -2130,10 +2130,15 @@ impl ChatWindow {
         let Some(menu) = self.server_menu.take() else {
             return;
         };
+        // The nickname in use, else the one the profile would connect with.
         let nickname = self
             .own_nickname(menu.network)
-            .unwrap_or_default()
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| {
+                let session = self.sessions.get(&menu.network)?;
+                Some(self.saved.profile(&session.profile_id)?.nickname.clone())
+            })
+            .unwrap_or_default();
         self.show_member_prompt(menu.network, nickname, kind, menu.position, window, cx);
     }
 
@@ -2151,7 +2156,16 @@ impl ChatWindow {
             MemberPromptKind::Invite | MemberPromptKind::Join => "member_channel_placeholder",
             MemberPromptKind::Nick => "nickname",
         });
-        let input = cx.new(|cx| TextInput::new_field(&placeholder, "", false, cx));
+        // A new nickname starts from the current one, all selected, so a
+        // small change is a small edit and typing replaces it.
+        let initial = match kind {
+            MemberPromptKind::Nick => nickname.as_str(),
+            _ => "",
+        };
+        let input = cx.new(|cx| TextInput::new_field(&placeholder, initial, false, cx));
+        if matches!(kind, MemberPromptKind::Nick) {
+            input.update(cx, |input, cx| input.select_everything(cx));
+        }
         let viewport = window.viewport_size();
         self.feedback = None;
         self.member_prompt = Some(MemberPrompt {
@@ -6007,7 +6021,11 @@ impl ChatWindow {
                     ((viewport.height - px(140.)) / 2.).max(px(0.)),
                 )
             });
-            let submit = self.i18n.text("member_submit");
+            let submit = self.i18n.text(match prompt.kind {
+                MemberPromptKind::Join => "channel_join",
+                MemberPromptKind::Nick => "nickname_change_submit",
+                MemberPromptKind::PrivateMessage | MemberPromptKind::Invite => "member_submit",
+            });
             div()
                 .id("member-prompt")
                 .absolute()
@@ -7936,7 +7954,8 @@ mod pane_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = crate::settings_with_channels("#a");
+        let mut settings = crate::settings_with_channels("#a");
+        settings.servers[0].nickname = "alice".into();
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
         });
@@ -7950,6 +7969,17 @@ mod pane_tests {
                 assert!(chat.server_menu.is_none());
                 let prompt = chat.member_prompt.as_ref().expect("prompt opened");
                 assert_eq!(prompt.network, NetworkId(1));
+                // A new nickname starts from the current one; a channel from nothing.
+                let initial = prompt.input.read(cx).text().to_owned();
+                match kind {
+                    MemberPromptKind::Nick => {
+                        let saved = chat.saved.servers[0].nickname.clone();
+                        assert!(!saved.is_empty());
+                        assert_eq!(initial, saved);
+                    }
+                    _ => assert_eq!(initial, ""),
+                }
+                let prompt = chat.member_prompt.as_ref().expect("prompt opened");
                 prompt
                     .input
                     .update(cx, |input, cx| input.set_text("#b", cx));
