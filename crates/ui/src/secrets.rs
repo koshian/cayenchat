@@ -17,8 +17,28 @@ pub fn install(kind: CredentialBackendKind, cx: &mut App) {
 pub fn store(cx: &App) -> CredentialStore {
     match cx.try_global::<Credentials>() {
         Some(credentials) => credentials.0.clone(),
+        #[cfg(not(test))]
         None => CredentialStore::open(CredentialBackendKind::System),
+        // Unit tests never open the real store: on macOS the Keychain asks
+        // for the login password the moment a test binary reads the user's
+        // "CayenChat" item. Each test (its own thread) gets an empty
+        // in-memory store instead.
+        #[cfg(test)]
+        None => test_store(),
     }
+}
+
+#[cfg(test)]
+fn test_store() -> CredentialStore {
+    use cayenchat_storage::credentials::MemoryBackend;
+    use std::sync::Arc;
+
+    thread_local! {
+        static STORE: CredentialStore = CredentialStore::with_backend(Arc::new(
+            MemoryBackend::new(CredentialBackendKind::System),
+        ));
+    }
+    STORE.with(Clone::clone)
 }
 
 /// User-facing text for a credential failure. Errors never contain secrets.
@@ -47,5 +67,29 @@ pub fn system_store_key() -> &'static str {
         "credential_system_windows"
     } else {
         "credential_system_linux"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cayenchat_storage::{Secret, SecretKey};
+
+    #[gpui::test]
+    fn without_an_installed_store_tests_get_a_private_in_memory_one(cx: &mut gpui::TestAppContext) {
+        // Nothing here may reach the operating system's credential store:
+        // the key below would otherwise be written to the real Keychain.
+        let key = SecretKey::server_password("secrets-test-never-the-real-store");
+        cx.update(|cx| {
+            assert!(cx.try_global::<Credentials>().is_none());
+            let first = store(cx);
+            assert_eq!(first.get(&key).unwrap(), None);
+            first.set(&key, &Secret::new("hunter2")).unwrap();
+            // The same test sees what it stored, through any handle.
+            let second = store(cx);
+            assert!(second.get(&key).unwrap().is_some());
+            second.delete(&key).unwrap();
+            assert_eq!(first.get(&key).unwrap(), None);
+        });
     }
 }
