@@ -171,8 +171,10 @@ bindings remain for layouts where [ and ] need Option (German, for example).
 The navigation shortcuts are named actions (`ui::shortcuts::ACTIONS`: id,
 command, per-platform default keys). The `keybindings` setting (action id →
 key, #114) replaces an action's keys; unknown actions and unusable keys (an
-empty string, a chord, a bare letter, a modifier alone) are ignored, leaving
-the defaults. A key is kept as GPUI reports it when pressed, which is not
+empty string, a chord, a bare letter, a modifier alone, and a combination that
+types a character: Option+letter on macOS, Ctrl+Alt+letter on Windows, where it
+is AltGr) are ignored, leaving the defaults. Clashes between what the user
+changed and other actions or fixed shortcuts are logged at startup. A key is kept as GPUI reports it when pressed, which is not
 always as it is typed (see `cmd-{` above). `shortcuts::conflicts` lists keys
 that two actions, or an action and a fixed shortcut, would share, for the
 editing UI (#118).

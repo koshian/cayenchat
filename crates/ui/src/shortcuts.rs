@@ -114,15 +114,42 @@ pub const ACTIONS: &[ShortcutAction] = &[
     ),
 ];
 
+/// Whether pressing `keystroke` is how a character is typed on that system:
+/// Option+letter on macOS (`å`, `ø`) and Ctrl+Alt+letter on Windows, where it
+/// is AltGr. A shortcut on it would be matched before the character reaches
+/// the draft and take that character away. `macos` and `windows` say which
+/// system's rules apply.
+pub fn types_text_on(keystroke: &Keystroke, macos: bool, windows: bool) -> bool {
+    let modifiers = &keystroke.modifiers;
+    let one_character = keystroke.key.chars().count() == 1;
+    one_character
+        && !modifiers.platform
+        && ((macos && modifiers.alt && !modifiers.control)
+            || (windows && modifiers.alt && modifiers.control))
+}
+
+/// [`types_text_on`] for the system this is running on.
+pub fn types_text(keystroke: &Keystroke) -> bool {
+    types_text_on(
+        keystroke,
+        cfg!(target_os = "macos"),
+        cfg!(target_os = "windows"),
+    )
+}
+
 /// A key a user may give an action, or `None`. One keystroke (no chords),
 /// parsed as GPUI parses a binding, carrying a modifier or being a function
 /// key: a bare letter would take the characters out of the draft, and a
-/// modifier on its own is not a key.
+/// modifier on its own is not a key. A combination that types a character
+/// ([`types_text`]) is not usable either.
 pub fn usable_key(key: &str) -> Option<Keystroke> {
     if key.is_empty() || key.chars().any(char::is_whitespace) {
         return None;
     }
     let keystroke = Keystroke::parse(key).ok()?;
+    if types_text(&keystroke) {
+        return None;
+    }
     let modifier_alone = matches!(
         keystroke.key.as_str(),
         "" | "shift" | "control" | "alt" | "platform" | "function"
@@ -163,10 +190,8 @@ pub fn bindings(overrides: &Overrides) -> Vec<KeyBinding> {
         .collect()
 }
 
-// Conflicts are shown as warnings by the shortcuts tab (#118), which does not
-// exist yet.
-/// Who holds a key.
-#[allow(dead_code)]
+/// Who holds a key. Conflicts are logged at startup and shown as warnings by
+/// the shortcuts tab (#118).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
     Action(&'static str),
@@ -175,7 +200,6 @@ pub enum Owner {
 }
 
 /// A key that more than one owner would take.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Conflict {
     pub key: String,
@@ -185,7 +209,6 @@ pub struct Conflict {
 /// The keys more than one owner takes, for the defaults and `overrides`.
 /// `fixed` are the bindings that cannot be changed; a key matches one the way
 /// GPUI would match it when pressed.
-#[allow(dead_code)]
 pub fn conflicts(overrides: &Overrides, fixed: &[KeyBinding]) -> Vec<Conflict> {
     let mut by_key: Vec<(String, Keystroke, Vec<Owner>)> = Vec::new();
     for action in ACTIONS {
@@ -301,13 +324,13 @@ mod tests {
 
     #[test]
     fn a_chosen_key_replaces_all_of_the_actions_defaults_and_only_its_own() {
-        let changed = navigation(&overrides(&[("next_channel", "ctrl-alt-n")]));
+        let changed = navigation(&overrides(&[("next_channel", "ctrl-shift-n")]));
         let next: Vec<_> = changed
             .iter()
             .filter(|(_, command)| *command == Command::NextChannel)
             .collect();
         assert_eq!(next.len(), 1, "{next:?}");
-        assert_eq!(next[0].0, "ctrl-alt-n");
+        assert_eq!(next[0].0, "ctrl-shift-n");
         // The other actions keep their defaults.
         let defaults = navigation(&Overrides::new());
         for pair in defaults
@@ -347,6 +370,36 @@ mod tests {
     }
 
     #[test]
+    fn a_combination_that_types_a_character_is_not_usable() {
+        let alt_a = Keystroke::parse("alt-a").unwrap();
+        let ctrl_alt_n = Keystroke::parse("ctrl-alt-n").unwrap();
+        let cmd_alt_a = Keystroke::parse("cmd-alt-a").unwrap();
+        let alt_space = Keystroke::parse("alt-space").unwrap();
+        let ctrl_alt_pageup = Keystroke::parse("ctrl-alt-pageup").unwrap();
+        // macOS: Option+letter types å, ø and the like.
+        assert!(types_text_on(&alt_a, true, false));
+        assert!(!types_text_on(&alt_a, false, false));
+        // Windows: Ctrl+Alt is AltGr.
+        assert!(types_text_on(&ctrl_alt_n, false, true));
+        assert!(
+            !types_text_on(&ctrl_alt_n, true, false),
+            "Ctrl stops Option typing"
+        );
+        assert!(!types_text_on(&ctrl_alt_n, false, false));
+        // With Cmd it is a shortcut, not typing; named keys never type text.
+        assert!(!types_text_on(&cmd_alt_a, true, true));
+        assert!(!types_text_on(&alt_space, true, true));
+        assert!(!types_text_on(&ctrl_alt_pageup, true, true));
+        // `usable_key` follows the system this runs on.
+        assert_eq!(usable_key("alt-a").is_none(), cfg!(target_os = "macos"));
+        assert_eq!(
+            usable_key("ctrl-alt-n").is_none(),
+            cfg!(target_os = "windows")
+        );
+        assert!(usable_key("cmd-alt-a").is_some());
+    }
+
+    #[test]
     fn a_changed_shortcut_in_the_saved_settings_counts_as_a_change_to_rebind() {
         use crate::ShortcutPrefs;
         let mut settings = cayenchat_storage::Settings::default();
@@ -354,10 +407,10 @@ mod tests {
         assert_eq!(before, ShortcutPrefs::from(&settings));
         settings
             .keybindings
-            .insert("next_channel".into(), "ctrl-alt-n".into());
+            .insert("next_channel".into(), "ctrl-shift-n".into());
         let after = ShortcutPrefs::from(&settings);
         assert_ne!(before, after, "the settings save rebinds only on a change");
-        assert_eq!(after.overrides["next_channel"], "ctrl-alt-n");
+        assert_eq!(after.overrides["next_channel"], "ctrl-shift-n");
     }
 
     #[test]
@@ -371,15 +424,15 @@ mod tests {
         let fixed = crate::fixed_bindings(cayenchat_storage::ChannelNumberModifier::Ctrl);
         let shared = conflicts(
             &overrides(&[
-                ("next_channel", "ctrl-alt-n"),
-                ("next_server", "ctrl-alt-n"),
+                ("next_channel", "ctrl-shift-n"),
+                ("next_server", "ctrl-shift-n"),
             ]),
             &fixed,
         );
         assert_eq!(
             shared,
             [Conflict {
-                key: "ctrl-alt-n".into(),
+                key: "ctrl-shift-n".into(),
                 owners: vec![Owner::Action("next_channel"), Owner::Action("next_server")],
             }]
         );
@@ -393,8 +446,8 @@ mod tests {
         // The same key spelled another way is the same key.
         let respelled = conflicts(
             &overrides(&[
-                ("next_channel", "alt-ctrl-n"),
-                ("next_server", "ctrl-alt-n"),
+                ("next_channel", "shift-ctrl-n"),
+                ("next_server", "ctrl-shift-n"),
             ]),
             &fixed,
         );

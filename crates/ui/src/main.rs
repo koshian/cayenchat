@@ -7414,6 +7414,18 @@ impl From<&Settings> for ShortcutPrefs {
 /// Replaces every key binding, so changed key preferences apply without
 /// restarting.
 fn apply_shortcuts(prefs: ShortcutPrefs, cx: &mut App) {
+    // Keys the user changed can end up shared with another action or a fixed
+    // shortcut (a hand-edited settings file, or before the shortcuts tab can
+    // warn). Both bindings are kept, as before, and the clash is reported.
+    if !prefs.overrides.is_empty() {
+        let fixed = fixed_bindings(prefs.channel_modifier);
+        for conflict in shortcuts::conflicts(&prefs.overrides, &fixed) {
+            eprintln!(
+                "CayenChat: the shortcut {} is taken by more than one action: {:?}",
+                conflict.key, conflict.owners
+            );
+        }
+    }
     cx.set_global(prefs);
     rebind_shortcuts(cx);
 }
