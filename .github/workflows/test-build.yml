@@ -82,6 +82,15 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # The variant is defined here, not read from the ref, so that refs
+          # branched before it existed can be packaged too. It installs the
+          # same paths as the regular package, so the two conflict.
+          cat >> crates/ui/Cargo.toml <<'EOF_VARIANT'
+
+          [package.metadata.deb.variants.test]
+          name = "cayenchat-test"
+          conflicts = "cayenchat-ui"
+          EOF_VARIANT
           cargo deb --no-build --variant test
           mv target/debian/*.deb "$PACKAGE.deb"
 

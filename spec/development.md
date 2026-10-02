@@ -208,12 +208,17 @@ tab or with
 It packages that ref like the beta does and keeps each package as a workflow
 artifact for 7 days, named `cayenchat-test-<short SHA>-<platform>` (`.zip`, or
 `.deb` on Linux) and downloaded as that file; the macOS bundle is
-`CayenChat Test.app`. The `.deb` is the package `cayenchat-test` (the `test`
-variant in `crates/ui/Cargo.toml`) with `Conflicts: cayenchat`. It installs the
-same paths as the regular package (`/usr/bin/cayenchat`, the desktop file and
-`/usr/share/cayenchat/locales`), so it cannot coexist with it: installing one
-asks to remove the other instead of silently overwriting it. `isolated=true` builds with the `test-build` feature, so
-the reporter's own settings and passwords are not used (suffix `-isolated`).
+`CayenChat Test.app`. The `.deb` is the package `cayenchat-test`, with
+`Conflicts: cayenchat-ui` (the regular package's name, from the crate); the
+regular package declares
+`Conflicts: cayenchat-test`. The workflow adds the `test` variant to
+`crates/ui/Cargo.toml` itself, so refs branched before it existed can be
+packaged. Both packages install the same paths (`/usr/bin/cayenchat`, the
+desktop file and `/usr/share/cayenchat/locales`), so they cannot coexist:
+`sudo apt install ./<file>.deb` asks to remove the other one instead of
+silently overwriting it (`dpkg -i` just fails). `isolated=true` builds with
+the `test-build` feature, so the reporter's own settings and passwords are
+not used (suffix `-isolated`).
 It only has a read-only token and publishes nothing, so the beta is
 unaffected. Link the run and the commit SHA in the PR or issue; downloading
 an artifact needs a signed-in GitHub account. It packages separately from
