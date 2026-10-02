@@ -789,13 +789,45 @@ pub fn settings_path() -> Result<PathBuf, String> {
     }
 }
 
+/// The directory `CAYENCHAT_TEST_DIR` names for a test build, created
+/// readable only by the user when it is missing. `None` when it is unset or
+/// empty. It is for trying what must survive a restart (the window layout,
+/// the settings) in a build that otherwise starts empty every time; it also
+/// holds that build's credentials file, so it should be a directory of its
+/// own.
+#[cfg(any(test, feature = "test-build"))]
+fn fixed_test_directory(value: Option<std::ffi::OsString>) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let directory = PathBuf::from(value);
+    if !directory.is_absolute() {
+        return Err("CAYENCHAT_TEST_DIR must be an absolute path.".into());
+    }
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(&directory)
+        .map(|()| Some(directory))
+        .map_err(|error| format!("Could not create CAYENCHAT_TEST_DIR: {error}"))
+}
+
 /// A test build's configuration directory: new and empty for every launch,
-/// under the system temporary directory, readable only by the user.
+/// under the system temporary directory, readable only by the user. Unless
+/// `CAYENCHAT_TEST_DIR` names a directory, which is then used and kept.
 #[cfg(feature = "test-build")]
 pub fn test_build_directory() -> Result<PathBuf, String> {
     static DIRECTORY: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
     DIRECTORY
         .get_or_init(|| {
+            if let Some(fixed) = fixed_test_directory(std::env::var_os("CAYENCHAT_TEST_DIR"))? {
+                return Ok(fixed);
+            }
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_millis())
@@ -2110,6 +2142,33 @@ mod tests {
 
         settings.appearance.dark.sub_log_alternate = "gray".into();
         assert!(settings.appearance.validate().is_err());
+    }
+
+    #[test]
+    fn a_test_build_can_keep_its_directory_between_launches() {
+        use std::ffi::OsString;
+
+        assert_eq!(fixed_test_directory(None), Ok(None));
+        assert_eq!(fixed_test_directory(Some(OsString::new())), Ok(None));
+        assert!(fixed_test_directory(Some("relative/dir".into())).is_err());
+        let base = tempfile::tempdir().unwrap();
+        let nested = base.path().join("a").join("b");
+        let made = fixed_test_directory(Some(nested.clone().into_os_string())).unwrap();
+        assert_eq!(made, Some(nested.clone()));
+        assert!(nested.is_dir());
+        // Using it again keeps what is in it.
+        fs::write(nested.join("window.json"), "kept").unwrap();
+        fixed_test_directory(Some(nested.clone().into_os_string())).unwrap();
+        assert_eq!(
+            fs::read_to_string(nested.join("window.json")).unwrap(),
+            "kept"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "readable only by the user");
+        }
     }
 
     #[test]
