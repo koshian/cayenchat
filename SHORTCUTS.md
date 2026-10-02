@@ -10,10 +10,10 @@
 | Next unread channel | `Ctrl+Tab` or `Opt+Space` | `Ctrl+Tab` |
 | Previous unread channel | `Ctrl+Shift+Tab` or `Opt+Shift+Space` | `Ctrl+Shift+Tab` |
 | Previously selected channel | `Opt+Tab` | `Alt+Left` |
-| Previous / next active channel | `Cmd+Up/Down`, `Cmd+Opt+Up/Down`, or `Cmd+{/}` | `Ctrl+PageUp/PageDown` |
-| Previous / next channel | `Ctrl+Up/Down` | `Alt+Up/Down` |
+| Previous / next active channel | `Cmd+Up/Down` or `Cmd+Opt+Up/Down` | `Ctrl+PageUp/PageDown` |
+| Previous / next channel | `Cmd+[` / `Cmd+]` or `Ctrl+Up/Down` | `Alt+Up/Down` |
 | Previous / next active server | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
-| Previous / next server | `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
+| Previous / next server | `Cmd+Shift+[` / `Cmd+Shift+]` or `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
 | First through tenth channel | `Cmd+1..9, 0` | `Ctrl+1..9, 0` (configurable) |
 | First through tenth server | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | Send a channel message (`PRIVMSG`) | `Enter` | `Enter` |

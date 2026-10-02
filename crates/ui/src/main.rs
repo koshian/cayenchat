@@ -7430,8 +7430,20 @@ fn shortcut_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding>
         navigation_binding("cmd-down", Command::NextActiveChannel),
         navigation_binding("cmd-alt-up", Command::PreviousActiveChannel),
         navigation_binding("cmd-alt-down", Command::NextActiveChannel),
-        navigation_binding("cmd-{", Command::PreviousActiveChannel),
-        navigation_binding("cmd-}", Command::NextActiveChannel),
+        // Decided in #72: the bracket keys need no arrow keys (HHKB) and
+        // avoid Ctrl+Option (VoiceOver) and Ctrl+Left/Right (Spaces). The more
+        // frequent channel move is the shorter key; the server, one level up,
+        // adds Shift. Cmd+Shift+[ / ] were the active-channel keys: active
+        // channels stay on Cmd+Up/Down and Cmd+Opt+Up/Down.
+        navigation_binding("cmd-[", Command::PreviousChannel),
+        navigation_binding("cmd-]", Command::NextChannel),
+        // Written `cmd-{` and `cmd-}`, not `cmd-shift-[`: with Shift held on a
+        // key whose shifted character is not a letter, GPUI's macOS backend
+        // delivers the shifted character with `shift` cleared
+        // (`parse_keystroke` in platform/mac/events.rs), so Cmd+Shift+[ arrives
+        // as `cmd-{`. A `cmd-shift-[` binding would never fire.
+        navigation_binding("cmd-{", Command::PreviousServer),
+        navigation_binding("cmd-}", Command::NextServer),
         navigation_binding("ctrl-up", Command::PreviousChannel),
         navigation_binding("ctrl-down", Command::NextChannel),
         navigation_binding("cmd-alt-left", Command::PreviousActiveServer),
@@ -10625,5 +10637,84 @@ mod field_traversal_tests {
         cx.simulate_keystrokes("tab");
         assert_eq!(view.read_with(cx, |view, _| view.completions), 1);
         assert!(cx.update(|window, cx| view.read(cx).draft.focus_handle(cx).is_focused(window)));
+    }
+}
+
+#[cfg(test)]
+mod navigation_binding_tests {
+    use super::{Navigate, shortcut_bindings};
+    use cayenchat_app::Command;
+    use cayenchat_storage::ChannelNumberModifier;
+
+    /// The navigation command a typed key combination runs, and that no other
+    /// navigation binding takes the same keys.
+    #[cfg(target_os = "macos")]
+    fn command_for(keys: &str) -> Option<Command> {
+        let typed = gpui::Keystroke::parse(keys).unwrap();
+        let bindings = shortcut_bindings(ChannelNumberModifier::Ctrl);
+        let matching: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.match_keystrokes(&[typed.clone()]) == Some(false))
+            .collect();
+        assert!(
+            matching.len() <= 1,
+            "{keys} is bound {} times",
+            matching.len()
+        );
+        matching.first().and_then(|binding| {
+            binding
+                .action()
+                .as_any()
+                .downcast_ref::<Navigate>()
+                .map(|navigate| navigate.command)
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_bracket_keys_move_between_channels_and_servers() {
+        // Decided in #72.
+        assert_eq!(command_for("cmd-["), Some(Command::PreviousChannel));
+        assert_eq!(command_for("cmd-]"), Some(Command::NextChannel));
+        // Pressing Cmd+Shift+[ on macOS arrives as `cmd-{` (see the bindings),
+        // so that is what must be bound; `cmd-shift-[` never arrives.
+        assert_eq!(command_for("cmd-{"), Some(Command::PreviousServer));
+        assert_eq!(command_for("cmd-}"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-shift-["), None);
+        assert_eq!(command_for("cmd-shift-]"), None);
+        // The arrow-based keys stay.
+        assert_eq!(command_for("ctrl-up"), Some(Command::PreviousChannel));
+        assert_eq!(command_for("ctrl-right"), Some(Command::NextServer));
+        assert_eq!(command_for("cmd-up"), Some(Command::PreviousActiveChannel));
+        assert_eq!(
+            command_for("cmd-alt-down"),
+            Some(Command::NextActiveChannel)
+        );
+    }
+
+    #[test]
+    fn no_two_navigation_bindings_share_keys() {
+        for modifier in [
+            ChannelNumberModifier::Ctrl,
+            ChannelNumberModifier::Alt,
+            ChannelNumberModifier::Super,
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            for binding in shortcut_bindings(modifier) {
+                if binding
+                    .action()
+                    .as_any()
+                    .downcast_ref::<Navigate>()
+                    .is_none()
+                {
+                    continue;
+                }
+                let keys = format!("{:?}", binding.keystrokes());
+                assert!(
+                    seen.insert(keys.clone()),
+                    "{keys} is bound twice ({modifier:?})"
+                );
+            }
+        }
     }
 }
