@@ -14,6 +14,7 @@ mod input_history;
 mod ircv3_settings;
 mod localization;
 mod log_list;
+mod member_selection;
 mod menu_bar;
 mod notifier;
 #[cfg(test)]
@@ -908,6 +909,8 @@ struct ChatWindow {
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
     member_prompt: Option<MemberPrompt>,
+    /// Members chosen in the member list of the selected channel.
+    member_selection: member_selection::MemberSelection,
     /// Sent drafts recalled with Up/Down in the draft input.
     input_history: input_history::InputHistory,
     /// One row per server whose nickname was rejected during registration,
@@ -1262,6 +1265,7 @@ impl ChatWindow {
             member_menu: None,
             channel_menu: None,
             member_prompt: None,
+            member_selection: Default::default(),
             input_history: Default::default(),
             nick_prompts: Vec::new(),
             startup_connections,
@@ -2627,6 +2631,16 @@ impl ChatWindow {
         let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
         self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
         cx.notify();
+    }
+
+    /// Applies a click on row `index` of the selected channel's member list.
+    fn click_member(&mut self, index: usize, click: member_selection::Click) {
+        let Some(channel) = self.state.selected_channel() else {
+            return;
+        };
+        let (conversation, members) = (channel.id, channel.members.clone());
+        self.member_selection
+            .click(conversation, &members, index, click);
     }
 
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
@@ -6807,10 +6821,12 @@ impl ChatWindow {
         let end = range.end.min(channel.members.len());
         let start = range.start.min(end);
         let network = channel.network;
+        let conversation = channel.id;
         let avatars_shown = self.avatars.enabled();
         (start..end)
             .map(|index| {
                 let member = channel.members[index].clone();
+                let selected = self.member_selection.contains(conversation, &member);
                 let channel = channel.name.clone();
                 let nickname = member
                     .trim_start_matches(['~', '&', '@', '%', '+'])
@@ -6827,7 +6843,8 @@ impl ChatWindow {
                     .id(("member", index))
                     .px_2()
                     .py(px(1.))
-                    .hover(|d| d.bg(theme.hover))
+                    .when(selected, |d| d.bg(theme.selected))
+                    .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
                     .when_some(avatar, |row, avatar| {
                         row.flex()
                             .items_center()
@@ -6836,8 +6853,27 @@ impl ChatWindow {
                     })
                     .child(member)
                     .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            let click = if event.modifiers.secondary() {
+                                member_selection::Click::Toggle
+                            } else if event.modifiers.shift {
+                                member_selection::Click::Range
+                            } else {
+                                member_selection::Click::Only
+                            };
+                            this.click_member(index, click);
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            // A menu for a member outside the chosen ones
+                            // acts on that member alone.
+                            if !selected {
+                                this.click_member(index, member_selection::Click::Only);
+                            }
                             let viewport = window.viewport_size();
                             this.server_menu = None;
                             this.channel_menu = None;
@@ -7920,6 +7956,99 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+        use gpui::{Modifiers, MouseButton, point, px};
+
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let members = ["@op", "alice", "bob", "carol"].map(String::from).to_vec();
+            chat.state.set_members(NetworkId(1), "#a", members);
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // The member list is the top of the 240 px column at the right edge;
+        // its rows are 22 px tall (a 20 px line and 1 px padding each side).
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let x = f32::from(viewport.width) - 240. + 30.;
+        let row = |index: usize| point(px(x), px(22. * index as f32 + 11.));
+        let none = Modifiers::none();
+        let chosen = |chat: &gpui::Entity<ChatWindow>, cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .nicknames(channel.id, &channel.members)
+            })
+        };
+        let click = |cx: &mut gpui::VisualTestContext, at, modifiers| {
+            cx.simulate_mouse_move(at, None, modifiers);
+            cx.simulate_mouse_down(at, MouseButton::Left, modifiers);
+            cx.simulate_mouse_up(at, MouseButton::Left, modifiers);
+            cx.run_until_parked();
+        };
+
+        click(cx, row(1), none);
+        assert_eq!(chosen(&chat, cx), ["alice"]);
+        click(cx, row(3), Modifiers::secondary_key());
+        assert_eq!(chosen(&chat, cx), ["alice", "carol"]);
+        // The range starts at the member clicked last (carol).
+        click(cx, row(0), Modifiers::shift());
+        assert_eq!(chosen(&chat, cx), ["op", "alice", "bob", "carol"]);
+        click(cx, row(2), none);
+        assert_eq!(chosen(&chat, cx), ["bob"]);
+        click(cx, row(0), Modifiers::shift());
+        assert_eq!(chosen(&chat, cx), ["op", "alice", "bob"]);
+
+        // A menu on a chosen member keeps the group; on another member it
+        // acts on that member alone.
+        click(cx, row(1), none);
+        click(cx, row(3), Modifiers::secondary_key());
+        let right_click = |cx: &mut gpui::VisualTestContext, at| {
+            cx.simulate_mouse_move(at, None, none);
+            cx.simulate_mouse_down(at, MouseButton::Right, none);
+            cx.run_until_parked();
+        };
+        right_click(cx, row(3));
+        assert_eq!(chosen(&chat, cx), ["alice", "carol"]);
+        assert!(chat.read_with(cx, |chat, _| chat.member_menu.is_some()));
+        right_click(cx, row(2));
+        assert_eq!(chosen(&chat, cx), ["bob"]);
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat
+                .member_menu
+                .as_ref()
+                .map(|menu| menu.nickname.clone())),
+            Some("bob".to_owned())
+        );
+    }
 
     #[gpui::test]
     fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestAppContext) {
