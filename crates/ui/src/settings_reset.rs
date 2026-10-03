@@ -413,9 +413,31 @@ mod tests {
             .unwrap()
             .expect("the settings window opens");
         cx.run_until_parked();
+        let shown = |cx: &mut gpui::TestAppContext| {
+            form.update(cx, |form, _, _| form.connected_shown).unwrap()
+        };
+        assert!(!shown(cx));
+        let entity = form.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let notified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = notified.clone();
+        cx.update(|cx| cx.observe(&entity, move |_, _| flag.set(true)).detach());
+
+        // The switch still follows the chat window: a reconnect scheduled
+        // for the shown server turns it on.
+        owner
+            .update(cx, |chat, _, cx| {
+                let network = chat
+                    .network_of_profile(&settings.selected_server)
+                    .expect("a session for the server");
+                chat.sessions.get_mut(&network).unwrap().retry_pending = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
         assert!(
-            form.update(cx, |form, _, _| form._subscriptions.len())
-                .is_ok_and(|count| count > 0)
+            notified.get(),
+            "the chat window's change reaches the settings window"
         );
+        assert!(shown(cx));
     }
 }
