@@ -233,17 +233,15 @@ impl SettingsWindow {
 
     pub(crate) fn render_shortcut_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        let mut panel = account_settings::panel(cx).child(self.tab_heading(
-            SettingsTab::Shortcuts,
-            "shortcuts_tab",
-            cx,
-        ));
+        let mut panel = account_settings::panel(cx).child(self.tab_heading("shortcuts_tab"));
         for (index, action) in shortcuts::ACTIONS.iter().enumerate() {
             panel = panel.child(self.shortcut_row(index, action, cx));
         }
-        panel.when_some(self.status_message(), |d, feedback| {
-            d.child(div().text_color(theme.warning).child(feedback))
-        })
+        panel
+            .when_some(self.status_message(), |d, feedback| {
+                d.child(div().text_color(theme.warning).child(feedback))
+            })
+            .child(self.reset_footer(SettingsTab::Shortcuts, cx))
     }
 }
 
@@ -316,6 +314,9 @@ mod tests {
         assert!(!warned(&form, "next_channel", cx));
         let reset_all = cx.debug_bounds("reset-defaults").unwrap().center();
         cx.simulate_click(reset_all, gpui::Modifiers::default());
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("reset_to_defaults"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
         assert!(overrides(&form, cx).is_empty());
 
         // Leaving the window ends a recording, so keys pressed elsewhere are

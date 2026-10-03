@@ -163,7 +163,7 @@ impl SettingsWindow {
         };
         let note = |text: String, color: Rgba| div().ml(px(22.)).text_color(color).child(text);
         panel(cx)
-            .child(self.tab_heading(SettingsTab::Credentials, "credentials_tab", cx))
+            .child(self.tab_heading("credentials_tab"))
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -292,7 +292,8 @@ impl SettingsWindow {
     pub(crate) fn render_image_upload_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let selected = self.settings.values.image_upload.provider.clone();
-        let heading = self.tab_heading(SettingsTab::ImageUpload, "image_upload_tab", cx);
+        let heading = self.tab_heading("image_upload_tab");
+        let footer = self.reset_footer(SettingsTab::ImageUpload, cx);
         let label = |key: &str| div().w(px(150.)).flex_shrink_0().child(self.i18n.text(key));
         let button =
             |id: &'static str, text: String| settings_theme::button(id, false, cx).child(text);
@@ -434,9 +435,11 @@ impl SettingsWindow {
                     );
             }
         }
-        panel.when_some(self.status_message(), |d, feedback| {
-            d.child(div().pt_2().text_color(theme.warning).child(feedback))
-        })
+        panel
+            .when_some(self.status_message(), |d, feedback| {
+                d.child(div().pt_2().text_color(theme.warning).child(feedback))
+            })
+            .child(footer)
     }
 }
 

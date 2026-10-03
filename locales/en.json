@@ -129,7 +129,7 @@
   "shortcut_reset": "Reset",
   "reset_to_defaults": "Restore Defaults",
   "reset_confirm_title": "Restore defaults?",
-  "reset_confirm_detail": "Every setting on this tab returns to its default.",
+  "reset_confirm_detail": "Everything on this settings page returns to its default. Continue?",
   "shortcut_press": "Press the new keys (Esc to cancel)",
   "shortcut_press_replaces": "Press the new keys (replaces the current ones; Esc to cancel)",
   "shortcut_needs_modifier": "Hold Ctrl, Alt or Cmd with the key",

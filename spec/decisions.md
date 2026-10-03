@@ -1145,20 +1145,21 @@ category's page on the right, scrolling by itself; the window opens wider
 takes focus (a tab stop) when a category is clicked; Up/Down move through it
 and select as they go, except while a shortcut key is being recorded.
 
-Every page starts with its heading and a "Restore Defaults" button at the
-right, so the reset range is the page. The rule is one tab, one reset over
-exactly what the tab shows; the button is disabled while all of it already
-has its default (`settings_reset.rs`, comparing the form's snapshot with
-`Settings::default()`). A reset is saved and applied by the ordinary autosave.
-It asks first only for Appearance (colors and fonts are many, hand-picked
-choices); the others are a few switches.
+Every page ends with a "Restore Defaults" button at the bottom right, in the
+same place on every tab (Japanese: 「すべて元に戻す」, the wording of the old
+Shortcuts button, as the owner asked on #135). The rule is one tab, one reset
+over exactly what the tab shows; the button is disabled while all of it
+already has its default (`settings_reset.rs`, comparing the form's snapshot
+with `Settings::default()`). A reset is saved and applied by the ordinary
+autosave. It always asks first ("everything on this settings page returns to
+its default"), because the button sits where a click by mistake is easy.
 
 - **Appearance** (theme, colors, row/preview/avatar/layout switches, fonts,
   combined-log name width, Linux display): the saved color palette is the
   user's own data and is kept.
 - **Keyboard**: channel-number modifier, text key theme, menu bar auto-hide.
 - **Shortcuts**: clears every override. The per-action "Reset" stays; the old
-  "Reset all" at the bottom became this button.
+  "Reset all" is this button.
 - **Notifications**, **Experimental**: their defaults (keywords emptied,
   logging off and no file).
 - **IRCv3**: the selected server's opt-ins only (it is per server, and the

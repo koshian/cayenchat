@@ -4379,7 +4379,7 @@ impl SettingsWindow {
             server_selector = server_selector.child(menu);
         }
         account_settings::panel(cx)
-            .child(self.tab_heading(SettingsTab::Connection, "connection", cx))
+            .child(self.tab_heading("connection"))
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -5051,7 +5051,7 @@ impl SettingsWindow {
     fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         account_settings::panel(cx)
-            .child(self.tab_heading(SettingsTab::Appearance, "appearance", cx))
+            .child(self.tab_heading("appearance"))
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -5256,6 +5256,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Appearance, cx))
     }
 
     /// Channel-number and draft-editing keys; only Windows and Linux have
@@ -5269,7 +5270,7 @@ impl SettingsWindow {
                 .child(self.i18n.text(key))
         };
         account_settings::panel(cx)
-            .child(self.tab_heading(SettingsTab::Keyboard, "keyboard", cx))
+            .child(self.tab_heading("keyboard"))
             .child(self.option_row(
                 "channel_number_modifier",
                 [
@@ -5324,6 +5325,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Keyboard, cx))
     }
 
     fn notification_toggle(
@@ -5370,7 +5372,7 @@ impl SettingsWindow {
                 .child(self.i18n.text(key))
         };
         account_settings::panel(cx)
-            .child(self.tab_heading(SettingsTab::Notifications, "notifications_tab", cx))
+            .child(self.tab_heading("notifications_tab"))
             .child(self.notification_toggle(
                 "notifications-enabled",
                 "notifications_enabled",
@@ -5416,6 +5418,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Notifications, cx))
     }
 
     fn settings_tab(

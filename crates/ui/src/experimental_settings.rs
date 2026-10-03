@@ -63,7 +63,7 @@ impl SettingsWindow {
             None => self.i18n.text("debug_log_inactive"),
         };
         account_settings::panel(cx)
-            .child(self.tab_heading(SettingsTab::Experimental, "experimental_tab", cx))
+            .child(self.tab_heading("experimental_tab"))
             .child(
                 div()
                     .id("debug-logging-toggle")
@@ -103,5 +103,6 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Experimental, cx))
     }
 }

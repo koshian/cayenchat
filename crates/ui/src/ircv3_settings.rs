@@ -129,13 +129,11 @@ impl SettingsWindow {
                 .text_color(theme.text_secondary)
                 .child(self.i18n.text(key))
         };
-        let mut panel = panel(cx)
-            .child(self.tab_heading(SettingsTab::Ircv3, "ircv3_tab", cx))
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("ircv3_intro")),
-            );
+        let mut panel = panel(cx).child(self.tab_heading("ircv3_tab")).child(
+            div()
+                .text_color(theme.text_secondary)
+                .child(self.i18n.text("ircv3_intro")),
+        );
         let Some(profile) = self.settings.values.selected_profile().cloned() else {
             return panel.child(div().child(self.i18n.text("ircv3_no_server")));
         };
@@ -257,6 +255,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Ircv3, cx))
     }
 }
 

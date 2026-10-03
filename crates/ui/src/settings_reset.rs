@@ -7,15 +7,6 @@ use gpui::{prelude::*, *};
 
 use crate::{SettingsTab, SettingsWindow, settings_theme};
 
-impl SettingsTab {
-    /// Whether the tab has a "Restore Defaults". Connection holds the user's
-    /// servers and Credentials moves saved secrets between stores, so neither
-    /// has a reset.
-    fn has_reset(self) -> bool {
-        !matches!(self, Self::Connection | Self::Credentials)
-    }
-}
-
 impl SettingsWindow {
     /// Whether everything `tab` shows already has its default value. The
     /// color palette is the user's own data and is not part of Appearance.
@@ -146,12 +137,9 @@ impl SettingsWindow {
         }
     }
 
-    /// Asks before a reset that discards a lot of choices, then resets.
+    /// Asks, then resets: a reset can discard many choices at once, and the
+    /// button is easy to click by mistake.
     fn request_reset(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
-        if tab != SettingsTab::Appearance {
-            self.reset_tab(tab, cx);
-            return;
-        }
         let answer = window.prompt(
             PromptLevel::Warning,
             &self.i18n.text("reset_confirm_title"),
@@ -170,30 +158,24 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// A tab's heading with its "Restore Defaults" at the right.
-    pub(crate) fn tab_heading(
-        &self,
-        tab: SettingsTab,
-        title_key: &str,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    /// A tab's heading.
+    pub(crate) fn tab_heading(&self, title_key: &str) -> Div {
+        div()
+            .text_size(px(20.))
+            .font_weight(FontWeight::BOLD)
+            .child(self.i18n.text(title_key))
+    }
+
+    /// The end of a tab with its reset at the right, in the same place on
+    /// every tab. It is disabled while everything the tab shows has its
+    /// default.
+    pub(crate) fn reset_footer(&self, tab: SettingsTab, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        let heading = div().flex().items_center().gap_2().child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(px(20.))
-                .font_weight(FontWeight::BOLD)
-                .child(self.i18n.text(title_key)),
-        );
-        if !tab.has_reset() {
-            return heading;
-        }
         let default = self.tab_is_default(tab, cx);
         let button = settings_theme::button("reset-defaults", false, cx)
             .debug_selector(|| "reset-defaults".into())
             .child(self.i18n.text("reset_to_defaults"));
-        heading.child(if default {
+        div().flex().justify_end().mt_2().child(if default {
             button
                 .cursor_default()
                 .opacity(0.5)
@@ -305,7 +287,7 @@ mod tests {
         cx.run_until_parked();
         click(cx);
         assert!(
-            marked(&form, cx),
+            !cx.has_pending_prompt() && marked(&form, cx),
             "nothing differs, so the click is ignored"
         );
 
@@ -314,9 +296,23 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
+        let mentions = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| form.settings.values.notifications.mentions)
+        };
+
+        // The reset waits for an answer; cancelling leaves everything.
         click(cx);
-        assert!(!marked(&form, cx));
-        assert!(form.read_with(cx, |form, _| form.settings.values.notifications.mentions));
+        assert!(cx.has_pending_prompt());
+        let cancel = form.read_with(cx, |form, _| form.i18n.text("cancel"));
+        cx.simulate_prompt_answer(&cancel);
+        cx.run_until_parked();
+        assert!(!mentions(&form, cx) && marked(&form, cx));
+
+        click(cx);
+        let confirm = form.read_with(cx, |form, _| form.i18n.text("reset_to_defaults"));
+        cx.simulate_prompt_answer(&confirm);
+        cx.run_until_parked();
+        assert!(mentions(&form, cx) && !marked(&form, cx));
     }
 
     #[gpui::test]
