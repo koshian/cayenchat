@@ -403,6 +403,8 @@ The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
 Server, channel and member context menus open at the pointer but are snapped back
 inside the window, so a short pane never cuts off their lower items (issue #144).
+They also block the mouse for what lies under them, so a menu item that has moved
+over another row is clicked itself, not the row.
 The server context menu also offers Join channel… (sends `/join <name>`) and
 Change nickname… (`NICK`), each asking in the small prompt the member menu
 uses and enabled only while registered; typed `/join` and `/nick` are unchanged.

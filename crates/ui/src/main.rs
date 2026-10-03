@@ -6365,6 +6365,7 @@ impl ChatWindow {
             };
             div()
                 .id("server-context-menu")
+                .occlude()
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -6430,6 +6431,7 @@ impl ChatWindow {
             let registered = self.registered_connection(menu.network).is_ok();
             let mut popup = div()
                 .id("channel-context-menu")
+                .occlude()
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -6477,6 +6479,7 @@ impl ChatWindow {
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
                 .id("member-context-menu")
+                .occlude()
                 .w(px(210.))
                 .p_1()
                 .bg(theme.surface)
@@ -8894,7 +8897,11 @@ mod pane_tests {
         assert_eq!(group(&chat, cx), Some(Vec::new()));
 
         // Choosing a mode closes the menu; without a connection it says so
-        // and sends nothing.
+        // and sends nothing. An open menu blocks the rows under it, so close
+        // it first.
+        chat.update(cx, |chat, _| {
+            chat.dismiss_menus();
+        });
         click(cx, row(1), none);
         click(cx, row(3), Modifiers::secondary_key());
         right_click(cx, row(3));
