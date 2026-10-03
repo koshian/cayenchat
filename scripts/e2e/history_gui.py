@@ -52,8 +52,11 @@ def check(condition, message):
 
 # ---------------------------------------------------------------- X helpers
 class Display:
-    def __init__(self, env, out):
+    def __init__(self, env, out, framebuffer=None):
         self.env, self.out = env, out
+        # Xvfb's `-fbdir` screen file (XWD format), read instead of running
+        # xwd when given.
+        self.framebuffer = framebuffer
         self.shots = 0
 
     def run(self, *args, **kw):
@@ -65,7 +68,11 @@ class Display:
     def grab(self):
         """The screen as (width, height, rows of 32-bit pixels, little
         endian), compared as they are and converted only when saved."""
-        data = self.run("xwd", "-root", "-silent", capture_output=True, check=True).stdout
+        if self.framebuffer:
+            with open(self.framebuffer, "rb") as file:
+                data = file.read()
+        else:
+            data = self.run("xwd", "-root", "-silent", capture_output=True, check=True).stdout
         header = struct.unpack(">25I", data[:100])
         size, width, height = header[0], header[4], header[5]
         bpp, stride, ncolors, lsb = header[11], header[12], header[19], header[7] == 0
