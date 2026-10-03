@@ -361,4 +361,23 @@ mod tests {
             assert!(form.shortcut_recording.is_none());
         });
     }
+
+    #[gpui::test]
+    fn the_connection_switch_is_at_the_right_and_off_without_a_connection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (form, cx) = form(SettingsTab::Connection, cx);
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let switch = cx.debug_bounds("connection-switch").expect("drawn");
+        // The page is at most 720 px wide beside the 190 px list, with 16 px
+        // of padding; the switch ends at its right edge.
+        let edge = viewport.width.min(gpui::px(190. + 720.)) - gpui::px(16.);
+        assert!(
+            switch.right() > edge - gpui::px(24.),
+            "right-aligned: {switch:?} in {viewport:?}"
+        );
+        assert!(form.read_with(cx, |form, _| !form.connected_shown));
+        let back = cx.debug_bounds("back-button").expect("drawn");
+        assert!(back.left() < switch.left());
+    }
 }

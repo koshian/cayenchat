@@ -277,6 +277,49 @@ pub fn checkbox(checked: bool, enabled: bool, cx: &App) -> Div {
     indicator.when(checked, |d| d.child("✓"))
 }
 
+/// A switch for something that takes effect when it is flipped, such as a
+/// connection being up. The knob sits at the right while it is on.
+pub fn switch(on: bool, cx: &App) -> Div {
+    let fallback = crate::theme::current(cx);
+    let mut track = div()
+        .flex()
+        .items_center()
+        .flex_shrink_0()
+        .w(px(36.))
+        .h(px(20.))
+        .p(px(2.))
+        .rounded_full()
+        .border_1()
+        .border_color(fallback.border)
+        .bg(if on { fallback.link } else { fallback.surface })
+        .when(on, |d| d.justify_end());
+    let mut knob =
+        div()
+            .size(px(14.))
+            .rounded_full()
+            .bg(if on { fallback.surface } else { fallback.text });
+    if let Some(native) = current(cx) {
+        let c = &native.checkbox;
+        track = track
+            .border_color(color(if on {
+                c.checked_background
+            } else {
+                c.unchecked_border_color.unwrap_or(c.border.color)
+            }))
+            .bg(color(if on {
+                c.checked_background
+            } else {
+                c.unchecked_background.unwrap_or(c.background_color)
+            }));
+        knob = knob.bg(color(if on {
+            c.indicator_color
+        } else {
+            c.border.color
+        }));
+    }
+    track.child(knob)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -1179,6 +1179,9 @@ struct SettingsWindow {
     avatar_editor: Option<avatar_editor::AvatarEditor>,
     /// An avatar image is being decoded or encoded.
     avatar_opening: bool,
+    /// Whether the connection switch was last drawn on, so the window is
+    /// redrawn only when a connection comes up or goes down.
+    connected_shown: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -3700,6 +3703,14 @@ impl SettingsWindow {
         for field in settings.text_fields() {
             subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
         }
+        // The connection switch follows the chat window's connections.
+        if let Ok(chat) = owner.entity(cx) {
+            subscriptions.push(cx.observe(&chat, |this, _, cx| {
+                if this.selected_connected(cx) != this.connected_shown {
+                    cx.notify();
+                }
+            }));
+        }
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_activation_changed(window.is_window_active(), cx)
         }));
@@ -3750,6 +3761,7 @@ impl SettingsWindow {
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             avatar_opening: false,
+            connected_shown: false,
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -4228,8 +4240,20 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Whether the server being edited is connected, being connected or
+    /// waiting to retry.
+    fn selected_connected(&self, cx: &App) -> bool {
+        let profile = &self.settings.values.selected_server;
+        self.owner.read(cx).is_ok_and(|chat| {
+            chat.network_of_profile(profile)
+                .is_some_and(|network| chat.can_disconnect(network))
+        })
+    }
+
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
+        let connected = self.selected_connected(cx);
+        self.connected_shown = connected;
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
@@ -4432,29 +4456,36 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex()
+                    .items_center()
                     .gap_2()
                     .pt_2()
-                    .when(!no_server, |d| {
-                        d.child(
-                            settings_theme::button("connect-button", true, cx)
-                                .child(self.i18n.text("connect"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.connect_from_settings(window, cx)
-                                })),
-                        )
-                    })
                     .child(
                         settings_theme::button("back-button", false, cx)
+                            .debug_selector(|| "back-button".into())
                             .child(self.i18n.text("back"))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
                             ),
                     )
+                    .child(div().flex_1())
                     .when(!no_server, |d| {
+                        // On while the server being edited is connected, being
+                        // connected or waiting to retry.
                         d.child(
-                            settings_theme::button("disconnect-button", false, cx)
-                                .child(self.i18n.text("disconnect"))
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            div()
+                                .id("connection-switch")
+                                .debug_selector(|| "connection-switch".into())
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .cursor_pointer()
+                                .child(self.i18n.text("connect"))
+                                .child(settings_theme::switch(connected, cx))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if !connected {
+                                        this.connect_from_settings(window, cx);
+                                        return;
+                                    }
                                     // Disconnects the server being edited.
                                     let profile = this.settings.values.selected_server.clone();
                                     let _ = this.owner.update(cx, |owner, _, cx| {
