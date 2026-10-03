@@ -14,7 +14,10 @@ Every input command then waits until the screen stops changing and saves
 it as a numbered PNG under the session's `shots/`, printing the path (pass
 `--no-shot` to skip). Coordinates are screen pixels, the same as in the
 screenshots. The app runs with its own HOME and settings in the session
-directory, so the user's settings and passwords are never touched.
+directory, keeps passwords in the session's own file (even with `--settings`
+copied from real settings) and cannot reach the desktop's D-Bus session, so
+the user's settings and passwords are never touched. `start` refuses a
+non-empty directory it did not make.
 
 Needs Linux with Xvfb, xdotool and a Vulkan driver (lavapipe from
 mesa-vulkan-drivers works without a GPU) and a font (`--fonts` when the
@@ -28,6 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from history_gui import Display  # noqa: E402
 
 SETTINGS_VERSION = 15
+# Marks a directory as a session; only these entries are cleared again.
+MARKER = ".cayenchat-gui-session"
+SESSION_ENTRIES = ("state.json", "home", "test-build", "run", "fb", "shots", "app.log", "xvfb.log")
 
 
 def session_dir(args):
@@ -101,10 +107,37 @@ def save(display, name, box=None, scale=1, timeout=8.0, still=0.3):
     print(path if still else f"{path} (the screen was still changing)")
 
 
+def prepare_directory(directory, keep):
+    """Creates the session directory, or clears what an earlier session left
+    in it. A directory this script did not make is refused when it is not
+    empty, and clearing removes only this script's own entries."""
+    marker = os.path.join(directory, MARKER)
+    if os.path.isdir(directory) and os.listdir(directory) and not os.path.exists(marker):
+        sys.exit(f"{directory} is not empty and was not made by gui_session.py; "
+                 "pass a new or empty --session")
+    if not keep:
+        for name in SESSION_ENTRIES:
+            path = os.path.join(directory, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            elif os.path.lexists(path):
+                os.remove(path)
+    # state.json holds the app's environment.
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    open(marker, "a").close()
+
+
 def settings_json(args):
     if args.settings:
         with open(args.settings) as file:
-            return file.read()
+            settings = json.load(file)
+        # Passwords go to the session's own file even from a copy of real
+        # settings: the system store would be the user's (its service name
+        # does not change with HOME).
+        if settings.get("credential_backend", "system") != "local_file":
+            print("credential_backend set to local_file", file=sys.stderr)
+        settings["credential_backend"] = "local_file"
+        return json.dumps(settings, indent=2)
     settings = {"version": SETTINGS_VERSION, "language": args.language, "theme": args.theme,
                 "linux_display": "x11", "credential_backend": "local_file"}
     if args.server:
@@ -116,6 +149,28 @@ def settings_json(args):
             "username": args.nick, "channels": args.channel, "connect_on_startup": True,
             "ircv3": {name: True for name in args.ircv3.split(",") if name}}]
     return json.dumps(settings, indent=2)
+
+
+def app_env(base, directory, display, extra=()):
+    """The app's environment: everything it stores stays in the session
+    directory, and the desktop's D-Bus session (with its Secret Service
+    holding the user's passwords) is out of reach. `extra` (KEY=VALUE) cannot
+    undo that."""
+    env = dict(base)
+    for pair in extra:
+        key, _, value = pair.partition("=")
+        env[key] = value
+    home = os.path.join(directory, "home")
+    runtime = os.path.join(directory, "run")
+    os.makedirs(runtime, mode=0o700, exist_ok=True)
+    env.update(DISPLAY=display, HOME=home, XDG_CONFIG_HOME=os.path.join(home, "config"),
+               XDG_DATA_HOME=os.path.join(home, "data"), XDG_CACHE_HOME=os.path.join(home, "cache"),
+               XDG_RUNTIME_DIR=runtime, CAYENCHAT_TEST_DIR=os.path.join(directory, "test-build"),
+               CAYENCHAT_DISPLAY="x11")
+    env.setdefault("RUST_LOG", "warn")
+    for key in ("WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+        env.pop(key, None)
+    return env
 
 
 def launch_app(state):
@@ -167,10 +222,7 @@ def start(args):
             sys.exit(f"a session is running in {directory}; `stop` it or pass another --session")
     if not os.access(args.app, os.X_OK):
         sys.exit(f"{args.app} is not an executable; build it first")
-    if os.path.isdir(directory) and not args.keep:
-        shutil.rmtree(directory)
-    # state.json holds the app's environment.
-    os.makedirs(directory, mode=0o700, exist_ok=True)
+    prepare_directory(directory, args.keep)
     home = os.path.join(directory, "home")
     config = os.path.join(home, "config")
     test_dir = os.path.join(directory, "test-build")
@@ -193,15 +245,7 @@ def start(args):
             with open(path, "w") as file:
                 file.write(settings)
 
-    env = dict(os.environ, DISPLAY=args.display, HOME=home, XDG_CONFIG_HOME=config,
-               XDG_DATA_HOME=os.path.join(home, "data"), XDG_CACHE_HOME=os.path.join(home, "cache"),
-               CAYENCHAT_TEST_DIR=test_dir, CAYENCHAT_DISPLAY="x11",
-               RUST_LOG=os.environ.get("RUST_LOG", "warn"))
-    env.pop("WAYLAND_DISPLAY", None)
-    for pair in args.env:
-        key, _, value = pair.partition("=")
-        env[key] = value
-
+    env = app_env(os.environ, directory, args.display, args.env)
     xvfb = subprocess.Popen(["Xvfb", args.display, "-screen", "0", f"{args.screen}x24",
                              "-fbdir", os.path.join(directory, "fb"), "-nolisten", "tcp"],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -220,11 +264,41 @@ def start(args):
     first_frame(display_for(state), state, args)
 
 
-def restart_app(args):
-    """Quits the app (as closing it would) and starts it again in the same
-    session, to check what survives a restart."""
+def quit_app(state, timeout=10):
+    """Quits the app as a user does, with its Quit shortcut (Ctrl+Q) in one
+    of its windows; true once it has exited."""
+    pid = state["pids"]["app"]
+    if not alive(pid):
+        return True
+    display = display_for(state)
+    found = display.run("xdotool", "search", "--onlyvisible", "--name", "CayenChat",
+                        capture_output=True, text=True).stdout.split()
+    if found:
+        display.xdo("windowfocus", found[0])
+        time.sleep(0.2)
+        display.xdo("key", "--clearmodifiers", "ctrl+q")
+    deadline = time.time() + timeout
+    while alive(pid) and time.time() < deadline:
+        time.sleep(0.2)
+    return not alive(pid)
+
+
+def quit_command(args):
     state = load(session_dir(args))
-    stop_process(state["pids"]["app"])
+    if quit_app(state):
+        print("the app quit")
+    else:
+        sys.exit("the app did not quit within 10 s; `stop` ends it")
+
+
+def restart_app(args):
+    """Quits the app as a user does and starts it again in the same session,
+    to check what survives a restart. Only when it does not quit is it
+    terminated by a signal, which skips what quitting saves; that is said."""
+    state = load(session_dir(args))
+    if not quit_app(state):
+        stop_process(state["pids"]["app"])
+        print("the app did not quit with Ctrl+Q and was terminated; what it saves on quitting was skipped")
     launch_app(state)
     save_state(state)
     first_frame(display_for(state), state, args)
@@ -343,9 +417,10 @@ def main():
     launch_options(command)
     command.set_defaults(func=start)
 
-    command = commands.add_parser("restart-app", help="quit the app and start it again in this session")
+    command = commands.add_parser("restart-app", help="quit the app with Ctrl+Q and start it again in this session")
     launch_options(command)
     command.set_defaults(func=restart_app)
+    commands.add_parser("quit", help="quit the app with Ctrl+Q, as a user does").set_defaults(func=quit_command)
     commands.add_parser("stop", help="stop the app and Xvfb").set_defaults(func=stop)
     commands.add_parser("windows", help="list visible windows: id, position, size, title").set_defaults(func=windows)
 
