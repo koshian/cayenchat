@@ -153,6 +153,7 @@ struct SettingsForm {
     nickname: Entity<TextInput>,
     username: Entity<TextInput>,
     realname: Entity<TextInput>,
+    quit_message: Entity<TextInput>,
     channels: Entity<TextInput>,
     /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
@@ -216,6 +217,12 @@ impl SettingsForm {
             realname: field(
                 &i18n.text("realname_placeholder"),
                 &profile.realname,
+                false,
+                cx,
+            ),
+            quit_message: field(
+                &i18n.text("quit_message_placeholder"),
+                &profile.quit_message,
                 false,
                 cx,
             ),
@@ -395,6 +402,7 @@ impl SettingsForm {
             profile.nickname = value(&self.nickname);
             profile.username = value(&self.username);
             profile.realname = value(&self.realname);
+            profile.quit_message = value(&self.quit_message);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
             profile.avatar_url = value(&self.avatar_url);
@@ -462,13 +470,14 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 32] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 33] {
         [
             &self.custom_host,
             &self.port,
             &self.nickname,
             &self.username,
             &self.realname,
+            &self.quit_message,
             &self.channels,
             &self.server_password,
             &self.sasl_username,
@@ -595,6 +604,7 @@ impl SettingsForm {
             (&self.nickname, &profile.nickname),
             (&self.username, &profile.username),
             (&self.realname, &profile.realname),
+            (&self.quit_message, &profile.quit_message),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
             (&self.avatar_url, &profile.avatar_url),
@@ -686,6 +696,7 @@ fn connection_config(
     }
     config.username = profile.username.clone();
     config.realname = profile.realname.clone();
+    config.quit_message = profile.quit_message.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
@@ -3664,6 +3675,7 @@ impl SettingsWindow {
             (&self.settings.nickname, "nickname"),
             (&self.settings.username, "username_placeholder"),
             (&self.settings.realname, "realname_placeholder"),
+            (&self.settings.quit_message, "quit_message_placeholder"),
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
@@ -4682,6 +4694,10 @@ impl SettingsWindow {
             .child(settings_field(
                 &self.i18n.text("realname"),
                 self.settings.realname.clone(),
+            ))
+            .child(settings_field(
+                &self.i18n.text("quit_message"),
+                self.settings.quit_message.clone(),
             ))
             .child(settings_field(
                 &self.i18n.text("auto_join_channels"),
@@ -8176,6 +8192,23 @@ mod startup_tests {
         assert!(
             connection_config(settings.selected_profile().unwrap(), language, None, None).is_err()
         );
+    }
+
+    #[test]
+    fn each_server_sends_its_own_quit_message() {
+        let mut settings = Settings::default();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "alice".into();
+        profile.username = "ident".into();
+        let language = settings.language;
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
+        assert_eq!(config.quit_message, "");
+        settings.selected_profile_mut().unwrap().quit_message = "Back soon".into();
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
+        assert_eq!(config.quit_message, "Back soon");
     }
 
     #[test]
