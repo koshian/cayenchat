@@ -904,11 +904,20 @@ events on macOS); the proxy, peer and assertions would carry over.
 
 Much of what used to be left for a person to look at can be seen by the
 developer (an LLM included) on a virtual display. `scripts/e2e/gui_session.py`
-keeps the real app running under Xvfb between commands, with its own HOME
-and settings in a session directory (the user's settings and passwords are
-never touched): `start`, `click X Y`, `type`, `key`, `scroll`, `drag`,
-`move`, `focus`, `wait`, `shot [--crop x0,y0,x1,y1 --scale N]`,
-`clipboard`, `windows`, `restart-app`, `stop`. Each input command prints the
+keeps the real app running under Xvfb between commands: `start`,
+`click X Y`, `type`, `key`, `scroll`, `drag`, `move`, `focus`, `wait`,
+`shot [--crop x0,y0,x1,y1 --scale N]`, `clipboard`, `windows`, `quit` and
+`restart-app` (both with Ctrl+Q, as a user quits; a restart says so when it
+had to terminate the app instead, which skips what quitting saves), `stop`.
+The user's settings and passwords are never touched: the app's HOME, XDG
+directories and runtime directory are in the session directory, passwords
+go to the session's local file even when `--settings` names a copy of real
+settings with the system store, and the desktop's D-Bus session (whose
+Secret Service holds the user's passwords under the same service name) is
+not passed on. `start` refuses a non-empty directory it did not make and
+clears only its own entries when a session is started again;
+`scripts/e2e/test_gui_session.py` checks both, without a display (CI runs it
+in the `gui-e2e-linux` job). Each input command prints the
 path of a PNG taken once the screen has settled; an LLM reads it as an
 image. `scripts/e2e/gui_session.py --help` lists the options, and the
 `gui-check` skill (`.claude/skills/gui-check/SKILL.md`) is the step-by-step

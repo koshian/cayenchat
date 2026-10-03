@@ -30,6 +30,8 @@ cargo build --locked -p cayenchat-ui  # target/debug/cayenchat
 - Use a session directory in your scratchpad:
   `export CAYENCHAT_GUI_SESSION=<scratchpad>/gui` (or `--session` on every
   command). It holds the app's own HOME and settings, `shots/`, `app.log`.
+  Use a new or empty directory: `start` refuses a non-empty one it did not
+  make, and later clears only its own entries there.
 
 ## 2. Drive the app
 
@@ -42,13 +44,20 @@ python3 $G type "alice" ; python3 $G key Tab
 python3 $G key ctrl+comma --still 2              # a window opens: wait longer
 python3 $G scroll 400 300 up 5
 python3 $G shot detail --crop 390,410,1090,640 --scale 2   # zoom to read text
-python3 $G restart-app                           # what survives a restart
+python3 $G restart-app                           # Ctrl+Q, then start again
+python3 $G quit                                  # Ctrl+Q only
 python3 $G stop
 ```
 
+- `restart-app` quits with Ctrl+Q as a user does, so what the app saves on
+  quitting is part of the check. If it says the app was terminated instead,
+  that saving was skipped: do not report it as verified.
 - `start` writes fresh settings (Japanese, light theme, local credential
   file, no servers, so the settings window opens). `--language english`,
-  `--theme dark`, `--settings FILE` for a prepared file, `--server
+  `--theme dark`, `--settings FILE` for a prepared file (its
+  `credential_backend` is forced to the session's local file, and the app
+  never sees the desktop's D-Bus session, so the user's stored passwords
+  stay out of reach), `--server
   127.0.0.1:36668 --channel '#demo' --ircv3 message_tags,server_time,batch,chathistory`
   to connect on startup, `--window-size 1000x700` to place the main window.
 - Pass `--no-shot` for intermediate steps and take one `shot` at the end.
