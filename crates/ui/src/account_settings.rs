@@ -3,7 +3,7 @@
 use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings, credentials};
 use gpui::{prelude::*, *};
 
-use crate::{SettingsTab, SettingsWindow, secrets, settings_theme};
+use crate::{SettingsTab, SettingsWindow, secrets, settings_file, settings_theme};
 
 /// Every secret this configuration may have stored, for moving them when the
 /// credential backend changes.
@@ -80,7 +80,7 @@ impl SettingsWindow {
     fn switch_credential_backend(&mut self, kind: CredentialBackendKind, cx: &mut Context<Self>) {
         let from = secrets::store(cx);
         let to = secrets::open(kind, cx);
-        let mut saved = match cayenchat_storage::load() {
+        let mut saved = match settings_file::load() {
             Ok(saved) => saved.unwrap_or_else(|| self.settings.values.clone()),
             Err(error) => {
                 self.feedback = Some(error);
@@ -101,7 +101,7 @@ impl SettingsWindow {
             }
         };
         saved.credential_backend = kind;
-        if let Err(error) = cayenchat_storage::save(&saved) {
+        if let Err(error) = settings_file::save(&saved) {
             // Keep using the old backend; the copies in the new one are harmless.
             self.feedback = Some(error);
             cx.notify();
@@ -232,10 +232,10 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let provider = provider.map(str::to_owned);
-        let result = cayenchat_storage::load().and_then(|saved| {
+        let result = settings_file::load().and_then(|saved| {
             let mut saved = saved.unwrap_or_else(|| self.settings.values.clone());
             saved.image_upload.provider = provider.clone();
-            cayenchat_storage::save(&saved)
+            settings_file::save(&saved)
         });
         match result {
             Ok(()) => {
