@@ -3692,7 +3692,10 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The title given at window creation reaches X11 only as Latin-1 `WM_NAME`;
+        // setting it again also writes the UTF-8 `_NET_WM_NAME` (issue #143).
         let i18n = Localizer::new(values.language);
+        window.set_window_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
