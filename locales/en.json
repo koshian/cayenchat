@@ -152,7 +152,7 @@
   "image_previews": "Show previews of image links",
   "image_previews_hint": "Shows small thumbnails of direct PNG, JPEG, GIF and WebP links in the channel log. While on, CayenChat downloads the linked images for the lines on screen from their servers; the link text stays as it is.",
   "user_avatars": "Show user avatars",
-  "wrap_long_nicknames": "Wrap long nicknames instead of shortening them",
+  "header_line_messages": "Show the time, avatar and nickname on a small first line, and the message below at full width",
   "restore_window_layout": "Restore window position and size at startup",
   "user_avatars_hint": "Shows a small picture beside nicknames in the channel log and the member list when the network supplies one. While on, CayenChat downloads the pictures of the users on screen from their servers. On IRC, avatars also need \"User avatars (experimental)\" on the server's IRCv3 tab.",
   "member_list": "Member list",

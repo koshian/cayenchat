@@ -128,12 +128,22 @@ messages have an application arrival sequence so the combined subwindow shows
 the actual latest line last even when several channels receive messages within
 the same displayed minute. Channel activity (JOIN, PART, QUIT, NICK and MODE) shares
 the channel arrival sequence, renders in English as a timestamped line without
-a nickname column regardless of the UI language, does not mark the channel
+a nickname regardless of the UI language, does not mark the channel
 unread, and appears only in its channel's main log, never in the combined
 subwindow. QUIT and NICK (ours included) are logged only in channels whose last
 published roster contained the nickname. Activity text uses configurable green (`#007D00`) by
-default. The main log's nickname column fits 15 typical characters; longer
-nicknames end in an ellipsis, or wrap when the Appearance setting is on. The
+default. A channel message is laid out as `time | [avatar] | nick: text`: the time is
+its own monospaced column and the nickname (nickname color, no fixed or
+right-aligned column) flows into one `StyledText` with the text, so wrapped
+lines return to the left of the text column and long nicknames wrap naturally.
+URL, highlight and selection offsets, and copy, refer to the text only; a click
+or drag starting on the nickname maps to the text start. The Appearance
+setting `header_line_messages` (off by default) instead shows a small first line
+`time [avatar] nick` with the text below at full width; the whole message is one
+row element, so the alternating row background covers both lines. Activity lines
+keep the compact single-line form in both layouts. The combined log always uses
+the default flow (its channel name column and width setting are unchanged); the
+former `wrap_long_nicknames` setting is gone and ignored when read. The
 main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.

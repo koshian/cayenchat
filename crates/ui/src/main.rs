@@ -410,7 +410,7 @@ impl SettingsForm {
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
-            wrap_long_nicknames: self.values.appearance.wrap_long_nicknames,
+            header_line_messages: self.values.appearance.header_line_messages,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
                 .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
@@ -5226,13 +5226,13 @@ impl SettingsWindow {
                     .gap_2()
                     .cursor_pointer()
                     .child(settings_theme::checkbox(
-                        self.settings.values.appearance.wrap_long_nicknames,
+                        self.settings.values.appearance.header_line_messages,
                         true,
                         cx,
                     ))
-                    .child(self.i18n.text("wrap_long_nicknames"))
+                    .child(self.i18n.text("header_line_messages"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.wrap_long_nicknames;
+                        let value = &mut this.settings.values.appearance.header_line_messages;
                         *value = !*value;
                         cx.notify();
                     })),
@@ -5712,15 +5712,25 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     found
 }
 
+///
+/// `prefix` (the sender and colon in the flowing layout) is drawn in the
+/// nickname color before `text`; every other range, and `selected`, is a
+/// byte offset into `text`.
 fn styled_log_text(
+    prefix: &str,
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
     highlights: &[std::ops::Range<usize>],
     selected: Option<std::ops::Range<usize>>,
     theme: &Theme,
 ) -> StyledText {
-    let mut boundaries = vec![0, text.len()];
-    for range in urls.iter().map(|(range, _)| range).chain(highlights) {
+    let shift = prefix.len();
+    let moved = |range: &std::ops::Range<usize>| range.start + shift..range.end + shift;
+    let urls: Vec<_> = urls.iter().map(|(range, _)| moved(range)).collect();
+    let highlights: Vec<_> = highlights.iter().map(moved).collect();
+    let selected = selected.as_ref().map(moved);
+    let mut boundaries = vec![0, shift, shift + text.len()];
+    for range in urls.iter().chain(&highlights) {
         boundaries.extend([range.start, range.end]);
     }
     if let Some(range) = &selected {
@@ -5730,19 +5740,22 @@ fn styled_log_text(
     boundaries.dedup();
     let highlights = boundaries.windows(2).filter_map(|pair| {
         let range = pair[0]..pair[1];
+        let is_prefix = range.end <= shift;
         let is_url = urls
             .iter()
-            .any(|(url, _)| url.start <= range.start && range.end <= url.end);
+            .any(|url| url.start <= range.start && range.end <= url.end);
         let is_selected = selected
             .as_ref()
             .is_some_and(|selection| selection.start <= range.start && range.end <= selection.end);
         let is_highlight = highlights
             .iter()
             .any(|word| word.start <= range.start && range.end <= word.end);
-        (is_url || is_selected || is_highlight).then_some((
+        (is_prefix || is_url || is_selected || is_highlight).then_some((
             range,
             HighlightStyle {
-                color: if is_url {
+                color: if is_prefix {
+                    Some(theme.nickname.into())
+                } else if is_url {
                     Some(theme.link.into())
                 } else {
                     is_highlight.then_some(theme.panes.highlight.into())
@@ -5758,7 +5771,7 @@ fn styled_log_text(
             },
         ))
     });
-    StyledText::new(text.to_owned()).with_highlights(highlights)
+    StyledText::new(format!("{prefix}{text}")).with_highlights(highlights)
 }
 
 /// A preview below a message: the thumbnail, or a box of the full height
@@ -6903,14 +6916,10 @@ struct LogStyle {
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
-    wrap_nicknames: bool,
+    header_lines: bool,
     /// Width of the channel name column of the combined log.
     sub_name_width: f32,
 }
-
-/// Width of the main log's nickname column: nicknames of up to 15 typical
-/// characters (the longest some servers allow) fit without shortening.
-const NICK_COLUMN_WIDTH: f32 = 124.;
 
 impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
@@ -6927,7 +6936,7 @@ impl LogStyle {
                 appearance.time_font.clone().into()
             },
             alternate_rows: appearance.alternate_rows,
-            wrap_nicknames: appearance.wrap_long_nicknames,
+            header_lines: appearance.header_line_messages,
             sub_name_width: appearance
                 .sub_log_name_width
                 .clamp(*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end())
@@ -7163,7 +7172,18 @@ impl ChatWindow {
             .filter(|selection| selection.channel == selected_channel)
             .and_then(|selection| selection.range(index, message.text.len()));
         let highlights = self.highlight_ranges(network, message);
+        // Default layout: the nickname flows into the message text, so
+        // wrapped lines return to the left edge of the text column. The
+        // header layout shows it on its own first line instead.
+        let header_lines = style.header_lines && !message.activity;
+        let prefix = if message.activity || header_lines {
+            String::new()
+        } else {
+            format!("{}: ", message.sender)
+        };
+        let prefix_len = prefix.len();
         let styled = styled_log_text(
+            &prefix,
             &message.text,
             &urls,
             &highlights,
@@ -7175,103 +7195,110 @@ impl ChatWindow {
         let move_layout = layout.clone();
         let click_layout = layout;
         let text_len = message.text.len();
-        div()
+        let avatar = (!message.activity && self.avatars.enabled()).then(|| {
+            self.avatar_slot(
+                self.own_avatar_for(network, &message.sender).or_else(|| {
+                    self.state
+                        .avatars()
+                        .for_message(
+                            network,
+                            &cayenchat_irc_core::text::nickname_key(&message.sender),
+                            message.sequence,
+                        )
+                        .cloned()
+                }),
+                &message.sender,
+                cx,
+            )
+        });
+        // One element for the whole message, so both lines of the header
+        // layout share the row's alternating background.
+        let row = div()
             .w_full()
             .flex()
-            .items_start()
-            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 d.bg(style.main_alt)
-            })
-            .child(style.time(message.time))
-            .when(!message.activity && self.avatars.enabled(), |row| {
-                row.child(self.avatar_slot(
-                    self.own_avatar_for(network, &message.sender).or_else(|| {
-                        self.state
-                            .avatars()
-                            .for_message(
-                                network,
-                                &cayenchat_irc_core::text::nickname_key(&message.sender),
-                                message.sequence,
-                            )
-                            .cloned()
-                    }),
-                    &message.sender,
-                    cx,
-                ))
-            })
-            .when(!message.activity, |row| {
-                row.child(
-                    div()
-                        .w(px(NICK_COLUMN_WIDTH))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_end()
-                        .text_right()
-                        .text_color(theme.nickname)
-                        .child(
-                            div()
-                                .min_w_0()
-                                .when(!style.wrap_nicknames, |d| {
-                                    d.overflow_hidden().whitespace_nowrap().text_ellipsis()
-                                })
-                                .child(message.sender.clone()),
-                        )
-                        .child(":"),
-                )
-            })
-            .child({
-                let text = div()
-                    .id(("message-text", index))
-                    .when(preview.is_none(), |d| d.flex_1())
-                    .min_w_0()
-                    .when(message.activity, |d| d.text_color(style.event_color))
-                    .when(message.delivery_failed, |d| d.text_color(theme.warning))
-                    .cursor(CursorStyle::IBeam)
-                    .child(styled)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            let byte = down_layout
-                                .index_for_position(event.position)
-                                .unwrap_or_else(|index| index)
-                                .min(text_len);
-                            this.start_log_selection(selected_channel, index, byte, window, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        let byte = move_layout
+            });
+        let row = if header_lines {
+            row.flex_col().child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .child(style.time(message.time))
+                    .children(avatar)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_color(theme.nickname)
+                            .child(message.sender.clone()),
+                    ),
+            )
+        } else {
+            row.items_start()
+                .gap_1()
+                .child(style.time(message.time))
+                .children(avatar)
+        };
+        row.child({
+            let text = div()
+                .id(("message-text", index))
+                .when(preview.is_none(), |d| d.flex_1())
+                .min_w_0()
+                .when(message.activity, |d| d.text_color(style.event_color))
+                .when(message.delivery_failed, |d| d.text_color(theme.warning))
+                .cursor(CursorStyle::IBeam)
+                .child(styled)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        let byte = down_layout
                             .index_for_position(event.position)
                             .unwrap_or_else(|index| index)
+                            .saturating_sub(prefix_len)
                             .min(text_len);
-                        this.extend_log_selection(selected_channel, index, byte, cx);
-                    }))
-                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                        if event.click_count() == 2 {
-                            let byte = click_layout
-                                .index_for_position(event.position())
-                                .unwrap_or_else(|index| index);
-                            if let Some((_, url)) =
-                                urls.iter().find(|(range, _)| range.contains(&byte))
-                            {
-                                cx.open_url(url);
-                            }
+                        this.start_log_selection(selected_channel, index, byte, window, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    let byte = move_layout
+                        .index_for_position(event.position)
+                        .unwrap_or_else(|index| index)
+                        .saturating_sub(prefix_len)
+                        .min(text_len);
+                    this.extend_log_selection(selected_channel, index, byte, cx);
+                }))
+                .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                    if event.click_count() == 2 {
+                        // A click on the nickname prefix is not on a link.
+                        let Some(byte) = click_layout
+                            .index_for_position(event.position())
+                            .unwrap_or_else(|index| index)
+                            .checked_sub(prefix_len)
+                        else {
+                            return;
+                        };
+                        if let Some((_, url)) = urls.iter().find(|(range, _)| range.contains(&byte))
+                        {
+                            cx.open_url(url);
                         }
-                    }));
-                match preview {
-                    None => text.into_any_element(),
-                    Some((link, shown)) => div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(text)
-                        .child(preview_element(link, shown, index, &theme, cx))
-                        .into_any_element(),
-                }
-            })
-            .into_any_element()
+                    }
+                }));
+            match preview {
+                None => text.into_any_element(),
+                Some((link, shown)) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(text)
+                    .child(preview_element(link, shown, index, &theme, cx))
+                    .into_any_element(),
+            }
+        })
+        .into_any_element()
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
