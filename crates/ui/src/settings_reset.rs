@@ -70,8 +70,6 @@ impl SettingsWindow {
                 values.channel_number_modifier = defaults.channel_number_modifier;
                 values.text_key_theme = defaults.text_key_theme;
                 values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
-                // This window's own bar follows at once, before it is saved.
-                self.menu_bar.set_always(!defaults.menu_bar_auto_hide);
             }
             SettingsTab::Shortcuts => {
                 self.settings.values.keybindings.clear();

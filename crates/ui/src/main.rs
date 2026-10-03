@@ -1155,7 +1155,6 @@ struct OpenColorPicker {
 }
 
 struct SettingsWindow {
-    menu_bar: menu_bar::MenuBar,
     owner: WindowHandle<ChatWindow>,
     settings: SettingsForm,
     feedback: Option<String>,
@@ -3762,11 +3761,6 @@ impl SettingsWindow {
         }));
         let saved = settings.values.clone();
         let mut this = Self {
-            menu_bar: {
-                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
-                bar.set_always(!saved.menu_bar_auto_hide);
-                bar
-            },
             owner,
             settings,
             feedback: None,
@@ -5379,9 +5373,6 @@ impl SettingsWindow {
                     .on_click(cx.listener(|this, _, _, cx| {
                         let hide = !this.settings.values.menu_bar_auto_hide;
                         this.settings.values.menu_bar_auto_hide = hide;
-                        // This window's own bar follows at once, before the
-                        // setting is saved.
-                        this.menu_bar.set_always(!hide);
                         cx.notify();
                     })),
             )
@@ -5832,14 +5823,6 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
         let content = self.render_settings(window, cx).into_any_element();
-        let content = menu_bar::wrap(
-            &self.menu_bar,
-            cx.get_menus().unwrap_or_default(),
-            content,
-            |this| &mut this.menu_bar,
-            window,
-            cx,
-        );
         decorations::window_frame(window, cx, title, content)
     }
 }
