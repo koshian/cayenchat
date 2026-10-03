@@ -954,6 +954,8 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// The main log row whose URL the pointer is over; it shows a hand.
+    url_hover: Option<(ConversationId, usize)>,
     /// Share of the two logs' height taken by the channel log; changed by
     /// dragging the bottom edge of the draft input, kept for this run only.
     log_split: f32,
@@ -1352,6 +1354,7 @@ impl ChatWindow {
             members_height: None,
             right_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
+            url_hover: None,
             attachments: AttachmentFlow::default(),
             uploader_override: None,
             notifier: Notifier::new(),
@@ -7174,6 +7177,8 @@ impl ChatWindow {
         let down_layout = layout.clone();
         let move_layout = layout.clone();
         let click_layout = layout;
+        let move_urls = urls.clone();
+        let over_url = self.url_hover == Some((selected_channel, index));
         let text_len = message.text.len();
         div()
             .w_full()
@@ -7224,11 +7229,16 @@ impl ChatWindow {
             .child({
                 let text = div()
                     .id(("message-text", index))
+                    .debug_selector(move || format!("message-text-{index}"))
                     .when(preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
                     .when(message.delivery_failed, |d| d.text_color(theme.warning))
-                    .cursor(CursorStyle::IBeam)
+                    .cursor(if over_url {
+                        CursorStyle::PointingHand
+                    } else {
+                        CursorStyle::IBeam
+                    })
                     .child(styled)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -7241,11 +7251,19 @@ impl ChatWindow {
                         }),
                     )
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        let byte = move_layout
-                            .index_for_position(event.position)
-                            .unwrap_or_else(|index| index)
-                            .min(text_len);
+                        let position = move_layout.index_for_position(event.position);
+                        let byte = position.unwrap_or_else(|index| index).min(text_len);
                         this.extend_log_selection(selected_channel, index, byte, cx);
+                        // Over a URL (not while selecting) the pointer is a
+                        // hand: a double click opens it.
+                        let hover = (event.pressed_button.is_none()
+                            && position.is_ok()
+                            && move_urls.iter().any(|(range, _)| range.contains(&byte)))
+                        .then_some((selected_channel, index));
+                        if this.url_hover != hover {
+                            this.url_hover = hover;
+                            cx.notify();
+                        }
                     }))
                     .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
                         if event.click_count() == 2 {
@@ -8591,6 +8609,74 @@ fn settings_with_channels(channels: &str) -> Settings {
         .add_server(cayenchat_storage::PRESETS[0].host)
         .channels = channels.into();
     settings
+}
+
+#[cfg(test)]
+mod url_hover_tests {
+    use super::ChatWindow;
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use gpui::{Modifiers, TestAppContext, point, px};
+
+    #[gpui::test]
+    fn the_pointer_is_a_hand_over_a_url_in_the_channel_log(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let message = |text: &str| Event::ChannelMessage {
+            channel: "#a".into(),
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            mentioned: false,
+            server_time: None,
+            msgid: None,
+            account: None,
+            replayed: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    message("https://example.org/x"),
+                    message("hello there"),
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let over = |row: usize, cx: &mut gpui::VisualTestContext| {
+            let selector: &'static str = ["message-text-0", "message-text-1"][row];
+            let bounds = cx.debug_bounds(selector).expect("row drawn");
+            let at = point(bounds.origin.x + px(4.), bounds.center().y);
+            cx.simulate_mouse_move(at, None, Modifiers::none());
+            cx.run_until_parked();
+            chat.read_with(cx, |chat, _| chat.url_hover.is_some())
+        };
+        assert!(over(0, cx), "on the link");
+        assert!(!over(1, cx), "on plain text");
+        assert!(over(0, cx), "back on the link");
+    }
 }
 
 #[cfg(test)]
