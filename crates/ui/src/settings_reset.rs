@@ -70,8 +70,6 @@ impl SettingsWindow {
                 values.channel_number_modifier = defaults.channel_number_modifier;
                 values.text_key_theme = defaults.text_key_theme;
                 values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
-                // This window's own bar follows at once, before it is saved.
-                self.menu_bar.set_always(!defaults.menu_bar_auto_hide);
             }
             SettingsTab::Shortcuts => {
                 self.settings.values.keybindings.clear();
@@ -384,5 +382,60 @@ mod tests {
         assert!(form.read_with(cx, |form, _| !form.connected_shown));
         let back = cx.debug_bounds("back-button").expect("drawn");
         assert!(back.left() < switch.left());
+    }
+
+    #[gpui::test]
+    fn the_chat_window_opens_the_settings_from_its_own_update(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx.add_window(|window, cx| {
+            crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        // As at startup without servers and on Ctrl+,: the settings window
+        // is made while the chat window's update is running.
+        let form = owner
+            .update(cx, |_, _, cx| {
+                cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                    cx.new(|cx| SettingsWindow::new(owner, settings.clone(), window, cx))
+                })
+            })
+            .unwrap()
+            .expect("the settings window opens");
+        cx.run_until_parked();
+        let shown = |cx: &mut gpui::TestAppContext| {
+            form.update(cx, |form, _, _| form.connected_shown).unwrap()
+        };
+        assert!(!shown(cx));
+        let entity = form.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let notified = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = notified.clone();
+        cx.update(|cx| cx.observe(&entity, move |_, _| flag.set(true)).detach());
+
+        // The switch still follows the chat window: a reconnect scheduled
+        // for the shown server turns it on.
+        owner
+            .update(cx, |chat, _, cx| {
+                let network = chat
+                    .network_of_profile(&settings.selected_server)
+                    .expect("a session for the server");
+                chat.sessions.get_mut(&network).unwrap().retry_pending = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            notified.get(),
+            "the chat window's change reaches the settings window"
+        );
+        assert!(shown(cx));
     }
 }
