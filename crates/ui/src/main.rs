@@ -6353,7 +6353,6 @@ impl ChatWindow {
 
         let server_menu = self.server_menu.as_ref().map(|menu| {
             let network = menu.network;
-            let position = menu.position;
             let session = self.sessions.get(&network);
             let connected = session.is_some_and(|session| session.irc.is_some());
             let can_disconnect = self.can_disconnect(network);
@@ -6366,9 +6365,7 @@ impl ChatWindow {
             };
             div()
                 .id("server-context-menu")
-                .absolute()
-                .left(position.x - origin.x)
-                .top(position.y - origin.y)
+                .occlude()
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -6434,9 +6431,7 @@ impl ChatWindow {
             let registered = self.registered_connection(menu.network).is_ok();
             let mut popup = div()
                 .id("channel-context-menu")
-                .absolute()
-                .left(menu.position.x - origin.x)
-                .top(menu.position.y - origin.y)
+                .occlude()
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -6484,9 +6479,7 @@ impl ChatWindow {
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
                 .id("member-context-menu")
-                .absolute()
-                .left(menu.position.x - origin.x)
-                .top(menu.position.y - origin.y)
+                .occlude()
                 .w(px(210.))
                 .p_1()
                 .bg(theme.surface)
@@ -6706,9 +6699,18 @@ impl ChatWindow {
             .child(left)
             .child(right_split)
             .child(right)
-            .when_some(server_menu, |d, menu| d.child(menu))
-            .when_some(member_menu, |d, menu| d.child(menu))
-            .when_some(channel_menu, |d, menu| d.child(menu))
+            .when_some(
+                self.server_menu.as_ref().zip(server_menu),
+                |d, (at, menu)| d.child(snapped_menu(at.position, menu)),
+            )
+            .when_some(
+                self.member_menu.as_ref().zip(member_menu),
+                |d, (at, menu)| d.child(snapped_menu(at.position, menu)),
+            )
+            .when_some(
+                self.channel_menu.as_ref().zip(channel_menu),
+                |d, (at, menu)| d.child(snapped_menu(at.position, menu)),
+            )
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .into_any_element()
@@ -6903,6 +6905,18 @@ impl ChatPanes {
             channels: pane(PaneKind::Channels),
         }
     }
+}
+
+/// Places a context menu at the pointer, moving it back inside the window when
+/// it would be cut off at the bottom or right edge (issue #144).
+fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoElement {
+    deferred(
+        anchored()
+            .position(position)
+            .snap_to_window_with_margin(px(4.))
+            .child(menu),
+    )
+    .with_priority(1)
 }
 
 /// Layout of a cached pane inside its column.
@@ -8883,7 +8897,11 @@ mod pane_tests {
         assert_eq!(group(&chat, cx), Some(Vec::new()));
 
         // Choosing a mode closes the menu; without a connection it says so
-        // and sends nothing.
+        // and sends nothing. An open menu blocks the rows under it, so close
+        // it first.
+        chat.update(cx, |chat, _| {
+            chat.dismiss_menus();
+        });
         click(cx, row(1), none);
         click(cx, row(3), Modifiers::secondary_key());
         right_click(cx, row(3));
