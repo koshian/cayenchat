@@ -24,6 +24,7 @@ mod perf_baseline;
 mod previews;
 mod secrets;
 mod session;
+mod settings_reset;
 mod settings_theme;
 mod shortcut_settings;
 mod shortcuts;
@@ -1146,6 +1147,8 @@ struct SettingsWindow {
     settings: SettingsForm,
     feedback: Option<String>,
     tab: SettingsTab,
+    /// The category list on the left; Up and Down move through it.
+    nav_focus: FocusHandle,
     font_picker: Option<FontTarget>,
     color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Shortcuts tab).
@@ -1176,6 +1179,9 @@ struct SettingsWindow {
     avatar_editor: Option<avatar_editor::AvatarEditor>,
     /// An avatar image is being decoded or encoded.
     avatar_opening: bool,
+    /// Whether the connection switch was last drawn on, so the window is
+    /// redrawn only when a connection comes up or goes down.
+    connected_shown: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -2633,11 +2639,11 @@ impl ChatWindow {
             settings.selected_server = profile;
         }
         let owner = window.window_handle().downcast::<ChatWindow>().unwrap();
-        let bounds = Bounds::centered(None, size(px(740.), px(750.)), cx);
+        let bounds = Bounds::centered(None, size(px(900.), px(750.)), cx);
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(620.), px(540.))),
+                window_min_size: Some(size(px(760.), px(540.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(self.i18n.text("settings_title").into()),
                     ..Default::default()
@@ -3697,6 +3703,14 @@ impl SettingsWindow {
         for field in settings.text_fields() {
             subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
         }
+        // The connection switch follows the chat window's connections.
+        if let Ok(chat) = owner.entity(cx) {
+            subscriptions.push(cx.observe(&chat, |this, _, cx| {
+                if this.selected_connected(cx) != this.connected_shown {
+                    cx.notify();
+                }
+            }));
+        }
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_activation_changed(window.is_window_active(), cx)
         }));
@@ -3729,6 +3743,7 @@ impl SettingsWindow {
             settings,
             feedback: None,
             tab: SettingsTab::Connection,
+            nav_focus: cx.focus_handle().tab_stop(true),
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -3746,6 +3761,7 @@ impl SettingsWindow {
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             avatar_opening: false,
+            connected_shown: false,
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -4224,8 +4240,20 @@ impl SettingsWindow {
         .detach();
     }
 
+    /// Whether the server being edited is connected, being connected or
+    /// waiting to retry.
+    fn selected_connected(&self, cx: &App) -> bool {
+        let profile = &self.settings.values.selected_server;
+        self.owner.read(cx).is_ok_and(|chat| {
+            chat.network_of_profile(profile)
+                .is_some_and(|network| chat.can_disconnect(network))
+        })
+    }
+
     fn render_connection_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
+        let connected = self.selected_connected(cx);
+        self.connected_shown = connected;
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
@@ -4374,23 +4402,8 @@ impl SettingsWindow {
             );
             server_selector = server_selector.child(menu);
         }
-        div()
-            .w(px(680.))
-            .p_4()
-            .mb_4()
-            .bg(theme.surface)
-            .border_1()
-            .border_t_0()
-            .border_color(theme.border)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("connection")),
-            )
+        account_settings::panel(cx)
+            .child(self.tab_heading("connection"))
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -4443,29 +4456,36 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex()
+                    .items_center()
                     .gap_2()
                     .pt_2()
-                    .when(!no_server, |d| {
-                        d.child(
-                            settings_theme::button("connect-button", true, cx)
-                                .child(self.i18n.text("connect"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.connect_from_settings(window, cx)
-                                })),
-                        )
-                    })
                     .child(
                         settings_theme::button("back-button", false, cx)
+                            .debug_selector(|| "back-button".into())
                             .child(self.i18n.text("back"))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
                             ),
                     )
+                    .child(div().flex_1())
                     .when(!no_server, |d| {
+                        // On while the server being edited is connected, being
+                        // connected or waiting to retry.
                         d.child(
-                            settings_theme::button("disconnect-button", false, cx)
-                                .child(self.i18n.text("disconnect"))
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            div()
+                                .id("connection-switch")
+                                .debug_selector(|| "connection-switch".into())
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .cursor_pointer()
+                                .child(self.i18n.text("connect"))
+                                .child(settings_theme::switch(connected, cx))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if !connected {
+                                        this.connect_from_settings(window, cx);
+                                        return;
+                                    }
                                     // Disconnects the server being edited.
                                     let profile = this.settings.values.selected_server.clone();
                                     let _ = this.owner.update(cx, |owner, _, cx| {
@@ -5061,23 +5081,8 @@ impl SettingsWindow {
 
     fn render_appearance_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        div()
-            .w(px(680.))
-            .p_4()
-            .mb_4()
-            .bg(theme.surface)
-            .border_1()
-            .border_t_0()
-            .border_color(theme.border)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("appearance")),
-            )
+        account_settings::panel(cx)
+            .child(self.tab_heading("appearance"))
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -5282,6 +5287,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Appearance, cx))
     }
 
     /// Channel-number and draft-editing keys; only Windows and Linux have
@@ -5294,23 +5300,8 @@ impl SettingsWindow {
                 .text_color(theme.text_secondary)
                 .child(self.i18n.text(key))
         };
-        div()
-            .w(px(680.))
-            .p_4()
-            .mb_4()
-            .bg(theme.surface)
-            .border_1()
-            .border_t_0()
-            .border_color(theme.border)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("keyboard")),
-            )
+        account_settings::panel(cx)
+            .child(self.tab_heading("keyboard"))
             .child(self.option_row(
                 "channel_number_modifier",
                 [
@@ -5365,6 +5356,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Keyboard, cx))
     }
 
     fn notification_toggle(
@@ -5410,23 +5402,8 @@ impl SettingsWindow {
                 .text_color(theme.text_secondary)
                 .child(self.i18n.text(key))
         };
-        div()
-            .w(px(680.))
-            .p_4()
-            .mb_4()
-            .bg(theme.surface)
-            .border_1()
-            .border_t_0()
-            .border_color(theme.border)
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("notifications_tab")),
-            )
+        account_settings::panel(cx)
+            .child(self.tab_heading("notifications_tab"))
             .child(self.notification_toggle(
                 "notifications-enabled",
                 "notifications_enabled",
@@ -5472,6 +5449,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Notifications, cx))
     }
 
     fn settings_tab(
@@ -5479,33 +5457,102 @@ impl SettingsWindow {
         tab: SettingsTab,
         id: &'static str,
         label_key: &str,
+        nav_focused: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let theme = settings_theme::palette(cx);
+        let selected = self.tab == tab;
         div()
             .id(id)
             .debug_selector(move || id.into())
-            .px_4()
+            .w_full()
+            .px_3()
             .py_2()
-            .border_1()
-            .when(tab != SettingsTab::Connection, |d| d.border_l_0())
-            .flex_shrink_0()
-            .border_color(theme.border)
+            .border_l_2()
+            // The indicator takes the link color while Up/Down act on the list.
+            .border_color(if selected && nav_focused {
+                theme.link.into()
+            } else if selected {
+                theme.text.into()
+            } else {
+                gpui::transparent_black()
+            })
+            .whitespace_nowrap()
             .cursor_pointer()
-            .when(self.tab == tab, |d| {
-                d.bg(theme.surface)
-                    .border_b_0()
-                    .font_weight(FontWeight::BOLD)
+            .when(selected, |d| {
+                d.bg(theme.selected).font_weight(FontWeight::BOLD)
             })
-            .when(self.tab != tab, |d| {
-                d.bg(theme.tab_inactive).hover(|d| d.bg(theme.window))
-            })
+            .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
             .child(self.i18n.text(label_key))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.show_tab(tab);
-                this.font_picker = None;
-                cx.notify();
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_tab(tab, window, cx);
             }))
+    }
+
+    /// Shows `tab` from the category list, which keeps the focus so Up and
+    /// Down continue from it.
+    fn select_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_tab(tab);
+        self.font_picker = None;
+        window.focus(&self.nav_focus);
+        cx.notify();
+    }
+
+    /// The categories in list order; the last, Experimental, stands apart.
+    fn settings_tabs() -> Vec<(SettingsTab, &'static str, &'static str)> {
+        let mut tabs = vec![
+            (SettingsTab::Connection, "connection-tab", "connection"),
+            (SettingsTab::Appearance, "appearance-tab", "appearance"),
+        ];
+        if !cfg!(target_os = "macos") {
+            tabs.push((SettingsTab::Keyboard, "keyboard-tab", "keyboard"));
+        }
+        tabs.extend([
+            (SettingsTab::Shortcuts, "shortcuts-tab", "shortcuts_tab"),
+            (
+                SettingsTab::Notifications,
+                "notifications-tab",
+                "notifications_tab",
+            ),
+            (SettingsTab::Ircv3, "ircv3-tab", "ircv3_tab"),
+            (
+                SettingsTab::ImageUpload,
+                "image-upload-tab",
+                "image_upload_tab",
+            ),
+            (
+                SettingsTab::Credentials,
+                "credentials-tab",
+                "credentials_tab",
+            ),
+            (
+                SettingsTab::Experimental,
+                "experimental-tab",
+                "experimental_tab",
+            ),
+        ]);
+        tabs
+    }
+
+    /// Up and Down move through the categories while the list has focus.
+    fn nav_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A key being recorded for a shortcut belongs to the recording.
+        if self.shortcut_recording.is_some() || event.keystroke.modifiers.modified() {
+            return;
+        }
+        let step: isize = match event.keystroke.key.as_str() {
+            "up" => -1,
+            "down" => 1,
+            _ => return,
+        };
+        let tabs = Self::settings_tabs();
+        let Some(current) = tabs.iter().position(|(tab, ..)| *tab == self.tab) else {
+            return;
+        };
+        if let Some((tab, ..)) = tabs.get(current.wrapping_add_signed(step)) {
+            self.select_tab(*tab, window, cx);
+            cx.stop_propagation();
+        }
     }
 
     /// Switches tabs. A message about something done on one tab (such as
@@ -5523,46 +5570,35 @@ impl SettingsWindow {
         self.tab = tab;
     }
 
-    fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = settings_theme::palette(cx);
-        let border = theme.border;
-        let tabs = div()
+        let nav_focused = self.nav_focus.is_focused(window);
+        let mut tabs = Self::settings_tabs();
+        let experimental = tabs.pop();
+        let mut nav = div()
+            .id("settings-nav")
+            .track_focus(&self.nav_focus)
+            .on_key_down(
+                cx.listener(|this, event, window, cx| this.nav_key_down(event, window, cx)),
+            )
+            .w(px(190.))
+            .flex_shrink_0()
+            .h_full()
+            .py_2()
             .flex()
-            .flex_wrap()
-            .w_full()
-            .border_b_1()
-            .border_color(border)
-            .child(self.settings_tab(SettingsTab::Connection, "connection-tab", "connection", cx))
-            .child(self.settings_tab(SettingsTab::Appearance, "appearance-tab", "appearance", cx))
-            .when(!cfg!(target_os = "macos"), |d| {
-                d.child(self.settings_tab(SettingsTab::Keyboard, "keyboard-tab", "keyboard", cx))
-            })
-            .child(self.settings_tab(SettingsTab::Shortcuts, "shortcuts-tab", "shortcuts_tab", cx))
-            .child(self.settings_tab(
-                SettingsTab::Notifications,
-                "notifications-tab",
-                "notifications_tab",
-                cx,
-            ))
-            .child(self.settings_tab(SettingsTab::Ircv3, "ircv3-tab", "ircv3_tab", cx))
-            .child(self.settings_tab(
-                SettingsTab::ImageUpload,
-                "image-upload-tab",
-                "image_upload_tab",
-                cx,
-            ))
-            .child(self.settings_tab(
-                SettingsTab::Credentials,
-                "credentials-tab",
-                "credentials_tab",
-                cx,
-            ))
-            .child(self.settings_tab(
-                SettingsTab::Experimental,
-                "experimental-tab",
-                "experimental_tab",
-                cx,
-            ));
+            .flex_col()
+            .gap_px()
+            .border_r_1()
+            .border_color(theme.border)
+            .overflow_y_scroll();
+        for (tab, id, label_key) in tabs {
+            nav = nav.child(self.settings_tab(tab, id, label_key, nav_focused, cx));
+        }
+        // Experimental stands apart from the ordinary settings.
+        nav = nav.child(div().flex_1().min_h_4());
+        if let Some((tab, id, label_key)) = experimental {
+            nav = nav.child(self.settings_tab(tab, id, label_key, nav_focused, cx));
+        }
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
@@ -5578,8 +5614,6 @@ impl SettingsWindow {
             .key_context("SettingsWindow")
             .size_full()
             .flex()
-            .flex_col()
-            .overflow_y_scroll()
             .bg(theme.window)
             .text_size(px(13.))
             .when_some(settings_theme::current(cx), |d, native| {
@@ -5587,16 +5621,15 @@ impl SettingsWindow {
                     .text_size(px(native.defaults.font.size))
             })
             .text_color(theme.text)
+            .child(nav)
             .child(
-                div().w_full().flex().justify_center().child(
-                    div()
-                        .w(px(680.))
-                        .mt_4()
-                        .flex()
-                        .flex_col()
-                        .child(tabs)
-                        .child(panel),
-                ),
+                div()
+                    .id("settings-pane")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
             )
             .on_action(cx.listener(Self::open_settings_action))
             .when(
@@ -5766,7 +5799,7 @@ fn preview_element(
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
-        let content = self.render_settings(cx).into_any_element();
+        let content = self.render_settings(window, cx).into_any_element();
         let content = menu_bar::wrap(
             &self.menu_bar,
             cx.get_menus().unwrap_or_default(),

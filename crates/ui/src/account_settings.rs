@@ -3,7 +3,7 @@
 use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings, credentials};
 use gpui::{prelude::*, *};
 
-use crate::{SettingsWindow, secrets, settings_theme};
+use crate::{SettingsTab, SettingsWindow, secrets, settings_theme};
 
 /// Every secret this configuration may have stored, for moving them when the
 /// credential backend changes.
@@ -163,12 +163,7 @@ impl SettingsWindow {
         };
         let note = |text: String, color: Rgba| div().ml(px(22.)).text_color(color).child(text);
         panel(cx)
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("credentials_tab")),
-            )
+            .child(self.tab_heading("credentials_tab"))
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -231,7 +226,11 @@ impl SettingsWindow {
     }
 
     /// Applies a provider choice at once, like the account buttons do.
-    fn select_upload_provider(&mut self, provider: Option<&'static str>, cx: &mut Context<Self>) {
+    pub(crate) fn select_upload_provider(
+        &mut self,
+        provider: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
         let provider = provider.map(str::to_owned);
         let result = cayenchat_storage::load().and_then(|saved| {
             let mut saved = saved.unwrap_or_else(|| self.settings.values.clone());
@@ -293,6 +292,8 @@ impl SettingsWindow {
     pub(crate) fn render_image_upload_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let selected = self.settings.values.image_upload.provider.clone();
+        let heading = self.tab_heading("image_upload_tab");
+        let footer = self.reset_footer(SettingsTab::ImageUpload, cx);
         let label = |key: &str| div().w(px(150.)).flex_shrink_0().child(self.i18n.text(key));
         let button =
             |id: &'static str, text: String| settings_theme::button(id, false, cx).child(text);
@@ -324,12 +325,7 @@ impl SettingsWindow {
         }
         let info = selected.as_deref().and_then(cayenchat_upload::provider);
         let mut panel = panel(cx)
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("image_upload_tab")),
-            )
+            .child(heading)
             .child(
                 div()
                     .text_color(theme.text_secondary)
@@ -439,24 +435,15 @@ impl SettingsWindow {
                     );
             }
         }
-        panel.when_some(self.status_message(), |d, feedback| {
-            d.child(div().pt_2().text_color(theme.warning).child(feedback))
-        })
+        panel
+            .when_some(self.status_message(), |d, feedback| {
+                d.child(div().pt_2().text_color(theme.warning).child(feedback))
+            })
+            .child(footer)
     }
 }
 
 /// The bordered panel below the settings tabs.
-pub(crate) fn panel(cx: &App) -> Div {
-    let theme = settings_theme::palette(cx);
-    div()
-        .w(px(680.))
-        .p_4()
-        .mb_4()
-        .bg(theme.surface)
-        .border_1()
-        .border_t_0()
-        .border_color(theme.border)
-        .flex()
-        .flex_col()
-        .gap_2()
+pub(crate) fn panel(_: &App) -> Div {
+    div().w_full().flex().flex_col().gap_2()
 }

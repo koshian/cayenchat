@@ -22,7 +22,7 @@ use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, SettingsWindow,
+    ChatWindow, SettingsTab, SettingsWindow,
     account_settings::panel,
     image_upload::{
         acceptable_attachment, clipboard_attachment, configured_uploader, file_attachment,
@@ -129,18 +129,11 @@ impl SettingsWindow {
                 .text_color(theme.text_secondary)
                 .child(self.i18n.text(key))
         };
-        let mut panel = panel(cx)
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("ircv3_tab")),
-            )
-            .child(
-                div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("ircv3_intro")),
-            );
+        let mut panel = panel(cx).child(self.tab_heading("ircv3_tab")).child(
+            div()
+                .text_color(theme.text_secondary)
+                .child(self.i18n.text("ircv3_intro")),
+        );
         let Some(profile) = self.settings.values.selected_profile().cloned() else {
             return panel.child(div().child(self.i18n.text("ircv3_no_server")));
         };
@@ -262,6 +255,7 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Ircv3, cx))
     }
 }
 
