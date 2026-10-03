@@ -385,4 +385,37 @@ mod tests {
         let back = cx.debug_bounds("back-button").expect("drawn");
         assert!(back.left() < switch.left());
     }
+
+    #[gpui::test]
+    fn the_chat_window_opens_the_settings_from_its_own_update(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx.add_window(|window, cx| {
+            crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        // As at startup without servers and on Ctrl+,: the settings window
+        // is made while the chat window's update is running.
+        let form = owner
+            .update(cx, |_, _, cx| {
+                cx.open_window(gpui::WindowOptions::default(), |window, cx| {
+                    cx.new(|cx| SettingsWindow::new(owner, settings.clone(), window, cx))
+                })
+            })
+            .unwrap()
+            .expect("the settings window opens");
+        cx.run_until_parked();
+        assert!(
+            form.update(cx, |form, _, _| form._subscriptions.len())
+                .is_ok_and(|count| count > 0)
+        );
+    }
 }

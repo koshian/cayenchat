@@ -3706,14 +3706,18 @@ impl SettingsWindow {
         for field in settings.text_fields() {
             subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
         }
-        // The connection switch follows the chat window's connections.
-        if let Ok(chat) = owner.entity(cx) {
-            subscriptions.push(cx.observe(&chat, |this, _, cx| {
-                if this.selected_connected(cx) != this.connected_shown {
-                    cx.notify();
-                }
-            }));
-        }
+        // The connection switch follows the chat window's connections. The
+        // chat window opens this window from its own update, when its window
+        // cannot be read yet, so subscribe once that update has returned.
+        cx.defer_in(window, |this, _, cx| {
+            if let Ok(chat) = this.owner.entity(cx) {
+                this._subscriptions.push(cx.observe(&chat, |this, _, cx| {
+                    if this.selected_connected(cx) != this.connected_shown {
+                        cx.notify();
+                    }
+                }));
+            }
+        });
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_activation_changed(window.is_window_active(), cx)
         }));
