@@ -585,6 +585,18 @@ Exceptions keep a half-finished edit from doing damage:
 - Removing a server that was already saved asks for confirmation, since the
   removal is saved at once and disconnects it and deletes its passwords.
 
+**Another process (#147).** The window holds a copy of the settings and
+writes all of it, so a second process (an installed build beside a Test Build
+without `isolated`, or a hand edit) could be overwritten with the copy's older
+values. Only the window in front takes edits, so: when the window loses
+activation it saves what is pending, and when it is activated again it reads
+the file and, if that differs from what this window last saved, rebuilds the
+form from it (the shown tab and server stay; nothing is read while a save is
+pending or failing, so unsaved edits are not dropped). Passwords are deleted
+only for servers this window itself removed, i.e. missing from what it last
+saved, never for servers that only the file has. File watching and
+single-instance locks were not added.
+
 ## D022 — Opt-in IRCv3 features and shared CAP negotiation
 
 **Status:** Accepted

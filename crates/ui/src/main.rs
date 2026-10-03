@@ -24,6 +24,7 @@ mod perf_baseline;
 mod previews;
 mod secrets;
 mod session;
+mod settings_file;
 mod settings_theme;
 mod shortcut_settings;
 mod shortcuts;
@@ -1176,6 +1177,8 @@ struct SettingsWindow {
     avatar_editor: Option<avatar_editor::AvatarEditor>,
     /// An avatar image is being decoded or encoded.
     avatar_opening: bool,
+    /// Observers of `settings`' fields; replaced with the form.
+    _field_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -2619,7 +2622,7 @@ impl ChatWindow {
         {
             return;
         }
-        let mut settings = match cayenchat_storage::load() {
+        let mut settings = match settings_file::load() {
             Ok(value) => value.unwrap_or_default(),
             Err(error) => {
                 self.feedback = Some(error);
@@ -3694,19 +3697,19 @@ impl SettingsWindow {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
         let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
-        for field in settings.text_fields() {
-            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
-        }
+        let field_subscriptions = Self::observe_fields(&settings, window, cx);
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
-            this.window_activation_changed(window.is_window_active(), cx)
+            let active = window.is_window_active();
+            this.window_activation_changed(active, cx);
+            // Another process may write the settings while this window is in
+            // the background, so leaving saves what is pending and coming
+            // back reads what changed (#147).
+            if active {
+                this.reload_changed_settings(window, cx);
+            } else {
+                this.autosave_now(None, cx);
+            }
         }));
-        // Typed passwords are stored once their field loses focus.
-        for field in [&settings.server_password, &settings.sasl_password] {
-            let handle = field.read(cx).focus_handle(cx);
-            subscriptions.push(
-                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
-            );
-        }
         // Leaving saves everything, including a password field that still
         // has focus.
         let view = cx.entity().downgrade();
@@ -3746,6 +3749,7 @@ impl SettingsWindow {
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             avatar_opening: false,
+            _field_subscriptions: field_subscriptions,
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -3753,10 +3757,67 @@ impl SettingsWindow {
         this
     }
 
-    /// Saves typed passwords to the credential store, forgets removed
-    /// profiles' passwords, and writes the settings file.
+    /// Saves after an edit to any text field, and stores a typed password
+    /// once its field loses focus.
+    fn observe_fields(
+        settings: &SettingsForm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        let mut subscriptions = Vec::new();
+        for field in settings.text_fields() {
+            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
+        }
+        for field in [&settings.server_password, &settings.sasl_password] {
+            let handle = field.read(cx).focus_handle(cx);
+            subscriptions.push(
+                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
+            );
+        }
+        subscriptions
+    }
+
+    /// Shows what another process wrote to the settings file while this
+    /// window was in the background, so a later save does not put the older
+    /// values back. Edits this window could not save yet are kept.
+    fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.autosave.is_some() || self.autosave_error.is_some() {
+            return;
+        }
+        let Ok(Some(mut loaded)) = settings_file::load() else {
+            return;
+        };
+        if loaded == self.saved {
+            return;
+        }
+        if loaded
+            .profile(&self.settings.values.selected_server)
+            .is_some()
+        {
+            loaded.selected_server = self.settings.values.selected_server.clone();
+        }
+        if loaded.language != self.settings.values.language {
+            self.i18n = Localizer::new(loaded.language);
+            window.set_window_title(&self.i18n.text("settings_title"));
+        }
+        self.menu_bar.set_always(!loaded.menu_bar_auto_hide);
+        self.settings = SettingsForm::new(loaded.clone(), &self.i18n, &secrets::store(cx), cx);
+        self._field_subscriptions = Self::observe_fields(&self.settings, window, cx);
+        self.saved = loaded;
+        self.font_picker = None;
+        self.color_picker = None;
+        self.shortcut_recording = None;
+        self.refresh_upload_account(cx);
+        cx.notify();
+    }
+
+    /// Saves typed passwords to the credential store, forgets the passwords
+    /// of profiles removed since `previous` (what this window last saved, not
+    /// the file, which another process may have added servers to), and
+    /// writes the settings file.
     fn commit_settings(
         &mut self,
+        previous: &Settings,
         mut settings: Settings,
         window: Option<&Window>,
         cx: &mut Context<Self>,
@@ -3765,13 +3826,11 @@ impl SettingsWindow {
         settings.servers.retain(|server| !server.host.is_empty());
         self.settings
             .persist_passwords(&store, &self.i18n, window, cx)?;
-        if let Ok(Some(previous)) = cayenchat_storage::load() {
-            forget_removed_profiles(&previous, &settings, &store);
-        }
+        forget_removed_profiles(previous, &settings, &store);
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        if let Err(error) = cayenchat_storage::save(&settings) {
+        if let Err(error) = settings_file::save(&settings) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
         }
@@ -3788,9 +3847,9 @@ impl SettingsWindow {
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        let mut saved = cayenchat_storage::load()?.unwrap_or_default();
+        let mut saved = settings_file::load()?.unwrap_or_default();
         saved.experimental = experimental.clone();
-        if let Err(error) = cayenchat_storage::save(&saved) {
+        if let Err(error) = settings_file::save(&saved) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
         }
@@ -3805,8 +3864,8 @@ impl SettingsWindow {
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             self.autosave = None;
-            self.saved = settings.clone();
-            let settings = self.commit_settings(settings, None, cx)?;
+            let previous = std::mem::replace(&mut self.saved, settings.clone());
+            let settings = self.commit_settings(&previous, settings, None, cx)?;
             self.settings.values = settings.clone();
             Ok::<_, String>((config, settings))
         })();
@@ -3904,7 +3963,7 @@ impl SettingsWindow {
             return;
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
-        let saved = match self.commit_settings(settings, window, cx) {
+        let saved = match self.commit_settings(&previous, settings, window, cx) {
             Ok(saved) => saved,
             Err(error) => {
                 // Try again on the next edit.
