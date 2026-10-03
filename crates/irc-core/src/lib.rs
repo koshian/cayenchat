@@ -3383,7 +3383,7 @@ mod tests {
             ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec!["#がが".into()]);
         config.port = port;
         config.use_tls = false;
-        config.encoding = "shift_jis".into();
+        config.encoding = "ISO-2022-JP".into();
         let mut connection = Connection::connect(config).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut joined = false;
@@ -4069,8 +4069,9 @@ mod tests {
         config.validate().unwrap();
     }
 
-    #[test]
-    fn disconnect_flushes_quit_to_server() {
+    /// Connects to a local server, disconnects, and returns the raw `QUIT`
+    /// line the server received (without its line ending).
+    fn quit_line_sent_with(configure: impl FnOnce(&mut ConnectionConfig)) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4079,11 +4080,11 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut lines = BufReader::new(socket.try_clone().unwrap());
-            let mut line = String::new();
+            let mut line = Vec::new();
             loop {
                 line.clear();
-                lines.read_line(&mut line).unwrap();
-                if line.starts_with("USER ") {
+                lines.read_until(b'\n', &mut line).unwrap();
+                if line.starts_with(b"USER ") {
                     break;
                 }
             }
@@ -4092,9 +4093,15 @@ mod tests {
                 .unwrap();
             loop {
                 line.clear();
-                lines.read_line(&mut line).unwrap();
-                if line.starts_with("QUIT ") {
-                    return line.trim_end().to_owned();
+                lines.read_until(b'\n', &mut line).unwrap();
+                if line.starts_with(b"QUIT ") {
+                    while line
+                        .last()
+                        .is_some_and(|byte| matches!(byte, b'\r' | b'\n'))
+                    {
+                        line.pop();
+                    }
+                    return line;
                 }
             }
         });
@@ -4102,6 +4109,7 @@ mod tests {
         let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
         config.port = port;
         config.use_tls = false;
+        configure(&mut config);
         let mut connection = Connection::connect(config).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut registered = false;
@@ -4114,7 +4122,51 @@ mod tests {
         }
         assert!(registered, "client did not register");
         connection.disconnect().unwrap();
-        assert_eq!(server.join().unwrap(), "QUIT :Leaving CayenChat");
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn disconnect_flushes_quit_to_server() {
+        assert_eq!(
+            quit_line_sent_with(|_| {}),
+            b"QUIT :Leaving CayenChat".to_vec()
+        );
+    }
+
+    #[test]
+    fn disconnect_sends_the_configured_quit_message() {
+        let line = quit_line_sent_with(|config| config.quit_message = " Back soon ".into());
+        assert_eq!(line, b"QUIT :Back soon".to_vec());
+        // Blank keeps the default.
+        let line = quit_line_sent_with(|config| config.quit_message = "  ".into());
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
+    }
+
+    #[test]
+    fn the_quit_message_follows_the_connection_encoding() {
+        let line = quit_line_sent_with(|config| {
+            config.encoding = "ISO-2022-JP".into();
+            config.quit_message = "さよなら".into();
+        });
+        // The whole line goes through the codec; a message without spaces
+        // needs no leading colon.
+        let mut want = encoding_from_whatwg_label("ISO-2022-JP")
+            .unwrap()
+            .encode("QUIT さよなら\r\n", EncoderTrap::Strict)
+            .unwrap();
+        assert!(want.contains(&0x1b), "ISO-2022-JP uses escape sequences");
+        want.truncate(want.len() - 2);
+        assert_eq!(line, want);
+    }
+
+    #[test]
+    fn the_quit_line_may_use_the_whole_512_bytes() {
+        // "QUIT :" is 6 bytes and CRLF 2, leaving 504 for the message.
+        let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+        config.quit_message = "x".repeat(504);
+        config.validate().unwrap();
+        config.quit_message = "x".repeat(505);
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -5831,7 +5883,7 @@ mod tests {
                 accounts: false,
             },
         );
-        config.encoding = "shift_jis".into();
+        config.encoding = "ISO-2022-JP".into();
         let events = run_fixture(config, |events| channel_messages(events).len() == 1);
         server.join().unwrap();
         assert_eq!(

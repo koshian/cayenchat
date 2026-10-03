@@ -475,12 +475,6 @@ Disconnect is available (in the menu bar and the server context menu) only
 while that server has a connection, including one still opening, or a
 scheduled reconnect to cancel; the
 settings window's Connect and Disconnect act on the server being
-Each server profile has an optional QUIT message (`quit_message`, issue #148; added
-without a version change). Disconnect and quitting the app send it as the `QUIT`
-reason; blank means "Leaving CayenChat". It is validated with the connection
-(no line breaks or NUL, within the encoding and the 512-byte line) and read when the
-connection starts, so an edit applies from the next connection. Lost connections
-send no QUIT.
 edited. A new server, blank or from a preset, starts with an empty
 nickname, `USER` username, auto-join channels and SASL account, SASL,
 password saving and startup connection off, IRCv3 options off, and the
@@ -501,6 +495,13 @@ context menu; connecting one uses its saved settings and stored passwords, or
 opens the settings on that server when they are incomplete.
 There is no application-wide bound on logs, conversations or transcripts yet;
 see `performance.md`.
+
+Each server profile has an optional QUIT message (`quit_message`, issue #148; added
+without a version change). Disconnect and quitting the app send it as the `QUIT`
+reason; blank means "Leaving CayenChat". It is validated with the connection
+(no line breaks or NUL, within the encoding and the 512-byte line) and read when the
+connection starts, so an edit applies from the next connection. Lost connections
+send no QUIT.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,
