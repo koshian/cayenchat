@@ -6889,7 +6889,6 @@ impl ChatPanes {
     }
 }
 
-/// Layout of a cached pane inside its column.
 /// Places a context menu at the pointer, moving it back inside the window when
 /// it would be cut off at the bottom or right edge (issue #144).
 fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoElement {
@@ -6902,6 +6901,7 @@ fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoEle
     .with_priority(1)
 }
 
+/// Layout of a cached pane inside its column.
 fn pane_style() -> StyleRefinement {
     StyleRefinement::default().flex_1().min_h_0()
 }
