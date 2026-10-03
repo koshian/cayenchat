@@ -59,6 +59,8 @@ const MAX_WHOIS_ITEMS: usize = 512;
 /// The realname sent in `USER` when none is configured; with a shared peer
 /// avatar it starts with KVIrc's avatar mark.
 const REALNAME: &str = "CayenChat";
+/// The `QUIT` reason sent when none is configured.
+const QUIT_MESSAGE: &str = "Leaving CayenChat";
 /// `SETNAME` requests waiting for an answer; a server answers each in order.
 const MAX_PENDING_SETNAME: usize = 4;
 
@@ -102,6 +104,9 @@ pub struct ConnectionConfig {
     /// The configured real name (GECOS); empty means the built-in default.
     /// The avatar mark is added on the wire only, never stored here.
     pub realname: String,
+    /// The `QUIT` reason sent on a normal disconnect; empty means the
+    /// built-in default.
+    pub quit_message: String,
     pub channels: Vec<String>,
     pub use_tls: bool,
     pub verify_tls_certificates: bool,
@@ -137,6 +142,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("nickname", &self.nickname)
             .field("username", &self.username)
             .field("realname", &self.realname)
+            .field("quit_message", &self.quit_message)
             .field("channels", &self.channels)
             .field("use_tls", &self.use_tls)
             .field("verify_tls_certificates", &self.verify_tls_certificates)
@@ -164,6 +170,7 @@ impl ConnectionConfig {
             port: 6697,
             username: nickname.clone(),
             realname: String::new(),
+            quit_message: String::new(),
             nickname,
             channels,
             use_tls: true,
@@ -189,6 +196,16 @@ impl ConnectionConfig {
     /// (or the default), with KVIrc's avatar mark when an avatar is shared.
     pub(crate) fn wire_realname(&self) -> String {
         peer_avatar::realname(base_realname(&self.realname), self.advertises_avatar())
+    }
+
+    /// The `QUIT` reason: the configured message, or the default when blank.
+    pub(crate) fn wire_quit_message(&self) -> String {
+        let configured = self.quit_message.trim();
+        if configured.is_empty() {
+            QUIT_MESSAGE.to_owned()
+        } else {
+            configured.to_owned()
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -218,6 +235,17 @@ impl ConnectionConfig {
             return Err("Username must not be empty or contain spaces, controls or @.".into());
         }
         check_realname(&self.realname)?;
+        if self
+            .quit_message
+            .chars()
+            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+        {
+            return Err("Quit message must not contain line breaks.".into());
+        }
+        validate_wire(
+            &format!("QUIT :{}\r\n", self.wire_quit_message()),
+            &self.encoding,
+        )?;
         for channel in &self.channels {
             if !valid_channel(channel) {
                 return Err(format!("Invalid channel name: {channel}"));
@@ -1457,6 +1485,7 @@ async fn run_cancellable(
     let irc_config = library_config(&config);
     let advertise_avatar = config.advertises_avatar();
     let registration_realname = config.wire_realname();
+    let quit_message = config.wire_quit_message();
     // The avatar mark is fixed for the connection, also for SETNAME.
     let mut pending_setname = 0usize;
     let mut peers = config.ircv3.peer_avatars.then(|| {
@@ -1790,7 +1819,7 @@ async fn run_cancellable(
                         }
                     }
                     Outgoing::Quit => {
-                        let quit = IrcMessage::from(IrcCommand::QUIT(Some("Leaving CayenChat".into())));
+                        let quit = IrcMessage::from(IrcCommand::QUIT(Some(quit_message.clone())));
                         if client.send(quit.clone()).is_ok() {
                             wire(&events, started, WireDirection::Sent, redacted_wire_line(&quit)).await;
                         }
@@ -4019,7 +4048,30 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_flushes_quit_to_server() {
+    fn the_quit_message_defaults_and_is_validated() {
+        let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+        assert_eq!(config.wire_quit_message(), "Leaving CayenChat");
+        config.quit_message = "   ".into();
+        assert_eq!(config.wire_quit_message(), "Leaving CayenChat");
+        config.quit_message = " Gone fishing ".into();
+        assert_eq!(config.wire_quit_message(), "Gone fishing");
+        config.validate().unwrap();
+        config.quit_message = "two\nlines".into();
+        assert!(config.validate().is_err());
+        config.quit_message = "a\0b".into();
+        assert!(config.validate().is_err());
+        config.quit_message = "x".repeat(600);
+        assert!(config.validate().is_err());
+        config.quit_message = "さよなら".into();
+        config.encoding = "iso-8859-1".into();
+        assert!(config.validate().is_err());
+        config.encoding = "shift_jis".into();
+        config.validate().unwrap();
+    }
+
+    /// Connects to a local server, disconnects, and returns the raw `QUIT`
+    /// line the server received (without its line ending).
+    fn quit_line_sent_with(configure: impl FnOnce(&mut ConnectionConfig)) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4028,11 +4080,11 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut lines = BufReader::new(socket.try_clone().unwrap());
-            let mut line = String::new();
+            let mut line = Vec::new();
             loop {
                 line.clear();
-                lines.read_line(&mut line).unwrap();
-                if line.starts_with("USER ") {
+                lines.read_until(b'\n', &mut line).unwrap();
+                if line.starts_with(b"USER ") {
                     break;
                 }
             }
@@ -4041,9 +4093,15 @@ mod tests {
                 .unwrap();
             loop {
                 line.clear();
-                lines.read_line(&mut line).unwrap();
-                if line.starts_with("QUIT ") {
-                    return line.trim_end().to_owned();
+                lines.read_until(b'\n', &mut line).unwrap();
+                if line.starts_with(b"QUIT ") {
+                    while line
+                        .last()
+                        .is_some_and(|byte| matches!(byte, b'\r' | b'\n'))
+                    {
+                        line.pop();
+                    }
+                    return line;
                 }
             }
         });
@@ -4051,6 +4109,7 @@ mod tests {
         let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
         config.port = port;
         config.use_tls = false;
+        configure(&mut config);
         let mut connection = Connection::connect(config).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut registered = false;
@@ -4063,7 +4122,51 @@ mod tests {
         }
         assert!(registered, "client did not register");
         connection.disconnect().unwrap();
-        assert_eq!(server.join().unwrap(), "QUIT :Leaving CayenChat");
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn disconnect_flushes_quit_to_server() {
+        assert_eq!(
+            quit_line_sent_with(|_| {}),
+            b"QUIT :Leaving CayenChat".to_vec()
+        );
+    }
+
+    #[test]
+    fn disconnect_sends_the_configured_quit_message() {
+        let line = quit_line_sent_with(|config| config.quit_message = " Back soon ".into());
+        assert_eq!(line, b"QUIT :Back soon".to_vec());
+        // Blank keeps the default.
+        let line = quit_line_sent_with(|config| config.quit_message = "  ".into());
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
+    }
+
+    #[test]
+    fn the_quit_message_follows_the_connection_encoding() {
+        let line = quit_line_sent_with(|config| {
+            config.encoding = "ISO-2022-JP".into();
+            config.quit_message = "さよなら".into();
+        });
+        // The whole line goes through the codec; a message without spaces
+        // needs no leading colon.
+        let mut want = encoding_from_whatwg_label("ISO-2022-JP")
+            .unwrap()
+            .encode("QUIT さよなら\r\n", EncoderTrap::Strict)
+            .unwrap();
+        assert!(want.contains(&0x1b), "ISO-2022-JP uses escape sequences");
+        want.truncate(want.len() - 2);
+        assert_eq!(line, want);
+    }
+
+    #[test]
+    fn the_quit_line_may_use_the_whole_512_bytes() {
+        // "QUIT :" is 6 bytes and CRLF 2, leaving 504 for the message.
+        let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+        config.quit_message = "x".repeat(504);
+        config.validate().unwrap();
+        config.quit_message = "x".repeat(505);
+        assert!(config.validate().is_err());
     }
 
     #[test]

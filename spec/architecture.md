@@ -327,6 +327,7 @@ hover-revealed bar slides in and hides again once the pointer moves more than
 convention (it resembles macOS full-screen menus). A bar that is always shown
 has no slide-in animation (a frozen animation was one suspected cause of a
 half-drawn bar, issue #87) and Alt/F10 only move keyboard use in and out of it.
+The settings window has no bar (issue #145; its menus were all disabled).
 The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
 and preserves input focus for editing commands. Alt chords do not toggle it;
 selecting an action or clicking outside dismisses it. Action availability is
@@ -495,6 +496,13 @@ context menu; connecting one uses its saved settings and stored passwords, or
 opens the settings on that server when they are incomplete.
 There is no application-wide bound on logs, conversations or transcripts yet;
 see `performance.md`.
+
+Each server profile has an optional QUIT message (`quit_message`, issue #148; added
+without a version change). Disconnect and quitting the app send it as the `QUIT`
+reason; blank means "Leaving CayenChat". It is validated with the connection
+(no line breaks or NUL, within the encoding and the 512-byte line) and read when the
+connection starts, so an edit applies from the next connection. Lost connections
+send no QUIT.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,

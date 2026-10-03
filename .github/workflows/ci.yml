@@ -113,6 +113,9 @@ jobs:
       - name: Build
         run: cargo build --locked -p cayenchat-ui
 
+      - name: Check the visual-check session's isolation
+        run: python3 -m unittest discover -s scripts/e2e -p 'test_*.py'
+
       - name: Build and configure Ergo
         run: ERGO_SETUP_ONLY=1 ERGO_NO_FAKELAG=1 scripts/ergo-metadata-interop.sh "$RUNNER_TEMP/ergo" 36667
 

@@ -2,7 +2,7 @@
 
 use gpui::{prelude::*, *};
 
-use crate::{SettingsWindow, account_settings, diagnostics, settings_theme};
+use crate::{SettingsTab, SettingsWindow, account_settings, diagnostics, settings_theme};
 
 impl SettingsWindow {
     fn choose_stderr_file(&mut self, enable: bool, cx: &mut Context<Self>) {
@@ -63,12 +63,7 @@ impl SettingsWindow {
             None => self.i18n.text("debug_log_inactive"),
         };
         account_settings::panel(cx)
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("experimental_tab")),
-            )
+            .child(self.tab_heading("experimental_tab"))
             .child(
                 div()
                     .id("debug-logging-toggle")
@@ -108,5 +103,6 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .child(self.reset_footer(SettingsTab::Experimental, cx))
     }
 }

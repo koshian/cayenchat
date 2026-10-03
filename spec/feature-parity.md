@@ -29,7 +29,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
 - DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
-- PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel and network; editing only through `/topic`
+- PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel (with its member count once the roster is known, issue #146) and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
 - DONE — IRCnet `!` safe-channel targets in auto-join, messages, rosters, channel commands and WHOIS links; preserve the full name returned by the server
@@ -51,7 +51,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — own nick changes update send identity; other nick/member changes remain pending
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
-- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click; lower combined log switches channels on double-click
+- PARTIAL — HTTP(S) URLs in the upper channel log open on double-click, and the pointer is a hand over one (not while selecting); lower combined log switches channels on double-click
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
@@ -123,6 +123,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
 - DONE — settings open in a separate window; closing it leaves the chat window running
+- DONE — settings categories are a left-hand list (Up/Down move through it) beside the selected category's page; each page except Connection and Credentials ends with a "Restore Defaults" (Japanese: すべて元に戻す) at the bottom right for exactly what it shows, disabled when nothing differs and confirmed first (D038)
 - DONE — Experimental settings tab with opt-in stderr file logging, native destination picker, immediate switching, append and saved preferences; Windows release builds suppress the startup console (Windows runtime verification pending)
 - DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D021)
 - DONE — persisted channel auto-join list
@@ -160,7 +161,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 ## Platform integration
 
 - PARTIAL — macOS native application, connection, edit and diagnostic menus; Command+, opens the separate settings window
-- PARTIAL — Windows/Linux Alt alone or F10 toggles an in-window menu bar (also revealed by resting the pointer just below the title bar) in chat and settings windows, with shared app/connection/edit/view/window actions, arrows/Enter navigation and Escape/outside-click dismissal; Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics. Native GPUI menus remain unavailable there; platform runtime verification is pending.
+- PARTIAL — Windows/Linux Alt alone or F10 toggles an in-window menu bar (also revealed by resting the pointer just below the title bar) in the chat window (the settings window has none, issue #145), with shared app/connection/edit/view/window actions, arrows/Enter navigation and Escape/outside-click dismissal; Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics. Native GPUI menus remain unavailable there; platform runtime verification is pending.
 - PARTIAL — notifications on macOS, Windows and Linux; macOS delivery reached the system (first-use permission banner) from the development bundle, Windows/Linux runtime unverified
 - PARTIAL — common macOS/Windows editing shortcuts; Windows runtime and custom
   macOS bindings unverified

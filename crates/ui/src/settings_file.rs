@@ -117,6 +117,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn another_processs_theme_and_provider_reach_the_chat_window(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        settings.theme = ThemeMode::Light;
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let owner = form.read_with(cx, |form, _| form.owner);
+
+        // Another process changes the theme and the image host while this
+        // window is in the background.
+        cx.deactivate_window();
+        let mut elsewhere = settings.clone();
+        elsewhere.theme = ThemeMode::Dark;
+        elsewhere.image_upload.provider = Some("elsewhere".into());
+        super::save(&elsewhere).unwrap();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        let (mode, provider) = cx.update(|_, app| {
+            let chat = owner.read(app).unwrap();
+            (chat.theme_mode, chat.image_provider.clone())
+        });
+        assert_eq!(mode, ThemeMode::Dark);
+        assert_eq!(provider.as_deref(), Some("elsewhere"));
+
+        // An edit here must not leave the chat window on the older values:
+        // the next save compares with what was read back.
+        form.update(cx, |form, cx| {
+            form.settings.values.appearance.alternate_rows = true;
+            form.autosave_now(None, cx);
+        });
+        let (mode, provider) = cx.update(|_, app| {
+            let chat = owner.read(app).unwrap();
+            (chat.theme_mode, chat.image_provider.clone())
+        });
+        assert_eq!(mode, ThemeMode::Dark);
+        assert_eq!(provider.as_deref(), Some("elsewhere"));
+        drop(file);
+    }
+
+    #[gpui::test]
     fn leaving_the_window_saves_what_is_pending(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);

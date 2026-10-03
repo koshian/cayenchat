@@ -37,12 +37,14 @@ impl WhoisWindow {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(300.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(title.into()),
+                    title: Some(title.clone().into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
             move |window, cx| {
+                // Gives X11 the UTF-8 title too (issue #143).
+                window.set_window_title(&title);
                 cx.new(|cx| {
                     let focus = cx.focus_handle();
                     window.focus(&focus);
