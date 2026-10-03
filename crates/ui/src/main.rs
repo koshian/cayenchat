@@ -1228,12 +1228,18 @@ impl ChatWindow {
         };
         match self.state.selected_channel() {
             Some(channel) => {
+                // A channel shows how many members it has, once the roster is known.
+                let name = if channel.is_private() || channel.members.is_empty() {
+                    channel.name.clone()
+                } else {
+                    format!("{} ({})", channel.name, channel.members.len())
+                };
                 let topic = cayenchat_irc_core::text::strip_formatting(&channel.topic);
                 let topic = topic.split_whitespace().collect::<Vec<_>>().join(" ");
                 if topic.is_empty() {
-                    format!("{} @ {} — {app}", channel.name, network.name)
+                    format!("{name} @ {} — {app}", network.name)
                 } else {
-                    format!("{} @ {}: {topic} — {app}", channel.name, network.name)
+                    format!("{name} @ {}: {topic} — {app}", network.name)
                 }
             }
             None => format!("{} — {app}", network.name),
@@ -8599,6 +8605,62 @@ mod pane_tests {
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn the_title_shows_the_member_count_of_a_channel(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            // Without a roster there is no count to show.
+            assert!(
+                chat.window_title().starts_with("#a @ "),
+                "{}",
+                chat.window_title()
+            );
+            let members = ["@op", "alice", "bob"].map(String::from).to_vec();
+            chat.state.set_members(NetworkId(1), "#a", members);
+            assert!(
+                chat.window_title().starts_with("#a (3) @ "),
+                "{}",
+                chat.window_title()
+            );
+            chat.state.set_topic(NetworkId(1), "#a", "Welcome");
+            assert!(
+                chat.window_title().starts_with("#a (3) @ ")
+                    && chat.window_title().contains(": Welcome"),
+                "{}",
+                chat.window_title()
+            );
+        });
+    }
 
     #[gpui::test]
     fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut TestAppContext) {
