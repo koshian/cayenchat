@@ -181,9 +181,14 @@ impl SettingsWindow {
                 .opacity(0.5)
                 .text_color(theme.text_secondary)
         } else {
-            button.on_click(cx.listener(move |this, _, window, cx| {
-                this.request_reset(tab, window, cx);
-            }))
+            // A destructive action: warning color, at the right end, behind a
+            // confirmation.
+            button
+                .text_color(theme.warning)
+                .border_color(theme.warning)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.request_reset(tab, window, cx);
+                }))
         })
     }
 }

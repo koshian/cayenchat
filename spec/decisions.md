@@ -1152,7 +1152,9 @@ over exactly what the tab shows; the button is disabled while all of it
 already has its default (`settings_reset.rs`, comparing the form's snapshot
 with `Settings::default()`). A reset is saved and applied by the ordinary
 autosave. It always asks first ("everything on this settings page returns to
-its default"), because the button sits where a click by mistake is easy.
+its default"), because the button sits where a click by mistake is easy. It
+is drawn in the warning color (text and border) as a destructive action, and
+dimmed instead when disabled.
 
 - **Appearance** (theme, colors, row/preview/avatar/layout switches, fonts,
   combined-log name width, Linux display): the saved color palette is the
