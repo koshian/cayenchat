@@ -161,7 +161,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 ## Platform integration
 
 - PARTIAL — macOS native application, connection, edit and diagnostic menus; Command+, opens the separate settings window
-- PARTIAL — Windows/Linux Alt alone or F10 toggles an in-window menu bar (also revealed by resting the pointer just below the title bar) in chat and settings windows, with shared app/connection/edit/view/window actions, arrows/Enter navigation and Escape/outside-click dismissal; Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics. Native GPUI menus remain unavailable there; platform runtime verification is pending.
+- PARTIAL — Windows/Linux Alt alone or F10 toggles an in-window menu bar (also revealed by resting the pointer just below the title bar) in the chat window (the settings window has none, issue #145), with shared app/connection/edit/view/window actions, arrows/Enter navigation and Escape/outside-click dismissal; Ctrl+, opens settings and Ctrl+Shift+D/L controls diagnostics. Native GPUI menus remain unavailable there; platform runtime verification is pending.
 - PARTIAL — notifications on macOS, Windows and Linux; macOS delivery reached the system (first-use permission banner) from the development bundle, Windows/Linux runtime unverified
 - PARTIAL — common macOS/Windows editing shortcuts; Windows runtime and custom
   macOS bindings unverified
