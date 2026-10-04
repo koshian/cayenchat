@@ -155,6 +155,7 @@ struct SettingsForm {
     username: Entity<TextInput>,
     realname: Entity<TextInput>,
     quit_message: Entity<TextInput>,
+    display_name: Entity<TextInput>,
     channels: Entity<TextInput>,
     /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
@@ -224,6 +225,12 @@ impl SettingsForm {
             quit_message: field(
                 &i18n.text("quit_message_placeholder"),
                 &profile.quit_message,
+                false,
+                cx,
+            ),
+            display_name: field(
+                &i18n.text("display_name_placeholder"),
+                &profile.display_name,
                 false,
                 cx,
             ),
@@ -404,6 +411,7 @@ impl SettingsForm {
             profile.username = value(&self.username);
             profile.realname = value(&self.realname);
             profile.quit_message = value(&self.quit_message);
+            profile.display_name = value(&self.display_name);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
             profile.avatar_url = value(&self.avatar_url);
@@ -471,7 +479,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 33] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 34] {
         [
             &self.custom_host,
             &self.port,
@@ -479,6 +487,7 @@ impl SettingsForm {
             &self.username,
             &self.realname,
             &self.quit_message,
+            &self.display_name,
             &self.channels,
             &self.server_password,
             &self.sasl_username,
@@ -606,6 +615,7 @@ impl SettingsForm {
             (&self.username, &profile.username),
             (&self.realname, &profile.realname),
             (&self.quit_message, &profile.quit_message),
+            (&self.display_name, &profile.display_name),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
             (&self.avatar_url, &profile.avatar_url),
@@ -3678,6 +3688,7 @@ impl SettingsWindow {
             (&self.settings.username, "username_placeholder"),
             (&self.settings.realname, "realname_placeholder"),
             (&self.settings.quit_message, "quit_message_placeholder"),
+            (&self.settings.display_name, "display_name_placeholder"),
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
@@ -4769,6 +4780,10 @@ impl SettingsWindow {
             .child(settings_field(
                 &self.i18n.text("quit_message"),
                 self.settings.quit_message.clone(),
+            ))
+            .child(settings_field(
+                &self.i18n.text("display_name"),
+                self.settings.display_name.clone(),
             ))
             .child(settings_field(
                 &self.i18n.text("auto_join_channels"),
@@ -7431,13 +7446,20 @@ impl ChatWindow {
         let Some(message) = conversation.messages.get(index) else {
             return div().into_any_element();
         };
-        let network = self
-            .state
-            .networks()
-            .iter()
-            .find(|network| network.id == conversation.network)
-            .map(|network| network.name.split_whitespace().next().unwrap_or(""))
-            .unwrap_or("");
+        let alias = self
+            .sessions
+            .get(&conversation.network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .map(|profile| profile.display_name.as_str())
+            .filter(|alias| !alias.is_empty());
+        let network = alias.unwrap_or_else(|| {
+            self.state
+                .networks()
+                .iter()
+                .find(|network| network.id == conversation.network)
+                .map(|network| network.name.split_whitespace().next().unwrap_or(""))
+                .unwrap_or("")
+        });
         div()
             .id(("sub-message", row))
             .w_full()
