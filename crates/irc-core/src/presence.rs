@@ -150,11 +150,14 @@ impl PresenceIndex {
         let Some(id) = self.by_nick.remove(&nickname_key(old)) else {
             return;
         };
-        // A stale holder of the new name (it quit unseen) is another presence.
-        if let Some(stale) = self.by_nick.remove(&nickname_key(new)) {
-            self.forget(stale);
-        }
         let key = nickname_key(new);
+        // A stale holder of the new name (it quit unseen) is another presence.
+        // A case-only change maps to the same key and keeps this presence.
+        if let Some(stale) = self.by_nick.remove(&key) {
+            if stale != id {
+                self.forget(stale);
+            }
+        }
         self.by_nick.insert(key.clone(), id);
         if let Some(presence) = self.users.get_mut(&id) {
             presence.key = key;
@@ -311,6 +314,19 @@ mod tests {
         let bob = index.user("bob");
         index.rename("bob", "robert");
         assert_eq!(index.user("robert"), bob);
+        assert!(index.consistent());
+    }
+
+    #[test]
+    fn case_only_rename_keeps_the_presence() {
+        let mut index = PresenceIndex::default();
+        index.replace_channel("#a", &names(&["bob"]));
+        index.replace_channel("#b", &names(&["bob"]));
+        let bob = index.user("bob");
+        index.rename("bob", "BOB");
+        assert_eq!(index.user("BOB"), bob);
+        assert!(bob.is_some());
+        assert_eq!(index.channels_of("BOB").len(), 2);
         assert!(index.consistent());
     }
 
