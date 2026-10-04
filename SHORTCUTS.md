@@ -26,6 +26,18 @@
 
 On Windows/Linux, press and release Alt alone or press F10 to show the menu bar.
 
+## While a list has focus
+
+Click the channel tree or the member list to focus it. These keys act only on the focused list; in the draft, `J`, `K` and the arrow keys keep their text meaning.
+
+| Action | Keys |
+| --- | --- |
+| Previous / next row | `Up` / `Down`, or `K` / `J` |
+| First / last row | `Home` / `End` |
+| One page up / down | `PageUp` / `PageDown` |
+| Channel tree: to the server / its first channel | `Left` / `Right` |
+| Channel tree: open the selected channel and return to the draft | `Enter` |
+
 ## IRC commands
 
 Type `/` at the beginning of the draft to send an IRC command. When the channel argument is omitted, the selected channel is used.

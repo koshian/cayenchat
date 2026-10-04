@@ -1148,6 +1148,23 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D039 — Standard keys in the channel tree and member list
+
+Status: implemented (#132).
+
+The channel tree and the member list take focus when clicked (`tree_focus`,
+`members_focus`) and then understand Up/Down and K/J (previous/next), Home/End,
+PageUp/PageDown (`ui::list_keys`); the tree also has Left/Right (to the server
+of a channel / to a server's first channel) and Enter (open the selected row
+and return to the draft). The keys are handled by the focused list only, never
+as shortcuts, so the draft keeps every character and its Emacs-style editing.
+Modified keys are ignored. N/P are not aliases. In the tree, moving selects as
+it goes and focus stays on the tree, and a click on a row now leaves focus on
+the tree instead of the draft (Enter or a click in the draft returns). In the
+member list the keys move the one chosen member. Not done: expand/collapse
+(the tree has no collapsed state), Shift-extended member ranges, type-to-find,
+and the global server/channel keys without arrows, which are separate issues.
+
 ## D038 — Settings: category list on the left, one reset per tab
 
 Status: implemented (#134, #135).
