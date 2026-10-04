@@ -191,6 +191,11 @@ signs/notarizes a distributable app. The normal `cargo run` entry point is porta
 The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
 `crates/ui/resources/windows/cayenchat.ico`. Both are rendered from the canonical
 `assets/icons/cayenchat.svg` and checked in so normal builds need no image tools.
+The version lives only in the workspace manifest (`[workspace.package] version`,
+currently 0.9.0). The macOS bundle helper reads it with `cargo metadata`, and
+`crates/ui/build.rs` generates the Windows VERSIONINFO resource (FileVersion and
+ProductVersion) from it; the Windows x86_64 CI job checks that the built exe
+reports the manifest version.
 When changing the artwork, run `python3 scripts/generate-icons.py` with Pillow
 and `rsvg-convert` (librsvg) installed, then rebuild the app.
 The macOS beta workflow signs the completed bundle ad hoc and verifies its

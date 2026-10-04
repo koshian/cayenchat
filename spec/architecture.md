@@ -252,7 +252,16 @@ server's network, redraws, and yields between batches of a burst, so a busy
 server cannot hold back another's lines beyond one batch. An earlier 50 ms poll handled at most 64
 events per tick (about 640 incoming lines per second, since each line also
 produces a wire diagnostic), delayed every line and woke 20 times a second while
-idle. QUIT and NICK republish rosters only for channels that contained the user.
+idle. QUIT and NICK republish rosters only for channels that contained the user;
+the worker's `PresenceIndex` (`irc-core/src/presence.rs`, #71) answers that, fed
+from the published NAMES snapshots. It indexes users by nickname and channel
+both ways under the RFC 1459 case mapping. A `UserId` (a `u64` never reused in a
+connection, never kept across connections) survives re-applied snapshots and NICK
+(the NICK line moves the id); QUIT or leaving the last shared channel ends it, so a
+returning nickname is a new presence. Only presence is held: accounts, metadata and
+peer-avatar state stay in their own tables, and the `renamed_roles` prefix
+correction stays in `RosterTracker`. Their shared-channel scans still read the
+published rosters and move onto the index in later steps.
 Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.
@@ -756,7 +765,10 @@ only while it is on:
   avatar. Queue ≤ 32, one probe per 2 s, ≤ 4 outstanding, 30 s timeout,
   `263` pauses 30 s; our 352/315/401 are consumed. Per-user state is
   cleared on QUIT or leaving the last shared channel and moved on NICK
-  (a WHO in flight for the old name is absorbed unused). A select branch
+  (a WHO in flight for the old name is absorbed unused). Channel names in
+  PART/KICK and the rosters are compared with the nickname case mapping
+  (RFC 1459), in metadata and peer avatars alike. A speaker already known
+  is not looked up again without scanning the rosters. A select branch
   exists only while a probe is queued or outstanding.
 - Merge: the struct keeps each user's metadata and peer reference and
   emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);
