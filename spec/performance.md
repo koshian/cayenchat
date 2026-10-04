@@ -613,10 +613,10 @@ or NICK.
 
 | Channels × members, distinct users | Roster | Index | Build (first NAMES / re-apply) | Lookup, all channels: scan → index | NICK / QUIT in the index |
 | --- | --- | --- | --- | --- | --- |
-| 10 × 50, 500 | 16 KiB | 135 KiB | 0.2–0.5 ms / 0.05–0.11 ms | 2–5 µs → 0.8–2 µs | 0.16 / 0.18 µs |
-| 10 × 50, 100 | 16 KiB | 32 KiB | 0.05 ms / 0.05 ms | 1.9 µs → 0.8 µs | 0.12 / 0.18 µs |
-| 20 × 5,000, 100,000 | 3.8 MiB | 11.7 MiB | 34 ms / 18–20 ms | 150 µs → 2 µs | 0.3 / 0.3 µs |
-| 20 × 5,000, 20,000 | 3.5 MiB | 6.7 MiB | 16–18 ms / 14–15 ms | 210–230 µs → 3–4 µs | 0.4–0.6 / 0.5–0.7 µs |
+| 10 × 50, 500 | 16 KiB | 162 KiB | 0.2–0.5 ms / 0.05–0.11 ms | 2–5 µs → 0.8–2 µs | 0.16 / 0.18 µs |
+| 10 × 50, 100 | 16 KiB | 36 KiB | 0.05 ms / 0.05 ms | 1.9 µs → 0.8 µs | 0.12 / 0.18 µs |
+| 20 × 5,000, 100,000 | 3.8 MiB | 13.7 MiB | 34 ms / 18–20 ms | 150 µs → 2 µs | 0.3 / 0.3 µs |
+| 20 × 5,000, 20,000 | 3.5 MiB | 7.6 MiB | 16–18 ms / 14–15 ms | 210–230 µs → 3–4 µs | 0.4–0.6 / 0.5–0.7 µs |
 
 - Cost: about 100–130 bytes per membership in the worst case, so the index
   adds roughly 2–3× the existing roster in large channels (a fourth copy,
@@ -628,8 +628,15 @@ or NICK.
 - Benefit: the QUIT/NICK affected-channel lookup no longer scans every
   roster (150–230 µs per event in a 100,000-membership connection, which
   matters in a netsplit), and NICK/QUIT in the index are sub-microsecond.
-- Not measured: process footprint (`run_baseline.py`), real servers, and
-  the accounts / metadata / peer-avatar scans, which still read the rosters.
+- Shared-channel judgments: accounts, metadata and peer avatars now ask the
+  index instead of scanning the rosters. This costs one more `String` per
+  user (the nickname as spelled, for `only_in`), which is the difference
+  from the 11.7 / 6.7 MiB first measured for the two large rows. A
+  `shares` check is the same kind of lookup as in the table (a hash lookup
+  and a walk of the user's few channels, instead of a walk of every
+  roster), and `PeerAvatars::speaker` calls it for each live message from
+  an unknown user. The worker's end-to-end timing was not measured.
+- Not measured: process footprint (`run_baseline.py`), real servers.
   Removing the duplicate roster copies is the follow-up listed under
   "Resource limit candidates"; the index is not bounded separately because
   it holds exactly the channels the library tracks as joined.

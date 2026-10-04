@@ -22,6 +22,8 @@ pub(crate) struct UserId(u64);
 
 struct Presence {
     key: String,
+    /// The nickname as the last roster or NICK spelled it.
+    nick: String,
     /// Shares the key allocation with [`Members::key`]; a user is in few
     /// channels, so a vector is smaller than a set.
     channels: Vec<Arc<str>>,
@@ -56,8 +58,33 @@ impl PresenceIndex {
         })
     }
 
+    /// The case-mapped keys of the channels holding `nickname`.
+    pub(crate) fn channel_keys_of(&self, nickname: &str) -> Vec<String> {
+        self.user(nickname)
+            .and_then(|id| self.users.get(&id))
+            .into_iter()
+            .flat_map(|presence| &presence.channels)
+            .map(|key| key.to_string())
+            .collect()
+    }
+
+    /// The users (as spelled) in `channel` and in no other channel.
+    pub(crate) fn only_in(&self, channel: &str) -> Vec<String> {
+        let key = nickname_key(channel);
+        let mut only: Vec<String> = self
+            .channels
+            .get(&key)
+            .into_iter()
+            .flat_map(|members| &members.users)
+            .filter_map(|id| self.users.get(id))
+            .filter(|presence| presence.channels.len() == 1)
+            .map(|presence| presence.nick.clone())
+            .collect();
+        only.sort_unstable();
+        only
+    }
+
     /// Whether `nickname` is in a channel other than `except`.
-    #[cfg(test)]
     pub(crate) fn shares(&self, nickname: &str, except: Option<&str>) -> bool {
         let except = except.map(nickname_key);
         self.user(nickname)
@@ -98,7 +125,12 @@ impl PresenceIndex {
             }
             let key = nickname_key(nickname);
             let id = match self.by_nick.get(&key) {
-                Some(id) => *id,
+                Some(id) => {
+                    if let Some(presence) = self.users.get_mut(id) {
+                        presence.nick = nickname.to_owned();
+                    }
+                    *id
+                }
                 None => {
                     let id = UserId(self.next);
                     self.next += 1;
@@ -107,6 +139,7 @@ impl PresenceIndex {
                         id,
                         Presence {
                             key,
+                            nick: nickname.to_owned(),
                             channels: Vec::new(),
                         },
                     );
@@ -161,7 +194,18 @@ impl PresenceIndex {
         self.by_nick.insert(key.clone(), id);
         if let Some(presence) = self.users.get_mut(&id) {
             presence.key = key;
+            presence.nick = new.to_owned();
         }
+    }
+
+    /// Builds the index the published `rosters` describe.
+    #[cfg(test)]
+    pub(crate) fn from_rosters(rosters: &HashMap<String, Vec<String>>) -> Self {
+        let mut index = Self::default();
+        for (channel, members) in rosters {
+            index.replace_channel(channel, members);
+        }
+        index
     }
 
     /// `nickname` left the network.
@@ -328,6 +372,19 @@ mod tests {
         assert!(bob.is_some());
         assert_eq!(index.channels_of("BOB").len(), 2);
         assert!(index.consistent());
+    }
+
+    #[test]
+    fn sole_members_and_channel_keys_follow_the_channels() {
+        let mut index = PresenceIndex::default();
+        index.replace_channel("#Room", &names(&["@me", "Bob", "carol"]));
+        index.replace_channel("#b", &names(&["me", "carol"]));
+        assert_eq!(index.only_in("#ROOM"), ["Bob"]);
+        assert_eq!(index.only_in("#b"), Vec::<String>::new());
+        assert_eq!(index.channel_keys_of("CAROL").len(), 2);
+        assert!(index.channel_keys_of("zed").is_empty());
+        index.rename("Bob", "Robert");
+        assert_eq!(index.only_in("#room"), ["Robert"]);
     }
 
     #[test]
