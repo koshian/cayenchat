@@ -153,10 +153,10 @@ impl PresenceIndex {
         let key = nickname_key(new);
         // A stale holder of the new name (it quit unseen) is another presence.
         // A case-only change maps to the same key and keeps this presence.
-        if let Some(stale) = self.by_nick.remove(&key) {
-            if stale != id {
-                self.forget(stale);
-            }
+        if let Some(stale) = self.by_nick.remove(&key)
+            && stale != id
+        {
+            self.forget(stale);
         }
         self.by_nick.insert(key.clone(), id);
         if let Some(presence) = self.users.get_mut(&id) {
