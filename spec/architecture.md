@@ -260,8 +260,13 @@ connection, never kept across connections) survives re-applied snapshots and NIC
 (the NICK line moves the id); QUIT or leaving the last shared channel ends it, so a
 returning nickname is a new presence. Only presence is held: accounts, metadata and
 peer-avatar state stay in their own tables, and the `renamed_roles` prefix
-correction stays in `RosterTracker`. Their shared-channel scans still read the
-published rosters and move onto the index in later steps.
+correction stays in `RosterTracker`. Their shared-channel judgments (accounts'
+ACCOUNT lookup, metadata's and peer avatars' lifecycle, peer avatars' speaker,
+probe and reply checks) ask the index (`shares`, `in_channel`, `only_in`,
+`channel_keys_of`) instead of scanning the published rosters, and so compare
+channel names and nicknames the same way. Like the rosters, the index shows the
+membership published before the line being handled, because the library has
+already applied that line.
 Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.

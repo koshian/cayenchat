@@ -32,7 +32,7 @@ use std::{
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Response};
 use tokio::time::Instant;
 
-use crate::{Event, display_nickname, text::nickname_key};
+use crate::{Event, display_nickname, presence::PresenceIndex, text::nickname_key};
 
 /// Users remembered per connection; more are ignored.
 const MAX_USERS: usize = 4096;
@@ -183,20 +183,6 @@ impl Accounts {
         }
     }
 
-    /// Channels of `roster` (name → members with their prefixes) holding
-    /// `nickname`.
-    fn shared_channels(nickname: &str, roster: &HashMap<String, Vec<String>>) -> Vec<String> {
-        roster
-            .iter()
-            .filter(|(_, members)| {
-                members
-                    .iter()
-                    .any(|member| crate::text::same_nickname(display_nickname(member), nickname))
-            })
-            .map(|(channel, _)| nickname_key(channel))
-            .collect()
-    }
-
     /// Notes that `nickname` left `channel` (`None`: every channel) while a
     /// WHOX query about it is outstanding, so its late reply is not trusted
     /// for them.
@@ -209,13 +195,13 @@ impl Accounts {
         }
     }
 
-    /// Follows JOIN, PART, KICK, QUIT, NICK and ACCOUNT. `roster` is the
+    /// Follows JOIN, PART, KICK, QUIT, NICK and ACCOUNT. `presence` is the
     /// last published membership of each joined channel.
     pub(crate) fn observe(
         &mut self,
         message: &IrcMessage,
         current_nick: &str,
-        roster: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
     ) -> Vec<Event> {
         let mut events = Vec::new();
         let source = message.source_nickname();
@@ -299,7 +285,7 @@ impl Accounts {
             }
             IrcCommand::ACCOUNT(account) => {
                 if let Some(nickname) = source {
-                    let channels = Self::shared_channels(nickname, roster);
+                    let channels = presence.channel_keys_of(nickname);
                     let account = account_value(account);
                     // A logout of a user we know nothing else about leaves
                     // nothing to keep (`learn` skips it); a known user
@@ -437,16 +423,18 @@ mod tests {
         text.parse().unwrap()
     }
 
-    fn roster(channels: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
-        channels
-            .iter()
-            .map(|(name, members)| {
-                (
-                    (*name).to_owned(),
-                    members.iter().map(|m| (*m).to_owned()).collect(),
-                )
-            })
-            .collect()
+    fn roster(channels: &[(&str, &[&str])]) -> PresenceIndex {
+        PresenceIndex::from_rosters(
+            &channels
+                .iter()
+                .map(|(name, members)| {
+                    (
+                        (*name).to_owned(),
+                        members.iter().map(|m| (*m).to_owned()).collect(),
+                    )
+                })
+                .collect(),
+        )
     }
 
     fn shown(events: Vec<Event>) -> Vec<String> {
@@ -468,18 +456,14 @@ mod tests {
             .collect()
     }
 
-    fn feed(
-        accounts: &mut Accounts,
-        text: &str,
-        roster: &HashMap<String, Vec<String>>,
-    ) -> Vec<String> {
+    fn feed(accounts: &mut Accounts, text: &str, roster: &PresenceIndex) -> Vec<String> {
         shown(accounts.observe(&line(text), "me", roster))
     }
 
     #[test]
     fn extended_join_records_the_account_and_the_real_name() {
         let mut accounts = Accounts::default();
-        let none = HashMap::new();
+        let none = PresenceIndex::default();
         assert_eq!(
             feed(
                 &mut accounts,
@@ -528,7 +512,7 @@ mod tests {
     #[test]
     fn users_are_forgotten_when_they_no_longer_share_a_channel() {
         let mut accounts = Accounts::default();
-        let none = HashMap::new();
+        let none = PresenceIndex::default();
         feed(&mut accounts, ":alice!u@h JOIN #a acct :A", &none);
         feed(&mut accounts, ":alice!u@h JOIN #b", &none);
         assert!(feed(&mut accounts, ":alice!u@h PART #a", &none).is_empty());
@@ -558,7 +542,7 @@ mod tests {
     #[test]
     fn a_nick_change_keeps_the_identity_and_uses_irc_casemapping() {
         let mut accounts = Accounts::default();
-        let none = HashMap::new();
+        let none = PresenceIndex::default();
         feed(&mut accounts, ":Al[x]!u@h JOIN #a acct :A", &none);
         assert_eq!(
             feed(&mut accounts, ":al{X}!u@h NICK Alice", &none),
@@ -579,7 +563,7 @@ mod tests {
     #[test]
     fn a_published_member_list_drops_users_who_left_unseen() {
         let mut accounts = Accounts::default();
-        let none = HashMap::new();
+        let none = PresenceIndex::default();
         feed(&mut accounts, ":alice!u@h JOIN #a acct :A", &none);
         feed(&mut accounts, ":bob!u@h JOIN #a b :B", &none);
         let events = accounts.names("#A", &["@bob".to_owned()]);
@@ -636,14 +620,14 @@ mod tests {
         assert!(accounts.next_who(now + WHO_TIMEOUT).is_some(), "#b follows");
         // Leaving while queued or asked cancels it.
         accounts.joined("#c");
-        accounts.observe(&line(":me!u@h PART #c"), "me", &HashMap::new());
+        accounts.observe(&line(":me!u@h PART #c"), "me", &PresenceIndex::default());
         assert!(accounts.queue.is_empty());
     }
 
     #[test]
     fn memory_is_bounded() {
         let mut accounts = Accounts::default();
-        let none = HashMap::new();
+        let none = PresenceIndex::default();
         for n in 0..MAX_USERS + 50 {
             accounts.observe(
                 &line(&format!(":u{n}!u@h JOIN #a acct{n} :real")),
@@ -679,7 +663,7 @@ mod tests {
     }
 
     /// Asks for `#a`'s accounts with one WHOX query outstanding.
-    fn asking_about_a() -> (Accounts, HashMap<String, Vec<String>>) {
+    fn asking_about_a() -> (Accounts, PresenceIndex) {
         let mut accounts = Accounts::default();
         accounts.isupport(&line(":srv 005 me WHOX :are supported"));
         accounts.joined("#a");
@@ -771,7 +755,7 @@ mod tests {
         feed(
             &mut accounts,
             ":bob!u@h JOIN #a bob-acct :Bob B",
-            &HashMap::new(),
+            &PresenceIndex::default(),
         );
         assert_eq!(
             feed(&mut accounts, ":bob!u@h ACCOUNT *", &members),
