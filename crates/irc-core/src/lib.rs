@@ -8,6 +8,7 @@ mod history;
 mod metadata;
 mod modes;
 mod peer_avatar;
+mod presence;
 mod replay;
 mod tags;
 pub mod text;
@@ -2382,6 +2383,7 @@ fn display_nickname(member: &str) -> &str {
 #[derive(Default)]
 struct RosterTracker {
     last: HashMap<String, Vec<String>>,
+    presence: presence::PresenceIndex,
     renamed_roles: HashMap<(String, String), char>,
 }
 
@@ -2417,15 +2419,12 @@ impl RosterTracker {
     /// Uses the snapshot published before the current message, because the
     /// library has already removed a quitting user from its own roster.
     fn had_member(&self, channel: &str, nickname: &str) -> bool {
-        self.last.get(channel).is_some_and(|members| {
-            members
-                .iter()
-                .any(|member| display_nickname(member).eq_ignore_ascii_case(nickname))
-        })
+        self.presence.in_channel(channel, nickname)
     }
 
     fn forget_channel(&mut self, channel: &str) {
         self.last.remove(channel);
+        self.presence.remove_channel(channel);
         self.renamed_roles
             .retain(|(known_channel, _), _| known_channel != channel);
     }
@@ -2574,6 +2573,7 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
     // Only channels the library tracks as joined are remembered, so arbitrary
     // end-of-NAMES replies cannot grow the roster cache.
     if known {
+        roster.presence.replace_channel(channel, &users);
         roster.last.insert(channel.to_owned(), users.clone());
     }
     Event::Names {
@@ -2718,7 +2718,14 @@ fn translate_message(
     match &message.command {
         IrcCommand::NICK(new_nick) => {
             let channels = client.list_channels().unwrap_or_default();
-            roster.rename(&channels, message.source_nickname().unwrap_or(""), new_nick);
+            let old_nick = message.source_nickname().unwrap_or("");
+            roster.rename(&channels, old_nick, new_nick);
+            roster.presence.rename(old_nick, new_nick);
+        }
+        IrcCommand::QUIT(_) => {
+            roster
+                .presence
+                .quit(message.source_nickname().unwrap_or(""));
         }
         IrcCommand::ChannelMODE(channel, modes) => roster.clear_mode_targets(channel, modes),
         IrcCommand::PART(channel, _) if message.source_nickname() == Some(current_nick) => {
