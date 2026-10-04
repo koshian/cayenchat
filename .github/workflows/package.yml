@@ -82,7 +82,7 @@ jobs:
         run: cargo install cargo-deb --locked
 
       - name: Build release binary
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Build Debian package
         shell: bash
@@ -149,7 +149,7 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Package
         shell: pwsh
@@ -206,7 +206,7 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Package
         shell: pwsh
@@ -262,7 +262,7 @@ jobs:
           toolchain: stable
 
       - name: Build release binary
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       # The Test Build bundle has a separate name and identifier, so that it
       # is never mistaken for (or dragged over) an installed CayenChat.app.
