@@ -24,7 +24,8 @@ Include their license notices and those of their transitive dependencies when
 preparing a distributable binary.
 
 UI icons in `assets/icons/ui/` are individual SVG files copied from
-[Lucide](https://github.com/lucide-icons/lucide), licensed under the ISC License
-(portions MIT, from Feather). The license is retained in
-`licenses/LUCIDE-ISC.txt`; the icons in use are listed in
+[Lucide](https://github.com/lucide-icons/lucide), licensed under the ISC License;
+icons derived from Feather (including `link` and `external-link`) are
+additionally under the MIT License. The upstream LICENSE, with both texts, is
+retained verbatim in `licenses/LUCIDE-ISC.txt`; the icons in use are listed in
 `assets/icons/ui/README.md`.

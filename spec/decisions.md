@@ -1162,7 +1162,8 @@ only then another source or a hand-drawn icon is considered.
 - They are drawn through GPUI's SVG support (`ImageFormat::Svg`); stroke colour
   must work in both light and dark themes.
 - Every vendored icon is listed in `assets/icons/ui/README.md` (name, upstream
-  URL, Lucide version) and the ISC text is kept in `licenses/LUCIDE-ISC.txt`,
+  URL, Lucide version) and the upstream LICENSE (ISC plus the MIT text for
+  Feather-derived icons) is kept verbatim in `licenses/LUCIDE-ISC.txt`,
   referenced from `THIRD_PARTY_NOTICES.md`. This is separate from the app icon
   `assets/icons/cayenchat.svg` and from CayenChat's own GPL-3.0-only licence.
 

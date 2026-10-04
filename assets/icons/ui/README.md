@@ -1,8 +1,8 @@
 # UI icons
 
 Small UI icons, taken from [Lucide](https://lucide.dev/)
-(<https://github.com/lucide-icons/lucide>), licensed under the ISC License
-(`licenses/LUCIDE-ISC.txt`). They are not covered by CayenChat's GPL-3.0-only
+(<https://github.com/lucide-icons/lucide>), licensed under the ISC License, with Feather-derived icons also under the MIT
+License (upstream LICENSE kept verbatim in `licenses/LUCIDE-ISC.txt`). They are not covered by CayenChat's GPL-3.0-only
 license. The app icon `assets/icons/cayenchat.svg` is separate.
 
 Rules (decision D039): copy only the SVGs that are used, keep the Lucide file
