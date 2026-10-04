@@ -1,0 +1,357 @@
+name: Package
+
+# Builds and packages CayenChat for every supported platform. Called by Beta
+# Release, Test Build and Release so that there is a single packaging
+# implementation. It never publishes anything.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch, tag or commit SHA to build
+        required: true
+        type: string
+      flavor:
+        description: "`release` for the regular packages, `test` for Test Build packages"
+        required: false
+        type: string
+        default: release
+      platform:
+        description: all, windows-x86_64, windows-arm64, linux-x86_64 or macos-arm64
+        required: false
+        type: string
+        default: all
+      features:
+        description: Cargo features to build with
+        required: false
+        type: string
+        default: ''
+      prefix:
+        description: File name prefix of the Windows and macOS zips (release flavor)
+        required: false
+        type: string
+        default: cayenchat
+      suffix:
+        description: Suffix appended to the package names
+        required: false
+        type: string
+        default: ''
+      archive:
+        description: >-
+          Upload each package inside a zipped artifact named after the
+          platform; when false, upload the file itself
+        required: false
+        type: boolean
+        default: true
+      retention-days:
+        description: Artifact retention in days (0 uses the repository default)
+        required: false
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FLAVOR: ${{ inputs.flavor }}
+  FEATURES: ${{ inputs.features }}
+  PREFIX: ${{ inputs.prefix }}
+  SUFFIX: ${{ inputs.suffix }}
+
+jobs:
+  linux-x86_64:
+    name: Package Linux x86_64
+    if: inputs.platform == 'all' || inputs.platform == 'linux-x86_64'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Name the package
+        shell: bash
+        run: |
+          if [ "$FLAVOR" = test ]; then
+            echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-linux-x86_64${SUFFIX}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked --features "$FEATURES"
+
+      - name: Build Debian package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ "$FLAVOR" = test ]; then
+            # The variant is defined here, not read from the ref, so that refs
+            # branched before it existed can be packaged too. It installs the
+            # same paths as the regular package, so the two conflict.
+            cat >> crates/ui/Cargo.toml <<'EOF_VARIANT'
+
+          [package.metadata.deb.variants.test]
+          name = "cayenchat-test"
+          conflicts = "cayenchat-ui"
+          EOF_VARIANT
+            cargo deb --no-build --variant test
+            mv target/debian/*.deb "$PACKAGE.deb"
+            echo "FILE=$PACKAGE.deb" >> "$GITHUB_ENV"
+          else
+            cargo deb --no-build
+            echo "FILE=$(ls target/debian/*.deb)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload package
+        if: inputs.archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-x86_64
+          path: ${{ env.FILE }}
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+      - name: Upload package file
+        if: ${{ !inputs.archive }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.FILE }}
+          archive: false
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+  windows-x86_64:
+    name: Package Windows x86_64
+    if: inputs.platform == 'all' || inputs.platform == 'windows-x86_64'
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Name the package
+        shell: bash
+        run: |
+          if [ "$FLAVOR" = test ]; then
+            echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-windows-x86_64${SUFFIX}" >> "$GITHUB_ENV"
+          else
+            echo "PACKAGE=${PREFIX}-windows-x86_64${SUFFIX}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --locked --features "$FEATURES"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package\locales
+          Copy-Item target\release\cayenchat.exe package\
+          Copy-Item locales\*.json package\locales\
+          Compress-Archive `
+            -Path package\* `
+            -DestinationPath "$env:PACKAGE.zip"
+
+      - name: Upload package
+        if: inputs.archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-x86_64
+          path: ${{ env.PACKAGE }}.zip
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+      - name: Upload package file
+        if: ${{ !inputs.archive }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.PACKAGE }}.zip
+          archive: false
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+  windows-arm64:
+    name: Package Windows ARM64
+    if: inputs.platform == 'all' || inputs.platform == 'windows-arm64'
+    runs-on: windows-11-arm
+
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Name the package
+        shell: bash
+        run: |
+          if [ "$FLAVOR" = test ]; then
+            echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-windows-arm64${SUFFIX}" >> "$GITHUB_ENV"
+          else
+            echo "PACKAGE=${PREFIX}-windows-arm64${SUFFIX}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --locked --features "$FEATURES"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package\locales
+          Copy-Item target\release\cayenchat.exe package\
+          Copy-Item locales\*.json package\locales\
+          Compress-Archive `
+            -Path package\* `
+            -DestinationPath "$env:PACKAGE.zip"
+
+      - name: Upload package
+        if: inputs.archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-arm64
+          path: ${{ env.PACKAGE }}.zip
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+      - name: Upload package file
+        if: ${{ !inputs.archive }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.PACKAGE }}.zip
+          archive: false
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+  macos-arm64:
+    name: Package macOS ARM64
+    if: inputs.platform == 'all' || inputs.platform == 'macos-arm64'
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Name the package
+        shell: bash
+        run: |
+          if [ "$FLAVOR" = test ]; then
+            echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-macos-arm64${SUFFIX}" >> "$GITHUB_ENV"
+          else
+            echo "PACKAGE=${PREFIX}-macos-arm64${SUFFIX}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Build release binary
+        run: cargo build --release --locked --features "$FEATURES"
+
+      # The test flavor has a separate name and identifier, so that the bundle
+      # is never mistaken for (or dragged over) an installed CayenChat.app.
+      - name: Create app bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+
+          if [ "$FLAVOR" = test ]; then
+            NAME="CayenChat Test"
+            IDENTIFIER="com.cayenchat.test"
+          else
+            NAME="CayenChat"
+            IDENTIFIER="com.cayenchat.app"
+          fi
+          APP="$NAME.app"
+
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/locales"
+          cp target/release/cayenchat "$APP/Contents/MacOS/CayenChat"
+          cp crates/ui/resources/macos/CayenChat.icns "$APP/Contents/Resources/CayenChat.icns"
+          cp locales/*.json "$APP/Contents/Resources/locales/"
+          chmod +x "$APP/Contents/MacOS/CayenChat"
+
+          cat > "$APP/Contents/Info.plist" <<EOF_PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>${NAME}</string>
+            <key>CFBundleDisplayName</key>
+            <string>${NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>${IDENTIFIER}</string>
+            <key>CFBundleExecutable</key>
+            <string>CayenChat</string>
+            <key>CFBundleIconFile</key>
+            <string>CayenChat</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleVersion</key>
+            <string>${VERSION}</string>
+          </dict>
+          </plist>
+          EOF_PLIST
+
+          # Seal the completed app bundle.
+          codesign --force --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$PACKAGE.zip"
+
+      - name: Upload package
+        if: inputs.archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-arm64
+          path: ${{ env.PACKAGE }}.zip
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+      - name: Upload package file
+        if: ${{ !inputs.archive }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.PACKAGE }}.zip
+          archive: false
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
