@@ -75,7 +75,7 @@ futures-util.workspace = true
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_Registry"] }
 gpui = { workspace = true, features = ["windows-manifest"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
@@ -84,3 +84,5 @@ embed-resource = "3"
 [target.'cfg(target_os = "macos")'.dependencies]
 # Reads the bundle identifier for notifications; already in GPUI's tree.
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString"] }
+# Login-item registration (#153).
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }

@@ -165,3 +165,4 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — notifications on macOS, Windows and Linux; macOS delivery reached the system (first-use permission banner) from the development bundle, Windows/Linux runtime unverified
 - PARTIAL — common macOS/Windows editing shortcuts; Windows runtime and custom
   macOS bindings unverified
+- PARTIAL — "Start CayenChat when you log in" on the Connection tab (#153), read from the system each time the settings window or a tab is shown and never saved in `settings.json`: XDG Autostart (`$XDG_CONFIG_HOME/autostart/cayenchat.desktop`, tested on Linux), `SMAppService` on macOS and the HKCU `Run` key on Windows (both unverified at runtime; Windows detects a package identity at run time and reports packaged installs as unavailable until a `StartupTask` backend exists). Registered launches pass `--autostart`, which does nothing yet (no hidden start).

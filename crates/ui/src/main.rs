@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod account_settings;
+mod autostart;
 mod avatar_editor;
 mod avatars;
 mod color_picker;
@@ -1197,6 +1198,9 @@ struct SettingsWindow {
     /// Whether the connection switch was last drawn on, so the window is
     /// redrawn only when a connection comes up or goes down.
     connected_shown: bool,
+    /// The system's login-startup registration as last read; never stored in
+    /// the settings file (#153).
+    autostart: Result<autostart::AutostartStatus, String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -3788,6 +3792,7 @@ impl SettingsWindow {
             avatar_opening: false,
             _field_subscriptions: field_subscriptions,
             connected_shown: false,
+            autostart: autostart::status(),
             _subscriptions: subscriptions,
         };
         this.probe_system_store(cx);
@@ -4795,6 +4800,7 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
+            .child(self.render_autostart_toggle(cx))
             .child(
                 div()
                     .pt_2()
@@ -5667,7 +5673,73 @@ impl SettingsWindow {
             // A picker open under a color row does not wait for a return.
             self.color_picker = None;
         }
+        // The system may have changed the registration since it was read.
+        self.autostart = autostart::status();
         self.tab = tab;
+    }
+
+    /// Registers or removes the login startup entry. The checkbox only
+    /// follows what the system reports afterwards, so a failure leaves it
+    /// matching the real state.
+    fn toggle_autostart(&mut self, cx: &mut Context<Self>) {
+        let turn_on = !self.autostart.as_ref().is_ok_and(|status| status.is_on());
+        let result = if turn_on {
+            autostart::enable()
+        } else {
+            autostart::disable()
+        };
+        self.feedback = result
+            .err()
+            .map(|error| self.i18n.format("autostart_error", &[("error", &error)]));
+        self.autostart = autostart::status();
+        cx.notify();
+    }
+
+    fn render_autostart_toggle(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        let status = self.autostart.as_ref().ok().copied();
+        let usable = status.is_some_and(|status| status != autostart::AutostartStatus::Unavailable);
+        let note = match &self.autostart {
+            Ok(autostart::AutostartStatus::DisabledByUser) => Some("autostart_disabled_by_user"),
+            Ok(autostart::AutostartStatus::Unavailable) => Some("autostart_unavailable"),
+            _ => None,
+        };
+        let mut toggle = div()
+            .id("autostart")
+            .debug_selector(|| "autostart".into())
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(settings_theme::checkbox(
+                status.is_some_and(autostart::AutostartStatus::is_on),
+                usable,
+                cx,
+            ))
+            .child(self.i18n.text("autostart"));
+        if usable {
+            toggle = toggle
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_autostart(cx)));
+        }
+        div()
+            .ml(px(158.))
+            .flex()
+            .flex_col()
+            .child(toggle)
+            .when_some(note, |d, key| {
+                d.child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text(key)),
+                )
+            })
+            .when_some(self.autostart.as_ref().err(), |d, error| {
+                d.child(
+                    div()
+                        .text_color(theme.warning)
+                        .child(self.i18n.format("autostart_error", &[("error", error)])),
+                )
+            })
     }
 
     fn render_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
