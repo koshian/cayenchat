@@ -60,7 +60,7 @@ use tokio::time::Instant;
 
 use crate::{
     Event, display_nickname,
-    text::{nickname_key, same_nickname},
+    text::{nickname_key, same_channel, same_nickname},
     valid_channel, valid_nickname,
 };
 
@@ -636,7 +636,7 @@ impl MetadataState {
         let ours = |nick: &str| same_nickname(nick, current_nick);
         let shares = |nick: &str, except: Option<&str>| {
             rosters.iter().any(|(channel, members)| {
-                Some(channel.as_str()) != except
+                !except.is_some_and(|except| same_channel(channel, except))
                     && members
                         .iter()
                         .any(|member| same_nickname(display_nickname(member), nick))
@@ -681,14 +681,14 @@ impl MetadataState {
                     // Everyone only we shared through this channel.
                     let others: HashSet<String> = rosters
                         .iter()
-                        .filter(|(name, _)| *name != channel)
+                        .filter(|(name, _)| !same_channel(name, channel))
                         .flat_map(|(_, members)| members)
                         .map(|member| nickname_key(display_nickname(member)))
                         .collect();
                     rosters
-                        .get(channel)
-                        .into_iter()
-                        .flatten()
+                        .iter()
+                        .filter(|(name, _)| same_channel(name, channel))
+                        .flat_map(|(_, members)| members)
                         .map(|member| display_nickname(member))
                         .filter(|nick| !ours(nick) && !others.contains(&nickname_key(nick)))
                         .map(str::to_owned)
@@ -1557,6 +1557,29 @@ mod tests {
 
     fn sent(state: &mut MetadataState, now: Instant) -> Vec<String> {
         wire(&state.tick(now, joined).send)
+    }
+
+    #[test]
+    fn channel_names_compare_alike_when_leaving() {
+        let now = Instant::now();
+        let mut state = MetadataState::new(true);
+        for nick in ["bob", "dave"] {
+            let text = format!(":srv METADATA {nick} avatar * :https://example.com/{nick}");
+            state.observe(&line(&text), now, "me", joined);
+        }
+        let rosters = HashMap::from([
+            ("#Room".to_owned(), vec!["me".into(), "bob".into()]),
+            ("#Other".to_owned(), vec!["me".into(), "dave".into()]),
+        ]);
+        let gone = |state: &mut MetadataState, text: &str| -> usize {
+            state
+                .lifecycle(&line(text), &rosters, "me", false, now)
+                .events
+                .len()
+        };
+        // Spelled differently from the roster, still the same channel.
+        assert_eq!(gone(&mut state, ":bob!u@h PART #room"), 1);
+        assert_eq!(gone(&mut state, ":me!u@h PART #OTHER"), 1, "dave only here");
     }
 
     #[test]
