@@ -227,6 +227,10 @@ mod platform {
         RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     };
 
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+    use windows::core::HSTRING;
+
     use super::{AUTOSTART_ARG, AutostartStatus};
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -240,8 +244,7 @@ mod platform {
     /// executable works both packaged and unpackaged.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Backend {
-        /// MSIX / Store: a `StartupTask`, which needs the packaged app's
-        /// manifest and WinRT. Not implemented yet.
+        /// MSIX / Store: the manifest's WinRT `StartupTask`.
         StartupTask,
         RegistryRun,
     }
@@ -317,9 +320,48 @@ mod platform {
         }
     }
 
+    /// The `StartupTask` the package manifest declares, with
+    /// `Parameters="--autostart"` so the launch carries the flag.
+    const TASK_ID: &str = "CayenChat";
+
+    /// Runs a WinRT call on a thread of its own: blocking on an async
+    /// operation from the UI thread's apartment can deadlock.
+    fn winrt<T: Send + 'static>(
+        call: impl FnOnce() -> windows::core::Result<T> + Send + 'static,
+    ) -> Result<T, String> {
+        std::thread::spawn(move || {
+            // SAFETY: initializes this fresh thread; a repeat or a mode
+            // clash only means COM is already usable here.
+            let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+            call().map_err(|error| error.message())
+        })
+        .join()
+        .map_err(|_| "the startup task call panicked".to_string())?
+    }
+
+    fn task_status(state: StartupTaskState) -> AutostartStatus {
+        match state {
+            StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
+                AutostartStatus::Enabled
+            }
+            StartupTaskState::Disabled => AutostartStatus::Disabled,
+            StartupTaskState::DisabledByUser => AutostartStatus::DisabledByUser,
+            // Group policy forbids it (or the state is one we do not know).
+            _ => AutostartStatus::Unavailable,
+        }
+    }
+
+    fn task_state() -> Result<StartupTaskState, String> {
+        winrt(|| {
+            StartupTask::GetAsync(&HSTRING::from(TASK_ID))?
+                .get()?
+                .State()
+        })
+    }
+
     pub fn status() -> Result<AutostartStatus, String> {
         if backend() == Backend::StartupTask {
-            return Ok(AutostartStatus::Unavailable);
+            return task_state().map(task_status);
         }
         let registered = match Key::open(RUN_KEY, KEY_READ)? {
             Some(key) => key.first_byte()?.is_some(),
@@ -340,7 +382,22 @@ mod platform {
 
     pub fn enable() -> Result<(), String> {
         if backend() == Backend::StartupTask {
-            return Err("packaged startup tasks are not supported yet".into());
+            // Never re-enables a task the user turned off in Windows settings:
+            // the request then returns `DisabledByUser` and we report it.
+            let state = winrt(|| {
+                StartupTask::GetAsync(&HSTRING::from(TASK_ID))?
+                    .get()?
+                    .RequestEnableAsync()?
+                    .get()
+            })?;
+            return match task_status(state) {
+                AutostartStatus::Enabled => Ok(()),
+                AutostartStatus::DisabledByUser => Err(
+                    "it is turned off in Windows settings (Apps > Startup); turn it on there"
+                        .into(),
+                ),
+                _ => Err("Windows did not enable the startup task".into()),
+            };
         }
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let command = format!("\"{}\" {AUTOSTART_ARG}", executable.display());
@@ -369,7 +426,11 @@ mod platform {
 
     pub fn disable() -> Result<(), String> {
         if backend() == Backend::StartupTask {
-            return Err("packaged startup tasks are not supported yet".into());
+            return winrt(|| {
+                StartupTask::GetAsync(&HSTRING::from(TASK_ID))?
+                    .get()?
+                    .Disable()
+            });
         }
         if let Some(key) = Key::open(RUN_KEY, KEY_SET_VALUE)? {
             key.delete()?;

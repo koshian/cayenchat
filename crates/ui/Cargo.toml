@@ -76,6 +76,8 @@ libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_Registry"] }
+# Packaged (MSIX) login startup through the WinRT StartupTask (#153).
+windows = { version = "0.61", default-features = false, features = ["ApplicationModel", "Foundation", "Win32_System_WinRT"] }
 gpui = { workspace = true, features = ["windows-manifest"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
