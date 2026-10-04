@@ -7316,11 +7316,11 @@ impl ChatWindow {
             &urls,
             style.compact_urls,
         ));
-        let urls = compact.shown_urls(&urls);
         let full_urls: Vec<_> = compact
             .shortened(&urls)
             .map(|(range, url)| (range, SharedString::from(url.to_owned())))
             .collect();
+        let urls = compact.shown_urls(&urls);
         let chips: Vec<_> = full_urls.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection

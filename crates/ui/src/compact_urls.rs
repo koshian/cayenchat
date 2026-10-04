@@ -231,4 +231,21 @@ mod tests {
         assert_eq!(shortened[0].1, found[0].1);
         assert_eq!(compact.shown_urls(&found)[0].0, 0..compact.text().len());
     }
+
+    #[test]
+    fn the_highlight_and_tooltip_cover_the_drawn_label() {
+        let text = "see https://github.com/koshian/cayenchat/issues/151?tab=a ok";
+        let found = urls(text);
+        let compact = Compact::new(text, &found, true);
+        // Rendering looks the URLs up by their original ranges.
+        let shortened: Vec<_> = compact.shortened(&found).collect();
+        assert_eq!(shortened.len(), 1);
+        let (range, url) = &shortened[0];
+        assert_eq!(url, &found[0].1);
+        assert_eq!(*range, compact.shown_urls(&found)[0].0);
+        assert!(compact.text()[range.clone()].contains("github.com"));
+        // Drawn ranges never match original ranges, so they must not be used.
+        let drawn = compact.shown_urls(&found);
+        assert_eq!(compact.shortened(&drawn).count(), 0);
+    }
 }
