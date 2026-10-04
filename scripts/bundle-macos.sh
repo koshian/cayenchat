@@ -21,6 +21,7 @@ else
     name=CayenChat
     identifier=dev.cayenchat.bootstrap
 fi
+version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 mkdir -p "$bundle/Contents/Resources/locales"
@@ -36,7 +37,8 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 <key>CFBundleName</key><string>$name</string>
 <key>CFBundleIconFile</key><string>CayenChat</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>0.1.0</string>
+<key>CFBundleShortVersionString</key><string>$version</string>
+<key>CFBundleVersion</key><string>$version</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
