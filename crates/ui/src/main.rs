@@ -5689,16 +5689,21 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
         let Some(start) = next else { break };
         let mut end = text[start..]
             .char_indices()
-            .find(|(_, ch)| ch.is_whitespace() || "<>\"'。、".contains(*ch))
+            .find(|(_, ch)| ch.is_whitespace() || "<>[]\"'。、".contains(*ch))
             .map(|(offset, _)| start + offset)
             .unwrap_or(text.len());
-        while end > start
-            && text[..end]
-                .chars()
-                .last()
-                .is_some_and(|ch| ".,;:!?)]}」』".contains(ch))
-        {
-            end -= text[..end].chars().last().unwrap().len_utf8();
+        while end > start {
+            let Some(last) = text[..end].chars().last() else {
+                break;
+            };
+            let closes_bracket = last == ')' && {
+                let candidate = &text[start..end];
+                candidate.matches(')').count() > candidate.matches('(').count()
+            };
+            if !(closes_bracket || ".,;:!?}」』".contains(last)) {
+                break;
+            }
+            end -= last.len_utf8();
         }
         let candidate = &text[start..end];
         if let Ok(url) = url::Url::parse(candidate)
@@ -7959,6 +7964,21 @@ mod log_tests {
         assert_eq!(urls[0].1, "https://example.org/a?q=1");
         assert_eq!(urls[1].1, "http://example.jp/path");
         assert_eq!(&text[urls[0].0.clone()], urls[0].1);
+    }
+
+    #[test]
+    fn markdown_links_and_brackets_do_not_leak_into_urls() {
+        let text = " [https://x.com/a/status/1](https://x.com/a/status/1)";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert!(
+            urls.iter()
+                .all(|(_, url)| url == "https://x.com/a/status/1")
+        );
+        let text = "(see https://example.org/a_(b)) https://example.org/c)";
+        let urls = log_urls(text);
+        assert_eq!(urls[0].1, "https://example.org/a_(b)");
+        assert_eq!(urls[1].1, "https://example.org/c");
     }
 
     #[test]
