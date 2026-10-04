@@ -7710,7 +7710,9 @@ impl ChatWindow {
                     })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            // The row blocks the pane's own handler below it.
+                            window.focus(&this.members_focus);
                             let click = if event.modifiers.secondary() {
                                 member_selection::Click::Toggle
                             } else if event.modifiers.shift {
