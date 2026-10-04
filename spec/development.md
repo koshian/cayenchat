@@ -222,9 +222,11 @@ the `test-build` feature, so the reporter's own settings and passwords are
 not used (suffix `-isolated`).
 It only has a read-only token and publishes nothing, so the beta is
 unaffected. Link the run and the commit SHA in the PR or issue; downloading
-an artifact needs a signed-in GitHub account. It packages separately from
-`beta-release.yml` rather than sharing a reusable workflow, because the beta
-can only be exercised from `master` and must not change untested.
+an artifact needs a signed-in GitHub account. Both it and
+`beta-release.yml` call the reusable `package.yml`, which holds the build and
+packaging steps (`test: true` selects the Test Build names, the `cayenchat-test`
+package and `CayenChat Test.app`), so a packaging change is made once. The
+beta's artifacts stay archived and named after the platform for `publish`.
 
 #### Changes that need a person's confirmation
 
