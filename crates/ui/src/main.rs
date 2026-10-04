@@ -50,8 +50,8 @@ use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
     DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
-    Notifications, SUB_LOG_NAME_WIDTHS, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme,
+    ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -7023,8 +7023,6 @@ struct LogStyle {
     time_font: SharedString,
     alternate_rows: bool,
     header_lines: bool,
-    /// Width of the channel name column of the combined log.
-    sub_name_width: f32,
 }
 
 impl LogStyle {
@@ -7043,10 +7041,6 @@ impl LogStyle {
             },
             alternate_rows: appearance.alternate_rows,
             header_lines: appearance.header_line_messages,
-            sub_name_width: appearance
-                .sub_log_name_width
-                .clamp(*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end())
-                as f32,
         }
     }
 
@@ -7464,13 +7458,27 @@ impl ChatWindow {
             .networks()
             .iter()
             .find(|network| network.id == conversation.network)
-            .map(|network| network.name.split_whitespace().next().unwrap_or(""))
+            .map(|network| network.name.as_str())
             .unwrap_or("");
+        // Same flow as the main log's default layout: channel, network and
+        // nickname lead the text, so wrapped lines return to the text column.
+        let prefix = if message.activity {
+            format!("{} [{network}] ", conversation.name)
+        } else {
+            format!("{} [{network}] {}: ", conversation.name, message.sender)
+        };
+        let highlights = if message.activity {
+            Vec::new()
+        } else {
+            self.highlight_ranges(conversation.network, message)
+        };
+        let styled = styled_log_text(&prefix, &message.text, &[], &highlights, None, &style.theme);
         div()
             .id(("sub-message", row))
             .w_full()
             .flex()
-            .gap_2()
+            .items_start()
+            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && row % 2 == 1, |d| {
                 d.bg(style.sub_alt)
@@ -7480,56 +7488,11 @@ impl ChatWindow {
             .child(style.time(message.time))
             .child(
                 div()
-                    .w(px(style.sub_name_width))
-                    .flex_shrink_0()
-                    .flex()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_color(theme.nickname)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(conversation.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(90.))
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(format!(" [{network}]")),
-                    ),
-            )
-            .child(
-                div()
+                    .debug_selector(move || format!("sub-text-{row}"))
                     .flex_1()
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
-                    .child(if message.activity {
-                        StyledText::new(message.text.clone())
-                    } else {
-                        let offset = message.sender.len() + 2;
-                        let highlight = HighlightStyle {
-                            color: Some(theme.panes.highlight.into()),
-                            font_weight: Some(FontWeight::BOLD),
-                            ..Default::default()
-                        };
-                        StyledText::new(format!("{}: {}", message.sender, message.text))
-                            .with_highlights(
-                                self.highlight_ranges(conversation.network, message)
-                                    .into_iter()
-                                    .map(|range| {
-                                        (range.start + offset..range.end + offset, highlight)
-                                    }),
-                            )
-                    }),
+                    .child(styled),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // A single click is too easy to hit while reading the combined log.
@@ -8825,6 +8788,65 @@ mod url_hover_tests {
         assert!(over(0, cx), "on the link");
         assert!(!over(1, cx), "on plain text");
         assert!(over(0, cx), "back on the link");
+    }
+
+    #[gpui::test]
+    fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a,#b");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "hello".into(),
+                        notice: false,
+                        mentioned: false,
+                        server_time: None,
+                        msgid: None,
+                        account: None,
+                        replayed: false,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("sub-text-0").expect("combined row drawn");
+        // No fixed channel name column (162 px by default) before the text:
+        // only the time column and its gap precede it.
+        assert!(
+            bounds.origin.x < px(100.),
+            "text starts at {:?}",
+            bounds.origin.x
+        );
+        chat.read_with(cx, |chat, _| assert_eq!(chat.sub_rows.len(), 1));
     }
 }
 

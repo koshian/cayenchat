@@ -142,7 +142,9 @@ setting `header_line_messages` (off by default) instead shows a small first line
 `time [avatar] nick` with the text below at full width; the whole message is one
 row element, so the alternating row background covers both lines. Activity lines
 keep the compact single-line form in both layouts. The combined log always uses
-the default flow (its channel name column and width setting are unchanged); the
+the default flow, `time | channel [network] nick: text` with the full channel and
+network names in the nickname color and no fixed channel column (the
+`sub_log_name_width` setting no longer applies); the
 former `wrap_long_nicknames` setting is gone and ignored when read. The
 main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
