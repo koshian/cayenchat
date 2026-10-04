@@ -24,6 +24,7 @@ mod perf_baseline;
 mod previews;
 mod secrets;
 mod session;
+mod settings_file;
 mod settings_reset;
 mod settings_theme;
 mod shortcut_settings;
@@ -153,6 +154,7 @@ struct SettingsForm {
     nickname: Entity<TextInput>,
     username: Entity<TextInput>,
     realname: Entity<TextInput>,
+    quit_message: Entity<TextInput>,
     channels: Entity<TextInput>,
     /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
@@ -216,6 +218,12 @@ impl SettingsForm {
             realname: field(
                 &i18n.text("realname_placeholder"),
                 &profile.realname,
+                false,
+                cx,
+            ),
+            quit_message: field(
+                &i18n.text("quit_message_placeholder"),
+                &profile.quit_message,
                 false,
                 cx,
             ),
@@ -395,6 +403,7 @@ impl SettingsForm {
             profile.nickname = value(&self.nickname);
             profile.username = value(&self.username);
             profile.realname = value(&self.realname);
+            profile.quit_message = value(&self.quit_message);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
             profile.avatar_url = value(&self.avatar_url);
@@ -462,13 +471,14 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 32] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 33] {
         [
             &self.custom_host,
             &self.port,
             &self.nickname,
             &self.username,
             &self.realname,
+            &self.quit_message,
             &self.channels,
             &self.server_password,
             &self.sasl_username,
@@ -595,6 +605,7 @@ impl SettingsForm {
             (&self.nickname, &profile.nickname),
             (&self.username, &profile.username),
             (&self.realname, &profile.realname),
+            (&self.quit_message, &profile.quit_message),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
             (&self.avatar_url, &profile.avatar_url),
@@ -686,6 +697,7 @@ fn connection_config(
     }
     config.username = profile.username.clone();
     config.realname = profile.realname.clone();
+    config.quit_message = profile.quit_message.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
@@ -954,6 +966,8 @@ struct ChatWindow {
     log_focus: FocusHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// The main log row whose URL the pointer is over; it shows a hand.
+    url_hover: Option<(ConversationId, usize)>,
     /// Share of the two logs' height taken by the channel log; changed by
     /// dragging the bottom edge of the draft input, kept for this run only.
     log_split: f32,
@@ -1142,7 +1156,6 @@ struct OpenColorPicker {
 }
 
 struct SettingsWindow {
-    menu_bar: menu_bar::MenuBar,
     owner: WindowHandle<ChatWindow>,
     settings: SettingsForm,
     feedback: Option<String>,
@@ -1179,6 +1192,8 @@ struct SettingsWindow {
     avatar_editor: Option<avatar_editor::AvatarEditor>,
     /// An avatar image is being decoded or encoded.
     avatar_opening: bool,
+    /// Observers of `settings`' fields; replaced with the form.
+    _field_subscriptions: Vec<Subscription>,
     /// Whether the connection switch was last drawn on, so the window is
     /// redrawn only when a connection comes up or goes down.
     connected_shown: bool,
@@ -1228,12 +1243,18 @@ impl ChatWindow {
         };
         match self.state.selected_channel() {
             Some(channel) => {
+                // A channel shows how many members it has, once the roster is known.
+                let name = if channel.is_private() || channel.members.is_empty() {
+                    channel.name.clone()
+                } else {
+                    format!("{} ({})", channel.name, channel.members.len())
+                };
                 let topic = cayenchat_irc_core::text::strip_formatting(&channel.topic);
                 let topic = topic.split_whitespace().collect::<Vec<_>>().join(" ");
                 if topic.is_empty() {
-                    format!("{} @ {} — {app}", channel.name, network.name)
+                    format!("{name} @ {} — {app}", network.name)
                 } else {
-                    format!("{} @ {}: {topic} — {app}", channel.name, network.name)
+                    format!("{name} @ {}: {topic} — {app}", network.name)
                 }
             }
             None => format!("{} — {app}", network.name),
@@ -1352,6 +1373,7 @@ impl ChatWindow {
             members_height: None,
             right_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
+            url_hover: None,
             attachments: AttachmentFlow::default(),
             uploader_override: None,
             notifier: Notifier::new(),
@@ -2625,7 +2647,7 @@ impl ChatWindow {
         {
             return;
         }
-        let mut settings = match cayenchat_storage::load() {
+        let mut settings = match settings_file::load() {
             Ok(value) => value.unwrap_or_default(),
             Err(error) => {
                 self.feedback = Some(error);
@@ -3655,6 +3677,7 @@ impl SettingsWindow {
             (&self.settings.nickname, "nickname"),
             (&self.settings.username, "username_placeholder"),
             (&self.settings.realname, "realname_placeholder"),
+            (&self.settings.quit_message, "quit_message_placeholder"),
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
@@ -3692,7 +3715,10 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The title given at window creation reaches X11 only as Latin-1 `WM_NAME`;
+        // setting it again also writes the UTF-8 `_NET_WM_NAME` (issue #143).
         let i18n = Localizer::new(values.language);
+        window.set_window_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
@@ -3700,27 +3726,31 @@ impl SettingsWindow {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
         });
         let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
-        for field in settings.text_fields() {
-            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
-        }
-        // The connection switch follows the chat window's connections.
-        if let Ok(chat) = owner.entity(cx) {
-            subscriptions.push(cx.observe(&chat, |this, _, cx| {
-                if this.selected_connected(cx) != this.connected_shown {
-                    cx.notify();
-                }
-            }));
-        }
+        let field_subscriptions = Self::observe_fields(&settings, window, cx);
+        // The connection switch follows the chat window's connections. The
+        // chat window opens this window from its own update, when its window
+        // cannot be read yet, so subscribe once that update has returned.
+        cx.defer_in(window, |this, _, cx| {
+            if let Ok(chat) = this.owner.entity(cx) {
+                this._subscriptions.push(cx.observe(&chat, |this, _, cx| {
+                    if this.selected_connected(cx) != this.connected_shown {
+                        cx.notify();
+                    }
+                }));
+            }
+        });
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
-            this.window_activation_changed(window.is_window_active(), cx)
+            let active = window.is_window_active();
+            this.window_activation_changed(active, cx);
+            // Another process may write the settings while this window is in
+            // the background, so leaving saves what is pending and coming
+            // back reads what changed (#147).
+            if active {
+                this.reload_changed_settings(window, cx);
+            } else {
+                this.autosave_now(None, cx);
+            }
         }));
-        // Typed passwords are stored once their field loses focus.
-        for field in [&settings.server_password, &settings.sasl_password] {
-            let handle = field.read(cx).focus_handle(cx);
-            subscriptions.push(
-                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
-            );
-        }
         // Leaving saves everything, including a password field that still
         // has focus.
         let view = cx.entity().downgrade();
@@ -3734,11 +3764,6 @@ impl SettingsWindow {
         }));
         let saved = settings.values.clone();
         let mut this = Self {
-            menu_bar: {
-                let mut bar = menu_bar::MenuBar::new(window, cx, |this| &mut this.menu_bar);
-                bar.set_always(!saved.menu_bar_auto_hide);
-                bar
-            },
             owner,
             settings,
             feedback: None,
@@ -3761,6 +3786,7 @@ impl SettingsWindow {
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             avatar_opening: false,
+            _field_subscriptions: field_subscriptions,
             connected_shown: false,
             _subscriptions: subscriptions,
         };
@@ -3769,10 +3795,72 @@ impl SettingsWindow {
         this
     }
 
-    /// Saves typed passwords to the credential store, forgets removed
-    /// profiles' passwords, and writes the settings file.
+    /// Saves after an edit to any text field, and stores a typed password
+    /// once its field loses focus.
+    fn observe_fields(
+        settings: &SettingsForm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        let mut subscriptions = Vec::new();
+        for field in settings.text_fields() {
+            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
+        }
+        for field in [&settings.server_password, &settings.sasl_password] {
+            let handle = field.read(cx).focus_handle(cx);
+            subscriptions.push(
+                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
+            );
+        }
+        subscriptions
+    }
+
+    /// Shows what another process wrote to the settings file while this
+    /// window was in the background, so a later save does not put the older
+    /// values back. Edits this window could not save yet are kept.
+    fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.autosave.is_some() || self.autosave_error.is_some() {
+            return;
+        }
+        let Ok(Some(mut loaded)) = settings_file::load() else {
+            return;
+        };
+        if loaded == self.saved {
+            return;
+        }
+        let previous = self.saved.clone();
+        if loaded
+            .profile(&self.settings.values.selected_server)
+            .is_some()
+        {
+            loaded.selected_server = self.settings.values.selected_server.clone();
+        }
+        if loaded.language != self.settings.values.language {
+            self.i18n = Localizer::new(loaded.language);
+            window.set_window_title(&self.i18n.text("settings_title"));
+        }
+        self.settings = SettingsForm::new(loaded.clone(), &self.i18n, &secrets::store(cx), cx);
+        self._field_subscriptions = Self::observe_fields(&self.settings, window, cx);
+        let servers_changed = previous.servers != loaded.servers
+            || previous.selected_server != loaded.selected_server;
+        self.saved = loaded.clone();
+        // The chat window follows too, so that a later save, which compares
+        // with `saved`, does not find nothing to apply (#147).
+        self.apply_to_chat_window(&previous, loaded, servers_changed, cx);
+        self.font_picker = None;
+        self.color_picker = None;
+        self.shortcut_recording = None;
+        self.refresh_upload_account(cx);
+        cx.notify();
+    }
+
+    /// Saves typed passwords to the credential store, forgets the passwords
+    /// of profiles removed since `previous` (what this window last saved, not
+    /// the file, which another process may have added servers to), and
+    /// writes the settings file.
     fn commit_settings(
         &mut self,
+        previous: &Settings,
         mut settings: Settings,
         window: Option<&Window>,
         cx: &mut Context<Self>,
@@ -3781,13 +3869,11 @@ impl SettingsWindow {
         settings.servers.retain(|server| !server.host.is_empty());
         self.settings
             .persist_passwords(&store, &self.i18n, window, cx)?;
-        if let Ok(Some(previous)) = cayenchat_storage::load() {
-            forget_removed_profiles(&previous, &settings, &store);
-        }
+        forget_removed_profiles(previous, &settings, &store);
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        if let Err(error) = cayenchat_storage::save(&settings) {
+        if let Err(error) = settings_file::save(&settings) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
         }
@@ -3804,9 +3890,9 @@ impl SettingsWindow {
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        let mut saved = cayenchat_storage::load()?.unwrap_or_default();
+        let mut saved = settings_file::load()?.unwrap_or_default();
         saved.experimental = experimental.clone();
-        if let Err(error) = cayenchat_storage::save(&saved) {
+        if let Err(error) = settings_file::save(&saved) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
         }
@@ -3821,8 +3907,8 @@ impl SettingsWindow {
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             self.autosave = None;
-            self.saved = settings.clone();
-            let settings = self.commit_settings(settings, None, cx)?;
+            let previous = std::mem::replace(&mut self.saved, settings.clone());
+            let settings = self.commit_settings(&previous, settings, None, cx)?;
             self.settings.values = settings.clone();
             Ok::<_, String>((config, settings))
         })();
@@ -3920,7 +4006,7 @@ impl SettingsWindow {
             return;
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
-        let saved = match self.commit_settings(settings, window, cx) {
+        let saved = match self.commit_settings(&previous, settings, window, cx) {
             Ok(saved) => saved,
             Err(error) => {
                 // Try again on the next edit.
@@ -3935,13 +4021,26 @@ impl SettingsWindow {
         }
         let servers_changed = previous.servers != self.saved.servers
             || previous.selected_server != self.saved.selected_server;
+        self.apply_to_chat_window(&previous, saved, servers_changed, cx);
+    }
+
+    /// Applies what differs between `previous` and `saved` to the chat window:
+    /// shortcuts, appearance, language, layout and servers. Used for this
+    /// window's own saves and for settings another process wrote.
+    fn apply_to_chat_window(
+        &self,
+        previous: &Settings,
+        saved: Settings,
+        servers_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
         let appearance_changed =
             previous.appearance != saved.appearance || previous.theme != saved.theme;
         let language_changed = previous.language != saved.language;
         let layout_changed = previous.restore_window_layout != saved.restore_window_layout;
         let restore_layout = saved.restore_window_layout;
         let shortcuts = ShortcutPrefs::from(&saved);
-        let shortcuts_changed = ShortcutPrefs::from(&previous) != shortcuts;
+        let shortcuts_changed = ShortcutPrefs::from(previous) != shortcuts;
         let menu_bar_changed = previous.menu_bar_auto_hide != saved.menu_bar_auto_hide;
         let menu_bar_always = !saved.menu_bar_auto_hide;
         let provider = saved.image_upload.provider.clone();
@@ -4668,6 +4767,10 @@ impl SettingsWindow {
                 self.settings.realname.clone(),
             ))
             .child(settings_field(
+                &self.i18n.text("quit_message"),
+                self.settings.quit_message.clone(),
+            ))
+            .child(settings_field(
                 &self.i18n.text("auto_join_channels"),
                 self.settings.channels.clone(),
             ))
@@ -5347,9 +5450,6 @@ impl SettingsWindow {
                     .on_click(cx.listener(|this, _, _, cx| {
                         let hide = !this.settings.values.menu_bar_auto_hide;
                         this.settings.values.menu_bar_auto_hide = hide;
-                        // This window's own bar follows at once, before the
-                        // setting is saved.
-                        this.menu_bar.set_always(!hide);
                         cx.notify();
                     })),
             )
@@ -5813,14 +5913,6 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.i18n.text("settings_title");
         let content = self.render_settings(window, cx).into_any_element();
-        let content = menu_bar::wrap(
-            &self.menu_bar,
-            cx.get_menus().unwrap_or_default(),
-            content,
-            |this| &mut this.menu_bar,
-            window,
-            cx,
-        );
         decorations::window_frame(window, cx, title, content)
     }
 }
@@ -6351,7 +6443,6 @@ impl ChatWindow {
 
         let server_menu = self.server_menu.as_ref().map(|menu| {
             let network = menu.network;
-            let position = menu.position;
             let session = self.sessions.get(&network);
             let connected = session.is_some_and(|session| session.irc.is_some());
             let can_disconnect = self.can_disconnect(network);
@@ -6364,9 +6455,7 @@ impl ChatWindow {
             };
             div()
                 .id("server-context-menu")
-                .absolute()
-                .left(position.x - origin.x)
-                .top(position.y - origin.y)
+                .occlude()
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -6432,9 +6521,7 @@ impl ChatWindow {
             let registered = self.registered_connection(menu.network).is_ok();
             let mut popup = div()
                 .id("channel-context-menu")
-                .absolute()
-                .left(menu.position.x - origin.x)
-                .top(menu.position.y - origin.y)
+                .occlude()
                 .w(px(176.))
                 .p_1()
                 .bg(theme.surface)
@@ -6482,9 +6569,7 @@ impl ChatWindow {
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
                 .id("member-context-menu")
-                .absolute()
-                .left(menu.position.x - origin.x)
-                .top(menu.position.y - origin.y)
+                .occlude()
                 .w(px(210.))
                 .p_1()
                 .bg(theme.surface)
@@ -6704,9 +6789,18 @@ impl ChatWindow {
             .child(left)
             .child(right_split)
             .child(right)
-            .when_some(server_menu, |d, menu| d.child(menu))
-            .when_some(member_menu, |d, menu| d.child(menu))
-            .when_some(channel_menu, |d, menu| d.child(menu))
+            .when_some(
+                self.server_menu.as_ref().zip(server_menu),
+                |d, (at, menu)| d.child(snapped_menu(at.position, menu)),
+            )
+            .when_some(
+                self.member_menu.as_ref().zip(member_menu),
+                |d, (at, menu)| d.child(snapped_menu(at.position, menu)),
+            )
+            .when_some(
+                self.channel_menu.as_ref().zip(channel_menu),
+                |d, (at, menu)| d.child(snapped_menu(at.position, menu)),
+            )
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .into_any_element()
@@ -6901,6 +6995,18 @@ impl ChatPanes {
             channels: pane(PaneKind::Channels),
         }
     }
+}
+
+/// Places a context menu at the pointer, moving it back inside the window when
+/// it would be cut off at the bottom or right edge (issue #144).
+fn snapped_menu(position: Point<Pixels>, menu: impl IntoElement) -> impl IntoElement {
+    deferred(
+        anchored()
+            .position(position)
+            .snap_to_window_with_margin(px(4.))
+            .child(menu),
+    )
+    .with_priority(1)
 }
 
 /// Layout of a cached pane inside its column.
@@ -7194,6 +7300,8 @@ impl ChatWindow {
         let down_layout = layout.clone();
         let move_layout = layout.clone();
         let click_layout = layout;
+        let move_urls = urls.clone();
+        let over_url = self.url_hover == Some((selected_channel, index));
         let text_len = message.text.len();
         let avatar = (!message.activity && self.avatars.enabled()).then(|| {
             self.avatar_slot(
@@ -7245,11 +7353,16 @@ impl ChatWindow {
         row.child({
             let text = div()
                 .id(("message-text", index))
+                .debug_selector(move || format!("message-text-{index}"))
                 .when(preview.is_none(), |d| d.flex_1())
                 .min_w_0()
                 .when(message.activity, |d| d.text_color(style.event_color))
                 .when(message.delivery_failed, |d| d.text_color(theme.warning))
-                .cursor(CursorStyle::IBeam)
+                .cursor(if over_url {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::IBeam
+                })
                 .child(styled)
                 .on_mouse_down(
                     MouseButton::Left,
@@ -7263,12 +7376,21 @@ impl ChatWindow {
                     }),
                 )
                 .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                    let byte = move_layout
-                        .index_for_position(event.position)
-                        .unwrap_or_else(|index| index)
-                        .saturating_sub(prefix_len)
-                        .min(text_len);
+                    let position = move_layout.index_for_position(event.position);
+                    let raw = position.unwrap_or_else(|index| index);
+                    let byte = raw.saturating_sub(prefix_len).min(text_len);
                     this.extend_log_selection(selected_channel, index, byte, cx);
+                    // Over a URL (not while selecting) the pointer is a
+                    // hand: a double click opens it.
+                    let hover = (event.pressed_button.is_none()
+                        && position.is_ok()
+                        && raw >= prefix_len
+                        && move_urls.iter().any(|(range, _)| range.contains(&byte)))
+                    .then_some((selected_channel, index));
+                    if this.url_hover != hover {
+                        this.url_hover = hover;
+                        cx.notify();
+                    }
                 }))
                 .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
                     if event.click_count() == 2 {
@@ -8175,6 +8297,23 @@ mod startup_tests {
     }
 
     #[test]
+    fn each_server_sends_its_own_quit_message() {
+        let mut settings = Settings::default();
+        settings.add_server(cayenchat_storage::PRESETS[0].host);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "alice".into();
+        profile.username = "ident".into();
+        let language = settings.language;
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
+        assert_eq!(config.quit_message, "");
+        settings.selected_profile_mut().unwrap().quit_message = "Back soon".into();
+        let config =
+            connection_config(settings.selected_profile().unwrap(), language, None, None).unwrap();
+        assert_eq!(config.quit_message, "Back soon");
+    }
+
+    #[test]
     fn nickname_and_username_stay_independent_without_credentials() {
         let mut settings = Settings::default();
         settings.add_server(cayenchat_storage::PRESETS[0].host);
@@ -8621,11 +8760,136 @@ fn settings_with_channels(channels: &str) -> Settings {
 }
 
 #[cfg(test)]
+mod url_hover_tests {
+    use super::ChatWindow;
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use gpui::{Modifiers, TestAppContext, point, px};
+
+    #[gpui::test]
+    fn the_pointer_is_a_hand_over_a_url_in_the_channel_log(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let message = |text: &str| Event::ChannelMessage {
+            channel: "#a".into(),
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            mentioned: false,
+            server_time: None,
+            msgid: None,
+            account: None,
+            replayed: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    message("https://example.org/x"),
+                    message("hello there"),
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let over = |row: usize, cx: &mut gpui::VisualTestContext| {
+            let selector: &'static str = ["message-text-0", "message-text-1"][row];
+            let bounds = cx.debug_bounds(selector).expect("row drawn");
+            // Past the "bob: " prefix the nickname shares the text with.
+            let at = point(bounds.origin.x + px(60.), bounds.center().y);
+            cx.simulate_mouse_move(at, None, Modifiers::none());
+            cx.run_until_parked();
+            chat.read_with(cx, |chat, _| chat.url_hover.is_some())
+        };
+        assert!(over(0, cx), "on the link");
+        assert!(!over(1, cx), "on plain text");
+        assert!(over(0, cx), "back on the link");
+    }
+}
+
+#[cfg(test)]
 mod pane_tests {
     use super::{ChatWindow, LogPosition, LogSelection, Selection};
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
     use gpui::{Focusable, TestAppContext};
+
+    #[gpui::test]
+    fn the_title_shows_the_member_count_of_a_channel(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            // Without a roster there is no count to show.
+            assert!(
+                chat.window_title().starts_with("#a @ "),
+                "{}",
+                chat.window_title()
+            );
+            let members = ["@op", "alice", "bob"].map(String::from).to_vec();
+            chat.state.set_members(NetworkId(1), "#a", members);
+            assert!(
+                chat.window_title().starts_with("#a (3) @ "),
+                "{}",
+                chat.window_title()
+            );
+            chat.state.set_topic(NetworkId(1), "#a", "Welcome");
+            assert!(
+                chat.window_title().starts_with("#a (3) @ ")
+                    && chat.window_title().contains(": Welcome"),
+                "{}",
+                chat.window_title()
+            );
+        });
+    }
 
     #[gpui::test]
     fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut TestAppContext) {
@@ -8739,7 +9003,11 @@ mod pane_tests {
         assert_eq!(group(&chat, cx), Some(Vec::new()));
 
         // Choosing a mode closes the menu; without a connection it says so
-        // and sends nothing.
+        // and sends nothing. An open menu blocks the rows under it, so close
+        // it first.
+        chat.update(cx, |chat, _| {
+            chat.dismiss_menus();
+        });
         click(cx, row(1), none);
         click(cx, row(3), Modifiers::secondary_key());
         right_click(cx, row(3));

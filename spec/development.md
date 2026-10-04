@@ -37,6 +37,7 @@ cargo test --workspace
 ```
 
 For UI work, also build and run the desktop application on the currently available platform when practical.
+On Linux without a desktop session, look at it under Xvfb ("Visual checks under Xvfb").
 
 Changes that affect event handling, retained state, rendering or resource
 limits (for example multi-server connections or image display) must be
@@ -190,6 +191,11 @@ signs/notarizes a distributable app. The normal `cargo run` entry point is porta
 The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
 `crates/ui/resources/windows/cayenchat.ico`. Both are rendered from the canonical
 `assets/icons/cayenchat.svg` and checked in so normal builds need no image tools.
+The version lives only in the workspace manifest (`[workspace.package] version`,
+currently 0.9.0). The macOS bundle helper reads it with `cargo metadata`, and
+`crates/ui/build.rs` generates the Windows VERSIONINFO resource (FileVersion and
+ProductVersion) from it; the Windows x86_64 CI job checks that the built exe
+reports the manifest version.
 When changing the artwork, run `python3 scripts/generate-icons.py` with Pillow
 and `rsvg-convert` (librsvg) installed, then rebuild the app.
 The macOS beta workflow signs the completed bundle ad hoc and verifies its
@@ -238,17 +244,23 @@ not just ask them to wait for the beta. In this order, every time:
    this: a person would test code that is still going to change, and the build
    would have to be made again. Building with `Test Build` early only to see
    that it packages is fine; do not announce it.
-2. Build with `Test Build` for the platform they use, from the PR branch
+2. **Check what Xvfb can show first** ("Visual checks under Xvfb" below):
+   run the change on Linux under Xvfb, look at it, and write in the PR what
+   was verified that way (with the screenshots that matter) and what is left
+   for a person. Ask a person only for what is left. When nothing is left,
+   no one is called.
+3. Build with `Test Build` for the platform they use, from the PR branch
    (before the merge) or from `master` when it is already merged by a person.
    Use `isolated=true` when their saved settings and passwords must not be
    touched; leave it off when the check needs their existing settings (for
    example restoring a saved window position).
-3. Comment on the issue, mentioning the reporter with `@name`, with the run
+4. Comment on the issue, mentioning the reporter with `@name`, with the run
    link, the commit SHA, the artifact name, how to start it (unzip and run;
    a signed-in GitHub account is needed; kept for 7 days), and what to look
    at. Ask for the environment details that matter (OS version, display
-   scale, IME) and say what is still unverified.
-4. Take the report on the issue, and rebuild with `Test Build` for each new
+   scale, IME), say what was already checked under Xvfb and what is still
+   unverified.
+5. Take the report on the issue, and rebuild with `Test Build` for each new
    commit that needs checking again (and, if the change was reviewed again,
    only after that review has passed too). An LLM reviewer never merges such a
    PR before the report arrives; only a person may decide to merge without
@@ -892,6 +904,58 @@ uploads the screenshots. It is Linux/X11 only: the driving tools are X11
 ones. The same scenario on macOS or Windows would need a logged-in desktop
 session and platform tools (for example `screencapture` and synthetic
 events on macOS); the proxy, peer and assertions would carry over.
+
+### Visual checks under Xvfb (Linux)
+
+Much of what used to be left for a person to look at can be seen by the
+developer (an LLM included) on a virtual display. `scripts/e2e/gui_session.py`
+keeps the real app running under Xvfb between commands: `start`,
+`click X Y`, `type`, `key`, `scroll`, `drag`, `move`, `focus`, `wait`,
+`shot [--crop x0,y0,x1,y1 --scale N]`, `clipboard`, `windows`, `quit` and
+`restart-app` (both with Ctrl+Q, as a user quits; a restart says so when it
+had to terminate the app instead, which skips what quitting saves), `stop`.
+The user's settings and passwords are never touched: the app's HOME, XDG
+directories and runtime directory are in the session directory, passwords
+go to the session's local file even when `--settings` names a copy of real
+settings with the system store, and the desktop's D-Bus session (whose
+Secret Service holds the user's passwords under the same service name) is
+not passed on. `start` refuses a non-empty directory it did not make and
+clears only its own entries when a session is started again;
+`scripts/e2e/test_gui_session.py` checks both, without a display (CI runs it
+in the `gui-e2e-linux` job). Each input command prints the
+path of a PNG taken once the screen has settled; an LLM reads it as an
+image. `scripts/e2e/gui_session.py --help` lists the options, and the
+`gui-check` skill (`.claude/skills/gui-check/SKILL.md`) is the step-by-step
+guide with the known pitfalls. It shares `Display` with the end-to-end test
+and reads Xvfb's framebuffer file (`-fbdir`), so it needs only Xvfb and
+xdotool (xclip for `clipboard`), a Vulkan driver (lavapipe works) and at
+least one font (`--fonts` lends a directory when the system has none).
+A real server comes from the local Ergo playground
+(`scripts/e2e/manual_history.py`) with `start --server`.
+
+Use it for every change to what the GUI shows or how it reacts, before
+asking anyone ("Changes that need a person's confirmation", step 2), and
+record in the PR what was verified and what was not. It can show: layout
+and wording in both languages and themes, settings screens and their
+controls, menus, drop-downs and dialogs drawn by the app, mouse and keyboard
+behavior (ASCII), focus moves, scrolling, what is written to the settings
+file, what survives `restart-app`, and connected behavior against the
+local Ergo. It cannot show, so a person still checks: macOS and Windows,
+Wayland, a real GPU, display scaling and HiDPI sharpness, multiple monitors,
+IME and non-ASCII typing, native file dialogs, the system credential stores,
+notifications, drag and drop from other apps, and how smooth motion feels
+(screens are stills). Coordinates from one screenshot go stale after the
+layout changes, and judging an image is not a pixel comparison: a lasting
+check belongs in a test.
+
+First run (2026-10-03, on Debian trixie without system fonts or the X
+`-dev` packages, unpacked into a scratch directory): the debug build
+started under Xvfb with lavapipe; adding IRCnet from the drop-down, the TLS
+switch moving the port to `6697` with certificate verification shown on,
+typing a nickname (autosaved to the session's settings file), reading it
+back through the clipboard and keeping all of it across `restart-app` were
+all seen in screenshots. The run also found that the app panicked on
+startup without servers, fixed separately.
 
 ### IRC metadata interoperability (Ergo)
 

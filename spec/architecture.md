@@ -262,7 +262,16 @@ server's network, redraws, and yields between batches of a burst, so a busy
 server cannot hold back another's lines beyond one batch. An earlier 50 ms poll handled at most 64
 events per tick (about 640 incoming lines per second, since each line also
 produces a wire diagnostic), delayed every line and woke 20 times a second while
-idle. QUIT and NICK republish rosters only for channels that contained the user.
+idle. QUIT and NICK republish rosters only for channels that contained the user;
+the worker's `PresenceIndex` (`irc-core/src/presence.rs`, #71) answers that, fed
+from the published NAMES snapshots. It indexes users by nickname and channel
+both ways under the RFC 1459 case mapping. A `UserId` (a `u64` never reused in a
+connection, never kept across connections) survives re-applied snapshots and NICK
+(the NICK line moves the id); QUIT or leaving the last shared channel ends it, so a
+returning nickname is a new presence. Only presence is held: accounts, metadata and
+peer-avatar state stay in their own tables, and the `renamed_roles` prefix
+correction stays in `RosterTracker`. Their shared-channel scans still read the
+published rosters and move onto the index in later steps.
 Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.
@@ -337,6 +346,7 @@ hover-revealed bar slides in and hides again once the pointer moves more than
 convention (it resembles macOS full-screen menus). A bar that is always shown
 has no slide-in animation (a frozen animation was one suspected cause of a
 half-drawn bar, issue #87) and Alt/F10 only move keyboard use in and out of it.
+The settings window has no bar (issue #145; its menus were all disabled).
 The bar shares native menu definitions and actions, supports arrows/Enter/Escape,
 and preserves input focus for editing commands. Alt chords do not toggle it;
 selecting an action or clicking outside dismisses it. Action availability is
@@ -410,6 +420,10 @@ for every line before queuing anything. NAMES entries without a nickname
 (servers padding with spaces) are dropped from rosters in `names_snapshot`.
 The channel tree context menu sends `/join` or `/part` for the clicked channel;
 only the action matching its current joined state is enabled while registered.
+Server, channel and member context menus open at the pointer but are snapped back
+inside the window, so a short pane never cuts off their lower items (issue #144).
+They also block the mouse for what lies under them, so a menu item that has moved
+over another row is clicked itself, not the row.
 The server context menu also offers Join channel… (sends `/join <name>`) and
 Change nickname… (`NICK`), each asking in the small prompt the member menu
 uses and enabled only while registered; typed `/join` and `/nick` are unchanged.
@@ -505,6 +519,13 @@ context menu; connecting one uses its saved settings and stored passwords, or
 opens the settings on that server when they are incomplete.
 There is no application-wide bound on logs, conversations or transcripts yet;
 see `performance.md`.
+
+Each server profile has an optional QUIT message (`quit_message`, issue #148; added
+without a version change). Disconnect and quitting the app send it as the `QUIT`
+reason; blank means "Leaving CayenChat". It is validated with the connection
+(no line breaks or NUL, within the encoding and the 512-byte line) and read when the
+connection starts, so an edit applies from the next connection. Lost connections
+send no QUIT.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,
@@ -754,7 +775,10 @@ only while it is on:
   avatar. Queue ≤ 32, one probe per 2 s, ≤ 4 outstanding, 30 s timeout,
   `263` pauses 30 s; our 352/315/401 are consumed. Per-user state is
   cleared on QUIT or leaving the last shared channel and moved on NICK
-  (a WHO in flight for the old name is absorbed unused). A select branch
+  (a WHO in flight for the old name is absorbed unused). Channel names in
+  PART/KICK and the rosters are compared with the nickname case mapping
+  (RFC 1459), in metadata and peer avatars alike. A speaker already known
+  is not looked up again without scanning the rosters. A select branch
   exists only while a probe is queued or outstanding.
 - Merge: the struct keeps each user's metadata and peer reference and
   emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);
