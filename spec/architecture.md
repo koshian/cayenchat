@@ -756,7 +756,10 @@ only while it is on:
   avatar. Queue ≤ 32, one probe per 2 s, ≤ 4 outstanding, 30 s timeout,
   `263` pauses 30 s; our 352/315/401 are consumed. Per-user state is
   cleared on QUIT or leaving the last shared channel and moved on NICK
-  (a WHO in flight for the old name is absorbed unused). A select branch
+  (a WHO in flight for the old name is absorbed unused). Channel names in
+  PART/KICK and the rosters are compared with the nickname case mapping
+  (RFC 1459), in metadata and peer avatars alike. A speaker already known
+  is not looked up again without scanning the rosters. A select branch
   exists only while a probe is queued or outstanding.
 - Merge: the struct keeps each user's metadata and peer reference and
   emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);

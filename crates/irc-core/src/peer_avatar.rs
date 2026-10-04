@@ -61,7 +61,7 @@ use tokio::time::Instant;
 use crate::{
     Event, display_nickname,
     metadata::{Handled, MAX_AVATAR_USERS, MAX_PUBLISHED_AVATAR_BYTES, avatar_value, numeric},
-    text::{nickname_key, same_nickname},
+    text::{nickname_key, same_channel, same_nickname},
     valid_channel,
 };
 
@@ -412,12 +412,15 @@ impl PeerAvatars {
         current_nick: &str,
         rosters: &HashMap<String, Vec<String>>,
     ) -> Option<String> {
-        if same_nickname(nick, current_nick) || !valid_sender(nick) || !shares(rosters, nick, None)
-        {
+        if same_nickname(nick, current_nick) || !valid_sender(nick) {
             return None;
         }
+        // Already known: skip the roster scan below.
         let key = nickname_key(nick);
         if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
+            return None;
+        }
+        if !shares(rosters, nick, None) {
             return None;
         }
         self.enqueue(ProbeKind::Who, nick, key)
@@ -523,14 +526,14 @@ impl PeerAvatars {
                 if ours(leaving) {
                     let others: HashSet<String> = rosters
                         .iter()
-                        .filter(|(name, _)| *name != channel)
+                        .filter(|(name, _)| !same_channel(name, channel))
                         .flat_map(|(_, members)| members)
                         .map(|member| nickname_key(display_nickname(member)))
                         .collect();
                     rosters
-                        .get(channel)
-                        .into_iter()
-                        .flatten()
+                        .iter()
+                        .filter(|(name, _)| same_channel(name, channel))
+                        .flat_map(|(_, members)| members)
                         .map(|member| display_nickname(member))
                         .filter(|nick| !ours(nick) && !others.contains(&nickname_key(nick)))
                         .map(str::to_owned)
@@ -712,7 +715,7 @@ fn valid_sender(nick: &str) -> bool {
 /// Whether `nick` is in a channel we are in, other than `except`.
 fn shares(rosters: &HashMap<String, Vec<String>>, nick: &str, except: Option<&str>) -> bool {
     rosters.iter().any(|(channel, members)| {
-        Some(channel.as_str()) != except
+        !except.is_some_and(|except| same_channel(channel, except))
             && members
                 .iter()
                 .any(|member| same_nickname(display_nickname(member), nick))
@@ -721,7 +724,7 @@ fn shares(rosters: &HashMap<String, Vec<String>>, nick: &str, except: Option<&st
 
 fn in_channel(rosters: &HashMap<String, Vec<String>>, channel: &str, nick: &str) -> bool {
     rosters.iter().any(|(name, members)| {
-        name.eq_ignore_ascii_case(channel)
+        same_channel(name, channel)
             && members
                 .iter()
                 .any(|member| same_nickname(display_nickname(member), nick))
@@ -1186,6 +1189,33 @@ mod tests {
         );
         let events = peers.lifecycle(&line(":bob!u@h NICK kv"), &rosters, ME);
         assert_eq!(avatars(&events), ["kv=-", "bob->kv"]);
+    }
+
+    #[test]
+    fn channel_names_compare_alike_when_leaving() {
+        let rosters = HashMap::from([
+            ("#Room".to_owned(), vec!["alice".into(), "bob".into()]),
+            ("#Other".to_owned(), vec!["alice".into(), "carol".into()]),
+        ]);
+        let known = |nick: &str| {
+            let mut peers = PeerAvatars::new(true, None);
+            observe(
+                &mut peers,
+                &format!(":{nick}!u@h NOTICE #a :\u{1}AVATAR https://example.com/x.png\u{1}"),
+                Instant::now(),
+            );
+            peers
+        };
+        let events = known("bob").lifecycle(&line(":bob!u@h PART #room"), &rosters, ME);
+        assert_eq!(avatars(&events), ["bob=-"]);
+        let events = known("carol").lifecycle(&line(":alice!u@h PART #OTHER"), &rosters, ME);
+        assert_eq!(avatars(&events), ["carol=-"]);
+        assert!(
+            known("carol")
+                .lifecycle(&line(":carol!u@h PART #room"), &rosters, ME)
+                .is_empty(),
+            "carol still shares #Other"
+        );
     }
 
     #[test]
