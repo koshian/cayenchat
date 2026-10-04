@@ -223,8 +223,8 @@ mod platform {
     };
     use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW,
-        RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegCreateKeyExW,
+        RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     };
 
     use windows::ApplicationModel::{StartupTask, StartupTaskState};
@@ -279,6 +279,29 @@ mod platform {
             match code {
                 ERROR_SUCCESS => Ok(Some(Self(key))),
                 ERROR_FILE_NOT_FOUND => Ok(None),
+                code => Err(format!("registry error {code}")),
+            }
+        }
+
+        /// Opens the key, creating it when it does not exist.
+        fn create(path: &str, access: u32) -> Result<Self, String> {
+            let mut key: HKEY = std::ptr::null_mut();
+            // SAFETY: `path` is NUL-terminated and `key` is a valid out pointer.
+            let code = unsafe {
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    wide(path).as_ptr(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    access,
+                    std::ptr::null(),
+                    &mut key,
+                    std::ptr::null_mut(),
+                )
+            };
+            match code {
+                ERROR_SUCCESS => Ok(Self(key)),
                 code => Err(format!("registry error {code}")),
             }
         }
@@ -380,6 +403,28 @@ mod platform {
         })
     }
 
+    /// Writes the value under `path`, creating the key first: a fresh user
+    /// profile may not have a `Run` key yet.
+    fn register(path: &str, command: &str) -> Result<(), String> {
+        let data = wide(command);
+        let key = Key::create(path, KEY_SET_VALUE)?;
+        // SAFETY: `data` is NUL-terminated UTF-16 and the size counts its bytes.
+        let code = unsafe {
+            RegSetValueExW(
+                key.0,
+                wide(VALUE).as_ptr(),
+                0,
+                REG_SZ,
+                data.as_ptr().cast(),
+                (data.len() * 2) as u32,
+            )
+        };
+        if code != ERROR_SUCCESS {
+            return Err(format!("registry error {code}"));
+        }
+        Ok(())
+    }
+
     pub fn enable() -> Result<(), String> {
         if backend() == Backend::StartupTask {
             // Never re-enables a task the user turned off in Windows settings:
@@ -401,22 +446,7 @@ mod platform {
         }
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let command = format!("\"{}\" {AUTOSTART_ARG}", executable.display());
-        let data = wide(&command);
-        let key = Key::open(RUN_KEY, KEY_SET_VALUE)?.ok_or("the Run key is missing")?;
-        // SAFETY: `data` is NUL-terminated UTF-16 and the size counts its bytes.
-        let code = unsafe {
-            RegSetValueExW(
-                key.0,
-                wide(VALUE).as_ptr(),
-                0,
-                REG_SZ,
-                data.as_ptr().cast(),
-                (data.len() * 2) as u32,
-            )
-        };
-        if code != ERROR_SUCCESS {
-            return Err(format!("registry error {code}"));
-        }
+        register(RUN_KEY, &command)?;
         // Choosing it here is an explicit request, so clear an old "disabled".
         if let Some(approved) = Key::open(APPROVED_KEY, KEY_SET_VALUE)? {
             approved.delete()?;
@@ -436,6 +466,30 @@ mod platform {
             key.delete()?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use windows_sys::Win32::System::Registry::RegDeleteKeyW;
+
+        use super::*;
+
+        #[test]
+        fn register_creates_a_missing_key() {
+            let path = format!(r"Software\CayenChatTest\autostart-{}", std::process::id());
+            assert!(Key::open(&path, KEY_READ).unwrap().is_none());
+
+            register(&path, r#""C:\cayenchat.exe" --autostart"#).unwrap();
+            let registered = Key::open(&path, KEY_READ).unwrap().unwrap();
+            assert!(registered.first_byte().unwrap().is_some());
+            drop(registered);
+
+            // SAFETY: the paths are NUL-terminated.
+            unsafe {
+                RegDeleteKeyW(HKEY_CURRENT_USER, wide(&path).as_ptr());
+                RegDeleteKeyW(HKEY_CURRENT_USER, wide(r"Software\CayenChatTest").as_ptr());
+            }
+        }
     }
 }
 
