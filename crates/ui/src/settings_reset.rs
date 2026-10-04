@@ -236,6 +236,7 @@ mod tests {
             field.update(cx, |field, cx| field.set_text("#123456", cx));
             let values = &mut form.settings.values;
             values.appearance.alternate_rows = true;
+            values.appearance.compact_urls = true;
             values.appearance.saved_colors.push("#ABCDEF".into());
             values.theme = ThemeMode::Dark;
             values.notifications.mentions = false;
@@ -253,6 +254,7 @@ mod tests {
             );
             assert_eq!(form.settings.values.theme, ThemeMode::System);
             assert!(!form.settings.values.appearance.alternate_rows);
+            assert!(!form.settings.values.appearance.compact_urls);
             // The palette is the user's own; another tab's settings stay.
             assert_eq!(form.settings.values.appearance.saved_colors, ["#ABCDEF"]);
             assert!(!form.settings.values.notifications.mentions);
