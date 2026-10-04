@@ -78,6 +78,10 @@ jobs:
             echo "::error::Tag $TAG is not an annotated tag (use git tag -a)"
             exit 1
           fi
+          if [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$SHA" ]; then
+            echo "::error::Tag $TAG no longer points to $SHA; tags must never be moved"
+            exit 1
+          fi
           git fetch --no-tags origin master:refs/remotes/origin/master
           if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/master; then
             echo "::error::Tagged commit $SHA is not on master"
