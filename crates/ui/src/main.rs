@@ -1194,7 +1194,7 @@ struct SettingsWindow {
     avatar_opening: bool,
     /// Observers of `settings`' fields; replaced with the form.
     _field_subscriptions: Vec<Subscription>,
-    /// Whether the connection switch was last drawn on, so the window is
+    /// Whether the connection button was last drawn as Disconnect, so the window is
     /// redrawn only when a connection comes up or goes down.
     connected_shown: bool,
     _subscriptions: Vec<Subscription>,
@@ -3727,7 +3727,7 @@ impl SettingsWindow {
         });
         let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
         let field_subscriptions = Self::observe_fields(&settings, window, cx);
-        // The connection switch follows the chat window's connections. The
+        // The connection button follows the chat window's connections. The
         // chat window opens this window from its own update, when its window
         // cannot be read yet, so subscribe once that update has returned.
         cx.defer_in(window, |this, _, cx| {
@@ -4568,18 +4568,17 @@ impl SettingsWindow {
                     )
                     .child(div().flex_1())
                     .when(!no_server, |d| {
-                        // On while the server being edited is connected, being
-                        // connected or waiting to retry.
+                        // One button in one place: Disconnect while the server
+                        // being edited is connected, being connected or
+                        // waiting to retry, Connect otherwise.
                         d.child(
-                            div()
-                                .id("connection-switch")
-                                .debug_selector(|| "connection-switch".into())
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .child(self.i18n.text("connect"))
-                                .child(settings_theme::switch(connected, cx))
+                            settings_theme::button("connection-button", !connected, cx)
+                                .debug_selector(|| "connection-button".into())
+                                .child(self.i18n.text(if connected {
+                                    "disconnect"
+                                } else {
+                                    "connect"
+                                }))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if !connected {
                                         this.connect_from_settings(window, cx);
