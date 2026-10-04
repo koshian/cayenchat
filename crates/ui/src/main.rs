@@ -2964,8 +2964,14 @@ impl ChatWindow {
                 index,
                 member_selection::Click::Only,
             );
-            self.members_scroll
-                .scroll_to_item(index, ScrollStrategy::Top);
+            // Scrolls only when the row is out of view, by the least amount:
+            // a row below the view lands at the bottom, one above at the top.
+            let strategy = if current.is_some_and(|current| index > current) {
+                ScrollStrategy::Bottom
+            } else {
+                ScrollStrategy::Top
+            };
+            self.members_scroll.scroll_to_item(index, strategy);
             cx.notify();
         }
     }
@@ -9333,6 +9339,93 @@ mod pane_tests {
         assert_eq!(chosen(cx), ["bob"]);
         cx.simulate_keystrokes("up");
         assert_eq!(chosen(cx), ["alice"]);
+    }
+
+    #[gpui::test]
+    fn member_keys_scroll_only_when_the_row_leaves_the_view(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.menu_bar_auto_hide = true;
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            let users = (0..200).map(|n| format!("user{n:03}")).collect();
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Names {
+                        channel: "#a".into(),
+                        users,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let first = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(first));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.members_focus));
+        let top = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let handle = chat.members_scroll.0.borrow();
+                (-f32::from(handle.base_handle.offset().y) / 22.).round() as usize
+            })
+        };
+        let chosen = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .anchor_index(channel.id, &channel.members)
+            })
+        };
+
+        // Rows still in view do not scroll the list.
+        cx.simulate_keystrokes("down down down down");
+        cx.run_until_parked();
+        assert_eq!(chosen(cx), Some(3));
+        assert_eq!(top(cx), 0, "a visible row does not move to the top");
+
+        // Paging past the view keeps the chosen row in view, at the bottom.
+        cx.simulate_keystrokes("pagedown pagedown");
+        cx.run_until_parked();
+        let (row, first) = (chosen(cx).unwrap(), top(cx));
+        assert!(row > 3 && first > 0 && first <= row, "{first} {row}");
+        let visible = chat.read_with(cx, |chat, _| {
+            (f32::from(
+                chat.members_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .bounds()
+                    .size
+                    .height,
+            ) / 22.) as usize
+        });
+        assert!(row < first + visible + 1, "{first} {row} {visible}");
+
+        // Moving up inside the view leaves the scroll position alone.
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        assert_eq!(top(cx), first);
     }
 
     #[gpui::test]
