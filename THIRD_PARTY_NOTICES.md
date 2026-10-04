@@ -22,3 +22,9 @@ Settings appearance uses [native-theme and native-theme-gpui 0.5.7](https://gith
 (Apache-2.0). They are Cargo dependencies; no upstream implementation is copied.
 Include their license notices and those of their transitive dependencies when
 preparing a distributable binary.
+
+UI icons in `assets/icons/ui/` are individual SVG files copied from
+[Lucide](https://github.com/lucide-icons/lucide), licensed under the ISC License
+(portions MIT, from Feather). The license is retained in
+`licenses/LUCIDE-ISC.txt`; the icons in use are listed in
+`assets/icons/ui/README.md`.
