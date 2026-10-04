@@ -12,6 +12,7 @@
 //! same case mapping everywhere (see [`crate::text`]).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::text::nickname_key;
 
@@ -21,11 +22,14 @@ pub(crate) struct UserId(u64);
 
 struct Presence {
     key: String,
-    channels: HashSet<String>,
+    /// Shares the key allocation with [`Members::key`]; a user is in few
+    /// channels, so a vector is smaller than a set.
+    channels: Vec<Arc<str>>,
 }
 
 #[derive(Default)]
 struct Members {
+    key: Arc<str>,
     name: String,
     users: HashSet<UserId>,
 }
@@ -62,7 +66,7 @@ impl PresenceIndex {
                 presence
                     .channels
                     .iter()
-                    .any(|channel| Some(channel) != except.as_ref())
+                    .any(|channel| Some(&**channel) != except.as_deref())
             })
     }
 
@@ -75,7 +79,7 @@ impl PresenceIndex {
             .and_then(|id| self.users.get(&id))
             .into_iter()
             .flat_map(|presence| &presence.channels)
-            .filter_map(|key| self.channels.get(key))
+            .filter_map(|key| self.channels.get(&**key))
             .map(|members| members.name.as_str())
             .collect();
         channels.sort_unstable();
@@ -103,7 +107,7 @@ impl PresenceIndex {
                         id,
                         Presence {
                             key,
-                            channels: HashSet::new(),
+                            channels: Vec::new(),
                         },
                     );
                     id
@@ -113,11 +117,17 @@ impl PresenceIndex {
         }
         let entry = self.channels.entry(channel_key.clone()).or_default();
         entry.name = channel.to_owned();
+        if entry.key.is_empty() {
+            entry.key = Arc::from(channel_key.as_str());
+        }
+        let key = entry.key.clone();
         let departed: Vec<UserId> = entry.users.difference(&present).copied().collect();
         entry.users = present.clone();
         for id in &present {
-            if let Some(presence) = self.users.get_mut(id) {
-                presence.channels.insert(channel_key.clone());
+            if let Some(presence) = self.users.get_mut(id)
+                && !presence.channels.contains(&key)
+            {
+                presence.channels.push(key.clone());
             }
         }
         for id in departed {
@@ -162,7 +172,7 @@ impl PresenceIndex {
         if let Some(presence) = self.users.remove(&id) {
             self.by_nick.remove(&presence.key);
             for channel in presence.channels {
-                if let Some(members) = self.channels.get_mut(&channel) {
+                if let Some(members) = self.channels.get_mut(&*channel) {
                     members.users.remove(&id);
                 }
             }
@@ -173,7 +183,9 @@ impl PresenceIndex {
         let Some(presence) = self.users.get_mut(&id) else {
             return;
         };
-        presence.channels.remove(channel_key);
+        presence
+            .channels
+            .retain(|channel| &**channel != channel_key);
         if presence.channels.is_empty() {
             self.forget(id);
         }
@@ -187,14 +199,17 @@ impl PresenceIndex {
                 && self.by_nick.get(&presence.key) == Some(id)
                 && presence.channels.iter().all(|channel| {
                     self.channels
-                        .get(channel)
+                        .get(&**channel)
                         .is_some_and(|members| members.users.contains(id))
                 })
         }) && self.by_nick.len() == self.users.len()
             && self.channels.iter().all(|(_, members)| {
                 members.users.iter().all(|id| {
                     self.users.get(id).is_some_and(|presence| {
-                        presence.channels.contains(&nickname_key(&members.name))
+                        presence
+                            .channels
+                            .iter()
+                            .any(|c| **c == *nickname_key(&members.name))
                     })
                 })
             })
@@ -305,5 +320,129 @@ mod tests {
         index.replace_channel("#a", &names(&["@", "bob"]));
         assert!(index.user("").is_none());
         assert!(index.consistent());
+    }
+}
+
+/// Cost of the index against scanning the published rosters. Ignored; run with
+/// `cargo test --release -p cayenchat-irc-core presence_cost -- --ignored --nocapture`.
+#[cfg(test)]
+mod cost {
+    use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+
+    struct Counting;
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
+
+    fn live() -> usize {
+        LIVE.load(Ordering::Relaxed)
+    }
+
+    fn scan(rosters: &HashMap<String, Vec<String>>, channel: &str, nick: &str) -> bool {
+        rosters.get(channel).is_some_and(|members| {
+            members.iter().any(|member| {
+                member
+                    .trim_start_matches(['~', '&', '@', '%', '+'])
+                    .eq_ignore_ascii_case(nick)
+            })
+        })
+    }
+
+    #[test]
+    #[ignore]
+    fn presence_cost() {
+        // (channels, members each, distinct users): overlap grows as users shrink.
+        for (channels, members, distinct) in [
+            (10, 50, 500),
+            (10, 50, 100),
+            (20, 5_000, 100_000),
+            (20, 5_000, 20_000),
+        ] {
+            let before = live();
+            let mut rosters: HashMap<String, Vec<String>> = HashMap::new();
+            for c in 0..channels {
+                let list = (0..members)
+                    .map(|m| {
+                        let user = (c * 7919 + m * 31) % distinct;
+                        format!("{}user{user}", if m % 10 == 0 { "@" } else { "" })
+                    })
+                    .collect();
+                rosters.insert(format!("#perf{c:02}"), list);
+            }
+            let roster_bytes = live() - before;
+
+            let before = live();
+            let mut index = PresenceIndex::default();
+            let start = Instant::now();
+            for (name, list) in &rosters {
+                index.replace_channel(name, list);
+            }
+            let first = start.elapsed();
+            let index_bytes = live() - before;
+            let start = Instant::now();
+            for (name, list) in &rosters {
+                index.replace_channel(name, list);
+            }
+            let again = start.elapsed();
+
+            let probes: Vec<String> = (0..200)
+                .map(|i| format!("user{}", i * 13 % distinct))
+                .collect();
+            let names: Vec<&String> = rosters.keys().collect();
+            let start = Instant::now();
+            let mut hits = 0;
+            for nick in &probes {
+                for name in &names {
+                    hits += usize::from(scan(&rosters, name, nick));
+                }
+            }
+            let scan_time = start.elapsed() / probes.len() as u32;
+            let start = Instant::now();
+            let mut hits_index = 0;
+            for nick in &probes {
+                for name in &names {
+                    hits_index += usize::from(index.in_channel(name, nick));
+                }
+            }
+            let index_time = start.elapsed() / probes.len() as u32;
+            assert_eq!(hits, hits_index);
+
+            // Cost of NICK and QUIT in the index alone.
+            let start = Instant::now();
+            for nick in &probes {
+                index.rename(nick, &format!("{nick}_"));
+            }
+            let rename = start.elapsed() / probes.len() as u32;
+            let start = Instant::now();
+            for nick in &probes {
+                index.quit(&format!("{nick}_"));
+            }
+            let quit = start.elapsed() / probes.len() as u32;
+            assert!(index.consistent());
+
+            println!(
+                "{channels}x{members} users={distinct} roster={} KiB index={} KiB \
+                 first={first:?} reapply={again:?} \
+                 lookup(all channels): scan={scan_time:?} index={index_time:?} \
+                 rename={rename:?} quit={quit:?}",
+                roster_bytes / 1024,
+                index_bytes / 1024,
+            );
+        }
     }
 }
