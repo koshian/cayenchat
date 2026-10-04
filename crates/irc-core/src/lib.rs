@@ -2036,7 +2036,7 @@ async fn run_cancellable(
                         // not chat and not server lines.
                         let replayed = replay.replayed(&message);
                         if let Some(peers) = peers.as_mut()
-                            && let Some(handled) = peers.observe(&message, &current_nick, &roster.last, replayed, tokio::time::Instant::now())
+                            && let Some(handled) = peers.observe(&message, &current_nick, &roster.presence, replayed, tokio::time::Instant::now())
                         {
                             if let Err(detail) = send_all(&client, &events, started, handled.send).await {
                                 let _ = events.send(Event::Disconnected(detail)).await;
@@ -2067,13 +2067,13 @@ async fn run_cancellable(
                         // peer avatar cannot stand in for their metadata.
                         let mut lifecycle = peers
                             .as_mut()
-                            .map(|peers| peers.lifecycle(&message, &roster.last, &current_nick))
+                            .map(|peers| peers.lifecycle(&message, &roster.presence, &current_nick))
                             .unwrap_or_default();
                         lifecycle.extend(merged(&mut peers, if metadata_enabled {
                             if let IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) = &message.command {
                                 metadata.forget_channel(channel);
                             }
-                            let handled = metadata.lifecycle(&message, &roster.last, &current_nick, replayed, tokio::time::Instant::now());
+                            let handled = metadata.lifecycle(&message, &roster.presence, &current_nick, replayed, tokio::time::Instant::now());
                             for note in handled.notes {
                                 diagnostic(&events, started, note).await;
                             }
@@ -2134,7 +2134,7 @@ async fn run_cancellable(
                             continue;
                         }
                         let mut account_events = if track_accounts {
-                            accounts.observe(&message, &current_nick, &roster.last)
+                            accounts.observe(&message, &current_nick, &roster.presence)
                         } else {
                             Vec::new()
                         };
@@ -2146,7 +2146,7 @@ async fn run_cancellable(
                                 // their avatar; nobody else is.
                                 Event::ChannelMessage { sender, replayed: false, .. }
                                 | Event::PrivateMessage { sender, replayed: false, .. } => {
-                                    if let Some(note) = peers.as_mut().and_then(|peers| peers.speaker(sender, &current_nick, &roster.last)) {
+                                    if let Some(note) = peers.as_mut().and_then(|peers| peers.speaker(sender, &current_nick, &roster.presence)) {
                                         diagnostic(&events, started, note).await;
                                     }
                                 }
@@ -2254,7 +2254,7 @@ async fn run_cancellable(
             // Peer avatar lookups and queries, spaced out; no timer runs
             // while none is queued or outstanding.
             _ = tokio::time::sleep_until(peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).unwrap_or_else(tokio::time::Instant::now)), if registered && peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).is_some() => {
-                let handled = peers.as_mut().map(|peers| peers.tick(tokio::time::Instant::now(), &current_nick, &roster.last)).unwrap_or_default();
+                let handled = peers.as_mut().map(|peers| peers.tick(tokio::time::Instant::now(), &current_nick, &roster.presence)).unwrap_or_default();
                 if let Err(detail) = send_all(&client, &events, started, handled.send).await {
                     let _ = events.send(Event::Disconnected(detail)).await;
                     return;

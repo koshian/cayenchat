@@ -1148,6 +1148,25 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D039 — UI icons come from Lucide, vendored one SVG at a time
+
+**Status:** Accepted
+
+New small UI icons (link, menu, status marks) are taken from
+[Lucide](https://lucide.dev/) (ISC License) unless Lucide has nothing suitable;
+only then another source or a hand-drawn icon is considered.
+
+- Only the SVG files in use are copied into `assets/icons/ui/<lucide-name>.svg`,
+  unchanged apart from what theming needs. No icon library is a dependency and
+  no icons are added ahead of use. One meaning gets one icon.
+- They are drawn through GPUI's SVG support (`ImageFormat::Svg`); stroke colour
+  must work in both light and dark themes.
+- Every vendored icon is listed in `assets/icons/ui/README.md` (name, upstream
+  URL, Lucide version) and the upstream LICENSE (ISC plus the MIT text for
+  Feather-derived icons) is kept verbatim in `licenses/LUCIDE-ISC.txt`,
+  referenced from `THIRD_PARTY_NOTICES.md`. This is separate from the app icon
+  `assets/icons/cayenchat.svg` and from CayenChat's own GPL-3.0-only licence.
+
 ## D038 — Settings: category list on the left, one reset per tab
 
 Status: implemented (#134, #135).
