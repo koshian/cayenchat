@@ -1234,7 +1234,12 @@ struct SettingsWindow {
     connected_shown: bool,
     /// The system's login-startup registration as last read; never stored in
     /// the settings file (#153).
-    autostart: Result<autostart::AutostartStatus, String>,
+    /// `None` until the first read finishes.
+    autostart: Option<Result<autostart::AutostartStatus, String>>,
+    /// A change is being made; the checkbox ignores clicks until it ends.
+    autostart_busy: bool,
+    /// Counts reads and changes, so an older answer never replaces a newer one.
+    autostart_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -2757,10 +2762,10 @@ impl ChatWindow {
             && handle
                 .update(cx, |settings, window, cx| {
                     if tab != SettingsTab::Connection {
-                        settings.show_tab(tab);
+                        settings.show_tab(tab, cx);
                         cx.notify();
                     } else if let Some(profile) = profile.clone() {
-                        settings.show_tab(tab);
+                        settings.show_tab(tab, cx);
                         settings.select_server(profile, cx);
                     }
                     window.activate_window()
@@ -3914,9 +3919,12 @@ impl SettingsWindow {
             avatar_opening: false,
             _field_subscriptions: field_subscriptions,
             connected_shown: false,
-            autostart: autostart::status(),
+            autostart: None,
+            autostart_busy: false,
+            autostart_generation: 0,
             _subscriptions: subscriptions,
         };
+        this.refresh_autostart(cx);
         this.probe_system_store(cx);
         this.refresh_upload_account(cx);
         this
@@ -4869,6 +4877,7 @@ impl SettingsWindow {
             );
             server_selector = server_selector.child(menu);
         }
+        let autostart_toggle = self.render_autostart_toggle(cx);
         account_settings::panel(cx)
             .child(self.tab_heading("connection"))
             .child(
@@ -4895,6 +4904,7 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("language_hint")),
             )
+            .child(autostart_toggle)
             .child(
                 div()
                     .flex()
@@ -5189,7 +5199,6 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
-            .child(self.render_autostart_toggle(cx))
             .child(
                 div()
                     .pt_2()
@@ -6022,7 +6031,7 @@ impl SettingsWindow {
     /// Shows `tab` from the category list, which keeps the focus so Up and
     /// Down continue from it.
     fn select_tab(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_tab(tab);
+        self.show_tab(tab, cx);
         self.font_picker = None;
         window.focus(&self.nav_focus);
         cx.notify();
@@ -6088,7 +6097,7 @@ impl SettingsWindow {
     /// Switches tabs. A message about something done on one tab (such as
     /// connecting an image upload account) is not shown on the others;
     /// an autosave failure still is.
-    fn show_tab(&mut self, tab: SettingsTab) {
+    fn show_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
         if self.tab != tab {
             self.feedback = None;
             self.avatar_feedback = None;
@@ -6098,36 +6107,96 @@ impl SettingsWindow {
             self.color_picker = None;
         }
         // The system may have changed the registration since it was read.
-        self.autostart = autostart::status();
+        self.refresh_autostart(cx);
         self.tab = tab;
+    }
+
+    /// Reads the system's registration without blocking the window. Skipped
+    /// while a change is under way: its own answer follows.
+    fn refresh_autostart(&mut self, cx: &mut Context<Self>) {
+        if self.autostart_busy {
+            return;
+        }
+        self.autostart_generation += 1;
+        let generation = self.autostart_generation;
+        let read = cx
+            .background_executor()
+            .spawn(async { autostart::status() });
+        cx.spawn(async move |this, cx| {
+            let status = read.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.autostart_generation == generation {
+                    this.autostart = Some(status);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Registers or removes the login startup entry. The checkbox only
     /// follows what the system reports afterwards, so a failure leaves it
     /// matching the real state.
     fn toggle_autostart(&mut self, cx: &mut Context<Self>) {
-        let turn_on = !self.autostart.as_ref().is_ok_and(|status| status.is_on());
-        let result = if turn_on {
-            autostart::enable()
-        } else {
-            autostart::disable()
-        };
-        self.feedback = result
-            .err()
-            .map(|error| self.i18n.format("autostart_error", &[("error", &error)]));
-        self.autostart = autostart::status();
+        if self.autostart_busy {
+            return;
+        }
+        let turn_on = !self
+            .autostart
+            .as_ref()
+            .is_some_and(|status| status.as_ref().is_ok_and(|status| status.is_on()));
+        self.autostart_busy = true;
+        self.autostart_generation += 1;
+        let generation = self.autostart_generation;
+        let change = cx.background_executor().spawn(async move {
+            let result = if turn_on {
+                autostart::enable()
+            } else {
+                autostart::disable()
+            };
+            (result, autostart::status())
+        });
         cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (result, status) = change.await;
+            let _ = this.update(cx, |this, cx| {
+                this.autostart_busy = false;
+                if this.autostart_generation == generation {
+                    this.autostart = Some(status);
+                }
+                this.feedback = result
+                    .err()
+                    .map(|error| this.i18n.format("autostart_error", &[("error", &error)]));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn render_autostart_toggle(&self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
-        let status = self.autostart.as_ref().ok().copied();
-        let usable = status.is_some_and(|status| status != autostart::AutostartStatus::Unavailable);
+        let status = self
+            .autostart
+            .as_ref()
+            .and_then(|status| status.as_ref().ok())
+            .copied();
+        let usable = !self.autostart_busy
+            && status.is_some_and(|status| status != autostart::AutostartStatus::Unavailable);
         let note = match &self.autostart {
-            Ok(autostart::AutostartStatus::DisabledByUser) => Some("autostart_disabled_by_user"),
-            Ok(autostart::AutostartStatus::Unavailable) => Some("autostart_unavailable"),
+            Some(Ok(autostart::AutostartStatus::DisabledByUser)) => {
+                Some(if autostart::reenable_in_system_settings() {
+                    "autostart_disabled_in_system"
+                } else {
+                    "autostart_disabled_by_user"
+                })
+            }
+            Some(Ok(autostart::AutostartStatus::Unavailable)) => Some("autostart_unavailable"),
             _ => None,
         };
+        let read_error = self
+            .autostart
+            .as_ref()
+            .and_then(|status| status.as_ref().err());
         let mut toggle = div()
             .id("autostart")
             .debug_selector(|| "autostart".into())
@@ -6157,7 +6226,7 @@ impl SettingsWindow {
                         .child(self.i18n.text(key)),
                 )
             })
-            .when_some(self.autostart.as_ref().err(), |d, error| {
+            .when_some(read_error, |d, error| {
                 d.child(
                     div()
                         .text_color(theme.warning)
@@ -10034,7 +10103,9 @@ mod pane_tests {
         // Leaving the tab closes an open picker; coming back finds it closed.
         form.update(cx, |form, cx| form.toggle_color_picker(&field, cx));
         assert!(form.read_with(cx, |form, _| form.color_picker.is_some()));
-        form.update(cx, |form, _| form.show_tab(super::SettingsTab::Connection));
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Connection, cx)
+        });
         assert!(form.read_with(cx, |form, _| form.color_picker.is_none()));
         // The picker opened here has no field of its own (the row has one),
         // and still follows what is typed in the row.
@@ -10048,6 +10119,69 @@ mod pane_tests {
         field.update(cx, |field, cx| field.set_text("#123456", cx));
         cx.run_until_parked();
         assert_eq!(picker.read_with(cx, |picker, _| picker.color()), 0x123456);
+    }
+
+    #[gpui::test]
+    fn login_startup_is_set_without_a_server_and_follows_the_system(cx: &mut TestAppContext) {
+        use crate::autostart::{AutostartStatus, fake};
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        *fake::STATE.lock().unwrap() = Ok(AutostartStatus::Disabled);
+        *fake::FAIL_CHANGES.lock().unwrap() = false;
+        // No server is registered, so the server form is not drawn at all.
+        let settings = Settings::default();
+        assert!(settings.selected_profile().is_none());
+        let owner = cx.add_window(|window, cx| {
+            ChatWindow::with_settings(crate::settings_with_channels("#a"), None, window, cx)
+        });
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            super::SettingsWindow::new(owner, settings.clone(), window, cx)
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("autostart").is_some(),
+            "shown without a server"
+        );
+        let shown = |form: &gpui::Entity<super::SettingsWindow>,
+                     cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| form.autostart.clone())
+        };
+        assert_eq!(shown(&form, cx), Some(Ok(AutostartStatus::Disabled)));
+
+        // A click changes the system and the checkbox follows it. The
+        // checkbox ignores clicks until the change has finished.
+        form.update(cx, |form, cx| {
+            form.toggle_autostart(cx);
+            assert!(form.autostart_busy);
+            form.toggle_autostart(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(shown(&form, cx), Some(Ok(AutostartStatus::Enabled)));
+        assert!(!form.read_with(cx, |form, _| form.autostart_busy));
+
+        // A refused change leaves the real state on screen, with the error.
+        *fake::FAIL_CHANGES.lock().unwrap() = true;
+        form.update(cx, |form, cx| form.toggle_autostart(cx));
+        cx.run_until_parked();
+        assert_eq!(shown(&form, cx), Some(Ok(AutostartStatus::Enabled)));
+        assert!(form.read_with(cx, |form, _| form.feedback.is_some()));
+        *fake::FAIL_CHANGES.lock().unwrap() = false;
+
+        // A change made in the system is seen when a tab is shown again.
+        *fake::STATE.lock().unwrap() = Ok(AutostartStatus::DisabledByUser);
+        form.update(cx, |form, cx| {
+            form.show_tab(super::SettingsTab::Connection, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(shown(&form, cx), Some(Ok(AutostartStatus::DisabledByUser)));
+        *fake::STATE.lock().unwrap() = Ok(AutostartStatus::Disabled);
     }
 
     #[gpui::test]

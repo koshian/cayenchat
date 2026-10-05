@@ -30,18 +30,66 @@ impl AutostartStatus {
     }
 }
 
+/// These call into the system and may wait on it, so the settings window
+/// runs them off the UI thread.
+#[cfg(not(test))]
 pub fn status() -> Result<AutostartStatus, String> {
     platform::status()
 }
 
+#[cfg(not(test))]
 pub fn enable() -> Result<(), String> {
     platform::enable()
 }
 
+#[cfg(not(test))]
 pub fn disable() -> Result<(), String> {
     platform::disable()
 }
 
+/// Whether a `DisabledByUser` entry can only be turned back on in the
+/// system's own settings, not by choosing it here.
+pub fn reenable_in_system_settings() -> bool {
+    platform::reenable_in_system_settings()
+}
+
+/// Stands in for the system in the UI tests.
+#[cfg(test)]
+pub mod fake {
+    use std::sync::Mutex;
+
+    use super::AutostartStatus;
+
+    pub static STATE: Mutex<Result<AutostartStatus, String>> =
+        Mutex::new(Ok(AutostartStatus::Disabled));
+    pub static FAIL_CHANGES: Mutex<bool> = Mutex::new(false);
+}
+
+#[cfg(test)]
+pub fn status() -> Result<AutostartStatus, String> {
+    fake::STATE.lock().unwrap().clone()
+}
+
+#[cfg(test)]
+pub fn enable() -> Result<(), String> {
+    change(AutostartStatus::Enabled)
+}
+
+#[cfg(test)]
+pub fn disable() -> Result<(), String> {
+    change(AutostartStatus::Disabled)
+}
+
+#[cfg(test)]
+fn change(to: AutostartStatus) -> Result<(), String> {
+    if *fake::FAIL_CHANGES.lock().unwrap() {
+        return Err("refused".into());
+    }
+    *fake::STATE.lock().unwrap() = Ok(to);
+    Ok(())
+}
+
+#[cfg_attr(test, allow(dead_code))]
 #[cfg(target_os = "linux")]
 mod platform {
     use std::path::{Path, PathBuf};
@@ -99,28 +147,78 @@ mod platform {
     }
 
     /// An entry the desktop's own settings switched off keeps its file but
-    /// gains `Hidden=true` or `X-GNOME-Autostart-enabled=false`.
+    /// gains `Hidden=true` or `X-GNOME-Autostart-enabled=false`. A file that
+    /// is not a usable application entry (empty, cut short, another type)
+    /// is not a registration.
     fn parse(text: &str) -> AutostartStatus {
-        let off = text.lines().any(|line| {
-            let line = line.trim();
-            line.eq_ignore_ascii_case("Hidden=true")
-                || line.eq_ignore_ascii_case("X-GNOME-Autostart-enabled=false")
-        });
-        if off {
+        let mut in_entry = false;
+        let mut has_entry = false;
+        let mut application = false;
+        let mut has_exec = false;
+        let mut off = false;
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') {
+                in_entry = line == "[Desktop Entry]";
+                has_entry |= in_entry;
+                continue;
+            }
+            let Some((key, value)) = in_entry.then(|| line.split_once('=')).flatten() else {
+                continue;
+            };
+            let value = value.trim();
+            match key.trim() {
+                "Type" => application = value == "Application",
+                "Exec" => has_exec = !value.is_empty(),
+                "Hidden" => off |= value.eq_ignore_ascii_case("true"),
+                "X-GNOME-Autostart-enabled" => off |= value.eq_ignore_ascii_case("false"),
+                _ => {}
+            }
+        }
+        if has_entry && off {
             AutostartStatus::DisabledByUser
-        } else {
+        } else if has_entry && application && has_exec {
             AutostartStatus::Enabled
+        } else {
+            AutostartStatus::Disabled
         }
     }
 
+    /// More than any real entry; a larger file is not read.
+    const MAX_ENTRY_BYTES: u64 = 64 * 1024;
+
     pub fn status() -> Result<AutostartStatus, String> {
-        match std::fs::read_to_string(entry_path()?) {
-            Ok(text) => Ok(parse(&text)),
+        use std::io::Read;
+
+        let file = match std::fs::File::open(entry_path()?) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(AutostartStatus::Disabled)
+                return Ok(AutostartStatus::Disabled);
             }
-            Err(error) => Err(error.to_string()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_ENTRY_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            return Ok(AutostartStatus::Disabled);
         }
+        Ok(parse(&String::from_utf8_lossy(&bytes)))
+    }
+
+    /// Replaces the entry through a temporary file, so a failed write leaves
+    /// the old registration as it was.
+    fn write_entry(path: &Path, text: &str) -> std::io::Result<()> {
+        let temporary = path.with_extension(format!("desktop.tmp{}", std::process::id()));
+        let result =
+            std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
     }
 
     pub fn enable() -> Result<(), String> {
@@ -129,7 +227,12 @@ mod platform {
         if let Some(directory) = path.parent() {
             std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
-        std::fs::write(path, contents(&executable)).map_err(|error| error.to_string())
+        write_entry(&path, &contents(&executable)).map_err(|error| error.to_string())
+    }
+
+    /// Choosing it here rewrites the entry, which clears the desktop's flag.
+    pub fn reenable_in_system_settings() -> bool {
+        false
     }
 
     pub fn disable() -> Result<(), String> {
@@ -180,9 +283,45 @@ mod platform {
                 AutostartStatus::DisabledByUser
             );
         }
+
+        #[test]
+        fn unusable_entries_are_not_a_registration() {
+            for text in [
+                "",
+                "[Desktop Entry]\n",
+                "[Desktop Entry]\nType=Application\n",
+                "[Desktop Entry]\nType=Application\nExec=\n",
+                "[Desktop Entry]\nType=Link\nExec=x\n",
+                "Type=Application\nExec=x\n",
+                "[Other]\nType=Application\nExec=x\n",
+                "[Desktop Entry]\nType=Applic",
+            ] {
+                assert_eq!(parse(text), AutostartStatus::Disabled, "{text:?}");
+            }
+        }
+
+        #[test]
+        fn a_failed_replacement_keeps_the_old_entry() {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/tmp")
+                .join(format!("autostart-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("cayenchat.desktop");
+            write_entry(&path, "old").unwrap();
+            write_entry(&path, "new").unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+            // A directory in the way makes the rename fail; nothing is left over.
+            let blocked = directory.join("blocked.desktop");
+            std::fs::create_dir(&blocked).unwrap();
+            std::fs::write(blocked.join("keep"), "x").unwrap();
+            assert!(write_entry(&blocked, "text").is_err());
+            assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+            std::fs::remove_dir_all(&directory).unwrap();
+        }
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[cfg(target_os = "macos")]
 mod platform {
     use objc2_service_management::{SMAppService, SMAppServiceStatus};
@@ -207,6 +346,11 @@ mod platform {
             .map_err(|error| error.localizedDescription().to_string())
     }
 
+    /// An entry waiting for approval is only approved in System Settings.
+    pub fn reenable_in_system_settings() -> bool {
+        true
+    }
+
     pub fn disable() -> Result<(), String> {
         // SAFETY: as above.
         unsafe { SMAppService::mainAppService().unregisterAndReturnError() }
@@ -214,6 +358,7 @@ mod platform {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[cfg(target_os = "windows")]
 mod platform {
     use std::os::windows::ffi::OsStrExt;
@@ -228,7 +373,7 @@ mod platform {
     };
 
     use windows::ApplicationModel::{StartupTask, StartupTaskState};
-    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
     use windows::core::HSTRING;
 
     use super::{AUTOSTART_ARG, AutostartStatus};
@@ -347,16 +492,18 @@ mod platform {
     /// `Parameters="--autostart"` so the launch carries the flag.
     const TASK_ID: &str = "CayenChat";
 
-    /// Runs a WinRT call on a thread of its own: blocking on an async
-    /// operation from the UI thread's apartment can deadlock.
+    /// Runs a WinRT call on a thread of its own (an MTA, where blocking on an
+    /// async operation is allowed). Callers are already off the UI thread.
     fn winrt<T: Send + 'static>(
         call: impl FnOnce() -> windows::core::Result<T> + Send + 'static,
     ) -> Result<T, String> {
         std::thread::spawn(move || {
-            // SAFETY: initializes this fresh thread; a repeat or a mode
-            // clash only means COM is already usable here.
-            let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-            call().map_err(|error| error.message())
+            // SAFETY: initializes this fresh thread, undone below.
+            unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|error| error.message())?;
+            let result = call().map_err(|error| error.message());
+            // SAFETY: pairs with the successful `RoInitialize` above.
+            unsafe { RoUninitialize() };
+            result
         })
         .join()
         .map_err(|_| "the startup task call panicked".to_string())?
@@ -454,6 +601,13 @@ mod platform {
         Ok(())
     }
 
+    /// A disabled `StartupTask` is only turned back on in Windows settings;
+    /// the `Run` entry is rewritten by choosing it here.
+    pub fn reenable_in_system_settings() -> bool {
+        static PACKAGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *PACKAGED.get_or_init(|| backend() == Backend::StartupTask)
+    }
+
     pub fn disable() -> Result<(), String> {
         if backend() == Backend::StartupTask {
             return winrt(|| {
@@ -493,6 +647,7 @@ mod platform {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 mod platform {
     use super::AutostartStatus;
@@ -503,6 +658,10 @@ mod platform {
 
     pub fn enable() -> Result<(), String> {
         Err("not supported on this platform".into())
+    }
+
+    pub fn reenable_in_system_settings() -> bool {
+        false
     }
 
     pub fn disable() -> Result<(), String> {
