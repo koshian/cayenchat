@@ -2286,7 +2286,7 @@ impl ChatWindow {
                 profile
                     .channels()
                     .iter()
-                    .any(|name| name.eq_ignore_ascii_case(channel))
+                    .any(|name| cayenchat_irc_core::text::same_channel(name, channel))
             })
     }
 
@@ -2321,7 +2321,7 @@ impl ChatWindow {
         let mut entries = profile.auto_join_entries();
         let found = entries
             .iter_mut()
-            .filter(|entry| entry.name.eq_ignore_ascii_case(&menu.channel))
+            .filter(|entry| cayenchat_irc_core::text::same_channel(&entry.name, &menu.channel))
             .map(|entry| entry.enabled = add)
             .count();
         if found == 0 && add {
@@ -11313,6 +11313,17 @@ mod pane_tests {
             assert_eq!(saved(chat), "-#a,#b,#c");
             let file = crate::settings_file::load().unwrap().unwrap();
             assert_eq!(file.selected_profile().unwrap().channels, "-#a,#b,#c");
+
+            // `[]` and `{}` are the same channel under RFC 1459 case mapping.
+            menu(chat, "#[x]");
+            chat.toggle_auto_join(true, cx);
+            assert!(chat.auto_join_enabled(network, "#{x}"));
+            menu(chat, "#{x}");
+            chat.toggle_auto_join(true, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c,#[x]");
+            menu(chat, "#{X}");
+            chat.toggle_auto_join(false, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c,-#[x]");
         });
         drop(file);
     }
