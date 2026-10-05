@@ -301,6 +301,7 @@
   "notify_mentions": "When someone mentions my nickname in a channel (e.g. nick: or @nick)",
   "notify_private_messages": "When I receive a private message",
   "notify_keywords": "When a channel message contains a keyword",
+  "notify_sound": "Play a sound and flash the taskbar button with a notification",
   "keywords": "Keywords",
   "keywords_placeholder": "word, another word",
   "keywords_hint": "Comma-separated. Matched anywhere in a message, ignoring case. Add your nickname here only if you also want it matched inside other words.",

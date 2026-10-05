@@ -476,6 +476,9 @@ pub struct Notifications {
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
     pub private_messages: bool,
+    /// Beep and flash the taskbar button (Windows) when a notification
+    /// fires. Off by default.
+    pub sound: bool,
 }
 
 impl Default for Notifications {
@@ -486,6 +489,7 @@ impl Default for Notifications {
             keyword_alerts: true,
             keywords: Vec::new(),
             private_messages: true,
+            sound: false,
         }
     }
 }

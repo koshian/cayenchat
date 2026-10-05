@@ -1583,6 +1583,7 @@ impl ChatWindow {
         self.notifier.show(DesktopNotification {
             summary,
             body: notifications::body_text(&plain),
+            sound: self.notification_rules.sound,
         });
     }
 
@@ -5541,6 +5542,16 @@ impl SettingsWindow {
                 self.settings.keywords.clone(),
             ))
             .child(hint("keywords_hint"))
+            .when(cfg!(target_os = "windows"), |d| {
+                d.child(self.notification_toggle(
+                    "notify-sound",
+                    "notify_sound",
+                    |n| n.sound,
+                    |n| n.sound = !n.sound,
+                    enabled,
+                    cx,
+                ))
+            })
             .child(hint(if cfg!(target_os = "macos") {
                 "notifications_hint_macos"
             } else {
@@ -5751,6 +5762,7 @@ fn notification_rules(settings: &Notifications) -> NotificationRules {
         keyword_alerts: settings.keyword_alerts,
         keywords: settings.keywords.clone(),
         private_messages: settings.private_messages,
+        sound: settings.sound,
     }
 }
 
@@ -10720,6 +10732,10 @@ mod pane_tests {
                 false,
                 cx,
             );
+            assert!(
+                chat.notifier.shown.iter().all(|n| !n.sound),
+                "sound is off by default"
+            );
             chat.notification_rules.mentions = false;
             chat.handle_events(
                 NetworkId(1),
@@ -10727,6 +10743,18 @@ mod pane_tests {
                 false,
                 cx,
             );
+            chat.notification_burst = cayenchat_app::notifications::BurstLimiter::default();
+            chat.notification_rules.sound = true;
+            chat.notification_rules.mentions = true;
+            chat.handle_events(
+                NetworkId(1),
+                vec![message("#a", "alice: with sound", true)],
+                false,
+                cx,
+            );
+            let loud = chat.notifier.shown.pop().expect("sound notification");
+            assert_eq!(loud.body, "alice: with sound");
+            assert!(loud.sound);
             let summaries: Vec<_> = chat
                 .notifier
                 .shown
