@@ -13,20 +13,50 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Pull requests run only the jobs their changed paths can affect, so a
+  # Linux-only or documentation-only change does not wait for Windows and macOS
+  # (scripts/ci-jobs.sh). Pushes to master run everything for the beta.
+  changes:
+    name: Choose jobs
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.choose.outputs.matrix }}
+      gui: ${{ steps.choose.outputs.gui }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The files API lists at most 3000 files; run everything beyond that.
+      - name: Choose jobs
+        id: choose
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED: ${{ github.event.pull_request.changed_files }}
+        run: |
+          if [[ $EVENT == pull_request && $CHANGED -le 3000 ]]; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+              --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed"
+            scripts/ci-jobs.sh < "$RUNNER_TEMP/changed" | tee -a "$GITHUB_OUTPUT"
+          else
+            scripts/ci-jobs.sh --all | tee -a "$GITHUB_OUTPUT"
+          fi
+
   build-and-test:
     name: ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.matrix != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Linux x86_64
-            os: ubuntu-24.04
-          - name: Windows x86_64
-            os: windows-latest
-          - name: Windows ARM64
-            os: windows-11-arm
-          - name: macOS ARM64
-            os: macos-latest
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
 
     runs-on: ${{ matrix.os }}
 
@@ -84,6 +114,8 @@ jobs:
   # the app with X11 tools (spec/development.md, "GUI end-to-end test").
   gui-e2e-linux:
     name: GUI end-to-end (Linux)
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     runs-on: ubuntu-24.04
 
     steps:

@@ -85,6 +85,16 @@ x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
 system credential store probe against Credential Manager. CI does not exercise
 GUI interaction, IME, drag and drop or clipboard images.
 
+On pull requests, CI runs only the jobs the changed paths can affect
+(`scripts/ci-jobs.sh`): documentation (`*.md`, `spec/`, `.claude/`,
+`licenses/`) runs nothing, GPUI's per-platform sources under
+`vendor/gpui/src/platform/{linux,windows,mac}` run only that platform (Linux
+also runs the GUI end-to-end test), and the E2E scripts run only the GUI
+end-to-end test. Any other path runs every job, so a new file that matters to
+several platforms is covered until the script names it. Pushes to master always
+run every job. Platform-specific code under `crates/` is not detected by path
+and runs everywhere.
+
 UI tests enable GPUI's `test-support` through a dev dependency. The menu regression
 test renders the Linux/Windows in-window menu on every test host, including macOS,
 and exercises the first frame and Alt reveal/hide without a display server or
