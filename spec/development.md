@@ -92,7 +92,10 @@ On pull requests, CI runs only the jobs the changed paths can affect
 also runs the GUI end-to-end test), and the E2E scripts run only the GUI
 end-to-end test. Any other path runs every job, so a new file that matters to
 several platforms is covered until the script names it. Pushes to master always
-run every job. Platform-specific code under `crates/` is not detected by path
+run every job. The paths come from `git diff` of the checked-out pull request
+merge commit against its first parent (renames count as both paths), so they
+always match the commit the other jobs build; `scripts/test-ci-jobs.sh` checks
+the selection and runs in the same job. Platform-specific code under `crates/` is not detected by path
 and runs everywhere.
 
 UI tests enable GPUI's `test-support` through a dev dependency. The menu regression
