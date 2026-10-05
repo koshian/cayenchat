@@ -54,7 +54,7 @@ $manifest = $manifest.Replace('@IDENTITY@', $Identity).Replace('@SUBJECT@', $Sub
 Set-Content (Join-Path $Layout 'AppxManifest.xml') $manifest -Encoding utf8
 
 $package = Join-Path $Out 'CayenChat.Test.msix'
-& (Find-SdkTool 'makeappx.exe') pack /d $Layout /p $package /nv
+& (Find-SdkTool 'makeappx.exe') pack /d $Layout /p $package
 if ($LASTEXITCODE) { throw 'makeappx failed' }
 
 $cert = New-SelfSignedCertificate -Type Custom -Subject $Subject -KeyUsage DigitalSignature `

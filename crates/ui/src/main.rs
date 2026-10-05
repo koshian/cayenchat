@@ -2767,6 +2767,9 @@ impl ChatWindow {
                     } else if let Some(profile) = profile.clone() {
                         settings.show_tab(tab, cx);
                         settings.select_server(profile, cx);
+                    } else {
+                        // The system may have changed it while the window was away.
+                        settings.refresh_autostart(cx);
                     }
                     window.activate_window()
                 })
