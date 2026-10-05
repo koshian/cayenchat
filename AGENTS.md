@@ -18,3 +18,5 @@ Use relative paths for files under the current working directory.
 Do not unnecessarily access files outside the working directory.
 Do not write to /tmp directly. Put temporary files, test homes, build caches and
 E2E outputs under `target/tmp/` in your current worktree.
+
+Builds, test suites and GUI checks often take longer than a shell tool's default command timeout (two minutes). Set the timeout explicitly to cover the expected duration, or use no timeout, instead of letting the command be cut off and retrying it.
