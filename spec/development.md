@@ -245,6 +245,9 @@ an artifact needs a signed-in GitHub account. Both it and
 packaging steps (`test: true` selects the Test Build names, the `cayenchat-test`
 package and `CayenChat Test.app`), so a packaging change is made once. The
 beta's artifacts stay archived and named after the platform for `publish`.
+`publish` uploads `dist/*` over the rolling `beta` release and then deletes
+assets that are not in `dist/` (for example a previous version's `.deb`), so the
+release only holds the latest build and is never empty if an upload fails.
 
 #### Changes that need a person's confirmation
 
