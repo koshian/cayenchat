@@ -20,7 +20,7 @@ What is asserted, without any test hook in the application:
 - in the log's own text (drag-select and Ctrl+C, read with xclip): which
   lines are shown and in which order.
 """
-import argparse, os, re, socket, struct, subprocess, sys, tempfile, threading, time, zlib
+import argparse, os, re, shutil, socket, struct, subprocess, sys, tempfile, threading, time, zlib
 
 WIDTH, HEIGHT = 1000, 700
 # Inside the main log pane (upper left) at this window size.
@@ -358,10 +358,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True)
     parser.add_argument("--ergo-dir", required=True)
-    parser.add_argument("--out", default=None, help="screenshots and logs")
+    parser.add_argument("--out", default=None, help="screenshots and logs (default: target/e2e in the repository)")
     parser.add_argument("--display", default=":99")
     args = parser.parse_args()
-    out = args.out or tempfile.mkdtemp(prefix="cayenchat-e2e-")
+    out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "e2e")
     os.makedirs(out, exist_ok=True)
     home = tempfile.mkdtemp(prefix="cayenchat-e2e-home-")
     processes = []
@@ -433,6 +433,7 @@ def main():
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+        shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":
