@@ -28,7 +28,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
-- DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
+- PARTIAL — the combined log lays a line out as `time | channel [network] nick: text` in one flowing text (full channel and network names, no fixed channel name column); the Appearance `sub_log_name_width` setting is kept but no longer applies
 - PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel (with its member count once the roster is known, issue #146) and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
@@ -52,6 +52,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click, and the pointer is a hand over one (not while selecting); lower combined log switches channels on double-click
+- PARTIAL — Appearance option "Show long URLs compactly" (off by default) draws URLs over 28 characters in the upper channel log as `↗ host/start-of-path…` on a faint link-colored background, with the whole host kept and the full URL in a hover tooltip; presentation only: opening, selection, copying and the stored text use the original, and a selection touching a short form covers all of it; the icon is a text arrow rather than an SVG, and short URLs are not chipped
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
@@ -73,7 +74,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — jump to unread channels in mock or live mode; highlights remain TODO
 - DONE — reference four-pane placement: main log over subwindow on the left,
   users over channel tree on the right, draft between left logs
-- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line
+- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line; each server can have a display name (settings) shown in place of the full host name (the combined log no longer shortens it)
 
 ## Unread and highlights
 
@@ -153,7 +154,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 ## Appearance
 
 - DONE — compact default layout
-- DONE — plain timestamp/right-aligned nickname/text rows with scrolling and follow-to-bottom unless the user scrolls away
+- DONE — plain timestamp/`nick: text` rows (optional header-line layout) with scrolling and follow-to-bottom unless the user scrolls away
 - TODO — light/dark appearance
 - PARTIAL — selectable installed font families per pane; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending; on Linux, unset pane fonts fall back through cosmic-text, whose exact locale match treats `ja-JP` as non-Japanese and renders Han characters with Simplified Chinese glyphs (Noto Sans CJK SC) — choosing a Japanese font explicitly avoids this
 - TODO — restrained theming
