@@ -420,13 +420,23 @@ impl ServerProfile {
         }
     }
 
+    /// The channels joined after registration, in order: the enabled
+    /// auto-join entries.
     pub fn channels(&self) -> Vec<String> {
-        self.channels
-            .split(',')
-            .map(str::trim)
-            .filter(|channel| !channel.is_empty())
-            .map(str::to_owned)
+        self.auto_join_entries()
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.name)
             .collect()
+    }
+
+    /// Every auto-join entry in the configured order, disabled ones included.
+    pub fn auto_join_entries(&self) -> Vec<AutoJoinEntry> {
+        parse_auto_join(&self.channels)
+    }
+
+    pub fn set_auto_join_entries(&mut self, entries: &[AutoJoinEntry]) {
+        self.channels = format_auto_join(entries);
     }
 
     pub fn server_password_key(&self) -> SecretKey {
@@ -436,6 +446,59 @@ impl ServerProfile {
     pub fn sasl_password_key(&self) -> SecretKey {
         SecretKey::sasl_password(&self.id)
     }
+}
+
+/// One auto-join channel of a server. A disabled entry stays configured but
+/// is skipped when connecting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoJoinEntry {
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// Prefix marking a disabled entry in `ServerProfile::channels`, a
+/// comma-separated list. No channel name starts with it.
+const DISABLED_PREFIX: char = '-';
+
+/// Reads the comma-separated list kept in `ServerProfile::channels`.
+pub fn parse_auto_join(text: &str) -> Vec<AutoJoinEntry> {
+    text.split(',')
+        .map(str::trim)
+        .filter_map(|item| {
+            let (name, enabled) = match item.strip_prefix(DISABLED_PREFIX) {
+                Some(name) => (name.trim(), false),
+                None => (item, true),
+            };
+            (!name.is_empty()).then(|| AutoJoinEntry {
+                name: name.to_owned(),
+                enabled,
+            })
+        })
+        .collect()
+}
+
+/// Writes entries as `parse_auto_join` reads them. Names are cleaned of
+/// whitespace and commas; empty ones are dropped.
+pub fn format_auto_join(entries: &[AutoJoinEntry]) -> String {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let name: String = entry
+                .name
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != ',')
+                .collect();
+            let name = name.trim_start_matches(DISABLED_PREFIX);
+            (!name.is_empty()).then(|| {
+                if entry.enabled {
+                    name.to_owned()
+                } else {
+                    format!("{DISABLED_PREFIX}{name}")
+                }
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Opt-in IRCv3 features of one server. Negotiation happens when the server
@@ -1048,6 +1111,25 @@ pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_auto_join_entries_stay_saved_but_are_not_joined() {
+        let mut profile = ServerProfile::default();
+        profile.channels = "#a, -#b ,#c,,-".into();
+        let entries = profile.auto_join_entries();
+        assert_eq!(
+            entries.iter().map(|e| e.enabled).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(profile.channels(), ["#a", "#c"]);
+        // Order is kept, and names cannot break the list format.
+        let mut entries = entries;
+        entries.swap(0, 2);
+        entries[1].name = "#x y,z".into();
+        profile.set_auto_join_entries(&entries);
+        assert_eq!(profile.channels, "#c,-#xyz,#a");
+        assert_eq!(profile.channels(), ["#c", "#a"]);
+    }
 
     #[test]
     fn settings_round_trip_without_secrets() {
