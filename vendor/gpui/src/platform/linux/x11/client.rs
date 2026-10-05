@@ -601,8 +601,12 @@ impl X11Client {
                     }
                     Err(err) => {
                         let err = handle_connection_error(err);
-                        log::warn!("error while polling for X11 events: {err:?}");
-                        break;
+                        // The connection is gone and its socket stays readable, so
+                        // polling again would fail forever. Leave the event loop;
+                        // `run` then invokes the quit callback.
+                        log::error!("lost the X11 connection, quitting: {err:?}");
+                        self.0.borrow().common.signal.stop();
+                        return Ok(());
                     }
                 }
             }
