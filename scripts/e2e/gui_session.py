@@ -17,14 +17,15 @@ screenshots. The app runs with its own HOME and settings in the session
 directory, keeps passwords in the session's own file (even with `--settings`
 copied from real settings) and cannot reach the desktop's D-Bus session, so
 the user's settings and passwords are never touched. `start` refuses a
-non-empty directory it did not make.
+non-empty directory it did not make. Links the app opens reach no browser:
+`opened` prints the URLs it handed to the desktop.
 
 Needs Linux with Xvfb, xdotool and a Vulkan driver (lavapipe from
 mesa-vulkan-drivers works without a GPU) and a font (`--fonts` when the
 system has none); xclip only for `clipboard`. Screens are read from Xvfb's
 framebuffer file, so xwd is not needed.
 """
-import argparse, json, os, shutil, signal, subprocess, sys, tempfile, time
+import argparse, json, os, shlex, shutil, signal, subprocess, sys, tempfile, time
 from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +34,11 @@ from history_gui import Display  # noqa: E402
 SETTINGS_VERSION = 15
 # Marks a directory as a session; only these entries are cleared again.
 MARKER = ".cayenchat-gui-session"
-SESSION_ENTRIES = ("state.json", "home", "test-build", "run", "fb", "shots", "app.log", "xvfb.log")
+SESSION_ENTRIES = ("state.json", "home", "test-build", "run", "fb", "shots", "app.log", "xvfb.log",
+                   "bin", "opened.txt")
+# What GPUI runs to open a link once the desktop portal is out of reach
+# (the `open` crate's Linux commands); each stand-in only records the URL.
+OPENERS = ("xdg-open", "gio", "gnome-open", "kde-open", "wslview")
 
 
 def session_dir(args):
@@ -154,8 +159,9 @@ def settings_json(args):
 def app_env(base, directory, display, extra=()):
     """The app's environment: everything it stores stays in the session
     directory, and the desktop's D-Bus session (with its Secret Service
-    holding the user's passwords) is out of reach. `extra` (KEY=VALUE) cannot
-    undo that."""
+    holding the user's passwords) is out of reach. Links go to stand-in
+    openers that append them to the session's opened.txt. `extra` (KEY=VALUE)
+    cannot undo that."""
     env = dict(base)
     for pair in extra:
         key, _, value = pair.partition("=")
@@ -167,10 +173,26 @@ def app_env(base, directory, display, extra=()):
                XDG_DATA_HOME=os.path.join(home, "data"), XDG_CACHE_HOME=os.path.join(home, "cache"),
                XDG_RUNTIME_DIR=runtime, CAYENCHAT_TEST_DIR=os.path.join(directory, "test-build"),
                CAYENCHAT_DISPLAY="x11")
+    env["PATH"] = os.pathsep.join(filter(None, (install_openers(directory), env.get("PATH"))))
     env.setdefault("RUST_LOG", "warn")
     for key in ("WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
         env.pop(key, None)
     return env
+
+
+def install_openers(directory):
+    """Writes the stand-in openers and returns their directory. The URL is
+    the last argument (`gio open URL`)."""
+    bin_dir = os.path.join(directory, "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    opened = os.path.join(directory, "opened.txt")
+    script = "#!/bin/sh\nfor url; do :; done\nprintf '%s\\n' \"$url\" >> " + shlex.quote(opened) + "\n"
+    for name in OPENERS:
+        path = os.path.join(bin_dir, name)
+        with open(path, "w") as file:
+            file.write(script)
+        os.chmod(path, 0o755)
+    return bin_dir
 
 
 def launch_app(state):
@@ -390,6 +412,21 @@ def clipboard(args):
     sys.stdout.write(result.stdout)
 
 
+def opened(args):
+    """Prints the URLs opened since the last `opened` (all with --all)."""
+    state = load(session_dir(args))
+    try:
+        with open(os.path.join(state["dir"], "opened.txt")) as file:
+            urls = file.read().splitlines()
+    except FileNotFoundError:
+        urls = []
+    start = 0 if args.all else state.get("opened_seen", 0)
+    for url in urls[start:]:
+        print(url)
+    state["opened_seen"] = len(urls)
+    save_state(state)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--session", help="session directory (default $CAYENCHAT_GUI_SESSION or $TMPDIR/cayenchat-gui)")
@@ -430,6 +467,9 @@ def main():
     command.add_argument("--scale", type=int, default=1, help="enlarge by this factor to read small text")
     command.set_defaults(func=shot)
     commands.add_parser("clipboard", help="print the clipboard (needs xclip)").set_defaults(func=clipboard)
+    command = commands.add_parser("opened", help="print the URLs the app opened since the last `opened`")
+    command.add_argument("--all", action="store_true", help="every URL opened in this session")
+    command.set_defaults(func=opened)
 
     def input_command(name, help):
         command = commands.add_parser(name, help=help)
