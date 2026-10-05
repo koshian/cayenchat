@@ -5787,18 +5787,31 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
             .filter_map(|scheme| text[cursor..].find(scheme).map(|offset| cursor + offset))
             .min();
         let Some(start) = next else { break };
-        let mut end = text[start..]
+        // An IPv6 literal host such as `https://[::1]/` keeps its brackets.
+        let host_start = start + text[start..].find("://").map_or(0, |i| i + 3);
+        let scan_from = match text[host_start..].strip_prefix('[') {
+            Some(rest) => rest
+                .find(']')
+                .map_or(host_start, |close| host_start + 1 + close + 1),
+            None => host_start,
+        };
+        let mut end = text[scan_from..]
             .char_indices()
-            .find(|(_, ch)| ch.is_whitespace() || "<>\"'。、".contains(*ch))
-            .map(|(offset, _)| start + offset)
+            .find(|(_, ch)| ch.is_whitespace() || "<>[]\"'。、".contains(*ch))
+            .map(|(offset, _)| scan_from + offset)
             .unwrap_or(text.len());
-        while end > start
-            && text[..end]
-                .chars()
-                .last()
-                .is_some_and(|ch| ".,;:!?)]}」』".contains(ch))
-        {
-            end -= text[..end].chars().last().unwrap().len_utf8();
+        while end > start {
+            let Some(last) = text[..end].chars().last() else {
+                break;
+            };
+            let closes_bracket = last == ')' && {
+                let candidate = &text[start..end];
+                candidate.matches(')').count() > candidate.matches('(').count()
+            };
+            if !(closes_bracket || ".,;:!?}」』".contains(last)) {
+                break;
+            }
+            end -= last.len_utf8();
         }
         let candidate = &text[start..end];
         if let Ok(url) = url::Url::parse(candidate)
@@ -8080,6 +8093,32 @@ mod log_tests {
         assert_eq!(urls[0].1, "https://example.org/a?q=1");
         assert_eq!(urls[1].1, "http://example.jp/path");
         assert_eq!(&text[urls[0].0.clone()], urls[0].1);
+    }
+
+    #[test]
+    fn markdown_links_and_brackets_do_not_leak_into_urls() {
+        let text = " [https://x.com/a/status/1](https://x.com/a/status/1)";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert!(
+            urls.iter()
+                .all(|(_, url)| url == "https://x.com/a/status/1")
+        );
+        let text = "(see https://example.org/a_(b)) https://example.org/c)";
+        let urls = log_urls(text);
+        assert_eq!(urls[0].1, "https://example.org/a_(b)");
+        assert_eq!(urls[1].1, "https://example.org/c");
+    }
+
+    #[test]
+    fn ipv6_literal_hosts_keep_their_brackets() {
+        let text =
+            "[https://[2001:db8::1]:8080/path](https://[2001:db8::1]:8080/path) http://[::1]/";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0].1, "https://[2001:db8::1]:8080/path");
+        assert_eq!(urls[1].1, "https://[2001:db8::1]:8080/path");
+        assert_eq!(urls[2].1, "http://[::1]/");
     }
 
     #[test]
