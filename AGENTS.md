@@ -20,3 +20,12 @@ Do not write to /tmp directly. Put temporary files, test homes, build caches and
 E2E outputs under `target/tmp/` in your current worktree.
 
 Builds, test suites and GUI checks often take longer than a shell tool's default command timeout (two minutes). Set the timeout explicitly to cover the expected duration, or use no timeout, instead of letting the command be cut off and retrying it.
+
+## Reviewing pull requests
+
+When reviewing, cover these project-specific concerns in addition to general correctness:
+
+- Untrusted input: everything from IRC servers and other users (nicks, channel names, message text, CTCP, IRCv3 tags and metadata, avatars), fetched URLs and images, and settings files read from disk. Look for panics on malformed input, unbounded growth, spoofed display (IRC formatting codes, bidirectional control characters) and server values reinterpreted as templates or commands. Known open findings are in `spec/security-review-2026-09-26.md`.
+- Secrets: server and SASL passwords and upload API keys stay in `storage::credentials` and never reach the preferences file, logs, the wire transcript, the clipboard or error messages unmasked.
+- Performance: per-message and per-event paths, log rendering and scrolling, and anything done on every frame. Stay event driven, keep logs, queues and caches bounded, and never block the UI thread. Follow `spec/performance.md`, including its baseline comparison for changes to these paths.
+- Design: IRC and network logic must not depend on GPUI, and each crate keeps the responsibilities in `spec/architecture.md`. Respect earlier choices in `spec/decisions.md`, reuse existing helpers instead of duplicating them, and question new abstractions the change does not need.
