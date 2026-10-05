@@ -227,12 +227,12 @@ the `test-build` feature, so the reporter's own settings and passwords are
 not used (suffix `-isolated`).
 It only has a read-only token and publishes nothing, so the beta is
 unaffected. Link the run and the commit SHA in the PR or issue; downloading
-an artifact needs a signed-in GitHub account.
-
-All packaging lives in the reusable workflow `.github/workflows/package.yml`
-(read-only token, never publishes). `beta-release.yml`, `test-build.yml` and
-`release.yml` only call it; `flavor: test` selects the Test Build names
-(`cayenchat-test` deb variant, `CayenChat Test.app`).
+an artifact needs a signed-in GitHub account. It,
+`beta-release.yml` and `release.yml` call the reusable `package.yml`, which
+holds the build and packaging steps (`test: true` selects the Test Build names,
+the `cayenchat-test` package and `CayenChat Test.app`; `prefix` names the
+regular Windows and macOS zips), so a packaging change is made once. The
+beta's artifacts stay archived and named after the platform for `publish`.
 
 #### Versioned releases
 

@@ -1,8 +1,13 @@
 name: Package
 
-# Builds and packages CayenChat for every supported platform. Called by Beta
-# Release, Test Build and Release so that there is a single packaging
-# implementation. It never publishes anything.
+# Builds and packages CayenChat. Shared by Beta Release and Test Build so a
+# packaging change is made in one place. Not meant to be started by hand.
+#
+# With `test` off the packages are the regular ones, uploaded as one archived
+# artifact per platform (named after the platform) for the beta to publish.
+# With `test` on they are the Test Build packages: named after the commit,
+# installable beside nothing else (see spec/development.md), uploaded as the
+# bare file and kept for 7 days.
 
 on:
   workflow_call:
@@ -11,53 +16,38 @@ on:
         description: Branch, tag or commit SHA to build
         required: true
         type: string
-      flavor:
-        description: "`release` for the regular packages, `test` for Test Build packages"
-        required: false
-        type: string
-        default: release
       platform:
-        description: all, windows-x86_64, windows-arm64, linux-x86_64 or macos-arm64
+        description: >-
+          all, windows-x86_64, windows-arm64, linux-x86_64 or macos-arm64
         required: false
         type: string
         default: all
-      features:
-        description: Cargo features to build with
+      test:
+        description: Produce Test Build packages instead of regular ones
         required: false
-        type: string
-        default: ''
+        type: boolean
+        default: false
+      isolated:
+        description: Build with the test-build feature (Test Build only)
+        required: false
+        type: boolean
+        default: false
       prefix:
-        description: File name prefix of the Windows and macOS zips (release flavor)
+        description: File name prefix of the regular Windows and macOS zips
         required: false
         type: string
         default: cayenchat
-      suffix:
-        description: Suffix appended to the package names
-        required: false
-        type: string
-        default: ''
-      archive:
-        description: >-
-          Upload each package inside a zipped artifact named after the
-          platform; when false, upload the file itself
-        required: false
-        type: boolean
-        default: true
-      retention-days:
-        description: Artifact retention in days (0 uses the repository default)
-        required: false
-        type: number
-        default: 0
 
+# The build runs code from an arbitrary ref, so the token can only read.
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  FLAVOR: ${{ inputs.flavor }}
-  FEATURES: ${{ inputs.features }}
+  FEATURES: ${{ inputs.isolated && 'cayenchat-ui/test-build' || '' }}
+  SUFFIX: ${{ inputs.isolated && '-isolated' || '' }}
+  TEST: ${{ inputs.test && 'true' || 'false' }}
   PREFIX: ${{ inputs.prefix }}
-  SUFFIX: ${{ inputs.suffix }}
 
 jobs:
   linux-x86_64:
@@ -75,8 +65,10 @@ jobs:
       - name: Name the package
         shell: bash
         run: |
-          if [ "$FLAVOR" = test ]; then
+          if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-linux-x86_64${SUFFIX}" >> "$GITHUB_ENV"
+          else
+            echo "PACKAGE=cayenchat-linux-x86_64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -96,46 +88,43 @@ jobs:
         run: cargo install cargo-deb --locked
 
       - name: Build release binary
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Build Debian package
         shell: bash
         run: |
           set -euxo pipefail
-          if [ "$FLAVOR" = test ]; then
-            # The variant is defined here, not read from the ref, so that refs
-            # branched before it existed can be packaged too. It installs the
-            # same paths as the regular package, so the two conflict.
-            cat >> crates/ui/Cargo.toml <<'EOF_VARIANT'
+          if [ "$TEST" != true ]; then
+            cargo deb --no-build
+            exit 0
+          fi
+          # The variant is defined here, not read from the ref, so that refs
+          # branched before it existed can be packaged too. It installs the
+          # same paths as the regular package, so the two conflict.
+          cat >> crates/ui/Cargo.toml <<'EOF_VARIANT'
 
           [package.metadata.deb.variants.test]
           name = "cayenchat-test"
           conflicts = "cayenchat-ui"
           EOF_VARIANT
-            cargo deb --no-build --variant test
-            mv target/debian/*.deb "$PACKAGE.deb"
-            echo "FILE=$PACKAGE.deb" >> "$GITHUB_ENV"
-          else
-            cargo deb --no-build
-            echo "FILE=$(ls target/debian/*.deb)" >> "$GITHUB_ENV"
-          fi
+          cargo deb --no-build --variant test
+          mv target/debian/*.deb "$PACKAGE.deb"
 
       - name: Upload package
-        if: inputs.archive
+        if: inputs.test
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: ${{ env.PACKAGE }}.deb
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload package
+        if: ${{ !inputs.test }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-x86_64
-          path: ${{ env.FILE }}
-          retention-days: ${{ inputs.retention-days }}
-          if-no-files-found: error
-
-      - name: Upload package file
-        if: ${{ !inputs.archive }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          path: ${{ env.FILE }}
-          archive: false
-          retention-days: ${{ inputs.retention-days }}
+          path: target/debian/*.deb
           if-no-files-found: error
 
   windows-x86_64:
@@ -153,10 +142,10 @@ jobs:
       - name: Name the package
         shell: bash
         run: |
-          if [ "$FLAVOR" = test ]; then
+          if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-windows-x86_64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=${PREFIX}-windows-x86_64${SUFFIX}" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-windows-x86_64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -166,7 +155,7 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Package
         shell: pwsh
@@ -179,21 +168,20 @@ jobs:
             -DestinationPath "$env:PACKAGE.zip"
 
       - name: Upload package
-        if: inputs.archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: windows-x86_64
-          path: ${{ env.PACKAGE }}.zip
-          retention-days: ${{ inputs.retention-days }}
-          if-no-files-found: error
-
-      - name: Upload package file
-        if: ${{ !inputs.archive }}
+        if: inputs.test
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ env.PACKAGE }}.zip
           archive: false
-          retention-days: ${{ inputs.retention-days }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload package
+        if: ${{ !inputs.test }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-x86_64
+          path: ${{ env.PACKAGE }}.zip
           if-no-files-found: error
 
   windows-arm64:
@@ -211,10 +199,10 @@ jobs:
       - name: Name the package
         shell: bash
         run: |
-          if [ "$FLAVOR" = test ]; then
+          if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-windows-arm64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=${PREFIX}-windows-arm64${SUFFIX}" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-windows-arm64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -224,7 +212,7 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Package
         shell: pwsh
@@ -237,21 +225,20 @@ jobs:
             -DestinationPath "$env:PACKAGE.zip"
 
       - name: Upload package
-        if: inputs.archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: windows-arm64
-          path: ${{ env.PACKAGE }}.zip
-          retention-days: ${{ inputs.retention-days }}
-          if-no-files-found: error
-
-      - name: Upload package file
-        if: ${{ !inputs.archive }}
+        if: inputs.test
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ env.PACKAGE }}.zip
           archive: false
-          retention-days: ${{ inputs.retention-days }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload package
+        if: ${{ !inputs.test }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-arm64
+          path: ${{ env.PACKAGE }}.zip
           if-no-files-found: error
 
   macos-arm64:
@@ -269,10 +256,10 @@ jobs:
       - name: Name the package
         shell: bash
         run: |
-          if [ "$FLAVOR" = test ]; then
+          if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-macos-arm64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=${PREFIX}-macos-arm64${SUFFIX}" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-macos-arm64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -281,9 +268,9 @@ jobs:
           toolchain: stable
 
       - name: Build release binary
-        run: cargo build --release --locked --features "$FEATURES"
+        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
 
-      # The test flavor has a separate name and identifier, so that the bundle
+      # The Test Build bundle has a separate name and identifier, so that it
       # is never mistaken for (or dragged over) an installed CayenChat.app.
       - name: Create app bundle
         shell: bash
@@ -291,8 +278,7 @@ jobs:
           set -euxo pipefail
 
           VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
-
-          if [ "$FLAVOR" = test ]; then
+          if [ "$TEST" = true ]; then
             NAME="CayenChat Test"
             IDENTIFIER="com.cayenchat.test"
           else
@@ -339,19 +325,18 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$PACKAGE.zip"
 
       - name: Upload package
-        if: inputs.archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: macos-arm64
-          path: ${{ env.PACKAGE }}.zip
-          retention-days: ${{ inputs.retention-days }}
-          if-no-files-found: error
-
-      - name: Upload package file
-        if: ${{ !inputs.archive }}
+        if: inputs.test
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: ${{ env.PACKAGE }}.zip
           archive: false
-          retention-days: ${{ inputs.retention-days }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload package
+        if: ${{ !inputs.test }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-arm64
+          path: ${{ env.PACKAGE }}.zip
           if-no-files-found: error

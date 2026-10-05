@@ -14,6 +14,9 @@ concurrency:
   group: beta-release
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   package:
     name: Package

@@ -39,12 +39,10 @@ permissions:
 
 jobs:
   package:
+    name: Package
     uses: ./.github/workflows/package.yml
     with:
       ref: ${{ inputs.ref }}
-      flavor: test
       platform: ${{ inputs.platform }}
-      features: ${{ inputs.isolated && 'cayenchat-ui/test-build' || '' }}
-      suffix: ${{ inputs.isolated && '-isolated' || '' }}
-      archive: false
-      retention-days: 7
+      test: true
+      isolated: ${{ inputs.isolated }}
