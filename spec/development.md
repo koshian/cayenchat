@@ -1270,3 +1270,13 @@ Unit and fake-server tests cover: default/explicit/marked wire realname,
 the reconnect configuration. `cargo clippy --workspace --all-targets`
 currently fails in `crates/app` tests (`while let` lint) on master itself,
 unrelated to this change. No live Ergo/soju run was made for this change.
+
+### X server loss (2026-10-06, issue #196)
+
+Killing the Xvfb of a running session left the app at 100% CPU, repeating
+"error while polling for X11 events" (166 GB of log in one case). The vendored
+GPUI now stops its event loop on an X11 connection error, so the app quits
+through its normal quit path (`vendor/gpui/PATCHES.md`).
+`scripts/e2e/xserver_loss.py --app target/debug/cayenchat` starts a session,
+kills only its Xvfb and asserts that the app exits and `app.log` stops
+growing.
