@@ -884,7 +884,9 @@ application; everything is observed from outside:
   line of the channel after paging; A, the missed B and C, our rejoin,
   then D after the reconnect, each once).
 
-Screenshots of every step and the app and Ergo logs go to `--out`. Two
+Screenshots of every step and the app and Ergo logs go to `--out` (default
+`target/e2e`). The throwaway `HOME` the app runs with is deleted when the
+run ends, pass or fail. Two
 deliberate breakages were checked to fail it: resetting the log list when
 rows are inserted above (the pixel check fails) and placing recovered lines
 where the request was made instead of at the cut (the order check fails).
