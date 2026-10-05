@@ -150,10 +150,12 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
-    /// Wrap nicknames too long for the main log's nickname column onto more
-    /// lines instead of ending them with an ellipsis. Added after version 15
-    /// without a version change; files without it read as off.
-    pub wrap_long_nicknames: bool,
+    /// Channel log layout: a small first line with the time, avatar and
+    /// nickname and the message below at full width, instead of the default
+    /// `time | avatar | nick: message` flow. Replaces the former
+    /// `wrap_long_nicknames`, which is ignored when read. Added after
+    /// version 15 without a version change; files without it read as off.
+    pub header_line_messages: bool,
     /// Width in pixels of the channel name (and network) column of the
     /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
     /// without a version change; files without it read as the default.
@@ -215,7 +217,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
-            wrap_long_nicknames: false,
+            header_line_messages: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -1647,16 +1649,19 @@ mod tests {
     }
 
     #[test]
-    fn wrapping_long_nicknames_is_off_when_absent() {
+    fn header_line_messages_is_off_when_absent() {
         let mut appearance = Appearance::default();
-        assert!(!appearance.wrap_long_nicknames);
-        appearance.wrap_long_nicknames = true;
+        assert!(!appearance.header_line_messages);
+        appearance.header_line_messages = true;
         let mut saved = serde_json::to_value(&appearance).unwrap();
         let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
-        assert!(loaded.wrap_long_nicknames);
-        saved.as_object_mut().unwrap().remove("wrap_long_nicknames");
+        assert!(loaded.header_line_messages);
+        saved
+            .as_object_mut()
+            .unwrap()
+            .remove("header_line_messages");
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
-        assert!(!loaded.wrap_long_nicknames);
+        assert!(!loaded.header_line_messages);
     }
 
     #[test]
