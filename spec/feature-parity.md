@@ -73,7 +73,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — jump to unread channels in mock or live mode; highlights remain TODO
 - DONE — reference four-pane placement: main log over subwindow on the left,
   users over channel tree on the right, draft between left logs
-- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line
+- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line; each server can have a display name (settings) shown instead of the first word of its host
 
 ## Unread and highlights
 
