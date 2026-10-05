@@ -233,9 +233,33 @@ can only be exercised from `master` and must not change untested.
 
 #### Changes that need a person's confirmation
 
-Whenever an issue or PR needs someone to try it on a real machine (a Windows
-or Linux desktop the developer does not have, a monitor layout, an IME), do
-not just ask them to wait for the beta. In this order, every time:
+Most changes are verified without a person: tests, CI on every platform,
+and, for anything the GUI shows or how it reacts, a run on Linux under Xvfb
+("Visual checks under Xvfb" below). Once those pass, a PR is merged even
+though nobody has looked at it on macOS or Windows; how it looks and feels
+there is checked afterwards on the beta, and what is found becomes a new
+issue. "It may look different on macOS or Windows" alone does not hold a
+merge.
+
+A person's check before merging is needed only when the change depends on
+what Xvfb on Linux cannot exercise:
+
+- platform-specific code: `cfg(target_os = ...)` branches, the macOS and
+  Windows backends, packaging for one platform;
+- input methods (IME) and keyboard layouts;
+- the desktop around the app: monitor layouts, display scaling and HiDPI,
+  native file dialogs, the system credential stores, notifications, starting
+  at login, drag and drop from other apps;
+- anything the issue itself asks a person to confirm.
+
+Changes that only run after they are merged, such as workflows triggered by
+pushes to `master`, tags or releases, cannot be tried on the PR branch and
+are an exception: review them, run what can run from the branch (for
+example `workflow_dispatch` on the PR branch), merge without waiting for a
+person, then check the first real run on `master` and fix forward.
+
+When a person's check is needed before merging, do not just ask them to
+wait for the beta. In this order, every time:
 
 1. **Get the review to pass first.** Read every review and comment on the PR
    and answer each point (a fix, or a reason for not making it), then ask for
@@ -262,10 +286,9 @@ not just ask them to wait for the beta. In this order, every time:
    unverified.
 5. Take the report on the issue, and rebuild with `Test Build` for each new
    commit that needs checking again (and, if the change was reviewed again,
-   only after that review has passed too). An LLM reviewer never merges such a
-   PR before the report arrives; only a person may decide to merge without
-   one. The old rule that the reviewer merges without waiting for the reporter
-   (#60) no longer applies.
+   only after that review has passed too). An LLM reviewer never merges a PR
+   that needs this check before the report arrives; only a person may decide
+   to merge without one.
 
 The project license is GPL-3.0-only; the adapted GPUI input file retains Apache-2.0.
 Review `THIRD_PARTY_NOTICES.md` and dependency licenses before distributing binaries.
@@ -884,7 +907,9 @@ application; everything is observed from outside:
   line of the channel after paging; A, the missed B and C, our rejoin,
   then D after the reconnect, each once).
 
-Screenshots of every step and the app and Ergo logs go to `--out`. Two
+Screenshots of every step and the app and Ergo logs go to `--out` (default
+`target/e2e`). The throwaway `HOME` the app runs with is deleted when the
+run ends, pass or fail. Two
 deliberate breakages were checked to fail it: resetting the log list when
 rows are inserted above (the pixel check fails) and placing recovered lines
 where the request was made instead of at the cut (the order check fails).
@@ -945,11 +970,12 @@ controls, menus, drop-downs and dialogs drawn by the app, mouse and keyboard
 behavior (ASCII), focus moves, scrolling, which URL a clicked link opens
 (`opened`), what is written to the settings
 file, what survives `restart-app`, and connected behavior against the
-local Ergo. It cannot show, so a person still checks: macOS and Windows,
-Wayland, a real GPU, display scaling and HiDPI sharpness, multiple monitors,
-IME and non-ASCII typing, native file dialogs, the system credential stores,
-notifications, drag and drop from other apps, and how smooth motion feels
-(screens are stills). Coordinates from one screenshot go stale after the
+local Ergo. It cannot show: macOS and Windows, Wayland, a real GPU, display
+scaling and HiDPI sharpness, multiple monitors, IME and non-ASCII typing,
+native file dialogs, the system credential stores, notifications, drag and
+drop from other apps, and how smooth motion feels (screens are stills).
+Which of these must be checked by a person before merging, and which on the
+beta afterwards, is in "Changes that need a person's confirmation". Coordinates from one screenshot go stale after the
 layout changes, and judging an image is not a pixel comparison: a lasting
 check belongs in a test.
 

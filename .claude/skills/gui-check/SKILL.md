@@ -99,6 +99,8 @@ python3 $G stop
 ## 4. Report
 
 In the PR or issue, list what you verified this way (with the screenshots
-that matter, attached or described) and what still needs a person, as
-`spec/development.md` describes. Never call a macOS, Windows, Wayland, IME
-or HiDPI behavior verified from an Xvfb run.
+that matter, attached or described) and what is left unverified. Never call
+a macOS, Windows, Wayland, IME or HiDPI behavior verified from an Xvfb run.
+Something left unverified holds the merge for a person only in the cases
+listed in `spec/development.md` ("Changes that need a person's
+confirmation"); otherwise it is checked on the beta after merging.
