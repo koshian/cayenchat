@@ -23,6 +23,7 @@ mod notifier;
 #[cfg(test)]
 mod perf_baseline;
 mod previews;
+mod scrollbar;
 mod secrets;
 mod session;
 mod settings_file;
@@ -49,7 +50,7 @@ use cayenchat_irc_core::{
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
-    Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
     DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
     Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme,
     ThemeMode, color_value,
@@ -931,6 +932,7 @@ struct ChatWindow {
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
     tree_list: LogList,
+    members_scroll: UniformListScrollHandle,
     tree_rows: Vec<TreeRow>,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
@@ -1158,6 +1160,22 @@ enum FontTarget {
     Time,
 }
 
+/// The auto-join dialog of the selected server: one row per entry, in JOIN
+/// order. Edits are written back to the form's `channels` field.
+struct AutoJoinDialog {
+    rows: Vec<AutoJoinRow>,
+    /// Holds the keyboard focus while no row is being edited, so typing and
+    /// Tab never reach the form behind the dialog.
+    focus: FocusHandle,
+}
+
+struct AutoJoinRow {
+    name: Entity<TextInput>,
+    enabled: bool,
+    /// Writes the name back while it is edited.
+    _subscription: Subscription,
+}
+
 /// The color picker open under one color row of the appearance settings.
 struct OpenColorPicker {
     /// The `#RRGGBB` field the picker edits.
@@ -1174,6 +1192,8 @@ struct SettingsWindow {
     tab: SettingsTab,
     /// The category list on the left; Up and Down move through it.
     nav_focus: FocusHandle,
+    nav_scroll: ScrollHandle,
+    pane_scroll: ScrollHandle,
     font_picker: Option<FontTarget>,
     color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Shortcuts tab).
@@ -1202,6 +1222,8 @@ struct SettingsWindow {
     avatar_upload: AttachmentFlow<String>,
     /// The square selection for an avatar image, before uploading it.
     avatar_editor: Option<avatar_editor::AvatarEditor>,
+    /// The auto-join list being edited in its own dialog.
+    auto_join: Option<AutoJoinDialog>,
     /// An avatar image is being decoded or encoded.
     avatar_opening: bool,
     /// Observers of `settings`' fields; replaced with the form.
@@ -1338,6 +1360,7 @@ impl ChatWindow {
             sub_list: LogList::new(),
             panes: None,
             tree_list: LogList::new_top(),
+            members_scroll: UniformListScrollHandle::new(),
             tree_rows: Vec::new(),
             sub_source: None,
             sub_rows: Vec::new(),
@@ -1782,6 +1805,8 @@ impl ChatWindow {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
                     config.shared_avatar = shared.clone();
+                    // The auto-join list too: reconnects join the saved one.
+                    config.channels = profile.channels();
                     // A new realname is sent at once with SETNAME when the
                     // connection has it; the server's answer says otherwise.
                     if config.realname != profile.realname {
@@ -2249,6 +2274,86 @@ impl ChatWindow {
                     connection.send_command(&format!("/part {}", menu.channel), None)
                 })
                 .err()
+        };
+        cx.notify();
+    }
+
+    /// Whether `channel` is an enabled auto-join entry of `network`'s server.
+    fn auto_join_enabled(&self, network: NetworkId, channel: &str) -> bool {
+        self.sessions
+            .get(&network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .is_some_and(|profile| {
+                profile
+                    .channels()
+                    .iter()
+                    .any(|name| cayenchat_irc_core::text::same_channel(name, channel))
+            })
+    }
+
+    /// Adds (enables) or disables the menu's channel in its server's saved
+    /// auto-join list. Only the saved configuration changes: nothing is
+    /// joined or parted now, and a disabled entry stays in the list.
+    fn toggle_auto_join(&mut self, add: bool, cx: &mut Context<Self>) {
+        let Some(menu) = self.channel_menu.take() else {
+            return;
+        };
+        let Some(profile_id) = self
+            .sessions
+            .get(&menu.network)
+            .map(|session| session.profile_id.clone())
+        else {
+            return;
+        };
+        // Start from the file, which a settings window may have updated.
+        let mut settings = match settings_file::load() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => self.saved.clone(),
+            Err(error) => {
+                // Saving over a file that cannot be read could destroy it.
+                self.feedback = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
+            return;
+        };
+        let mut entries = profile.auto_join_entries();
+        let found = entries
+            .iter_mut()
+            .filter(|entry| cayenchat_irc_core::text::same_channel(&entry.name, &menu.channel))
+            .map(|entry| entry.enabled = add)
+            .count();
+        if found == 0 && add {
+            entries.push(AutoJoinEntry {
+                name: menu.channel.clone(),
+                enabled: true,
+            });
+        }
+        profile.set_auto_join_entries(&entries);
+        self.feedback = match settings_file::save(&settings) {
+            Ok(()) => {
+                if let Some(saved) = self.saved.servers.iter_mut().find(|p| p.id == profile_id) {
+                    saved.channels = settings
+                        .servers
+                        .iter()
+                        .find(|p| p.id == profile_id)
+                        .map(|p| p.channels.clone())
+                        .unwrap_or_default();
+                }
+                // The next reconnect joins the new list; nothing is sent now.
+                if let (Some(config), Some(profile)) = (
+                    self.sessions
+                        .get_mut(&menu.network)
+                        .and_then(|session| session.active_config.as_mut()),
+                    settings.servers.iter().find(|p| p.id == profile_id),
+                ) {
+                    config.channels = profile.channels();
+                }
+                None
+            }
+            Err(error) => Some(error),
         };
         cx.notify();
     }
@@ -3783,6 +3888,8 @@ impl SettingsWindow {
             feedback: None,
             tab: SettingsTab::Connection,
             nav_focus: cx.focus_handle().tab_stop(true),
+            nav_scroll: ScrollHandle::new(),
+            pane_scroll: ScrollHandle::new(),
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -3799,6 +3906,7 @@ impl SettingsWindow {
             avatar_feedback: None,
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
+            auto_join: None,
             avatar_opening: false,
             _field_subscriptions: field_subscriptions,
             connected_shown: false,
@@ -3863,6 +3971,7 @@ impl SettingsWindow {
         self.apply_to_chat_window(&previous, loaded, servers_changed, cx);
         self.font_picker = None;
         self.color_picker = None;
+        self.auto_join = None;
         self.shortcut_recording = None;
         self.refresh_upload_account(cx);
         cx.notify();
@@ -4297,6 +4406,245 @@ impl SettingsWindow {
         self.switch_server(move |settings| settings.selected_server = id, cx);
     }
 
+    fn auto_join_row(&self, name: &str, enabled: bool, cx: &mut Context<Self>) -> AutoJoinRow {
+        let input = cx.new(|cx| TextInput::new_settings_field("#channel", name, false, cx));
+        let _subscription = cx.observe(&input, |this, _, cx| this.sync_auto_join(cx));
+        AutoJoinRow {
+            name: input,
+            enabled,
+            _subscription,
+        }
+    }
+
+    /// The enabled channels in JOIN order, for the Connection tab.
+    fn auto_join_summary(&self, cx: &App) -> String {
+        let names: Vec<String> =
+            cayenchat_storage::parse_auto_join(self.settings.channels.read(cx).text())
+                .into_iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.name)
+                .collect();
+        const SHOWN: usize = 5;
+        match names.len() {
+            0 => self.i18n.text("auto_join_none"),
+            n if n > SHOWN => format!("{}, …", names[..SHOWN].join(", ")),
+            _ => names.join(", "),
+        }
+    }
+
+    fn render_auto_join_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let dialog = self.auto_join.as_ref()?;
+        let theme = settings_theme::palette(cx);
+        let last = dialog.rows.len().saturating_sub(1);
+        let mut list = div().flex().flex_col().gap_1();
+        for (index, row) in dialog.rows.iter().enumerate() {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(("auto-join-enabled", index))
+                            .cursor_pointer()
+                            .child(settings_theme::checkbox(row.enabled, true, cx))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.edit_auto_join(
+                                    |rows| rows[index].enabled = !rows[index].enabled,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(div().flex_1().min_w_0().child(row.name.clone()))
+                    .child(
+                        settings_theme::button(("auto-join-up", index), false, cx)
+                            .child(self.i18n.text("auto_join_move_up"))
+                            .when(index == 0, |d| d.opacity(0.4))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if index > 0 {
+                                    this.edit_auto_join(|rows| rows.swap(index - 1, index), cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        settings_theme::button(("auto-join-down", index), false, cx)
+                            .child(self.i18n.text("auto_join_move_down"))
+                            .when(index == last, |d| d.opacity(0.4))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.edit_auto_join(
+                                    |rows| {
+                                        if index + 1 < rows.len() {
+                                            rows.swap(index, index + 1);
+                                        }
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        settings_theme::button(("auto-join-delete", index), false, cx)
+                            .child(self.i18n.text("auto_join_delete"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_auto_join(
+                                    |rows| {
+                                        rows.remove(index);
+                                    },
+                                    cx,
+                                );
+                                if let Some(dialog) = &this.auto_join {
+                                    window.focus(&dialog.focus);
+                                }
+                            })),
+                    ),
+            );
+        }
+        let panel = div()
+            .id("auto-join-dialog")
+            .track_focus(&dialog.focus)
+            .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
+                this.auto_join_traverse(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                this.auto_join_traverse(false, window, cx)
+            }))
+            .occlude()
+            .w(px(560.))
+            .max_w_full()
+            .max_h_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_4()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("auto_join_title")),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("auto_join_hint")),
+            )
+            .child(
+                div()
+                    .id("auto-join-list")
+                    .flex_1()
+                    .min_h_0()
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .child(list),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(
+                        settings_theme::button("auto-join-add", false, cx)
+                            .child(self.i18n.text("auto_join_add"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_auto_join_row(window, cx)
+                            })),
+                    )
+                    .child(
+                        settings_theme::button("auto-join-done", true, cx)
+                            .child(self.i18n.text("auto_join_done"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_auto_join(window, cx)),
+                            ),
+                    ),
+            );
+        Some(
+            div()
+                .id("auto-join-backdrop")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .bg(gpui::black().opacity(0.4))
+                .child(panel)
+                .into_any_element(),
+        )
+    }
+
+    fn open_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entries = cayenchat_storage::parse_auto_join(self.settings.channels.read(cx).text());
+        let rows = entries
+            .iter()
+            .map(|entry| self.auto_join_row(&entry.name, entry.enabled, cx))
+            .collect();
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.auto_join = Some(AutoJoinDialog { rows, focus });
+        cx.notify();
+    }
+
+    fn close_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.auto_join = None;
+        window.focus(&self.nav_focus);
+        cx.notify();
+    }
+
+    /// Tab / Shift+Tab inside the dialog: moves between its fields and wraps
+    /// back to the dialog instead of leaving it.
+    fn auto_join_traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.auto_join else {
+            return;
+        };
+        if forward {
+            window.focus_next();
+        } else {
+            window.focus_prev();
+        }
+        if !dialog.focus.contains_focused(window, cx) {
+            window.focus(&dialog.focus);
+        }
+    }
+
+    /// Stores the dialog's rows in the `channels` field, which autosaves.
+    fn sync_auto_join(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.auto_join else {
+            return;
+        };
+        let entries: Vec<AutoJoinEntry> = dialog
+            .rows
+            .iter()
+            .map(|row| AutoJoinEntry {
+                name: row.name.read(cx).text().to_owned(),
+                enabled: row.enabled,
+            })
+            .collect();
+        let text = cayenchat_storage::format_auto_join(&entries);
+        self.settings
+            .channels
+            .update(cx, |field, cx| field.set_text(&text, cx));
+        cx.notify();
+    }
+
+    fn edit_auto_join(
+        &mut self,
+        change: impl FnOnce(&mut Vec<AutoJoinRow>),
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dialog) = &mut self.auto_join {
+            change(&mut dialog.rows);
+        }
+        self.sync_auto_join(cx);
+    }
+
+    fn add_auto_join_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.auto_join_row("", true, cx);
+        let input = row.name.clone();
+        self.edit_auto_join(|rows| rows.push(row), cx);
+        window.focus(&input.read(cx).focus_handle(cx));
+    }
+
     /// Adds a server, blank or filled in from a preset's `host`.
     fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
         let host = host.to_owned();
@@ -4311,6 +4659,7 @@ impl SettingsWindow {
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.avatar_feedback = None;
         self.avatar_editor = None;
+        self.auto_join = None;
         let store = secrets::store(cx);
         match self.settings.switch_server(change, &store, &self.i18n, cx) {
             Ok(()) => self.feedback = None,
@@ -4787,10 +5136,33 @@ impl SettingsWindow {
                 &self.i18n.text("display_name"),
                 self.settings.display_name.clone(),
             ))
-            .child(settings_field(
-                &self.i18n.text("auto_join_channels"),
-                self.settings.channels.clone(),
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .child(self.i18n.text("auto_join_channels")),
+                    )
+                    .child(
+                        div()
+                            .id("auto-join-summary")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.auto_join_summary(cx)),
+                    )
+                    .child(
+                        settings_theme::button("auto-join-edit", false, cx)
+                            .child(self.i18n.text("auto_join_edit"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_auto_join(window, cx)),
+                            ),
+                    ),
+            )
             .child(
                 div()
                     .id("connect-on-startup")
@@ -5729,6 +6101,7 @@ impl SettingsWindow {
         let experimental = tabs.pop();
         let mut nav = div()
             .id("settings-nav")
+            .track_scroll(&self.nav_scroll)
             .track_focus(&self.nav_focus)
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.nav_key_down(event, window, cx)),
@@ -5762,8 +6135,10 @@ impl SettingsWindow {
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
+        let auto_join = self.render_auto_join_dialog(cx);
         field_traversal(div().id("settings-screen"))
             .key_context("SettingsWindow")
+            .relative()
             .size_full()
             .flex()
             .bg(theme.window)
@@ -5773,16 +6148,30 @@ impl SettingsWindow {
                     .text_size(px(native.defaults.font.size))
             })
             .text_color(theme.text)
-            .child(nav)
+            .child(div().relative().flex_shrink_0().h_full().child(nav).child(
+                scrollbar::scrollbar("scrollbar-settings-nav", &self.nav_scroll, theme.text_muted),
+            ))
             .child(
                 div()
-                    .id("settings-pane")
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .overflow_y_scroll()
-                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                    .child(
+                        div()
+                            .id("settings-pane")
+                            .track_scroll(&self.pane_scroll)
+                            .size_full()
+                            .overflow_y_scroll()
+                            .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-settings-pane",
+                        &self.pane_scroll,
+                        theme.text_muted,
+                    )),
             )
+            .children(auto_join)
             .on_action(cx.listener(Self::open_settings_action))
             .when(
                 self.owner
@@ -6060,12 +6449,22 @@ impl ChatWindow {
             .border_t_1()
             .border_color(theme.border)
             .child(
-                list(
-                    self.tree_list.state.clone(),
-                    cx.processor(Self::render_tree_row),
-                )
-                .flex_1()
-                .min_h_0(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        list(
+                            self.tree_list.state.clone(),
+                            cx.processor(Self::render_tree_row),
+                        )
+                        .size_full(),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-channels",
+                        &self.tree_list.state,
+                        theme.text_muted,
+                    )),
             )
             .into_any_element()
     }
@@ -6185,7 +6584,7 @@ impl ChatWindow {
                                     event
                                         .position
                                         .y
-                                        .min((viewport.height - px(76.)).max(px(0.))),
+                                        .min((viewport.height - px(110.)).max(px(0.))),
                                 ),
                                 network,
                                 conversation: id,
@@ -6215,6 +6614,7 @@ impl ChatWindow {
         {
             self.pane_renders += 1;
         }
+        let theme = theme::current(cx);
         match kind {
             PaneKind::MainLog => {
                 let selection = self.state.selection();
@@ -6233,28 +6633,55 @@ impl ChatWindow {
                         });
                     });
                 }
-                list(main.state.clone(), cx.processor(Self::render_main_row))
+                let bar = scrollbar::scrollbar("scrollbar-main", &main.state, theme.text_muted);
+                div()
+                    .relative()
                     .size_full()
+                    .child(
+                        list(main.state.clone(), cx.processor(Self::render_main_row)).size_full(),
+                    )
+                    .child(bar)
                     .into_any_element()
             }
-            PaneKind::SubLog => list(
-                self.sub_list.state.clone(),
-                cx.processor(Self::render_sub_row),
-            )
-            .size_full()
-            .into_any_element(),
+            PaneKind::SubLog => div()
+                .relative()
+                .size_full()
+                .child(
+                    list(
+                        self.sub_list.state.clone(),
+                        cx.processor(Self::render_sub_row),
+                    )
+                    .size_full(),
+                )
+                .child(scrollbar::scrollbar(
+                    "scrollbar-sub",
+                    &self.sub_list.state,
+                    theme.text_muted,
+                ))
+                .into_any_element(),
             PaneKind::Members => {
                 let member_count = self
                     .state
                     .selected_channel()
                     .map_or(0, |channel| channel.members.len());
-                uniform_list(
-                    "members",
-                    member_count,
-                    cx.processor(Self::render_member_rows),
-                )
-                .size_full()
-                .into_any_element()
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        uniform_list(
+                            "members",
+                            member_count,
+                            cx.processor(Self::render_member_rows),
+                        )
+                        .track_scroll(self.members_scroll.clone())
+                        .size_full(),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-members",
+                        &self.members_scroll,
+                        theme.text_muted,
+                    ))
+                    .into_any_element()
             }
             PaneKind::Channels => self.render_channel_tree(cx),
         }
@@ -6643,7 +7070,28 @@ impl ChatWindow {
                         .when(!enabled, |d| d.text_color(theme.text_muted)),
                 );
             }
+            let auto_joined = self.auto_join_enabled(menu.network, &menu.channel);
             popup
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .child(
+                    div()
+                        .id("channel-menu-auto-join")
+                        .px_2()
+                        .py_1()
+                        .child(self.i18n.text(if auto_joined {
+                            "auto_join_remove_from"
+                        } else {
+                            "auto_join_add_to"
+                        }))
+                        .when(registered, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(theme.hover_strong))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_auto_join(!auto_joined, cx)
+                                }))
+                        })
+                        .when(!registered, |d| d.text_color(theme.text_muted)),
+                )
         });
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
@@ -10823,6 +11271,73 @@ mod pane_tests {
             assert!(chat.state.private_id(one, "bob").is_none());
             assert!(!chat.inputs.contains_key(&Selection::Channel(new_bob)));
         });
+    }
+
+    #[gpui::test]
+    fn the_channel_menu_disables_or_adds_auto_join_without_deleting(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a,-#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            let network = chat.state.networks()[0].id;
+            let menu = |chat: &mut ChatWindow, channel: &str| {
+                chat.channel_menu = Some(crate::ChannelMenu {
+                    position: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    network,
+                    conversation: chat.state.conversations()[0].id,
+                    channel: channel.into(),
+                    joined: false,
+                    private: false,
+                });
+            };
+            assert!(chat.auto_join_enabled(network, "#A"));
+            assert!(!chat.auto_join_enabled(network, "#b"));
+            let saved = |chat: &ChatWindow| chat.saved.selected_profile().unwrap().channels.clone();
+            chat.sessions.get_mut(&network).unwrap().active_config =
+                Some(cayenchat_irc_core::ConnectionConfig::tls(
+                    "irc.example".into(),
+                    "alice".into(),
+                    vec!["#a".into()],
+                ));
+
+            menu(chat, "#a");
+            chat.toggle_auto_join(false, cx);
+            assert_eq!(saved(chat), "-#a,-#b");
+            // The next reconnect uses the saved list, without a JOIN/PART now.
+            assert!(chat.reconnect_config(network).unwrap().channels.is_empty());
+            assert!(!chat.auto_join_enabled(network, "#a"));
+            assert!(chat.channel_menu.is_none());
+
+            // A disabled entry is enabled again in place; a new one is appended.
+            menu(chat, "#b");
+            chat.toggle_auto_join(true, cx);
+            menu(chat, "#c");
+            chat.toggle_auto_join(true, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c");
+            let file = crate::settings_file::load().unwrap().unwrap();
+            assert_eq!(file.selected_profile().unwrap().channels, "-#a,#b,#c");
+
+            // `[]` and `{}` are the same channel under RFC 1459 case mapping.
+            menu(chat, "#[x]");
+            chat.toggle_auto_join(true, cx);
+            assert!(chat.auto_join_enabled(network, "#{x}"));
+            menu(chat, "#{x}");
+            chat.toggle_auto_join(true, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c,#[x]");
+            menu(chat, "#{X}");
+            chat.toggle_auto_join(false, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c,-#[x]");
+        });
+        drop(file);
     }
 
     #[gpui::test]

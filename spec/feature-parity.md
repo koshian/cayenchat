@@ -129,6 +129,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — Experimental settings tab with opt-in stderr file logging, native destination picker, immediate switching, append and saved preferences; Windows release builds suppress the startup console (Windows runtime verification pending)
 - DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D021)
 - DONE — persisted channel auto-join list
+- DONE — auto-join list is edited in a dialog opened from the Connection tab (summary plus Edit…): enable/disable, add, delete, rename and move up/down; the saved order is the JOIN order. A disabled entry stays saved, stored in `channels` with a `-` prefix (`-#chan`) and skipped when connecting. While connected, the channel context menu offers Add to auto-join / Remove from auto-join (which disables, not deletes); it only changes the saved list and never JOINs or PARTs. A marker in the channel list is not implemented
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
 - DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知), and on Windows a notification sound option (default off)

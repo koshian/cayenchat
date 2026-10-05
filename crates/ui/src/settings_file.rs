@@ -59,7 +59,7 @@ impl Drop for TestFile {
 #[cfg(test)]
 mod tests {
     use cayenchat_storage::{Appearance, Secret, Settings, ThemeMode};
-    use gpui::TestAppContext;
+    use gpui::{Focusable, TestAppContext};
 
     use super::TestFile;
     use crate::{SettingsWindow, secrets, settings_with_channels};
@@ -87,6 +87,69 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         cx.run_until_parked();
         (form, cx)
+    }
+
+    #[gpui::test]
+    fn the_auto_join_dialog_edits_toggles_reorders_and_deletes(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a,-#b,#c");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let channels = |form: &SettingsWindow, cx: &gpui::App| {
+            form.settings.channels.read(cx).text().to_owned()
+        };
+
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        form.update(cx, |form, cx| {
+            form.edit_auto_join(|rows| rows[1].enabled = true, cx);
+            form.edit_auto_join(|rows| rows[0].enabled = false, cx);
+            form.edit_auto_join(|rows| rows.swap(0, 2), cx);
+            assert_eq!(channels(form, cx), "#c,#b,-#a");
+            form.edit_auto_join(
+                |rows| {
+                    rows.remove(1);
+                },
+                cx,
+            );
+            assert_eq!(channels(form, cx), "#c,-#a");
+            let name = form.auto_join.as_ref().unwrap().rows[0].name.clone();
+            name.update(cx, |name, cx| name.set_text("#renamed", cx));
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, cx| {
+            assert_eq!(channels(form, cx), "#renamed,-#a");
+            form.autosave_now(None, cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_auto_join_dialog_keeps_the_focus_away_from_the_form(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let nickname = form.read_with(cx, |form, _| form.settings.nickname.clone());
+        let text = |cx: &gpui::App| nickname.read(cx).text().to_owned();
+        let before = cx.update(|_, cx| text(cx));
+        cx.update(|window, cx| window.focus(&nickname.read(cx).focus_handle(cx)));
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        cx.simulate_input("X");
+        assert_eq!(cx.update(|_, cx| text(cx)), before);
+
+        // Tab and Shift+Tab stay inside the dialog, even with no rows.
+        for keys in ["tab", "shift-tab", "tab", "tab"] {
+            cx.simulate_keystrokes(keys);
+            cx.simulate_input("X");
+            let inside = form.update_in(cx, |form, window, cx| {
+                form.auto_join
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.focus.contains_focused(window, cx))
+            });
+            assert!(inside, "{keys} left the dialog");
+        }
+        assert_eq!(cx.update(|_, cx| text(cx)), before);
+        drop(file);
     }
 
     #[gpui::test]

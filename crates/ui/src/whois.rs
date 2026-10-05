@@ -14,6 +14,8 @@ pub struct WhoisWindow {
     joined: HashSet<String>,
     selected_channel: usize,
     channel_menu_open: bool,
+    details_scroll: ScrollHandle,
+    menu_scroll: ScrollHandle,
     status: Option<String>,
     i18n: Localizer,
     focus: FocusHandle,
@@ -55,6 +57,8 @@ impl WhoisWindow {
                         joined,
                         selected_channel: 0,
                         channel_menu_open: false,
+                        details_scroll: ScrollHandle::new(),
+                        menu_scroll: ScrollHandle::new(),
                         status: None,
                         i18n,
                         focus,
@@ -203,6 +207,7 @@ impl WhoisWindow {
         if self.channel_menu_open {
             let mut menu = div()
                 .id("whois-channel-menu")
+                .track_scroll(&self.menu_scroll)
                 .max_h(px(180.))
                 .overflow_y_scroll()
                 .bg(theme.surface)
@@ -237,7 +242,13 @@ impl WhoisWindow {
                         })),
                 );
             }
-            selector = selector.child(menu);
+            selector = selector.child(div().relative().child(menu).child(
+                crate::scrollbar::scrollbar(
+                    "scrollbar-whois-menu",
+                    &self.menu_scroll,
+                    theme.text_muted,
+                ),
+            ));
         }
         selector
     }
@@ -370,11 +381,22 @@ impl WhoisWindow {
             }))
             .child(
                 div()
-                    .id("whois-details")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .child(details),
+                    .child(
+                        div()
+                            .id("whois-details")
+                            .track_scroll(&self.details_scroll)
+                            .size_full()
+                            .overflow_y_scroll()
+                            .child(details),
+                    )
+                    .child(crate::scrollbar::scrollbar(
+                        "scrollbar-whois-details",
+                        &self.details_scroll,
+                        theme.text_muted,
+                    )),
             )
             .child(
                 div()
