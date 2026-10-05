@@ -24,6 +24,7 @@ mod notifier;
 #[cfg(test)]
 mod perf_baseline;
 mod previews;
+mod scrollbar;
 mod secrets;
 mod session;
 mod settings_file;
@@ -1180,6 +1181,8 @@ struct SettingsWindow {
     tab: SettingsTab,
     /// The category list on the left; Up and Down move through it.
     nav_focus: FocusHandle,
+    nav_scroll: ScrollHandle,
+    pane_scroll: ScrollHandle,
     font_picker: Option<FontTarget>,
     color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Shortcuts tab).
@@ -3895,6 +3898,8 @@ impl SettingsWindow {
             feedback: None,
             tab: SettingsTab::Connection,
             nav_focus: cx.focus_handle().tab_stop(true),
+            nav_scroll: ScrollHandle::new(),
+            pane_scroll: ScrollHandle::new(),
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -5831,6 +5836,7 @@ impl SettingsWindow {
         let experimental = tabs.pop();
         let mut nav = div()
             .id("settings-nav")
+            .track_scroll(&self.nav_scroll)
             .track_focus(&self.nav_focus)
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.nav_key_down(event, window, cx)),
@@ -5875,15 +5881,28 @@ impl SettingsWindow {
                     .text_size(px(native.defaults.font.size))
             })
             .text_color(theme.text)
-            .child(nav)
+            .child(div().relative().flex_shrink_0().h_full().child(nav).child(
+                scrollbar::scrollbar("scrollbar-settings-nav", &self.nav_scroll, theme.text_muted),
+            ))
             .child(
                 div()
-                    .id("settings-pane")
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .overflow_y_scroll()
-                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                    .child(
+                        div()
+                            .id("settings-pane")
+                            .track_scroll(&self.pane_scroll)
+                            .size_full()
+                            .overflow_y_scroll()
+                            .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-settings-pane",
+                        &self.pane_scroll,
+                        theme.text_muted,
+                    )),
             )
             .on_action(cx.listener(Self::open_settings_action))
             .when(
@@ -6161,12 +6180,22 @@ impl ChatWindow {
             .border_t_1()
             .border_color(theme.border)
             .child(
-                list(
-                    self.tree_list.state.clone(),
-                    cx.processor(Self::render_tree_row),
-                )
-                .flex_1()
-                .min_h_0(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        list(
+                            self.tree_list.state.clone(),
+                            cx.processor(Self::render_tree_row),
+                        )
+                        .size_full(),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-channels",
+                        &self.tree_list.state,
+                        theme.text_muted,
+                    )),
             )
             .into_any_element()
     }
@@ -6316,6 +6345,7 @@ impl ChatWindow {
         {
             self.pane_renders += 1;
         }
+        let theme = theme::current(cx);
         match kind {
             PaneKind::MainLog => {
                 let selection = self.state.selection();
@@ -6334,29 +6364,55 @@ impl ChatWindow {
                         });
                     });
                 }
-                list(main.state.clone(), cx.processor(Self::render_main_row))
+                let bar = scrollbar::scrollbar("scrollbar-main", &main.state, theme.text_muted);
+                div()
+                    .relative()
                     .size_full()
+                    .child(
+                        list(main.state.clone(), cx.processor(Self::render_main_row)).size_full(),
+                    )
+                    .child(bar)
                     .into_any_element()
             }
-            PaneKind::SubLog => list(
-                self.sub_list.state.clone(),
-                cx.processor(Self::render_sub_row),
-            )
-            .size_full()
-            .into_any_element(),
+            PaneKind::SubLog => div()
+                .relative()
+                .size_full()
+                .child(
+                    list(
+                        self.sub_list.state.clone(),
+                        cx.processor(Self::render_sub_row),
+                    )
+                    .size_full(),
+                )
+                .child(scrollbar::scrollbar(
+                    "scrollbar-sub",
+                    &self.sub_list.state,
+                    theme.text_muted,
+                ))
+                .into_any_element(),
             PaneKind::Members => {
                 let member_count = self
                     .state
                     .selected_channel()
                     .map_or(0, |channel| channel.members.len());
-                uniform_list(
-                    "members",
-                    member_count,
-                    cx.processor(Self::render_member_rows),
-                )
-                .track_scroll(self.members_scroll.clone())
-                .size_full()
-                .into_any_element()
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        uniform_list(
+                            "members",
+                            member_count,
+                            cx.processor(Self::render_member_rows),
+                        )
+                        .track_scroll(self.members_scroll.clone())
+                        .size_full(),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-members",
+                        &self.members_scroll,
+                        theme.text_muted,
+                    ))
+                    .into_any_element()
             }
             PaneKind::Channels => self.render_channel_tree(cx),
         }
