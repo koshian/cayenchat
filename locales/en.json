@@ -220,6 +220,8 @@
   "realname_placeholder": "CayenChat",
   "quit_message": "Quit message",
   "quit_message_placeholder": "Leaving CayenChat",
+  "display_name": "Display name",
+  "display_name_placeholder": "Short name for the combined log",
   "event_realname_changed": "Real name changed to {realname}.",
   "event_realname_unsupported": "The server does not support SETNAME; the new real name is used from the next connection.",
   "event_realname_busy": "Too many real name changes are waiting for the server.",

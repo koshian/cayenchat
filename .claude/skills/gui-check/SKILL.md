@@ -44,6 +44,8 @@ python3 $G type "alice" ; python3 $G key Tab
 python3 $G key ctrl+comma --still 2              # a window opens: wait longer
 python3 $G scroll 400 300 up 5
 python3 $G shot detail --crop 390,410,1090,640 --scale 2   # zoom to read text
+python3 $G click 400 407 --repeat 2 --no-shot    # double-click a link in the log
+python3 $G opened                                # URLs opened since the last `opened`
 python3 $G restart-app                           # Ctrl+Q, then start again
 python3 $G quit                                  # Ctrl+Q only
 python3 $G stop
@@ -86,6 +88,9 @@ python3 $G stop
   `--wm openbox` if a check needs one.
 - `type` sends key events without an input method: ASCII only. Japanese
   input (IME) cannot be checked here.
+- Opening a link starts no browser: the URL goes to the session's
+  `opened.txt` and `opened` prints it. Check the exact URL there rather
+  than in a screenshot. `Failed to open with dbus` in `app.log` is expected.
 - "(the screen was still changing)" after a path usually means a blinking
   caret; the shot is still usable.
 - `app.log` has the app's stderr; look there when a command says the app

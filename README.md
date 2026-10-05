@@ -33,6 +33,10 @@ See [development requirements](spec/development.md) for platform prerequisites a
 
 Add a server in the settings window that opens at startup (`Cmd+,` / `Ctrl+,`), then choose **Connect**. See [keyboard shortcuts and IRC commands](SHORTCUTS.md).
 
+## Customizing UI text
+
+CayenChat loads the packaged `locales/ja.json` and `locales/en.json` at runtime. Edit these files to customize or override UI text locally. If the external files are missing, CayenChat falls back to the catalogs embedded in the executable.
+
 ## Documentation
 
 The specifications under [`spec/`](spec/) are authoritative; start with [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md). To run the tests and view their coverage, see [How to test](HOW_TO_TEST.md).

@@ -155,6 +155,7 @@ struct SettingsForm {
     username: Entity<TextInput>,
     realname: Entity<TextInput>,
     quit_message: Entity<TextInput>,
+    display_name: Entity<TextInput>,
     channels: Entity<TextInput>,
     /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
@@ -224,6 +225,12 @@ impl SettingsForm {
             quit_message: field(
                 &i18n.text("quit_message_placeholder"),
                 &profile.quit_message,
+                false,
+                cx,
+            ),
+            display_name: field(
+                &i18n.text("display_name_placeholder"),
+                &profile.display_name,
                 false,
                 cx,
             ),
@@ -404,6 +411,7 @@ impl SettingsForm {
             profile.username = value(&self.username);
             profile.realname = value(&self.realname);
             profile.quit_message = value(&self.quit_message);
+            profile.display_name = value(&self.display_name);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
             profile.avatar_url = value(&self.avatar_url);
@@ -471,7 +479,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 33] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 34] {
         [
             &self.custom_host,
             &self.port,
@@ -479,6 +487,7 @@ impl SettingsForm {
             &self.username,
             &self.realname,
             &self.quit_message,
+            &self.display_name,
             &self.channels,
             &self.server_password,
             &self.sasl_username,
@@ -606,6 +615,7 @@ impl SettingsForm {
             (&self.username, &profile.username),
             (&self.realname, &profile.realname),
             (&self.quit_message, &profile.quit_message),
+            (&self.display_name, &profile.display_name),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
             (&self.avatar_url, &profile.avatar_url),
@@ -1194,7 +1204,7 @@ struct SettingsWindow {
     avatar_opening: bool,
     /// Observers of `settings`' fields; replaced with the form.
     _field_subscriptions: Vec<Subscription>,
-    /// Whether the connection switch was last drawn on, so the window is
+    /// Whether the connection button was last drawn as Disconnect, so the window is
     /// redrawn only when a connection comes up or goes down.
     connected_shown: bool,
     _subscriptions: Vec<Subscription>,
@@ -3678,6 +3688,7 @@ impl SettingsWindow {
             (&self.settings.username, "username_placeholder"),
             (&self.settings.realname, "realname_placeholder"),
             (&self.settings.quit_message, "quit_message_placeholder"),
+            (&self.settings.display_name, "display_name_placeholder"),
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
@@ -3727,7 +3738,7 @@ impl SettingsWindow {
         });
         let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
         let field_subscriptions = Self::observe_fields(&settings, window, cx);
-        // The connection switch follows the chat window's connections. The
+        // The connection button follows the chat window's connections. The
         // chat window opens this window from its own update, when its window
         // cannot be read yet, so subscribe once that update has returned.
         cx.defer_in(window, |this, _, cx| {
@@ -4568,18 +4579,17 @@ impl SettingsWindow {
                     )
                     .child(div().flex_1())
                     .when(!no_server, |d| {
-                        // On while the server being edited is connected, being
-                        // connected or waiting to retry.
+                        // One button in one place: Disconnect while the server
+                        // being edited is connected, being connected or
+                        // waiting to retry, Connect otherwise.
                         d.child(
-                            div()
-                                .id("connection-switch")
-                                .debug_selector(|| "connection-switch".into())
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .child(self.i18n.text("connect"))
-                                .child(settings_theme::switch(connected, cx))
+                            settings_theme::button("connection-button", !connected, cx)
+                                .debug_selector(|| "connection-button".into())
+                                .child(self.i18n.text(if connected {
+                                    "disconnect"
+                                } else {
+                                    "connect"
+                                }))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if !connected {
                                         this.connect_from_settings(window, cx);
@@ -4769,6 +4779,10 @@ impl SettingsWindow {
             .child(settings_field(
                 &self.i18n.text("quit_message"),
                 self.settings.quit_message.clone(),
+            ))
+            .child(settings_field(
+                &self.i18n.text("display_name"),
+                self.settings.display_name.clone(),
             ))
             .child(settings_field(
                 &self.i18n.text("auto_join_channels"),
@@ -5787,18 +5801,31 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
             .filter_map(|scheme| text[cursor..].find(scheme).map(|offset| cursor + offset))
             .min();
         let Some(start) = next else { break };
-        let mut end = text[start..]
+        // An IPv6 literal host such as `https://[::1]/` keeps its brackets.
+        let host_start = start + text[start..].find("://").map_or(0, |i| i + 3);
+        let scan_from = match text[host_start..].strip_prefix('[') {
+            Some(rest) => rest
+                .find(']')
+                .map_or(host_start, |close| host_start + 1 + close + 1),
+            None => host_start,
+        };
+        let mut end = text[scan_from..]
             .char_indices()
-            .find(|(_, ch)| ch.is_whitespace() || "<>\"'。、".contains(*ch))
-            .map(|(offset, _)| start + offset)
+            .find(|(_, ch)| ch.is_whitespace() || "<>[]\"'。、".contains(*ch))
+            .map(|(offset, _)| scan_from + offset)
             .unwrap_or(text.len());
-        while end > start
-            && text[..end]
-                .chars()
-                .last()
-                .is_some_and(|ch| ".,;:!?)]}」』".contains(ch))
-        {
-            end -= text[..end].chars().last().unwrap().len_utf8();
+        while end > start {
+            let Some(last) = text[..end].chars().last() else {
+                break;
+            };
+            let closes_bracket = last == ')' && {
+                let candidate = &text[start..end];
+                candidate.matches(')').count() > candidate.matches('(').count()
+            };
+            if !(closes_bracket || ".,;:!?}」』".contains(last)) {
+                break;
+            }
+            end -= last.len_utf8();
         }
         let candidate = &text[start..end];
         if let Ok(url) = url::Url::parse(candidate)
@@ -7453,13 +7480,20 @@ impl ChatWindow {
         let Some(message) = conversation.messages.get(index) else {
             return div().into_any_element();
         };
-        let network = self
-            .state
-            .networks()
-            .iter()
-            .find(|network| network.id == conversation.network)
-            .map(|network| network.name.as_str())
-            .unwrap_or("");
+        let alias = self
+            .sessions
+            .get(&conversation.network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .map(|profile| profile.display_name.as_str())
+            .filter(|alias| !alias.is_empty());
+        let network = alias.unwrap_or_else(|| {
+            self.state
+                .networks()
+                .iter()
+                .find(|network| network.id == conversation.network)
+                .map(|network| network.name.as_str())
+                .unwrap_or("")
+        });
         // Same flow as the main log's default layout: channel, network and
         // nickname lead the text, so wrapped lines return to the text column.
         let prefix = if message.activity {
@@ -8071,6 +8105,32 @@ mod log_tests {
         assert_eq!(urls[0].1, "https://example.org/a?q=1");
         assert_eq!(urls[1].1, "http://example.jp/path");
         assert_eq!(&text[urls[0].0.clone()], urls[0].1);
+    }
+
+    #[test]
+    fn markdown_links_and_brackets_do_not_leak_into_urls() {
+        let text = " [https://x.com/a/status/1](https://x.com/a/status/1)";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert!(
+            urls.iter()
+                .all(|(_, url)| url == "https://x.com/a/status/1")
+        );
+        let text = "(see https://example.org/a_(b)) https://example.org/c)";
+        let urls = log_urls(text);
+        assert_eq!(urls[0].1, "https://example.org/a_(b)");
+        assert_eq!(urls[1].1, "https://example.org/c");
+    }
+
+    #[test]
+    fn ipv6_literal_hosts_keep_their_brackets() {
+        let text =
+            "[https://[2001:db8::1]:8080/path](https://[2001:db8::1]:8080/path) http://[::1]/";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0].1, "https://[2001:db8::1]:8080/path");
+        assert_eq!(urls[1].1, "https://[2001:db8::1]:8080/path");
+        assert_eq!(urls[2].1, "http://[::1]/");
     }
 
     #[test]

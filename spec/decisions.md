@@ -1203,11 +1203,13 @@ dimmed instead when disabled.
   data, not an option, and stays.
 - **Image Upload**: provider None. The account token is a credential and is
   kept; Disconnect stays its own button.
-- **Connection** has a "Connect" switch at the bottom right instead of the
-  Connect and Disconnect buttons (owner's request on #135, a layout matter).
-  It is on while the edited server is connected, connecting or waiting to
-  retry; flipping it on connects as the button did (and closes the window),
-  flipping it off disconnects. Back stays at the left.
+- **Connection** has a single ordinary push button at the bottom right instead
+  of separate Connect and Disconnect buttons (owner's request on #135, a
+  layout matter; #178 corrected an over-literal toggle switch). It reads
+  "Connect" while the edited server is not connected and "Disconnect" while it
+  is connected, connecting or waiting to retry, in the same place. Pressing
+  Connect connects as before (and closes the window); pressing Disconnect
+  disconnects. No switch or checkbox is used. Back stays at the left.
 - **Connection** and **Credentials** have no reset: the former holds the user's
   servers (and the language), the latter moves saved secrets between stores.
 
