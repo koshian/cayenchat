@@ -51,8 +51,8 @@ use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
     Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
     DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
-    Notifications, SUB_LOG_NAME_WIDTHS, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme,
+    ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -428,8 +428,8 @@ impl SettingsForm {
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
-            wrap_long_nicknames: self.values.appearance.wrap_long_nicknames,
             compact_urls: self.values.appearance.compact_urls,
+            header_line_messages: self.values.appearance.header_line_messages,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
                 .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
@@ -5345,13 +5345,13 @@ impl SettingsWindow {
                     .gap_2()
                     .cursor_pointer()
                     .child(settings_theme::checkbox(
-                        self.settings.values.appearance.wrap_long_nicknames,
+                        self.settings.values.appearance.header_line_messages,
                         true,
                         cx,
                     ))
-                    .child(self.i18n.text("wrap_long_nicknames"))
+                    .child(self.i18n.text("header_line_messages"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.wrap_long_nicknames;
+                        let value = &mut this.settings.values.appearance.header_line_messages;
                         *value = !*value;
                         cx.notify();
                     })),
@@ -5866,7 +5866,12 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     found
 }
 
+///
+/// `prefix` (the sender and colon in the flowing layout) is drawn in the
+/// nickname color before `text`; every other range, and `selected`, is a
+/// byte offset into `text`.
 fn styled_log_text(
+    prefix: &str,
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
     chips: &[std::ops::Range<usize>],
@@ -5874,13 +5879,14 @@ fn styled_log_text(
     selected: Option<std::ops::Range<usize>>,
     theme: &Theme,
 ) -> StyledText {
-    let mut boundaries = vec![0, text.len()];
-    for range in urls
-        .iter()
-        .map(|(range, _)| range)
-        .chain(highlights)
-        .chain(chips)
-    {
+    let shift = prefix.len();
+    let moved = |range: &std::ops::Range<usize>| range.start + shift..range.end + shift;
+    let urls: Vec<_> = urls.iter().map(|(range, _)| moved(range)).collect();
+    let chips: Vec<_> = chips.iter().map(moved).collect();
+    let highlights: Vec<_> = highlights.iter().map(moved).collect();
+    let selected = selected.as_ref().map(moved);
+    let mut boundaries = vec![0, shift, shift + text.len()];
+    for range in urls.iter().chain(&highlights).chain(&chips) {
         boundaries.extend([range.start, range.end]);
     }
     if let Some(range) = &selected {
@@ -5890,9 +5896,10 @@ fn styled_log_text(
     boundaries.dedup();
     let highlights = boundaries.windows(2).filter_map(|pair| {
         let range = pair[0]..pair[1];
+        let is_prefix = range.end <= shift;
         let is_url = urls
             .iter()
-            .any(|(url, _)| url.start <= range.start && range.end <= url.end);
+            .any(|url| url.start <= range.start && range.end <= url.end);
         let is_chip = chips
             .iter()
             .any(|chip| chip.start <= range.start && range.end <= chip.end);
@@ -5902,10 +5909,12 @@ fn styled_log_text(
         let is_highlight = highlights
             .iter()
             .any(|word| word.start <= range.start && range.end <= word.end);
-        (is_url || is_chip || is_selected || is_highlight).then_some((
+        (is_prefix || is_url || is_chip || is_selected || is_highlight).then_some((
             range,
             HighlightStyle {
-                color: if is_url {
+                color: if is_prefix {
+                    Some(theme.nickname.into())
+                } else if is_url {
                     Some(theme.link.into())
                 } else {
                     is_highlight.then_some(theme.panes.highlight.into())
@@ -5929,7 +5938,7 @@ fn styled_log_text(
             },
         ))
     });
-    StyledText::new(text.to_owned()).with_highlights(highlights)
+    StyledText::new(format!("{prefix}{text}")).with_highlights(highlights)
 }
 
 /// A preview below a message: the thumbnail, or a box of the full height
@@ -7080,15 +7089,9 @@ struct LogStyle {
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
-    wrap_nicknames: bool,
     compact_urls: bool,
-    /// Width of the channel name column of the combined log.
-    sub_name_width: f32,
+    header_lines: bool,
 }
-
-/// Width of the main log's nickname column: nicknames of up to 15 typical
-/// characters (the longest some servers allow) fit without shortening.
-const NICK_COLUMN_WIDTH: f32 = 124.;
 
 impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
@@ -7105,12 +7108,8 @@ impl LogStyle {
                 appearance.time_font.clone().into()
             },
             alternate_rows: appearance.alternate_rows,
-            wrap_nicknames: appearance.wrap_long_nicknames,
             compact_urls: appearance.compact_urls,
-            sub_name_width: appearance
-                .sub_log_name_width
-                .clamp(*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end())
-                as f32,
+            header_lines: appearance.header_line_messages,
         }
     }
 
@@ -7359,7 +7358,18 @@ impl ChatWindow {
             .into_iter()
             .map(|range| compact.shown_range(range))
             .collect();
+        // Default layout: the nickname flows into the message text, so
+        // wrapped lines return to the left edge of the text column. The
+        // header layout shows it on its own first line instead.
+        let header_lines = style.header_lines && !message.activity;
+        let prefix = if message.activity || header_lines {
+            String::new()
+        } else {
+            format!("{}: ", message.sender)
+        };
+        let prefix_len = prefix.len();
         let styled = styled_log_text(
+            &prefix,
             compact.text(),
             &urls,
             &chips,
@@ -7381,128 +7391,137 @@ impl ChatWindow {
             // The full URL of a shortened one shows on hover.
             InteractiveText::new(("message-urls", index), styled)
                 .tooltip(move |byte, _, cx| {
+                    let byte = byte.checked_sub(prefix_len)?;
                     let (_, url) = full_urls.iter().find(|(range, _)| range.contains(&byte))?;
                     let url = url.clone();
                     Some(cx.new(|_| ircv3_settings::TextTooltip(url)).into())
                 })
                 .into_any_element()
         };
-        div()
+        let avatar = (!message.activity && self.avatars.enabled()).then(|| {
+            self.avatar_slot(
+                self.own_avatar_for(network, &message.sender).or_else(|| {
+                    self.state
+                        .avatars()
+                        .for_message(
+                            network,
+                            &cayenchat_irc_core::text::nickname_key(&message.sender),
+                            message.sequence,
+                        )
+                        .cloned()
+                }),
+                &message.sender,
+                cx,
+            )
+        });
+        // One element for the whole message, so both lines of the header
+        // layout share the row's alternating background.
+        let row = div()
             .w_full()
             .flex()
-            .items_start()
-            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 d.bg(style.main_alt)
-            })
-            .child(style.time(message.time))
-            .when(!message.activity && self.avatars.enabled(), |row| {
-                row.child(self.avatar_slot(
-                    self.own_avatar_for(network, &message.sender).or_else(|| {
-                        self.state
-                            .avatars()
-                            .for_message(
-                                network,
-                                &cayenchat_irc_core::text::nickname_key(&message.sender),
-                                message.sequence,
-                            )
-                            .cloned()
+            });
+        let row = if header_lines {
+            row.flex_col().child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .child(style.time(message.time))
+                    .children(avatar)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_color(theme.nickname)
+                            .child(message.sender.clone()),
+                    ),
+            )
+        } else {
+            row.items_start()
+                .gap_1()
+                .child(style.time(message.time))
+                .children(avatar)
+        };
+        row.child({
+            let text = div()
+                .id(("message-text", index))
+                .debug_selector(move || format!("message-text-{index}"))
+                .when(preview.is_none(), |d| d.flex_1())
+                .min_w_0()
+                .when(message.activity, |d| d.text_color(style.event_color))
+                .when(message.delivery_failed, |d| d.text_color(theme.warning))
+                .cursor(if over_url {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::IBeam
+                })
+                .child(styled)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        let byte = down_layout
+                            .index_for_position(event.position)
+                            .unwrap_or_else(|index| index)
+                            .saturating_sub(prefix_len)
+                            .min(text_len);
+                        let byte = down_compact.original(byte);
+                        this.start_log_selection(selected_channel, index, byte, window, cx);
                     }),
-                    &message.sender,
-                    cx,
-                ))
-            })
-            .when(!message.activity, |row| {
-                row.child(
-                    div()
-                        .w(px(NICK_COLUMN_WIDTH))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_end()
-                        .text_right()
-                        .text_color(theme.nickname)
-                        .child(
-                            div()
-                                .min_w_0()
-                                .when(!style.wrap_nicknames, |d| {
-                                    d.overflow_hidden().whitespace_nowrap().text_ellipsis()
-                                })
-                                .child(message.sender.clone()),
-                        )
-                        .child(":"),
                 )
-            })
-            .child({
-                let text = div()
-                    .id(("message-text", index))
-                    .debug_selector(move || format!("message-text-{index}"))
-                    .when(preview.is_none(), |d| d.flex_1())
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    let position = move_layout.index_for_position(event.position);
+                    let raw = position.unwrap_or_else(|index| index);
+                    let byte = raw.saturating_sub(prefix_len).min(text_len);
+                    this.extend_log_selection(
+                        selected_channel,
+                        index,
+                        move_compact.original(byte),
+                        cx,
+                    );
+                    // Over a URL (not while selecting) the pointer is a
+                    // hand: a double click opens it.
+                    let hover = (event.pressed_button.is_none()
+                        && position.is_ok()
+                        && raw >= prefix_len
+                        && move_urls.iter().any(|(range, _)| range.contains(&byte)))
+                    .then_some((selected_channel, index));
+                    if this.url_hover != hover {
+                        this.url_hover = hover;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                    if event.click_count() == 2 {
+                        // A click on the nickname prefix is not on a link.
+                        let Some(byte) = click_layout
+                            .index_for_position(event.position())
+                            .unwrap_or_else(|index| index)
+                            .checked_sub(prefix_len)
+                        else {
+                            return;
+                        };
+                        if let Some((_, url)) = urls.iter().find(|(range, _)| range.contains(&byte))
+                        {
+                            cx.open_url(url);
+                        }
+                    }
+                }));
+            match preview {
+                None => text.into_any_element(),
+                Some((link, shown)) => div()
+                    .flex_1()
                     .min_w_0()
-                    .when(message.activity, |d| d.text_color(style.event_color))
-                    .when(message.delivery_failed, |d| d.text_color(theme.warning))
-                    .cursor(if over_url {
-                        CursorStyle::PointingHand
-                    } else {
-                        CursorStyle::IBeam
-                    })
-                    .child(styled)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            let byte = down_layout
-                                .index_for_position(event.position)
-                                .unwrap_or_else(|index| index)
-                                .min(text_len);
-                            let byte = down_compact.original(byte);
-                            this.start_log_selection(selected_channel, index, byte, window, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        let position = move_layout.index_for_position(event.position);
-                        let byte = position.unwrap_or_else(|index| index).min(text_len);
-                        this.extend_log_selection(
-                            selected_channel,
-                            index,
-                            move_compact.original(byte),
-                            cx,
-                        );
-                        // Over a URL (not while selecting) the pointer is a
-                        // hand: a double click opens it.
-                        let hover = (event.pressed_button.is_none()
-                            && position.is_ok()
-                            && move_urls.iter().any(|(range, _)| range.contains(&byte)))
-                        .then_some((selected_channel, index));
-                        if this.url_hover != hover {
-                            this.url_hover = hover;
-                            cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                        if event.click_count() == 2 {
-                            let byte = click_layout
-                                .index_for_position(event.position())
-                                .unwrap_or_else(|index| index);
-                            if let Some((_, url)) =
-                                urls.iter().find(|(range, _)| range.contains(&byte))
-                            {
-                                cx.open_url(url);
-                            }
-                        }
-                    }));
-                match preview {
-                    None => text.into_any_element(),
-                    Some((link, shown)) => div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(text)
-                        .child(preview_element(link, shown, index, &theme, cx))
-                        .into_any_element(),
-                }
-            })
-            .into_any_element()
+                    .flex()
+                    .flex_col()
+                    .child(text)
+                    .child(preview_element(link, shown, index, &theme, cx))
+                    .into_any_element(),
+            }
+        })
+        .into_any_element()
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
@@ -7552,14 +7571,36 @@ impl ChatWindow {
                 .networks()
                 .iter()
                 .find(|network| network.id == conversation.network)
-                .map(|network| network.name.split_whitespace().next().unwrap_or(""))
+                .map(|network| network.name.as_str())
                 .unwrap_or("")
         });
+        // Same flow as the main log's default layout: channel, network and
+        // nickname lead the text, so wrapped lines return to the text column.
+        let prefix = if message.activity {
+            format!("{} [{network}] ", conversation.name)
+        } else {
+            format!("{} [{network}] {}: ", conversation.name, message.sender)
+        };
+        let highlights = if message.activity {
+            Vec::new()
+        } else {
+            self.highlight_ranges(conversation.network, message)
+        };
+        let styled = styled_log_text(
+            &prefix,
+            &message.text,
+            &[],
+            &[],
+            &highlights,
+            None,
+            &style.theme,
+        );
         div()
             .id(("sub-message", row))
             .w_full()
             .flex()
-            .gap_2()
+            .items_start()
+            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && row % 2 == 1, |d| {
                 d.bg(style.sub_alt)
@@ -7569,56 +7610,11 @@ impl ChatWindow {
             .child(style.time(message.time))
             .child(
                 div()
-                    .w(px(style.sub_name_width))
-                    .flex_shrink_0()
-                    .flex()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_color(theme.nickname)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(conversation.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(90.))
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(format!(" [{network}]")),
-                    ),
-            )
-            .child(
-                div()
+                    .debug_selector(move || format!("sub-text-{row}"))
                     .flex_1()
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
-                    .child(if message.activity {
-                        StyledText::new(message.text.clone())
-                    } else {
-                        let offset = message.sender.len() + 2;
-                        let highlight = HighlightStyle {
-                            color: Some(theme.panes.highlight.into()),
-                            font_weight: Some(FontWeight::BOLD),
-                            ..Default::default()
-                        };
-                        StyledText::new(format!("{}: {}", message.sender, message.text))
-                            .with_highlights(
-                                self.highlight_ranges(conversation.network, message)
-                                    .into_iter()
-                                    .map(|range| {
-                                        (range.start + offset..range.end + offset, highlight)
-                                    }),
-                            )
-                    }),
+                    .child(styled),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // A single click is too easy to hit while reading the combined log.
@@ -8931,7 +8927,8 @@ mod url_hover_tests {
         let over = |row: usize, cx: &mut gpui::VisualTestContext| {
             let selector: &'static str = ["message-text-0", "message-text-1"][row];
             let bounds = cx.debug_bounds(selector).expect("row drawn");
-            let at = point(bounds.origin.x + px(4.), bounds.center().y);
+            // Past the "bob: " prefix the nickname shares the text with.
+            let at = point(bounds.origin.x + px(60.), bounds.center().y);
             cx.simulate_mouse_move(at, None, Modifiers::none());
             cx.run_until_parked();
             chat.read_with(cx, |chat, _| chat.url_hover.is_some())
@@ -8939,6 +8936,65 @@ mod url_hover_tests {
         assert!(over(0, cx), "on the link");
         assert!(!over(1, cx), "on plain text");
         assert!(over(0, cx), "back on the link");
+    }
+
+    #[gpui::test]
+    fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a,#b");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "hello".into(),
+                        notice: false,
+                        mentioned: false,
+                        server_time: None,
+                        msgid: None,
+                        account: None,
+                        replayed: false,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("sub-text-0").expect("combined row drawn");
+        // No fixed channel name column (162 px by default) before the text:
+        // only the time column and its gap precede it.
+        assert!(
+            bounds.origin.x < px(100.),
+            "text starts at {:?}",
+            bounds.origin.x
+        );
+        chat.read_with(cx, |chat, _| assert_eq!(chat.sub_rows.len(), 1));
     }
 }
 
