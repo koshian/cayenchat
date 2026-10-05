@@ -16,3 +16,5 @@ Commit completed work in small, concern-specific commits with concise English im
 
 Use relative paths for files under the current working directory.
 Do not unnecessarily access files outside the working directory.
+Do not write to /tmp directly. Put temporary files, test homes, build caches and
+E2E outputs under `target/tmp/` in your current worktree.

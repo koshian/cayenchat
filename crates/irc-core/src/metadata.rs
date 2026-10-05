@@ -50,16 +50,14 @@
 //! previews: the events here only feed the avatar directory and the state
 //! of our own avatar.
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
 use irc::proto::{Command as IrcCommand, Message as IrcMessage};
 use tokio::time::Instant;
 
 use crate::{
-    Event, display_nickname,
+    Event,
+    presence::PresenceIndex,
     text::{nickname_key, same_nickname},
     valid_channel, valid_nickname,
 };
@@ -611,8 +609,8 @@ impl MetadataState {
             .count()
     }
 
-    /// Follows who is present, judged from the rosters published before
-    /// `message` (`rosters`: channel to members with their rank prefixes).
+    /// Follows who is present, judged from the membership published before
+    /// `message` (`presence`).
     ///
     /// A nickname keeps its avatar only while its user shares a channel with
     /// us: after QUIT, or after leaving (PART, KICK) the last shared
@@ -624,7 +622,7 @@ impl MetadataState {
     pub(crate) fn lifecycle(
         &mut self,
         message: &IrcMessage,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
         current_nick: &str,
         replayed: bool,
         now: Instant,
@@ -634,14 +632,6 @@ impl MetadataState {
             return handled;
         };
         let ours = |nick: &str| same_nickname(nick, current_nick);
-        let shares = |nick: &str, except: Option<&str>| {
-            rosters.iter().any(|(channel, members)| {
-                Some(channel.as_str()) != except
-                    && members
-                        .iter()
-                        .any(|member| same_nickname(display_nickname(member), nick))
-            })
-        };
         // A lookup for a name someone renamed onto is left alone: it was
         // scheduled for that user just now.
         let renamed = matches!(message.command, IrcCommand::NICK(_));
@@ -650,7 +640,7 @@ impl MetadataState {
                 if self.subscribed
                     && !replayed
                     && !ours(actor)
-                    && !shares(actor, None)
+                    && !presence.shares(actor, None)
                     && let Some(note) = self.schedule_lookup(actor, now)
                 {
                     handled.notes.push(note);
@@ -679,21 +669,10 @@ impl MetadataState {
                 };
                 if ours(leaving) {
                     // Everyone only we shared through this channel.
-                    let others: HashSet<String> = rosters
-                        .iter()
-                        .filter(|(name, _)| *name != channel)
-                        .flat_map(|(_, members)| members)
-                        .map(|member| nickname_key(display_nickname(member)))
-                        .collect();
-                    rosters
-                        .get(channel)
-                        .into_iter()
-                        .flatten()
-                        .map(|member| display_nickname(member))
-                        .filter(|nick| !ours(nick) && !others.contains(&nickname_key(nick)))
-                        .map(str::to_owned)
-                        .collect()
-                } else if shares(leaving, Some(channel)) {
+                    let mut only = presence.only_in(channel);
+                    only.retain(|nick| !ours(nick));
+                    only
+                } else if presence.shares(leaving, Some(channel)) {
                     Vec::new()
                 } else {
                     vec![leaving.to_owned()]
@@ -934,6 +913,8 @@ pub(crate) fn numeric(message: &IrcMessage) -> Option<(u16, &[String])> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn line(text: &str) -> IrcMessage {
@@ -1475,7 +1456,7 @@ mod tests {
             let text = format!(":srv METADATA {nick} avatar * :https://example.com/{nick}");
             state.observe(&line(&text), now, "me", joined);
         }
-        let rosters = HashMap::from([
+        let rosters = PresenceIndex::from_rosters(&HashMap::from([
             (
                 "#a".to_owned(),
                 vec!["@me".into(), "bob".into(), "+carol".into()],
@@ -1484,7 +1465,7 @@ mod tests {
                 "#b".to_owned(),
                 vec!["me".into(), "carol".into(), "dave".into()],
             ),
-        ]);
+        ]));
         let gone = |state: &mut MetadataState, text: &str| -> Vec<String> {
             state
                 .lifecycle(&line(text), &rosters, "me", false, now)
@@ -1538,11 +1519,11 @@ mod tests {
         );
     }
 
-    fn rosters() -> HashMap<String, Vec<String>> {
-        HashMap::from([
+    fn rosters() -> PresenceIndex {
+        PresenceIndex::from_rosters(&HashMap::from([
             ("#chan".to_owned(), vec!["@me".into(), "carol".into()]),
             ("#big1".to_owned(), vec!["me".into()]),
-        ])
+        ]))
     }
 
     fn join(state: &mut MetadataState, nick: &str, now: Instant) -> Handled {
@@ -1557,6 +1538,29 @@ mod tests {
 
     fn sent(state: &mut MetadataState, now: Instant) -> Vec<String> {
         wire(&state.tick(now, joined).send)
+    }
+
+    #[test]
+    fn channel_names_compare_alike_when_leaving() {
+        let now = Instant::now();
+        let mut state = MetadataState::new(true);
+        for nick in ["bob", "dave"] {
+            let text = format!(":srv METADATA {nick} avatar * :https://example.com/{nick}");
+            state.observe(&line(&text), now, "me", joined);
+        }
+        let rosters = PresenceIndex::from_rosters(&HashMap::from([
+            ("#Room".to_owned(), vec!["me".into(), "bob".into()]),
+            ("#Other".to_owned(), vec!["me".into(), "dave".into()]),
+        ]));
+        let gone = |state: &mut MetadataState, text: &str| -> usize {
+            state
+                .lifecycle(&line(text), &rosters, "me", false, now)
+                .events
+                .len()
+        };
+        // Spelled differently from the roster, still the same channel.
+        assert_eq!(gone(&mut state, ":bob!u@h PART #room"), 1);
+        assert_eq!(gone(&mut state, ":me!u@h PART #OTHER"), 1, "dave only here");
     }
 
     #[test]

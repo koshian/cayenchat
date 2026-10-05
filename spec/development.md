@@ -191,6 +191,11 @@ signs/notarizes a distributable app. The normal `cargo run` entry point is porta
 The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
 `crates/ui/resources/windows/cayenchat.ico`. Both are rendered from the canonical
 `assets/icons/cayenchat.svg` and checked in so normal builds need no image tools.
+The version lives only in the workspace manifest (`[workspace.package] version`,
+currently 0.9.0). The macOS bundle helper reads it with `cargo metadata`, and
+`crates/ui/build.rs` generates the Windows VERSIONINFO resource (FileVersion and
+ProductVersion) from it; the Windows x86_64 CI job checks that the built exe
+reports the manifest version.
 When changing the artwork, run `python3 scripts/generate-icons.py` with Pillow
 and `rsvg-convert` (librsvg) installed, then rebuild the app.
 The macOS beta workflow signs the completed bundle ad hoc and verifies its
@@ -908,7 +913,7 @@ Much of what used to be left for a person to look at can be seen by the
 developer (an LLM included) on a virtual display. `scripts/e2e/gui_session.py`
 keeps the real app running under Xvfb between commands: `start`,
 `click X Y`, `type`, `key`, `scroll`, `drag`, `move`, `focus`, `wait`,
-`shot [--crop x0,y0,x1,y1 --scale N]`, `clipboard`, `windows`, `quit` and
+`shot [--crop x0,y0,x1,y1 --scale N]`, `clipboard`, `opened`, `windows`, `quit` and
 `restart-app` (both with Ctrl+Q, as a user quits; a restart says so when it
 had to terminate the app instead, which skips what quitting saves), `stop`.
 The user's settings and passwords are never touched: the app's HOME, XDG
@@ -916,7 +921,11 @@ directories and runtime directory are in the session directory, passwords
 go to the session's local file even when `--settings` names a copy of real
 settings with the system store, and the desktop's D-Bus session (whose
 Secret Service holds the user's passwords under the same service name) is
-not passed on. `start` refuses a non-empty directory it did not make and
+not passed on. Without that session GPUI cannot reach the desktop portal and
+opens links with `xdg-open` (or `gio` and the like); the session puts
+stand-ins for them first on the app's `PATH` that only append the URL to
+the session's `opened.txt`, so no browser starts and `opened` prints the
+URLs opened since it last ran. `start` refuses a non-empty directory it did not make and
 clears only its own entries when a session is started again;
 `scripts/e2e/test_gui_session.py` checks both, without a display (CI runs it
 in the `gui-e2e-linux` job). Each input command prints the
@@ -935,7 +944,8 @@ asking anyone ("Changes that need a person's confirmation", step 2), and
 record in the PR what was verified and what was not. It can show: layout
 and wording in both languages and themes, settings screens and their
 controls, menus, drop-downs and dialogs drawn by the app, mouse and keyboard
-behavior (ASCII), focus moves, scrolling, what is written to the settings
+behavior (ASCII), focus moves, scrolling, which URL a clicked link opens
+(`opened`), what is written to the settings
 file, what survives `restart-app`, and connected behavior against the
 local Ergo. It cannot show, so a person still checks: macOS and Windows,
 Wayland, a real GPU, display scaling and HiDPI sharpness, multiple monitors,

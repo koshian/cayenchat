@@ -51,7 +51,7 @@
 //! worker, so a reconnect starts empty.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     time::Duration,
 };
 
@@ -59,8 +59,9 @@ use irc::proto::{Command as IrcCommand, Message as IrcMessage, Prefix};
 use tokio::time::Instant;
 
 use crate::{
-    Event, display_nickname,
+    Event,
     metadata::{Handled, MAX_AVATAR_USERS, MAX_PUBLISHED_AVATAR_BYTES, avatar_value, numeric},
+    presence::PresenceIndex,
     text::{nickname_key, same_nickname},
     valid_channel,
 };
@@ -247,7 +248,7 @@ impl PeerAvatars {
         &mut self,
         message: &IrcMessage,
         current_nick: &str,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
         replayed: bool,
         now: Instant,
     ) -> Option<Handled> {
@@ -285,9 +286,9 @@ impl PeerAvatars {
                 // names them: sent to us by someone we share a channel
                 // with, or to a channel they are in.
                 let present = if same_nickname(target, current_nick) {
-                    shares(rosters, sender, None)
+                    presence.shares(sender, None)
                 } else {
-                    valid_channel(target) && in_channel(rosters, target, sender)
+                    valid_channel(target) && presence.in_channel(target, sender)
                 };
                 if !present {
                     return Some(handled);
@@ -302,7 +303,7 @@ impl PeerAvatars {
                 handled.events.extend(self.set_peer(sender, url));
                 Some(handled)
             }
-            _ => self.numeric_reply(message, current_nick, rosters, now),
+            _ => self.numeric_reply(message, current_nick, presence, now),
         }
     }
 
@@ -310,7 +311,7 @@ impl PeerAvatars {
         &mut self,
         message: &IrcMessage,
         current_nick: &str,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
         now: Instant,
     ) -> Option<Handled> {
         let (code, args) = numeric(message)?;
@@ -330,7 +331,7 @@ impl PeerAvatars {
                 if !stale {
                     let trailing = args.last().map(String::as_str).unwrap_or_default();
                     let real = trailing.split_once(' ').map_or("", |(_, real)| real);
-                    self.realname_seen(nick, real, current_nick, rosters);
+                    self.realname_seen(nick, real, current_nick, presence);
                 }
                 found.map(|_| Handled::default())
             }
@@ -344,7 +345,7 @@ impl PeerAvatars {
             // user asked for it; it is only read.
             311 if args.len() > 5 => {
                 let real = args.last().map(String::as_str).unwrap_or_default();
-                self.realname_seen(&args[1], real, current_nick, rosters);
+                self.realname_seen(&args[1], real, current_nick, presence);
                 None
             }
             // ERR_NOSUCHNICK for a lookup or query of ours: they are gone.
@@ -382,9 +383,9 @@ impl PeerAvatars {
         nick: &str,
         real: &str,
         current_nick: &str,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
     ) {
-        if same_nickname(nick, current_nick) || !valid_sender(nick) || !shares(rosters, nick, None)
+        if same_nickname(nick, current_nick) || !valid_sender(nick) || !presence.shares(nick, None)
         {
             return;
         }
@@ -410,14 +411,16 @@ impl PeerAvatars {
         &mut self,
         nick: &str,
         current_nick: &str,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
     ) -> Option<String> {
-        if same_nickname(nick, current_nick) || !valid_sender(nick) || !shares(rosters, nick, None)
-        {
+        if same_nickname(nick, current_nick) || !valid_sender(nick) {
             return None;
         }
         let key = nickname_key(nick);
         if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
+            return None;
+        }
+        if !presence.shares(nick, None) {
             return None;
         }
         self.enqueue(ProbeKind::Who, nick, key)
@@ -465,7 +468,7 @@ impl PeerAvatars {
         &mut self,
         now: Instant,
         current_nick: &str,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
     ) -> Handled {
         let mut handled = Handled::default();
         self.in_flight.retain(|probe| probe.deadline > now);
@@ -476,7 +479,7 @@ impl PeerAvatars {
         }
         while let Some(mut probe) = self.queue.pop_front() {
             if same_nickname(&probe.nickname, current_nick)
-                || !shares(rosters, &probe.nickname, None)
+                || !presence.shares(&probe.nickname, None)
             {
                 continue;
             }
@@ -497,7 +500,7 @@ impl PeerAvatars {
         handled
     }
 
-    /// Follows who is present, judged from the rosters published before
+    /// Follows who is present, judged from the membership published before
     /// `message`, like metadata's lifecycle: NICK moves a user's avatar and
     /// what we asked; QUIT, or PART/KICK from the last shared channel, ends
     /// them. Call it before passing metadata's events for the same message
@@ -505,7 +508,7 @@ impl PeerAvatars {
     pub(crate) fn lifecycle(
         &mut self,
         message: &IrcMessage,
-        rosters: &HashMap<String, Vec<String>>,
+        presence: &PresenceIndex,
         current_nick: &str,
     ) -> Vec<Event> {
         let Some(actor) = message.source_nickname() else {
@@ -521,21 +524,10 @@ impl PeerAvatars {
                     _ => actor,
                 };
                 if ours(leaving) {
-                    let others: HashSet<String> = rosters
-                        .iter()
-                        .filter(|(name, _)| *name != channel)
-                        .flat_map(|(_, members)| members)
-                        .map(|member| nickname_key(display_nickname(member)))
-                        .collect();
-                    rosters
-                        .get(channel)
-                        .into_iter()
-                        .flatten()
-                        .map(|member| display_nickname(member))
-                        .filter(|nick| !ours(nick) && !others.contains(&nickname_key(nick)))
-                        .map(str::to_owned)
-                        .collect()
-                } else if shares(rosters, leaving, Some(channel)) {
+                    let mut only = presence.only_in(channel);
+                    only.retain(|nick| !ours(nick));
+                    only
+                } else if presence.shares(leaving, Some(channel)) {
                     Vec::new()
                 } else {
                     vec![leaving.to_owned()]
@@ -709,25 +701,6 @@ fn valid_sender(nick: &str) -> bool {
     crate::valid_nickname(nick) && !valid_channel(nick)
 }
 
-/// Whether `nick` is in a channel we are in, other than `except`.
-fn shares(rosters: &HashMap<String, Vec<String>>, nick: &str, except: Option<&str>) -> bool {
-    rosters.iter().any(|(channel, members)| {
-        Some(channel.as_str()) != except
-            && members
-                .iter()
-                .any(|member| same_nickname(display_nickname(member), nick))
-    })
-}
-
-fn in_channel(rosters: &HashMap<String, Vec<String>>, channel: &str, nick: &str) -> bool {
-    rosters.iter().any(|(name, members)| {
-        name.eq_ignore_ascii_case(channel)
-            && members
-                .iter()
-                .any(|member| same_nickname(display_nickname(member), nick))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,14 +713,14 @@ mod tests {
 
     /// `#a` holds us, kv (a KVIrc user), bob and carol; `#b` holds us and
     /// carol.
-    fn rosters() -> HashMap<String, Vec<String>> {
-        HashMap::from([
+    fn rosters() -> PresenceIndex {
+        PresenceIndex::from_rosters(&HashMap::from([
             (
                 "#a".to_owned(),
                 vec!["@alice".into(), "kv".into(), "+bob".into(), "carol".into()],
             ),
             ("#b".to_owned(), vec!["alice".into(), "carol".into()]),
-        ])
+        ]))
     }
 
     fn observe(peers: &mut PeerAvatars, text: &str, now: Instant) -> Option<Handled> {
@@ -1102,7 +1075,8 @@ mod tests {
         let now = Instant::now();
         let mut peers = PeerAvatars::new(true, None);
         let members: Vec<String> = (0..100).map(|index| format!("u{index}")).collect();
-        let rosters = HashMap::from([("#big".to_owned(), members.clone())]);
+        let rosters =
+            PresenceIndex::from_rosters(&HashMap::from([("#big".to_owned(), members.clone())]));
         let notes: Vec<String> = members
             .iter()
             .filter_map(|nick| peers.speaker(nick, ME, &rosters))
@@ -1147,10 +1121,10 @@ mod tests {
         // NICK moves it.
         let events = peers.lifecycle(&line(":kv!u@h NICK kv2"), &rosters, ME);
         assert_eq!(avatars(&events), ["kv->kv2"]);
-        let moved: HashMap<String, Vec<String>> = HashMap::from([(
+        let moved = PresenceIndex::from_rosters(&HashMap::from([(
             "#a".to_owned(),
             vec!["alice".into(), "kv2".into(), "bob".into()],
-        )]);
+        )]));
         // QUIT ends it; the next holder of the name gets nothing from it.
         let events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &moved, ME);
         assert_eq!(avatars(&events), ["kv2=-"]);
@@ -1167,10 +1141,10 @@ mod tests {
                 .lifecycle(&line(":carol!u@h PART #a"), &rosters, ME)
                 .is_empty()
         );
-        let only_b = HashMap::from([(
+        let only_b = PresenceIndex::from_rosters(&HashMap::from([(
             "#b".to_owned(),
             vec!["alice".to_owned(), "carol".to_owned()],
-        )]);
+        )]));
         let events = peers.lifecycle(&line(":carol!u@h PART #b"), &only_b, ME);
         assert_eq!(avatars(&events), ["carol=-"]);
         // Our own PART ends everyone we shared only through that channel.
@@ -1186,6 +1160,33 @@ mod tests {
         );
         let events = peers.lifecycle(&line(":bob!u@h NICK kv"), &rosters, ME);
         assert_eq!(avatars(&events), ["kv=-", "bob->kv"]);
+    }
+
+    #[test]
+    fn channel_names_compare_alike_when_leaving() {
+        let rosters = PresenceIndex::from_rosters(&HashMap::from([
+            ("#Room".to_owned(), vec!["alice".into(), "bob".into()]),
+            ("#Other".to_owned(), vec!["alice".into(), "carol".into()]),
+        ]));
+        let known = |nick: &str| {
+            let mut peers = PeerAvatars::new(true, None);
+            observe(
+                &mut peers,
+                &format!(":{nick}!u@h NOTICE #a :\u{1}AVATAR https://example.com/x.png\u{1}"),
+                Instant::now(),
+            );
+            peers
+        };
+        let events = known("bob").lifecycle(&line(":bob!u@h PART #room"), &rosters, ME);
+        assert_eq!(avatars(&events), ["bob=-"]);
+        let events = known("carol").lifecycle(&line(":alice!u@h PART #OTHER"), &rosters, ME);
+        assert_eq!(avatars(&events), ["carol=-"]);
+        assert!(
+            known("carol")
+                .lifecycle(&line(":carol!u@h PART #room"), &rosters, ME)
+                .is_empty(),
+            "carol still shares #Other"
+        );
     }
 
     #[test]
