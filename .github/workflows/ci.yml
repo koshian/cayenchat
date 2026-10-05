@@ -61,6 +61,12 @@ jobs:
         run: |
           cargo build --release --locked -p cayenchat-ui
           ./scripts/check-windows-subsystem.ps1 target/release/cayenchat.exe
+          $expected = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json |
+            ForEach-Object { $_.packages[0].version }
+          $info = (Get-Item target/release/cayenchat.exe).VersionInfo
+          if ($info.FileVersion -ne $expected -or $info.ProductVersion -ne $expected) {
+            throw "Expected version $expected, found $($info.FileVersion) / $($info.ProductVersion)"
+          }
 
       # The default member is only the UI crate; test every crate so storage,
       # upload, irc-core and app also run on each platform.

@@ -150,10 +150,16 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
-    /// Wrap nicknames too long for the main log's nickname column onto more
-    /// lines instead of ending them with an ellipsis. Added after version 15
-    /// without a version change; files without it read as off.
-    pub wrap_long_nicknames: bool,
+    /// Show long URLs in the channel log in a short form; the text, links
+    /// and copies keep the full URL. Added after version 15 without a version
+    /// change; files without it read as off.
+    pub compact_urls: bool,
+    /// Channel log layout: a small first line with the time, avatar and
+    /// nickname and the message below at full width, instead of the default
+    /// `time | avatar | nick: message` flow. Replaces the former
+    /// `wrap_long_nicknames`, which is ignored when read. Added after
+    /// version 15 without a version change; files without it read as off.
+    pub header_line_messages: bool,
     /// Width in pixels of the channel name (and network) column of the
     /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
     /// without a version change; files without it read as the default.
@@ -215,7 +221,8 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
-            wrap_long_nicknames: false,
+            compact_urls: false,
+            header_line_messages: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -340,6 +347,11 @@ pub struct ServerProfile {
     /// default. Added without a version change; files without it read as empty.
     #[serde(default)]
     pub quit_message: String,
+    /// Short name shown for this server in the combined log; empty means the
+    /// first word of the host. Added without a version change; files without
+    /// it read as empty.
+    #[serde(default)]
+    pub display_name: String,
     #[serde(default)]
     pub channels: String,
     #[serde(default)]
@@ -395,6 +407,7 @@ impl ServerProfile {
             username: String::new(),
             realname: String::new(),
             quit_message: String::new(),
+            display_name: String::new(),
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
@@ -407,13 +420,23 @@ impl ServerProfile {
         }
     }
 
+    /// The channels joined after registration, in order: the enabled
+    /// auto-join entries.
     pub fn channels(&self) -> Vec<String> {
-        self.channels
-            .split(',')
-            .map(str::trim)
-            .filter(|channel| !channel.is_empty())
-            .map(str::to_owned)
+        self.auto_join_entries()
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.name)
             .collect()
+    }
+
+    /// Every auto-join entry in the configured order, disabled ones included.
+    pub fn auto_join_entries(&self) -> Vec<AutoJoinEntry> {
+        parse_auto_join(&self.channels)
+    }
+
+    pub fn set_auto_join_entries(&mut self, entries: &[AutoJoinEntry]) {
+        self.channels = format_auto_join(entries);
     }
 
     pub fn server_password_key(&self) -> SecretKey {
@@ -423,6 +446,59 @@ impl ServerProfile {
     pub fn sasl_password_key(&self) -> SecretKey {
         SecretKey::sasl_password(&self.id)
     }
+}
+
+/// One auto-join channel of a server. A disabled entry stays configured but
+/// is skipped when connecting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoJoinEntry {
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// Prefix marking a disabled entry in `ServerProfile::channels`, a
+/// comma-separated list. No channel name starts with it.
+const DISABLED_PREFIX: char = '-';
+
+/// Reads the comma-separated list kept in `ServerProfile::channels`.
+pub fn parse_auto_join(text: &str) -> Vec<AutoJoinEntry> {
+    text.split(',')
+        .map(str::trim)
+        .filter_map(|item| {
+            let (name, enabled) = match item.strip_prefix(DISABLED_PREFIX) {
+                Some(name) => (name.trim(), false),
+                None => (item, true),
+            };
+            (!name.is_empty()).then(|| AutoJoinEntry {
+                name: name.to_owned(),
+                enabled,
+            })
+        })
+        .collect()
+}
+
+/// Writes entries as `parse_auto_join` reads them. Names are cleaned of
+/// whitespace and commas; empty ones are dropped.
+pub fn format_auto_join(entries: &[AutoJoinEntry]) -> String {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let name: String = entry
+                .name
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != ',')
+                .collect();
+            let name = name.trim_start_matches(DISABLED_PREFIX);
+            (!name.is_empty()).then(|| {
+                if entry.enabled {
+                    name.to_owned()
+                } else {
+                    format!("{DISABLED_PREFIX}{name}")
+                }
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Opt-in IRCv3 features of one server. Negotiation happens when the server
@@ -476,6 +552,9 @@ pub struct Notifications {
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
     pub private_messages: bool,
+    /// Beep and flash the taskbar button (Windows) when a notification
+    /// fires. Off by default.
+    pub sound: bool,
 }
 
 impl Default for Notifications {
@@ -486,6 +565,7 @@ impl Default for Notifications {
             keyword_alerts: true,
             keywords: Vec::new(),
             private_messages: true,
+            sound: false,
         }
     }
 }
@@ -1037,6 +1117,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disabled_auto_join_entries_stay_saved_but_are_not_joined() {
+        let mut profile = ServerProfile::default();
+        profile.channels = "#a, -#b ,#c,,-".into();
+        let entries = profile.auto_join_entries();
+        assert_eq!(
+            entries.iter().map(|e| e.enabled).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert_eq!(profile.channels(), ["#a", "#c"]);
+        // Order is kept, and names cannot break the list format.
+        let mut entries = entries;
+        entries.swap(0, 2);
+        entries[1].name = "#x y,z".into();
+        profile.set_auto_join_entries(&entries);
+        assert_eq!(profile.channels, "#c,-#xyz,#a");
+        assert_eq!(profile.channels(), ["#c", "#a"]);
+    }
+
+    #[test]
     fn settings_round_trip_without_secrets() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1132,6 +1231,36 @@ mod tests {
             .map(|server| server.quit_message.as_str())
             .collect();
         assert_eq!(messages, ["Back soon", ""]);
+    }
+
+    #[test]
+    fn display_name_is_per_profile_and_absent_in_older_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let original = serde_json::json!({
+            "version": 15,
+            "selected_server": "custom-1",
+            "servers": [{
+                "id": "custom-1", "custom": true, "host": "irc.example.net",
+                "port": 6697, "use_tls": true, "encoding": "utf8",
+                "nickname": "alice", "username": "ident"
+            }],
+            "credential_backend": "system"
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.selected_profile().unwrap().display_name, "");
+
+        settings.selected_profile_mut().unwrap().display_name = "ex".into();
+        settings.add_server("irc.example.org");
+        save_to(&path, &settings).unwrap();
+        let reloaded = load_from(&path).unwrap().unwrap();
+        let names: Vec<_> = reloaded
+            .servers
+            .iter()
+            .map(|server| server.display_name.as_str())
+            .collect();
+        assert_eq!(names, ["ex", ""]);
     }
 
     #[test]
@@ -1611,16 +1740,19 @@ mod tests {
     }
 
     #[test]
-    fn wrapping_long_nicknames_is_off_when_absent() {
+    fn header_line_messages_is_off_when_absent() {
         let mut appearance = Appearance::default();
-        assert!(!appearance.wrap_long_nicknames);
-        appearance.wrap_long_nicknames = true;
+        assert!(!appearance.header_line_messages);
+        appearance.header_line_messages = true;
         let mut saved = serde_json::to_value(&appearance).unwrap();
         let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
-        assert!(loaded.wrap_long_nicknames);
-        saved.as_object_mut().unwrap().remove("wrap_long_nicknames");
+        assert!(loaded.header_line_messages);
+        saved
+            .as_object_mut()
+            .unwrap()
+            .remove("header_line_messages");
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
-        assert!(!loaded.wrap_long_nicknames);
+        assert!(!loaded.header_line_messages);
     }
 
     #[test]
@@ -1690,6 +1822,25 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
         settings.appearance.image_previews = false;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn compact_urls_default_off_for_old_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.compact_urls);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("compact_urls");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.appearance.compact_urls);
+        settings.appearance.compact_urls = true;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }

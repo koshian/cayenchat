@@ -28,7 +28,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — configured channels auto-join after registration; `/join` and `/part` work, with member snapshots refreshed on JOIN, PART, KICK, QUIT, NICK and channel MODE
 - PARTIAL — live channel rows, or four mock channels across two networks
-- DONE — width of the combined log's channel name column (Appearance `sub_log_name_width`, 80–600 px, default 162)
+- PARTIAL — the combined log lays a line out as `time | channel [network] nick: text` in one flowing text (full channel and network names, no fixed channel name column); the Appearance `sub_log_name_width` setting is kept but no longer applies
 - PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel (with its member count once the roster is known, issue #146) and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
@@ -52,6 +52,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click, and the pointer is a hand over one (not while selecting); lower combined log switches channels on double-click
+- PARTIAL — Appearance option "Show long URLs compactly" (off by default) draws URLs over 28 characters in the upper channel log as `↗ host/start-of-path…` on a faint link-colored background, with the whole host kept and the full URL in a hover tooltip; presentation only: opening, selection, copying and the stored text use the original, and a selection touching a short form covers all of it; the icon is a text arrow rather than an SVG, and short URLs are not chipped
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
@@ -73,7 +74,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — jump to unread channels in mock or live mode; highlights remain TODO
 - DONE — reference four-pane placement: main log over subwindow on the left,
   users over channel tree on the right, draft between left logs
-- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line
+- PARTIAL — subwindow displays other conversations, including live channel messages, and jumps on double-click; channel/server labels ellipsize on one line; each server can have a display name (settings) shown in place of the full host name (the combined log no longer shortens it)
 
 ## Unread and highlights
 
@@ -114,6 +115,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — OS desktop notifications through notify-rust: org.freedesktop.Notifications on Linux, NSUserNotificationCenter on macOS (app bundle only), WinRT toasts on Windows (attributed to the PowerShell AppUserModelID until CayenChat registers its own); no action on click
 - TODO — per-network/channel controls
+- PARTIAL — Windows notification sound (opt-in, default off): when a notification would be shown (same conditions, including the burst limit) it also plays the system default sound (`MessageBeep`) and flashes the taskbar button of the app's top-level windows until one comes to the foreground; the option is shown only on Windows; implemented and type-checked for Windows, not run on Windows
 - DONE — mention, keyword and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds; replayed history (lines without a user mask such as Tiarra's Log::Recent, IRCv3 `chathistory`/`znc.in/playback` batches) neither notifies nor highlights; an old server-time alone does not count as history
 
 ## Settings
@@ -127,9 +129,10 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — Experimental settings tab with opt-in stderr file logging, native destination picker, immediate switching, append and saved preferences; Windows release builds suppress the startup console (Windows runtime verification pending)
 - DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D021)
 - DONE — persisted channel auto-join list
+- DONE — auto-join list is edited in a dialog opened from the Connection tab (summary plus Edit…): enable/disable, add, delete, rename and move up/down; the saved order is the JOIN order. A disabled entry stays saved, stored in `channels` with a `-` prefix (`-#chan`) and skipped when connecting. While connected, the channel context menu offers Add to auto-join / Remove from auto-join (which disables, not deletes); it only changes the saved list and never JOINs or PARTs. A marker in the channel list is not implemented
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
-- DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
+- DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知), and on Windows a notification sound option (default off)
 - DONE — IRCv3 tab: per-server opt-ins for server timestamps, message tags, and message batches, naming the configured server; changes apply on the next connection; and our own avatar: a URL draft (typed, or filled by uploading a dropped, pasted or chosen image through the configured image host) (the uploaded one is sent at once) and Send to / Remove from IRC Server shown only when they would change something on the connected server; the experimental peer avatar option with explicit Share with Peers / Stop Sharing
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
@@ -153,7 +156,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 ## Appearance
 
 - DONE — compact default layout
-- DONE — plain timestamp/right-aligned nickname/text rows with scrolling and follow-to-bottom unless the user scrolls away
+- DONE — plain timestamp/`nick: text` rows (optional header-line layout) with scrolling and follow-to-bottom unless the user scrolls away
 - TODO — light/dark appearance
 - PARTIAL — selectable installed font families per pane; default timestamp fonts are Menlo, Consolas, or DejaVu Sans Mono by platform, with Windows rendering pending; on Linux, unset pane fonts fall back through cosmic-text, whose exact locale match treats `ja-JP` as non-Japanese and renders Han characters with Simplified Chinese glyphs (Noto Sans CJK SC) — choosing a Japanese font explicitly avoids this
 - TODO — restrained theming

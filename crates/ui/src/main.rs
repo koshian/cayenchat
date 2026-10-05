@@ -5,6 +5,7 @@ mod autostart;
 mod avatar_editor;
 mod avatars;
 mod color_picker;
+mod compact_urls;
 mod decorations;
 mod default_avatar;
 mod desktop;
@@ -23,6 +24,7 @@ mod notifier;
 #[cfg(test)]
 mod perf_baseline;
 mod previews;
+mod scrollbar;
 mod secrets;
 mod session;
 mod settings_file;
@@ -49,10 +51,10 @@ use cayenchat_irc_core::{
 };
 use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
-    Appearance, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
     DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
-    Notifications, SUB_LOG_NAME_WIDTHS, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme,
+    ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -156,6 +158,7 @@ struct SettingsForm {
     username: Entity<TextInput>,
     realname: Entity<TextInput>,
     quit_message: Entity<TextInput>,
+    display_name: Entity<TextInput>,
     channels: Entity<TextInput>,
     /// Password fields start empty; typing replaces a saved value.
     server_password: Entity<TextInput>,
@@ -225,6 +228,12 @@ impl SettingsForm {
             quit_message: field(
                 &i18n.text("quit_message_placeholder"),
                 &profile.quit_message,
+                false,
+                cx,
+            ),
+            display_name: field(
+                &i18n.text("display_name_placeholder"),
+                &profile.display_name,
                 false,
                 cx,
             ),
@@ -405,6 +414,7 @@ impl SettingsForm {
             profile.username = value(&self.username);
             profile.realname = value(&self.realname);
             profile.quit_message = value(&self.quit_message);
+            profile.display_name = value(&self.display_name);
             profile.channels = value(&self.channels);
             profile.sasl_username = value(&self.sasl_username);
             profile.avatar_url = value(&self.avatar_url);
@@ -420,7 +430,8 @@ impl SettingsForm {
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
-            wrap_long_nicknames: self.values.appearance.wrap_long_nicknames,
+            compact_urls: self.values.appearance.compact_urls,
+            header_line_messages: self.values.appearance.header_line_messages,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
                 .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
@@ -472,7 +483,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 33] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 34] {
         [
             &self.custom_host,
             &self.port,
@@ -480,6 +491,7 @@ impl SettingsForm {
             &self.username,
             &self.realname,
             &self.quit_message,
+            &self.display_name,
             &self.channels,
             &self.server_password,
             &self.sasl_username,
@@ -607,6 +619,7 @@ impl SettingsForm {
             (&self.username, &profile.username),
             (&self.realname, &profile.realname),
             (&self.quit_message, &profile.quit_message),
+            (&self.display_name, &profile.display_name),
             (&self.channels, &profile.channels),
             (&self.sasl_username, &profile.sasl_username),
             (&self.avatar_url, &profile.avatar_url),
@@ -920,6 +933,7 @@ struct ChatWindow {
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
     tree_list: LogList,
+    members_scroll: UniformListScrollHandle,
     tree_rows: Vec<TreeRow>,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
@@ -1147,6 +1161,22 @@ enum FontTarget {
     Time,
 }
 
+/// The auto-join dialog of the selected server: one row per entry, in JOIN
+/// order. Edits are written back to the form's `channels` field.
+struct AutoJoinDialog {
+    rows: Vec<AutoJoinRow>,
+    /// Holds the keyboard focus while no row is being edited, so typing and
+    /// Tab never reach the form behind the dialog.
+    focus: FocusHandle,
+}
+
+struct AutoJoinRow {
+    name: Entity<TextInput>,
+    enabled: bool,
+    /// Writes the name back while it is edited.
+    _subscription: Subscription,
+}
+
 /// The color picker open under one color row of the appearance settings.
 struct OpenColorPicker {
     /// The `#RRGGBB` field the picker edits.
@@ -1163,6 +1193,8 @@ struct SettingsWindow {
     tab: SettingsTab,
     /// The category list on the left; Up and Down move through it.
     nav_focus: FocusHandle,
+    nav_scroll: ScrollHandle,
+    pane_scroll: ScrollHandle,
     font_picker: Option<FontTarget>,
     color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Shortcuts tab).
@@ -1191,11 +1223,13 @@ struct SettingsWindow {
     avatar_upload: AttachmentFlow<String>,
     /// The square selection for an avatar image, before uploading it.
     avatar_editor: Option<avatar_editor::AvatarEditor>,
+    /// The auto-join list being edited in its own dialog.
+    auto_join: Option<AutoJoinDialog>,
     /// An avatar image is being decoded or encoded.
     avatar_opening: bool,
     /// Observers of `settings`' fields; replaced with the form.
     _field_subscriptions: Vec<Subscription>,
-    /// Whether the connection switch was last drawn on, so the window is
+    /// Whether the connection button was last drawn as Disconnect, so the window is
     /// redrawn only when a connection comes up or goes down.
     connected_shown: bool,
     /// The system's login-startup registration as last read; never stored in
@@ -1330,6 +1364,7 @@ impl ChatWindow {
             sub_list: LogList::new(),
             panes: None,
             tree_list: LogList::new_top(),
+            members_scroll: UniformListScrollHandle::new(),
             tree_rows: Vec::new(),
             sub_source: None,
             sub_rows: Vec::new(),
@@ -1587,6 +1622,7 @@ impl ChatWindow {
         self.notifier.show(DesktopNotification {
             summary,
             body: notifications::body_text(&plain),
+            sound: self.notification_rules.sound,
         });
     }
 
@@ -1773,6 +1809,8 @@ impl ChatWindow {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
                     config.shared_avatar = shared.clone();
+                    // The auto-join list too: reconnects join the saved one.
+                    config.channels = profile.channels();
                     // A new realname is sent at once with SETNAME when the
                     // connection has it; the server's answer says otherwise.
                     if config.realname != profile.realname {
@@ -2240,6 +2278,86 @@ impl ChatWindow {
                     connection.send_command(&format!("/part {}", menu.channel), None)
                 })
                 .err()
+        };
+        cx.notify();
+    }
+
+    /// Whether `channel` is an enabled auto-join entry of `network`'s server.
+    fn auto_join_enabled(&self, network: NetworkId, channel: &str) -> bool {
+        self.sessions
+            .get(&network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .is_some_and(|profile| {
+                profile
+                    .channels()
+                    .iter()
+                    .any(|name| cayenchat_irc_core::text::same_channel(name, channel))
+            })
+    }
+
+    /// Adds (enables) or disables the menu's channel in its server's saved
+    /// auto-join list. Only the saved configuration changes: nothing is
+    /// joined or parted now, and a disabled entry stays in the list.
+    fn toggle_auto_join(&mut self, add: bool, cx: &mut Context<Self>) {
+        let Some(menu) = self.channel_menu.take() else {
+            return;
+        };
+        let Some(profile_id) = self
+            .sessions
+            .get(&menu.network)
+            .map(|session| session.profile_id.clone())
+        else {
+            return;
+        };
+        // Start from the file, which a settings window may have updated.
+        let mut settings = match settings_file::load() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => self.saved.clone(),
+            Err(error) => {
+                // Saving over a file that cannot be read could destroy it.
+                self.feedback = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
+            return;
+        };
+        let mut entries = profile.auto_join_entries();
+        let found = entries
+            .iter_mut()
+            .filter(|entry| cayenchat_irc_core::text::same_channel(&entry.name, &menu.channel))
+            .map(|entry| entry.enabled = add)
+            .count();
+        if found == 0 && add {
+            entries.push(AutoJoinEntry {
+                name: menu.channel.clone(),
+                enabled: true,
+            });
+        }
+        profile.set_auto_join_entries(&entries);
+        self.feedback = match settings_file::save(&settings) {
+            Ok(()) => {
+                if let Some(saved) = self.saved.servers.iter_mut().find(|p| p.id == profile_id) {
+                    saved.channels = settings
+                        .servers
+                        .iter()
+                        .find(|p| p.id == profile_id)
+                        .map(|p| p.channels.clone())
+                        .unwrap_or_default();
+                }
+                // The next reconnect joins the new list; nothing is sent now.
+                if let (Some(config), Some(profile)) = (
+                    self.sessions
+                        .get_mut(&menu.network)
+                        .and_then(|session| session.active_config.as_mut()),
+                    settings.servers.iter().find(|p| p.id == profile_id),
+                ) {
+                    config.channels = profile.channels();
+                }
+                None
+            }
+            Err(error) => Some(error),
         };
         cx.notify();
     }
@@ -3682,6 +3800,7 @@ impl SettingsWindow {
             (&self.settings.username, "username_placeholder"),
             (&self.settings.realname, "realname_placeholder"),
             (&self.settings.quit_message, "quit_message_placeholder"),
+            (&self.settings.display_name, "display_name_placeholder"),
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
@@ -3731,7 +3850,7 @@ impl SettingsWindow {
         });
         let mut subscriptions = vec![cx.observe_self(|this, cx| this.schedule_autosave(cx))];
         let field_subscriptions = Self::observe_fields(&settings, window, cx);
-        // The connection switch follows the chat window's connections. The
+        // The connection button follows the chat window's connections. The
         // chat window opens this window from its own update, when its window
         // cannot be read yet, so subscribe once that update has returned.
         cx.defer_in(window, |this, _, cx| {
@@ -3773,6 +3892,8 @@ impl SettingsWindow {
             feedback: None,
             tab: SettingsTab::Connection,
             nav_focus: cx.focus_handle().tab_stop(true),
+            nav_scroll: ScrollHandle::new(),
+            pane_scroll: ScrollHandle::new(),
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -3789,6 +3910,7 @@ impl SettingsWindow {
             avatar_feedback: None,
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
+            auto_join: None,
             avatar_opening: false,
             _field_subscriptions: field_subscriptions,
             connected_shown: false,
@@ -3854,6 +3976,7 @@ impl SettingsWindow {
         self.apply_to_chat_window(&previous, loaded, servers_changed, cx);
         self.font_picker = None;
         self.color_picker = None;
+        self.auto_join = None;
         self.shortcut_recording = None;
         self.refresh_upload_account(cx);
         cx.notify();
@@ -4288,6 +4411,245 @@ impl SettingsWindow {
         self.switch_server(move |settings| settings.selected_server = id, cx);
     }
 
+    fn auto_join_row(&self, name: &str, enabled: bool, cx: &mut Context<Self>) -> AutoJoinRow {
+        let input = cx.new(|cx| TextInput::new_settings_field("#channel", name, false, cx));
+        let _subscription = cx.observe(&input, |this, _, cx| this.sync_auto_join(cx));
+        AutoJoinRow {
+            name: input,
+            enabled,
+            _subscription,
+        }
+    }
+
+    /// The enabled channels in JOIN order, for the Connection tab.
+    fn auto_join_summary(&self, cx: &App) -> String {
+        let names: Vec<String> =
+            cayenchat_storage::parse_auto_join(self.settings.channels.read(cx).text())
+                .into_iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.name)
+                .collect();
+        const SHOWN: usize = 5;
+        match names.len() {
+            0 => self.i18n.text("auto_join_none"),
+            n if n > SHOWN => format!("{}, …", names[..SHOWN].join(", ")),
+            _ => names.join(", "),
+        }
+    }
+
+    fn render_auto_join_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let dialog = self.auto_join.as_ref()?;
+        let theme = settings_theme::palette(cx);
+        let last = dialog.rows.len().saturating_sub(1);
+        let mut list = div().flex().flex_col().gap_1();
+        for (index, row) in dialog.rows.iter().enumerate() {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(("auto-join-enabled", index))
+                            .cursor_pointer()
+                            .child(settings_theme::checkbox(row.enabled, true, cx))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.edit_auto_join(
+                                    |rows| rows[index].enabled = !rows[index].enabled,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(div().flex_1().min_w_0().child(row.name.clone()))
+                    .child(
+                        settings_theme::button(("auto-join-up", index), false, cx)
+                            .child(self.i18n.text("auto_join_move_up"))
+                            .when(index == 0, |d| d.opacity(0.4))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if index > 0 {
+                                    this.edit_auto_join(|rows| rows.swap(index - 1, index), cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        settings_theme::button(("auto-join-down", index), false, cx)
+                            .child(self.i18n.text("auto_join_move_down"))
+                            .when(index == last, |d| d.opacity(0.4))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.edit_auto_join(
+                                    |rows| {
+                                        if index + 1 < rows.len() {
+                                            rows.swap(index, index + 1);
+                                        }
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        settings_theme::button(("auto-join-delete", index), false, cx)
+                            .child(self.i18n.text("auto_join_delete"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_auto_join(
+                                    |rows| {
+                                        rows.remove(index);
+                                    },
+                                    cx,
+                                );
+                                if let Some(dialog) = &this.auto_join {
+                                    window.focus(&dialog.focus);
+                                }
+                            })),
+                    ),
+            );
+        }
+        let panel = div()
+            .id("auto-join-dialog")
+            .track_focus(&dialog.focus)
+            .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
+                this.auto_join_traverse(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                this.auto_join_traverse(false, window, cx)
+            }))
+            .occlude()
+            .w(px(560.))
+            .max_w_full()
+            .max_h_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_4()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("auto_join_title")),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("auto_join_hint")),
+            )
+            .child(
+                div()
+                    .id("auto-join-list")
+                    .flex_1()
+                    .min_h_0()
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .child(list),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(
+                        settings_theme::button("auto-join-add", false, cx)
+                            .child(self.i18n.text("auto_join_add"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_auto_join_row(window, cx)
+                            })),
+                    )
+                    .child(
+                        settings_theme::button("auto-join-done", true, cx)
+                            .child(self.i18n.text("auto_join_done"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_auto_join(window, cx)),
+                            ),
+                    ),
+            );
+        Some(
+            div()
+                .id("auto-join-backdrop")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .bg(gpui::black().opacity(0.4))
+                .child(panel)
+                .into_any_element(),
+        )
+    }
+
+    fn open_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entries = cayenchat_storage::parse_auto_join(self.settings.channels.read(cx).text());
+        let rows = entries
+            .iter()
+            .map(|entry| self.auto_join_row(&entry.name, entry.enabled, cx))
+            .collect();
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.auto_join = Some(AutoJoinDialog { rows, focus });
+        cx.notify();
+    }
+
+    fn close_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.auto_join = None;
+        window.focus(&self.nav_focus);
+        cx.notify();
+    }
+
+    /// Tab / Shift+Tab inside the dialog: moves between its fields and wraps
+    /// back to the dialog instead of leaving it.
+    fn auto_join_traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.auto_join else {
+            return;
+        };
+        if forward {
+            window.focus_next();
+        } else {
+            window.focus_prev();
+        }
+        if !dialog.focus.contains_focused(window, cx) {
+            window.focus(&dialog.focus);
+        }
+    }
+
+    /// Stores the dialog's rows in the `channels` field, which autosaves.
+    fn sync_auto_join(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.auto_join else {
+            return;
+        };
+        let entries: Vec<AutoJoinEntry> = dialog
+            .rows
+            .iter()
+            .map(|row| AutoJoinEntry {
+                name: row.name.read(cx).text().to_owned(),
+                enabled: row.enabled,
+            })
+            .collect();
+        let text = cayenchat_storage::format_auto_join(&entries);
+        self.settings
+            .channels
+            .update(cx, |field, cx| field.set_text(&text, cx));
+        cx.notify();
+    }
+
+    fn edit_auto_join(
+        &mut self,
+        change: impl FnOnce(&mut Vec<AutoJoinRow>),
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dialog) = &mut self.auto_join {
+            change(&mut dialog.rows);
+        }
+        self.sync_auto_join(cx);
+    }
+
+    fn add_auto_join_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.auto_join_row("", true, cx);
+        let input = row.name.clone();
+        self.edit_auto_join(|rows| rows.push(row), cx);
+        window.focus(&input.read(cx).focus_handle(cx));
+    }
+
     /// Adds a server, blank or filled in from a preset's `host`.
     fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
         let host = host.to_owned();
@@ -4302,6 +4664,7 @@ impl SettingsWindow {
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.avatar_feedback = None;
         self.avatar_editor = None;
+        self.auto_join = None;
         let store = secrets::store(cx);
         match self.settings.switch_server(change, &store, &self.i18n, cx) {
             Ok(()) => self.feedback = None,
@@ -4573,18 +4936,17 @@ impl SettingsWindow {
                     )
                     .child(div().flex_1())
                     .when(!no_server, |d| {
-                        // On while the server being edited is connected, being
-                        // connected or waiting to retry.
+                        // One button in one place: Disconnect while the server
+                        // being edited is connected, being connected or
+                        // waiting to retry, Connect otherwise.
                         d.child(
-                            div()
-                                .id("connection-switch")
-                                .debug_selector(|| "connection-switch".into())
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .child(self.i18n.text("connect"))
-                                .child(settings_theme::switch(connected, cx))
+                            settings_theme::button("connection-button", !connected, cx)
+                                .debug_selector(|| "connection-button".into())
+                                .child(self.i18n.text(if connected {
+                                    "disconnect"
+                                } else {
+                                    "connect"
+                                }))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if !connected {
                                         this.connect_from_settings(window, cx);
@@ -4776,9 +5138,36 @@ impl SettingsWindow {
                 self.settings.quit_message.clone(),
             ))
             .child(settings_field(
-                &self.i18n.text("auto_join_channels"),
-                self.settings.channels.clone(),
+                &self.i18n.text("display_name"),
+                self.settings.display_name.clone(),
             ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_shrink_0()
+                            .child(self.i18n.text("auto_join_channels")),
+                    )
+                    .child(
+                        div()
+                            .id("auto-join-summary")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.auto_join_summary(cx)),
+                    )
+                    .child(
+                        settings_theme::button("auto-join-edit", false, cx)
+                            .child(self.i18n.text("auto_join_edit"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_auto_join(window, cx)),
+                            ),
+                    ),
+            )
             .child(
                 div()
                     .id("connect-on-startup")
@@ -5335,16 +5724,41 @@ impl SettingsWindow {
                     .gap_2()
                     .cursor_pointer()
                     .child(settings_theme::checkbox(
-                        self.settings.values.appearance.wrap_long_nicknames,
+                        self.settings.values.appearance.header_line_messages,
                         true,
                         cx,
                     ))
-                    .child(self.i18n.text("wrap_long_nicknames"))
+                    .child(self.i18n.text("header_line_messages"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.wrap_long_nicknames;
+                        let value = &mut this.settings.values.appearance.header_line_messages;
                         *value = !*value;
                         cx.notify();
                     })),
+            )
+            .child(
+                div()
+                    .id("compact-urls")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.compact_urls,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("compact_urls"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.compact_urls;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("compact_urls_hint")),
             )
             .child(
                 div()
@@ -5547,6 +5961,16 @@ impl SettingsWindow {
                 self.settings.keywords.clone(),
             ))
             .child(hint("keywords_hint"))
+            .when(cfg!(target_os = "windows"), |d| {
+                d.child(self.notification_toggle(
+                    "notify-sound",
+                    "notify_sound",
+                    |n| n.sound,
+                    |n| n.sound = !n.sound,
+                    enabled,
+                    cx,
+                ))
+            })
             .child(hint(if cfg!(target_os = "macos") {
                 "notifications_hint_macos"
             } else {
@@ -5749,6 +6173,7 @@ impl SettingsWindow {
         let experimental = tabs.pop();
         let mut nav = div()
             .id("settings-nav")
+            .track_scroll(&self.nav_scroll)
             .track_focus(&self.nav_focus)
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.nav_key_down(event, window, cx)),
@@ -5782,8 +6207,10 @@ impl SettingsWindow {
             SettingsTab::Credentials => self.render_credential_settings(cx).into_any_element(),
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
+        let auto_join = self.render_auto_join_dialog(cx);
         field_traversal(div().id("settings-screen"))
             .key_context("SettingsWindow")
+            .relative()
             .size_full()
             .flex()
             .bg(theme.window)
@@ -5793,16 +6220,30 @@ impl SettingsWindow {
                     .text_size(px(native.defaults.font.size))
             })
             .text_color(theme.text)
-            .child(nav)
+            .child(div().relative().flex_shrink_0().h_full().child(nav).child(
+                scrollbar::scrollbar("scrollbar-settings-nav", &self.nav_scroll, theme.text_muted),
+            ))
             .child(
                 div()
-                    .id("settings-pane")
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .overflow_y_scroll()
-                    .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                    .child(
+                        div()
+                            .id("settings-pane")
+                            .track_scroll(&self.pane_scroll)
+                            .size_full()
+                            .overflow_y_scroll()
+                            .child(div().w_full().max_w(px(720.)).p_4().child(panel)),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-settings-pane",
+                        &self.pane_scroll,
+                        theme.text_muted,
+                    )),
             )
+            .children(auto_join)
             .on_action(cx.listener(Self::open_settings_action))
             .when(
                 self.owner
@@ -5823,6 +6264,7 @@ fn notification_rules(settings: &Notifications) -> NotificationRules {
         keyword_alerts: settings.keyword_alerts,
         keywords: settings.keywords.clone(),
         private_messages: settings.private_messages,
+        sound: settings.sound,
     }
 }
 
@@ -5859,18 +6301,31 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
             .filter_map(|scheme| text[cursor..].find(scheme).map(|offset| cursor + offset))
             .min();
         let Some(start) = next else { break };
-        let mut end = text[start..]
+        // An IPv6 literal host such as `https://[::1]/` keeps its brackets.
+        let host_start = start + text[start..].find("://").map_or(0, |i| i + 3);
+        let scan_from = match text[host_start..].strip_prefix('[') {
+            Some(rest) => rest
+                .find(']')
+                .map_or(host_start, |close| host_start + 1 + close + 1),
+            None => host_start,
+        };
+        let mut end = text[scan_from..]
             .char_indices()
-            .find(|(_, ch)| ch.is_whitespace() || "<>\"'。、".contains(*ch))
-            .map(|(offset, _)| start + offset)
+            .find(|(_, ch)| ch.is_whitespace() || "<>[]\"'。、".contains(*ch))
+            .map(|(offset, _)| scan_from + offset)
             .unwrap_or(text.len());
-        while end > start
-            && text[..end]
-                .chars()
-                .last()
-                .is_some_and(|ch| ".,;:!?)]}」』".contains(ch))
-        {
-            end -= text[..end].chars().last().unwrap().len_utf8();
+        while end > start {
+            let Some(last) = text[..end].chars().last() else {
+                break;
+            };
+            let closes_bracket = last == ')' && {
+                let candidate = &text[start..end];
+                candidate.matches(')').count() > candidate.matches('(').count()
+            };
+            if !(closes_bracket || ".,;:!?}」』".contains(last)) {
+                break;
+            }
+            end -= last.len_utf8();
         }
         let candidate = &text[start..end];
         if let Ok(url) = url::Url::parse(candidate)
@@ -5884,15 +6339,27 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     found
 }
 
+///
+/// `prefix` (the sender and colon in the flowing layout) is drawn in the
+/// nickname color before `text`; every other range, and `selected`, is a
+/// byte offset into `text`.
 fn styled_log_text(
+    prefix: &str,
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
+    chips: &[std::ops::Range<usize>],
     highlights: &[std::ops::Range<usize>],
     selected: Option<std::ops::Range<usize>>,
     theme: &Theme,
 ) -> StyledText {
-    let mut boundaries = vec![0, text.len()];
-    for range in urls.iter().map(|(range, _)| range).chain(highlights) {
+    let shift = prefix.len();
+    let moved = |range: &std::ops::Range<usize>| range.start + shift..range.end + shift;
+    let urls: Vec<_> = urls.iter().map(|(range, _)| moved(range)).collect();
+    let chips: Vec<_> = chips.iter().map(moved).collect();
+    let highlights: Vec<_> = highlights.iter().map(moved).collect();
+    let selected = selected.as_ref().map(moved);
+    let mut boundaries = vec![0, shift, shift + text.len()];
+    for range in urls.iter().chain(&highlights).chain(&chips) {
         boundaries.extend([range.start, range.end]);
     }
     if let Some(range) = &selected {
@@ -5902,19 +6369,25 @@ fn styled_log_text(
     boundaries.dedup();
     let highlights = boundaries.windows(2).filter_map(|pair| {
         let range = pair[0]..pair[1];
+        let is_prefix = range.end <= shift;
         let is_url = urls
             .iter()
-            .any(|(url, _)| url.start <= range.start && range.end <= url.end);
+            .any(|url| url.start <= range.start && range.end <= url.end);
+        let is_chip = chips
+            .iter()
+            .any(|chip| chip.start <= range.start && range.end <= chip.end);
         let is_selected = selected
             .as_ref()
             .is_some_and(|selection| selection.start <= range.start && range.end <= selection.end);
         let is_highlight = highlights
             .iter()
             .any(|word| word.start <= range.start && range.end <= word.end);
-        (is_url || is_selected || is_highlight).then_some((
+        (is_prefix || is_url || is_chip || is_selected || is_highlight).then_some((
             range,
             HighlightStyle {
-                color: if is_url {
+                color: if is_prefix {
+                    Some(theme.nickname.into())
+                } else if is_url {
                     Some(theme.link.into())
                 } else {
                     is_highlight.then_some(theme.panes.highlight.into())
@@ -5925,12 +6398,20 @@ fn styled_log_text(
                     thickness: px(1.),
                     wavy: false,
                 }),
-                background_color: is_selected.then_some(theme.selected.into()),
+                background_color: if is_selected {
+                    Some(theme.selected.into())
+                } else {
+                    is_chip.then(|| {
+                        let mut chip = theme.link;
+                        chip.a = 0.14;
+                        chip.into()
+                    })
+                },
                 ..Default::default()
             },
         ))
     });
-    StyledText::new(text.to_owned()).with_highlights(highlights)
+    StyledText::new(format!("{prefix}{text}")).with_highlights(highlights)
 }
 
 /// A preview below a message: the thumbnail, or a box of the full height
@@ -6040,12 +6521,22 @@ impl ChatWindow {
             .border_t_1()
             .border_color(theme.border)
             .child(
-                list(
-                    self.tree_list.state.clone(),
-                    cx.processor(Self::render_tree_row),
-                )
-                .flex_1()
-                .min_h_0(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        list(
+                            self.tree_list.state.clone(),
+                            cx.processor(Self::render_tree_row),
+                        )
+                        .size_full(),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-channels",
+                        &self.tree_list.state,
+                        theme.text_muted,
+                    )),
             )
             .into_any_element()
     }
@@ -6165,7 +6656,7 @@ impl ChatWindow {
                                     event
                                         .position
                                         .y
-                                        .min((viewport.height - px(76.)).max(px(0.))),
+                                        .min((viewport.height - px(110.)).max(px(0.))),
                                 ),
                                 network,
                                 conversation: id,
@@ -6195,6 +6686,7 @@ impl ChatWindow {
         {
             self.pane_renders += 1;
         }
+        let theme = theme::current(cx);
         match kind {
             PaneKind::MainLog => {
                 let selection = self.state.selection();
@@ -6213,28 +6705,55 @@ impl ChatWindow {
                         });
                     });
                 }
-                list(main.state.clone(), cx.processor(Self::render_main_row))
+                let bar = scrollbar::scrollbar("scrollbar-main", &main.state, theme.text_muted);
+                div()
+                    .relative()
                     .size_full()
+                    .child(
+                        list(main.state.clone(), cx.processor(Self::render_main_row)).size_full(),
+                    )
+                    .child(bar)
                     .into_any_element()
             }
-            PaneKind::SubLog => list(
-                self.sub_list.state.clone(),
-                cx.processor(Self::render_sub_row),
-            )
-            .size_full()
-            .into_any_element(),
+            PaneKind::SubLog => div()
+                .relative()
+                .size_full()
+                .child(
+                    list(
+                        self.sub_list.state.clone(),
+                        cx.processor(Self::render_sub_row),
+                    )
+                    .size_full(),
+                )
+                .child(scrollbar::scrollbar(
+                    "scrollbar-sub",
+                    &self.sub_list.state,
+                    theme.text_muted,
+                ))
+                .into_any_element(),
             PaneKind::Members => {
                 let member_count = self
                     .state
                     .selected_channel()
                     .map_or(0, |channel| channel.members.len());
-                uniform_list(
-                    "members",
-                    member_count,
-                    cx.processor(Self::render_member_rows),
-                )
-                .size_full()
-                .into_any_element()
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        uniform_list(
+                            "members",
+                            member_count,
+                            cx.processor(Self::render_member_rows),
+                        )
+                        .track_scroll(self.members_scroll.clone())
+                        .size_full(),
+                    )
+                    .child(scrollbar::scrollbar(
+                        "scrollbar-members",
+                        &self.members_scroll,
+                        theme.text_muted,
+                    ))
+                    .into_any_element()
             }
             PaneKind::Channels => self.render_channel_tree(cx),
         }
@@ -6623,7 +7142,28 @@ impl ChatWindow {
                         .when(!enabled, |d| d.text_color(theme.text_muted)),
                 );
             }
+            let auto_joined = self.auto_join_enabled(menu.network, &menu.channel);
             popup
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .child(
+                    div()
+                        .id("channel-menu-auto-join")
+                        .px_2()
+                        .py_1()
+                        .child(self.i18n.text(if auto_joined {
+                            "auto_join_remove_from"
+                        } else {
+                            "auto_join_add_to"
+                        }))
+                        .when(registered, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(theme.hover_strong))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_auto_join(!auto_joined, cx)
+                                }))
+                        })
+                        .when(!registered, |d| d.text_color(theme.text_muted)),
+                )
         });
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
@@ -7081,14 +7621,9 @@ struct LogStyle {
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
-    wrap_nicknames: bool,
-    /// Width of the channel name column of the combined log.
-    sub_name_width: f32,
+    compact_urls: bool,
+    header_lines: bool,
 }
-
-/// Width of the main log's nickname column: nicknames of up to 15 typical
-/// characters (the longest some servers allow) fit without shortening.
-const NICK_COLUMN_WIDTH: f32 = 124.;
 
 impl LogStyle {
     fn new(appearance: &Appearance, theme: Theme) -> Self {
@@ -7105,11 +7640,8 @@ impl LogStyle {
                 appearance.time_font.clone().into()
             },
             alternate_rows: appearance.alternate_rows,
-            wrap_nicknames: appearance.wrap_long_nicknames,
-            sub_name_width: appearance
-                .sub_log_name_width
-                .clamp(*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end())
-                as f32,
+            compact_urls: appearance.compact_urls,
+            header_lines: appearance.header_line_messages,
         }
     }
 
@@ -7336,14 +7868,43 @@ impl ChatWindow {
         if matches!(preview, Some((_, previews::Shown::Pending))) {
             self.pump_previews(cx);
         }
+        // Drawn text may differ from the message's; positions map back.
+        let compact = Rc::new(compact_urls::Compact::new(
+            &message.text,
+            &urls,
+            style.compact_urls,
+        ));
+        let full_urls: Vec<_> = compact
+            .shortened(&urls)
+            .map(|(range, url)| (range, SharedString::from(url.to_owned())))
+            .collect();
+        let urls = compact.shown_urls(&urls);
+        let chips: Vec<_> = full_urls.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
-            .and_then(|selection| selection.range(index, message.text.len()));
-        let highlights = self.highlight_ranges(network, message);
+            .and_then(|selection| selection.range(index, message.text.len()))
+            .map(|range| compact.shown_range(range));
+        let highlights: Vec<_> = self
+            .highlight_ranges(network, message)
+            .into_iter()
+            .map(|range| compact.shown_range(range))
+            .collect();
+        // Default layout: the nickname flows into the message text, so
+        // wrapped lines return to the left edge of the text column. The
+        // header layout shows it on its own first line instead.
+        let header_lines = style.header_lines && !message.activity;
+        let prefix = if message.activity || header_lines {
+            String::new()
+        } else {
+            format!("{}: ", message.sender)
+        };
+        let prefix_len = prefix.len();
         let styled = styled_log_text(
-            &message.text,
+            &prefix,
+            compact.text(),
             &urls,
+            &chips,
             &highlights,
             selected_range,
             &style.theme,
@@ -7353,118 +7914,146 @@ impl ChatWindow {
         let move_layout = layout.clone();
         let click_layout = layout;
         let move_urls = urls.clone();
+        let (down_compact, move_compact) = (compact.clone(), compact.clone());
         let over_url = self.url_hover == Some((selected_channel, index));
-        let text_len = message.text.len();
-        div()
+        let text_len = compact.text().len();
+        let styled = if full_urls.is_empty() {
+            styled.into_any_element()
+        } else {
+            // The full URL of a shortened one shows on hover.
+            InteractiveText::new(("message-urls", index), styled)
+                .tooltip(move |byte, _, cx| {
+                    let byte = byte.checked_sub(prefix_len)?;
+                    let (_, url) = full_urls.iter().find(|(range, _)| range.contains(&byte))?;
+                    let url = url.clone();
+                    Some(cx.new(|_| ircv3_settings::TextTooltip(url)).into())
+                })
+                .into_any_element()
+        };
+        let avatar = (!message.activity && self.avatars.enabled()).then(|| {
+            self.avatar_slot(
+                self.own_avatar_for(network, &message.sender).or_else(|| {
+                    self.state
+                        .avatars()
+                        .for_message(
+                            network,
+                            &cayenchat_irc_core::text::nickname_key(&message.sender),
+                            message.sequence,
+                        )
+                        .cloned()
+                }),
+                &message.sender,
+                cx,
+            )
+        });
+        // One element for the whole message, so both lines of the header
+        // layout share the row's alternating background.
+        let row = div()
             .w_full()
             .flex()
-            .items_start()
-            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 d.bg(style.main_alt)
-            })
-            .child(style.time(message.time))
-            .when(!message.activity && self.avatars.enabled(), |row| {
-                row.child(self.avatar_slot(
-                    self.own_avatar_for(network, &message.sender).or_else(|| {
-                        self.state
-                            .avatars()
-                            .for_message(
-                                network,
-                                &cayenchat_irc_core::text::nickname_key(&message.sender),
-                                message.sequence,
-                            )
-                            .cloned()
+            });
+        let row = if header_lines {
+            row.flex_col().child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .child(style.time(message.time))
+                    .children(avatar)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_color(theme.nickname)
+                            .child(message.sender.clone()),
+                    ),
+            )
+        } else {
+            row.items_start()
+                .gap_1()
+                .child(style.time(message.time))
+                .children(avatar)
+        };
+        row.child({
+            let text = div()
+                .id(("message-text", index))
+                .debug_selector(move || format!("message-text-{index}"))
+                .when(preview.is_none(), |d| d.flex_1())
+                .min_w_0()
+                .when(message.activity, |d| d.text_color(style.event_color))
+                .when(message.delivery_failed, |d| d.text_color(theme.warning))
+                .cursor(if over_url {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::IBeam
+                })
+                .child(styled)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        let byte = down_layout
+                            .index_for_position(event.position)
+                            .unwrap_or_else(|index| index)
+                            .saturating_sub(prefix_len)
+                            .min(text_len);
+                        let byte = down_compact.original(byte);
+                        this.start_log_selection(selected_channel, index, byte, window, cx);
                     }),
-                    &message.sender,
-                    cx,
-                ))
-            })
-            .when(!message.activity, |row| {
-                row.child(
-                    div()
-                        .w(px(NICK_COLUMN_WIDTH))
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_end()
-                        .text_right()
-                        .text_color(theme.nickname)
-                        .child(
-                            div()
-                                .min_w_0()
-                                .when(!style.wrap_nicknames, |d| {
-                                    d.overflow_hidden().whitespace_nowrap().text_ellipsis()
-                                })
-                                .child(message.sender.clone()),
-                        )
-                        .child(":"),
                 )
-            })
-            .child({
-                let text = div()
-                    .id(("message-text", index))
-                    .debug_selector(move || format!("message-text-{index}"))
-                    .when(preview.is_none(), |d| d.flex_1())
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    let position = move_layout.index_for_position(event.position);
+                    let raw = position.unwrap_or_else(|index| index);
+                    let byte = raw.saturating_sub(prefix_len).min(text_len);
+                    this.extend_log_selection(
+                        selected_channel,
+                        index,
+                        move_compact.original(byte),
+                        cx,
+                    );
+                    // Over a URL (not while selecting) the pointer is a
+                    // hand: a double click opens it.
+                    let hover = (event.pressed_button.is_none()
+                        && position.is_ok()
+                        && raw >= prefix_len
+                        && move_urls.iter().any(|(range, _)| range.contains(&byte)))
+                    .then_some((selected_channel, index));
+                    if this.url_hover != hover {
+                        this.url_hover = hover;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                    if event.click_count() == 2 {
+                        // A click on the nickname prefix is not on a link.
+                        let Some(byte) = click_layout
+                            .index_for_position(event.position())
+                            .unwrap_or_else(|index| index)
+                            .checked_sub(prefix_len)
+                        else {
+                            return;
+                        };
+                        if let Some((_, url)) = urls.iter().find(|(range, _)| range.contains(&byte))
+                        {
+                            cx.open_url(url);
+                        }
+                    }
+                }));
+            match preview {
+                None => text.into_any_element(),
+                Some((link, shown)) => div()
+                    .flex_1()
                     .min_w_0()
-                    .when(message.activity, |d| d.text_color(style.event_color))
-                    .when(message.delivery_failed, |d| d.text_color(theme.warning))
-                    .cursor(if over_url {
-                        CursorStyle::PointingHand
-                    } else {
-                        CursorStyle::IBeam
-                    })
-                    .child(styled)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            let byte = down_layout
-                                .index_for_position(event.position)
-                                .unwrap_or_else(|index| index)
-                                .min(text_len);
-                            this.start_log_selection(selected_channel, index, byte, window, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        let position = move_layout.index_for_position(event.position);
-                        let byte = position.unwrap_or_else(|index| index).min(text_len);
-                        this.extend_log_selection(selected_channel, index, byte, cx);
-                        // Over a URL (not while selecting) the pointer is a
-                        // hand: a double click opens it.
-                        let hover = (event.pressed_button.is_none()
-                            && position.is_ok()
-                            && move_urls.iter().any(|(range, _)| range.contains(&byte)))
-                        .then_some((selected_channel, index));
-                        if this.url_hover != hover {
-                            this.url_hover = hover;
-                            cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
-                        if event.click_count() == 2 {
-                            let byte = click_layout
-                                .index_for_position(event.position())
-                                .unwrap_or_else(|index| index);
-                            if let Some((_, url)) =
-                                urls.iter().find(|(range, _)| range.contains(&byte))
-                            {
-                                cx.open_url(url);
-                            }
-                        }
-                    }));
-                match preview {
-                    None => text.into_any_element(),
-                    Some((link, shown)) => div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(text)
-                        .child(preview_element(link, shown, index, &theme, cx))
-                        .into_any_element(),
-                }
-            })
-            .into_any_element()
+                    .flex()
+                    .flex_col()
+                    .child(text)
+                    .child(preview_element(link, shown, index, &theme, cx))
+                    .into_any_element(),
+            }
+        })
+        .into_any_element()
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
@@ -7503,18 +8092,47 @@ impl ChatWindow {
         let Some(message) = conversation.messages.get(index) else {
             return div().into_any_element();
         };
-        let network = self
-            .state
-            .networks()
-            .iter()
-            .find(|network| network.id == conversation.network)
-            .map(|network| network.name.split_whitespace().next().unwrap_or(""))
-            .unwrap_or("");
+        let alias = self
+            .sessions
+            .get(&conversation.network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .map(|profile| profile.display_name.as_str())
+            .filter(|alias| !alias.is_empty());
+        let network = alias.unwrap_or_else(|| {
+            self.state
+                .networks()
+                .iter()
+                .find(|network| network.id == conversation.network)
+                .map(|network| network.name.as_str())
+                .unwrap_or("")
+        });
+        // Same flow as the main log's default layout: channel, network and
+        // nickname lead the text, so wrapped lines return to the text column.
+        let prefix = if message.activity {
+            format!("{} [{network}] ", conversation.name)
+        } else {
+            format!("{} [{network}] {}: ", conversation.name, message.sender)
+        };
+        let highlights = if message.activity {
+            Vec::new()
+        } else {
+            self.highlight_ranges(conversation.network, message)
+        };
+        let styled = styled_log_text(
+            &prefix,
+            &message.text,
+            &[],
+            &[],
+            &highlights,
+            None,
+            &style.theme,
+        );
         div()
             .id(("sub-message", row))
             .w_full()
             .flex()
-            .gap_2()
+            .items_start()
+            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && row % 2 == 1, |d| {
                 d.bg(style.sub_alt)
@@ -7524,56 +8142,11 @@ impl ChatWindow {
             .child(style.time(message.time))
             .child(
                 div()
-                    .w(px(style.sub_name_width))
-                    .flex_shrink_0()
-                    .flex()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_color(theme.nickname)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(conversation.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(90.))
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(format!(" [{network}]")),
-                    ),
-            )
-            .child(
-                div()
+                    .debug_selector(move || format!("sub-text-{row}"))
                     .flex_1()
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
-                    .child(if message.activity {
-                        StyledText::new(message.text.clone())
-                    } else {
-                        let offset = message.sender.len() + 2;
-                        let highlight = HighlightStyle {
-                            color: Some(theme.panes.highlight.into()),
-                            font_weight: Some(FontWeight::BOLD),
-                            ..Default::default()
-                        };
-                        StyledText::new(format!("{}: {}", message.sender, message.text))
-                            .with_highlights(
-                                self.highlight_ranges(conversation.network, message)
-                                    .into_iter()
-                                    .map(|range| {
-                                        (range.start + offset..range.end + offset, highlight)
-                                    }),
-                            )
-                    }),
+                    .child(styled),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // A single click is too easy to hit while reading the combined log.
@@ -8152,6 +8725,32 @@ mod log_tests {
         assert_eq!(urls[0].1, "https://example.org/a?q=1");
         assert_eq!(urls[1].1, "http://example.jp/path");
         assert_eq!(&text[urls[0].0.clone()], urls[0].1);
+    }
+
+    #[test]
+    fn markdown_links_and_brackets_do_not_leak_into_urls() {
+        let text = " [https://x.com/a/status/1](https://x.com/a/status/1)";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert!(
+            urls.iter()
+                .all(|(_, url)| url == "https://x.com/a/status/1")
+        );
+        let text = "(see https://example.org/a_(b)) https://example.org/c)";
+        let urls = log_urls(text);
+        assert_eq!(urls[0].1, "https://example.org/a_(b)");
+        assert_eq!(urls[1].1, "https://example.org/c");
+    }
+
+    #[test]
+    fn ipv6_literal_hosts_keep_their_brackets() {
+        let text =
+            "[https://[2001:db8::1]:8080/path](https://[2001:db8::1]:8080/path) http://[::1]/";
+        let urls = log_urls(text);
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0].1, "https://[2001:db8::1]:8080/path");
+        assert_eq!(urls[1].1, "https://[2001:db8::1]:8080/path");
+        assert_eq!(urls[2].1, "http://[::1]/");
     }
 
     #[test]
@@ -8860,7 +9459,8 @@ mod url_hover_tests {
         let over = |row: usize, cx: &mut gpui::VisualTestContext| {
             let selector: &'static str = ["message-text-0", "message-text-1"][row];
             let bounds = cx.debug_bounds(selector).expect("row drawn");
-            let at = point(bounds.origin.x + px(4.), bounds.center().y);
+            // Past the "bob: " prefix the nickname shares the text with.
+            let at = point(bounds.origin.x + px(60.), bounds.center().y);
             cx.simulate_mouse_move(at, None, Modifiers::none());
             cx.run_until_parked();
             chat.read_with(cx, |chat, _| chat.url_hover.is_some())
@@ -8868,6 +9468,65 @@ mod url_hover_tests {
         assert!(over(0, cx), "on the link");
         assert!(!over(1, cx), "on plain text");
         assert!(over(0, cx), "back on the link");
+    }
+
+    #[gpui::test]
+    fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a,#b");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Joined {
+                        channel: "#b".into(),
+                    },
+                    Event::ChannelMessage {
+                        channel: "#b".into(),
+                        sender: "bob".into(),
+                        text: "hello".into(),
+                        notice: false,
+                        mentioned: false,
+                        server_time: None,
+                        msgid: None,
+                        account: None,
+                        replayed: false,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let channel = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(channel));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("sub-text-0").expect("combined row drawn");
+        // No fixed channel name column (162 px by default) before the text:
+        // only the time column and its gap precede it.
+        assert!(
+            bounds.origin.x < px(100.),
+            "text starts at {:?}",
+            bounds.origin.x
+        );
+        chat.read_with(cx, |chat, _| assert_eq!(chat.sub_rows.len(), 1));
     }
 }
 
@@ -10687,6 +11346,73 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn the_channel_menu_disables_or_adds_auto_join_without_deleting(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a,-#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            let network = chat.state.networks()[0].id;
+            let menu = |chat: &mut ChatWindow, channel: &str| {
+                chat.channel_menu = Some(crate::ChannelMenu {
+                    position: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    network,
+                    conversation: chat.state.conversations()[0].id,
+                    channel: channel.into(),
+                    joined: false,
+                    private: false,
+                });
+            };
+            assert!(chat.auto_join_enabled(network, "#A"));
+            assert!(!chat.auto_join_enabled(network, "#b"));
+            let saved = |chat: &ChatWindow| chat.saved.selected_profile().unwrap().channels.clone();
+            chat.sessions.get_mut(&network).unwrap().active_config =
+                Some(cayenchat_irc_core::ConnectionConfig::tls(
+                    "irc.example".into(),
+                    "alice".into(),
+                    vec!["#a".into()],
+                ));
+
+            menu(chat, "#a");
+            chat.toggle_auto_join(false, cx);
+            assert_eq!(saved(chat), "-#a,-#b");
+            // The next reconnect uses the saved list, without a JOIN/PART now.
+            assert!(chat.reconnect_config(network).unwrap().channels.is_empty());
+            assert!(!chat.auto_join_enabled(network, "#a"));
+            assert!(chat.channel_menu.is_none());
+
+            // A disabled entry is enabled again in place; a new one is appended.
+            menu(chat, "#b");
+            chat.toggle_auto_join(true, cx);
+            menu(chat, "#c");
+            chat.toggle_auto_join(true, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c");
+            let file = crate::settings_file::load().unwrap().unwrap();
+            assert_eq!(file.selected_profile().unwrap().channels, "-#a,#b,#c");
+
+            // `[]` and `{}` are the same channel under RFC 1459 case mapping.
+            menu(chat, "#[x]");
+            chat.toggle_auto_join(true, cx);
+            assert!(chat.auto_join_enabled(network, "#{x}"));
+            menu(chat, "#{x}");
+            chat.toggle_auto_join(true, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c,#[x]");
+            menu(chat, "#{X}");
+            chat.toggle_auto_join(false, cx);
+            assert_eq!(saved(chat), "-#a,#b,#c,-#[x]");
+        });
+        drop(file);
+    }
+
+    #[gpui::test]
     fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Event;
 
@@ -10792,6 +11518,10 @@ mod pane_tests {
                 false,
                 cx,
             );
+            assert!(
+                chat.notifier.shown.iter().all(|n| !n.sound),
+                "sound is off by default"
+            );
             chat.notification_rules.mentions = false;
             chat.handle_events(
                 NetworkId(1),
@@ -10799,6 +11529,18 @@ mod pane_tests {
                 false,
                 cx,
             );
+            chat.notification_burst = cayenchat_app::notifications::BurstLimiter::default();
+            chat.notification_rules.sound = true;
+            chat.notification_rules.mentions = true;
+            chat.handle_events(
+                NetworkId(1),
+                vec![message("#a", "alice: with sound", true)],
+                false,
+                cx,
+            );
+            let loud = chat.notifier.shown.pop().expect("sound notification");
+            assert_eq!(loud.body, "alice: with sound");
+            assert!(loud.sound);
             let summaries: Vec<_> = chat
                 .notifier
                 .shown

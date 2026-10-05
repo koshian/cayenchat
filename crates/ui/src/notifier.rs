@@ -9,6 +9,8 @@
 pub struct DesktopNotification {
     pub summary: String,
     pub body: String,
+    /// Also beep and flash the taskbar button (Windows only).
+    pub sound: bool,
 }
 
 pub struct Notifier {
@@ -32,6 +34,9 @@ impl Notifier {
                 for notification in receiver {
                     if let Err(error) = platform::show(&notification) {
                         log::warn!("Could not show a desktop notification: {error}");
+                    }
+                    if notification.sound {
+                        platform::alert();
                     }
                 }
             })
@@ -106,6 +111,53 @@ mod platform {
         builder.hint(notify_rust::Hint::Category("im.received".into()));
         builder.show().map(|_| ())
     }
+
+    /// The system notification sound and a taskbar flash that lasts until
+    /// the window comes to the foreground.
+    #[cfg(target_os = "windows")]
+    pub fn alert() {
+        use windows_sys::Win32::{
+            Foundation::{HWND, LPARAM},
+            System::{Diagnostics::Debug::MessageBeep, Threading::GetCurrentProcessId},
+            UI::WindowsAndMessaging::{
+                EnumWindows, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GW_OWNER,
+                GetWindow, GetWindowThreadProcessId, IsWindowVisible, MB_OK,
+            },
+        };
+
+        unsafe extern "system" fn flash(hwnd: HWND, process: LPARAM) -> i32 {
+            // SAFETY: plain Win32 queries on a handle EnumWindows just gave us.
+            unsafe {
+                let mut owner = 0;
+                GetWindowThreadProcessId(hwnd, &mut owner);
+                // Top-level, visible windows of this process: owned windows
+                // have no taskbar button of their own.
+                if owner as LPARAM == process
+                    && IsWindowVisible(hwnd) != 0
+                    && GetWindow(hwnd, GW_OWNER).is_null()
+                {
+                    let info = FLASHWINFO {
+                        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+                        hwnd,
+                        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+                        uCount: 0,
+                        dwTimeout: 0,
+                    };
+                    FlashWindowEx(&info);
+                }
+            }
+            1
+        }
+
+        // SAFETY: both calls take no pointers owned by us beyond the callback.
+        unsafe {
+            MessageBeep(MB_OK);
+            EnumWindows(Some(flash), GetCurrentProcessId() as LPARAM);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn alert() {}
 
     /// Servers that advertise `body-markup` parse the body as a small
     /// HTML subset, so IRC text must be escaped.

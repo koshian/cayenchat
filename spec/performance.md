@@ -70,7 +70,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
 | WHOIS collection | 32 nicknames × 512 items | per connection | |
-| Rosters | none | per channel | Kept three times: `irc`'s channel lists, `irc-core`'s `RosterTracker`, and `app`'s sorted `members`. |
+| Rosters | none | per channel | Kept four times: `irc`'s channel lists, `irc-core`'s `RosterTracker`, its `PresenceIndex` (see "Presence index"), and `app`'s sorted `members`. |
 | Per-selection UI state | none | per visited server/channel | `main_lists` (one `LogList` with measured heights) and one `TextInput` entity per conversation; cleared only when a connection is applied from settings (automatic reconnects keep them). |
 | Attachment | 32 MiB | one upload at a time | Upload only. |
 | Preview loads in flight | 2 | application | Fetch plus decode; jobs started before previews were switched off still count until they return. |
@@ -589,6 +589,57 @@ adds at most 100 lines (one note line more) through the existing
 insertion and the 2,000-line bound, and a long gap never triggers further
 requests. No timer beyond the existing 30 s per-request timeout; nothing
 remains after recovery.
+
+## Presence index (2026-10-04, issue #71)
+
+The worker's `PresenceIndex` (`irc-core/src/presence.rs`) is a second,
+two-way copy of who is in which joined channel, next to `RosterTracker::last`.
+It lives only in the worker, so the headless UI test (which bypasses the
+worker) cannot see it; no UI, event or `model` type changed, so the process
+scenarios and the UI test were not rerun for comparison. A single UI test run
+(parallel with other tests, so noisy) stayed in the usual range. Instead the
+ignored `presence::cost::presence_cost` test measures the index against
+scanning the published rosters, on the Linux x86_64 container (12 cores,
+rustc 1.99.0, release, three runs; times agreed within noise):
+
+```sh
+cargo test --release -p cayenchat-irc-core --lib presence_cost -- --ignored --nocapture
+```
+
+Heap bytes come from a counting allocator in that test. "Roster" is the
+`HashMap<String, Vec<String>>` the tracker already keeps. Lookup is "is this
+nickname in channel X" asked for every channel, as `had_member` does per QUIT
+or NICK.
+
+| Channels × members, distinct users | Roster | Index | Build (first NAMES / re-apply) | Lookup, all channels: scan → index | NICK / QUIT in the index |
+| --- | --- | --- | --- | --- | --- |
+| 10 × 50, 500 | 16 KiB | 162 KiB | 0.2–0.5 ms / 0.05–0.11 ms | 2–5 µs → 0.8–2 µs | 0.16 / 0.18 µs |
+| 10 × 50, 100 | 16 KiB | 36 KiB | 0.05 ms / 0.05 ms | 1.9 µs → 0.8 µs | 0.12 / 0.18 µs |
+| 20 × 5,000, 100,000 | 3.8 MiB | 13.7 MiB | 34 ms / 18–20 ms | 150 µs → 2 µs | 0.3 / 0.3 µs |
+| 20 × 5,000, 20,000 | 3.5 MiB | 7.6 MiB | 16–18 ms / 14–15 ms | 210–230 µs → 3–4 µs | 0.4–0.6 / 0.5–0.7 µs |
+
+- Cost: about 100–130 bytes per membership in the worst case, so the index
+  adds roughly 2–3× the existing roster in large channels (a fourth copy,
+  see "Resource bounds today"), and each NAMES snapshot costs a rebuild of
+  that channel's entry (about 7 µs per member here). A channel switch or
+  keystroke does not touch it. Channel keys are shared (`Arc<str>`) between
+  the user and channel sides; the first version cloned a `String` per
+  membership and used 17 MiB / 10 MiB in the large cases.
+- Benefit: the QUIT/NICK affected-channel lookup no longer scans every
+  roster (150–230 µs per event in a 100,000-membership connection, which
+  matters in a netsplit), and NICK/QUIT in the index are sub-microsecond.
+- Shared-channel judgments: accounts, metadata and peer avatars now ask the
+  index instead of scanning the rosters. This costs one more `String` per
+  user (the nickname as spelled, for `only_in`), which is the difference
+  from the 11.7 / 6.7 MiB first measured for the two large rows. A
+  `shares` check is the same kind of lookup as in the table (a hash lookup
+  and a walk of the user's few channels, instead of a walk of every
+  roster), and `PeerAvatars::speaker` calls it for each live message from
+  an unknown user. The worker's end-to-end timing was not measured.
+- Not measured: process footprint (`run_baseline.py`), real servers.
+  Removing the duplicate roster copies is the follow-up listed under
+  "Resource limit candidates"; the index is not bounded separately because
+  it holds exactly the channels the library tracks as joined.
 
 ## Resource limit candidates (proposal)
 
