@@ -26,6 +26,8 @@ pub struct NotificationRules {
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
     pub private_messages: bool,
+    /// Also draw attention with a sound and the taskbar button.
+    pub sound: bool,
 }
 
 /// An incoming message as the notification rules see it.
@@ -178,6 +180,7 @@ mod tests {
             keyword_alerts: true,
             keywords: vec!["ビルド".into(), "Deploy".into()],
             private_messages: true,
+            sound: false,
         }
     }
 
