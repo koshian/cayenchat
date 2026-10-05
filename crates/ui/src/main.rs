@@ -1164,6 +1164,9 @@ enum FontTarget {
 /// order. Edits are written back to the form's `channels` field.
 struct AutoJoinDialog {
     rows: Vec<AutoJoinRow>,
+    /// Holds the keyboard focus while no row is being edited, so typing and
+    /// Tab never reach the form behind the dialog.
+    focus: FocusHandle,
 }
 
 struct AutoJoinRow {
@@ -1801,6 +1804,8 @@ impl ChatWindow {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
                     config.shared_avatar = shared.clone();
+                    // The auto-join list too: reconnects join the saved one.
+                    config.channels = profile.channels();
                     // A new realname is sent at once with SETNAME when the
                     // connection has it; the server's answer says otherwise.
                     if config.realname != profile.realname {
@@ -2302,7 +2307,13 @@ impl ChatWindow {
         // Start from the file, which a settings window may have updated.
         let mut settings = match settings_file::load() {
             Ok(Some(settings)) => settings,
-            _ => self.saved.clone(),
+            Ok(None) => self.saved.clone(),
+            Err(error) => {
+                // Saving over a file that cannot be read could destroy it.
+                self.feedback = Some(error);
+                cx.notify();
+                return;
+            }
         };
         let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
             return;
@@ -2329,6 +2340,15 @@ impl ChatWindow {
                         .find(|p| p.id == profile_id)
                         .map(|p| p.channels.clone())
                         .unwrap_or_default();
+                }
+                // The next reconnect joins the new list; nothing is sent now.
+                if let (Some(config), Some(profile)) = (
+                    self.sessions
+                        .get_mut(&menu.network)
+                        .and_then(|session| session.active_config.as_mut()),
+                    settings.servers.iter().find(|p| p.id == profile_id),
+                ) {
+                    config.channels = profile.channels();
                 }
                 None
             }
@@ -4463,19 +4483,29 @@ impl SettingsWindow {
                     .child(
                         settings_theme::button(("auto-join-delete", index), false, cx)
                             .child(self.i18n.text("auto_join_delete"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.edit_auto_join(
                                     |rows| {
                                         rows.remove(index);
                                     },
                                     cx,
                                 );
+                                if let Some(dialog) = &this.auto_join {
+                                    window.focus(&dialog.focus);
+                                }
                             })),
                     ),
             );
         }
         let panel = div()
             .id("auto-join-dialog")
+            .track_focus(&dialog.focus)
+            .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
+                this.auto_join_traverse(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                this.auto_join_traverse(false, window, cx)
+            }))
             .occlude()
             .w(px(560.))
             .max_w_full()
@@ -4521,10 +4551,9 @@ impl SettingsWindow {
                     .child(
                         settings_theme::button("auto-join-done", true, cx)
                             .child(self.i18n.text("auto_join_done"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.auto_join = None;
-                                cx.notify();
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_auto_join(window, cx)),
+                            ),
                     ),
             );
         Some(
@@ -4543,14 +4572,38 @@ impl SettingsWindow {
         )
     }
 
-    fn open_auto_join(&mut self, cx: &mut Context<Self>) {
+    fn open_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entries = cayenchat_storage::parse_auto_join(self.settings.channels.read(cx).text());
         let rows = entries
             .iter()
             .map(|entry| self.auto_join_row(&entry.name, entry.enabled, cx))
             .collect();
-        self.auto_join = Some(AutoJoinDialog { rows });
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.auto_join = Some(AutoJoinDialog { rows, focus });
         cx.notify();
+    }
+
+    fn close_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.auto_join = None;
+        window.focus(&self.nav_focus);
+        cx.notify();
+    }
+
+    /// Tab / Shift+Tab inside the dialog: moves between its fields and wraps
+    /// back to the dialog instead of leaving it.
+    fn auto_join_traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.auto_join else {
+            return;
+        };
+        if forward {
+            window.focus_next();
+        } else {
+            window.focus_prev();
+        }
+        if !dialog.focus.contains_focused(window, cx) {
+            window.focus(&dialog.focus);
+        }
     }
 
     /// Stores the dialog's rows in the `channels` field, which autosaves.
@@ -5104,7 +5157,9 @@ impl SettingsWindow {
                     .child(
                         settings_theme::button("auto-join-edit", false, cx)
                             .child(self.i18n.text("auto_join_edit"))
-                            .on_click(cx.listener(|this, _, _, cx| this.open_auto_join(cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_auto_join(window, cx)),
+                            ),
                     ),
             )
             .child(
@@ -11235,10 +11290,18 @@ mod pane_tests {
             assert!(chat.auto_join_enabled(network, "#A"));
             assert!(!chat.auto_join_enabled(network, "#b"));
             let saved = |chat: &ChatWindow| chat.saved.selected_profile().unwrap().channels.clone();
+            chat.sessions.get_mut(&network).unwrap().active_config =
+                Some(cayenchat_irc_core::ConnectionConfig::tls(
+                    "irc.example".into(),
+                    "alice".into(),
+                    vec!["#a".into()],
+                ));
 
             menu(chat, "#a");
             chat.toggle_auto_join(false, cx);
             assert_eq!(saved(chat), "-#a,-#b");
+            // The next reconnect uses the saved list, without a JOIN/PART now.
+            assert!(chat.reconnect_config(network).unwrap().channels.is_empty());
             assert!(!chat.auto_join_enabled(network, "#a"));
             assert!(chat.channel_menu.is_none());
 

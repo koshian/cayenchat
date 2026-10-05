@@ -59,7 +59,7 @@ impl Drop for TestFile {
 #[cfg(test)]
 mod tests {
     use cayenchat_storage::{Appearance, Secret, Settings, ThemeMode};
-    use gpui::TestAppContext;
+    use gpui::{Focusable, TestAppContext};
 
     use super::TestFile;
     use crate::{SettingsWindow, secrets, settings_with_channels};
@@ -98,7 +98,7 @@ mod tests {
             form.settings.channels.read(cx).text().to_owned()
         };
 
-        form.update(cx, |form, cx| form.open_auto_join(cx));
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
         form.update(cx, |form, cx| {
             form.edit_auto_join(|rows| rows[1].enabled = true, cx);
             form.edit_auto_join(|rows| rows[0].enabled = false, cx);
@@ -121,6 +121,34 @@ mod tests {
         });
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_auto_join_dialog_keeps_the_focus_away_from_the_form(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let nickname = form.read_with(cx, |form, _| form.settings.nickname.clone());
+        let text = |cx: &gpui::App| nickname.read(cx).text().to_owned();
+        let before = cx.update(|_, cx| text(cx));
+        cx.update(|window, cx| window.focus(&nickname.read(cx).focus_handle(cx)));
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        cx.simulate_input("X");
+        assert_eq!(cx.update(|_, cx| text(cx)), before);
+
+        // Tab and Shift+Tab stay inside the dialog, even with no rows.
+        for keys in ["tab", "shift-tab", "tab", "tab"] {
+            cx.simulate_keystrokes(keys);
+            cx.simulate_input("X");
+            let inside = form.update_in(cx, |form, window, cx| {
+                form.auto_join
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.focus.contains_focused(window, cx))
+            });
+            assert!(inside, "{keys} left the dialog");
+        }
+        assert_eq!(cx.update(|_, cx| text(cx)), before);
         drop(file);
     }
 
