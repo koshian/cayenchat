@@ -115,6 +115,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 - PARTIAL — OS desktop notifications through notify-rust: org.freedesktop.Notifications on Linux, NSUserNotificationCenter on macOS (app bundle only), WinRT toasts on Windows (attributed to the PowerShell AppUserModelID until CayenChat registers its own); no action on click
 - TODO — per-network/channel controls
+- PARTIAL — Windows notification sound (opt-in, default off): when a notification would be shown (same conditions, including the burst limit) it also plays the system default sound (`MessageBeep`) and flashes the taskbar button of the app's top-level windows until one comes to the foreground; the option is shown only on Windows; implemented and type-checked for Windows, not run on Windows
 - DONE — mention, keyword and private-message notifications, suppressed for the selected conversation of the focused chat window and limited to 5 per 10 seconds; replayed history (lines without a user mask such as Tiarra's Log::Recent, IRCv3 `chathistory`/`znc.in/playback` batches) neither notifies nor highlights; an old server-time alone does not count as history
 
 ## Settings
@@ -128,9 +129,10 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — Experimental settings tab with opt-in stderr file logging, native destination picker, immediate switching, append and saved preferences; Windows release builds suppress the startup console (Windows runtime verification pending)
 - DONE — settings save automatically as they change (no Save buttons); passwords are stored when their field loses focus or the window closes; removing a saved server asks first (D021)
 - DONE — persisted channel auto-join list
+- DONE — auto-join list is edited in a dialog opened from the Connection tab (summary plus Edit…): enable/disable, add, delete, rename and move up/down; the saved order is the JOIN order. A disabled entry stays saved, stored in `channels` with a `-` prefix (`-#chan`) and skipped when connecting. While connected, the channel context menu offers Add to auto-join / Remove from auto-join (which disables, not deletes); it only changes the saved list and never JOINs or PARTs. A marker in the channel list is not implemented
 - DONE — opt-in startup connection to the selected saved server; invalid saved settings reopen the settings window
 - DONE — Japanese and English UI catalogs with a persisted language choice; System follows the OS locale (Japanese when available, English otherwise)
-- DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知)
+- DONE — Notifications tab: enable, mentions, private messages, keyword alerts and keywords (Japanese UI: キーワード通知), and on Windows a notification sound option (default off)
 - DONE — IRCv3 tab: per-server opt-ins for server timestamps, message tags, and message batches, naming the configured server; changes apply on the next connection; and our own avatar: a URL draft (typed, or filled by uploading a dropped, pasted or chosen image through the configured image host) (the uploaded one is sent at once) and Send to / Remove from IRC Server shown only when they would change something on the connected server; the experimental peer avatar option with explicit Share with Peers / Stop Sharing
 - PARTIAL — separate Appearance tab persists member-list and log background colors, channel event text color, alternating message rows, and font families for logs, users, tree, input and monospace time
 - PARTIAL — Windows/Linux Keyboard tab: channel-number modifier (Ctrl/Alt/Super) and, on Linux, draft editing keys (Follow GTK/Standard/Emacs, GTK 3 `gtk-key-theme` via portal or `settings.ini`); other shortcuts are fixed. The Emacs keys were confirmed working on a Debian machine on 2026-09-26
