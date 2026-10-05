@@ -90,6 +90,41 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_auto_join_dialog_edits_toggles_reorders_and_deletes(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a,-#b,#c");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let channels = |form: &SettingsWindow, cx: &gpui::App| {
+            form.settings.channels.read(cx).text().to_owned()
+        };
+
+        form.update(cx, |form, cx| form.open_auto_join(cx));
+        form.update(cx, |form, cx| {
+            form.edit_auto_join(|rows| rows[1].enabled = true, cx);
+            form.edit_auto_join(|rows| rows[0].enabled = false, cx);
+            form.edit_auto_join(|rows| rows.swap(0, 2), cx);
+            assert_eq!(channels(form, cx), "#c,#b,-#a");
+            form.edit_auto_join(
+                |rows| {
+                    rows.remove(1);
+                },
+                cx,
+            );
+            assert_eq!(channels(form, cx), "#c,-#a");
+            let name = form.auto_join.as_ref().unwrap().rows[0].name.clone();
+            name.update(cx, |name, cx| name.set_text("#renamed", cx));
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, cx| {
+            assert_eq!(channels(form, cx), "#renamed,-#a");
+            form.autosave_now(None, cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
+        drop(file);
+    }
+
+    #[gpui::test]
     fn another_processs_change_is_read_back_instead_of_overwritten(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
