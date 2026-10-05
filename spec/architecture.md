@@ -227,6 +227,14 @@ window uses it for the boundary between the left column and the right column
 and for the one between the member list and the channel tree (80 px at least
 each; an even split until first dragged). The boundary between the two logs
 keeps its own handle, which also moves it with the pointer within limits and
+
+`ui::scrollbar` draws a thin overlay scrollbar (GPUI has none) at the right
+edge of a `relative` container. It reads and writes the scroll position of the
+pane's own handle (`ListState`, or a `ScrollHandle` from `track_scroll`), shows
+a thumb only while the content overflows, and supports dragging the thumb and
+clicking the track to jump. The main and sub logs, the member list, the
+channel tree, the settings navigation and pane, and the WHOIS details and
+channel menu use it. The font-choice drop-down in settings still has none.
 resets on a double click. Sizes are saved and restored (D037).
 
 `ui::color_picker::ColorPicker` is a saturation/brightness square, a hue bar
