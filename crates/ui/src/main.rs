@@ -3064,15 +3064,20 @@ impl ChatWindow {
         cx.stop_propagation();
         let (conversation, members) = (channel.id, channel.members.clone());
         let current = self.member_selection.anchor_index(conversation, &members);
-        let page = (f32::from(
-            self.members_scroll
-                .0
-                .borrow()
-                .base_handle
-                .bounds()
-                .size
-                .height,
-        ) / 20.) as usize;
+        // The measured row height and the pixel range now in view.
+        let (row_height, view_top, view_bottom) = {
+            let state = self.members_scroll.0.borrow();
+            let row_height = state
+                .last_item_size
+                .map_or(22., |size| {
+                    f32::from(size.contents.height) / members.len() as f32
+                })
+                .max(1.);
+            let top = -f32::from(state.base_handle.offset().y);
+            let height = f32::from(state.base_handle.bounds().size.height);
+            (row_height, top, top + height)
+        };
+        let page = ((view_bottom - view_top) / row_height) as usize;
         if let Some(index) = list_keys::target(current, members.len(), key, page) {
             self.member_selection.click(
                 conversation,
@@ -3081,13 +3086,16 @@ impl ChatWindow {
                 member_selection::Click::Only,
             );
             // Scrolls only when the row is out of view, by the least amount:
-            // a row below the view lands at the bottom, one above at the top.
-            let strategy = if current.is_some_and(|current| index > current) {
-                ScrollStrategy::Bottom
-            } else {
-                ScrollStrategy::Top
-            };
-            self.members_scroll.scroll_to_item(index, strategy);
+            // a row above the view lands at the top, one below at the bottom.
+            let (row_top, row_bottom) =
+                (index as f32 * row_height, (index + 1) as f32 * row_height);
+            if row_top < view_top {
+                self.members_scroll
+                    .scroll_to_item(index, ScrollStrategy::Top);
+            } else if row_bottom > view_bottom {
+                self.members_scroll
+                    .scroll_to_item(index, ScrollStrategy::Bottom);
+            }
             cx.notify();
         }
     }
@@ -10061,7 +10069,7 @@ mod pane_tests {
         assert_eq!(top(cx), 0, "a visible row does not move to the top");
 
         // Paging past the view keeps the chosen row in view, at the bottom.
-        cx.simulate_keystrokes("pagedown pagedown");
+        cx.simulate_keystrokes("pagedown pagedown pagedown pagedown");
         cx.run_until_parked();
         let (row, first) = (chosen(cx).unwrap(), top(cx));
         assert!(row > 3 && first > 0 && first <= row, "{first} {row}");
@@ -10082,6 +10090,35 @@ mod pane_tests {
         cx.simulate_keystrokes("up");
         cx.run_until_parked();
         assert_eq!(top(cx), first);
+
+        // After the wheel moves the view away from the chosen row, a key
+        // brings the new row in at the nearest edge, not the far one.
+        let wheel_to = |cx: &mut gpui::VisualTestContext, row: usize| {
+            chat.update(cx, |chat, _| {
+                let handle = chat.members_scroll.0.borrow();
+                let mut offset = handle.base_handle.offset();
+                offset.y = px(-(row as f32) * 22.);
+                handle.base_handle.set_offset(offset);
+            });
+            cx.run_until_parked();
+        };
+        let row = chosen(cx).unwrap();
+        wheel_to(cx, row + 50);
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        assert_eq!(chosen(cx), Some(row - 1));
+        assert_eq!(top(cx), row - 1, "a row above the view lands at the top");
+
+        cx.simulate_keystrokes("end");
+        wheel_to(cx, 0);
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        let (row, first) = (chosen(cx).unwrap(), top(cx));
+        assert_eq!(row, 198);
+        assert!(
+            first > 100 && row < first + visible + 1,
+            "a row below the view lands at the bottom: {first} {row}"
+        );
     }
 
     #[gpui::test]
