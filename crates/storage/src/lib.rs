@@ -150,6 +150,10 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
+    /// Show long URLs in the channel log in a short form; the text, links
+    /// and copies keep the full URL. Added after version 15 without a version
+    /// change; files without it read as off.
+    pub compact_urls: bool,
     /// Channel log layout: a small first line with the time, avatar and
     /// nickname and the message below at full width, instead of the default
     /// `time | avatar | nick: message` flow. Replaces the former
@@ -217,6 +221,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
+            compact_urls: false,
             header_line_messages: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
@@ -1731,6 +1736,25 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
         settings.appearance.image_previews = false;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn compact_urls_default_off_for_old_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.compact_urls);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("compact_urls");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.appearance.compact_urls);
+        settings.appearance.compact_urls = true;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }

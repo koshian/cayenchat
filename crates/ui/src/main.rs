@@ -4,6 +4,7 @@ mod account_settings;
 mod avatar_editor;
 mod avatars;
 mod color_picker;
+mod compact_urls;
 mod decorations;
 mod default_avatar;
 mod desktop;
@@ -428,6 +429,7 @@ impl SettingsForm {
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
+            compact_urls: self.values.appearance.compact_urls,
             header_line_messages: self.values.appearance.header_line_messages,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
@@ -5469,6 +5471,31 @@ impl SettingsWindow {
             )
             .child(
                 div()
+                    .id("compact-urls")
+                    .ml(px(158.))
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.appearance.compact_urls,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("compact_urls"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.appearance.compact_urls;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("compact_urls_hint")),
+            )
+            .child(
+                div()
                     .id("restore-window-layout")
                     .ml(px(158.))
                     .flex()
@@ -5960,6 +5987,7 @@ fn styled_log_text(
     prefix: &str,
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
+    chips: &[std::ops::Range<usize>],
     highlights: &[std::ops::Range<usize>],
     selected: Option<std::ops::Range<usize>>,
     theme: &Theme,
@@ -5967,10 +5995,11 @@ fn styled_log_text(
     let shift = prefix.len();
     let moved = |range: &std::ops::Range<usize>| range.start + shift..range.end + shift;
     let urls: Vec<_> = urls.iter().map(|(range, _)| moved(range)).collect();
+    let chips: Vec<_> = chips.iter().map(moved).collect();
     let highlights: Vec<_> = highlights.iter().map(moved).collect();
     let selected = selected.as_ref().map(moved);
     let mut boundaries = vec![0, shift, shift + text.len()];
-    for range in urls.iter().chain(&highlights) {
+    for range in urls.iter().chain(&highlights).chain(&chips) {
         boundaries.extend([range.start, range.end]);
     }
     if let Some(range) = &selected {
@@ -5984,13 +6013,16 @@ fn styled_log_text(
         let is_url = urls
             .iter()
             .any(|url| url.start <= range.start && range.end <= url.end);
+        let is_chip = chips
+            .iter()
+            .any(|chip| chip.start <= range.start && range.end <= chip.end);
         let is_selected = selected
             .as_ref()
             .is_some_and(|selection| selection.start <= range.start && range.end <= selection.end);
         let is_highlight = highlights
             .iter()
             .any(|word| word.start <= range.start && range.end <= word.end);
-        (is_prefix || is_url || is_selected || is_highlight).then_some((
+        (is_prefix || is_url || is_chip || is_selected || is_highlight).then_some((
             range,
             HighlightStyle {
                 color: if is_prefix {
@@ -6006,7 +6038,15 @@ fn styled_log_text(
                     thickness: px(1.),
                     wavy: false,
                 }),
-                background_color: is_selected.then_some(theme.selected.into()),
+                background_color: if is_selected {
+                    Some(theme.selected.into())
+                } else {
+                    is_chip.then(|| {
+                        let mut chip = theme.link;
+                        chip.a = 0.14;
+                        chip.into()
+                    })
+                },
                 ..Default::default()
             },
         ))
@@ -7187,6 +7227,7 @@ struct LogStyle {
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
+    compact_urls: bool,
     header_lines: bool,
 }
 
@@ -7205,6 +7246,7 @@ impl LogStyle {
                 appearance.time_font.clone().into()
             },
             alternate_rows: appearance.alternate_rows,
+            compact_urls: appearance.compact_urls,
             header_lines: appearance.header_line_messages,
         }
     }
@@ -7432,11 +7474,28 @@ impl ChatWindow {
         if matches!(preview, Some((_, previews::Shown::Pending))) {
             self.pump_previews(cx);
         }
+        // Drawn text may differ from the message's; positions map back.
+        let compact = Rc::new(compact_urls::Compact::new(
+            &message.text,
+            &urls,
+            style.compact_urls,
+        ));
+        let full_urls: Vec<_> = compact
+            .shortened(&urls)
+            .map(|(range, url)| (range, SharedString::from(url.to_owned())))
+            .collect();
+        let urls = compact.shown_urls(&urls);
+        let chips: Vec<_> = full_urls.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection
             .filter(|selection| selection.channel == selected_channel)
-            .and_then(|selection| selection.range(index, message.text.len()));
-        let highlights = self.highlight_ranges(network, message);
+            .and_then(|selection| selection.range(index, message.text.len()))
+            .map(|range| compact.shown_range(range));
+        let highlights: Vec<_> = self
+            .highlight_ranges(network, message)
+            .into_iter()
+            .map(|range| compact.shown_range(range))
+            .collect();
         // Default layout: the nickname flows into the message text, so
         // wrapped lines return to the left edge of the text column. The
         // header layout shows it on its own first line instead.
@@ -7449,8 +7508,9 @@ impl ChatWindow {
         let prefix_len = prefix.len();
         let styled = styled_log_text(
             &prefix,
-            &message.text,
+            compact.text(),
             &urls,
+            &chips,
             &highlights,
             selected_range,
             &style.theme,
@@ -7460,8 +7520,22 @@ impl ChatWindow {
         let move_layout = layout.clone();
         let click_layout = layout;
         let move_urls = urls.clone();
+        let (down_compact, move_compact) = (compact.clone(), compact.clone());
         let over_url = self.url_hover == Some((selected_channel, index));
-        let text_len = message.text.len();
+        let text_len = compact.text().len();
+        let styled = if full_urls.is_empty() {
+            styled.into_any_element()
+        } else {
+            // The full URL of a shortened one shows on hover.
+            InteractiveText::new(("message-urls", index), styled)
+                .tooltip(move |byte, _, cx| {
+                    let byte = byte.checked_sub(prefix_len)?;
+                    let (_, url) = full_urls.iter().find(|(range, _)| range.contains(&byte))?;
+                    let url = url.clone();
+                    Some(cx.new(|_| ircv3_settings::TextTooltip(url)).into())
+                })
+                .into_any_element()
+        };
         let avatar = (!message.activity && self.avatars.enabled()).then(|| {
             self.avatar_slot(
                 self.own_avatar_for(network, &message.sender).or_else(|| {
@@ -7531,6 +7605,7 @@ impl ChatWindow {
                             .unwrap_or_else(|index| index)
                             .saturating_sub(prefix_len)
                             .min(text_len);
+                        let byte = down_compact.original(byte);
                         this.start_log_selection(selected_channel, index, byte, window, cx);
                     }),
                 )
@@ -7538,7 +7613,12 @@ impl ChatWindow {
                     let position = move_layout.index_for_position(event.position);
                     let raw = position.unwrap_or_else(|index| index);
                     let byte = raw.saturating_sub(prefix_len).min(text_len);
-                    this.extend_log_selection(selected_channel, index, byte, cx);
+                    this.extend_log_selection(
+                        selected_channel,
+                        index,
+                        move_compact.original(byte),
+                        cx,
+                    );
                     // Over a URL (not while selecting) the pointer is a
                     // hand: a double click opens it.
                     let hover = (event.pressed_button.is_none()
@@ -7644,7 +7724,15 @@ impl ChatWindow {
         } else {
             self.highlight_ranges(conversation.network, message)
         };
-        let styled = styled_log_text(&prefix, &message.text, &[], &highlights, None, &style.theme);
+        let styled = styled_log_text(
+            &prefix,
+            &message.text,
+            &[],
+            &[],
+            &highlights,
+            None,
+            &style.theme,
+        );
         div()
             .id(("sub-message", row))
             .w_full()
