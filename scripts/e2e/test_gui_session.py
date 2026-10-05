@@ -82,7 +82,37 @@ class Passwords(unittest.TestCase):
             for key in ("HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
                         "XDG_CACHE_HOME", "CAYENCHAT_TEST_DIR"):
                 self.assertTrue(env[key].startswith(directory + os.sep), key)
-            self.assertEqual(env["PATH"], "/usr/bin")
+            self.assertEqual(env["PATH"], os.path.join(directory, "bin") + os.pathsep + "/usr/bin")
+
+    def test_opened_links_are_recorded_in_the_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = gui_session.app_env({"PATH": "/usr/bin"}, directory, ":98")
+            urls = ["https://example.org/a_(b)", "https://x.example/it's here"]
+            subprocess.run(["xdg-open", urls[0]], env=env, check=True)
+            subprocess.run(["gio", "open", urls[1]], env=env, check=True)
+            with open(os.path.join(directory, "opened.txt")) as file:
+                self.assertEqual(file.read().splitlines(), urls)
+            for name in gui_session.OPENERS:
+                self.assertTrue(os.access(os.path.join(directory, "bin", name), os.X_OK), name)
+
+    def test_opened_prints_only_new_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "state.json"), "w") as file:
+                json.dump({"dir": directory, "pids": {}}, file)
+            opened = os.path.join(directory, "opened.txt")
+
+            def run(*extra):
+                return subprocess.run([sys.executable, SCRIPT, "--session", directory, "opened", *extra],
+                                      capture_output=True, text=True, check=True).stdout
+
+            self.assertEqual(run(), "")
+            with open(opened, "w") as file:
+                file.write("https://one.example\n")
+            self.assertEqual(run(), "https://one.example\n")
+            with open(opened, "a") as file:
+                file.write("https://two.example\n")
+            self.assertEqual(run(), "https://two.example\n")
+            self.assertEqual(run("--all"), "https://one.example\nhttps://two.example\n")
 
 
 if __name__ == "__main__":
