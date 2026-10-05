@@ -33,6 +33,10 @@ open target/CayenChat.app
 
 起動時に開く設定ウィンドウ（`Cmd+,` / `Ctrl+,`）でサーバーを追加し、**接続**を押します。[キーボードショートカットと IRC コマンド](SHORTCUTS.ja.md)も参照してください。
 
+## UI 文言のカスタマイズ
+
+CayenChat は、同梱の `locales/ja.json` と `locales/en.json` を実行時に読み込みます。これらのファイルを編集すると、UI の文言をローカルで変更（上書き）できます。外部ファイルが見つからない場合は、実行ファイルに埋め込まれたカタログを使います。
+
 ## ドキュメント
 
 [`spec/`](spec/) 以下の仕様書が基準です。まず[アーキテクチャ](spec/architecture.md)と[機能の実装状況](spec/feature-parity.md)を参照してください。テストの実行とカバレッジの確認は[テストの方法](HOW_TO_TEST.ja.md)を参照してください。

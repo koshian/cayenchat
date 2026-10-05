@@ -222,6 +222,8 @@
   "realname_placeholder": "CayenChat",
   "quit_message": "終了メッセージ (QUIT)",
   "quit_message_placeholder": "Leaving CayenChat",
+  "display_name": "表示名",
+  "display_name_placeholder": "全体ログに表示する別名",
   "event_realname_changed": "本名を {realname} に変更しました。",
   "event_realname_unsupported": "このサーバーは SETNAME に対応していません。新しい本名は次回の接続から使われます。",
   "event_realname_busy": "本名の変更がサーバーの応答待ちで溜まっています。",

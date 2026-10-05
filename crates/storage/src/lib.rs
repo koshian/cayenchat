@@ -345,6 +345,11 @@ pub struct ServerProfile {
     /// default. Added without a version change; files without it read as empty.
     #[serde(default)]
     pub quit_message: String,
+    /// Short name shown for this server in the combined log; empty means the
+    /// first word of the host. Added without a version change; files without
+    /// it read as empty.
+    #[serde(default)]
+    pub display_name: String,
     #[serde(default)]
     pub channels: String,
     #[serde(default)]
@@ -400,6 +405,7 @@ impl ServerProfile {
             username: String::new(),
             realname: String::new(),
             quit_message: String::new(),
+            display_name: String::new(),
             channels: String::new(),
             sasl_enabled: false,
             sasl_username: String::new(),
@@ -1137,6 +1143,36 @@ mod tests {
             .map(|server| server.quit_message.as_str())
             .collect();
         assert_eq!(messages, ["Back soon", ""]);
+    }
+
+    #[test]
+    fn display_name_is_per_profile_and_absent_in_older_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let original = serde_json::json!({
+            "version": 15,
+            "selected_server": "custom-1",
+            "servers": [{
+                "id": "custom-1", "custom": true, "host": "irc.example.net",
+                "port": 6697, "use_tls": true, "encoding": "utf8",
+                "nickname": "alice", "username": "ident"
+            }],
+            "credential_backend": "system"
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.selected_profile().unwrap().display_name, "");
+
+        settings.selected_profile_mut().unwrap().display_name = "ex".into();
+        settings.add_server("irc.example.org");
+        save_to(&path, &settings).unwrap();
+        let reloaded = load_from(&path).unwrap().unwrap();
+        let names: Vec<_> = reloaded
+            .servers
+            .iter()
+            .map(|server| server.display_name.as_str())
+            .collect();
+        assert_eq!(names, ["ex", ""]);
     }
 
     #[test]

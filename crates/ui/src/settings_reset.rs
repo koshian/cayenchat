@@ -368,22 +368,62 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_connection_switch_is_at_the_right_and_off_without_a_connection(
+    fn the_connection_button_is_at_the_right_and_connects_without_a_connection(
         cx: &mut gpui::TestAppContext,
     ) {
         let (form, cx) = form(SettingsTab::Connection, cx);
         let viewport = cx.update(|window, _| window.viewport_size());
-        let switch = cx.debug_bounds("connection-switch").expect("drawn");
+        let button = cx.debug_bounds("connection-button").expect("drawn");
         // The page is at most 720 px wide beside the 190 px list, with 16 px
-        // of padding; the switch ends at its right edge.
+        // of padding; the button ends at its right edge.
         let edge = viewport.width.min(gpui::px(190. + 720.)) - gpui::px(16.);
         assert!(
-            switch.right() > edge - gpui::px(24.),
-            "right-aligned: {switch:?} in {viewport:?}"
+            button.right() > edge - gpui::px(24.),
+            "right-aligned: {button:?} in {viewport:?}"
         );
         assert!(form.read_with(cx, |form, _| !form.connected_shown));
         let back = cx.debug_bounds("back-button").expect("drawn");
-        assert!(back.left() < switch.left());
+        assert!(back.left() < button.left());
+    }
+
+    #[gpui::test]
+    fn the_connection_button_becomes_disconnect_in_the_same_place(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let owner = cx.add_window(|window, cx| {
+            crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            let mut form = SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = SettingsTab::Connection;
+            form
+        });
+        cx.run_until_parked();
+        let before = cx.debug_bounds("connection-button").expect("drawn");
+        assert!(!form.read_with(cx, |form, _| form.connected_shown));
+
+        // A reconnect scheduled for the shown server counts as connected.
+        owner
+            .update(cx, |chat, _, cx| {
+                let network = chat
+                    .network_of_profile(&settings.selected_server)
+                    .expect("a session for the server");
+                chat.sessions.get_mut(&network).unwrap().retry_pending = true;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.connected_shown));
+        let after = cx.debug_bounds("connection-button").expect("drawn");
+        assert_eq!(before.right(), after.right(), "the button does not move");
+        assert!(cx.debug_bounds("connection-switch").is_none());
     }
 
     #[gpui::test]
@@ -422,7 +462,7 @@ mod tests {
         let flag = notified.clone();
         cx.update(|cx| cx.observe(&entity, move |_, _| flag.set(true)).detach());
 
-        // The switch still follows the chat window: a reconnect scheduled
+        // The button still follows the chat window: a reconnect scheduled
         // for the shown server turns it on.
         owner
             .update(cx, |chat, _, cx| {
