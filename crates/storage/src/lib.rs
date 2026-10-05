@@ -150,10 +150,16 @@ pub struct Appearance {
     /// `image_previews`. Added after version 15 without a version change;
     /// files without it read as off.
     pub user_avatars: bool,
-    /// Wrap nicknames too long for the main log's nickname column onto more
-    /// lines instead of ending them with an ellipsis. Added after version 15
-    /// without a version change; files without it read as off.
-    pub wrap_long_nicknames: bool,
+    /// Show long URLs in the channel log in a short form; the text, links
+    /// and copies keep the full URL. Added after version 15 without a version
+    /// change; files without it read as off.
+    pub compact_urls: bool,
+    /// Channel log layout: a small first line with the time, avatar and
+    /// nickname and the message below at full width, instead of the default
+    /// `time | avatar | nick: message` flow. Replaces the former
+    /// `wrap_long_nicknames`, which is ignored when read. Added after
+    /// version 15 without a version change; files without it read as off.
+    pub header_line_messages: bool,
     /// Width in pixels of the channel name (and network) column of the
     /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
     /// without a version change; files without it read as the default.
@@ -215,7 +221,8 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
-            wrap_long_nicknames: false,
+            compact_urls: false,
+            header_line_messages: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -1647,16 +1654,19 @@ mod tests {
     }
 
     #[test]
-    fn wrapping_long_nicknames_is_off_when_absent() {
+    fn header_line_messages_is_off_when_absent() {
         let mut appearance = Appearance::default();
-        assert!(!appearance.wrap_long_nicknames);
-        appearance.wrap_long_nicknames = true;
+        assert!(!appearance.header_line_messages);
+        appearance.header_line_messages = true;
         let mut saved = serde_json::to_value(&appearance).unwrap();
         let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
-        assert!(loaded.wrap_long_nicknames);
-        saved.as_object_mut().unwrap().remove("wrap_long_nicknames");
+        assert!(loaded.header_line_messages);
+        saved
+            .as_object_mut()
+            .unwrap()
+            .remove("header_line_messages");
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
-        assert!(!loaded.wrap_long_nicknames);
+        assert!(!loaded.header_line_messages);
     }
 
     #[test]
@@ -1726,6 +1736,25 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 
         settings.appearance.image_previews = false;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn compact_urls_default_off_for_old_settings_and_round_trip() {
+        assert!(!Settings::default().appearance.compact_urls);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old["appearance"]
+            .as_object_mut()
+            .unwrap()
+            .remove("compact_urls");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.appearance.compact_urls);
+        settings.appearance.compact_urls = true;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
