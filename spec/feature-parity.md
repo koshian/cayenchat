@@ -52,7 +52,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click, and the pointer is a hand over one (not while selecting); lower combined log switches channels on double-click
-- PARTIAL — Startup & Behavior option "Show long URLs compactly" (off by default) draws URLs over 28 characters in the upper channel log as `↗ host/start-of-path…` on a faint link-colored background, with the whole host kept and the full URL in a hover tooltip; presentation only: opening, selection, copying and the stored text use the original, and a selection touching a short form covers all of it; the icon is a text arrow rather than an SVG, and short URLs are not chipped
+- PARTIAL — Startup & Behavior option "Show long URLs compactly" (off by default) draws URLs over 28 characters in the upper channel log and the combined log (plain text there, not clickable) as `↗ host/start-of-path…` on a faint link-colored background, with the whole host kept and the full URL in a hover tooltip; presentation only: opening, selection, copying and the stored text use the original, and a selection touching a short form covers all of it; the icon is a text arrow rather than an SVG, and short URLs are not chipped
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
