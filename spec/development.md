@@ -499,7 +499,7 @@ this delay.
    empty afterwards.
 
 9. Image previews, with a `preview-fixture` build (above) and a local load
-   fixture started with `--image-every 2`: in **外観**, **画像リンクのプレビューを表示する**
+   fixture started with `--image-every 2`: in **起動と動作**, **画像リンクのプレビューを表示する**
    is off for new settings. Turn it on: image links in the selected
    channel show a thumbnail below the text (an outlined box while loading),
    the link text stays, a double-click on the link or the thumbnail opens it,
@@ -511,7 +511,7 @@ this delay.
    directory's access times do not change).
 10. User avatars, with a `preview-fixture` build and a local IRC fixture
    that offers `batch` and `draft/metadata-2` (never a public server): in
-   **外観**, **ユーザーのアバターを表示する** is off for new settings and is
+   **起動と動作**, **ユーザーのアバターを表示する** is off for new settings and is
    the only avatar switch; the IRCv3 tab has no metadata option (its
    **ピア間のアバター** option is D025's, step 12). Connect (the
    transcript shows `CAP REQ batch` and `CAP REQ draft/metadata-2` even with

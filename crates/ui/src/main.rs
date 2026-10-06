@@ -5856,100 +5856,6 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
-            .child(
-                div()
-                    .id("image-previews")
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.image_previews,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("image_previews"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.image_previews;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(px(158.))
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("image_previews_hint")),
-            )
-            .child(
-                div()
-                    .id("user-avatars")
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.user_avatars,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("user_avatars"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.user_avatars;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(px(158.))
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("user_avatars_hint")),
-            )
-            .child(
-                div()
-                    .id("reiwa-mode")
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.reiwa_mode,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("reiwa_mode"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.reiwa_mode;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("compact-urls")
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.compact_urls,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("compact_urls"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.compact_urls;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .ml(px(158.))
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("compact_urls_hint")),
-            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
@@ -6450,6 +6356,7 @@ impl SettingsWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
             .on_action(cx.listener(Self::copy_diagnostics_action))
+            .on_action(|_: &Quit, _, cx| cx.quit())
     }
 }
 
@@ -7604,6 +7511,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
+            .on_action(|_: &Quit, _, cx| cx.quit())
             .on_action(cx.listener(Self::paste_image))
             .child(left)
             .child(right_split)
@@ -8358,14 +8266,27 @@ impl ChatWindow {
         } else {
             format!("{} [{network}] {}: ", conversation.name, message.sender)
         };
-        let highlights = if message.activity {
+        // Long URLs are shortened as in the channel log, but stay plain text.
+        let compact = compact_urls::Compact::new(
+            &message.text,
+            &if style.compact_urls {
+                log_urls(&message.text)
+            } else {
+                Vec::new()
+            },
+            style.compact_urls,
+        );
+        let highlights: Vec<_> = if message.activity {
             Vec::new()
         } else {
             self.highlight_ranges(conversation.network, message)
+                .into_iter()
+                .map(|range| compact.shown_range(range))
+                .collect()
         };
         let styled = styled_log_text(
             &prefix,
-            &message.text,
+            compact.text(),
             &[],
             &[],
             &highlights,
