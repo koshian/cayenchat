@@ -154,9 +154,16 @@ mod platform {
 
     /// GIO refuses an entry whose `Exec` path contains `%` even when it is
     /// written as `%%`, so such a registration would show as on but never
-    /// start. Refuse it up front instead.
+    /// start. A path that is not UTF-8 cannot be written to the entry
+    /// without changing it. Refuse both up front instead.
     fn check_executable(executable: &Path) -> Result<(), String> {
-        if executable.to_string_lossy().contains('%') {
+        let Some(text) = executable.to_str() else {
+            return Err(format!(
+                "desktop autostart cannot start {} because its path is not valid UTF-8",
+                executable.display()
+            ));
+        };
+        if text.contains('%') {
             return Err(format!(
                 "desktop autostart cannot start {} because its path contains '%'",
                 executable.display()
@@ -318,6 +325,14 @@ mod platform {
         fn a_path_with_a_percent_sign_is_refused() {
             assert!(check_executable(Path::new("/opt/a%b/cayenchat")).is_err());
             assert!(check_executable(Path::new("/opt/ab/cayenchat")).is_ok());
+        }
+
+        #[test]
+        fn a_path_that_is_not_utf8_is_refused() {
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt;
+            let path = PathBuf::from(OsString::from_vec(b"/opt/in\xffvalid/cayenchat".to_vec()));
+            assert!(check_executable(&path).is_err());
         }
 
         #[test]
