@@ -8368,14 +8368,27 @@ impl ChatWindow {
         } else {
             format!("{} [{network}] {}: ", conversation.name, message.sender)
         };
-        let highlights = if message.activity {
+        // Long URLs are shortened as in the channel log, but stay plain text.
+        let compact = compact_urls::Compact::new(
+            &message.text,
+            &if style.compact_urls {
+                log_urls(&message.text)
+            } else {
+                Vec::new()
+            },
+            style.compact_urls,
+        );
+        let highlights: Vec<_> = if message.activity {
             Vec::new()
         } else {
             self.highlight_ranges(conversation.network, message)
+                .into_iter()
+                .map(|range| compact.shown_range(range))
+                .collect()
         };
         let styled = styled_log_text(
             &prefix,
-            &message.text,
+            compact.text(),
             &[],
             &[],
             &highlights,
