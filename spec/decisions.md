@@ -600,6 +600,21 @@ notifications) exactly as a save would, because later saves compare with the
 read-back copy and would otherwise find nothing to apply. File watching and
 single-instance locks were not added.
 
+**Server settings wait for Save (#209).** The exception to the above: the
+server list and everything stored in a server profile (hostname, port,
+nickname, channels, SASL, IRCv3 options, password saving, removal) are written
+only when **Save** on the Connection tab is pressed (Connect also saves), so
+an accidentally chosen server is never kept. Everything else keeps autosaving
+and leaves the saved server list as it is. Typed passwords are stored by Save
+too, not when their field loses focus. A note says server changes are unsaved;
+leaving the window with them discards them, and a file written by another
+process is not read back while they are pending. Adding a server shows only
+the suggestions (`PRESETS`: `irc.ircnet.com` first, the default, then every
+server on <https://www.ircnet.info/servers>), not the saved servers; choosing
+one fills host and port 6667 of the new, still unsaved server, and "Cancel
+adding" drops it. Editing lists only saved servers plus "Add a server…".
+Removal is confirmed first and, like other server edits, applies on Save.
+
 ## D022 — Opt-in IRCv3 features and shared CAP negotiation
 
 **Status:** Accepted

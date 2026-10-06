@@ -117,7 +117,7 @@ mod tests {
         cx.run_until_parked();
         form.update(cx, |form, cx| {
             assert_eq!(channels(form, cx), "#renamed,-#a");
-            form.autosave_now(None, cx);
+            form.save_servers(cx);
         });
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
@@ -243,6 +243,33 @@ mod tests {
                 .notifications
                 .private_messages
         );
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn server_edits_wait_for_save_while_other_settings_autosave(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+
+        form.update(cx, |form, cx| {
+            form.settings
+                .channels
+                .update(cx, |field, cx| field.set_text("#b", cx));
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+            assert!(form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages);
+        assert_eq!(saved.selected_profile().unwrap().channels, "#a");
+
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(!form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().channels, "#b");
         drop(file);
     }
 

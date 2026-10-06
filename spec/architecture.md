@@ -523,7 +523,7 @@ IRCv3 tab (`SettingsForm::switch_server`) first keeps the shown server's
 edits in the form's values and stores its typed passwords under its own
 keys, then fills every server field from the chosen profile alone, so a
 pending autosave can only see each server's own values.
-Settings save automatically as they change (D021); saving adds,
+Settings save automatically as they change, server settings when Save is pressed (D021); saving adds,
 renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
 Connecting a server replaces only that server's conversations with its

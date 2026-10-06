@@ -4067,18 +4067,19 @@ impl SettingsWindow {
     /// once its field loses focus.
     fn observe_fields(
         settings: &SettingsForm,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<Subscription> {
         let mut subscriptions = Vec::new();
         for field in settings.text_fields() {
-            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
+            subscriptions.push(cx.observe(field, |this, _, cx| {
+                this.schedule_autosave(cx);
+                // Shows or hides the unsaved-changes note.
+                cx.notify();
+            }));
         }
         for field in [&settings.server_password, &settings.sasl_password] {
-            let handle = field.read(cx).focus_handle(cx);
-            subscriptions.push(
-                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
-            );
+            subscriptions.push(cx.observe(field, |_, _, cx| cx.notify()));
         }
         subscriptions
     }
@@ -4087,7 +4088,7 @@ impl SettingsWindow {
     /// window was in the background, so a later save does not put the older
     /// values back. Edits this window could not save yet are kept.
     fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.autosave.is_some() || self.autosave_error.is_some() {
+        if self.autosave.is_some() || self.autosave_error.is_some() || self.servers_unsaved(cx) {
             return;
         }
         let Ok(Some(mut loaded)) = settings_file::load() else {
@@ -4132,12 +4133,15 @@ impl SettingsWindow {
         previous: &Settings,
         mut settings: Settings,
         window: Option<&Window>,
+        with_servers: bool,
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
-        self.settings
-            .persist_passwords(&store, &self.i18n, window, cx)?;
+        if with_servers {
+            self.settings
+                .persist_passwords(&store, &self.i18n, window, cx)?;
+        }
         forget_removed_profiles(previous, &settings, &store);
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
@@ -4149,26 +4153,6 @@ impl SettingsWindow {
         Ok(settings)
     }
 
-    /// Diagnostics preferences are independent of an incomplete new server
-    /// form. Persist them alone so selecting an experimental log destination
-    /// does not wait for the user to finish a connection profile.
-    fn persist_experimental_settings(
-        &mut self,
-        experimental: &cayenchat_storage::Experimental,
-    ) -> Result<(), String> {
-        let previous_logging = diagnostics::configuration();
-        diagnostics::configure(experimental)
-            .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        let mut saved = settings_file::load()?.unwrap_or_default();
-        saved.experimental = experimental.clone();
-        if let Err(error) = settings_file::save(&saved) {
-            let _ = diagnostics::configure(&previous_logging);
-            return Err(error);
-        }
-        self.saved.experimental = experimental.clone();
-        Ok(())
-    }
-
     fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| {
             let settings = self.settings.snapshot(cx)?;
@@ -4177,7 +4161,7 @@ impl SettingsWindow {
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             self.autosave = None;
             let previous = std::mem::replace(&mut self.saved, settings.clone());
-            let settings = self.commit_settings(&previous, settings, None, cx)?;
+            let settings = self.commit_settings(&previous, settings, None, true, cx)?;
             self.settings.values = settings.clone();
             Ok::<_, String>((config, settings))
         })();
@@ -4229,68 +4213,83 @@ impl SettingsWindow {
         }));
     }
 
-    /// Writes the form when it differs from what was last saved and applies
-    /// the changes to the chat window. With `window`, a password still being
-    /// typed waits; without it (closing, quitting) every typed password is
-    /// stored. A server without a host waits; invalid values are reported.
-    fn autosave_now(&mut self, window: Option<&Window>, cx: &mut Context<Self>) {
+    /// Writes everything except the server list when the form differs from
+    /// what was last saved and applies the changes to the chat window. The
+    /// servers (and typed passwords) wait for Save (D021).
+    fn autosave_now(&mut self, _window: Option<&Window>, cx: &mut Context<Self>) {
         self.autosave = None;
-        let settings = match self.settings.snapshot(cx) {
-            Ok(settings) => settings,
+        match self.save_settings(false, cx) {
+            Ok(()) => {
+                if self.autosave_error.take().is_some() {
+                    cx.notify();
+                }
+            }
             Err(error) => {
                 if self.autosave_error.as_ref() != Some(&error) {
                     self.autosave_error = Some(error);
                     cx.notify();
                 }
-                return;
             }
-        };
-        let passwords = self.settings.pending_passwords(window, cx);
-        let waiting = settings
-            .selected_profile()
-            .is_some_and(|profile| profile.host.is_empty());
-        if waiting {
-            if settings.experimental != self.saved.experimental {
-                match self.persist_experimental_settings(&settings.experimental) {
-                    Ok(()) => self.autosave_error = None,
-                    Err(error) => {
-                        self.autosave_error = Some(error);
-                        cx.notify();
-                        return;
-                    }
-                }
-            }
-            // Saving now would drop the server; wait until it has a host.
-            let error = Some(self.i18n.text("server_required"));
-            if self.autosave_error != error {
-                self.autosave_error = error;
-                cx.notify();
-            }
-            return;
         }
-        if settings == self.saved && !passwords {
-            if self.autosave_error.take().is_some() {
-                cx.notify();
+    }
+
+    /// Whether the server list or a typed password has edits that Save has
+    /// not written yet.
+    fn servers_unsaved(&self, cx: &App) -> bool {
+        let Ok(settings) = self.settings.snapshot(cx) else {
+            return true;
+        };
+        settings.servers != self.saved.servers || self.settings.pending_passwords(None, cx)
+    }
+
+    /// The Save button: writes the servers along with everything else.
+    fn save_servers(&mut self, cx: &mut Context<Self>) {
+        self.autosave = None;
+        match self.save_settings(true, cx) {
+            Ok(()) => {
+                self.autosave_error = None;
+                self.feedback = None;
             }
-            return;
+            Err(error) => self.feedback = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Writes the form, with the servers only when `with_servers`; without,
+    /// the saved server list stays as it is. A server without a host cannot
+    /// be saved.
+    fn save_settings(&mut self, with_servers: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        let mut settings = self.settings.snapshot(cx)?;
+        if with_servers {
+            if settings
+                .selected_profile()
+                .is_some_and(|profile| profile.host.is_empty())
+            {
+                return Err(self.i18n.text("server_required"));
+            }
+        } else {
+            settings.servers = self.saved.servers.clone();
+            settings.selected_server = self.saved.selected_server.clone();
+        }
+        if settings == self.saved && !(with_servers && self.servers_unsaved(cx)) {
+            return Ok(());
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
-        let saved = match self.commit_settings(&previous, settings, window, cx) {
+        let saved = match self.commit_settings(&previous, settings, None, with_servers, cx) {
             Ok(saved) => saved,
             Err(error) => {
                 // Try again on the next edit.
                 self.saved = previous;
-                self.autosave_error = Some(error);
-                cx.notify();
-                return;
+                return Err(error);
             }
         };
-        if self.autosave_error.take().is_some() {
-            cx.notify();
+        if with_servers {
+            self.saved = saved.clone();
         }
         let servers_changed = previous.servers != self.saved.servers
             || previous.selected_server != self.saved.selected_server;
         self.apply_to_chat_window(&previous, saved, servers_changed, cx);
+        Ok(())
     }
 
     /// Applies what differs between `previous` and `saved` to the chat window:
@@ -4792,6 +4791,17 @@ impl SettingsWindow {
     }
 
     /// Adds a server, blank or filled in from a preset's `host`.
+    fn choose_preset(&mut self, host: &str, cx: &mut Context<Self>) {
+        self.settings
+            .custom_host
+            .update(cx, |field, cx| field.set_text(host, cx));
+        self.settings
+            .port
+            .update(cx, |field, cx| field.set_text("6667", cx));
+        self.settings.server_list_open = false;
+        cx.notify();
+    }
+
     fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
         let host = host.to_owned();
         self.switch_server(
@@ -4864,6 +4874,11 @@ impl SettingsWindow {
         self.connected_shown = connected;
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
+        // A server not in the saved list is being added; it is saved with Save.
+        let adding = profile
+            .as_ref()
+            .is_some_and(|profile| self.saved.profile(&profile.id).is_none());
+        let unsaved = self.servers_unsaved(cx);
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
         let server_fields = profile
             .as_ref()
@@ -4895,72 +4910,65 @@ impl SettingsWindow {
         );
         if self.settings.server_list_open {
             let mut menu = div()
+                .id("server-menu")
+                .max_h(px(260.))
+                .overflow_y_scroll()
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
-            for (index, server) in self.settings.values.ordered_servers().enumerate() {
-                let id = server.id.clone();
-                let (host, port) = if Some(&id) == selected_id.as_ref() {
-                    (current_host.as_str(), current_port.as_str())
-                } else {
-                    (server.host.as_str(), "")
-                };
-                let label = if host.is_empty() {
-                    self.i18n.text("new_server")
-                } else {
-                    format!(
-                        "{}:{}",
-                        host,
-                        if port.is_empty() {
-                            server.port.to_string()
-                        } else {
-                            port.to_owned()
-                        },
-                    )
-                };
+            if adding {
+                // Adding offers only suggestions; existing servers stay out
+                // of the way so the list cannot be mistaken for editing one.
+                for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
+                    menu = menu.child(
+                        div()
+                            .id(("preset-option", index))
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover))
+                            .when(preset.host == current_host, |d| d.bg(theme.selected))
+                            .child(self.i18n.format(
+                                "preset_option",
+                                &[("name", preset.name), ("host", preset.host)],
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.choose_preset(preset.host, cx)
+                            })),
+                    );
+                }
+            } else {
+                for (index, server) in self.saved.ordered_servers().enumerate() {
+                    let id = server.id.clone();
+                    let label = format!("{}:{}", server.host, server.port);
+                    menu = menu.child(
+                        div()
+                            .id(("server-option", index))
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover))
+                            .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_server(id.clone(), cx)
+                            })),
+                    );
+                }
                 menu = menu.child(
                     div()
-                        .id(("server-option", index))
+                        .id("add-server-option")
                         .px_2()
                         .py_1()
+                        .when(!no_server, |d| d.border_t_1().border_color(theme.border))
                         .cursor_pointer()
                         .hover(|d| d.bg(theme.hover))
-                        .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
-                        .child(label)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.select_server(id.clone(), cx)),
-                        ),
+                        .child(self.i18n.text("add_server"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.add_server(cayenchat_storage::PRESETS[0].host, cx)
+                        })),
                 );
             }
-            // Well-known servers are only suggestions for adding a server.
-            for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
-                menu = menu.child(
-                    div()
-                        .id(("add-preset-option", index))
-                        .px_2()
-                        .py_1()
-                        .when(index == 0, |d| d.border_t_1().border_color(theme.border))
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .child(self.i18n.format(
-                            "add_preset_server",
-                            &[("name", preset.name), ("host", preset.host)],
-                        ))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.add_server(preset.host, cx)),
-                        ),
-                );
-            }
-            menu = menu.child(
-                div()
-                    .id("add-server-option")
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.hover))
-                    .child(self.i18n.text("add_server"))
-                    .on_click(cx.listener(|this, _, _, cx| this.add_server("", cx))),
-            );
             server_selector = server_selector.child(menu);
         }
         account_settings::panel(cx)
@@ -4968,7 +4976,11 @@ impl SettingsWindow {
             .child(
                 div()
                     .text_color(theme.text_secondary)
-                    .child(self.i18n.text("connection_intro")),
+                    .child(self.i18n.text(if adding {
+                        "adding_server_intro"
+                    } else {
+                        "connection_intro"
+                    })),
             )
             .child(
                 div()
@@ -4995,6 +5007,13 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .when(unsaved, |d| {
+                d.child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("unsaved_server_changes")),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -5010,6 +5029,14 @@ impl SettingsWindow {
                             ),
                     )
                     .child(div().flex_1())
+                    .when(!no_server, |d| {
+                        d.child(
+                            settings_theme::button("save-button", false, cx)
+                                .debug_selector(|| "save-button".into())
+                                .child(self.i18n.text("save"))
+                                .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
+                        )
+                    })
                     .when(!no_server, |d| {
                         // One button in one place: Disconnect while the server
                         // being edited is connected, being connected or
@@ -5104,7 +5131,14 @@ impl SettingsWindow {
                     .py_1()
                     .cursor_pointer()
                     .text_color(theme.warning)
-                    .child(self.i18n.text("remove_server"))
+                    .child(
+                        self.i18n
+                            .text(if self.saved.profile(&profile.id).is_none() {
+                                "cancel_add_server"
+                            } else {
+                                "remove_server"
+                            }),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| this.remove_server(window, cx))),
             )
             .child(settings_field(
@@ -8976,7 +9010,7 @@ mod startup_tests {
         assert_eq!(startup.len(), 1);
         assert_eq!(startup[0].0, settings.selected_server);
         let config = startup.into_iter().next().unwrap().1.unwrap();
-        assert_eq!(config.host, "irc.ircnet.ne.jp");
+        assert_eq!(config.host, "irc.ircnet.com");
         assert_eq!(config.nickname, "alice");
         assert_eq!(config.username, "ident");
         assert_eq!(config.server_password.as_deref(), Some("server-secret"));
@@ -9018,7 +9052,7 @@ mod startup_tests {
             hosts,
             [
                 ("irc.example.org", "bob", vec!["#b".to_owned()]),
-                ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
+                ("irc.ircnet.com", "alice", vec!["#a".to_owned()]),
             ]
         );
     }
@@ -9308,7 +9342,7 @@ mod server_settings_tests {
         });
         assert_eq!(
             server_fields(&form, cx),
-            ["irc.ircnet.ne.jp", "6667", "", "", "", "", ""].map(str::to_owned)
+            ["irc.ircnet.com", "6667", "", "", "", "", ""].map(str::to_owned)
         );
         let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
         let preset = settings.selected_profile().unwrap();
@@ -12404,7 +12438,7 @@ mod pane_tests {
         cx.run_until_parked();
         chat.read_with(cx, |chat, _| {
             assert_eq!(chat.state.networks().len(), 1);
-            assert_eq!(chat.state.networks()[0].name, "irc.ircnet.ne.jp");
+            assert_eq!(chat.state.networks()[0].name, "irc.ircnet.com");
             assert_eq!(chat.tree_list.state.item_count(), 2);
         });
     }
