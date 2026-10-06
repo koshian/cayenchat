@@ -6350,6 +6350,7 @@ impl SettingsWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug_action))
             .on_action(cx.listener(Self::copy_diagnostics_action))
+            .on_action(|_: &Quit, _, cx| cx.quit())
     }
 }
 
@@ -7504,6 +7505,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::reconnect_action))
             .on_action(cx.listener(Self::toggle_debug))
             .on_action(cx.listener(Self::copy_diagnostics))
+            .on_action(|_: &Quit, _, cx| cx.quit())
             .on_action(cx.listener(Self::paste_image))
             .child(left)
             .child(right_split)
