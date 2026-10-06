@@ -16,6 +16,7 @@ mod input;
 mod input_history;
 mod ircv3_settings;
 mod key_recorder;
+mod list_keys;
 mod localization;
 mod log_list;
 mod member_selection;
@@ -933,7 +934,6 @@ struct ChatWindow {
     // Created on first render, when this window's entity exists.
     panes: Option<ChatPanes>,
     tree_list: LogList,
-    members_scroll: UniformListScrollHandle,
     tree_rows: Vec<TreeRow>,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
@@ -979,6 +979,11 @@ struct ChatWindow {
     theme_mode: ThemeMode,
     i18n: Localizer,
     log_focus: FocusHandle,
+    /// Focus of the channel tree and of the member list, which take the
+    /// standard list keys (see [`list_keys`]) while focused.
+    tree_focus: FocusHandle,
+    members_focus: FocusHandle,
+    members_scroll: UniformListScrollHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
     /// The main log row whose URL the pointer is over; it shows a hand.
@@ -1369,7 +1374,6 @@ impl ChatWindow {
             sub_list: LogList::new(),
             panes: None,
             tree_list: LogList::new_top(),
-            members_scroll: UniformListScrollHandle::new(),
             tree_rows: Vec::new(),
             sub_source: None,
             sub_rows: Vec::new(),
@@ -1409,6 +1413,9 @@ impl ChatWindow {
             saved,
             i18n,
             log_focus: cx.focus_handle(),
+            tree_focus: cx.focus_handle(),
+            members_focus: cx.focus_handle(),
+            members_scroll: UniformListScrollHandle::new(),
             log_selection: None,
             log_split: DEFAULT_LOG_SPLIT,
             log_split_dragging: false,
@@ -3004,6 +3011,107 @@ impl ChatWindow {
             .click(conversation, &members, index, click);
     }
 
+    /// The standard list keys while the channel tree has focus. Moving
+    /// selects as it goes and keeps focus on the tree; Enter selects and
+    /// returns to the draft.
+    fn tree_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use list_keys::ListKey;
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let Some(key) = ListKey::from_key(event.keystroke.key.as_str()) else {
+            return;
+        };
+        let selection = self.state.selection();
+        let current = self.tree_rows.iter().position(|row| match *row {
+            TreeRow::Server(id) => selection == Selection::Server(id),
+            TreeRow::Channel(id) => selection == Selection::Channel(id),
+        });
+        let target = match (key, current) {
+            (ListKey::Parent, Some(at)) => self.tree_rows[..at]
+                .iter()
+                .rposition(|row| matches!(row, TreeRow::Server(_)))
+                .filter(|_| matches!(self.tree_rows[at], TreeRow::Channel(_))),
+            (ListKey::Child, Some(at)) => (at + 1 < self.tree_rows.len()
+                && matches!(self.tree_rows[at], TreeRow::Server(_))
+                && matches!(self.tree_rows[at + 1], TreeRow::Channel(_)))
+            .then_some(at + 1),
+            (ListKey::Activate, at) => at,
+            (ListKey::Parent | ListKey::Child, None) => None,
+            _ => {
+                let page =
+                    (f32::from(self.tree_list.state.viewport_bounds().size.height) / 22.) as usize;
+                list_keys::target(current, self.tree_rows.len(), key, page)
+            }
+        };
+        cx.stop_propagation();
+        let Some(row) = target.and_then(|at| self.tree_rows.get(at).copied().map(|r| (at, r)))
+        else {
+            return;
+        };
+        let command = match row.1 {
+            TreeRow::Server(id) => Command::SelectServer(id),
+            TreeRow::Channel(id) => Command::SelectChannel(id),
+        };
+        if key == ListKey::Activate {
+            self.dispatch(command, window, cx);
+        } else {
+            self.dispatch_keeping_focus(command, window, cx);
+            self.tree_list.state.scroll_to_reveal_item(row.0);
+        }
+    }
+
+    /// The standard list keys while the member list has focus: they move
+    /// the one chosen member.
+    fn members_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let Some(key) = list_keys::ListKey::from_key(event.keystroke.key.as_str()) else {
+            return;
+        };
+        let Some(channel) = self.state.selected_channel() else {
+            return;
+        };
+        cx.stop_propagation();
+        let (conversation, members) = (channel.id, channel.members.clone());
+        let current = self.member_selection.anchor_index(conversation, &members);
+        // The measured row height and the pixel range now in view.
+        let (row_height, view_top, view_bottom) = {
+            let state = self.members_scroll.0.borrow();
+            let row_height = state
+                .last_item_size
+                .map_or(22., |size| {
+                    f32::from(size.contents.height) / members.len() as f32
+                })
+                .max(1.);
+            let top = -f32::from(state.base_handle.offset().y);
+            let height = f32::from(state.base_handle.bounds().size.height);
+            (row_height, top, top + height)
+        };
+        let page = ((view_bottom - view_top) / row_height) as usize;
+        if let Some(index) = list_keys::target(current, members.len(), key, page) {
+            self.member_selection.click(
+                conversation,
+                &members,
+                index,
+                member_selection::Click::Only,
+            );
+            // Scrolls only when the row is out of view, by the least amount:
+            // a row above the view lands at the top, one below at the bottom.
+            let (row_top, row_bottom) =
+                (index as f32 * row_height, (index + 1) as f32 * row_height);
+            if row_top < view_top {
+                self.members_scroll
+                    .scroll_to_item(index, ScrollStrategy::Top);
+            } else if row_bottom > view_bottom {
+                self.members_scroll
+                    .scroll_to_item(index, ScrollStrategy::Bottom);
+            }
+            cx.notify();
+        }
+    }
+
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.push_diagnostic(line);
@@ -3011,6 +3119,18 @@ impl ChatWindow {
     }
 
     fn dispatch(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        self.dispatch_keeping_focus(command, window, cx);
+        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
+    }
+
+    /// [`Self::dispatch`] without moving focus to the draft, for the lists
+    /// that are driven from the keyboard.
+    fn dispatch_keeping_focus(
+        &mut self,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.server_menu = None;
         self.member_menu = None;
         self.channel_menu = None;
@@ -3018,7 +3138,6 @@ impl ChatWindow {
         self.log_selection = None;
         self.feedback = None;
         self.update_title(window);
-        window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
         cx.notify();
         // Redraw the pane contents together with the native title change.
         window.refresh();
@@ -6682,7 +6801,7 @@ impl ChatWindow {
                         }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dispatch(Command::SelectServer(server_id), window, cx);
+                        this.dispatch_keeping_focus(Command::SelectServer(server_id), window, cx);
                     }))
                     .into_any_element()
             }
@@ -6744,7 +6863,7 @@ impl ChatWindow {
                         }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dispatch(Command::SelectChannel(id), window, cx);
+                        this.dispatch_keeping_focus(Command::SelectChannel(id), window, cx);
                     }))
                     .into_any_element()
             }
@@ -6892,6 +7011,14 @@ impl ChatWindow {
             .child(panes.sub_log.clone().cached(pane_style()));
 
         let members = div()
+            .id("members-pane")
+            .key_context("MemberList")
+            .track_focus(&self.members_focus)
+            .on_key_down(cx.listener(Self::members_key_down))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, _| window.focus(&this.members_focus)),
+            )
             .flex()
             .flex_col()
             .flex_1()
@@ -7089,7 +7216,23 @@ impl ChatWindow {
                 d.flex_none().flex_basis(px(height)).h(px(height))
             }))
             .child(members_split)
-            .child(panes.channels.clone().cached(pane_style().w_full()));
+            .child(
+                div()
+                    .id("channels-pane")
+                    .key_context("ChannelTree")
+                    .track_focus(&self.tree_focus)
+                    .on_key_down(cx.listener(Self::tree_key_down))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, _| window.focus(&this.tree_focus)),
+                    )
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(panes.channels.clone().cached(pane_style().w_full())),
+            );
 
         let server_menu = self.server_menu.as_ref().map(|menu| {
             let network = menu.network;
@@ -8295,7 +8438,9 @@ impl ChatWindow {
                     })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            // The row blocks the pane's own handler below it.
+                            window.focus(&this.members_focus);
                             let click = if event.modifiers.secondary() {
                                 member_selection::Click::Toggle
                             } else if event.modifiers.shift {
@@ -9907,6 +10052,217 @@ mod pane_tests {
                 );
             }
         }
+    }
+
+    #[gpui::test]
+    fn focused_lists_take_the_standard_movement_keys(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a,#b");
+        settings.menu_bar_auto_hide = true;
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            let mut events = vec![Event::Registered {
+                nickname: "me".into(),
+            }];
+            for channel in ["#a", "#b"] {
+                events.push(Event::Joined {
+                    channel: channel.into(),
+                });
+                events.push(Event::Names {
+                    channel: channel.into(),
+                    users: vec!["@op".into(), "alice".into(), "bob".into()],
+                });
+            }
+            chat.handle_events(NetworkId(1), events, false, cx);
+            let first = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(first));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let selected = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                chat.state.selected_channel().map(|c| c.name.clone())
+            })
+        };
+        // The draft keeps J/K as text and Up/Down as history.
+        cx.simulate_keystrokes("j");
+        assert_eq!(selected(cx).as_deref(), Some("#a"));
+
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.tree_focus));
+        cx.simulate_keystrokes("j");
+        assert_eq!(selected(cx).as_deref(), Some("#b"));
+        assert!(
+            chat.update_in(cx, |chat, window, _| chat.tree_focus.is_focused(window)),
+            "moving keeps focus on the tree"
+        );
+        cx.simulate_keystrokes("k");
+        assert_eq!(selected(cx).as_deref(), Some("#a"));
+        cx.simulate_keystrokes("end");
+        assert_eq!(selected(cx).as_deref(), Some("#b"));
+        cx.simulate_keystrokes("home");
+        // The first row is the server.
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.state.selection()),
+            Selection::Server(NetworkId(1))
+        );
+        cx.simulate_keystrokes("right");
+        assert_eq!(selected(cx).as_deref(), Some("#a"));
+        cx.simulate_keystrokes("left");
+        assert_eq!(
+            chat.read_with(cx, |chat, _| chat.state.selection()),
+            Selection::Server(NetworkId(1))
+        );
+        cx.simulate_keystrokes("down enter");
+        assert!(
+            chat.update_in(cx, |chat, window, cx| chat.inputs[&chat.state.selection()]
+                .focus_handle(cx)
+                .is_focused(window)),
+            "Enter activates the channel and returns to the draft"
+        );
+
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.members_focus));
+        cx.simulate_keystrokes("j j");
+        let chosen = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .nicknames(channel.id, &channel.members)
+            })
+        };
+        // Moving from nothing starts at the first row.
+        assert_eq!(chosen(cx), ["alice"]);
+        cx.simulate_keystrokes("end");
+        assert_eq!(chosen(cx), ["bob"]);
+        cx.simulate_keystrokes("up");
+        assert_eq!(chosen(cx), ["alice"]);
+    }
+
+    #[gpui::test]
+    fn member_keys_scroll_only_when_the_row_leaves_the_view(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.menu_bar_auto_hide = true;
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            let users = (0..200).map(|n| format!("user{n:03}")).collect();
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "me".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    Event::Names {
+                        channel: "#a".into(),
+                        users,
+                    },
+                ],
+                false,
+                cx,
+            );
+            let first = chat.state.conversations()[0].id;
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectChannel(first));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.members_focus));
+        let top = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let handle = chat.members_scroll.0.borrow();
+                (-f32::from(handle.base_handle.offset().y) / 22.).round() as usize
+            })
+        };
+        let chosen = |cx: &mut gpui::VisualTestContext| {
+            chat.read_with(cx, |chat, _| {
+                let channel = chat.state.selected_channel().unwrap();
+                chat.member_selection
+                    .anchor_index(channel.id, &channel.members)
+            })
+        };
+
+        // Rows still in view do not scroll the list.
+        cx.simulate_keystrokes("down down down down");
+        cx.run_until_parked();
+        assert_eq!(chosen(cx), Some(3));
+        assert_eq!(top(cx), 0, "a visible row does not move to the top");
+
+        // Paging past the view keeps the chosen row in view, at the bottom.
+        cx.simulate_keystrokes("pagedown pagedown pagedown pagedown");
+        cx.run_until_parked();
+        let (row, first) = (chosen(cx).unwrap(), top(cx));
+        assert!(row > 3 && first > 0 && first <= row, "{first} {row}");
+        let visible = chat.read_with(cx, |chat, _| {
+            (f32::from(
+                chat.members_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .bounds()
+                    .size
+                    .height,
+            ) / 22.) as usize
+        });
+        assert!(row < first + visible + 1, "{first} {row} {visible}");
+
+        // Moving up inside the view leaves the scroll position alone.
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        assert_eq!(top(cx), first);
+
+        // After the wheel moves the view away from the chosen row, a key
+        // brings the new row in at the nearest edge, not the far one.
+        let wheel_to = |cx: &mut gpui::VisualTestContext, row: usize| {
+            chat.update(cx, |chat, _| {
+                let handle = chat.members_scroll.0.borrow();
+                let mut offset = handle.base_handle.offset();
+                offset.y = px(-(row as f32) * 22.);
+                handle.base_handle.set_offset(offset);
+            });
+            cx.run_until_parked();
+        };
+        let row = chosen(cx).unwrap();
+        wheel_to(cx, row + 50);
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        assert_eq!(chosen(cx), Some(row - 1));
+        assert_eq!(top(cx), row - 1, "a row above the view lands at the top");
+
+        cx.simulate_keystrokes("end");
+        wheel_to(cx, 0);
+        cx.simulate_keystrokes("up");
+        cx.run_until_parked();
+        let (row, first) = (chosen(cx).unwrap(), top(cx));
+        assert_eq!(row, 198);
+        assert!(
+            first > 100 && row < first + visible + 1,
+            "a row below the view lands at the bottom: {first} {row}"
+        );
     }
 
     #[gpui::test]

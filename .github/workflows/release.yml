@@ -1,0 +1,168 @@
+name: Release
+
+# Publishes an immutable versioned release from a `v*` tag, for example
+#   git tag -a v0.9.0 -m "CayenChat 0.9.0"
+#   git push origin v0.9.0
+# The tag is never moved or recreated by this workflow, and an existing release
+# is never overwritten. Pre-release tags such as v1.0.0-rc.1 become pre-releases.
+#
+# Run it manually with a branch or commit to rehearse: it checks the version and
+# builds all packages as workflow artifacts, but publishes nothing. The rolling
+# `beta` release is separate (beta-release.yml).
+run-name: Release ${{ inputs.ref || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit SHA to rehearse the release build with (nothing is published)
+        required: true
+        type: string
+
+# Build jobs run third-party build scripts, so only the publish job can write.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check release
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+      version: ${{ steps.check.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT: ${{ github.event_name }}
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Check out requested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Check version, tag and release
+        id: check
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Commit $SHA, Cargo version $VERSION"
+
+          if [ "$EVENT" != push ]; then
+            echo "Rehearsal: tag and release checks skipped."
+            exit 0
+          fi
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $TAG is not of the form vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
+          fi
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::Tag $TAG does not match the Cargo version $VERSION"
+            exit 1
+          fi
+          # Checkout can leave an annotated tag as a bare ref, so fetch it again.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
+            echo "::error::Tag $TAG is not an annotated tag (use git tag -a)"
+            exit 1
+          fi
+          if [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$SHA" ]; then
+            echo "::error::Tag $TAG no longer points to $SHA; tags must never be moved"
+            exit 1
+          fi
+          git fetch --no-tags origin master:refs/remotes/origin/master
+          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/master; then
+            echo "::error::Tagged commit $SHA is not on master"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::A release for $TAG already exists; it is never overwritten"
+            exit 1
+          fi
+
+  package:
+    name: Package
+    needs: check
+    uses: ./.github/workflows/package.yml
+    with:
+      ref: ${{ needs.check.outputs.sha }}
+      prefix: cayenchat-${{ needs.check.outputs.version }}
+
+  publish:
+    name: Publish release
+    if: github.event_name == 'push'
+    needs:
+      - check
+      - package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.check.outputs.version }}
+
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums
+        run: |
+          set -euo pipefail
+          scripts/release/check-artifacts.sh dist "$VERSION"
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Verify the tag again
+        env:
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          # The tag may have been moved while the packages were building.
+          scripts/release/verify-tag.sh "$TAG" "$SHA"
+
+      - name: Create release
+        run: |
+          set -euo pipefail
+          ARGS=(--verify-tag --title "CayenChat $VERSION" --generate-notes)
+
+          # `beta` is a movable tag with a release of its own, so name the
+          # previous version tag instead of letting GitHub pick the start.
+          if PREVIOUS="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null)"; then
+            ARGS+=(--notes-start-tag "$PREVIOUS")
+          fi
+
+          if [[ "$TAG" == *-* ]]; then
+            ARGS+=(--prerelease --latest=false)
+          else
+            ARGS+=(--latest)
+          fi
+
+          cat > intro.md <<'EOF_NOTES'
+          Downloads: the Linux x86_64 `.deb`, the Windows x86_64 and ARM64 `.zip`
+          files and the macOS ARM64 `.zip`. `SHA256SUMS` lists their SHA-256
+          checksums (`sha256sum -c SHA256SUMS`).
+          EOF_NOTES
+
+          gh release create "$TAG" "${ARGS[@]}" --notes-file intro.md dist/*
