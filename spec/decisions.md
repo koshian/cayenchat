@@ -1207,10 +1207,23 @@ its default"), because the button sits where a click by mistake is easy. It
 is drawn in the warning color (text and border) as a destructive action, and
 dimmed instead when disabled.
 
-- **Appearance** (theme, colors, row/preview/avatar/layout switches, fonts,
-  combined-log name width, Linux display): the saved color palette is the
-  user's own data and is kept.
-- **Keyboard**: channel-number modifier, text key theme, menu bar auto-hide.
+- **Startup & Behavior** (Japanese: 起動と動作; #192): how the app itself
+  behaves, right after Connection (never first, so it is not called General).
+  It holds the language, login startup (#153), restoring the window layout,
+  the Linux display (Linux only) and menu bar auto-hide (Windows and Linux
+  only). Its reset covers all of these except login startup: that is the
+  system's registration, not a value in `settings.json`, so a reset never
+  changes it and the button's disabled state ignores it; the page's intro
+  says so. The language is reset too (to System, which switches the UI
+  language at once), as the owner decided on #192. "Start automatically
+  when the app starts" is per server and stays on Connection.
+- **Appearance** (theme, colors, row/preview/avatar switches, fonts,
+  combined-log name width): the saved color palette is the user's own data
+  and is kept.
+- **Keyboard**: channel-number modifier, text key theme.
+- A setting moved between pages moves between resets with it;
+  `each_page_reset_covers_its_own_items_and_no_others` fails when a page's
+  reset leaves another page's items changed or its own not default.
 - **Shortcuts**: clears every override. The per-action "Reset" stays; the old
   "Reset all" is this button.
 - **Notifications**, **Experimental**: their defaults (keywords emptied,
@@ -1228,7 +1241,7 @@ dimmed instead when disabled.
   Connect connects as before (and closes the window); pressing Disconnect
   disconnects. No switch or checkbox is used. Back stays at the left.
 - **Connection** and **Credentials** have no reset: the former holds the user's
-  servers (and the language), the latter moves saved secrets between stores.
+  servers, the latter moves saved secrets between stores.
 
 ## D037 — Window position, size and pane sizes are remembered
 

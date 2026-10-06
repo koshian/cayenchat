@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod account_settings;
+mod application_settings;
 mod autostart;
 mod avatar_editor;
 mod avatars;
@@ -1146,6 +1147,7 @@ impl LogSelection {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
     Connection,
+    Application,
     Appearance,
     Keyboard,
     Shortcuts,
@@ -4857,53 +4859,6 @@ impl SettingsWindow {
         let server_fields = profile
             .as_ref()
             .map(|profile| self.render_server_fields(profile, cx));
-        let mut language_selector = div().flex().flex_col().child(
-            div()
-                .id("language-select")
-                .px_2()
-                .py_1()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .child(format!(
-                    "{}  ▾",
-                    self.i18n.preference_label(self.settings.values.language)
-                ))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.language_list_open = !this.settings.language_list_open;
-                    this.settings.server_list_open = false;
-                    this.settings.encoding_list_open = false;
-                    cx.notify();
-                })),
-        );
-        if self.settings.language_list_open {
-            let mut menu = div()
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface);
-            for (index, language) in [Language::System, Language::Japanese, Language::English]
-                .into_iter()
-                .enumerate()
-            {
-                menu = menu.child(
-                    div()
-                        .id(("language-option", index))
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .when(self.settings.values.language == language, |d| {
-                            d.bg(theme.selected)
-                        })
-                        .child(self.i18n.preference_label(language))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.settings.language_list_open = false;
-                            this.select_language(language, window, cx)
-                        })),
-                );
-            }
-            language_selector = language_selector.child(menu);
-        }
         let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
         let selected_label = if no_server {
@@ -4999,7 +4954,6 @@ impl SettingsWindow {
             );
             server_selector = server_selector.child(menu);
         }
-        let autostart_toggle = self.render_autostart_toggle(cx);
         account_settings::panel(cx)
             .child(self.tab_heading("connection"))
             .child(
@@ -5007,26 +4961,6 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("connection_intro")),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(px(150.))
-                            .flex_shrink_0()
-                            .child(self.i18n.text("language")),
-                    )
-                    .child(language_selector),
-            )
-            .child(
-                div()
-                    .ml(px(158.))
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("language_hint")),
-            )
-            .child(autostart_toggle)
             .child(
                 div()
                     .flex()
@@ -5891,25 +5825,6 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("compact_urls_hint")),
             )
-            .child(
-                div()
-                    .id("restore-window-layout")
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.restore_window_layout,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("restore_window_layout"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.restore_window_layout;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
             .child(settings_field(
@@ -5920,24 +5835,6 @@ impl SettingsWindow {
             .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))
             .child(self.font_field(FontTarget::Time, &self.i18n.text("timestamp_monospace"), cx))
-            .when(cfg!(target_os = "linux"), |d| {
-                d.child(self.option_row(
-                    "linux_display",
-                    [
-                        (LinuxDisplay::Wayland, "linux_display_wayland"),
-                        (LinuxDisplay::X11, "linux_display_x11"),
-                    ],
-                    self.settings.values.linux_display,
-                    |settings, display| settings.linux_display = display,
-                    cx,
-                ))
-                .child(
-                    div()
-                        .ml(px(158.))
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("linux_display_hint")),
-                )
-            })
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -5985,25 +5882,6 @@ impl SettingsWindow {
                 ))
                 .child(hint("text_key_theme_hint"))
             })
-            .child(
-                div()
-                    .id("menu-bar-auto-hide")
-                    .ml(px(158.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.menu_bar_auto_hide,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("menu_bar_auto_hide"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let hide = !this.settings.values.menu_bar_auto_hide;
-                        this.settings.values.menu_bar_auto_hide = hide;
-                        cx.notify();
-                    })),
-            )
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -6163,6 +6041,11 @@ impl SettingsWindow {
     fn settings_tabs() -> Vec<(SettingsTab, &'static str, &'static str)> {
         let mut tabs = vec![
             (SettingsTab::Connection, "connection-tab", "connection"),
+            (
+                SettingsTab::Application,
+                "application-tab",
+                "application_tab",
+            ),
             (SettingsTab::Appearance, "appearance-tab", "appearance"),
         ];
         if !cfg!(target_os = "macos") {
@@ -6389,6 +6272,7 @@ impl SettingsWindow {
         }
         let panel = match self.tab {
             SettingsTab::Connection => self.render_connection_settings(cx).into_any_element(),
+            SettingsTab::Application => self.render_application_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
             SettingsTab::Shortcuts => self.render_shortcut_settings(cx).into_any_element(),
@@ -10501,7 +10385,9 @@ mod pane_tests {
             ChatWindow::with_settings(crate::settings_with_channels("#a"), None, window, cx)
         });
         let (form, cx) = cx.add_window_view(|window, cx| {
-            super::SettingsWindow::new(owner, settings.clone(), window, cx)
+            let mut form = super::SettingsWindow::new(owner, settings.clone(), window, cx);
+            form.tab = super::SettingsTab::Application;
+            form
         });
         cx.run_until_parked();
         assert!(
@@ -10536,7 +10422,7 @@ mod pane_tests {
         // A change made in the system is seen when a tab is shown again.
         *fake::STATE.lock().unwrap() = Ok(AutostartStatus::DisabledByUser);
         form.update(cx, |form, cx| {
-            form.show_tab(super::SettingsTab::Connection, cx)
+            form.show_tab(super::SettingsTab::Appearance, cx)
         });
         cx.run_until_parked();
         assert_eq!(shown(&form, cx), Some(Ok(AutostartStatus::DisabledByUser)));

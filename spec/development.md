@@ -823,8 +823,20 @@ locale through `sys-locale`; Japanese uses `ja`, and all other or unavailable
 languages use English. UI catalogs live in `locales/`; the executable reads
 packaged JSON files at runtime and uses embedded copies when the files are
 missing. Check that macOS, Windows, and Debian packages include both JSON files.
-For UI verification, switch each language in Connection settings, reopen
-settings, and inspect the chat window and native menus without reconnecting.
+For UI verification, switch each language in the 起動と動作 (Startup & Behavior)
+settings, reopen settings, and inspect the chat window and native menus without
+reconnecting.
+
+Manual check of the Startup & Behavior page (#192): it is the second category,
+right after Connection. It shows the language, "Start CayenChat when you log
+in", restoring the window layout, on Windows and Linux the menu bar auto-hide,
+and on Linux the display (Wayland / X11); none of these remain on Connection,
+Appearance or Keyboard. Change each, press すべて元に戻す on that page and
+confirm: the language returns to System (the UI switches at once), the other
+items return to their defaults, and the login startup checkbox keeps its state
+and the system's registration is unchanged. Then change an item on Appearance
+and Keyboard and confirm resetting Startup & Behavior leaves them, and the
+reverse.
 
 ### Linux performance tuning (2026-09-26, issue #5)
 

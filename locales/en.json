@@ -16,6 +16,8 @@
   "no_servers_hint": "Open the server list and add IRCnet or another server.",
   "connection": "Connection",
   "connection_intro": "Choose a server. The nickname, channels and sign-in below belong to that server; several servers can be connected at once.",
+  "application_tab": "Startup & Behavior",
+  "application_intro": "How CayenChat itself starts and behaves, whichever server you use. Restoring defaults does not change the login startup, which the system keeps.",
   "destination": "Server",
   "host": "Hostname",
   "remove_server": "Remove this server",
