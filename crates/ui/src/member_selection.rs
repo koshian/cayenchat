@@ -83,6 +83,17 @@ impl MemberSelection {
         }
     }
 
+    /// The row of the member chosen last, where keyboard movement starts.
+    pub fn anchor_index(&self, conversation: ConversationId, members: &[String]) -> Option<usize> {
+        if self.conversation != Some(conversation) {
+            return None;
+        }
+        let anchor = self.anchor.as_ref()?;
+        members
+            .iter()
+            .position(|member| nickname_key(nickname(member)) == *anchor)
+    }
+
     /// Whether the roster entry `entry` of `conversation` is chosen.
     pub fn contains(&self, conversation: ConversationId, entry: &str) -> bool {
         self.conversation == Some(conversation)
