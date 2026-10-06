@@ -39,6 +39,8 @@ base64 = "0.22"
 [patch.crates-io]
 # GPUI 0.2.2 predates upstream's Windows language-key/IME message handling fix.
 gpui = { path = "vendor/gpui" }
+# The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
+zed-xim = { path = "vendor/zed-xim" }
 
 [profile.dev]
 debug = 1
