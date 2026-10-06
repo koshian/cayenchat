@@ -115,8 +115,24 @@ mod platform {
         Ok(base.join("autostart").join("cayenchat.desktop"))
     }
 
-    /// Quotes one `Exec` argument as the Desktop Entry specification asks.
+    /// Quotes one `Exec` argument as the Desktop Entry specification asks,
+    /// then escapes the result as a string value (the spec applies that
+    /// first when reading, so backslashes must be doubled again).
     fn quote(argument: &str) -> String {
+        let mut escaped = String::new();
+        for c in quote_argument(argument).chars() {
+            match c {
+                '\\' => escaped.push_str("\\\\"),
+                '\n' => escaped.push_str("\\n"),
+                '\t' => escaped.push_str("\\t"),
+                '\r' => escaped.push_str("\\r"),
+                _ => escaped.push(c),
+            }
+        }
+        escaped
+    }
+
+    fn quote_argument(argument: &str) -> String {
         let special = |c: char| " \t\n\"'\\><~|&;$*?#()`".contains(c);
         if !argument.chars().any(special) {
             return argument.replace('%', "%%");
@@ -270,6 +286,18 @@ mod platform {
             let plain = contents(Path::new("/usr/bin/cayenchat"));
             assert!(plain.contains("Exec=/usr/bin/cayenchat --autostart\n"));
             assert_eq!(parse(&plain), AutostartStatus::Enabled);
+        }
+
+        #[test]
+        fn exec_line_escapes_special_characters_as_a_string_value() {
+            let text = contents(Path::new("/opt/Cayen$Chat/a\"b`c\\d\ne"));
+            assert!(
+                text.contains(
+                    "Exec=\"/opt/Cayen\\\\$Chat/a\\\\\"b\\\\`c\\\\\\\\d\\ne\" --autostart\n"
+                ),
+                "{text}"
+            );
+            assert_eq!(text.lines().count(), 8);
         }
 
         #[test]
