@@ -32,6 +32,11 @@ on:
         required: false
         type: boolean
         default: false
+      prefix:
+        description: File name prefix of the regular Windows and macOS zips
+        required: false
+        type: string
+        default: cayenchat
 
 # The build runs code from an arbitrary ref, so the token can only read.
 permissions:
@@ -42,6 +47,7 @@ env:
   FEATURES: ${{ inputs.isolated && 'cayenchat-ui/test-build' || '' }}
   SUFFIX: ${{ inputs.isolated && '-isolated' || '' }}
   TEST: ${{ inputs.test && 'true' || 'false' }}
+  PREFIX: ${{ inputs.prefix }}
 
 jobs:
   linux-x86_64:
@@ -139,7 +145,7 @@ jobs:
           if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-windows-x86_64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=cayenchat-windows-x86_64" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-windows-x86_64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -196,7 +202,7 @@ jobs:
           if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-windows-arm64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=cayenchat-windows-arm64" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-windows-arm64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -253,7 +259,7 @@ jobs:
           if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-macos-arm64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=cayenchat-macos-arm64" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-macos-arm64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
