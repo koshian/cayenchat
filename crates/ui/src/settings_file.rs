@@ -377,7 +377,11 @@ mod tests {
 
     #[gpui::test]
     fn a_failed_connect_save_leaves_the_draft_unsaved(cx: &mut TestAppContext) {
-        let settings = settings_with_channels("#a");
+        // Valid identity, so Connect gets as far as saving.
+        let mut settings = settings_with_channels("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "nick".into();
+        profile.username = "user".into();
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         form.update(cx, |form, cx| {
@@ -390,7 +394,13 @@ mod tests {
             form.connect_from_settings(window, cx)
         });
         form.update(cx, |form, cx| {
-            assert!(form.feedback.is_some(), "the failure is shown");
+            assert!(
+                form.feedback
+                    .as_deref()
+                    .is_some_and(|text| text.contains("cannot write the settings file")),
+                "the save failure is shown: {:?}",
+                form.feedback
+            );
             assert!(form.servers_unsaved(cx));
             assert_eq!(form.saved.selected_profile().unwrap().channels, "#a");
 
