@@ -138,9 +138,11 @@ right-aligned column) flows into one `StyledText` with the text, so wrapped
 lines return to the left of the text column and long nicknames wrap naturally.
 URL, highlight and selection offsets, and copy, refer to the text only; a click
 or drag starting on the nickname maps to the text start. The Appearance
-setting `header_line_messages` (off by default) instead shows a small first line
-`time [avatar] nick` with the text below at full width; the whole message is one
-row element, so the alternating row background covers both lines. Activity lines
+setting `reiwa_mode` (Reiwa mode, off by default; the former key
+`header_line_messages` is still read) instead draws the avatar two lines tall
+at the left, with `nick time` on the first line and the text on the second; the
+time is not a column there. The whole message is one row element, so the
+alternating row background covers both lines. Activity lines
 keep the compact single-line form in both layouts. The combined log always uses
 the default flow, `time | channel [network] nick: text` with the full channel and
 network names in the nickname color and no fixed channel column (the
