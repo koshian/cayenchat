@@ -53,10 +53,10 @@ use cayenchat_irc_core::{
 };
 use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
-    Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme,
-    ThemeMode, color_value,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
+    CredentialStore, DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language,
+    LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
+    TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -168,6 +168,9 @@ struct SettingsForm {
     sasl_password: Entity<TextInput>,
     saved_server_password: bool,
     saved_sasl_password: bool,
+    /// Typed (server, SASL) passwords of servers not being shown, by server
+    /// ID. They stay in memory until Save stores them (D021).
+    drafts: HashMap<String, (String, String)>,
     member_list_background: Entity<TextInput>,
     main_log_background: Entity<TextInput>,
     main_log_alternate: Entity<TextInput>,
@@ -270,6 +273,7 @@ impl SettingsForm {
             ),
             saved_server_password,
             saved_sasl_password,
+            drafts: HashMap::new(),
             member_list_background: field(
                 "#FFFFFF",
                 &values.appearance.member_list_background,
@@ -404,26 +408,36 @@ impl SettingsForm {
     }
 
     fn snapshot(&self, cx: &App) -> Result<Settings, String> {
+        self.snapshot_with(cx, true)
+    }
+
+    /// The form as settings. Without `with_servers`, the shown server's
+    /// fields are not read (and not validated), so an unfinished connection
+    /// entry does not stop other settings from being saved; the server list
+    /// and selection are then the form's earlier values.
+    fn snapshot_with(&self, cx: &App, with_servers: bool) -> Result<Settings, String> {
         let mut settings = self.values.clone();
-        let host = self.custom_host.read(cx).text().trim().to_owned();
-        // Without a server the host and port fields are hidden and unused.
-        let port = match self.port.read(cx).text().trim().parse() {
-            Ok(port) if port != 0 => port,
-            _ if settings.servers.is_empty() => 6667,
-            _ => return Err(i18n_error(settings.language, "port_invalid")),
-        };
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
-        if let Some(profile) = settings.selected_profile_mut() {
-            profile.host = host;
-            profile.port = port;
-            profile.nickname = value(&self.nickname);
-            profile.username = value(&self.username);
-            profile.realname = value(&self.realname);
-            profile.quit_message = value(&self.quit_message);
-            profile.display_name = value(&self.display_name);
-            profile.channels = value(&self.channels);
-            profile.sasl_username = value(&self.sasl_username);
-            profile.avatar_url = value(&self.avatar_url);
+        if with_servers {
+            let host = value(&self.custom_host);
+            // Without a server the host and port fields are hidden and unused.
+            let port = match self.port.read(cx).text().trim().parse() {
+                Ok(port) if port != 0 => port,
+                _ if settings.servers.is_empty() => 6667,
+                _ => return Err(i18n_error(settings.language, "port_invalid")),
+            };
+            if let Some(profile) = settings.selected_profile_mut() {
+                profile.host = host;
+                profile.port = port;
+                profile.nickname = value(&self.nickname);
+                profile.username = value(&self.username);
+                profile.realname = value(&self.realname);
+                profile.quit_message = value(&self.quit_message);
+                profile.display_name = value(&self.display_name);
+                profile.channels = value(&self.channels);
+                profile.sasl_username = value(&self.sasl_username);
+                profile.avatar_url = value(&self.avatar_url);
+            }
         }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
@@ -532,58 +546,101 @@ impl SettingsForm {
         ]
     }
 
-    /// Whether a typed password is waiting to be stored. With `window`, a
-    /// field that still has focus is left alone so it is not stored mid-typing.
-    fn pending_passwords(&self, window: Option<&Window>, cx: &App) -> bool {
-        self.values
+    /// Moves the typed passwords of the shown server into `drafts`.
+    fn stash_typed_passwords(&mut self, cx: &App) {
+        let Some(id) = self
+            .values
             .selected_profile()
-            .is_some_and(|profile| profile.remember_passwords)
-            && [&self.server_password, &self.sasl_password]
-                .into_iter()
-                .any(|field| password_ready(field, window, cx))
+            .map(|profile| profile.id.clone())
+        else {
+            return;
+        };
+        let text = |field: &Entity<TextInput>| field.read(cx).text().to_owned();
+        let typed = (text(&self.server_password), text(&self.sasl_password));
+        if typed.0.is_empty() && typed.1.is_empty() {
+            self.drafts.remove(&id);
+        } else {
+            self.drafts.insert(id, typed);
+        }
     }
 
-    /// Stores typed passwords when saving is on, then empties the fields so
-    /// plaintext does not stay in the form. With `window`, a focused field is
-    /// skipped until the user leaves it.
+    /// Whether a typed password of a server that stores its passwords is
+    /// waiting for Save.
+    fn pending_passwords(&self, cx: &App) -> bool {
+        let remembers = |id: &str| {
+            self.values
+                .servers
+                .iter()
+                .any(|profile| profile.id == id && profile.remember_passwords)
+        };
+        let shown = self.values.selected_profile().is_some_and(|profile| {
+            profile.remember_passwords
+                && [&self.server_password, &self.sasl_password]
+                    .into_iter()
+                    .any(|field| !field.read(cx).text().is_empty())
+        });
+        shown
+            || self.drafts.iter().any(|(id, (server, sasl))| {
+                remembers(id) && !(server.is_empty() && sasl.is_empty())
+            })
+    }
+
+    /// Stores the typed passwords of the servers in `settings` that keep
+    /// them, then empties the shown fields so plaintext does not stay in the
+    /// form. Nothing is stored before this (D021).
     fn persist_passwords(
         &mut self,
+        settings: &Settings,
         store: &CredentialStore,
         i18n: &Localizer,
-        window: Option<&Window>,
         cx: &mut App,
     ) -> Result<(), String> {
-        let Some(profile) = self.values.selected_profile().cloned() else {
-            return Ok(());
-        };
-        if !profile.remember_passwords {
-            return Ok(());
-        }
-        for (field, key, saved) in [
-            (
-                self.server_password.clone(),
-                profile.server_password_key(),
-                &mut self.saved_server_password,
-            ),
-            (
-                self.sasl_password.clone(),
-                profile.sasl_password_key(),
-                &mut self.saved_sasl_password,
-            ),
-        ] {
-            if !password_ready(&field, window, cx) {
+        self.stash_typed_passwords(cx);
+        let shown = self.values.selected_server.clone();
+        for profile in &settings.servers {
+            if !profile.remember_passwords || profile.host.is_empty() {
                 continue;
             }
-            let text = field.read(cx).text().to_owned();
-            store
-                .set(&key, &Secret::new(text))
-                .map_err(|error| secrets::error_text(i18n, &error))?;
-            *saved = true;
-            let hint = i18n.text("password_saved_placeholder");
-            field.update(cx, |field, cx| {
-                field.set_text("", cx);
-                field.set_placeholder(&hint, cx);
-            });
+            let Some((server, sasl)) = self.drafts.get(&profile.id).cloned() else {
+                continue;
+            };
+            for (text, key, saved) in [
+                (
+                    server,
+                    profile.server_password_key(),
+                    &mut self.saved_server_password,
+                ),
+                (
+                    sasl,
+                    profile.sasl_password_key(),
+                    &mut self.saved_sasl_password,
+                ),
+            ] {
+                if text.is_empty() {
+                    continue;
+                }
+                store
+                    .set(&key, &Secret::new(text))
+                    .map_err(|error| secrets::error_text(i18n, &error))?;
+                if profile.id == shown {
+                    *saved = true;
+                }
+            }
+            self.drafts.remove(&profile.id);
+            if profile.id == shown {
+                let hint = i18n.text("password_saved_placeholder");
+                for (field, saved) in [
+                    (&self.server_password, self.saved_server_password),
+                    (&self.sasl_password, self.saved_sasl_password),
+                ] {
+                    if saved {
+                        field.update(cx, |field, cx| {
+                            field.set_text("", cx);
+                            field.set_placeholder(&hint, cx);
+                        });
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -591,9 +648,9 @@ impl SettingsForm {
 
 impl SettingsForm {
     /// Shows another server: `change` selects it (or adds it). The shown
-    /// server's edits are kept in `values` first, and its typed passwords
-    /// are stored under its own keys (switching leaves the field), so
-    /// nothing typed for one server can be saved into the next.
+    /// server's edits are kept in `values` first and its typed passwords in
+    /// `drafts`, so nothing typed for one server can end up in the next.
+    /// Nothing is written until Save (D021).
     fn switch_server(
         &mut self,
         change: impl FnOnce(&mut Settings),
@@ -602,13 +659,7 @@ impl SettingsForm {
         cx: &mut App,
     ) -> Result<(), String> {
         let mut settings = self.snapshot(cx)?;
-        // A server without a host is not saved, so neither are its passwords.
-        if settings
-            .selected_profile()
-            .is_some_and(|profile| !profile.host.is_empty())
-        {
-            self.persist_passwords(store, i18n, None, cx)?;
-        }
+        self.stash_typed_passwords(cx);
         change(&mut settings);
         self.values = settings;
         self.show_selected(store, i18n, cx);
@@ -639,13 +690,15 @@ impl SettingsForm {
         let (saved_server, saved_sasl) = saved_passwords(&profile, store);
         self.saved_server_password = saved_server;
         self.saved_sasl_password = saved_sasl;
-        for (field, saved, key) in [
+        let (draft_server, draft_sasl) = self.drafts.get(&profile.id).cloned().unwrap_or_default();
+        for (field, saved, key, draft) in [
             (
                 &self.server_password,
                 saved_server,
                 "server_password_placeholder",
+                draft_server,
             ),
-            (&self.sasl_password, saved_sasl, "sasl_password"),
+            (&self.sasl_password, saved_sasl, "sasl_password", draft_sasl),
         ] {
             let placeholder = i18n.text(if saved {
                 "password_saved_placeholder"
@@ -653,7 +706,7 @@ impl SettingsForm {
                 key
             });
             field.update(cx, |field, cx| {
-                field.set_text("", cx);
+                field.set_text(&draft, cx);
                 field.set_placeholder(&placeholder, cx);
             });
         }
@@ -662,12 +715,6 @@ impl SettingsForm {
         self.language_list_open = false;
         self.ircv3_server_list_open = false;
     }
-}
-
-/// A password field holds text and, with `window`, is not being typed in.
-fn password_ready(field: &Entity<TextInput>, window: Option<&Window>, cx: &App) -> bool {
-    !field.read(cx).text().is_empty()
-        && window.is_none_or(|window| !field.read(cx).focus_handle(cx).is_focused(window))
 }
 
 /// Whether the profile has saved server and SASL passwords.
@@ -799,15 +846,29 @@ fn startup_connections(
         .collect()
 }
 
-/// Deletes the saved passwords of profiles that no longer exist. New profiles
-/// have fresh IDs even if cleanup fails or a removal has not been saved yet.
-fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &CredentialStore) {
+/// Deletes the saved passwords of profiles that no longer exist or no longer
+/// keep them. New profiles have fresh IDs even if cleanup fails or a removal
+/// has not been saved yet. Every deletion is tried; the first failure is
+/// returned so the save stays pending and a later Save retries.
+fn forget_removed_profiles(
+    previous: &Settings,
+    next: &Settings,
+    store: &CredentialStore,
+) -> Result<(), CredentialError> {
+    let mut first_error = None;
     for server in &previous.servers {
-        if !next.servers.iter().any(|kept| kept.id == server.id) {
-            let _ = store.delete(&server.server_password_key());
-            let _ = store.delete(&server.sasl_password_key());
+        let kept = next.servers.iter().find(|kept| kept.id == server.id);
+        let stopped_keeping =
+            server.remember_passwords && kept.is_some_and(|kept| !kept.remember_passwords);
+        if kept.is_none() || stopped_keeping {
+            for key in [server.server_password_key(), server.sasl_password_key()] {
+                if let Err(error) = store.delete(&key) {
+                    first_error.get_or_insert(error);
+                }
+            }
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Fills the account and real name a WHOIS reply lacks from what the
@@ -4076,22 +4137,23 @@ impl SettingsWindow {
         this
     }
 
-    /// Saves after an edit to any text field, and stores a typed password
-    /// once its field loses focus.
+    /// Schedules the autosave after an edit to any text field (it leaves the
+    /// server fields to Save) and refreshes the unsaved-changes note.
     fn observe_fields(
         settings: &SettingsForm,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<Subscription> {
         let mut subscriptions = Vec::new();
         for field in settings.text_fields() {
-            subscriptions.push(cx.observe(field, |this, _, cx| this.schedule_autosave(cx)));
+            subscriptions.push(cx.observe(field, |this, _, cx| {
+                this.schedule_autosave(cx);
+                // Shows or hides the unsaved-changes note.
+                cx.notify();
+            }));
         }
         for field in [&settings.server_password, &settings.sasl_password] {
-            let handle = field.read(cx).focus_handle(cx);
-            subscriptions.push(
-                cx.on_focus_out(&handle, window, |this, _, _, cx| this.schedule_autosave(cx)),
-            );
+            subscriptions.push(cx.observe(field, |_, _, cx| cx.notify()));
         }
         subscriptions
     }
@@ -4100,7 +4162,7 @@ impl SettingsWindow {
     /// window was in the background, so a later save does not put the older
     /// values back. Edits this window could not save yet are kept.
     fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.autosave.is_some() || self.autosave_error.is_some() {
+        if self.autosave.is_some() || self.autosave_error.is_some() || self.servers_unsaved(cx) {
             return;
         }
         let Ok(Some(mut loaded)) = settings_file::load() else {
@@ -4144,14 +4206,17 @@ impl SettingsWindow {
         &mut self,
         previous: &Settings,
         mut settings: Settings,
-        window: Option<&Window>,
+        with_servers: bool,
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
-        self.settings
-            .persist_passwords(&store, &self.i18n, window, cx)?;
-        forget_removed_profiles(previous, &settings, &store);
+        if with_servers {
+            self.settings
+                .persist_passwords(&settings, &store, &self.i18n, cx)?;
+        }
+        forget_removed_profiles(previous, &settings, &store)
+            .map_err(|error| secrets::error_text(&self.i18n, &error))?;
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
@@ -4162,26 +4227,6 @@ impl SettingsWindow {
         Ok(settings)
     }
 
-    /// Diagnostics preferences are independent of an incomplete new server
-    /// form. Persist them alone so selecting an experimental log destination
-    /// does not wait for the user to finish a connection profile.
-    fn persist_experimental_settings(
-        &mut self,
-        experimental: &cayenchat_storage::Experimental,
-    ) -> Result<(), String> {
-        let previous_logging = diagnostics::configuration();
-        diagnostics::configure(experimental)
-            .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        let mut saved = settings_file::load()?.unwrap_or_default();
-        saved.experimental = experimental.clone();
-        if let Err(error) = settings_file::save(&saved) {
-            let _ = diagnostics::configure(&previous_logging);
-            return Err(error);
-        }
-        self.saved.experimental = experimental.clone();
-        Ok(())
-    }
-
     fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = (|| {
             let settings = self.settings.snapshot(cx)?;
@@ -4189,8 +4234,11 @@ impl SettingsWindow {
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             self.autosave = None;
-            let previous = std::mem::replace(&mut self.saved, settings.clone());
-            let settings = self.commit_settings(&previous, settings, None, cx)?;
+            // `saved` follows only once the file is written, so a failed
+            // Connect leaves the draft unsaved.
+            let previous = self.saved.clone();
+            let settings = self.commit_settings(&previous, settings, true, cx)?;
+            self.saved = settings.clone();
             self.settings.values = settings.clone();
             Ok::<_, String>((config, settings))
         })();
@@ -4242,68 +4290,85 @@ impl SettingsWindow {
         }));
     }
 
-    /// Writes the form when it differs from what was last saved and applies
-    /// the changes to the chat window. With `window`, a password still being
-    /// typed waits; without it (closing, quitting) every typed password is
-    /// stored. A server without a host waits; invalid values are reported.
-    fn autosave_now(&mut self, window: Option<&Window>, cx: &mut Context<Self>) {
+    /// Writes everything except the server list when the form differs from
+    /// what was last saved and applies the changes to the chat window. The
+    /// servers (and typed passwords) wait for Save (D021).
+    fn autosave_now(&mut self, _window: Option<&Window>, cx: &mut Context<Self>) {
         self.autosave = None;
-        let settings = match self.settings.snapshot(cx) {
-            Ok(settings) => settings,
+        match self.save_settings(false, cx) {
+            Ok(()) => {
+                if self.autosave_error.take().is_some() {
+                    cx.notify();
+                }
+            }
             Err(error) => {
                 if self.autosave_error.as_ref() != Some(&error) {
                     self.autosave_error = Some(error);
                     cx.notify();
                 }
-                return;
             }
-        };
-        let passwords = self.settings.pending_passwords(window, cx);
-        let waiting = settings
-            .selected_profile()
-            .is_some_and(|profile| profile.host.is_empty());
-        if waiting {
-            if settings.experimental != self.saved.experimental {
-                match self.persist_experimental_settings(&settings.experimental) {
-                    Ok(()) => self.autosave_error = None,
-                    Err(error) => {
-                        self.autosave_error = Some(error);
-                        cx.notify();
-                        return;
-                    }
-                }
-            }
-            // Saving now would drop the server; wait until it has a host.
-            let error = Some(self.i18n.text("server_required"));
-            if self.autosave_error != error {
-                self.autosave_error = error;
-                cx.notify();
-            }
-            return;
         }
-        if settings == self.saved && !passwords {
-            if self.autosave_error.take().is_some() {
-                cx.notify();
+    }
+
+    /// Whether the server list or a typed password has edits that Save has
+    /// not written yet.
+    fn servers_unsaved(&self, cx: &App) -> bool {
+        let Ok(settings) = self.settings.snapshot(cx) else {
+            return true;
+        };
+        settings.servers != self.saved.servers
+            || settings.selected_server != self.saved.selected_server
+            || self.settings.pending_passwords(cx)
+    }
+
+    /// The Save button: writes the servers along with everything else.
+    fn save_servers(&mut self, cx: &mut Context<Self>) {
+        self.autosave = None;
+        match self.save_settings(true, cx) {
+            Ok(()) => {
+                self.autosave_error = None;
+                self.feedback = None;
             }
-            return;
+            Err(error) => self.feedback = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Writes the form, with the servers only when `with_servers`; without,
+    /// the saved server list stays as it is. A server without a host cannot
+    /// be saved.
+    fn save_settings(&mut self, with_servers: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        let mut settings = self.settings.snapshot_with(cx, with_servers)?;
+        if with_servers {
+            if settings
+                .selected_profile()
+                .is_some_and(|profile| profile.host.is_empty())
+            {
+                return Err(self.i18n.text("server_required"));
+            }
+        } else {
+            settings.servers = self.saved.servers.clone();
+            settings.selected_server = self.saved.selected_server.clone();
+        }
+        if settings == self.saved && !(with_servers && self.servers_unsaved(cx)) {
+            return Ok(());
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
-        let saved = match self.commit_settings(&previous, settings, window, cx) {
+        let saved = match self.commit_settings(&previous, settings, with_servers, cx) {
             Ok(saved) => saved,
             Err(error) => {
                 // Try again on the next edit.
                 self.saved = previous;
-                self.autosave_error = Some(error);
-                cx.notify();
-                return;
+                return Err(error);
             }
         };
-        if self.autosave_error.take().is_some() {
-            cx.notify();
+        if with_servers {
+            self.saved = saved.clone();
         }
         let servers_changed = previous.servers != self.saved.servers
             || previous.selected_server != self.saved.selected_server;
         self.apply_to_chat_window(&previous, saved, servers_changed, cx);
+        Ok(())
     }
 
     /// Applies what differs between `previous` and `saved` to the chat window:
@@ -4410,21 +4475,23 @@ impl SettingsWindow {
             return;
         };
         if profile.remember_passwords {
-            let result = store
-                .delete(&profile.server_password_key())
-                .and_then(|()| store.delete(&profile.sasl_password_key()))
-                .map_err(|error| secrets::error_text(&self.i18n, &error))
-                .and_then(|()| cayenchat_storage::clear_saved_passwords(&profile.id));
-            match result {
-                Ok(()) => {
-                    if let Some(profile) = self.settings.values.selected_profile_mut() {
-                        profile.remember_passwords = false;
-                    }
-                    self.show_selected_server(cx);
-                    self.feedback = Some(self.i18n.text("passwords_removed"));
+            // The stored secrets are deleted when the change is saved. Take
+            // the typed connection fields into `values` first so rebuilding
+            // the fields does not bring back older text.
+            match self.settings.snapshot(cx) {
+                Ok(settings) => self.settings.values = settings,
+                Err(error) => {
+                    self.feedback = Some(error);
+                    cx.notify();
+                    return;
                 }
-                Err(error) => self.feedback = Some(error),
             }
+            if let Some(profile) = self.settings.values.selected_profile_mut() {
+                profile.remember_passwords = false;
+            }
+            self.settings.drafts.remove(&profile.id);
+            self.show_selected_server(cx);
+            self.feedback = Some(self.i18n.text("passwords_removed"));
             cx.notify();
             return;
         }
@@ -4766,7 +4833,7 @@ impl SettingsWindow {
         }
     }
 
-    /// Stores the dialog's rows in the `channels` field, which autosaves.
+    /// Stores the dialog's rows in the `channels` field, which is saved with Save.
     fn sync_auto_join(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = &self.auto_join else {
             return;
@@ -4805,6 +4872,17 @@ impl SettingsWindow {
     }
 
     /// Adds a server, blank or filled in from a preset's `host`.
+    fn choose_preset(&mut self, host: &str, cx: &mut Context<Self>) {
+        self.settings
+            .custom_host
+            .update(cx, |field, cx| field.set_text(host, cx));
+        self.settings
+            .port
+            .update(cx, |field, cx| field.set_text("6667", cx));
+        self.settings.server_list_open = false;
+        cx.notify();
+    }
+
     fn add_server(&mut self, host: &str, cx: &mut Context<Self>) {
         let host = host.to_owned();
         self.switch_server(
@@ -4827,8 +4905,8 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Removes the selected server. Removal is saved at once, disconnecting
-    /// it and forgetting its passwords, so a saved server asks first.
+    /// Removes the selected server. Saving the removal disconnects it and
+    /// forgets its passwords, so a saved server asks first.
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = self.settings.values.selected_server.clone();
         let Some(profile) = self.saved.profile(&id).filter(|p| !p.host.is_empty()) else {
@@ -4877,6 +4955,11 @@ impl SettingsWindow {
         self.connected_shown = connected;
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
+        // A server not in the saved list is being added; it is saved with Save.
+        let adding = profile
+            .as_ref()
+            .is_some_and(|profile| self.saved.profile(&profile.id).is_none());
+        let unsaved = self.servers_unsaved(cx);
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
         let server_fields = profile
             .as_ref()
@@ -4908,72 +4991,65 @@ impl SettingsWindow {
         );
         if self.settings.server_list_open {
             let mut menu = div()
+                .id("server-menu")
+                .max_h(px(260.))
+                .overflow_y_scroll()
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
-            for (index, server) in self.settings.values.ordered_servers().enumerate() {
-                let id = server.id.clone();
-                let (host, port) = if Some(&id) == selected_id.as_ref() {
-                    (current_host.as_str(), current_port.as_str())
-                } else {
-                    (server.host.as_str(), "")
-                };
-                let label = if host.is_empty() {
-                    self.i18n.text("new_server")
-                } else {
-                    format!(
-                        "{}:{}",
-                        host,
-                        if port.is_empty() {
-                            server.port.to_string()
-                        } else {
-                            port.to_owned()
-                        },
-                    )
-                };
+            if adding {
+                // Adding offers only suggestions; existing servers stay out
+                // of the way so the list cannot be mistaken for editing one.
+                for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
+                    menu = menu.child(
+                        div()
+                            .id(("preset-option", index))
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover))
+                            .when(preset.host == current_host, |d| d.bg(theme.selected))
+                            .child(self.i18n.format(
+                                "preset_option",
+                                &[("name", preset.name), ("host", preset.host)],
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.choose_preset(preset.host, cx)
+                            })),
+                    );
+                }
+            } else {
+                for (index, server) in self.saved.ordered_servers().enumerate() {
+                    let id = server.id.clone();
+                    let label = format!("{}:{}", server.host, server.port);
+                    menu = menu.child(
+                        div()
+                            .id(("server-option", index))
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover))
+                            .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_server(id.clone(), cx)
+                            })),
+                    );
+                }
                 menu = menu.child(
                     div()
-                        .id(("server-option", index))
+                        .id("add-server-option")
                         .px_2()
                         .py_1()
+                        .when(!no_server, |d| d.border_t_1().border_color(theme.border))
                         .cursor_pointer()
                         .hover(|d| d.bg(theme.hover))
-                        .when(Some(&id) == selected_id.as_ref(), |d| d.bg(theme.selected))
-                        .child(label)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.select_server(id.clone(), cx)),
-                        ),
+                        .child(self.i18n.text("add_server"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.add_server(cayenchat_storage::PRESETS[0].host, cx)
+                        })),
                 );
             }
-            // Well-known servers are only suggestions for adding a server.
-            for (index, preset) in cayenchat_storage::PRESETS.iter().enumerate() {
-                menu = menu.child(
-                    div()
-                        .id(("add-preset-option", index))
-                        .px_2()
-                        .py_1()
-                        .when(index == 0, |d| d.border_t_1().border_color(theme.border))
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover))
-                        .child(self.i18n.format(
-                            "add_preset_server",
-                            &[("name", preset.name), ("host", preset.host)],
-                        ))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.add_server(preset.host, cx)),
-                        ),
-                );
-            }
-            menu = menu.child(
-                div()
-                    .id("add-server-option")
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.hover))
-                    .child(self.i18n.text("add_server"))
-                    .on_click(cx.listener(|this, _, _, cx| this.add_server("", cx))),
-            );
             server_selector = server_selector.child(menu);
         }
         account_settings::panel(cx)
@@ -4981,7 +5057,11 @@ impl SettingsWindow {
             .child(
                 div()
                     .text_color(theme.text_secondary)
-                    .child(self.i18n.text("connection_intro")),
+                    .child(self.i18n.text(if adding {
+                        "adding_server_intro"
+                    } else {
+                        "connection_intro"
+                    })),
             )
             .child(
                 div()
@@ -5008,6 +5088,13 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
+            .when(unsaved, |d| {
+                d.child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("unsaved_server_changes")),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -5023,6 +5110,15 @@ impl SettingsWindow {
                             ),
                     )
                     .child(div().flex_1())
+                    // Removing the last server needs Save to take effect.
+                    .when(!no_server || unsaved, |d| {
+                        d.child(
+                            settings_theme::button("save-button", false, cx)
+                                .debug_selector(|| "save-button".into())
+                                .child(self.i18n.text("save"))
+                                .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
+                        )
+                    })
                     .when(!no_server, |d| {
                         // One button in one place: Disconnect while the server
                         // being edited is connected, being connected or
@@ -5121,7 +5217,14 @@ impl SettingsWindow {
                     .py_1()
                     .cursor_pointer()
                     .text_color(theme.warning)
-                    .child(self.i18n.text("remove_server"))
+                    .child(
+                        self.i18n
+                            .text(if self.saved.profile(&profile.id).is_none() {
+                                "cancel_add_server"
+                            } else {
+                                "remove_server"
+                            }),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| this.remove_server(window, cx))),
             )
             .child(settings_field(
@@ -9013,7 +9116,7 @@ mod startup_tests {
         assert_eq!(startup.len(), 1);
         assert_eq!(startup[0].0, settings.selected_server);
         let config = startup.into_iter().next().unwrap().1.unwrap();
-        assert_eq!(config.host, "irc.ircnet.ne.jp");
+        assert_eq!(config.host, "irc.ircnet.com");
         assert_eq!(config.nickname, "alice");
         assert_eq!(config.username, "ident");
         assert_eq!(config.server_password.as_deref(), Some("server-secret"));
@@ -9055,7 +9158,7 @@ mod startup_tests {
             hosts,
             [
                 ("irc.example.org", "bob", vec!["#b".to_owned()]),
-                ("irc.ircnet.ne.jp", "alice", vec!["#a".to_owned()]),
+                ("irc.ircnet.com", "alice", vec!["#a".to_owned()]),
             ]
         );
     }
@@ -9193,7 +9296,7 @@ mod startup_tests {
             assert!(sasl.is_none());
             assert_ne!(next.selected_profile().unwrap().id, removed.id);
 
-            forget_removed_profiles(&previous, &next, &store);
+            forget_removed_profiles(&previous, &next, &store).unwrap();
             assert!(!store.contains(&removed.server_password_key()).unwrap());
             assert!(!store.contains(&removed.sasl_password_key()).unwrap());
         }
@@ -9213,9 +9316,44 @@ mod startup_tests {
         store.set(&kept, &Secret::new("y")).unwrap();
         let mut next = previous.clone();
         next.remove_selected_server();
-        forget_removed_profiles(&previous, &next, &store);
+        forget_removed_profiles(&previous, &next, &store).unwrap();
         assert!(store.get(&removed.server_password_key()).unwrap().is_none());
         assert!(store.get(&kept).unwrap().is_some());
+    }
+
+    #[test]
+    fn turning_password_saving_off_deletes_them_when_saved() {
+        let store = memory_store();
+        let mut previous = Settings::default();
+        previous.add_server("");
+        previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        previous.selected_profile_mut().unwrap().remember_passwords = true;
+        let profile = previous.selected_profile().unwrap().clone();
+        store
+            .set(&profile.server_password_key(), &Secret::new("x"))
+            .unwrap();
+        // Still on: the secret stays.
+        forget_removed_profiles(&previous, &previous, &store).unwrap();
+        assert!(store.get(&profile.server_password_key()).unwrap().is_some());
+        let mut next = previous.clone();
+        next.selected_profile_mut().unwrap().remember_passwords = false;
+        forget_removed_profiles(&previous, &next, &store).unwrap();
+        assert!(store.get(&profile.server_password_key()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_deletion_is_reported_so_save_can_retry() {
+        let unavailable = CredentialStore::with_backend(Arc::new(MemoryBackend::unavailable(
+            CredentialBackendKind::System,
+        )));
+        let mut previous = Settings::default();
+        previous.add_server("irc.example.org");
+        previous.selected_profile_mut().unwrap().remember_passwords = true;
+        let mut next = previous.clone();
+        next.selected_profile_mut().unwrap().remember_passwords = false;
+        assert!(forget_removed_profiles(&previous, &next, &unavailable).is_err());
+        // Nothing to forget once nothing changed.
+        assert!(forget_removed_profiles(&previous, &previous, &unavailable).is_ok());
     }
 }
 
@@ -9345,12 +9483,48 @@ mod server_settings_tests {
         });
         assert_eq!(
             server_fields(&form, cx),
-            ["irc.ircnet.ne.jp", "6667", "", "", "", "", ""].map(str::to_owned)
+            ["irc.ircnet.com", "6667", "", "", "", "", ""].map(str::to_owned)
         );
         let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
         let preset = settings.selected_profile().unwrap();
         assert!(preset.nickname.is_empty() && preset.channels.is_empty());
         assert_eq!(preset.ircv3, Ircv3Preferences::default());
+    }
+
+    #[gpui::test]
+    fn an_unfinished_connection_entry_does_not_block_other_settings(cx: &mut TestAppContext) {
+        let store = memory_store();
+        let form = form(configured_a(), &store, cx);
+        type_into(&form.port, "bad", cx);
+        assert!(cx.read(|cx| form.snapshot(cx)).is_err());
+        let settings = cx.read(|cx| form.snapshot_with(cx, false)).unwrap();
+        assert_eq!(settings.servers, form.values.servers);
+    }
+
+    #[gpui::test]
+    fn typed_passwords_wait_for_save_and_are_kept_per_server(cx: &mut TestAppContext) {
+        let store = memory_store();
+        let mut settings = configured_a();
+        settings.selected_profile_mut().unwrap().remember_passwords = true;
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let mut form = form(settings, &store, cx);
+        assert!(!cx.read(|cx| form.pending_passwords(cx)));
+        type_into(&form.server_password, "a-typed", cx);
+        assert!(cx.read(|cx| form.pending_passwords(cx)));
+        switch(&mut form, &store, cx, |settings| {
+            settings.selected_server = b_id.clone()
+        });
+        // Not shown, but still waiting, and nothing was written.
+        assert_eq!(text(&form.server_password, cx), "");
+        assert!(cx.read(|cx| form.pending_passwords(cx)));
+        let key = form.values.profile(&a_id).unwrap().server_password_key();
+        assert!(store.get(&key).unwrap().is_none());
+        switch(&mut form, &store, cx, |settings| {
+            settings.selected_server = a_id.clone()
+        });
+        assert_eq!(text(&form.server_password, cx), "a-typed");
     }
 
     #[gpui::test]
@@ -9383,13 +9557,25 @@ mod server_settings_tests {
             server_fields(&form, cx),
             ["b.example", "6667", "bob", "ident-b", "#b1", "", ""].map(str::to_owned)
         );
+        assert!(
+            store.get(&a_key).unwrap().is_none(),
+            "switching does not store anything"
+        );
+        assert!(store.get(&b_key).unwrap().is_none());
+        assert!(!form.saved_server_password, "B has no saved password");
+
+        // Save stores the draft under the server it was typed for.
+        let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
+        cx.update(|cx| {
+            form.persist_passwords(&settings, &store, &Localizer::new(Language::English), cx)
+        })
+        .unwrap();
         assert_eq!(
             store.get(&a_key).unwrap().map(|s| s.expose().to_owned()),
             Some("a-typed".to_owned()),
             "the password went to the server it was typed for"
         );
         assert!(store.get(&b_key).unwrap().is_none());
-        assert!(!form.saved_server_password, "B has no saved password");
 
         // The pending autosave now snapshots the form showing B.
         let directory = tempfile::tempdir().unwrap();
@@ -12441,7 +12627,7 @@ mod pane_tests {
         cx.run_until_parked();
         chat.read_with(cx, |chat, _| {
             assert_eq!(chat.state.networks().len(), 1);
-            assert_eq!(chat.state.networks()[0].name, "irc.ircnet.ne.jp");
+            assert_eq!(chat.state.networks()[0].name, "irc.ircnet.com");
             assert_eq!(chat.tree_list.state.item_count(), 2);
         });
     }
