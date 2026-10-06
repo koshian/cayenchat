@@ -254,26 +254,24 @@ impl SettingsWindow {
             .child(self.render_own_avatar(&profile, cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
-                    .when(self.servers_unsaved(cx), |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    settings_theme::button("ircv3-save-button", false, cx)
-                                        .child(self.i18n.text("save"))
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.save_servers(cx)),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(theme.text_secondary)
-                                        .child(self.i18n.text("unsaved_server_changes")),
-                                ),
+            })
+            .when(self.servers_unsaved(cx), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            settings_theme::button("ircv3-save-button", false, cx)
+                                .child(self.i18n.text("save"))
+                                .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
                         )
-                    })
+                        .child(
+                            div()
+                                .text_color(theme.text_secondary)
+                                .child(self.i18n.text("unsaved_server_changes")),
+                        ),
+                )
             })
             .child(self.reset_footer(SettingsTab::Ircv3, cx))
     }

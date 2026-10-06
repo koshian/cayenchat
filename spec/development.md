@@ -456,16 +456,16 @@ this delay.
    screen masks it. Switch servers and confirm the values follow only their server.
 4. With **パスワードを保存する** off, type passwords, leave the fields and inspect
    the settings file: neither password should be present. Turn it on (no prompt
-   with system storage). While a password field keeps focus it must stay as
-   typed; leaving it (or closing the window with the field still focused)
-   stores it. Verify the fields become empty with the "saved" placeholder, the settings
+   with system storage). Nothing is stored while typing, leaving the field or
+   switching servers (the store stays unchanged, and the typed text returns when
+   switching back); pressing **Save** stores it. Verify the fields become empty with the "saved" placeholder, the settings
    file still has no password, and Keychain Access (macOS), Credential Manager
    (Windows) or Seahorse/`secret-tool search service CayenChat` (Linux) shows
    `connection/<id>/…` entries (on macOS, one `secrets` item whose data lists
    those names). On macOS, after rebuilding, connecting should ask for the
    login password once however many passwords are saved, and opening settings
    afterwards should not ask again. Restart with startup connection on and verify
-   they are used. Turn saving off and verify the entries disappear immediately.
+   they are used. Turn saving off and verify the entries disappear when **Save** is pressed (not before; closing without saving keeps them).
    A version 10 settings file with saved passwords should lose them from the
    file on the next start and gain the store entries.
 5. Close settings with its window close button and verify CayenChat stays open.

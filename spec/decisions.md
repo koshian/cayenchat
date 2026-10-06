@@ -573,11 +573,9 @@ Nothing reconnects; **Connect** stays as the one explicit action.
 
 Exceptions keep a half-finished edit from doing damage:
 
-- A typed password is stored when its field loses focus, not while it is
-  being typed, because storing empties the field. Closing the window (close
-  button or Back), quitting the app and choosing another server store every
-  typed password, focused or not; a server switch stores them under the
-  server they were typed for (not yet for a server without a host).
+- (Superseded for server settings by #209 below: typed passwords are stored
+  by Save only.) A typed password was stored when its field lost focus,
+  closing the window or choosing another server.
 - While the selected server has no host nothing is saved and the window says
   a host is needed, because saving would drop the server and forget its
   passwords.
@@ -605,8 +603,13 @@ server list and everything stored in a server profile (hostname, port,
 nickname, channels, SASL, IRCv3 options, password saving, removal) are written
 only when **Save** on the Connection tab is pressed (Connect also saves), so
 an accidentally chosen server is never kept. Everything else keeps autosaving
-and leaves the saved server list as it is. Typed passwords are stored by Save
-too, not when their field loses focus. A note says server changes are unsaved;
+and leaves the saved server list and the selected server as it is (an invalid
+unsaved port does not stop it). Typed passwords are kept in memory per server
+and stored by Save too, not when their field loses focus or another server is
+chosen; turning password saving off or removing a server deletes the stored
+secrets only on Save. Save stays available after the last server was removed,
+and the IRCv3 tab shows it with the note whenever server changes are
+unsaved. A note says server changes are unsaved;
 leaving the window with them discards them, and a file written by another
 process is not read back while they are pending. Adding a server shows only
 the suggestions (`PRESETS`: `irc.ircnet.com` first, the default, then every

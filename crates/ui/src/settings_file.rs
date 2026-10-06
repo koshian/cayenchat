@@ -274,6 +274,67 @@ mod tests {
     }
 
     #[gpui::test]
+    fn an_unfinished_port_does_not_stop_other_settings_from_autosaving(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings
+                .port
+                .update(cx, |field, cx| field.set_text("bad", cx));
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+            assert!(form.autosave_error.is_none());
+        });
+        assert!(
+            !super::load()
+                .unwrap()
+                .unwrap()
+                .notifications
+                .private_messages
+        );
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unsaved_selection_is_not_saved_by_a_readback(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.select_server(b_id.clone(), cx);
+            assert!(form.servers_unsaved(cx));
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+            assert!(form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_server, a_id);
+        assert!(!saved.notifications.private_messages);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn removing_the_last_server_is_saved_explicitly(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings.values.remove_selected_server();
+            form.settings
+                .show_selected(&crate::secrets::store(cx), &form.i18n, cx);
+            assert!(form.servers_unsaved(cx));
+            form.save_servers(cx);
+            assert!(!form.servers_unsaved(cx));
+        });
+        assert!(super::load().unwrap().unwrap().servers.is_empty());
+        drop(file);
+    }
+
+    #[gpui::test]
     fn a_server_another_process_added_keeps_its_password(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);

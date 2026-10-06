@@ -3,7 +3,7 @@
   "settings_open_failed": "設定ウィンドウを開けません: {error}",
   "chat_closed": "チャットウィンドウが閉じられました: {error}",
   "server_required": "サーバー名を入力してください。",
-  "passwords_removed": "保存済みパスワードを削除しました。",
+  "passwords_removed": "保存済みパスワードは「保存」を押すと削除されます。",
   "password_warning_title": "パスワードをローカルの資格情報ファイルに保存しますか？",
   "password_warning_detail": "資格情報の保存先がローカル設定ファイルになっています。このサーバーのサーバーパスワードと SASL パスワードは、あなたのユーザーだけが読める {path} に暗号化せずに保存されます。",
   "save_passwords": "保存する",

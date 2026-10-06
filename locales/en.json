@@ -3,7 +3,7 @@
   "settings_open_failed": "Could not open the settings window: {error}",
   "chat_closed": "The chat window has closed: {error}",
   "server_required": "Enter a server hostname.",
-  "passwords_removed": "Saved passwords were deleted.",
+  "passwords_removed": "Saved passwords will be deleted when you save.",
   "password_warning_title": "Save passwords to the local credential file?",
   "password_warning_detail": "Credential storage is set to Local configuration file. This server's server and SASL passwords will be stored unencrypted in {path}, readable only by your user account.",
   "save_passwords": "Save passwords",
