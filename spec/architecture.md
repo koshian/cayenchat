@@ -146,7 +146,7 @@ alternating row background covers both lines. Activity lines
 keep the compact single-line form in both layouts. The combined log always uses
 the default flow, `time | channel [network] nick: text` with the full channel and
 network names in the nickname color and no fixed channel column (the
-`sub_log_name_width` setting no longer applies); the
+former `sub_log_name_width` setting is gone and ignored when read); the
 former `wrap_long_nicknames` setting is gone and ignored when read. The
 main log keeps separate scroll positions for each server or
 channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
