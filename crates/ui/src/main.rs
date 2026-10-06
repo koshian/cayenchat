@@ -54,9 +54,8 @@ use cayenchat_irc_core::{
 use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
-    CredentialStore, DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language,
-    LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    CredentialStore, DarkColors, Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret,
+    SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -189,7 +188,6 @@ struct SettingsForm {
     dark_sub_log_alternate: Entity<TextInput>,
     main_log_font: Entity<TextInput>,
     sub_log_font: Entity<TextInput>,
-    sub_log_name_width: Entity<TextInput>,
     member_font: Entity<TextInput>,
     channel_font: Entity<TextInput>,
     input_font: Entity<TextInput>,
@@ -352,12 +350,6 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            sub_log_name_width: field(
-                &DEFAULT_SUB_LOG_NAME_WIDTH.to_string(),
-                &values.appearance.sub_log_name_width.to_string(),
-                false,
-                cx,
-            ),
             member_font: field(
                 &i18n.text("font_system_placeholder"),
                 &values.appearance.member_font,
@@ -453,9 +445,6 @@ impl SettingsForm {
             user_avatars: self.values.appearance.user_avatars,
             compact_urls: self.values.appearance.compact_urls,
             reiwa_mode: self.values.appearance.reiwa_mode,
-            sub_log_name_width: value(&self.sub_log_name_width)
-                .parse()
-                .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
             main_log_font: value(&self.main_log_font),
             sub_log_font: value(&self.sub_log_font),
             member_font: value(&self.member_font),
@@ -505,7 +494,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 36] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 35] {
         [
             &self.custom_host,
             &self.port,
@@ -536,7 +525,6 @@ impl SettingsForm {
             &self.dark_sub_log_alternate,
             &self.main_log_font,
             &self.sub_log_font,
-            &self.sub_log_name_width,
             &self.member_font,
             &self.channel_font,
             &self.input_font,
@@ -5958,10 +5946,6 @@ impl SettingsWindow {
             )
             .child(self.font_field(FontTarget::MainLog, &self.i18n.text("channel_log"), cx))
             .child(self.font_field(FontTarget::SubLog, &self.i18n.text("combined_log"), cx))
-            .child(settings_field(
-                &self.i18n.text("combined_log_name_width"),
-                self.settings.sub_log_name_width.clone(),
-            ))
             .child(self.font_field(FontTarget::Members, &self.i18n.text("member_list"), cx))
             .child(self.font_field(FontTarget::Channels, &self.i18n.text("channel_list"), cx))
             .child(self.font_field(FontTarget::Input, &self.i18n.text("draft_input"), cx))

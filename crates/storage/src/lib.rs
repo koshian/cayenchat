@@ -341,11 +341,6 @@ impl TextEncoding {
     }
 }
 
-/// Default width in pixels of the combined log's channel name column.
-pub const DEFAULT_SUB_LOG_NAME_WIDTH: u32 = 162;
-/// Widths in pixels the user may choose for that column.
-pub const SUB_LOG_NAME_WIDTHS: std::ops::RangeInclusive<u32> = 80..=600;
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -383,10 +378,6 @@ pub struct Appearance {
     /// version change; files without it read as off.
     #[serde(alias = "header_line_messages")]
     pub reiwa_mode: bool,
-    /// Width in pixels of the channel name (and network) column of the
-    /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
-    /// without a version change; files without it read as the default.
-    pub sub_log_name_width: u32,
     pub main_log_font: String,
     pub sub_log_font: String,
     pub member_font: String,
@@ -449,7 +440,6 @@ impl Default for Appearance {
             user_avatars: false,
             compact_urls: false,
             reiwa_mode: false,
-            sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
             member_font: String::new(),
@@ -523,13 +513,6 @@ impl Appearance {
             if color_value(value).is_none() {
                 return Err(format!("{label} color must be #RRGGBB."));
             }
-        }
-        if !SUB_LOG_NAME_WIDTHS.contains(&self.sub_log_name_width) {
-            return Err(format!(
-                "Combined log channel name width must be {}–{} px.",
-                SUB_LOG_NAME_WIDTHS.start(),
-                SUB_LOG_NAME_WIDTHS.end()
-            ));
         }
         Ok(())
     }
@@ -1991,25 +1974,15 @@ mod tests {
     }
 
     #[test]
-    fn combined_log_name_width_defaults_and_is_bounded() {
-        let mut appearance = Appearance::default();
-        assert_eq!(appearance.sub_log_name_width, DEFAULT_SUB_LOG_NAME_WIDTH);
-        let mut saved = serde_json::to_value(&appearance).unwrap();
-        saved.as_object_mut().unwrap().remove("sub_log_name_width");
+    fn ignores_the_removed_combined_log_name_width() {
+        let mut saved = serde_json::to_value(Appearance::default()).unwrap();
+        saved
+            .as_object_mut()
+            .unwrap()
+            .insert("sub_log_name_width".into(), 0.into());
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
-        assert_eq!(loaded.sub_log_name_width, DEFAULT_SUB_LOG_NAME_WIDTH);
-        for width in [*SUB_LOG_NAME_WIDTHS.start(), *SUB_LOG_NAME_WIDTHS.end()] {
-            appearance.sub_log_name_width = width;
-            assert!(appearance.validate().is_ok());
-        }
-        for width in [
-            0,
-            SUB_LOG_NAME_WIDTHS.start() - 1,
-            SUB_LOG_NAME_WIDTHS.end() + 1,
-        ] {
-            appearance.sub_log_name_width = width;
-            assert!(appearance.validate().is_err());
-        }
+        assert_eq!(loaded, Appearance::default());
+        assert!(loaded.validate().is_ok());
     }
 
     #[test]
