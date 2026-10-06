@@ -913,6 +913,9 @@ impl Element for TextElement {
                                 gpui::Hsla::from(crate::settings_theme::color(n.input.caret_color))
                             })
                             .unwrap_or_else(gpui::blue)
+                    } else if input.palette(cx).dark {
+                        // Blue is hard to see on the bluish dark input background.
+                        style.color
                     } else {
                         gpui::blue()
                     },
