@@ -1,0 +1,9 @@
+changelog:
+  categories:
+    - title: Dependency updates
+      labels:
+        - dependencies
+        - github_actions
+    - title: Changes
+      labels:
+        - "*"
