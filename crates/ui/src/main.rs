@@ -4137,8 +4137,8 @@ impl SettingsWindow {
         this
     }
 
-    /// Saves after an edit to any text field, and stores a typed password
-    /// once its field loses focus.
+    /// Schedules the autosave after an edit to any text field (it leaves the
+    /// server fields to Save) and refreshes the unsaved-changes note.
     fn observe_fields(
         settings: &SettingsForm,
         _window: &mut Window,
@@ -4833,7 +4833,7 @@ impl SettingsWindow {
         }
     }
 
-    /// Stores the dialog's rows in the `channels` field, which autosaves.
+    /// Stores the dialog's rows in the `channels` field, which is saved with Save.
     fn sync_auto_join(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = &self.auto_join else {
             return;

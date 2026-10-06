@@ -121,7 +121,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 ## Settings
 
 - DONE — single-network connection settings with a server drop-down, multiple saved custom profiles, per-profile host/port/TLS/certificate verification/encoding and optional server password (sent without TLS only after a per-server opt-in with a warning, for bouncers such as ZNC)
-- DONE — persisted nickname, independent IRC `USER` username and optional SASL account name; per-server server/SASL password persistence in the credential store (system store, or an explicitly chosen local file after a plaintext warning), with immediate deletion when disabled
+- DONE — persisted nickname, independent IRC `USER` username and optional SASL account name; per-server server/SASL password persistence in the credential store (system store, or an explicitly chosen local file after a plaintext warning), with deletion when disabling is saved
 - DONE — Credential Storage tab: system secure storage (Keychain, Credential Manager, Secret Service) or a `0600` local file; availability probe, confirmation for the local file, migration of saved secrets when switching and of pre-version-11 plaintext passwords on startup
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
 - DONE — settings open in a separate window; closing it leaves the chat window running

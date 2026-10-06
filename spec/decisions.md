@@ -630,7 +630,7 @@ server and are off for new and migrated settings (settings version 15). The
 IRCv3 settings tab is their current home and names the server being
 configured. This milestone exposes message tags and server timestamps
 (server-time); server-time does not require message-tags, as the protocol
-allows. Changes are saved by the existing autosave (D021) and take effect on
+allows. Per-server changes are saved with Save (D021) and take effect on
 the next connection, including reconnects and retries; nothing reconnects.
 
 CAP negotiation is shared infrastructure, not a user-facing feature: SASL
