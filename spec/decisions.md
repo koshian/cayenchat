@@ -1232,14 +1232,16 @@ dimmed instead when disabled.
   behaves, right after Connection (never first, so it is not called General).
   It holds the language, login startup (#153), restoring the window layout,
   the Linux display (Linux only) and menu bar auto-hide (Windows and Linux
-  only). Its reset covers all of these except login startup: that is the
+  only), and (#221) the channel log's image link previews, user avatars,
+  Reiwa-mode layout and compact long URLs, which are behavior switches
+  rather than looks (they are still stored in `appearance`). Its reset
+  covers all of these except login startup: that is the
   system's registration, not a value in `settings.json`, so a reset never
   changes it and the button's disabled state ignores it; the page's intro
   says so. The language is reset too (to System, which switches the UI
   language at once), as the owner decided on #192. "Start automatically
   when the app starts" is per server and stays on Connection.
-- **Appearance** (theme, colors, row/preview/avatar switches, fonts,
-  combined-log name width): the saved color palette is the user's own data
+- **Appearance** (theme, colors, alternating rows, fonts): the saved color palette is the user's own data
   and is kept.
 - **Keyboard**: channel-number modifier, text key theme.
 - A setting moved between pages moves between resets with it;
