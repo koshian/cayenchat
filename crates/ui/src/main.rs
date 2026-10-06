@@ -172,6 +172,7 @@ struct SettingsForm {
     main_log_background: Entity<TextInput>,
     main_log_alternate: Entity<TextInput>,
     channel_event_color: Entity<TextInput>,
+    notice_color: Entity<TextInput>,
     highlight_color: Entity<TextInput>,
     sub_log_background: Entity<TextInput>,
     sub_log_alternate: Entity<TextInput>,
@@ -179,6 +180,7 @@ struct SettingsForm {
     dark_main_log_background: Entity<TextInput>,
     dark_main_log_alternate: Entity<TextInput>,
     dark_channel_event_color: Entity<TextInput>,
+    dark_notice_color: Entity<TextInput>,
     dark_highlight_color: Entity<TextInput>,
     dark_sub_log_background: Entity<TextInput>,
     dark_sub_log_alternate: Entity<TextInput>,
@@ -287,6 +289,7 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            notice_color: field("#7A838C", &values.appearance.notice_color, false, cx),
             highlight_color: field("#D46A8E", &values.appearance.highlight_color, false, cx),
             sub_log_background: field("#F9FAFB", &values.appearance.sub_log_background, false, cx),
             sub_log_alternate: field("#F2F5FF", &values.appearance.sub_log_alternate, false, cx),
@@ -314,6 +317,7 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            dark_notice_color: field("#8C949C", &values.appearance.dark.notice_color, false, cx),
             dark_highlight_color: field(
                 "#EFA0BE",
                 &values.appearance.dark.highlight_color,
@@ -426,6 +430,7 @@ impl SettingsForm {
             main_log_background: value(&self.main_log_background),
             main_log_alternate: value(&self.main_log_alternate),
             channel_event_color: value(&self.channel_event_color),
+            notice_color: value(&self.notice_color),
             highlight_color: value(&self.highlight_color),
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
@@ -448,6 +453,7 @@ impl SettingsForm {
                 main_log_background: value(&self.dark_main_log_background),
                 main_log_alternate: value(&self.dark_main_log_alternate),
                 channel_event_color: value(&self.dark_channel_event_color),
+                notice_color: value(&self.dark_notice_color),
                 highlight_color: value(&self.dark_highlight_color),
                 sub_log_background: value(&self.dark_sub_log_background),
                 sub_log_alternate: value(&self.dark_sub_log_alternate),
@@ -485,7 +491,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 34] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 36] {
         [
             &self.custom_host,
             &self.port,
@@ -502,6 +508,7 @@ impl SettingsForm {
             &self.main_log_background,
             &self.main_log_alternate,
             &self.channel_event_color,
+            &self.notice_color,
             &self.highlight_color,
             &self.sub_log_background,
             &self.sub_log_alternate,
@@ -509,6 +516,7 @@ impl SettingsForm {
             &self.dark_main_log_background,
             &self.dark_main_log_alternate,
             &self.dark_channel_event_color,
+            &self.dark_notice_color,
             &self.dark_highlight_color,
             &self.dark_sub_log_background,
             &self.dark_sub_log_alternate,
@@ -847,6 +855,7 @@ fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
             } else {
                 message.text
             },
+            notice: message.notice,
             meta: irc_message_meta(
                 message.server_time,
                 message.msgid.as_deref(),
@@ -5708,6 +5717,12 @@ impl SettingsWindow {
                 cx,
             ))
             .child(self.color_pair(
+                &self.i18n.text("notice_color"),
+                &self.settings.notice_color,
+                &self.settings.dark_notice_color,
+                cx,
+            ))
+            .child(self.color_pair(
                 &self.i18n.text("highlight_color"),
                 &self.settings.highlight_color,
                 &self.settings.dark_highlight_color,
@@ -7730,6 +7745,7 @@ struct LogStyle {
     theme: Theme,
     main_alt: Rgba,
     event_color: Rgba,
+    notice_color: Rgba,
     sub_alt: Rgba,
     time_font: SharedString,
     alternate_rows: bool,
@@ -7743,6 +7759,7 @@ impl LogStyle {
             theme,
             main_alt: theme.panes.main_alternate,
             event_color: theme.panes.channel_event,
+            notice_color: theme.panes.notice,
             sub_alt: theme.panes.sub_alternate,
             // Built for every visible row on each redraw; the default font
             // name needs no allocation.
@@ -8096,6 +8113,7 @@ impl ChatWindow {
                 .when(preview.is_none(), |d| d.flex_1())
                 .min_w_0()
                 .when(message.activity, |d| d.text_color(style.event_color))
+                .when(message.notice, |d| d.text_color(style.notice_color))
                 .when(message.delivery_failed, |d| d.text_color(theme.warning))
                 .cursor(if over_url {
                     CursorStyle::PointingHand
@@ -8251,6 +8269,7 @@ impl ChatWindow {
                     .flex_1()
                     .min_w_0()
                     .when(message.activity, |d| d.text_color(style.event_color))
+                    .when(message.notice, |d| d.text_color(style.notice_color))
                     .child(styled),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -8798,6 +8817,7 @@ mod combined_log_tests {
                 sender: "bob".into(),
                 text: String::new(),
                 activity: sequence % 5 == 0,
+                notice: false,
                 provenance: if sequence % 11 == 0 {
                     cayenchat_model::Provenance::Requested
                 } else {

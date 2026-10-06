@@ -286,6 +286,7 @@ impl AppState {
                             sender: sender.into(),
                             text: text.into(),
                             activity: false,
+                            notice: false,
                             provenance: Provenance::Live,
                             delivery_failed: false,
                         }
@@ -758,7 +759,9 @@ impl AppState {
         } else {
             text.into()
         };
-        if !self.append_to_conversation(id, new_message(sender.into(), text, false, meta)) {
+        let mut message = new_message(sender.into(), text, false, meta);
+        message.notice = notice;
+        if !self.append_to_conversation(id, message) {
             return false;
         }
         if unread {
@@ -950,7 +953,9 @@ impl AppState {
         } else {
             text.into()
         };
-        if !self.append_to_conversation(id, new_message(sender.into(), text, false, meta)) {
+        let mut message = new_message(sender.into(), text, false, meta);
+        message.notice = notice;
+        if !self.append_to_conversation(id, message) {
             return false;
         }
         self.mark_unread(id);
@@ -1009,6 +1014,7 @@ impl AppState {
                 text
             };
         }
+        message.notice = notice;
         message.delivery_failed = false;
         if meta.native_id.is_some() {
             message.native_id = meta.native_id;
@@ -1242,6 +1248,7 @@ impl AppState {
                     ..line.meta
                 },
             );
+            message.notice = line.notice;
             if (message.native_id.is_some() || message.timestamp.is_some())
                 && !self.duplicates.entry(id).or_default().admit(&message)
             {
@@ -1373,7 +1380,7 @@ impl AppState {
         let mut block: Vec<Message> = lines
             .into_iter()
             .map(|line| {
-                new_message(
+                let mut message = new_message(
                     line.sender,
                     line.text,
                     false,
@@ -1381,7 +1388,9 @@ impl AppState {
                         provenance: Provenance::Requested,
                         ..line.meta
                     },
-                )
+                );
+                message.notice = line.notice;
+                message
             })
             .filter(|message| {
                 !recent.is_some_and(|filter| filter.contains(message)) && near_top.admit(message)
@@ -1706,6 +1715,7 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         sender,
         text,
         activity,
+        notice: false,
         provenance: meta.provenance,
         delivery_failed: false,
     }
@@ -2383,6 +2393,7 @@ mod tests {
         timeline::TimelineLine {
             sender: "bob".into(),
             text: text.into(),
+            notice: false,
             meta: meta(millis, msgid, Provenance::Live),
         }
     }
@@ -2605,6 +2616,23 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn notices_are_flagged_but_a_privmsg_that_looks_like_one_is_not() {
+        let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+        let network = NetworkId(1);
+        state.append_channel_message(network, "#a", "bob", "psst", true, false);
+        state.append_channel_message(network, "#a", "eve", "[NOTICE] psst", false, false);
+        let id = state.channel_id(network, "#a").unwrap();
+        let messages = &state
+            .conversations()
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .messages;
+        assert!(messages[0].notice && messages[0].text == "[NOTICE] psst");
+        assert!(!messages[1].notice);
     }
 
     #[test]
