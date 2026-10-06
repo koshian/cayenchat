@@ -18,7 +18,7 @@
   "connection_intro": "接続先を選んでください。ニックネーム、チャンネル、認証はサーバーごとの設定です。複数のサーバーに同時に接続できます。",
   "application_tab": "起動と動作",
   "application_intro": "接続先のサーバーに関係なく、CayenChat 自体の起動や動作に関する設定です。「ログイン時に CayenChat を起動」はシステム側で管理されるため、デフォルトに戻しても変わりません。",
-  "destination":"接続先",
+  "destination": "接続先",
   "host": "サーバー",
   "remove_server": "このサーバーを削除",
   "remove_server_title": "{host} を削除しますか？",

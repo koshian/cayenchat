@@ -298,7 +298,7 @@ mod tests {
         use cayenchat_storage::{ChannelNumberModifier, Language, LinuxDisplay, Settings};
 
         // Each page's items, changed from their defaults.
-        let dirty: [(SettingsTab, fn(&mut Settings)); 3] = [
+        let dirty: [(SettingsTab, fn(&mut Settings)); 8] = [
             (SettingsTab::Application, |values| {
                 values.language = Language::English;
                 values.restore_window_layout = !values.restore_window_layout;
@@ -311,6 +311,22 @@ mod tests {
             }),
             (SettingsTab::Keyboard, |values| {
                 values.channel_number_modifier = ChannelNumberModifier::Alt;
+            }),
+            (SettingsTab::Shortcuts, |values| {
+                values.keybindings.insert("a".into(), "b".into());
+            }),
+            (SettingsTab::Notifications, |values| {
+                values.notifications.mentions = !values.notifications.mentions;
+            }),
+            (SettingsTab::Ircv3, |values| {
+                let profile = values.selected_profile_mut().unwrap();
+                profile.ircv3.message_tags = !profile.ircv3.message_tags;
+            }),
+            (SettingsTab::ImageUpload, |values| {
+                values.image_upload.provider = Some("provider".into());
+            }),
+            (SettingsTab::Experimental, |values| {
+                values.experimental.debug_logging = !values.experimental.debug_logging;
             }),
         ];
         let (form, cx) = form(SettingsTab::Application, cx);
