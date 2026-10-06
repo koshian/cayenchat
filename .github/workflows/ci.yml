@@ -35,6 +35,9 @@ jobs:
       - name: Test job selection
         run: scripts/test-ci-jobs.sh
 
+      - name: Test release checks
+        run: scripts/test-release.sh
+
       # Diff the commit the other jobs build, not the live pull request, so a
       # push made while this run waits cannot change the answer. --no-renames
       # lists both the old and the new path of a rename.
