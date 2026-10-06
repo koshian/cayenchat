@@ -66,8 +66,13 @@ impl SettingsWindow {
                 self.settings.language_list_open = false;
                 let values = &mut self.settings.values;
                 values.restore_window_layout = defaults.restore_window_layout;
-                values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
-                values.linux_display = defaults.linux_display;
+                // Settings hidden on this platform keep their saved values.
+                if !cfg!(target_os = "macos") {
+                    values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
+                }
+                if cfg!(target_os = "linux") {
+                    values.linux_display = defaults.linux_display;
+                }
             }
             SettingsTab::Appearance => {
                 let appearance = Appearance {
@@ -84,7 +89,9 @@ impl SettingsWindow {
             SettingsTab::Keyboard => {
                 let values = &mut self.settings.values;
                 values.channel_number_modifier = defaults.channel_number_modifier;
-                values.text_key_theme = defaults.text_key_theme;
+                if cfg!(target_os = "linux") {
+                    values.text_key_theme = defaults.text_key_theme;
+                }
             }
             SettingsTab::Shortcuts => {
                 self.settings.values.keybindings.clear();
@@ -374,6 +381,35 @@ mod tests {
             form.read_with(cx, |form, _| form.autostart.clone()),
             startup
         );
+    }
+
+    /// Settings the platform does not show are not part of that page's reset.
+    #[gpui::test]
+    fn reset_keeps_settings_hidden_on_this_platform(cx: &mut gpui::TestAppContext) {
+        use cayenchat_storage::{LinuxDisplay, Settings, TextKeyTheme};
+
+        let (form, cx) = form(SettingsTab::Application, cx);
+        form.update_in(cx, |form, window, cx| {
+            let values = &mut form.settings.values;
+            values.menu_bar_auto_hide = !values.menu_bar_auto_hide;
+            values.linux_display = LinuxDisplay::X11;
+            values.text_key_theme = TextKeyTheme::Emacs;
+            form.reset_tab(SettingsTab::Application, window, cx);
+            form.reset_tab(SettingsTab::Keyboard, window, cx);
+            let (values, defaults) = (&form.settings.values, Settings::default());
+            assert_eq!(
+                values.menu_bar_auto_hide == defaults.menu_bar_auto_hide,
+                !cfg!(target_os = "macos")
+            );
+            assert_eq!(
+                values.linux_display == defaults.linux_display,
+                cfg!(target_os = "linux")
+            );
+            assert_eq!(
+                values.text_key_theme == defaults.text_key_theme,
+                cfg!(target_os = "linux")
+            );
+        });
     }
 
     #[gpui::test]
