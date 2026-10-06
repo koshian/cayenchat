@@ -53,10 +53,10 @@ use cayenchat_irc_core::{
 };
 use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
-    Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme,
-    ThemeMode, color_value,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
+    CredentialStore, DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language,
+    LinuxDisplay, Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
+    TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -848,17 +848,27 @@ fn startup_connections(
 
 /// Deletes the saved passwords of profiles that no longer exist or no longer
 /// keep them. New profiles have fresh IDs even if cleanup fails or a removal
-/// has not been saved yet.
-fn forget_removed_profiles(previous: &Settings, next: &Settings, store: &CredentialStore) {
+/// has not been saved yet. Every deletion is tried; the first failure is
+/// returned so the save stays pending and a later Save retries.
+fn forget_removed_profiles(
+    previous: &Settings,
+    next: &Settings,
+    store: &CredentialStore,
+) -> Result<(), CredentialError> {
+    let mut first_error = None;
     for server in &previous.servers {
         let kept = next.servers.iter().find(|kept| kept.id == server.id);
         let stopped_keeping =
             server.remember_passwords && kept.is_some_and(|kept| !kept.remember_passwords);
         if kept.is_none() || stopped_keeping {
-            let _ = store.delete(&server.server_password_key());
-            let _ = store.delete(&server.sasl_password_key());
+            for key in [server.server_password_key(), server.sasl_password_key()] {
+                if let Err(error) = store.delete(&key) {
+                    first_error.get_or_insert(error);
+                }
+            }
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Fills the account and real name a WHOIS reply lacks from what the
@@ -4205,7 +4215,8 @@ impl SettingsWindow {
             self.settings
                 .persist_passwords(&settings, &store, &self.i18n, cx)?;
         }
-        forget_removed_profiles(previous, &settings, &store);
+        forget_removed_profiles(previous, &settings, &store)
+            .map_err(|error| secrets::error_text(&self.i18n, &error))?;
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
@@ -4223,8 +4234,11 @@ impl SettingsWindow {
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             self.autosave = None;
-            let previous = std::mem::replace(&mut self.saved, settings.clone());
+            // `saved` follows only once the file is written, so a failed
+            // Connect leaves the draft unsaved.
+            let previous = self.saved.clone();
             let settings = self.commit_settings(&previous, settings, true, cx)?;
+            self.saved = settings.clone();
             self.settings.values = settings.clone();
             Ok::<_, String>((config, settings))
         })();
@@ -4461,7 +4475,17 @@ impl SettingsWindow {
             return;
         };
         if profile.remember_passwords {
-            // The stored secrets are deleted when the change is saved.
+            // The stored secrets are deleted when the change is saved. Take
+            // the typed connection fields into `values` first so rebuilding
+            // the fields does not bring back older text.
+            match self.settings.snapshot(cx) {
+                Ok(settings) => self.settings.values = settings,
+                Err(error) => {
+                    self.feedback = Some(error);
+                    cx.notify();
+                    return;
+                }
+            }
             if let Some(profile) = self.settings.values.selected_profile_mut() {
                 profile.remember_passwords = false;
             }
@@ -9241,7 +9265,7 @@ mod startup_tests {
             assert!(sasl.is_none());
             assert_ne!(next.selected_profile().unwrap().id, removed.id);
 
-            forget_removed_profiles(&previous, &next, &store);
+            forget_removed_profiles(&previous, &next, &store).unwrap();
             assert!(!store.contains(&removed.server_password_key()).unwrap());
             assert!(!store.contains(&removed.sasl_password_key()).unwrap());
         }
@@ -9261,7 +9285,7 @@ mod startup_tests {
         store.set(&kept, &Secret::new("y")).unwrap();
         let mut next = previous.clone();
         next.remove_selected_server();
-        forget_removed_profiles(&previous, &next, &store);
+        forget_removed_profiles(&previous, &next, &store).unwrap();
         assert!(store.get(&removed.server_password_key()).unwrap().is_none());
         assert!(store.get(&kept).unwrap().is_some());
     }
@@ -9278,12 +9302,27 @@ mod startup_tests {
             .set(&profile.server_password_key(), &Secret::new("x"))
             .unwrap();
         // Still on: the secret stays.
-        forget_removed_profiles(&previous, &previous, &store);
+        forget_removed_profiles(&previous, &previous, &store).unwrap();
         assert!(store.get(&profile.server_password_key()).unwrap().is_some());
         let mut next = previous.clone();
         next.selected_profile_mut().unwrap().remember_passwords = false;
-        forget_removed_profiles(&previous, &next, &store);
+        forget_removed_profiles(&previous, &next, &store).unwrap();
         assert!(store.get(&profile.server_password_key()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_failed_deletion_is_reported_so_save_can_retry() {
+        let unavailable = CredentialStore::with_backend(Arc::new(MemoryBackend::unavailable(
+            CredentialBackendKind::System,
+        )));
+        let mut previous = Settings::default();
+        previous.add_server("irc.example.org");
+        previous.selected_profile_mut().unwrap().remember_passwords = true;
+        let mut next = previous.clone();
+        next.selected_profile_mut().unwrap().remember_passwords = false;
+        assert!(forget_removed_profiles(&previous, &next, &unavailable).is_err());
+        // Nothing to forget once nothing changed.
+        assert!(forget_removed_profiles(&previous, &previous, &unavailable).is_ok());
     }
 }
 

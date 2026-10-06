@@ -617,6 +617,9 @@ server on <https://www.ircnet.info/servers>), not the saved servers; choosing
 one fills host and port 6667 of the new, still unsaved server, and "Cancel
 adding" drops it. Editing lists only saved servers plus "Add a server…".
 Removal is confirmed first and, like other server edits, applies on Save.
+A failed save (settings file, or deleting a stored secret) leaves the edits
+unsaved, for Connect too, so a later Save retries and nothing unsaved reaches
+the autosave.
 
 ## D022 — Opt-in IRCv3 features and shared CAP negotiation
 
