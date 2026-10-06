@@ -114,6 +114,7 @@
   "channel_log": "チャンネルログ",
   "channel_log_alternate": "チャンネルログ交互",
   "channel_event_color": "チャンネルイベント色",
+  "notice_color": "NOTICE 色",
   "combined_log": "全体ログ",
   "combined_log_alternate": "全体ログ交互",
   "combined_log_name_width": "全体ログのチャンネル名幅 (px)",
