@@ -92,3 +92,9 @@ expects BGRA, but the SVG branch passed resvg's RGBA through unchanged, so
 colored SVGs shown with `img(Arc<Image>)` had red and blue exchanged.
 CayenChat's default avatars are such SVGs. (Monochrome `svg()` elements use
 a separate path and were unaffected.)
+
+In `src/platform/linux/x11/client.rs`, `process_x11_events` stops the event
+loop (so the quit callback runs) when polling fails with a connection error.
+Upstream logged a warning and returned; the dead socket stayed readable, so
+the same warning repeated forever at 100% CPU after the X server exited
+(issue #196).

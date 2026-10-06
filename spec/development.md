@@ -85,6 +85,19 @@ x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
 system credential store probe against Credential Manager. CI does not exercise
 GUI interaction, IME, drag and drop or clipboard images.
 
+On pull requests, CI runs only the jobs the changed paths can affect
+(`scripts/ci-jobs.sh`): documentation (`*.md`, `spec/`, `.claude/`,
+`licenses/`) runs nothing, GPUI's per-platform sources under
+`vendor/gpui/src/platform/{linux,windows,mac}` run only that platform (Linux
+also runs the GUI end-to-end test), and the E2E scripts run only the GUI
+end-to-end test. Any other path runs every job, so a new file that matters to
+several platforms is covered until the script names it. Pushes to master always
+run every job. The paths come from `git diff` of the checked-out pull request
+merge commit against its first parent (renames count as both paths), so they
+always match the commit the other jobs build; `scripts/test-ci-jobs.sh` checks
+the selection and runs in the same job. Platform-specific code under `crates/` is not detected by path
+and runs everywhere.
+
 UI tests enable GPUI's `test-support` through a dev dependency. The menu regression
 test renders the Linux/Windows in-window menu on every test host, including macOS,
 and exercises the first frame and Alt reveal/hide without a display server or
@@ -1270,3 +1283,13 @@ Unit and fake-server tests cover: default/explicit/marked wire realname,
 the reconnect configuration. `cargo clippy --workspace --all-targets`
 currently fails in `crates/app` tests (`while let` lint) on master itself,
 unrelated to this change. No live Ergo/soju run was made for this change.
+
+### X server loss (2026-10-06, issue #196)
+
+Killing the Xvfb of a running session left the app at 100% CPU, repeating
+"error while polling for X11 events" (166 GB of log in one case). The vendored
+GPUI now stops its event loop on an X11 connection error, so the app quits
+through its normal quit path (`vendor/gpui/PATCHES.md`).
+`scripts/e2e/xserver_loss.py --app target/debug/cayenchat` starts a session,
+kills only its Xvfb and asserts that the app exits and `app.log` stops
+growing.
