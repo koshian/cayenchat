@@ -70,6 +70,7 @@ pub struct TimelineLine {
     pub sender: String,
     /// As shown, including any notice marker.
     pub text: String,
+    pub notice: bool,
     pub meta: MessageMeta,
 }
 
@@ -183,6 +184,7 @@ mod tests {
             sender: "alice".into(),
             text: text.into(),
             activity: false,
+            notice: false,
             provenance,
             delivery_failed: false,
         }
