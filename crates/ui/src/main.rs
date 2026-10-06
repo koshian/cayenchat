@@ -51,7 +51,7 @@ use cayenchat_irc_core::{
     Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, RealNameFailure,
     SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
-use cayenchat_model::{ConversationId, NetworkId, TimeOfDay, Timestamp};
+use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
     DEFAULT_SUB_LOG_NAME_WIDTH, DarkColors, Ircv3Preferences, Language, LinuxDisplay,
@@ -1282,6 +1282,18 @@ impl ChatWindow {
         }
     }
 
+    /// The label for a server: its saved display name when set, else the
+    /// name the connection reports.
+    fn network_label(&self, network: &Network) -> String {
+        self.sessions
+            .get(&network.id)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+            .map(|profile| profile.display_name.as_str())
+            .filter(|alias| !alias.is_empty())
+            .unwrap_or(network.name.as_str())
+            .to_string()
+    }
+
     fn window_title(&self) -> String {
         let app = if cfg!(feature = "test-build") {
             "CayenChat [test build]"
@@ -1291,6 +1303,7 @@ impl ChatWindow {
         let Some(network) = self.state.selected_network() else {
             return app.into();
         };
+        let network_name = self.network_label(network);
         match self.state.selected_channel() {
             Some(channel) => {
                 // A channel shows how many members it has, once the roster is known.
@@ -1302,12 +1315,12 @@ impl ChatWindow {
                 let topic = cayenchat_irc_core::text::strip_formatting(&channel.topic);
                 let topic = topic.split_whitespace().collect::<Vec<_>>().join(" ");
                 if topic.is_empty() {
-                    format!("{name} @ {} — {app}", network.name)
+                    format!("{name} @ {network_name} — {app}")
                 } else {
-                    format!("{name} @ {}: {topic} — {app}", network.name)
+                    format!("{name} @ {network_name}: {topic} — {app}")
                 }
             }
-            None => format!("{} — {app}", network.name),
+            None => format!("{network_name} — {app}"),
         }
     }
 
@@ -5084,6 +5097,10 @@ impl SettingsWindow {
             .flex_col()
             .gap_2()
             .child(settings_field(
+                &self.i18n.text("display_name"),
+                self.settings.display_name.clone(),
+            ))
+            .child(settings_field(
                 &self.i18n.text("host"),
                 self.settings.custom_host.clone(),
             ))
@@ -5202,10 +5219,6 @@ impl SettingsWindow {
             .child(settings_field(
                 &self.i18n.text("quit_message"),
                 self.settings.quit_message.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("display_name"),
-                self.settings.display_name.clone(),
             ))
             .child(
                 div()
@@ -6659,7 +6672,7 @@ impl ChatWindow {
                         d.bg(theme.selected)
                     })
                     .hover(|d| d.bg(theme.hover_strong))
-                    .child(format!("{}{}", network.name, status_mark))
+                    .child(format!("{}{}", self.network_label(network), status_mark))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -8191,20 +8204,13 @@ impl ChatWindow {
         let Some(message) = conversation.messages.get(index) else {
             return div().into_any_element();
         };
-        let alias = self
-            .sessions
-            .get(&conversation.network)
-            .and_then(|session| self.saved.profile(&session.profile_id))
-            .map(|profile| profile.display_name.as_str())
-            .filter(|alias| !alias.is_empty());
-        let network = alias.unwrap_or_else(|| {
-            self.state
-                .networks()
-                .iter()
-                .find(|network| network.id == conversation.network)
-                .map(|network| network.name.as_str())
-                .unwrap_or("")
-        });
+        let network = self
+            .state
+            .networks()
+            .iter()
+            .find(|network| network.id == conversation.network)
+            .map(|network| self.network_label(network))
+            .unwrap_or_default();
         // Same flow as the main log's default layout: channel, network and
         // nickname lead the text, so wrapped lines return to the text column.
         let prefix = if message.activity {
