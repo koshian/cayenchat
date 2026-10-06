@@ -88,4 +88,13 @@ jobs:
               --notes "Rolling beta build from master (${SHA})."
           fi
 
+          # Upload first so a failed upload never leaves the release empty,
+          # then drop assets from older builds whose names no longer exist.
           gh release upload beta dist/* --clobber
+
+          gh release view beta --json assets --jq '.assets[].name' |
+            while IFS= read -r asset; do
+              if [ ! -e "dist/${asset}" ]; then
+                gh release delete-asset beta "$asset" --yes
+              fi
+            done
