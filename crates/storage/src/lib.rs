@@ -157,12 +157,14 @@ pub struct Appearance {
     /// and copies keep the full URL. Added after version 15 without a version
     /// change; files without it read as off.
     pub compact_urls: bool,
-    /// Channel log layout: a small first line with the time, avatar and
-    /// nickname and the message below at full width, instead of the default
-    /// `time | avatar | nick: message` flow. Replaces the former
-    /// `wrap_long_nicknames`, which is ignored when read. Added after
-    /// version 15 without a version change; files without it read as off.
-    pub header_line_messages: bool,
+    /// Reiwa mode, a channel log layout: the avatar spans two lines, the
+    /// first line holds the nickname and time and the second the message,
+    /// instead of the default `time | avatar | nick: message` flow. Read
+    /// from the former `header_line_messages` too; the older
+    /// `wrap_long_nicknames` is ignored. Added after version 15 without a
+    /// version change; files without it read as off.
+    #[serde(alias = "header_line_messages")]
+    pub reiwa_mode: bool,
     /// Width in pixels of the channel name (and network) column of the
     /// combined log; within [`SUB_LOG_NAME_WIDTHS`]. Added after version 15
     /// without a version change; files without it read as the default.
@@ -228,7 +230,7 @@ impl Default for Appearance {
             image_previews: false,
             user_avatars: false,
             compact_urls: false,
-            header_line_messages: false,
+            reiwa_mode: false,
             sub_log_name_width: DEFAULT_SUB_LOG_NAME_WIDTH,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -1748,19 +1750,23 @@ mod tests {
     }
 
     #[test]
-    fn header_line_messages_is_off_when_absent() {
+    fn reiwa_mode_is_off_when_absent_and_reads_the_former_name() {
         let mut appearance = Appearance::default();
-        assert!(!appearance.header_line_messages);
-        appearance.header_line_messages = true;
+        assert!(!appearance.reiwa_mode);
+        appearance.reiwa_mode = true;
         let mut saved = serde_json::to_value(&appearance).unwrap();
         let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
-        assert!(loaded.header_line_messages);
+        assert!(loaded.reiwa_mode);
+        let object = saved.as_object_mut().unwrap();
+        object.remove("reiwa_mode");
+        let loaded: Appearance = serde_json::from_value(saved.clone()).unwrap();
+        assert!(!loaded.reiwa_mode);
         saved
             .as_object_mut()
             .unwrap()
-            .remove("header_line_messages");
+            .insert("header_line_messages".into(), true.into());
         let loaded: Appearance = serde_json::from_value(saved).unwrap();
-        assert!(!loaded.header_line_messages);
+        assert!(loaded.reiwa_mode);
     }
 
     #[test]

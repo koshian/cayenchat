@@ -173,7 +173,7 @@
   "user_avatars": "Show user avatars",
   "compact_urls": "Show long URLs compactly",
   "compact_urls_hint": "Shortens long links in the channel log to the host and the start of the path, marked with an arrow. Hover shows the full URL; opening, selecting and copying use it too.",
-  "header_line_messages": "Show the time, avatar and nickname on a small first line, and the message below at full width",
+  "reiwa_mode": "Show the channel log in Reiwa mode",
   "restore_window_layout": "Restore window position and size at startup",
   "user_avatars_hint": "Shows a small picture beside nicknames in the channel log and the member list when the network supplies one. While on, CayenChat downloads the pictures of the users on screen from their servers. On IRC, avatars also need \"User avatars (experimental)\" on the server's IRCv3 tab.",
   "member_list": "Member list",

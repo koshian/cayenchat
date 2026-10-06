@@ -438,7 +438,7 @@ impl SettingsForm {
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
             compact_urls: self.values.appearance.compact_urls,
-            header_line_messages: self.values.appearance.header_line_messages,
+            reiwa_mode: self.values.appearance.reiwa_mode,
             sub_log_name_width: value(&self.sub_log_name_width)
                 .parse()
                 .map_err(|_| "Combined log channel name width must be a number.".to_owned())?,
@@ -5798,19 +5798,19 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .id("wrap-long-nicknames")
+                    .id("reiwa-mode")
                     .ml(px(158.))
                     .flex()
                     .gap_2()
                     .cursor_pointer()
                     .child(settings_theme::checkbox(
-                        self.settings.values.appearance.header_line_messages,
+                        self.settings.values.appearance.reiwa_mode,
                         true,
                         cx,
                     ))
-                    .child(self.i18n.text("header_line_messages"))
+                    .child(self.i18n.text("reiwa_mode"))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.header_line_messages;
+                        let value = &mut this.settings.values.appearance.reiwa_mode;
                         *value = !*value;
                         cx.notify();
                     })),
@@ -7737,7 +7737,7 @@ struct LogStyle {
     time_font: SharedString,
     alternate_rows: bool,
     compact_urls: bool,
-    header_lines: bool,
+    reiwa_mode: bool,
 }
 
 impl LogStyle {
@@ -7757,7 +7757,7 @@ impl LogStyle {
             },
             alternate_rows: appearance.alternate_rows,
             compact_urls: appearance.compact_urls,
-            header_lines: appearance.header_line_messages,
+            reiwa_mode: appearance.reiwa_mode,
         }
     }
 
@@ -8007,10 +8007,10 @@ impl ChatWindow {
             .map(|range| compact.shown_range(range))
             .collect();
         // Default layout: the nickname flows into the message text, so
-        // wrapped lines return to the left edge of the text column. The
-        // header layout shows it on its own first line instead.
-        let header_lines = style.header_lines && !message.activity;
-        let prefix = if message.activity || header_lines {
+        // wrapped lines return to the left edge of the text column. Reiwa
+        // mode shows it on its own first line instead.
+        let reiwa = style.reiwa_mode && !message.activity;
+        let prefix = if message.activity || reiwa {
             String::new()
         } else {
             format!("{}: ", message.sender)
@@ -8059,41 +8059,31 @@ impl ChatWindow {
                         .cloned()
                 }),
                 &message.sender,
+                if reiwa {
+                    avatars::SLOT * 2.
+                } else {
+                    avatars::SLOT
+                },
                 cx,
             )
         });
-        // One element for the whole message, so both lines of the header
-        // layout share the row's alternating background.
+        // One element for the whole message, so both lines of Reiwa mode
+        // share the row's alternating background.
         let row = div()
             .w_full()
             .flex()
+            .items_start()
+            .gap_1()
             .py(px(1.))
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 d.bg(style.main_alt)
             });
-        let row = if header_lines {
-            row.flex_col().child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .text_xs()
-                    .child(style.time(message.time))
-                    .children(avatar)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .text_color(theme.nickname)
-                            .child(message.sender.clone()),
-                    ),
-            )
+        let row = if reiwa {
+            row.children(avatar)
         } else {
-            row.items_start()
-                .gap_1()
-                .child(style.time(message.time))
-                .children(avatar)
+            row.child(style.time(message.time)).children(avatar)
         };
-        row.child({
+        let body = {
             let text = div()
                 .id(("message-text", index))
                 .debug_selector(move || format!("message-text-{index}"))
@@ -8169,17 +8159,56 @@ impl ChatWindow {
                     .child(preview_element(link, shown, index, &theme, cx))
                     .into_any_element(),
             }
-        })
+        };
+        if reiwa {
+            // Line one: nickname and time; line two: the message.
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_color(theme.nickname)
+                                    .child(message.sender.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .font_family(style.time_font.clone())
+                                    .text_color(theme.time)
+                                    .child(message.time.to_string()),
+                            ),
+                    )
+                    .child(body),
+            )
+        } else {
+            row.child(body)
+        }
         .into_any_element()
     }
 
     /// The fixed avatar slot of a message or member row: the image when it
     /// is ready, blank while it loads, and the nickname's default avatar
     /// when there is none or it failed. It never changes the row's height.
-    fn avatar_slot(&self, avatar: Option<Arc<str>>, nickname: &str, cx: &mut Context<Self>) -> Div {
+    fn avatar_slot(
+        &self,
+        avatar: Option<Arc<str>>,
+        nickname: &str,
+        size: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let slot = div()
-            .w(px(avatars::SLOT))
-            .h(px(avatars::SLOT))
+            .w(px(size))
+            .h(px(size))
             .mt(px(2.))
             .flex_shrink_0()
             .overflow_hidden();
@@ -8314,10 +8343,12 @@ impl ChatWindow {
                     .when(selected, |d| d.bg(theme.selected))
                     .when(!selected, |d| d.hover(|d| d.bg(theme.hover)))
                     .when_some(avatar, |row, avatar| {
-                        row.flex()
-                            .items_center()
-                            .gap_1()
-                            .child(self.avatar_slot(avatar, &nickname, cx))
+                        row.flex().items_center().gap_1().child(self.avatar_slot(
+                            avatar,
+                            &nickname,
+                            avatars::SLOT,
+                            cx,
+                        ))
                     })
                     // The list gives every row the height of the first, so a
                     // nickname that wrapped would overlap the next row.
