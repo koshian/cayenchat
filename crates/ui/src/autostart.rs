@@ -152,6 +152,19 @@ mod platform {
         quoted
     }
 
+    /// GIO refuses an entry whose `Exec` path contains `%` even when it is
+    /// written as `%%`, so such a registration would show as on but never
+    /// start. Refuse it up front instead.
+    fn check_executable(executable: &Path) -> Result<(), String> {
+        if executable.to_string_lossy().contains('%') {
+            return Err(format!(
+                "desktop autostart cannot start {} because its path contains '%'",
+                executable.display()
+            ));
+        }
+        Ok(())
+    }
+
     fn contents(executable: &Path) -> String {
         format!(
             "[Desktop Entry]\nType=Application\nName=CayenChat\n\
@@ -240,6 +253,7 @@ mod platform {
     pub fn enable() -> Result<(), String> {
         let path = entry_path()?;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        check_executable(&executable)?;
         if let Some(directory) = path.parent() {
             std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
@@ -298,6 +312,12 @@ mod platform {
                 "{text}"
             );
             assert_eq!(text.lines().count(), 8);
+        }
+
+        #[test]
+        fn a_path_with_a_percent_sign_is_refused() {
+            assert!(check_executable(Path::new("/opt/a%b/cayenchat")).is_err());
+            assert!(check_executable(Path::new("/opt/ab/cayenchat")).is_ok());
         }
 
         #[test]
