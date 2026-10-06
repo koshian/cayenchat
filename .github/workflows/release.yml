@@ -131,9 +131,35 @@ jobs:
       - name: Write checksums
         run: |
           set -euo pipefail
-          test "$(ls dist | wc -l)" -eq 4
+          EXPECTED="cayenchat-${VERSION}-macos-arm64.zip
+          cayenchat-${VERSION}-windows-arm64.zip
+          cayenchat-${VERSION}-windows-x86_64.zip
+          cayenchat-ui_${VERSION}-1_amd64.deb"
+          if [ "$(ls dist)" != "$EXPECTED" ]; then
+            echo "::error::Unexpected release artifacts:"
+            ls dist
+            exit 1
+          fi
           (cd dist && sha256sum -- * > SHA256SUMS)
           cat dist/SHA256SUMS
+
+      - name: Verify the tag again
+        env:
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # The tag may have been moved while the packages were building.
+          REF="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")"
+          if [ "$(jq -r '.object.type' <<<"$REF")" != tag ]; then
+            echo "::error::Tag $TAG is not an annotated tag"
+            exit 1
+          fi
+          TAG_SHA="$(jq -r '.object.sha' <<<"$REF")"
+          TARGET="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.object | select(.type == "commit") | .sha')"
+          if [ "$TARGET" != "$SHA" ]; then
+            echo "::error::Tag $TAG no longer points to $SHA; refusing to publish"
+            exit 1
+          fi
 
       - name: Create release
         run: |

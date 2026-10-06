@@ -261,7 +261,7 @@ rolling `beta` is separate and unchanged. To release:
 3. The workflow fails before building if the tag does not match the Cargo
    version, is not annotated, points at a commit not on `master`, or already
    has a release. It builds the exact tagged commit and, in the only job with
-   `contents: write`, creates the release with `--verify-tag`, the four
+   `contents: write`, re-checks the tag right before publishing and creates the release with `--verify-tag`, the four
    packages (`cayenchat-<version>-windows-x86_64.zip`, `-windows-arm64.zip`,
    `-macos-arm64.zip` and the Linux `.deb`) and `SHA256SUMS`. Tags containing
    `-` (such as `v1.0.0-rc.1`) are pre-releases and not "latest". Notes are
