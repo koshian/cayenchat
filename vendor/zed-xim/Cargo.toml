@@ -107,3 +107,6 @@ default-features = false
 [dependencies.xim-parser]
 version = "0.2.0"
 default-features = false
+
+[dependencies.encoding_rs]
+version = "0.8.28"

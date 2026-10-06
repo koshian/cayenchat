@@ -123,6 +123,10 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --verbose
 
+      # The vendored XIM client is outside the workspace; keep its decoder tests.
+      - name: Test vendored zed-xim
+        run: cargo test -p zed-xim --locked
+
       # Probes the real Windows Credential Manager through the keyring crate.
       - name: Test system credential store
         if: runner.os == 'Windows'

@@ -8855,6 +8855,7 @@ name = "zed-xim"
 version = "0.4.0-zed"
 dependencies = [
  "ahash",
+ "encoding_rs",
  "hashbrown 0.14.5",
  "log",
  "x11rb",

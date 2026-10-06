@@ -3,35 +3,33 @@
 //! `xim_ctext::compound_text_to_utf8` only accepts a single UTF-8 or JIS segment and
 //! the client used to `expect` it to succeed. IBus (Mozc) sends mixed strings such
 //! as ASCII followed by a UTF-8 or JIS X 0208 segment, which made the whole
-//! application panic. This decoder never fails: unsupported segments are dropped.
+//! application panic. This decoder tracks the G0 (GL) and G1 (GR) designations
+//! separately, supports ASCII, Latin-1, JIS X 0201 katakana, JIS X 0208 and UTF-8
+//! segments, and never fails: unsupported segments are dropped.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 const ESC: u8 = 0x1B;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Mode {
-    Single,
-    Utf8,
+enum Set {
+    Ascii,
+    Latin1,
+    Kana,
     Jis,
     Skip,
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> String {
     let mut out = String::new();
-    let mut mode = Mode::Single;
-    let mut latin1_right = false;
-    let mut segment: Vec<u8> = Vec::new();
+    let mut gl = Set::Ascii;
+    let mut gr = Set::Latin1;
+    let mut utf8 = false;
     let mut i = 0;
 
-    while i <= bytes.len() {
-        let at_escape = i < bytes.len() && bytes[i] == ESC;
-        if i == bytes.len() || at_escape {
-            flush(&mut out, mode, &mut segment);
-            if !at_escape {
-                break;
-            }
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == ESC {
             // ESC, intermediate bytes (0x20..=0x2F), final byte (0x30..=0x7E).
             let start = i + 1;
             let mut end = start;
@@ -41,55 +39,80 @@ pub(crate) fn decode(bytes: &[u8]) -> String {
             let intermediates = &bytes[start..end];
             let final_byte = bytes.get(end).copied();
             i = (end + 1).min(bytes.len());
+            if utf8 {
+                if (intermediates, final_byte) == (b"%".as_slice(), Some(b'@')) {
+                    utf8 = false;
+                }
+                continue;
+            }
             match (intermediates, final_byte) {
-                (b"%", Some(b'G')) => mode = Mode::Utf8,
-                (b"%", Some(b'@')) => mode = Mode::Single,
-                (b"(", Some(b'B' | b'J')) => mode = Mode::Single,
-                (b"$(" | b"$", Some(b'B')) => mode = Mode::Jis,
-                (b"-", Some(b'A')) => latin1_right = true,
-                (b"$(" | b"$)" | b"$", _) => mode = Mode::Skip,
+                (b"%", Some(b'G')) => utf8 = true,
+                (b"(", Some(b'B' | b'J')) => gl = Set::Ascii,
+                (b"(", Some(b'I')) => gl = Set::Kana,
+                (b"$(" | b"$", Some(b'B')) => gl = Set::Jis,
+                (b"$(" | b"$" | b"(", _) => gl = Set::Skip,
+                (b")", Some(b'I')) => gr = Set::Kana,
+                (b")", Some(b'B' | b'J')) => gr = Set::Ascii,
+                (b"$)", Some(b'B')) => gr = Set::Jis,
+                (b"-", Some(b'A')) => gr = Set::Latin1,
+                (b"$)" | b")" | b"-", _) => gr = Set::Skip,
                 _ => {}
             }
             continue;
         }
 
-        let byte = bytes[i];
+        if utf8 {
+            let end = bytes[i..]
+                .iter()
+                .position(|&c| c == ESC)
+                .map_or(bytes.len(), |p| i + p);
+            out.push_str(&String::from_utf8_lossy(&bytes[i..end]));
+            i = end;
+            continue;
+        }
+
+        let set = if b < 0x80 { gl } else { gr };
+        // Controls, space and DEL are not part of the graphic sets.
+        if b < 0x21 || b == 0x7F || b == 0xA0 || b == 0xFF {
+            if b < 0x80 || set == Set::Latin1 {
+                out.push(char::from(b));
+            }
+            i += 1;
+            continue;
+        }
+        let low = b & 0x7F;
         i += 1;
-        match mode {
-            Mode::Skip => {}
-            Mode::Utf8 | Mode::Jis => segment.push(byte),
-            Mode::Single => {
-                if byte < 0x80 || latin1_right {
-                    out.push(char::from(byte));
+        match set {
+            Set::Ascii => out.push(char::from(low)),
+            Set::Latin1 => {
+                if b >= 0x80 {
+                    out.push(char::from(b));
                 }
             }
+            Set::Kana => {
+                if (0x21..=0x5F).contains(&low) {
+                    out.push(char::from_u32(0xFF61 + u32::from(low) - 0x21).unwrap_or('\u{FFFD}'));
+                }
+            }
+            Set::Jis => match bytes.get(i) {
+                Some(&second) if second != ESC && (0x21..=0x7E).contains(&(second & 0x7F)) => {
+                    i += 1;
+                    let pair = [low | 0x80, (second & 0x7F) | 0x80];
+                    let (text, _) = encoding_rs::EUC_JP.decode_without_bom_handling(&pair);
+                    out.push_str(&text);
+                }
+                _ => {}
+            },
+            Set::Skip => {}
         }
     }
     out
 }
 
-fn flush(out: &mut String, mode: Mode, segment: &mut Vec<u8>) {
-    if segment.is_empty() {
-        return;
-    }
-    match mode {
-        Mode::Utf8 => out.push_str(&String::from_utf8_lossy(segment)),
-        Mode::Jis => {
-            let mut jis = Vec::with_capacity(segment.len() + 4);
-            jis.extend_from_slice(&[ESC, b'$', b'(', b'B']);
-            jis.extend_from_slice(segment);
-            if let Ok(text) = xim_ctext::compound_text_to_utf8(&jis) {
-                out.push_str(&text);
-            }
-        }
-        Mode::Single | Mode::Skip => {}
-    }
-    segment.clear();
-}
-
 #[cfg(test)]
 mod tests {
     use super::decode;
+    use alloc::string::String;
 
     #[test]
     fn plain_and_utf8() {
@@ -107,8 +130,34 @@ mod tests {
 
     #[test]
     fn jis_x0208() {
-        // "あ" is 0x2422 in JIS X 0208.
         assert_eq!(decode(b"\x1b$(B\x24\x22\x1b(Bt"), "あt");
+    }
+
+    // Generated by Xlib Xutf8TextListToTextProperty.
+    #[test]
+    fn xlib_tesuto_is_not_duplicated() {
+        let bytes = b"\x1b$(B\x24\x46\x24\x39\x24\x48\x24\x46\x24\x39\x24\x48";
+        assert_eq!(decode(bytes), "てすとてすと");
+    }
+
+    #[test]
+    fn long_jis_and_mixed_ascii() {
+        let mut v = b"ab\x1b$(B".to_vec();
+        for _ in 0..200 {
+            v.extend_from_slice(b"\x24\x46\x24\x39");
+        }
+        v.extend_from_slice(b"\x1b(Bxy");
+        let mut want = String::from("ab");
+        want.push_str(&"てす".repeat(200));
+        want.push_str("xy");
+        assert_eq!(decode(&v), want);
+    }
+
+    // Xlib output for half-width katakana (ESC ) I, GR) and Latin-1 default GR.
+    #[test]
+    fn halfwidth_katakana_and_latin1() {
+        assert_eq!(decode(b"\x1b)I\xb1\xb2\xb3"), "ｱｲｳ");
+        assert_eq!(decode(b"\x1b$(B\x46\x7c\x1b(B caf\xe9"), "日 café");
     }
 
     #[test]
@@ -118,5 +167,7 @@ mod tests {
         decode(b"\x1b$(");
         decode(b"\x1b%G\xff\xfe");
         decode(b"\x1b$(A\x30\x30abc");
+        decode(b"\x1b$(B\x24");
+        decode(b"\x1b$(B\x24\x1b(B");
     }
 }

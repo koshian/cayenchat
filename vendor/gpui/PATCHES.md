@@ -106,4 +106,4 @@ the same warning repeated forever at 100% CPU after the X server exited
 `xim_ctext::compound_text_to_utf8(..).expect(..)` on preedit and commit text, so
 IBus/Mozc text that mixes ASCII with UTF-8 or JIS X 0208 segments panicked the
 whole app on X11 (issue #227). `src/ctext.rs` now decodes COMPOUND_TEXT leniently
-(UTF-8, ASCII, Latin-1 and JIS X 0208 segments; others are dropped) and never fails.
+(UTF-8, ASCII, Latin-1, JIS X 0201 katakana and JIS X 0208, with GL and GR tracked separately; others are dropped) and never fails.
