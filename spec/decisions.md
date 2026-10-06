@@ -573,11 +573,9 @@ Nothing reconnects; **Connect** stays as the one explicit action.
 
 Exceptions keep a half-finished edit from doing damage:
 
-- A typed password is stored when its field loses focus, not while it is
-  being typed, because storing empties the field. Closing the window (close
-  button or Back), quitting the app and choosing another server store every
-  typed password, focused or not; a server switch stores them under the
-  server they were typed for (not yet for a server without a host).
+- (Superseded for server settings by #209 below: typed passwords are stored
+  by Save only.) A typed password was stored when its field lost focus,
+  closing the window or choosing another server.
 - While the selected server has no host nothing is saved and the window says
   a host is needed, because saving would drop the server and forget its
   passwords.
@@ -600,6 +598,29 @@ notifications) exactly as a save would, because later saves compare with the
 read-back copy and would otherwise find nothing to apply. File watching and
 single-instance locks were not added.
 
+**Server settings wait for Save (#209).** The exception to the above: the
+server list and everything stored in a server profile (hostname, port,
+nickname, channels, SASL, IRCv3 options, password saving, removal) are written
+only when **Save** on the Connection tab is pressed (Connect also saves), so
+an accidentally chosen server is never kept. Everything else keeps autosaving
+and leaves the saved server list and the selected server as it is (an invalid
+unsaved port does not stop it). Typed passwords are kept in memory per server
+and stored by Save too, not when their field loses focus or another server is
+chosen; turning password saving off or removing a server deletes the stored
+secrets only on Save. Save stays available after the last server was removed,
+and the IRCv3 tab shows it with the note whenever server changes are
+unsaved. A note says server changes are unsaved;
+leaving the window with them discards them, and a file written by another
+process is not read back while they are pending. Adding a server shows only
+the suggestions (`PRESETS`: `irc.ircnet.com` first, the default, then every
+server on <https://www.ircnet.info/servers>), not the saved servers; choosing
+one fills host and port 6667 of the new, still unsaved server, and "Cancel
+adding" drops it. Editing lists only saved servers plus "Add a server…".
+Removal is confirmed first and, like other server edits, applies on Save.
+A failed save (settings file, or deleting a stored secret) leaves the edits
+unsaved, for Connect too, so a later Save retries and nothing unsaved reaches
+the autosave.
+
 ## D022 — Opt-in IRCv3 features and shared CAP negotiation
 
 **Status:** Accepted
@@ -609,7 +630,7 @@ server and are off for new and migrated settings (settings version 15). The
 IRCv3 settings tab is their current home and names the server being
 configured. This milestone exposes message tags and server timestamps
 (server-time); server-time does not require message-tags, as the protocol
-allows. Changes are saved by the existing autosave (D021) and take effect on
+allows. Per-server changes are saved with Save (D021) and take effect on
 the next connection, including reconnects and retries; nothing reconnects.
 
 CAP negotiation is shared infrastructure, not a user-facing feature: SASL

@@ -29,9 +29,19 @@ pub struct ServerPreset {
     pub host: &'static str,
 }
 
-pub const PRESETS: [ServerPreset; 3] = [
+/// Hosts of the two servers that `IRCNET_ID` and `IRCNET_IPV6_ID` meant.
+const LEGACY_IRCNET_HOSTS: [&str; 2] = ["irc.ircnet.ne.jp", "irc6.ircnet.ne.jp"];
+
+/// Suggested servers, `irc.ircnet.com` (the default for a new server) first,
+/// then every server listed at <https://www.ircnet.info/servers> (some of
+/// them only link to other servers and do not accept clients).
+pub const PRESETS: [ServerPreset; 56] = [
     ServerPreset {
         name: "IRCnet",
+        host: "irc.ircnet.com",
+    },
+    ServerPreset {
+        name: "IRCnet (Japan)",
         host: "irc.ircnet.ne.jp",
     },
     ServerPreset {
@@ -41,6 +51,214 @@ pub const PRESETS: [ServerPreset; 3] = [
     ServerPreset {
         name: "IRCnet (dev)",
         host: "dev.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "Austria",
+        host: "hub.irc.at",
+    },
+    ServerPreset {
+        name: "Austria",
+        host: "vienna.irc.at",
+    },
+    ServerPreset {
+        name: "Belgium",
+        host: "ircnet.clue.be",
+    },
+    ServerPreset {
+        name: "Canada",
+        host: "irc.ircnet.ca",
+    },
+    ServerPreset {
+        name: "Czech Republic",
+        host: "irc.felk.cvut.cz",
+    },
+    ServerPreset {
+        name: "Denmark",
+        host: "irc.dotsrc.org",
+    },
+    ServerPreset {
+        name: "Estonia",
+        host: "irc.datanet.ee",
+    },
+    ServerPreset {
+        name: "Estonia",
+        host: "hub.ircnet.ee",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc.cs.hut.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc.cc.tut.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "hub.cc.tut.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc.oulu.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc.lut.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc.nebula.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc.elisa.fi",
+    },
+    ServerPreset {
+        name: "Finland",
+        host: "irc2.inet.fi",
+    },
+    ServerPreset {
+        name: "Germany",
+        host: "fu-berlin.de",
+    },
+    ServerPreset {
+        name: "Germany",
+        host: "man-da.de",
+    },
+    ServerPreset {
+        name: "Germany",
+        host: "uni-erlangen.de",
+    },
+    ServerPreset {
+        name: "Germany",
+        host: "belwue.de",
+    },
+    ServerPreset {
+        name: "Hungary",
+        host: "atw.irc.hu",
+    },
+    ServerPreset {
+        name: "Hungary",
+        host: "ssl.atw.irc.hu",
+    },
+    ServerPreset {
+        name: "Hungary",
+        host: "sasl.irc.atw.hu",
+    },
+    ServerPreset {
+        name: "Hungary",
+        host: "irc.atw-inter.net",
+    },
+    ServerPreset {
+        name: "Hungary",
+        host: "ssl.irc.atw-inter.net",
+    },
+    ServerPreset {
+        name: "Italy",
+        host: "hub.tophost.it",
+    },
+    ServerPreset {
+        name: "Italy",
+        host: "irc6.tophost.it",
+    },
+    ServerPreset {
+        name: "Italy",
+        host: "spadhausen.irc.it",
+    },
+    ServerPreset {
+        name: "Italy",
+        host: "irc.spadhausen.com",
+    },
+    ServerPreset {
+        name: "Japan",
+        host: "dh.ircnet.ne.jp",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "hostsailor.ircnet.nl",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "hub.snt.utwente.nl",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "irc3.snt.ipv6.utwente.nl",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "ircnet.tngnet.nl",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "ircng.snt.utwente.nl",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "tngnet.ircnet.io",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "irc.nlnog.net",
+    },
+    ServerPreset {
+        name: "Netherlands",
+        host: "openirc.snt.utwente.nl",
+    },
+    ServerPreset {
+        name: "Norway",
+        host: "irc.uio.no",
+    },
+    ServerPreset {
+        name: "Poland",
+        host: "hub.irc.pl",
+    },
+    ServerPreset {
+        name: "Poland",
+        host: "poznan.irc.pl",
+    },
+    ServerPreset {
+        name: "Romania",
+        host: "ircnet.hostsailor.com",
+    },
+    ServerPreset {
+        name: "Slovenia",
+        host: "irc.arnes.si",
+    },
+    ServerPreset {
+        name: "Sweden",
+        host: "hub.se",
+    },
+    ServerPreset {
+        name: "Sweden",
+        host: "irc.okit.se",
+    },
+    ServerPreset {
+        name: "Sweden",
+        host: "irc.swipnet.se",
+    },
+    ServerPreset {
+        name: "Sweden",
+        host: "irc.swepipe.net",
+    },
+    ServerPreset {
+        name: "United Kingdom",
+        host: "hub.uk",
+    },
+    ServerPreset {
+        name: "United States",
+        host: "hub.us.ircnet.com",
+    },
+    ServerPreset {
+        name: "United States",
+        host: "hub.us",
+    },
+    ServerPreset {
+        name: "United States",
+        host: "irc.psychz.net",
+    },
+    ServerPreset {
+        name: "United States",
+        host: "ircnet.tempest.net",
     },
 ];
 
@@ -768,7 +986,7 @@ impl Settings {
             // user-added ones. Keep a preset only if it was in use: selected
             // (created if the file omitted it) or holding saved passwords.
             for (index, id) in [IRCNET_ID, IRCNET_IPV6_ID].into_iter().enumerate() {
-                let host = PRESETS[index].host;
+                let host = LEGACY_IRCNET_HOSTS[index];
                 match self.servers.iter_mut().find(|s| s.id == id) {
                     Some(server) => server.host = host.into(),
                     None if self.selected_server == id => {
@@ -873,8 +1091,8 @@ impl From<OldSettings> for Settings {
             ..Settings::default()
         };
         let (id, host) = match old.server {
-            OldServerChoice::Ircnet => (IRCNET_ID.to_owned(), PRESETS[0].host),
-            OldServerChoice::IrcnetIpv6 => (IRCNET_IPV6_ID.to_owned(), PRESETS[1].host),
+            OldServerChoice::Ircnet => (IRCNET_ID.to_owned(), LEGACY_IRCNET_HOSTS[0]),
+            OldServerChoice::IrcnetIpv6 => (IRCNET_IPV6_ID.to_owned(), LEGACY_IRCNET_HOSTS[1]),
             OldServerChoice::Custom => ("custom-1".to_owned(), old.custom_host.as_str()),
         };
         let mut server = ServerProfile::new(id, host);
@@ -1479,9 +1697,12 @@ mod tests {
         let mut settings = Settings::default();
         assert!(settings.servers.is_empty());
         assert!(settings.selected_profile().is_none());
-        let added = settings.add_server(PRESETS[1].host);
+        let added = settings.add_server(PRESETS[2].host);
         assert_eq!(added.host, "irc6.ircnet.ne.jp");
         assert!(PRESETS.iter().any(|p| p.host == "dev.ircnet.ne.jp"));
+        assert_eq!(PRESETS[0].host, "irc.ircnet.com", "the default suggestion");
+        let hosts: HashSet<_> = PRESETS.iter().map(|p| p.host).collect();
+        assert_eq!(hosts.len(), PRESETS.len(), "no host is listed twice");
         assert!(
             added.id.starts_with("custom-"),
             "a fresh ID, not a preset's"

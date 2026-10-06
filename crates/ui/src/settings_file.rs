@@ -20,6 +20,13 @@ thread_local! {
     /// `None` while no test holds a file; then the file's content.
     static FILE: std::cell::RefCell<Option<Settings>> = const { std::cell::RefCell::new(None) };
     static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes saving fail (or work again) to test what a failed save leaves.
+#[cfg(test)]
+pub(crate) fn fail_saves(failing: bool) {
+    FAILING.set(failing);
 }
 
 #[cfg(test)]
@@ -29,6 +36,9 @@ pub(crate) fn load() -> Result<Option<Settings>, String> {
 
 #[cfg(test)]
 pub(crate) fn save(settings: &Settings) -> Result<(), String> {
+    if FAILING.get() {
+        return Err("cannot write the settings file".into());
+    }
     if ENABLED.get() {
         FILE.with_borrow_mut(|file| *file = Some(settings.clone()));
     }
@@ -52,13 +62,19 @@ impl TestFile {
 impl Drop for TestFile {
     fn drop(&mut self) {
         ENABLED.set(false);
+        FAILING.set(false);
         FILE.with_borrow_mut(|file| *file = None);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use cayenchat_storage::{Appearance, Secret, Settings, ThemeMode};
+    use std::sync::Arc;
+
+    use cayenchat_storage::credentials::MemoryBackend;
+    use cayenchat_storage::{
+        Appearance, CredentialBackendKind, CredentialStore, Secret, Settings, ThemeMode,
+    };
     use gpui::{Focusable, TestAppContext};
 
     use super::TestFile;
@@ -117,7 +133,7 @@ mod tests {
         cx.run_until_parked();
         form.update(cx, |form, cx| {
             assert_eq!(channels(form, cx), "#renamed,-#a");
-            form.autosave_now(None, cx);
+            form.save_servers(cx);
         });
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
@@ -247,6 +263,94 @@ mod tests {
     }
 
     #[gpui::test]
+    fn server_edits_wait_for_save_while_other_settings_autosave(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+
+        form.update(cx, |form, cx| {
+            form.settings
+                .channels
+                .update(cx, |field, cx| field.set_text("#b", cx));
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+            assert!(form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages);
+        assert_eq!(saved.selected_profile().unwrap().channels, "#a");
+
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(!form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().channels, "#b");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unfinished_port_does_not_stop_other_settings_from_autosaving(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings
+                .port
+                .update(cx, |field, cx| field.set_text("bad", cx));
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+            assert!(form.autosave_error.is_none());
+        });
+        assert!(
+            !super::load()
+                .unwrap()
+                .unwrap()
+                .notifications
+                .private_messages
+        );
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unsaved_selection_is_not_saved_by_a_readback(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        let a_id = settings.selected_server.clone();
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.select_server(b_id.clone(), cx);
+            assert!(form.servers_unsaved(cx));
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+            assert!(form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_server, a_id);
+        assert!(!saved.notifications.private_messages);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn removing_the_last_server_is_saved_explicitly(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings.values.remove_selected_server();
+            form.settings
+                .show_selected(&crate::secrets::store(cx), &form.i18n, cx);
+            assert!(form.servers_unsaved(cx));
+            form.save_servers(cx);
+            assert!(!form.servers_unsaved(cx));
+        });
+        assert!(super::load().unwrap().unwrap().servers.is_empty());
+        drop(file);
+    }
+
+    #[gpui::test]
     fn a_server_another_process_added_keeps_its_password(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
@@ -268,6 +372,144 @@ mod tests {
             form.autosave_now(None, cx);
         });
         assert!(store.contains(&added.server_password_key()).unwrap());
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn a_failed_connect_save_leaves_the_draft_unsaved(cx: &mut TestAppContext) {
+        // Valid identity, so Connect gets as far as saving.
+        let mut settings = settings_with_channels("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "nick".into();
+        profile.username = "user".into();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings
+                .channels
+                .update(cx, |field, cx| field.set_text("#draft", cx));
+        });
+        super::fail_saves(true);
+        form.update_in(cx, |form, window, cx| {
+            form.connect_from_settings(window, cx)
+        });
+        form.update(cx, |form, cx| {
+            assert!(
+                form.feedback
+                    .as_deref()
+                    .is_some_and(|text| text.contains("cannot write the settings file")),
+                "the save failure is shown: {:?}",
+                form.feedback
+            );
+            assert!(form.servers_unsaved(cx));
+            assert_eq!(form.saved.selected_profile().unwrap().channels, "#a");
+
+            // Another setting autosaves without the draft.
+            super::fail_saves(false);
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages);
+        assert_eq!(saved.selected_profile().unwrap().channels, "#a");
+
+        // Save tries the draft again.
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(form.feedback.is_none());
+            assert!(!form.servers_unsaved(cx));
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().channels, "#draft");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn turning_password_saving_off_keeps_the_typed_connection_fields(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        settings.selected_profile_mut().unwrap().remember_passwords = true;
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let host = |form: &SettingsWindow, cx: &gpui::App| {
+            form.settings.custom_host.read(cx).text().to_owned()
+        };
+
+        // A saved edit, then an unsaved one, survive the switch.
+        form.update(cx, |form, cx| {
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text("changed.example", cx));
+            form.save_servers(cx);
+            form.settings
+                .channels
+                .update(cx, |field, cx| field.set_text("#draft", cx));
+        });
+        form.update_in(cx, |form, window, cx| {
+            form.toggle_remember_passwords(window, cx)
+        });
+        form.update(cx, |form, cx| {
+            assert_eq!(host(form, cx), "changed.example");
+            assert_eq!(form.settings.channels.read(cx).text(), "#draft");
+            assert!(form.servers_unsaved(cx));
+            form.save_servers(cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        let profile = saved.selected_profile().unwrap();
+        assert_eq!(profile.host, "changed.example");
+        assert_eq!(profile.channels, "#draft");
+        assert!(!profile.remember_passwords);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn a_failed_password_deletion_stays_unsaved_until_a_save_succeeds(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        settings.selected_profile_mut().unwrap().remember_passwords = true;
+        let key = settings.selected_profile().unwrap().server_password_key();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let working = cx.update(|_, cx| secrets::store(cx));
+        working.set(&key, &Secret::new("secret")).unwrap();
+
+        form.update_in(cx, |form, window, cx| {
+            form.toggle_remember_passwords(window, cx)
+        });
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(form.feedback.is_some(), "the failed deletion is shown");
+            assert!(form.servers_unsaved(cx));
+        });
+        assert!(
+            super::load()
+                .unwrap()
+                .unwrap()
+                .selected_profile()
+                .unwrap()
+                .remember_passwords
+        );
+        assert!(working.contains(&key).unwrap());
+
+        // Once the store works again, Save deletes the secret.
+        cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(form.feedback.is_none());
+            assert!(!form.servers_unsaved(cx));
+        });
+        assert!(!working.contains(&key).unwrap());
+        assert!(
+            !super::load()
+                .unwrap()
+                .unwrap()
+                .selected_profile()
+                .unwrap()
+                .remember_passwords
+        );
         drop(file);
     }
 }
