@@ -101,6 +101,23 @@ jobs:
             throw "Expected version $expected, found $($info.FileVersion) / $($info.ProductVersion)"
           }
 
+      # Builds and signs the throw-away MSIX used to check the packaged
+      # login-startup backend (#153); makeappx validates the manifest.
+      - name: Build test MSIX
+        if: matrix.name == 'Windows x86_64'
+        shell: pwsh
+        run: ./scripts/msix-test/build.ps1 -Exe target/release/cayenchat.exe
+
+      - name: Upload test MSIX
+        if: matrix.name == 'Windows x86_64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: msix-test
+          path: |
+            target/tmp/msix-test/CayenChat.Test.msix
+            target/tmp/msix-test/test.cer
+          if-no-files-found: error
+
       # The default member is only the UI crate; test every crate so storage,
       # upload, irc-core and app also run on each platform.
       - name: Test
