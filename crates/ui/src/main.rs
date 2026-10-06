@@ -2229,11 +2229,17 @@ impl ChatWindow {
             session.push_diagnostic(format!("Disconnected: {reason}"));
             session.pending_whois.clear();
         }
+        // Only a lost registered connection marks the conversations; failed
+        // retries would repeat the line in every log.
+        let was_registered = self.state.is_registered(network);
         self.state
             .set_status(network, ConnectionStatus::Disconnected(reason.clone()));
         let message = self
             .i18n
             .format("status_disconnected", &[("reason", &reason)]);
+        if was_registered {
+            self.state.append_network_activity(network, &message);
+        }
         self.state.append_server_message(network, message.clone());
         // Another server's disconnect is shown in its tree row and log only.
         if self.selected_network_id() == Some(network) {
@@ -8260,14 +8266,27 @@ impl ChatWindow {
         } else {
             format!("{} [{network}] {}: ", conversation.name, message.sender)
         };
-        let highlights = if message.activity {
+        // Long URLs are shortened as in the channel log, but stay plain text.
+        let compact = compact_urls::Compact::new(
+            &message.text,
+            &if style.compact_urls {
+                log_urls(&message.text)
+            } else {
+                Vec::new()
+            },
+            style.compact_urls,
+        );
+        let highlights: Vec<_> = if message.activity {
             Vec::new()
         } else {
             self.highlight_ranges(conversation.network, message)
+                .into_iter()
+                .map(|range| compact.shown_range(range))
+                .collect()
         };
         let styled = styled_log_text(
             &prefix,
-            &message.text,
+            compact.text(),
             &[],
             &[],
             &highlights,
@@ -11456,6 +11475,21 @@ mod pane_tests {
             assert!(lines(chat).contains(&("never answered".to_owned(), true)));
             assert!(lines(chat).contains(&("no echo-message here".to_owned(), false)));
             assert!(chat.sessions[&NetworkId(1)].pending_sends.is_empty());
+            // The channel log shows where the connection was lost, once.
+            let lost = |chat: &ChatWindow| {
+                lines(chat)
+                    .iter()
+                    .filter(|(text, _)| text.starts_with("Disconnected"))
+                    .count()
+            };
+            assert_eq!(lost(chat), 1);
+            chat.handle_events(
+                NetworkId(1),
+                vec![Event::Disconnected("still gone".into())],
+                false,
+                cx,
+            );
+            assert_eq!(lost(chat), 1);
         });
     }
 
@@ -11641,6 +11675,7 @@ mod pane_tests {
                     "A",
                     super::HISTORY_GAP_NOTE,
                     "alice: while you were away",
+                    "Disconnected: connection reset",
                     "D"
                 ]
             );

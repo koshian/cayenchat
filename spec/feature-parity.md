@@ -20,7 +20,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — rustls connection with certificate verification on by default and a per-server opt-out for self-signed or otherwise invalid certificates; public-server interoperability unverified
 - DONE — initial connect, manual disconnect and manual reconnect via settings, native menu or server context menu; the server context menu disables reconnect while a connection is active, and it and the menu bar disable disconnect unless a connection or a scheduled retry exists; disconnect also cancels a connection still in TCP/TLS setup; unexpected disconnections retry with capped backoff, while explicit disconnect cancels retries; a nickname rejected during registration (432/433) prompts for another nickname instead of retrying
 - DONE — multiple live networks; each connects, disconnects and retries independently, and its events, menus, prompts and WHOIS windows stay with it
-- PARTIAL — connecting, registered, disconnected status and errors shown in the UI; directional IRC transcript appears automatically during connection/failure, with a menu toggle after registration and clipboard copy (parsed lines, not a complete socket capture)
+- PARTIAL — connecting, registered, disconnected status and errors shown in the UI (a lost registered connection also adds a `Disconnected: reason` line to every channel and conversation log of that server, so the log shows where it was cut); directional IRC transcript appears automatically during connection/failure, with a menu toggle after registration and clipboard copy (parsed lines, not a complete socket capture)
 - DONE — optional server PASS over TLS
 - PARTIAL — SASL PLAIN over TLS with CAP negotiation; external-server interoperability unverified
 
@@ -52,7 +52,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — own joins/parts update active channels; channel logs show JOIN, PART, QUIT, NICK and channel MODE activity in English regardless of UI language, while other membership details remain pending
 - PARTIAL — server responses and errors in the selected server log
 - PARTIAL — HTTP(S) URLs in the upper channel log open on double-click, and the pointer is a hand over one (not while selecting); lower combined log switches channels on double-click
-- PARTIAL — Startup & Behavior option "Show long URLs compactly" (off by default) draws URLs over 28 characters in the upper channel log as `↗ host/start-of-path…` on a faint link-colored background, with the whole host kept and the full URL in a hover tooltip; presentation only: opening, selection, copying and the stored text use the original, and a selection touching a short form covers all of it; the icon is a text arrow rather than an SVG, and short URLs are not chipped
+- PARTIAL — Startup & Behavior option "Show long URLs compactly" (off by default) draws URLs over 28 characters in the upper channel log and the combined log (plain text there, not clickable) as `↗ host/start-of-path…` on a faint link-colored background, with the whole host kept and the full URL in a hover tooltip; presentation only: opening, selection, copying and the stored text use the original, and a selection touching a short form covers all of it; the icon is a text arrow rather than an SVG, and short URLs are not chipped
 - PARTIAL — drag selection and copy of channel-message body text; server and lower logs are not selectable
 
 ## Member list
