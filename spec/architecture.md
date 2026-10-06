@@ -350,8 +350,8 @@ invalid saved connection details open settings with feedback. Only explicitly
 saved credentials are available at startup. The macOS
 application menu and Command+, open that window;
 Windows/Linux use Ctrl+, or an in-window menu bar that is shown all the time by
-default (users found a hidden bar hard to discover, issue #60). The Keyboard tab
-has "Hide the menu bar until Alt or F10" (`menu_bar_auto_hide`, off by default,
+default (users found a hidden bar hard to discover, issue #60). The Startup &
+Behavior tab has "Hide the menu bar until Alt or F10" (`menu_bar_auto_hide`, off by default,
 added without a version change): then the bar is revealed by pressing Alt alone,
 by F10, or by resting the pointer for 0.4 s in a 6 px strip at the top of the
 content. Alt alone is commonly an IME on/off key, in which case the IME consumes

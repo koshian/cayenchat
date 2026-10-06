@@ -17,20 +17,25 @@ impl SettingsWindow {
         };
         match tab {
             SettingsTab::Connection | SettingsTab::Credentials => true,
+            // Login startup is the system's state, not a setting here, so
+            // it is neither compared nor reset.
+            SettingsTab::Application => {
+                current.language == defaults.language
+                    && current.restore_window_layout == defaults.restore_window_layout
+                    && (cfg!(target_os = "macos")
+                        || current.menu_bar_auto_hide == defaults.menu_bar_auto_hide)
+                    && (!cfg!(target_os = "linux")
+                        || current.linux_display == defaults.linux_display)
+            }
             SettingsTab::Appearance => {
                 let appearance = Appearance {
                     saved_colors: current.appearance.saved_colors.clone(),
                     ..defaults.appearance
                 };
-                current.appearance == appearance
-                    && current.theme == defaults.theme
-                    && current.restore_window_layout == defaults.restore_window_layout
-                    && (!cfg!(target_os = "linux")
-                        || current.linux_display == defaults.linux_display)
+                current.appearance == appearance && current.theme == defaults.theme
             }
             SettingsTab::Keyboard => {
                 current.channel_number_modifier == defaults.channel_number_modifier
-                    && current.menu_bar_auto_hide == defaults.menu_bar_auto_hide
                     && (!cfg!(target_os = "linux")
                         || current.text_key_theme == defaults.text_key_theme)
             }
@@ -46,11 +51,24 @@ impl SettingsWindow {
 
     /// Puts everything `tab` shows back to its default. Like any other
     /// change, it is saved and applied by the autosave.
-    pub(crate) fn reset_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+    pub(crate) fn reset_tab(
+        &mut self,
+        tab: SettingsTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let defaults = Settings::default();
         self.feedback = None;
         match tab {
             SettingsTab::Connection | SettingsTab::Credentials => {}
+            SettingsTab::Application => {
+                self.select_language(defaults.language, window, cx);
+                self.settings.language_list_open = false;
+                let values = &mut self.settings.values;
+                values.restore_window_layout = defaults.restore_window_layout;
+                values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
+                values.linux_display = defaults.linux_display;
+            }
             SettingsTab::Appearance => {
                 let appearance = Appearance {
                     saved_colors: std::mem::take(&mut self.settings.values.appearance.saved_colors),
@@ -60,8 +78,6 @@ impl SettingsWindow {
                 let values = &mut self.settings.values;
                 values.appearance = appearance;
                 values.theme = defaults.theme;
-                values.restore_window_layout = defaults.restore_window_layout;
-                values.linux_display = defaults.linux_display;
                 self.font_picker = None;
                 self.color_picker = None;
             }
@@ -69,7 +85,6 @@ impl SettingsWindow {
                 let values = &mut self.settings.values;
                 values.channel_number_modifier = defaults.channel_number_modifier;
                 values.text_key_theme = defaults.text_key_theme;
-                values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
             }
             SettingsTab::Shortcuts => {
                 self.settings.values.keybindings.clear();
@@ -148,9 +163,9 @@ impl SettingsWindow {
             ],
             cx,
         );
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
-                let _ = this.update(cx, |this, cx| this.reset_tab(tab, cx));
+                let _ = this.update_in(cx, |this, window, cx| this.reset_tab(tab, window, cx));
             }
         })
         .detach();
@@ -245,7 +260,9 @@ mod tests {
         assert!(!is_default(&form, SettingsTab::Appearance, cx));
         assert!(!is_default(&form, SettingsTab::Notifications, cx));
 
-        form.update(cx, |form, cx| form.reset_tab(SettingsTab::Appearance, cx));
+        form.update_in(cx, |form, window, cx| {
+            form.reset_tab(SettingsTab::Appearance, window, cx)
+        });
         form.read_with(cx, |form, cx| {
             let defaults = Appearance::default();
             assert_eq!(
@@ -261,17 +278,86 @@ mod tests {
         });
         assert!(is_default(&form, SettingsTab::Appearance, cx));
 
-        form.update(cx, |form, cx| {
+        form.update_in(cx, |form, window, cx| {
             form.settings
                 .keywords
                 .update(cx, |field, cx| field.set_text("cat", cx));
-            form.reset_tab(SettingsTab::Notifications, cx);
+            form.reset_tab(SettingsTab::Notifications, window, cx);
         });
         form.read_with(cx, |form, cx| {
             assert_eq!(form.settings.values.notifications, Notifications::default());
             assert_eq!(form.settings.keywords.read(cx).text(), "");
         });
         assert!(is_default(&form, SettingsTab::Notifications, cx));
+    }
+
+    /// Moving a setting between pages must move it between resets too: each
+    /// reset leaves exactly its own page default and the others untouched.
+    #[gpui::test]
+    fn each_page_reset_covers_its_own_items_and_no_others(cx: &mut gpui::TestAppContext) {
+        use cayenchat_storage::{ChannelNumberModifier, Language, LinuxDisplay, Settings};
+
+        // Each page's items, changed from their defaults.
+        let dirty: [(SettingsTab, fn(&mut Settings)); 3] = [
+            (SettingsTab::Application, |values| {
+                values.language = Language::English;
+                values.restore_window_layout = !values.restore_window_layout;
+                values.menu_bar_auto_hide = !values.menu_bar_auto_hide;
+                values.linux_display = LinuxDisplay::X11;
+            }),
+            (SettingsTab::Appearance, |values| {
+                values.theme = ThemeMode::Dark;
+                values.appearance.compact_urls = !values.appearance.compact_urls;
+            }),
+            (SettingsTab::Keyboard, |values| {
+                values.channel_number_modifier = ChannelNumberModifier::Alt;
+            }),
+        ];
+        let (form, cx) = form(SettingsTab::Application, cx);
+        let is_default =
+            |form: &gpui::Entity<SettingsWindow>, tab, cx: &mut gpui::VisualTestContext| {
+                form.read_with(cx, |form, cx| form.tab_is_default(tab, cx))
+            };
+
+        for (reset, _) in dirty {
+            form.update(cx, |form, cx| {
+                for (_, change) in dirty {
+                    change(&mut form.settings.values);
+                }
+                cx.notify();
+            });
+            for (tab, _) in dirty {
+                assert!(!is_default(&form, tab, cx), "dirty before reset");
+            }
+
+            form.update_in(cx, |form, window, cx| form.reset_tab(reset, window, cx));
+            for (tab, _) in dirty {
+                assert_eq!(
+                    is_default(&form, tab, cx),
+                    tab == reset,
+                    "only the reset page returns to its default"
+                );
+            }
+
+            // Back to defaults for the next round.
+            form.update_in(cx, |form, window, cx| {
+                for (tab, _) in dirty {
+                    form.reset_tab(tab, window, cx);
+                }
+            });
+        }
+
+        // Login startup is the system's state: the reset neither starts a
+        // change of it nor re-reads it.
+        let startup = form.read_with(cx, |form, _| form.autostart.clone());
+        form.update_in(cx, |form, window, cx| {
+            form.reset_tab(SettingsTab::Application, window, cx);
+            assert!(!form.autostart_busy);
+        });
+        assert_eq!(
+            form.read_with(cx, |form, _| form.autostart.clone()),
+            startup
+        );
     }
 
     #[gpui::test]
@@ -328,7 +414,7 @@ mod tests {
             form.read_with(cx, |form, _| form.tab)
         };
         cx.simulate_keystrokes("down");
-        assert!(tab(&form, cx) == SettingsTab::Appearance);
+        assert!(tab(&form, cx) == SettingsTab::Application);
         cx.simulate_keystrokes("up up");
         assert!(tab(&form, cx) == SettingsTab::Connection);
     }
