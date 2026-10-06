@@ -26,10 +26,20 @@ impl SettingsWindow {
                         || current.menu_bar_auto_hide == defaults.menu_bar_auto_hide)
                     && (!cfg!(target_os = "linux")
                         || current.linux_display == defaults.linux_display)
+                    && current.appearance.image_previews == defaults.appearance.image_previews
+                    && current.appearance.user_avatars == defaults.appearance.user_avatars
+                    && current.appearance.reiwa_mode == defaults.appearance.reiwa_mode
+                    && current.appearance.compact_urls == defaults.appearance.compact_urls
             }
             SettingsTab::Appearance => {
+                // The switches that live on the Application page are not
+                // shown here.
                 let appearance = Appearance {
                     saved_colors: current.appearance.saved_colors.clone(),
+                    image_previews: current.appearance.image_previews,
+                    user_avatars: current.appearance.user_avatars,
+                    reiwa_mode: current.appearance.reiwa_mode,
+                    compact_urls: current.appearance.compact_urls,
                     ..defaults.appearance
                 };
                 current.appearance == appearance && current.theme == defaults.theme
@@ -73,10 +83,20 @@ impl SettingsWindow {
                 if cfg!(target_os = "linux") {
                     values.linux_display = defaults.linux_display;
                 }
+                let appearance = &mut values.appearance;
+                appearance.image_previews = defaults.appearance.image_previews;
+                appearance.user_avatars = defaults.appearance.user_avatars;
+                appearance.reiwa_mode = defaults.appearance.reiwa_mode;
+                appearance.compact_urls = defaults.appearance.compact_urls;
             }
             SettingsTab::Appearance => {
+                let current = &mut self.settings.values.appearance;
                 let appearance = Appearance {
-                    saved_colors: std::mem::take(&mut self.settings.values.appearance.saved_colors),
+                    saved_colors: std::mem::take(&mut current.saved_colors),
+                    image_previews: current.image_previews,
+                    user_avatars: current.user_avatars,
+                    reiwa_mode: current.reiwa_mode,
+                    compact_urls: current.compact_urls,
                     ..defaults.appearance
                 };
                 self.show_appearance(&appearance, cx);
@@ -259,6 +279,7 @@ mod tests {
             let values = &mut form.settings.values;
             values.appearance.alternate_rows = true;
             values.appearance.compact_urls = true;
+            values.appearance.image_previews = true;
             values.appearance.saved_colors.push("#ABCDEF".into());
             values.theme = ThemeMode::Dark;
             values.notifications.mentions = false;
@@ -278,7 +299,9 @@ mod tests {
             );
             assert_eq!(form.settings.values.theme, ThemeMode::System);
             assert!(!form.settings.values.appearance.alternate_rows);
-            assert!(!form.settings.values.appearance.compact_urls);
+            // Switches shown on the Application page stay.
+            assert!(form.settings.values.appearance.compact_urls);
+            assert!(form.settings.values.appearance.image_previews);
             // The palette is the user's own; another tab's settings stay.
             assert_eq!(form.settings.values.appearance.saved_colors, ["#ABCDEF"]);
             assert!(!form.settings.values.notifications.mentions);
@@ -311,10 +334,12 @@ mod tests {
                 values.restore_window_layout = !values.restore_window_layout;
                 values.menu_bar_auto_hide = !values.menu_bar_auto_hide;
                 values.linux_display = LinuxDisplay::X11;
+                values.appearance.compact_urls = !values.appearance.compact_urls;
+                values.appearance.image_previews = !values.appearance.image_previews;
             }),
             (SettingsTab::Appearance, |values| {
                 values.theme = ThemeMode::Dark;
-                values.appearance.compact_urls = !values.appearance.compact_urls;
+                values.appearance.alternate_rows = !values.appearance.alternate_rows;
             }),
             (SettingsTab::Keyboard, |values| {
                 values.channel_number_modifier = ChannelNumberModifier::Alt;
