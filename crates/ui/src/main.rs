@@ -11675,6 +11675,7 @@ mod pane_tests {
                     "A",
                     super::HISTORY_GAP_NOTE,
                     "alice: while you were away",
+                    "Disconnected: connection reset",
                     "D"
                 ]
             );
