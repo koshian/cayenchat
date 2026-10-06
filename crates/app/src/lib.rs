@@ -607,6 +607,25 @@ impl AppState {
         }
     }
 
+    /// Whether `id` had a registered connection that has not ended yet.
+    pub fn is_registered(&self, id: NetworkId) -> bool {
+        self.active_servers.contains(&id)
+    }
+
+    /// Adds an activity line to every channel and conversation of `id`, so
+    /// each log shows where the connection was lost.
+    pub fn append_network_activity(&mut self, id: NetworkId, text: &str) {
+        let ids: Vec<_> = self
+            .conversations
+            .iter()
+            .filter(|conversation| conversation.network == id)
+            .map(|conversation| conversation.id)
+            .collect();
+        for conversation in ids {
+            self.append_conversation_activity(conversation, text.into());
+        }
+    }
+
     pub fn append_server_message(&mut self, id: NetworkId, text: String) {
         self.append_server_message_at(id, text, MessageMeta::live());
     }
