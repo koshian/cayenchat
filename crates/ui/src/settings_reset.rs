@@ -123,7 +123,6 @@ impl SettingsWindow {
     fn show_appearance(&self, appearance: &Appearance, cx: &mut Context<Self>) {
         let form = &self.settings;
         let dark = &appearance.dark;
-        let width = appearance.sub_log_name_width.to_string();
         for (field, value) in [
             (
                 &form.member_list_background,
@@ -153,7 +152,6 @@ impl SettingsWindow {
             (&form.channel_font, &appearance.channel_font),
             (&form.input_font, &appearance.input_font),
             (&form.time_font, &appearance.time_font),
-            (&form.sub_log_name_width, &width),
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
