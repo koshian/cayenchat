@@ -73,6 +73,21 @@ def serve(listener):
         threading.Thread(target=client, args=(conn,), daemon=True).start()
 
 
+def write_settings(path, port):
+    with open(path, "w") as file:
+        json.dump({
+            "version": 15, "language": "english", "theme": "light", "linux_display": "x11",
+            "credential_backend": "local_file", "selected_server": "local",
+            "servers": [{
+                "id": "local", "host": "127.0.0.1", "port": port, "use_tls": False,
+                "verify_tls_certificates": True, "encoding": "utf8", "nickname": "alice",
+                "username": "alice", "channels": CHANNEL, "connect_on_startup": True, "ircv3": {},
+            }],
+            "appearance": {"compact_urls": True},
+        }, file)
+    return path
+
+
 class Session:
     def __init__(self, directory):
         self.directory = directory
@@ -127,18 +142,7 @@ def main():
 
     scratch = tempfile.TemporaryDirectory(prefix="url-bubble-")
     directory = args.session or os.path.join(scratch.name, "gui")
-    settings = os.path.join(scratch.name, "settings.json")
-    with open(settings, "w") as file:
-        json.dump({
-            "version": 15, "language": "english", "theme": "light", "linux_display": "x11",
-            "credential_backend": "local_file", "selected_server": "local",
-            "servers": [{
-                "id": "local", "host": "127.0.0.1", "port": port, "use_tls": False,
-                "verify_tls_certificates": True, "encoding": "utf8", "nickname": "alice",
-                "username": "alice", "channels": CHANNEL, "connect_on_startup": True, "ircv3": {},
-            }],
-            "appearance": {"compact_urls": True},
-        }, file)
+    settings = write_settings(os.path.join(scratch.name, "settings.json"), port)
 
     session = Session(directory)
     session.run("start", "--app", args.app, "--settings", settings, "--window-size", "1100x750")
