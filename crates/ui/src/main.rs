@@ -8111,6 +8111,10 @@ impl ChatWindow {
                         cx.new(|_| ircv3_settings::UrlTooltip(url)).into()
                     },
                 )
+                .tooltip_bridge(
+                    ircv3_settings::URL_TOOLTIP_BRIDGE.0,
+                    ircv3_settings::URL_TOOLTIP_BRIDGE.1,
+                )
                 .into_any_element()
         };
         let avatar = (!message.activity && self.avatars.enabled()).then(|| {

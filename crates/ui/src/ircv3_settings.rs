@@ -855,6 +855,10 @@ impl Render for TextTooltip {
     }
 }
 
+/// Transparent margin (left, top) of the bubble view: it only bridges the gap
+/// to the pointer and is not part of the bubble.
+pub(crate) const URL_TOOLTIP_BRIDGE: (Pixels, Pixels) = (px(10.), px(18.));
+
 /// The bubble showing a shortened URL in full. It is drawn in the link color
 /// on the (translucent) appearance color, and a click on it opens the URL.
 pub(crate) struct UrlTooltip(pub(crate) SharedString);
@@ -866,14 +870,17 @@ impl Render for UrlTooltip {
         // The padding bridges the gap to the pointer, so moving onto the
         // bubble does not leave it. Only the visible bubble is clickable; the
         // padding lies over the log text and must leave it usable.
-        div().pl(px(10.)).pt(px(18.)).child(
-            settings_theme::tooltip(self.0.clone(), cx)
-                .id("url-tooltip")
-                .bg(theme.panes.url_tooltip)
-                .text_color(theme.link)
-                .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url)),
-        )
+        div()
+            .pl(URL_TOOLTIP_BRIDGE.0)
+            .pt(URL_TOOLTIP_BRIDGE.1)
+            .child(
+                settings_theme::tooltip(self.0.clone(), cx)
+                    .id("url-tooltip")
+                    .bg(theme.panes.url_tooltip)
+                    .text_color(theme.link)
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url)),
+            )
     }
 }
 
