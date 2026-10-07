@@ -1515,6 +1515,8 @@ box it scrolls horizontally (`scroll_x`, computed in `prepaint`) so the caret
 stays visible, i.e. the end of what is being typed; painting is clipped to the
 box, and mouse and IME positions add `scroll_x`.
 
-The caret is blue in the light theme and uses the theme's text color in the dark
-theme, where blue is hard to tell from the bluish input background. Native
-settings-style inputs keep the OS theme's caret color.
+In the dark theme the caret uses the text color in every text input, including
+the native settings-style ones, because blue and the OS theme's caret color are
+hard to tell from the dark input backgrounds (issue #219). In the light theme
+the caret is blue, or the OS theme's caret color for native settings-style
+inputs.
