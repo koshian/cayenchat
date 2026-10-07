@@ -692,3 +692,84 @@ Observed while measuring; each is a separate task if pursued:
   channels, and remove duplicate roster copies.
 - Drop per-conversation UI state (`main_lists`, draft inputs without text)
   for conversations that were parted and are no longer shown.
+
+## Shortened URL bubble (2026-10-07)
+
+A short check, not a baseline run, in the Linux container used for this
+change (x86_64, shared vCPUs, rustc 1.99.0). Headless UI test in release
+mode, 10 channels × 2,000 lines, three alternating runs each, medians in µs
+(parent `64f165a` / branch):
+
+| Run | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 235 / 244 | 1,485 / 1,601 | 1,169 / 1,203 | 1,589 / 1,630 | 240 / 254 |
+| 2 | 245 / 242 | 1,618 / 1,619 | 1,193 / 1,216 | 1,597 / 1,598 | 258 / 251 |
+| 3 | 246 / 243 | 1,586 / 1,608 | 1,209 / 1,207 | 1,595 / 1,719 | 255 / 254 |
+
+- The two builds agree within run-to-run noise. The bubble's logic runs
+  only while a bubble is shown or being scheduled (one mouse-move check per
+  frame in the tooltip layer); nothing is added to the per-message or
+  per-frame paths otherwise. The test does not turn shortened URLs on or
+  hover a URL; that path is covered by `scripts/e2e/url_bubble_gui.py`
+  (behaviour) and `scripts/perf/url_bubble_perf.py` (see below).
+
+With shortened URLs on (`perf_baseline_short_urls`: every second line has two
+long URLs, `compact_urls` enabled; same machine and build, parent `64f165a`
+with the same test file / branch, three alternating runs, medians in µs):
+
+| Run | Typing | Channel switch | Scroll 20 rows | 256-event batch |
+| --- | --- | --- | --- | --- |
+| 1 | 262 / 267 | 1,771 / 1,807 | 1,400 / 1,421 | 1,906 / 3,016 |
+| 2 | 264 / 262 | 1,783 / 1,753 | 1,396 / 1,384 | 1,840 / 1,853 |
+| 3 | 264 / 270 | 1,750 / 1,761 | 1,375 / 1,400 | 1,868 / 1,862 |
+
+- Equal within noise; the one 3,016 µs batch is a single outlier (the same
+  run's other medians match, and runs 2 and 3 give 1,853 / 1,862). The
+  headless test cannot hover, so showing, replacing and hiding a bubble is
+  measured under Xvfb below (`scripts/perf/url_bubble_perf.py`); that path
+  runs only while a bubble is shown or scheduled.
+
+#### Bubble path under Xvfb (CPU and memory, issue #232)
+
+`scripts/perf/url_bubble_perf.py` drives the hover path of a release binary
+under Xvfb with shortened URLs on (same loopback server and layout as
+`scripts/e2e/url_bubble_gui.py`) and samples the app process with
+`sample_process.py`: 15 s idle, three rounds of 10 pointer cycles (1.5 s on
+each stop; off the log, first URL, second URL, off the log), 15 s idle.
+CPU is the app process only. Builds: parent `64f165ac41532793fd8f0b10fdb41d9deeed4f4b`
+(separate worktree and target directory) and this branch's code at
+`becc1b326ec2bb66c13266b4db24d61d550793d7` (plus the script), both
+`cargo build --release --locked -p cayenchat-ui`, rustc 1.99.0, x86_64 Linux,
+12 vCPUs, Mesa software rendering. Parent and branch alternate. The parent
+does not replace a bubble when the pointer moves to another URL, so the
+second stop only does work on the branch. `--first-only` leaves the second
+stop out (off, first URL, off), which both builds treat alike.
+
+CPU % of one core per round (three rounds each, three alternating runs; two
+runs for `--first-only`):
+
+| Scenario | Parent | Branch |
+| --- | --- | --- |
+| Idle before / after | 0.86–0.93 | 0.86–0.93 |
+| Pointer resting on a shown bubble (20 s) | 0.89 | 0.89 |
+| 4-stop cycle (first, second) | 4.34–4.79 | 6.46–6.80 |
+| `--first-only` cycle | 4.41–4.90 | 5.76–6.28 |
+
+RSS at the end of each round: constant across the three rounds in every run
+(parent 141.9–143.6 MB, branch 142.3–144.1 MB; the run-to-run spread is as
+large as the difference), and idle CPU after the cycles equals idle CPU
+before. Thread count stayed at 47.
+
+- Nothing grows with repetition, and nothing runs while a bubble merely
+  stays up. Memory is unchanged.
+- The branch costs more CPU per bubble that comes and goes. A one-off check
+  (five times: pointer onto the URL, 8 s wait, off the log, 4 s wait) gave
+  the same CPU for showing (about 180 ms on both, including idle) and about
+  65 ms more for hiding on the branch (about 80 ms vs 150 ms, including idle).
+  The bubble is now hoverable, so it stays for the hide delay and the
+  pointer check runs on its frames. The cost is per hover, not per message
+  or per frame, and the 1–2 point difference above comes from the test
+  moving the pointer every 1.5 s. The extra 0.5–0.7 point in the 4-stop cycle
+  is the second bubble that the branch now draws.
+- Those one-off figures came from throwaway scripts that are not committed;
+  the committed script gives the cycle figures.

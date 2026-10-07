@@ -186,6 +186,10 @@ struct SettingsForm {
     dark_highlight_color: Entity<TextInput>,
     dark_sub_log_background: Entity<TextInput>,
     dark_sub_log_alternate: Entity<TextInput>,
+    url_tooltip_color: Entity<TextInput>,
+    dark_url_tooltip_color: Entity<TextInput>,
+    /// Percent, as typed.
+    url_tooltip_opacity: Entity<TextInput>,
     main_log_font: Entity<TextInput>,
     sub_log_font: Entity<TextInput>,
     member_font: Entity<TextInput>,
@@ -338,6 +342,19 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            url_tooltip_color: field("#FFFFFF", &values.appearance.url_tooltip_color, false, cx),
+            dark_url_tooltip_color: field(
+                "#2A2D32",
+                &values.appearance.dark.url_tooltip_color,
+                false,
+                cx,
+            ),
+            url_tooltip_opacity: field(
+                "80",
+                &values.appearance.url_tooltip_opacity.to_string(),
+                false,
+                cx,
+            ),
             main_log_font: field(
                 &i18n.text("font_system_placeholder"),
                 &values.appearance.main_log_font,
@@ -440,6 +457,14 @@ impl SettingsForm {
             highlight_color: value(&self.highlight_color),
             sub_log_background: value(&self.sub_log_background),
             sub_log_alternate: value(&self.sub_log_alternate),
+            url_tooltip_color: value(&self.url_tooltip_color),
+            url_tooltip_opacity: value(&self.url_tooltip_opacity)
+                .parse()
+                .ok()
+                .filter(|percent| {
+                    (cayenchat_storage::MIN_URL_TOOLTIP_OPACITY..=100).contains(percent)
+                })
+                .ok_or_else(|| i18n_error(settings.language, "url_tooltip_opacity_invalid"))?,
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
@@ -460,6 +485,7 @@ impl SettingsForm {
                 highlight_color: value(&self.dark_highlight_color),
                 sub_log_background: value(&self.dark_sub_log_background),
                 sub_log_alternate: value(&self.dark_sub_log_alternate),
+                url_tooltip_color: value(&self.dark_url_tooltip_color),
             },
             saved_colors: self.values.appearance.saved_colors.clone(),
         };
@@ -494,7 +520,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 35] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 38] {
         [
             &self.custom_host,
             &self.port,
@@ -523,6 +549,9 @@ impl SettingsForm {
             &self.dark_highlight_color,
             &self.dark_sub_log_background,
             &self.dark_sub_log_alternate,
+            &self.url_tooltip_color,
+            &self.dark_url_tooltip_color,
+            &self.url_tooltip_opacity,
             &self.main_log_font,
             &self.sub_log_font,
             &self.member_font,
@@ -5837,6 +5866,16 @@ impl SettingsWindow {
                 &self.settings.dark_sub_log_alternate,
                 cx,
             ))
+            .child(self.color_pair(
+                &self.i18n.text("url_tooltip_color"),
+                &self.settings.url_tooltip_color,
+                &self.settings.dark_url_tooltip_color,
+                cx,
+            ))
+            .child(settings_field(
+                &self.i18n.text("url_tooltip_opacity"),
+                self.settings.url_tooltip_opacity.clone(),
+            ))
             .child(
                 div()
                     .id("alternate-rows")
@@ -8050,14 +8089,32 @@ impl ChatWindow {
         let styled = if full_urls.is_empty() {
             styled.into_any_element()
         } else {
-            // The full URL of a shortened one shows on hover.
+            // The full URL of a shortened one shows on hover; clicking it
+            // opens the URL.
             InteractiveText::new(("message-urls", index), styled)
-                .tooltip(move |byte, _, cx| {
-                    let byte = byte.checked_sub(prefix_len)?;
-                    let (_, url) = full_urls.iter().find(|(range, _)| range.contains(&byte))?;
-                    let url = url.clone();
-                    Some(cx.new(|_| ircv3_settings::TextTooltip(url)).into())
-                })
+                .hoverable_tooltip(
+                    {
+                        let full_urls = full_urls.clone();
+                        move |byte| {
+                            let byte = byte.checked_sub(prefix_len)?;
+                            let (range, _) =
+                                full_urls.iter().find(|(range, _)| range.contains(&byte))?;
+                            Some(range.start + prefix_len..range.end + prefix_len)
+                        }
+                    },
+                    move |range, _, cx| {
+                        let url = full_urls
+                            .iter()
+                            .find(|(url, _)| url.start + prefix_len == range.start)
+                            .map(|(_, url)| url.clone())
+                            .unwrap_or_default();
+                        cx.new(|_| ircv3_settings::UrlTooltip(url)).into()
+                    },
+                )
+                .tooltip_bridge(
+                    ircv3_settings::URL_TOOLTIP_BRIDGE.0,
+                    ircv3_settings::URL_TOOLTIP_BRIDGE.1,
+                )
                 .into_any_element()
         };
         let avatar = (!message.activity && self.avatars.enabled()).then(|| {

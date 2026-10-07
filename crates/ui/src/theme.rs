@@ -19,6 +19,8 @@ pub struct PaneColors {
     pub highlight: Rgba,
     pub sub_log: Rgba,
     pub sub_alternate: Rgba,
+    /// Bubble showing a shortened URL in full, with its opacity as alpha.
+    pub url_tooltip: Rgba,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -100,6 +102,10 @@ impl Theme {
                 highlight: color(&appearance.highlight_color, 0xd46a8e),
                 sub_log: color(&appearance.sub_log_background, 0xf9fafb),
                 sub_alternate: color(&appearance.sub_log_alternate, 0xf2f5ff),
+                url_tooltip: translucent(
+                    color(&appearance.url_tooltip_color, 0xffffff),
+                    appearance.url_tooltip_opacity,
+                ),
             },
         }
     }
@@ -135,6 +141,10 @@ impl Theme {
                 highlight: color(&colors.highlight_color, 0xefa0be),
                 sub_log: color(&colors.sub_log_background, 0x24272b),
                 sub_alternate: color(&colors.sub_log_alternate, 0x2c3036),
+                url_tooltip: translucent(
+                    color(&colors.url_tooltip_color, 0x2a2d32),
+                    appearance.url_tooltip_opacity,
+                ),
             },
         }
     }
@@ -142,6 +152,14 @@ impl Theme {
 
 fn color(value: &str, fallback: u32) -> Rgba {
     rgb(color_value(value).unwrap_or(fallback))
+}
+
+/// `color` at `percent` opacity.
+fn translucent(color: Rgba, percent: u8) -> Rgba {
+    Rgba {
+        a: f32::from(percent.min(100)) / 100.,
+        ..color
+    }
 }
 
 pub fn current(cx: &App) -> Theme {
