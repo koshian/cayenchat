@@ -34,6 +34,8 @@ extern crate std;
 mod client;
 #[cfg(feature = "client")]
 mod ctext;
+#[cfg(feature = "client")]
+mod style;
 #[cfg(feature = "server")]
 mod server;
 
@@ -44,6 +46,8 @@ pub mod xlib;
 
 #[cfg(feature = "client")]
 pub use crate::client::{Client, ClientError, ClientHandler};
+#[cfg(feature = "client")]
+pub use crate::style::choose_input_style;
 
 #[cfg(feature = "server")]
 pub const ALL_LOCALES: &str = include_str!("./all_locales.txt");

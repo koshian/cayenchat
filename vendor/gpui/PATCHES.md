@@ -110,6 +110,6 @@ whole app on X11 (issue #227). `src/ctext.rs` now decodes COMPOUND_TEXT lenientl
 
 In `src/platform/linux/x11/{xim_handler,client}.rs`, the XIM input context is
 created with a style chosen from the server's `XNQueryInputStyle` reply
-(preedit callbacks + status nothing) instead of a hard-coded
+(preedit callbacks + status nothing; `xim::choose_input_style` in zed-xim so its tests run in CI) instead of a hard-coded
 `PREEDIT_CALLBACKS`, which IBus does not offer. `set_ic_values` no longer
 resends `InputStyle`/`ClientWindow`, which are creation-time only (issue #227).
