@@ -692,3 +692,23 @@ Observed while measuring; each is a separate task if pursued:
   channels, and remove duplicate roster copies.
 - Drop per-conversation UI state (`main_lists`, draft inputs without text)
   for conversations that were parted and are no longer shown.
+
+## Shortened URL bubble (2026-10-07)
+
+A short check, not a baseline run, in the Linux container used for this
+change (x86_64, shared vCPUs, rustc 1.99.0). Headless UI test in release
+mode, 10 channels × 2,000 lines, three alternating runs each, medians in µs
+(parent `64f165a` / branch):
+
+| Run | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 235 / 244 | 1,485 / 1,601 | 1,169 / 1,203 | 1,589 / 1,630 | 240 / 254 |
+| 2 | 245 / 242 | 1,618 / 1,619 | 1,193 / 1,216 | 1,597 / 1,598 | 258 / 251 |
+| 3 | 246 / 243 | 1,586 / 1,608 | 1,209 / 1,207 | 1,595 / 1,719 | 255 / 254 |
+
+- The two builds agree within run-to-run noise. The bubble's logic runs
+  only while a bubble is shown or being scheduled (one mouse-move check per
+  frame in the tooltip layer); nothing is added to the per-message or
+  per-frame paths otherwise. The test does not turn shortened URLs on or
+  hover a URL; that path is covered by `scripts/e2e/url_bubble_gui.py`
+  (behaviour, not timing).
