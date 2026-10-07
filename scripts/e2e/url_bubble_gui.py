@@ -44,7 +44,7 @@ def log(*parts):
 
 def serve(listener):
     def client(conn):
-        file = conn.makefile("rw", newline="\r\n")
+        file = conn.makefile("rw", newline="\n")
 
         def send(line):
             file.write(line + "\r\n")

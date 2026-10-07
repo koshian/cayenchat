@@ -185,7 +185,7 @@ jobs:
           --out "$RUNNER_TEMP/e2e"
 
       - name: Run URL bubble GUI test
-        run: python3 scripts/e2e/url_bubble_gui.py --app target/debug/cayenchat
+        run: python3 scripts/e2e/url_bubble_gui.py --app target/debug/cayenchat --session "$RUNNER_TEMP/e2e/url-bubble"
 
       - name: Upload screenshots
         if: always()

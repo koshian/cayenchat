@@ -712,3 +712,19 @@ mode, 10 channels × 2,000 lines, three alternating runs each, medians in µs
   per-frame paths otherwise. The test does not turn shortened URLs on or
   hover a URL; that path is covered by `scripts/e2e/url_bubble_gui.py`
   (behaviour, not timing).
+
+With shortened URLs on (`perf_baseline_short_urls`: every second line has two
+long URLs, `compact_urls` enabled; same machine and build, parent `64f165a`
+with the same test file / branch, three alternating runs, medians in µs):
+
+| Run | Typing | Channel switch | Scroll 20 rows | 256-event batch |
+| --- | --- | --- | --- | --- |
+| 1 | 262 / 267 | 1,771 / 1,807 | 1,400 / 1,421 | 1,906 / 3,016 |
+| 2 | 264 / 262 | 1,783 / 1,753 | 1,396 / 1,384 | 1,840 / 1,853 |
+| 3 | 264 / 270 | 1,750 / 1,761 | 1,375 / 1,400 | 1,868 / 1,862 |
+
+- Equal within noise; the one 3,016 µs batch is a single outlier (the same
+  run's other medians match, and runs 2 and 3 give 1,853 / 1,862). The
+  headless test cannot hover, so showing, replacing and hiding a bubble is
+  still covered only by behaviour (`scripts/e2e/url_bubble_gui.py`); that
+  path runs only while a bubble is shown or scheduled.
