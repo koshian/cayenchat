@@ -356,6 +356,13 @@ pub struct Appearance {
     pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
+    /// Background of the bubble that shows a shortened URL in full. Added
+    /// after version 15 without a version change; files without it read as
+    /// the default.
+    pub url_tooltip_color: String,
+    /// How opaque that bubble is, in percent (`MIN_URL_TOOLTIP_OPACITY` to
+    /// 100). Added after version 15 without a version change.
+    pub url_tooltip_opacity: u8,
     pub alternate_rows: bool,
     /// Inline thumbnails of direct image links in the main channel log
     /// (version 14). Off by default, also for settings saved before it existed.
@@ -396,6 +403,11 @@ pub struct Appearance {
 /// Colors the palette holds.
 pub const MAX_SAVED_COLORS: usize = 24;
 
+/// Opacity of the full-URL bubble, in percent. Below the minimum the text
+/// would be hard to read.
+pub const MIN_URL_TOOLTIP_OPACITY: u8 = 20;
+pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DarkColors {
@@ -407,6 +419,7 @@ pub struct DarkColors {
     pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
+    pub url_tooltip_color: String,
 }
 
 impl Default for DarkColors {
@@ -420,6 +433,7 @@ impl Default for DarkColors {
             highlight_color: "#EFA0BE".into(),
             sub_log_background: "#24272B".into(),
             sub_log_alternate: "#2C3036".into(),
+            url_tooltip_color: "#2A2D32".into(),
         }
     }
 }
@@ -435,6 +449,8 @@ impl Default for Appearance {
             highlight_color: "#D46A8E".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
+            url_tooltip_color: "#FFFFFF".into(),
+            url_tooltip_opacity: DEFAULT_URL_TOOLTIP_OPACITY,
             alternate_rows: false,
             image_previews: false,
             user_avatars: false,
@@ -501,6 +517,8 @@ impl Appearance {
             ("Highlight", &self.highlight_color),
             ("Sub log", &self.sub_log_background),
             ("Sub alternate", &self.sub_log_alternate),
+            ("URL tooltip", &self.url_tooltip_color),
+            ("Dark URL tooltip", &self.dark.url_tooltip_color),
             ("Dark member list", &self.dark.member_list_background),
             ("Dark main log", &self.dark.main_log_background),
             ("Dark main alternate", &self.dark.main_log_alternate),
@@ -513,6 +531,11 @@ impl Appearance {
             if color_value(value).is_none() {
                 return Err(format!("{label} color must be #RRGGBB."));
             }
+        }
+        if !(MIN_URL_TOOLTIP_OPACITY..=100).contains(&self.url_tooltip_opacity) {
+            return Err(format!(
+                "URL tooltip opacity must be {MIN_URL_TOOLTIP_OPACITY} to 100."
+            ));
         }
         Ok(())
     }
@@ -2051,6 +2074,33 @@ mod tests {
         settings.appearance.compact_urls = true;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn url_tooltip_appearance_defaults_for_old_settings_and_is_validated() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = old["appearance"].as_object_mut().unwrap();
+        appearance.remove("url_tooltip_color");
+        appearance.remove("url_tooltip_opacity");
+        appearance["dark"]
+            .as_object_mut()
+            .unwrap()
+            .remove("url_tooltip_color");
+        let settings: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(settings.appearance, Appearance::default());
+        assert_eq!(settings.appearance.url_tooltip_opacity, 80);
+
+        let mut appearance = Appearance {
+            url_tooltip_opacity: MIN_URL_TOOLTIP_OPACITY - 1,
+            ..Appearance::default()
+        };
+        assert!(appearance.validate().is_err());
+        appearance.url_tooltip_opacity = 101;
+        assert!(appearance.validate().is_err());
+        appearance.url_tooltip_opacity = 100;
+        assert!(appearance.validate().is_ok());
+        appearance.url_tooltip_color = "white".into();
+        assert!(appearance.validate().is_err());
     }
 
     #[test]

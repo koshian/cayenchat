@@ -855,6 +855,30 @@ impl Render for TextTooltip {
     }
 }
 
+/// The bubble showing a shortened URL in full. It is drawn in the link color
+/// on the (translucent) appearance color, and a click on it opens the URL.
+pub(crate) struct UrlTooltip(pub(crate) SharedString);
+
+impl Render for UrlTooltip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = crate::theme::current(cx);
+        let url = self.0.clone();
+        // The padding bridges the gap to the pointer, so moving onto the
+        // bubble does not leave it.
+        div()
+            .id("url-tooltip")
+            .pl(px(10.))
+            .pt(px(18.))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url))
+            .child(
+                settings_theme::tooltip(self.0.clone(), cx)
+                    .bg(theme.panes.url_tooltip)
+                    .text_color(theme.link),
+            )
+    }
+}
+
 /// What the IRCv3 tab shows about our own avatar on one server.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OwnAvatarStatus {
