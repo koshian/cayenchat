@@ -36,7 +36,7 @@ use x11rb::{
     wrapper::ConnectionExt as _,
     xcb_ffi::XCBConnection,
 };
-use xim::{AttributeName, Client, InputStyle, x11rb::X11rbClient};
+use xim::{AttributeName, Client, x11rb::X11rbClient};
 use xkbc::x11::ffi::{XKB_X11_MIN_MAJOR_XKB_VERSION, XKB_X11_MIN_MINOR_XKB_VERSION};
 use xkbcommon::xkb::{self as xkbc, STATE_LAYOUT_EFFECTIVE};
 
@@ -273,11 +273,6 @@ impl X11ClientStatePtr {
         let scaled_bounds = bounds.scale(state.scale_factor);
         let ic_attributes = ximc
             .build_ic_attributes()
-            .push(
-                xim::AttributeName::InputStyle,
-                xim::InputStyle::PREEDIT_CALLBACKS,
-            )
-            .push(xim::AttributeName::ClientWindow, xim_handler.window)
             .push(xim::AttributeName::FocusWindow, xim_handler.window)
             .nested_list(xim::AttributeName::PreeditAttributes, |b| {
                 b.push(
@@ -693,7 +688,7 @@ impl X11Client {
         };
         let mut ic_attributes = ximc
             .build_ic_attributes()
-            .push(AttributeName::InputStyle, InputStyle::PREEDIT_CALLBACKS)
+            .push(AttributeName::InputStyle, xim_handler.input_style)
             .push(AttributeName::ClientWindow, xim_handler.window)
             .push(AttributeName::FocusWindow, xim_handler.window);
 
@@ -1350,11 +1345,6 @@ impl X11Client {
         if let Some(scaled_area) = window.get_ime_area() {
             let ic_attributes = ximc
                 .build_ic_attributes()
-                .push(
-                    xim::AttributeName::InputStyle,
-                    xim::InputStyle::PREEDIT_CALLBACKS,
-                )
-                .push(xim::AttributeName::ClientWindow, xim_handler.window)
                 .push(xim::AttributeName::FocusWindow, xim_handler.window)
                 .nested_list(xim::AttributeName::PreeditAttributes, |b| {
                     b.push(

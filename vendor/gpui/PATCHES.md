@@ -106,4 +106,10 @@ the same warning repeated forever at 100% CPU after the X server exited
 `xim_ctext::compound_text_to_utf8(..).expect(..)` on preedit and commit text, so
 IBus/Mozc text that mixes ASCII with UTF-8 or JIS X 0208 segments panicked the
 whole app on X11 (issue #227). `src/ctext.rs` now decodes COMPOUND_TEXT leniently
-(UTF-8, ASCII, Latin-1, JIS X 0201 katakana and JIS X 0208, with GL and GR tracked separately; others are dropped) and never fails.
+(UTF-8, ASCII, Latin-1, JIS X 0201 katakana, JIS X 0208, GB2312 and KS C 5601, with GL and GR tracked separately; others are dropped) and never fails.
+
+In `src/platform/linux/x11/{xim_handler,client}.rs`, the XIM input context is
+created with a style chosen from the server's `XNQueryInputStyle` reply
+(preedit callbacks + status nothing) instead of a hard-coded
+`PREEDIT_CALLBACKS`, which IBus does not offer. `set_ic_values` no longer
+resends `InputStyle`/`ClientWindow`, which are creation-time only (issue #227).
