@@ -67,7 +67,7 @@ fn image_link(index: usize) -> String {
 
 /// One incoming line as the worker reports it: its wire diagnostic, then the
 /// translated message.
-fn incoming(sequence: usize, images: bool) -> [Event; 2] {
+fn incoming(sequence: usize, images: bool, long_urls: bool) -> [Event; 2] {
     let channel = channel(sequence % CHANNELS);
     let sender = format!("user{:03}", sequence % MEMBERS);
     // Lines go round-robin over the channels; count within the channel.
@@ -75,6 +75,10 @@ fn incoming(sequence: usize, images: bool) -> [Event; 2] {
     let text = if images && line.is_multiple_of(IMAGE_EVERY) {
         let link = (line / IMAGE_EVERY + sequence % CHANNELS * 7) % IMAGE_LINKS;
         format!("see {}", image_link(link))
+    } else if long_urls && sequence % 2 == 0 {
+        format!(
+            "read https://docs.load.example/guides/{line:04}/section/with/a/long/path?q={sequence} and https://other.load.example/{sequence}/another/long/path/to/page"
+        )
     } else {
         TEXTS[sequence % TEXTS.len()].to_owned()
     };
@@ -139,25 +143,31 @@ impl Timings {
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline(cx: &mut TestAppContext) {
-    run(cx, 1, false, false);
+    run(cx, 1, false, false, false);
 }
 
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_4_servers(cx: &mut TestAppContext) {
-    run(cx, 4, false, false);
+    run(cx, 4, false, false, false);
 }
 
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_previews(cx: &mut TestAppContext) {
-    run(cx, 1, true, false);
+    run(cx, 1, true, false, false);
 }
 
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_avatars(cx: &mut TestAppContext) {
-    run(cx, 1, false, true);
+    run(cx, 1, false, true, false);
+}
+
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_short_urls(cx: &mut TestAppContext) {
+    run(cx, 1, false, false, true);
 }
 
 /// Serves one 800×400 PNG for every link and counts requests.
@@ -204,7 +214,7 @@ fn settings(servers: usize) -> cayenchat_storage::Settings {
     settings
 }
 
-fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
+fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool, short_urls: bool) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
         crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
@@ -218,6 +228,7 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
     let mut settings = settings(servers);
     settings.appearance.image_previews = images;
     settings.appearance.user_avatars = avatars;
+    settings.appearance.compact_urls = short_urls;
     let fetcher = memory_fetcher();
     let (chat, cx) = cx.add_window_view(|window, cx| {
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
@@ -256,7 +267,7 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
     let history: Vec<Event> = (0..HISTORY * CHANNELS)
         .flat_map(|_| {
             sequence += 1;
-            incoming(sequence, images)
+            incoming(sequence, images, short_urls)
         })
         .collect();
     for network in &networks {
@@ -365,7 +376,7 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool) {
         let batch: Vec<Event> = (0..EVENT_BATCH / 2)
             .flat_map(|_| {
                 sequence += 1;
-                incoming(sequence, images)
+                incoming(sequence, images, short_urls)
             })
             .collect();
         let network = networks[index % networks.len()];

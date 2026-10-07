@@ -2311,6 +2311,7 @@ impl Interactivity {
                     build_tooltip,
                     check_is_hovered,
                     check_is_hovered_during_prepaint,
+                    None,
                     window,
                 );
             }
@@ -2647,12 +2648,25 @@ pub(crate) fn set_tooltip_on_window(
     Some(window.set_tooltip(tooltip))
 }
 
+/// For a hoverable tooltip that belongs to part of its element (a text range):
+/// when the pointer moves onto another such part, the tooltip is replaced at
+/// once instead of waiting for another mouse move.
+pub(crate) struct TooltipRetarget {
+    /// The pointer is on another part that has a tooltip of its own.
+    pub elsewhere: Rc<dyn Fn(&Window) -> bool>,
+    /// The tooltip's transparent margin (left, top) that only bridges the gap
+    /// to the pointer. The pointer there does not count as being on the
+    /// tooltip.
+    pub bridge: Point<Pixels>,
+}
+
 pub(crate) fn register_tooltip_mouse_handlers(
     active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
     tooltip_id: Option<TooltipId>,
     build_tooltip: Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
     check_is_hovered: Rc<dyn Fn(&Window) -> bool>,
     check_is_hovered_during_prepaint: Rc<dyn Fn(&Window) -> bool>,
+    retarget: Option<Rc<TooltipRetarget>>,
     window: &mut Window,
 ) {
     window.on_mouse_event({
@@ -2665,6 +2679,7 @@ pub(crate) fn register_tooltip_mouse_handlers(
                 &build_tooltip,
                 &check_is_hovered,
                 &check_is_hovered_during_prepaint,
+                &retarget,
                 phase,
                 window,
                 cx,
@@ -2707,6 +2722,7 @@ fn handle_tooltip_mouse_move(
     build_tooltip: &Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
     check_is_hovered: &Rc<dyn Fn(&Window) -> bool>,
     check_is_hovered_during_prepaint: &Rc<dyn Fn(&Window) -> bool>,
+    retarget: &Option<Rc<TooltipRetarget>>,
     phase: DispatchPhase,
     window: &mut Window,
     cx: &mut App,
@@ -2748,50 +2764,67 @@ fn handle_tooltip_mouse_move(
             // Cancel waiting to show tooltip when it is no longer hovered.
             active_tooltip.borrow_mut().take();
         }
-        Action::ScheduleShow => {
-            let delayed_show_task = window.spawn(cx, {
-                let active_tooltip = active_tooltip.clone();
-                let build_tooltip = build_tooltip.clone();
-                let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
-                async move |cx| {
-                    cx.background_executor().timer(TOOLTIP_SHOW_DELAY).await;
-                    cx.update(|window, cx| {
-                        let new_tooltip =
-                            build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
-                                let active_tooltip = active_tooltip.clone();
-                                ActiveTooltip::Visible {
-                                    tooltip: AnyTooltip {
-                                        view,
-                                        mouse_position: window.mouse_position(),
-                                        check_visible_and_update: Rc::new(
-                                            move |tooltip_bounds, window, cx| {
-                                                handle_tooltip_check_visible_and_update(
-                                                    &active_tooltip,
-                                                    tooltip_is_hoverable,
-                                                    &check_is_hovered_during_prepaint,
-                                                    tooltip_bounds,
-                                                    window,
-                                                    cx,
-                                                )
-                                            },
-                                        ),
-                                    },
-                                    is_hoverable: tooltip_is_hoverable,
-                                }
-                            });
-                        *active_tooltip.borrow_mut() = new_tooltip;
-                        window.refresh();
-                    })
-                    .ok();
-                }
-            });
-            active_tooltip
-                .borrow_mut()
-                .replace(ActiveTooltip::WaitingForShow {
-                    _task: delayed_show_task,
-                });
-        }
+        Action::ScheduleShow => schedule_tooltip_show(
+            active_tooltip,
+            build_tooltip,
+            check_is_hovered_during_prepaint,
+            retarget,
+            window,
+            cx,
+        ),
     }
+}
+
+fn schedule_tooltip_show(
+    active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
+    build_tooltip: &Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
+    check_is_hovered_during_prepaint: &Rc<dyn Fn(&Window) -> bool>,
+    retarget: &Option<Rc<TooltipRetarget>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let delayed_show_task = window.spawn(cx, {
+        let active_tooltip = active_tooltip.clone();
+        let build_tooltip = build_tooltip.clone();
+        let check_is_hovered_during_prepaint = check_is_hovered_during_prepaint.clone();
+        let retarget = retarget.clone();
+        async move |cx| {
+            cx.background_executor().timer(TOOLTIP_SHOW_DELAY).await;
+            cx.update(|window, cx| {
+                let new_tooltip = build_tooltip(window, cx).map(|(view, tooltip_is_hoverable)| {
+                    let active_tooltip = active_tooltip.clone();
+                    let build_tooltip = build_tooltip.clone();
+                    ActiveTooltip::Visible {
+                        tooltip: AnyTooltip {
+                            view,
+                            mouse_position: window.mouse_position(),
+                            check_visible_and_update: Rc::new(move |tooltip_bounds, window, cx| {
+                                handle_tooltip_check_visible_and_update(
+                                    &active_tooltip,
+                                    tooltip_is_hoverable,
+                                    &build_tooltip,
+                                    &check_is_hovered_during_prepaint,
+                                    &retarget,
+                                    tooltip_bounds,
+                                    window,
+                                    cx,
+                                )
+                            }),
+                        },
+                        is_hoverable: tooltip_is_hoverable,
+                    }
+                });
+                *active_tooltip.borrow_mut() = new_tooltip;
+                window.refresh();
+            })
+            .ok();
+        }
+    });
+    active_tooltip
+        .borrow_mut()
+        .replace(ActiveTooltip::WaitingForShow {
+            _task: delayed_show_task,
+        });
 }
 
 /// Returns a callback which will be called by window prepaint to update tooltip visibility. The
@@ -2800,11 +2833,39 @@ fn handle_tooltip_mouse_move(
 fn handle_tooltip_check_visible_and_update(
     active_tooltip: &Rc<RefCell<Option<ActiveTooltip>>>,
     tooltip_is_hoverable: bool,
+    build_tooltip: &Rc<dyn Fn(&mut Window, &mut App) -> Option<(AnyView, bool)>>,
     check_is_hovered: &Rc<dyn Fn(&Window) -> bool>,
+    retarget: &Option<Rc<TooltipRetarget>>,
     tooltip_bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    // The pointer is on another part of the element, outside the visible
+    // tooltip: replace the tooltip with that part's.
+    let visible_bubble = retarget.as_ref().map(|retarget| Bounds {
+        origin: tooltip_bounds.origin + retarget.bridge,
+        size: Size {
+            width: tooltip_bounds.size.width - retarget.bridge.x,
+            height: tooltip_bounds.size.height - retarget.bridge.y,
+        },
+    });
+    if let Some(retarget) = retarget
+        && let Some(visible_bubble) = visible_bubble
+        && (retarget.elsewhere)(window)
+        && !visible_bubble.contains(&window.mouse_position())
+    {
+        clear_active_tooltip(active_tooltip, window);
+        schedule_tooltip_show(
+            active_tooltip,
+            build_tooltip,
+            check_is_hovered,
+            &Some(retarget.clone()),
+            window,
+            cx,
+        );
+        return false;
+    }
+
     // Separates logic for what mutation should occur from applying it, to avoid overlapping RefCell
     // borrows.
     enum Action {

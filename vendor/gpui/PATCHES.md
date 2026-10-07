@@ -98,3 +98,16 @@ loop (so the quit callback runs) when polling fails with a connection error.
 Upstream logged a warning and returned; the dead socket stayed readable, so
 the same warning repeated forever at 100% CPU after the X server exited
 (issue #196).
+
+In `src/elements/text.rs`, `InteractiveText::hoverable_tooltip` is `tooltip`
+whose bubble stays while the pointer moves onto it (upstream hardcoded
+non-hoverable text tooltips), so a click on it can be handled. CayenChat's
+shortened URLs open from their full-URL bubble (issue #232).
+The tooltip belongs to the text range `hoverable_tooltip`'s `anchor` returns
+for the hovered byte: while it is shown, the pointer on other text (another
+URL) no longer keeps it, so it is replaced instead of opening a stale target.
+`tooltip_bridge` declares the tooltip view's transparent margin (left, top)
+that only bridges the gap to the pointer. A pointer on another range with a
+tooltip of its own, outside the visible part of the shown one, replaces the
+tooltip at once (`TooltipRetarget` in `src/elements/div.rs`: the shown tooltip
+is cleared and the next one is scheduled without another mouse move).

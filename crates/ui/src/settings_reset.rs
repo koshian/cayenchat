@@ -166,6 +166,8 @@ impl SettingsWindow {
             (&form.dark_highlight_color, &dark.highlight_color),
             (&form.dark_sub_log_background, &dark.sub_log_background),
             (&form.dark_sub_log_alternate, &dark.sub_log_alternate),
+            (&form.url_tooltip_color, &appearance.url_tooltip_color),
+            (&form.dark_url_tooltip_color, &dark.url_tooltip_color),
             (&form.main_log_font, &appearance.main_log_font),
             (&form.sub_log_font, &appearance.sub_log_font),
             (&form.member_font, &appearance.member_font),
@@ -175,6 +177,9 @@ impl SettingsWindow {
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
+        form.url_tooltip_opacity.update(cx, |field, cx| {
+            field.set_text(&appearance.url_tooltip_opacity.to_string(), cx)
+        });
     }
 
     /// Asks, then resets: a reset can discard many choices at once, and the
