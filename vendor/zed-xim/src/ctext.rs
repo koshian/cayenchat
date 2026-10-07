@@ -17,6 +17,8 @@ enum Set {
     Latin1,
     Kana,
     Jis,
+    Gb,
+    Ks,
     Skip,
 }
 
@@ -50,10 +52,14 @@ pub(crate) fn decode(bytes: &[u8]) -> String {
                 (b"(", Some(b'B' | b'J')) => gl = Set::Ascii,
                 (b"(", Some(b'I')) => gl = Set::Kana,
                 (b"$(" | b"$", Some(b'B')) => gl = Set::Jis,
+                (b"$(" | b"$", Some(b'A')) => gl = Set::Gb,
+                (b"$(", Some(b'C')) => gl = Set::Ks,
                 (b"$(" | b"$" | b"(", _) => gl = Set::Skip,
                 (b")", Some(b'I')) => gr = Set::Kana,
                 (b")", Some(b'B' | b'J')) => gr = Set::Ascii,
                 (b"$)", Some(b'B')) => gr = Set::Jis,
+                (b"$)", Some(b'A')) => gr = Set::Gb,
+                (b"$)", Some(b'C')) => gr = Set::Ks,
                 (b"-", Some(b'A')) => gr = Set::Latin1,
                 (b"$)" | b")" | b"-", _) => gr = Set::Skip,
                 _ => {}
@@ -94,11 +100,17 @@ pub(crate) fn decode(bytes: &[u8]) -> String {
                     out.push(char::from_u32(0xFF61 + u32::from(low) - 0x21).unwrap_or('\u{FFFD}'));
                 }
             }
-            Set::Jis => match bytes.get(i) {
+            Set::Jis | Set::Gb | Set::Ks => match bytes.get(i) {
                 Some(&second) if second != ESC && (0x21..=0x7E).contains(&(second & 0x7F)) => {
                     i += 1;
+                    // All three 94x94 sets are the 7-bit form of their EUC encodings.
+                    let encoding = match set {
+                        Set::Jis => encoding_rs::EUC_JP,
+                        Set::Gb => encoding_rs::GBK,
+                        _ => encoding_rs::EUC_KR,
+                    };
                     let pair = [low | 0x80, (second & 0x7F) | 0x80];
-                    let (text, _) = encoding_rs::EUC_JP.decode_without_bom_handling(&pair);
+                    let (text, _) = encoding.decode_without_bom_handling(&pair);
                     out.push_str(&text);
                 }
                 _ => {}
@@ -158,6 +170,15 @@ mod tests {
     fn halfwidth_katakana_and_latin1() {
         assert_eq!(decode(b"\x1b)I\xb1\xb2\xb3"), "ｱｲｳ");
         assert_eq!(decode(b"\x1b$(B\x46\x7c\x1b(B caf\xe9"), "日 café");
+    }
+
+    // Sent by IBus with Mozc for "tesutotesuto" (ESC $ ( A, GB2312).
+    #[test]
+    fn ibus_mozc_gb2312_designation() {
+        let bytes = b"\x1b$(A\x24\x46\x24\x39\x24\x48\x24\x46\x24\x39\x24\x48";
+        assert_eq!(decode(bytes), "てすとてすと");
+        assert_eq!(decode(b"\x1b$)A\xa4\xc6\x1b(Bx"), "てx");
+        assert_eq!(decode(b"\x1b$(A\x30\x21"), "啊");
     }
 
     #[test]

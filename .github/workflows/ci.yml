@@ -127,7 +127,7 @@ jobs:
       # XIM is only used on X11, and the crate does not resolve on other hosts.
       - name: Test vendored zed-xim
         if: runner.os == 'Linux'
-        run:cargo test -p zed-xim --locked
+        run: cargo test -p zed-xim --locked
 
       # Probes the real Windows Credential Manager through the keyring crate.
       - name: Test system credential store
