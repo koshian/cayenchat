@@ -460,7 +460,11 @@ impl SettingsForm {
             url_tooltip_color: value(&self.url_tooltip_color),
             url_tooltip_opacity: value(&self.url_tooltip_opacity)
                 .parse()
-                .map_err(|_| i18n_error(settings.language, "url_tooltip_opacity_invalid"))?,
+                .ok()
+                .filter(|percent| {
+                    (cayenchat_storage::MIN_URL_TOOLTIP_OPACITY..=100).contains(percent)
+                })
+                .ok_or_else(|| i18n_error(settings.language, "url_tooltip_opacity_invalid"))?,
             alternate_rows: self.values.appearance.alternate_rows,
             image_previews: self.values.appearance.image_previews,
             user_avatars: self.values.appearance.user_avatars,
@@ -8088,12 +8092,25 @@ impl ChatWindow {
             // The full URL of a shortened one shows on hover; clicking it
             // opens the URL.
             InteractiveText::new(("message-urls", index), styled)
-                .hoverable_tooltip(move |byte, _, cx| {
-                    let byte = byte.checked_sub(prefix_len)?;
-                    let (_, url) = full_urls.iter().find(|(range, _)| range.contains(&byte))?;
-                    let url = url.clone();
-                    Some(cx.new(|_| ircv3_settings::UrlTooltip(url)).into())
-                })
+                .hoverable_tooltip(
+                    {
+                        let full_urls = full_urls.clone();
+                        move |byte| {
+                            let byte = byte.checked_sub(prefix_len)?;
+                            let (range, _) =
+                                full_urls.iter().find(|(range, _)| range.contains(&byte))?;
+                            Some(range.start + prefix_len..range.end + prefix_len)
+                        }
+                    },
+                    move |range, _, cx| {
+                        let url = full_urls
+                            .iter()
+                            .find(|(url, _)| url.start + prefix_len == range.start)
+                            .map(|(_, url)| url.clone())
+                            .unwrap_or_default();
+                        cx.new(|_| ircv3_settings::UrlTooltip(url)).into()
+                    },
+                )
                 .into_any_element()
         };
         let avatar = (!message.activity && self.avatars.enabled()).then(|| {

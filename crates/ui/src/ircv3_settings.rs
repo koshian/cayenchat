@@ -864,18 +864,16 @@ impl Render for UrlTooltip {
         let theme = crate::theme::current(cx);
         let url = self.0.clone();
         // The padding bridges the gap to the pointer, so moving onto the
-        // bubble does not leave it.
-        div()
-            .id("url-tooltip")
-            .pl(px(10.))
-            .pt(px(18.))
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url))
-            .child(
-                settings_theme::tooltip(self.0.clone(), cx)
-                    .bg(theme.panes.url_tooltip)
-                    .text_color(theme.link),
-            )
+        // bubble does not leave it. Only the visible bubble is clickable; the
+        // padding lies over the log text and must leave it usable.
+        div().pl(px(10.)).pt(px(18.)).child(
+            settings_theme::tooltip(self.0.clone(), cx)
+                .id("url-tooltip")
+                .bg(theme.panes.url_tooltip)
+                .text_color(theme.link)
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url)),
+        )
     }
 }
 

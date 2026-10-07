@@ -103,3 +103,6 @@ In `src/elements/text.rs`, `InteractiveText::hoverable_tooltip` is `tooltip`
 whose bubble stays while the pointer moves onto it (upstream hardcoded
 non-hoverable text tooltips), so a click on it can be handled. CayenChat's
 shortened URLs open from their full-URL bubble (issue #232).
+The tooltip belongs to the text range `hoverable_tooltip`'s `anchor` returns
+for the hovered byte: while it is shown, the pointer on other text (another
+URL) no longer keeps it, so it is replaced instead of opening a stale target.
