@@ -993,6 +993,15 @@ ones. The same scenario on macOS or Windows would need a logged-in desktop
 session and platform tools (for example `screencapture` and synthetic
 events on macOS); the proxy, peer and assertions would carry over.
 
+`scripts/e2e/url_bubble_gui.py` is a second, smaller test in the same job. It
+needs no Ergo: a one-message IRC server on loopback sends two long URLs, the
+app shortens them, and the script drives the pointer through
+`gui_session.py` and reads which URLs the app opened. It checks that the
+bubble's transparent margin opens nothing, that the visible bubble opens the
+URL it shows, and that moving to another URL (inside or outside the margin)
+replaces the bubble. It waits for the bubble to be drawn, because under Xvfb
+a still pointer can take seconds to show it.
+
 ### Visual checks under Xvfb (Linux)
 
 Much of what used to be left for a person to look at can be seen by the

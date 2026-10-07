@@ -3,7 +3,7 @@ use crate::{
     HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, TextOverflow,
     TextRun, TextStyle, TooltipId, WhiteSpace, Window, WrappedLine, WrappedLineLayout,
-    register_tooltip_mouse_handlers, set_tooltip_on_window,
+    TooltipRetarget, register_tooltip_mouse_handlers, set_tooltip_on_window,
 };
 use anyhow::Context as _;
 use smallvec::SmallVec;
@@ -631,6 +631,11 @@ pub struct InteractiveText {
     hover_listener: Option<Box<dyn Fn(Option<usize>, MouseMoveEvent, &mut Window, &mut App)>>,
     tooltip_builder: Option<Rc<dyn Fn(usize, &mut Window, &mut App) -> Option<AnyView>>>,
     tooltip_id: Option<TooltipId>,
+    tooltip_hoverable: bool,
+    /// For hoverable tooltips: the text range a tooltip belongs to.
+    tooltip_anchor: Option<Rc<dyn Fn(usize) -> Option<Range<usize>>>>,
+    /// Transparent margin (left, top) of a hoverable tooltip's view.
+    tooltip_bridge: Point<Pixels>,
     clickable_ranges: Vec<Range<usize>>,
 }
 
@@ -645,6 +650,8 @@ pub struct InteractiveTextState {
     mouse_down_index: Rc<Cell<Option<usize>>>,
     hovered_index: Rc<Cell<Option<usize>>>,
     active_tooltip: Rc<RefCell<Option<ActiveTooltip>>>,
+    /// The anchor range of the shown hoverable tooltip.
+    tooltip_range: Rc<RefCell<Option<Range<usize>>>>,
 }
 
 /// InteractiveTest is a wrapper around StyledText that adds mouse interactions.
@@ -658,6 +665,9 @@ impl InteractiveText {
             hover_listener: None,
             tooltip_builder: None,
             tooltip_id: None,
+            tooltip_hoverable: false,
+            tooltip_anchor: None,
+            tooltip_bridge: Point::default(),
             clickable_ranges: Vec::new(),
         }
     }
@@ -697,6 +707,34 @@ impl InteractiveText {
         builder: impl Fn(usize, &mut Window, &mut App) -> Option<AnyView> + 'static,
     ) -> Self {
         self.tooltip_builder = Some(Rc::new(builder));
+        self
+    }
+
+    /// Like [`Self::tooltip`], but the tooltip stays while the pointer moves
+    /// onto it, so it can be clicked. `anchor` gives the text range under a
+    /// byte index that has a tooltip; the tooltip is only kept while the
+    /// pointer stays within that range (or on the tooltip), so moving to
+    /// another range replaces it.
+    pub fn hoverable_tooltip(
+        mut self,
+        anchor: impl Fn(usize) -> Option<Range<usize>> + 'static,
+        builder: impl Fn(Range<usize>, &mut Window, &mut App) -> AnyView + 'static,
+    ) -> Self {
+        let anchor = Rc::new(anchor);
+        self.tooltip_builder = Some(Rc::new({
+            let anchor = anchor.clone();
+            move |index, window, cx| anchor(index).map(|range| builder(range, window, cx))
+        }));
+        self.tooltip_anchor = Some(anchor);
+        self.tooltip_hoverable = true;
+        self
+    }
+
+    /// Declares the transparent margin (left, top) of a hoverable tooltip's
+    /// view. It only bridges the gap to the pointer: over it, another range's
+    /// tooltip replaces this one instead of the pointer counting as on it.
+    pub fn tooltip_bridge(mut self, left: Pixels, top: Pixels) -> Self {
+        self.tooltip_bridge = Point { x: left, y: top };
         self
     }
 }
@@ -847,15 +885,42 @@ impl Element for InteractiveText {
 
                 if let Some(tooltip_builder) = self.tooltip_builder.clone() {
                     let active_tooltip = interactive_state.active_tooltip.clone();
+                    let tooltip_range = interactive_state.tooltip_range.clone();
                     let build_tooltip = Rc::new({
-                        let tooltip_is_hoverable = false;
+                        let tooltip_is_hoverable = self.tooltip_hoverable;
+                        let anchor = self.tooltip_anchor.clone();
+                        let tooltip_range = tooltip_range.clone();
                         let text_layout = text_layout.clone();
                         move |window: &mut Window, cx: &mut App| {
-                            text_layout
+                            let position = text_layout
                                 .index_for_position(window.mouse_position())
-                                .ok()
-                                .and_then(|position| tooltip_builder(position, window, cx))
-                                .map(|view| (view, tooltip_is_hoverable))
+                                .ok()?;
+                            let view = tooltip_builder(position, window, cx)?;
+                            *tooltip_range.borrow_mut() =
+                                anchor.as_ref().and_then(|anchor| anchor(position));
+                            Some((view, tooltip_is_hoverable))
+                        }
+                    });
+
+                    // A shown hoverable tooltip belongs to its anchor range;
+                    // the pointer on other text no longer keeps it.
+                    let in_anchor = Rc::new({
+                        let anchored = self.tooltip_anchor.is_some();
+                        let active_tooltip = active_tooltip.clone();
+                        let tooltip_range = tooltip_range.clone();
+                        move |index: usize| {
+                            !anchored
+                                || !matches!(
+                                    active_tooltip.borrow().as_ref(),
+                                    Some(
+                                        ActiveTooltip::Visible { .. }
+                                            | ActiveTooltip::WaitingForHide { .. }
+                                    )
+                                )
+                                || tooltip_range
+                                    .borrow()
+                                    .as_ref()
+                                    .is_some_and(|range| range.contains(&index))
                         }
                     });
 
@@ -863,11 +928,12 @@ impl Element for InteractiveText {
                     let check_is_hovered_during_prepaint = Rc::new({
                         let source_bounds = hitbox.bounds;
                         let text_layout = text_layout.clone();
+                        let in_anchor = in_anchor.clone();
                         let pending_mouse_down = interactive_state.mouse_down_index.clone();
                         move |window: &Window| {
                             text_layout
                                 .index_for_position(window.mouse_position())
-                                .is_ok()
+                                .is_ok_and(|index| in_anchor(index))
                                 && source_bounds.contains(&window.mouse_position())
                                 && pending_mouse_down.get().is_none()
                         }
@@ -880,10 +946,32 @@ impl Element for InteractiveText {
                         move |window: &Window| {
                             text_layout
                                 .index_for_position(window.mouse_position())
-                                .is_ok()
+                                .is_ok_and(|index| in_anchor(index))
                                 && hitbox.is_hovered(window)
                                 && pending_mouse_down.get().is_none()
                         }
+                    });
+
+                    let retarget = self.tooltip_anchor.clone().map(|anchor| {
+                        let text_layout = text_layout.clone();
+                        let tooltip_range = tooltip_range.clone();
+                        let source_bounds = hitbox.bounds;
+                        Rc::new(TooltipRetarget {
+                            elsewhere: Rc::new(move |window: &Window| {
+                                let position = window.mouse_position();
+                                source_bounds.contains(&position)
+                                    && text_layout.index_for_position(position).is_ok_and(
+                                        |index| {
+                                            anchor(index).is_some()
+                                                && !tooltip_range
+                                                    .borrow()
+                                                    .as_ref()
+                                                    .is_some_and(|range| range.contains(&index))
+                                        },
+                                    )
+                            }),
+                            bridge: self.tooltip_bridge,
+                        })
                     });
 
                     register_tooltip_mouse_handlers(
@@ -892,6 +980,7 @@ impl Element for InteractiveText {
                         build_tooltip,
                         check_is_hovered,
                         check_is_hovered_during_prepaint,
+                        retarget,
                         window,
                     );
                 }
