@@ -725,7 +725,7 @@ fn send_req_impl<C: HasConnection, E: From<ConnectionError> + From<ReplyError>>(
     } else {
         let prop = c
             .conn()
-            .intern_atom(false, format!("_XIM_DATA_{}", sequence).as_bytes())?
+            .intern_atom(false, crate::property::data_property_name(*sequence).as_bytes())?
             .reply()?
             .atom;
         *sequence = sequence.wrapping_add(1);

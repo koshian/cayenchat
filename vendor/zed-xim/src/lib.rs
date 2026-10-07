@@ -36,6 +36,8 @@ mod client;
 mod ctext;
 #[cfg(feature = "client")]
 mod style;
+#[cfg(any(feature = "x11rb-server", feature = "x11rb-client", test))]
+mod property;
 #[cfg(feature = "server")]
 mod server;
 

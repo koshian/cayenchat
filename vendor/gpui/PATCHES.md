@@ -113,3 +113,9 @@ created with a style chosen from the server's `XNQueryInputStyle` reply
 (preedit callbacks + status nothing; `xim::choose_input_style` in zed-xim so its tests run in CI) instead of a hard-coded
 `PREEDIT_CALLBACKS`, which IBus does not offer. `set_ic_values` no longer
 resends `InputStyle`/`ClientWindow`, which are creation-time only (issue #227).
+
+Requests too large for a ClientMessage are passed through `_XIM_DATA_N`
+properties. `src/property.rs` limits N to 21 names (as Xlib's `_clientN` does)
+instead of a new atom per request: IBus' IMdkit offset cache corrupts the heap
+of `ibus-x11` past 22 atoms, which dropped the IME connection after a few dozen
+keystrokes (issue #227).
