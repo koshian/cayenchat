@@ -561,14 +561,16 @@ Each server profile has an optional QUIT message (`quit_message`, issue #148; ad
 without a version change). Disconnect and quitting the app send it as the `QUIT`
 reason; blank means "Leaving CayenChat". `/quit [reason]` takes the same path (a
 typed reason wins, and the UI does not reconnect afterwards), and closing the
-main window or quitting sends QUIT on every connection and waits up to 500 ms in
+main window or quitting sends QUIT on every connection and waits up to 2 s in
 total for the workers to flush it (`Connection::wait_closed`; issue #234). That path
 uses `Connection::shutdown`, a flag the worker checks before the command queue, and
 the worker then drops events instead of waiting for the UI, so QUIT still goes out
 when the UI stopped draining a full event queue or the command queue is full. After queuing QUIT the
-worker drops its client handle and polls the library stream until it ends, which the library does
-only once its outgoing queue is written (at most 2 s), so QUIT behind a send backlog is not lost;
-lines arriving meanwhile are ignored, and nothing is read from the server afterwards. It is validated with the connection
+worker closes the connection with the vendored `ClientStream::close`: it writes the outgoing
+queue (so QUIT behind a send backlog is not lost), shuts down only the sending side so a FIN
+follows QUIT, and discards what the server still sends until it closes or 2 s pass. Dropping a
+socket that still holds unread data would send an RST, which discards QUIT that is not yet
+sent (the server then reports "EOF From client"); the data read here is never shown. It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
 connection starts, so an edit applies from the next connection. Lost connections
 send no QUIT.

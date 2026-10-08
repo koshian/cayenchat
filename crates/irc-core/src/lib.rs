@@ -1992,17 +1992,12 @@ async fn run_cancellable(
                         if client.send(quit).is_ok() {
                             transcript.record(WireDirection::Sent, line).await;
                         }
-                        // The library writes the outgoing queue only while ClientStream is
-                        // polled, and ends the stream once every sender is gone and the queue
-                        // is flushed. Dropping the client and polling to that end (or an
-                        // error) means QUIT, even behind a backlog, has been written before
-                        // the socket is dropped.
+                        // Queued lines are written only while ClientStream is polled. close()
+                        // writes QUIT, shuts down just the sending side (FIN after QUIT) and
+                        // discards what the server still sends until it closes. Dropping a
+                        // socket with unread data would send RST and could discard QUIT.
                         drop(client);
-                        let flush_deadline = tokio::time::Instant::now() + QUIT_FLUSH_LIMIT;
-                        let _ = tokio::time::timeout_at(flush_deadline, async {
-                            while let Some(Ok(_)) = stream.next().await {}
-                        })
-                        .await;
+                        let _ = tokio::time::timeout(QUIT_FLUSH_LIMIT, stream.close()).await;
                         let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
                         break;
                     }
@@ -4412,6 +4407,18 @@ mod tests {
                     {
                         line.pop();
                     }
+                    // A server that answers QUIT still sends data. The client must
+                    // finish with FIN after QUIT, not an RST that discards it, so
+                    // reading on ends with a clean EOF rather than an error.
+                    for index in 0..100 {
+                        let _ = socket.write_all(
+                            format!(":server NOTICE alice :late {index}\r\n").as_bytes(),
+                        );
+                    }
+                    let mut rest = Vec::new();
+                    lines
+                        .read_until(0, &mut rest)
+                        .expect("client closed with an error, not FIN");
                     return line;
                 }
             }

@@ -1665,7 +1665,7 @@ impl ChatWindow {
         for connection in &closing {
             connection.shutdown();
         }
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
         for connection in closing {
             connection.wait_closed(deadline.saturating_duration_since(std::time::Instant::now()));
         }

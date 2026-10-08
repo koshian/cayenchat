@@ -43,6 +43,8 @@ gpui = { path = "vendor/gpui" }
 zed-xim = { path = "vendor/zed-xim" }
 # The published codec buffers a line without any length limit.
 irc-proto = { path = "vendor/irc-proto" }
+# ClientStream::close ends the sending side (FIN after QUIT) and drains the server before the socket is dropped.
+irc = { path = "vendor/irc" }
 
 [profile.dev]
 debug = 1
