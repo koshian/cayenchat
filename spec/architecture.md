@@ -492,14 +492,18 @@ display and clipboard export. Library-generated PONG and configured JOIN lines
 are reflected when their triggering server lines are processed. This is a parsed
 IRC transcript, not a byte-for-byte socket capture. The UI shows it automatically
 while registration is incomplete or after disconnection, including over a selected
-channel. A worker panic produces a disconnected event; the UI also handles a closed
+channel. The worker formats and sends IRC lines only while they can be shown:
+until registration completes, and afterwards while the debug transcript is on
+(`Connection::set_transcript`, set for every connection when it is toggled and
+for each new one). Stage diagnostics are always sent. A worker panic produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is included
 in the transcript and clipboard export.
 Connection diagnostics are reached through the View menu (Alt, F10 or hovering
 below the title bar reveals the menu bar on Linux/Windows) or keyboard shortcuts. There are no permanent diagnostic
 buttons. Displaying diagnostics selects the server view, enables the transcript
 and scrolls to its start; copying exports the retained transcript regardless of
-the selected pane.
+the selected pane. An established session's traffic is in it only from when
+the transcript was turned on.
 
 ### Servers and sessions
 
