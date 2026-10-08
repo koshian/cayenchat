@@ -13,14 +13,11 @@
 
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Prefix};
 
-use crate::tags::tag_value;
+use crate::tags::{followed_batch, tag_value};
 
 /// Open history batches remembered at once. A server that never ends its
 /// batches evicts its oldest ones instead of growing the table.
 const MAX_OPEN_BATCHES: usize = 64;
-/// Longest batch reference kept. References are short opaque identifiers;
-/// a longer one is not followed, so its messages count as live.
-const MAX_REFERENCE_BYTES: usize = 64;
 /// Batch types that carry history rather than live traffic. irc-proto 1.1.0
 /// upper-cases every batch type it parses (`BatchSubCommand::CUSTOM`), so
 /// the raw spelling is lost and these are compared in upper case. Batch
@@ -50,7 +47,7 @@ impl ReplayTracker {
         if let Some(reference) = reference.strip_prefix('-') {
             self.forget(reference);
         } else if let Some(reference) = reference.strip_prefix('+') {
-            if reference.is_empty() || reference.len() > MAX_REFERENCE_BYTES {
+            if !followed_batch(reference) {
                 return;
             }
             let history = kind
@@ -101,6 +98,7 @@ impl ReplayTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::MAX_BATCH_REFERENCE_BYTES;
 
     fn parse(line: &str) -> IrcMessage {
         line.parse().unwrap()
@@ -218,10 +216,10 @@ mod tests {
         // No type, an empty reference or an oversized one is not followed.
         tracker.observe(&parse(":srv BATCH +notype"));
         tracker.observe(&parse(":srv BATCH + chathistory #chan"));
-        let long = "r".repeat(MAX_REFERENCE_BYTES + 1);
+        let long = "r".repeat(MAX_BATCH_REFERENCE_BYTES + 1);
         tracker.observe(&parse(&format!(":srv BATCH +{long} chathistory #chan")));
         assert_eq!(tracker.history_batches, ["dup"]);
-        let fits = "r".repeat(MAX_REFERENCE_BYTES);
+        let fits = "r".repeat(MAX_BATCH_REFERENCE_BYTES);
         tracker.observe(&parse(&format!(":srv BATCH +{fits} chathistory #chan")));
         assert!(tracker.replayed(&tagged(&format!("batch={fits}"))));
     }

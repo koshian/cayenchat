@@ -25,7 +25,10 @@ pub use peer_avatar::shareable as shareable_avatar;
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -802,19 +805,36 @@ fn echo_text(target: &str, text: String) -> String {
     }
 }
 
-async fn wire(
-    events: &mpsc::Sender<Event>,
+/// The worker's side of the diagnostic transcript. IRC lines are formatted
+/// and sent to the UI only while someone may read them: until registration
+/// completes (the transcript is shown while a connection does not come up)
+/// and while the UI asks for them ([`Connection::set_transcript`]).
+struct Transcript {
+    events: mpsc::Sender<Event>,
     started: Instant,
-    direction: WireDirection,
-    line: String,
-) {
-    let _ = events
-        .send(Event::Wire {
-            elapsed: started.elapsed(),
-            direction,
-            line,
-        })
-        .await;
+    requested: Arc<AtomicBool>,
+    registered: bool,
+}
+
+impl Transcript {
+    /// The line to record for `message`, if lines are recorded now.
+    fn line(&self, message: &IrcMessage) -> Option<String> {
+        (!self.registered || self.requested.load(Ordering::Relaxed))
+            .then(|| redacted_wire_line(message))
+    }
+
+    async fn record(&self, direction: WireDirection, line: Option<String>) {
+        if let Some(line) = line {
+            let _ = self
+                .events
+                .send(Event::Wire {
+                    elapsed: self.started.elapsed(),
+                    direction,
+                    line,
+                })
+                .await;
+        }
+    }
 }
 
 fn error_chain(error: &dyn std::error::Error) -> String {
@@ -1141,6 +1161,8 @@ pub struct Connection {
     encoding: String,
     /// The server's announced `MODES` limit; 0 until one is seen.
     modes_per_line: Arc<AtomicUsize>,
+    /// Whether IRC lines are recorded after registration.
+    transcript: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for Connection {
@@ -1162,6 +1184,8 @@ impl Connection {
         let worker_cancel = cancel.clone();
         let modes_per_line = Arc::new(AtomicUsize::new(0));
         let worker_modes = modes_per_line.clone();
+        let transcript = Arc::new(AtomicBool::new(false));
+        let worker_transcript = transcript.clone();
         thread::Builder::new()
             .name("cayenchat-irc".into())
             .spawn(move || {
@@ -1177,6 +1201,7 @@ impl Connection {
                             event_tx,
                             worker_cancel,
                             worker_modes,
+                            worker_transcript,
                         )),
                         Err(error) => {
                             let _ = event_tx.blocking_send(Event::Disconnected(error.to_string()));
@@ -1196,7 +1221,15 @@ impl Connection {
             events: Some(Events(events)),
             encoding,
             modes_per_line,
+            transcript,
         })
+    }
+
+    /// Whether `Event::Wire` lines are sent after registration; they always
+    /// are before it. Off by default, since formatting and sending every line
+    /// costs work on each message that only the debug transcript reads.
+    pub fn set_transcript(&self, on: bool) {
+        self.transcript.store(on, Ordering::Relaxed);
     }
 
     /// Moves the event stream out; afterwards `try_recv` returns `None` and
@@ -1278,9 +1311,7 @@ impl Connection {
         if let Some(bad) = nicknames.iter().find(|nick| !valid_nickname(nick)) {
             return Err(format!("Invalid nickname: {bad}"));
         }
-        let announced = self
-            .modes_per_line
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let announced = self.modes_per_line.load(Ordering::Relaxed);
         let lines = modes::mode_lines(channel, mode, nicknames, modes::effective_limit(announced));
         let outgoing = lines
             .into_iter()
@@ -1440,6 +1471,7 @@ async fn run(
         events,
         Arc::new(Notify::new()),
         Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(true)),
     )
     .await
 }
@@ -1450,8 +1482,15 @@ async fn run_cancellable(
     events: mpsc::Sender<Event>,
     cancel: Arc<Notify>,
     modes_per_line: Arc<AtomicUsize>,
+    transcript: Arc<AtomicBool>,
 ) {
     let started = Instant::now();
+    let mut transcript = Transcript {
+        events: events.clone(),
+        started,
+        requested: transcript,
+        registered: false,
+    };
     let host = config.host.clone();
     let port = config.port;
     let use_tls = config.use_tls;
@@ -1659,7 +1698,7 @@ async fn run_cancellable(
     ));
     for command in registration {
         let message = IrcMessage::from(command);
-        let line = redacted_wire_line(&message);
+        let line = transcript.line(&message);
         if let Err(error) = client.send(message) {
             let detail = error_chain(&error);
             diagnostic(
@@ -1671,7 +1710,7 @@ async fn run_cancellable(
             let _ = events.send(Event::Disconnected(detail)).await;
             return;
         }
-        wire(&events, started, WireDirection::Sent, line).await;
+        transcript.record(WireDirection::Sent, line).await;
     }
     let mut registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
     let mut registered = false;
@@ -1728,12 +1767,12 @@ async fn run_cancellable(
                             IrcMessage::from(IrcCommand::PRIVMSG(target.clone(), text))
                         };
                         let message = echo::with_label(message, label.flatten());
-                        let line = redacted_wire_line(&message);
+                        let line = transcript.line(&message);
                         let result = validate_tagged_wire(&message, &wire_encoding)
                             .and_then(|_| client.send(message).map_err(|error| error.to_string()));
                         let event = match result {
                             Ok(()) => {
-                                wire(&events, started, WireDirection::Sent, line).await;
+                                transcript.record(WireDirection::Sent, line).await;
                                 Event::OutgoingAccepted {
                                     local_id: tracked.then_some(local_id),
                                     channel: target,
@@ -1749,7 +1788,7 @@ async fn run_cancellable(
                         if events.send(event).await.is_err() { break; }
                     }
                     Outgoing::Raw(message) => {
-                        let line = redacted_wire_line(&message);
+                        let line = transcript.line(&message);
                         let retry_nick = match &message.command {
                             IrcCommand::NICK(nickname) if !registered => Some(nickname.clone()),
                             _ => None,
@@ -1758,7 +1797,7 @@ async fn run_cancellable(
                             .and_then(|_| client.send(message).map_err(|error| error.to_string()));
                         match result {
                             Ok(()) => {
-                                wire(&events, started, WireDirection::Sent, line).await;
+                                transcript.record(WireDirection::Sent, line).await;
                                 if let Some(nickname) = retry_nick {
                                     current_nick = nickname;
                                     awaiting_nick = false;
@@ -1783,12 +1822,12 @@ async fn run_cancellable(
                         match queued {
                             Ok(command) => {
                                 let message = IrcMessage::from(command);
-                                let line = redacted_wire_line(&message);
+                                let line = transcript.line(&message);
                                 if let Err(error) = client.send(message) {
                                     let _ = events.send(Event::Disconnected(error_chain(&error))).await;
                                     return;
                                 }
-                                wire(&events, started, WireDirection::Sent, line).await;
+                                transcript.record(WireDirection::Sent, line).await;
                             }
                             Err(failure) => {
                                 if events.send(Event::OwnAvatarFailed { request, failure }).await.is_err() {
@@ -1812,13 +1851,13 @@ async fn run_cancellable(
                                 "SETNAME".into(),
                                 vec![peer_avatar::realname(base_realname(&realname), advertise_avatar)],
                             ));
-                            let line = redacted_wire_line(&message);
+                            let line = transcript.line(&message);
                             match validate_wire(&message.to_string(), &wire_encoding)
                                 .and_then(|_| client.send(message).map_err(|error| error.to_string()))
                             {
                                 Ok(()) => {
                                     pending_setname += 1;
-                                    wire(&events, started, WireDirection::Sent, line).await;
+                                    transcript.record(WireDirection::Sent, line).await;
                                     None
                                 }
                                 Err(error) => Some(RealNameFailure::Rejected(error)),
@@ -1837,7 +1876,7 @@ async fn run_cancellable(
                             Err(history::Finished::failed_older(channel, request))
                         };
                         let sent = match queued {
-                            Ok(()) => request_history(&client, &events, started, &mut history, registered).await,
+                            Ok(()) => request_history(&client, &events, &transcript, &mut history, registered).await,
                             Err(finished) => history_finished(&events, started, finished).await,
                         };
                         if !sent {
@@ -1846,8 +1885,9 @@ async fn run_cancellable(
                     }
                     Outgoing::Quit => {
                         let quit = IrcMessage::from(IrcCommand::QUIT(Some(quit_message.clone())));
-                        if client.send(quit.clone()).is_ok() {
-                            wire(&events, started, WireDirection::Sent, redacted_wire_line(&quit)).await;
+                        let line = transcript.line(&quit);
+                        if client.send(quit).is_ok() {
+                            transcript.record(WireDirection::Sent, line).await;
                         }
                         // ClientStream drives the library's outgoing queue. Poll it once more
                         // so QUIT is flushed before the runtime and socket are dropped.
@@ -1860,17 +1900,17 @@ async fn run_cancellable(
             incoming = stream.next() => {
                 match incoming {
                     Some(Ok(message)) => {
-                        wire(&events, started, WireDirection::Received, redacted_wire_line(&message)).await;
+                        transcript.record(WireDirection::Received, transcript.line(&message)).await;
                         // irc's transport enqueues PONG before exposing PING here.
                         if let IrcCommand::PING(data, _) = &message.command {
                             let pong = IrcMessage::from(IrcCommand::PONG(data.clone(), None));
-                            wire(&events, started, WireDirection::Sent, redacted_wire_line(&pong)).await;
+                            transcript.record(WireDirection::Sent, transcript.line(&pong)).await;
                         }
                         // irc's client state enqueues configured JOINs on end-of-MOTD.
                         if matches!(message.command, IrcCommand::Response(Response::RPL_ENDOFMOTD | Response::ERR_NOMOTD, _)) {
                             for channel in &auto_join_channels {
                                 let join = IrcMessage::from(IrcCommand::JOIN(channel.clone(), None, None));
-                                wire(&events, started, WireDirection::Sent, redacted_wire_line(&join)).await;
+                                transcript.record(WireDirection::Sent, transcript.line(&join)).await;
                             }
                         }
                         if !registered {
@@ -1895,12 +1935,12 @@ async fn run_cancellable(
                                 }
                                 for command in step.send {
                                     let message = IrcMessage::from(command);
-                                    let line = redacted_wire_line(&message);
+                                    let line = transcript.line(&message);
                                     if let Err(error) = client.send(message) {
                                         let _ = events.send(Event::Disconnected(error_chain(&error))).await;
                                         return;
                                     }
-                                    wire(&events, started, WireDirection::Sent, line).await;
+                                    transcript.record(WireDirection::Sent, line).await;
                                 }
                             }
                             Err(error) => {
@@ -1943,6 +1983,7 @@ async fn run_cancellable(
                         }
                         if matches!(message.command, IrcCommand::Response(Response::RPL_WELCOME, _)) {
                             registered = true;
+                            transcript.registered = true;
                             negotiation.registered();
                             diagnostic(&events, started, "Registration completed (001 received).").await;
                         }
@@ -1961,7 +2002,7 @@ async fn run_cancellable(
                                 let now = SystemTime::now();
                                 let since = targets_since.unwrap_or(now - TARGETS_DEFAULT_WINDOW);
                                 history.enqueue_targets(since.max(now - TARGETS_MAX_WINDOW), now);
-                                if !request_history(&client, &events, started, &mut history, registered).await {
+                                if !request_history(&client, &events, &transcript, &mut history, registered).await {
                                     return;
                                 }
                             }
@@ -1976,12 +2017,12 @@ async fn run_cancellable(
                         if !start.is_empty() {
                             for command in start {
                                 let message = IrcMessage::from(command);
-                                let line = redacted_wire_line(&message);
+                                let line = transcript.line(&message);
                                 if let Err(error) = client.send(message) {
                                     let _ = events.send(Event::Disconnected(error_chain(&error))).await;
                                     return;
                                 }
-                                wire(&events, started, WireDirection::Sent, line).await;
+                                transcript.record(WireDirection::Sent, line).await;
                             }
                             if events.send(Event::MetadataReady).await.is_err() {
                                 return;
@@ -2004,7 +2045,7 @@ async fn run_cancellable(
                                 history::Observed::Consumed => continue,
                                 history::Observed::Finished(finished) => {
                                     if !history_finished(&events, started, finished).await
-                                        || !request_history(&client, &events, started, &mut history, registered).await
+                                        || !request_history(&client, &events, &transcript, &mut history, registered).await
                                     {
                                         return;
                                     }
@@ -2063,7 +2104,7 @@ async fn run_cancellable(
                         if let Some(peers) = peers.as_mut()
                             && let Some(handled) = peers.observe(&message, &current_nick, &roster.presence, replayed, tokio::time::Instant::now())
                         {
-                            if let Err(detail) = send_all(&client, &events, started, handled.send).await {
+                            if let Err(detail) = send_all(&client, &transcript,handled.send).await {
                                 let _ = events.send(Event::Disconnected(detail)).await;
                                 return;
                             }
@@ -2078,7 +2119,7 @@ async fn run_cancellable(
                         // Other CTCP requests and replies become one
                         // readable server line, answered when asked.
                         if let Some(handled) = ctcp.observe(&message, &current_nick, replayed, tokio::time::Instant::now()) {
-                            if let Err(detail) = send_all(&client, &events, started, handled.send).await {
+                            if let Err(detail) = send_all(&client, &transcript,handled.send).await {
                                 let _ = events.send(Event::Disconnected(detail)).await;
                                 return;
                             }
@@ -2151,7 +2192,7 @@ async fn run_cancellable(
                                 if events.send(event).await.is_err() { return; }
                             }
                             if let Some(command) = accounts.next_who(tokio::time::Instant::now())
-                                && let Err(detail) = send_all(&client, &events, started, vec![command]).await
+                                && let Err(detail) = send_all(&client, &transcript,vec![command]).await
                             {
                                 let _ = events.send(Event::Disconnected(detail)).await;
                                 return;
@@ -2191,7 +2232,7 @@ async fn run_cancellable(
                         }
                         if track_accounts
                             && let Some(command) = accounts.next_who(tokio::time::Instant::now())
-                            && let Err(detail) = send_all(&client, &events, started, vec![command]).await
+                            && let Err(detail) = send_all(&client, &transcript,vec![command]).await
                         {
                             let _ = events.send(Event::Disconnected(detail)).await;
                             return;
@@ -2201,7 +2242,7 @@ async fn run_cancellable(
                         }
                         // After the JOIN's own events, so the channel exists
                         // in the application before its history is asked for.
-                        if history_enabled && !request_history(&client, &events, started, &mut history, registered).await {
+                        if history_enabled && !request_history(&client, &events, &transcript, &mut history, registered).await {
                             return;
                         }
                     }
@@ -2248,9 +2289,9 @@ async fn run_cancellable(
                 });
                 for command in handled.send {
                     let message = IrcMessage::from(command);
-                    let line = redacted_wire_line(&message);
+                    let line = transcript.line(&message);
                     if client.send(message).is_ok() {
-                        wire(&events, started, WireDirection::Sent, line).await;
+                        transcript.record(WireDirection::Sent, line).await;
                     }
                 }
                 for note in handled.notes {
@@ -2271,7 +2312,7 @@ async fn run_cancellable(
             _ = tokio::time::sleep_until(history.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if history_enabled && history.next_deadline().is_some() => {
                 if let Some(history::Observed::Finished(finished)) = history.tick(tokio::time::Instant::now())
                     && (!history_finished(&events, started, finished).await
-                        || !request_history(&client, &events, started, &mut history, registered).await)
+                        || !request_history(&client, &events, &transcript, &mut history, registered).await)
                 {
                     return;
                 }
@@ -2280,7 +2321,7 @@ async fn run_cancellable(
             // while none is queued or outstanding.
             _ = tokio::time::sleep_until(peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).unwrap_or_else(tokio::time::Instant::now)), if registered && peers.as_ref().and_then(peer_avatar::PeerAvatars::next_deadline).is_some() => {
                 let handled = peers.as_mut().map(|peers| peers.tick(tokio::time::Instant::now(), &current_nick, &roster.presence)).unwrap_or_default();
-                if let Err(detail) = send_all(&client, &events, started, handled.send).await {
+                if let Err(detail) = send_all(&client, &transcript,handled.send).await {
                     let _ = events.send(Event::Disconnected(detail)).await;
                     return;
                 }
@@ -2305,7 +2346,7 @@ async fn run_cancellable(
 async fn request_history(
     client: &Client,
     events: &mpsc::Sender<Event>,
-    started: Instant,
+    transcript: &Transcript,
     history: &mut history::HistoryRequests,
     registered: bool,
 ) -> bool {
@@ -2315,7 +2356,7 @@ async fn request_history(
     let Some((channel, page, command)) = history.next_request(tokio::time::Instant::now()) else {
         return true;
     };
-    if let Err(detail) = send_all(client, events, started, vec![command]).await {
+    if let Err(detail) = send_all(client, transcript, vec![command]).await {
         let _ = events.send(Event::Disconnected(detail)).await;
         return false;
     }
@@ -2374,15 +2415,14 @@ fn merged(peers: &mut Option<peer_avatar::PeerAvatars>, events: Vec<Event>) -> V
 /// transcript; `Err` means the link failed.
 async fn send_all(
     client: &Client,
-    events: &mpsc::Sender<Event>,
-    started: Instant,
+    transcript: &Transcript,
     commands: Vec<IrcCommand>,
 ) -> Result<(), String> {
     for command in commands {
         let message = IrcMessage::from(command);
-        let line = redacted_wire_line(&message);
+        let line = transcript.line(&message);
         client.send(message).map_err(|error| error_chain(&error))?;
-        wire(events, started, WireDirection::Sent, line).await;
+        transcript.record(WireDirection::Sent, line).await;
     }
     Ok(())
 }
@@ -3197,6 +3237,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
+            transcript: Arc::default(),
         };
         assert!(!connection.is_closed());
         assert!(matches!(
@@ -3216,6 +3257,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(2)),
+            transcript: Arc::default(),
         };
         let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
         connection
@@ -3251,6 +3293,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(1)),
+            transcript: Arc::default(),
         };
         let names = ["a", "b", "c"].map(str::to_owned).to_vec();
         assert!(
@@ -3276,6 +3319,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
+            transcript: Arc::default(),
         };
         let mut events = connection.take_events().unwrap();
         assert!(connection.take_events().is_none());
@@ -3419,6 +3463,64 @@ mod tests {
         assert!(!requires_utf8(&message));
     }
 
+    /// IRC lines reach the transcript during registration, and afterwards
+    /// only while the UI asks for them.
+    #[test]
+    fn the_transcript_follows_registration_and_the_ui() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (next, wait) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            loop {
+                let mut line = Vec::new();
+                reader.read_until(b'\n', &mut line).unwrap();
+                if line.starts_with(b"USER ") {
+                    break;
+                }
+            }
+            socket
+                .write_all(b":server 001 alice :Welcome\r\n:bob!u@h PRIVMSG alice :one\r\n")
+                .unwrap();
+            wait.recv().unwrap();
+            socket
+                .write_all(b":bob!u@h PRIVMSG alice :two\r\n")
+                .unwrap();
+            wait.recv().unwrap();
+        });
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+        config.port = port;
+        config.use_tls = false;
+        let mut connection = Connection::connect(config).unwrap();
+        let until_message = |connection: &mut Connection, text: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut wire = Vec::new();
+            loop {
+                assert!(Instant::now() < deadline, "no message {text}");
+                match connection.try_recv() {
+                    Some(Event::Wire { line, .. }) => wire.push(line),
+                    Some(Event::PrivateMessage { text: got, .. }) if got == text => break wire,
+                    Some(_) => {}
+                    None => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        };
+        let before = until_message(&mut connection, "one");
+        assert!(before.iter().any(|line| line.starts_with("NICK alice")));
+        assert!(before.iter().any(|line| line.contains(" 001 alice ")));
+        assert!(!before.iter().any(|line| line.contains("PRIVMSG")));
+        connection.set_transcript(true);
+        next.send(()).unwrap();
+        let after = until_message(&mut connection, "two");
+        assert_eq!(after, [":bob!u@h PRIVMSG alice two"]);
+        next.send(()).unwrap();
+        server.join().unwrap();
+    }
+
     #[test]
     fn iso_2022_jp_channel_name_and_message_round_trip() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3475,6 +3577,35 @@ mod tests {
         assert!(joined && received, "Japanese channel event was not decoded");
         assert!(connection.send_message("#がが", "🙂", false).is_err());
         connection.send_message("#がが", "返事", false).unwrap();
+        server.join().unwrap();
+    }
+
+    /// A server that never ends its line is disconnected once the line passes
+    /// the codec's limit, instead of being buffered without bound.
+    #[test]
+    fn an_endless_line_disconnects_with_the_reason() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let chunk = [b'a'; 4096];
+            // Stops when the client hangs up.
+            while socket.write_all(&chunk).is_ok() {}
+        });
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+        config.port = port;
+        config.use_tls = false;
+        let mut connection = Connection::connect(config).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let reason = loop {
+            assert!(Instant::now() < deadline, "the client kept reading");
+            match connection.try_recv() {
+                Some(Event::Disconnected(reason)) => break reason,
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        assert!(reason.contains("longer than 16384 bytes"), "{reason}");
+        drop(connection);
         server.join().unwrap();
     }
 
@@ -3789,6 +3920,8 @@ mod tests {
         config.port = port;
         config.use_tls = false;
         let mut connection = Connection::connect(config).unwrap();
+        // The transcript is checked after registration too.
+        connection.set_transcript(true);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut seen_registered = false;
         let mut seen_joined = false;

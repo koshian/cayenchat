@@ -43,6 +43,18 @@ Persistent formats should be explicit and versionable.
 Also owns the application's only credential store (`storage::credentials`).
 Secrets never enter the preferences file.
 
+Every file it writes (settings, window layout, local credentials) goes
+through `private_file::write`: a fresh `0600` temporary file, flushed, then
+renamed over the old one, so an interrupted save leaves the old or the new
+file whole. Settings that cannot be loaded at startup are copied to
+`settings-unreadable-<seconds>.json` before the defaults are used, since the
+next save replaces the file. The credential and layout files are flushed to
+disk before the rename, which waits for the disk, so the chat window writes
+the layout on the background executor, one write after another, and quitting
+waits for the writes under way. The settings file is saved from the UI thread
+and is therefore renamed without the flush: a crash of the process cannot
+leave half of it, a power loss may.
+
 ### media
 
 Inline media display without GPUI or protocol types: which links are image
@@ -488,14 +500,18 @@ display and clipboard export. Library-generated PONG and configured JOIN lines
 are reflected when their triggering server lines are processed. This is a parsed
 IRC transcript, not a byte-for-byte socket capture. The UI shows it automatically
 while registration is incomplete or after disconnection, including over a selected
-channel. A worker panic produces a disconnected event; the UI also handles a closed
+channel. The worker formats and sends IRC lines only while they can be shown:
+until registration completes, and afterwards while the debug transcript is on
+(`Connection::set_transcript`, set for every connection when it is toggled and
+for each new one). Stage diagnostics are always sent. A worker panic produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is included
 in the transcript and clipboard export.
 Connection diagnostics are reached through the View menu (Alt, F10 or hovering
 below the title bar reveals the menu bar on Linux/Windows) or keyboard shortcuts. There are no permanent diagnostic
 buttons. Displaying diagnostics selects the server view, enables the transcript
 and scrolls to its start; copying exports the retained transcript regardless of
-the selected pane.
+the selected pane. An established session's traffic is in it only from when
+the transcript was turned on.
 
 ### Servers and sessions
 
@@ -615,8 +631,11 @@ occurrence of a key wins, an empty value equals a missing one, a value
 containing U+FFFD (bytes the line codec could not decode) is dropped instead
 of used, and a tag section over 8,191 bytes (measured on the re-escaped
 tags, including `@` and the trailing space) is ignored as a whole while the
-body is still processed. The library enforces no line length at all, so
-neither limit truncates a line. Unknown tags are ignored. Only the values
+body is still processed. Neither limit truncates a line. The line codec
+(vendored irc-proto, `MAX_LINE_BYTES`) rejects a line over 16 KiB including
+its ending, whether or not its newline has arrived: the stream fails, the
+connection ends with the reason, and the usual reconnect applies, so a
+server cannot make the receive buffer grow without bound. Unknown tags are ignored. Only the values
 this client uses are read; no tag map is retained. TAGMSG produces no event:
 no chat row, unread mark, notification or preview request; it remains in
 the diagnostic transcript, where long tag sections are shortened to 512

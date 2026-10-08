@@ -41,6 +41,17 @@ base64 = "0.22"
 gpui = { path = "vendor/gpui" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
+# The published codec buffers a line without any length limit.
+irc-proto = { path = "vendor/irc-proto" }
 
 [profile.dev]
 debug = 1
+
+# Versioned releases only (release.yml); the rolling beta and test builds use
+# `release`, which builds much faster. On Linux x86_64 this took the binary
+# from 55.3 MB (41.6 MB stripped) to 28.6 MB.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
