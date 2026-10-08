@@ -66,13 +66,13 @@ use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use std::{
     cell::Cell,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
-use whois::WhoisWindow;
+use whois::{JoinedChannels, WhoisWindow};
 
 /// The channel log's share of the log height when nothing was dragged, and
 /// the bounds of what dragging may leave to either log.
@@ -2509,17 +2509,22 @@ impl ChatWindow {
         Ok(())
     }
 
-    fn joined_channels(&self, network: NetworkId) -> HashSet<String> {
-        self.state
-            .conversations()
-            .iter()
-            .filter(|conversation| {
-                conversation.network == network
-                    && !conversation.is_private()
-                    && self.state.is_active_channel(conversation.id)
-            })
-            .map(|conversation| names::fold(&conversation.name))
-            .collect()
+    fn joined_channels(&self, network: NetworkId) -> JoinedChannels {
+        let mapping = self.state.casemapping(network);
+        JoinedChannels {
+            mapping,
+            names: self
+                .state
+                .conversations()
+                .iter()
+                .filter(|conversation| {
+                    conversation.network == network
+                        && !conversation.is_private()
+                        && self.state.is_active_channel(conversation.id)
+                })
+                .map(|conversation| mapping.fold(&conversation.name))
+                .collect(),
+        }
     }
 
     fn dismiss_menus(&mut self) -> bool {
@@ -2547,6 +2552,7 @@ impl ChatWindow {
 
     /// Whether `channel` is an enabled auto-join entry of `network`'s server.
     fn auto_join_enabled(&self, network: NetworkId, channel: &str) -> bool {
+        let mapping = self.state.casemapping(network);
         self.sessions
             .get(&network)
             .and_then(|session| self.saved.profile(&session.profile_id))
@@ -2554,7 +2560,7 @@ impl ChatWindow {
                 profile
                     .channels()
                     .iter()
-                    .any(|name| cayenchat_irc_core::text::same_channel(name, channel))
+                    .any(|name| mapping.same(name, channel))
             })
     }
 
@@ -2572,6 +2578,7 @@ impl ChatWindow {
         else {
             return;
         };
+        let mapping = self.state.casemapping(menu.network);
         // Start from the file, which a settings window may have updated.
         let mut settings = match settings_file::load() {
             Ok(Some(settings)) => settings,
@@ -2589,7 +2596,7 @@ impl ChatWindow {
         let mut entries = profile.auto_join_entries();
         let found = entries
             .iter_mut()
-            .filter(|entry| cayenchat_irc_core::text::same_channel(&entry.name, &menu.channel))
+            .filter(|entry| mapping.same(&entry.name, &menu.channel))
             .map(|entry| entry.enabled = add)
             .count();
         if found == 0 && add {
@@ -3552,7 +3559,12 @@ impl ChatWindow {
                     format!("[{:.1}s] {arrow} {line}", elapsed.as_secs_f32()),
                 );
             }
+            Event::CaseMapping(mapping) => self.state.set_casemapping(network, mapping),
             Event::TransportConnected => {
+                // A new connection compares names as RFC 1459 until the
+                // server advertises otherwise.
+                self.state
+                    .set_casemapping(network, names::CaseMapping::default());
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
                 }

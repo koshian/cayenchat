@@ -71,12 +71,6 @@ pub fn same_nickname(left: &str, right: &str) -> bool {
     names::same(left, right)
 }
 
-/// Channel-name equality, under the same case mapping as nicknames so every
-/// feature judges "the same channel" alike.
-pub fn same_channel(left: &str, right: &str) -> bool {
-    names::same(left, right)
-}
-
 fn is_nick_char(ch: char) -> bool {
     ch.is_alphanumeric() || "-_[]\\`^{}|".contains(ch)
 }
