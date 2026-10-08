@@ -12785,6 +12785,7 @@ mod field_traversal_tests {
 #[cfg(test)]
 mod navigation_binding_tests {
     use super::{Navigate, shortcut_bindings};
+    #[cfg(target_os = "macos")]
     use cayenchat_app::Command;
     use cayenchat_storage::ChannelNumberModifier;
 
