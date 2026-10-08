@@ -3513,6 +3513,35 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// A server that never ends its line is disconnected once the line passes
+    /// the codec's limit, instead of being buffered without bound.
+    #[test]
+    fn an_endless_line_disconnects_with_the_reason() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let chunk = [b'a'; 4096];
+            // Stops when the client hangs up.
+            while socket.write_all(&chunk).is_ok() {}
+        });
+        let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+        config.port = port;
+        config.use_tls = false;
+        let mut connection = Connection::connect(config).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let reason = loop {
+            assert!(Instant::now() < deadline, "the client kept reading");
+            match connection.try_recv() {
+                Some(Event::Disconnected(reason)) => break reason,
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        };
+        assert!(reason.contains("longer than 16384 bytes"), "{reason}");
+        drop(connection);
+        server.join().unwrap();
+    }
+
     #[test]
     fn slash_commands_infer_selected_channel_and_reject_injection() {
         let wire = |line: &str, selected: Option<&str>| match parse_slash_command(line, selected)
