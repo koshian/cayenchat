@@ -32,6 +32,8 @@ use std::{
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Response};
 use tokio::time::Instant;
 
+use cayenchat_model::names::CaseMapping;
+
 use crate::{Event, display_nickname, presence::PresenceIndex, text::nickname_key};
 
 /// Users remembered per connection; more are ignored.
@@ -74,6 +76,8 @@ pub(crate) struct Accounts {
     queue: VecDeque<String>,
     outstanding: Option<Outstanding>,
     token: u16,
+    /// How the server compares channel names; nicknames always use RFC 1459.
+    casemapping: CaseMapping,
 }
 
 fn account_value(value: &str) -> Option<String> {
@@ -93,6 +97,23 @@ fn realname_value(value: &str) -> Option<String> {
 }
 
 impl Accounts {
+    /// Compares channel names with `casemapping` from now on. The channel
+    /// keys already kept were made with the old one, so what depends on them
+    /// is dropped; the server announces its mapping before channels are
+    /// joined, so this is empty in practice.
+    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+        if self.casemapping != casemapping {
+            self.casemapping = casemapping;
+            self.users.clear();
+            self.queue.clear();
+            self.outstanding = None;
+        }
+    }
+
+    fn channel_key(&self, channel: &str) -> String {
+        self.casemapping.fold(channel)
+    }
+
     /// Reads the `WHOX` token from RPL_ISUPPORT (and its removal). The token
     /// may carry a value (`WHOX=...`); it is recognized by its name.
     pub(crate) fn isupport(&mut self, message: &IrcMessage) {
@@ -187,9 +208,9 @@ impl Accounts {
     /// WHOX query about it is outstanding, so its late reply is not trusted
     /// for them.
     fn departed(&mut self, nickname: &str, channel: Option<&str>) {
+        let mapping = self.casemapping;
         if let Some(outstanding) = self.outstanding.as_mut()
-            && channel
-                .is_none_or(|channel| nickname_key(channel) == nickname_key(&outstanding.channel))
+            && channel.is_none_or(|channel| mapping.same(channel, &outstanding.channel))
         {
             outstanding.departed.insert(nickname_key(nickname));
         }
@@ -214,8 +235,9 @@ impl Accounts {
                 };
                 // Joining again while the query is out: the reply is about a
                 // member who is here now.
+                let mapping = self.casemapping;
                 if let Some(outstanding) = self.outstanding.as_mut()
-                    && nickname_key(channel) == nickname_key(&outstanding.channel)
+                    && mapping.same(channel, &outstanding.channel)
                 {
                     outstanding.departed.remove(&nickname_key(nickname));
                 }
@@ -230,11 +252,14 @@ impl Accounts {
                         nickname,
                         account,
                         realname,
-                        [nickname_key(channel)],
+                        [self.channel_key(channel)],
                         &mut events,
                     );
-                } else if let Some(known) = self.users.get_mut(&nickname_key(nickname)) {
-                    known.channels.insert(nickname_key(channel));
+                } else {
+                    let channel = self.channel_key(channel);
+                    if let Some(known) = self.users.get_mut(&nickname_key(nickname)) {
+                        known.channels.insert(channel);
+                    }
                 }
             }
             IrcCommand::PART(channel, _) => {
@@ -245,7 +270,8 @@ impl Accounts {
                     self.forget_channel(channel, &mut events);
                 } else {
                     self.departed(nickname, Some(channel));
-                    self.leave(&nickname_key(nickname), &nickname_key(channel), &mut events);
+                    let channel = self.channel_key(channel);
+                    self.leave(&nickname_key(nickname), &channel, &mut events);
                 }
             }
             IrcCommand::KICK(channel, nickname, _) => {
@@ -253,7 +279,8 @@ impl Accounts {
                     self.forget_channel(channel, &mut events);
                 } else {
                     self.departed(nickname, Some(channel));
-                    self.leave(&nickname_key(nickname), &nickname_key(channel), &mut events);
+                    let channel = self.channel_key(channel);
+                    self.leave(&nickname_key(nickname), &channel, &mut events);
                 }
             }
             IrcCommand::QUIT(_) => {
@@ -299,12 +326,13 @@ impl Accounts {
     }
 
     fn forget_channel(&mut self, channel: &str, events: &mut Vec<Event>) {
-        let key = nickname_key(channel);
-        self.queue.retain(|queued| nickname_key(queued) != key);
+        let mapping = self.casemapping;
+        let key = self.channel_key(channel);
+        self.queue.retain(|queued| !mapping.same(queued, channel));
         if self
             .outstanding
             .as_ref()
-            .is_some_and(|o| nickname_key(&o.channel) == key)
+            .is_some_and(|o| mapping.same(&o.channel, channel))
         {
             self.outstanding = None;
         }
@@ -318,7 +346,7 @@ impl Accounts {
     /// it lose the channel, users who are in it and known gain it.
     pub(crate) fn names(&mut self, channel: &str, users: &[String]) -> Vec<Event> {
         let mut events = Vec::new();
-        let key = nickname_key(channel);
+        let key = self.channel_key(channel);
         let present: HashSet<String> = users
             .iter()
             .map(|user| nickname_key(display_nickname(user)))
@@ -341,12 +369,17 @@ impl Accounts {
         if !self.whox || self.queue.len() >= MAX_QUEUED_WHO {
             return;
         }
-        let key = nickname_key(channel);
+        let mapping = self.casemapping;
         let busy = self
             .outstanding
             .as_ref()
-            .is_some_and(|o| nickname_key(&o.channel) == key);
-        if !busy && !self.queue.iter().any(|queued| nickname_key(queued) == key) {
+            .is_some_and(|o| mapping.same(&o.channel, channel));
+        if !busy
+            && !self
+                .queue
+                .iter()
+                .any(|queued| mapping.same(queued, channel))
+        {
             self.queue.push_back(channel.to_owned());
         }
     }
@@ -392,7 +425,7 @@ impl Accounts {
                 let (Some(nickname), Some(account)) = (args.get(2), args.get(3)) else {
                     return Some(events);
                 };
-                let channel = nickname_key(&outstanding.channel);
+                let channel = self.casemapping.fold(&outstanding.channel);
                 // Somebody who left after the query was made: the line
                 // describes the channel as it was, not as it is.
                 if outstanding.departed.contains(&nickname_key(nickname)) {
@@ -405,7 +438,7 @@ impl Accounts {
             }
             315 if args
                 .get(1)
-                .is_some_and(|name| crate::text::same_nickname(name, &outstanding.channel)) =>
+                .is_some_and(|name| self.casemapping.same(name, &outstanding.channel)) =>
             {
                 self.outstanding = None;
                 Some(events)

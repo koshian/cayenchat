@@ -52,6 +52,7 @@
 
 use std::{collections::HashSet, time::Duration};
 
+use cayenchat_model::names::CaseMapping;
 use irc::proto::{Command as IrcCommand, Message as IrcMessage};
 use tokio::time::Instant;
 
@@ -186,11 +187,14 @@ pub(crate) struct MetadataState {
     /// Joiners not looked up because the table was full, since it last
     /// emptied; only the first one is reported.
     lookups_skipped: usize,
+    /// How this server compares channel names (`CASEMAPPING`).
+    casemapping: CaseMapping,
 }
 
 impl MetadataState {
     pub(crate) fn new(utf8: bool) -> Self {
         Self {
+            casemapping: CaseMapping::default(),
             utf8,
             subscribed: false,
             known: HashSet::new(),
@@ -201,6 +205,11 @@ impl MetadataState {
             next_lookup: None,
             lookups_skipped: 0,
         }
+    }
+
+    /// The server's channel-name comparison changed (RPL_ISUPPORT).
+    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+        self.casemapping = casemapping;
     }
 
     /// What to send once registered with metadata enabled: the subscription
@@ -342,7 +351,7 @@ impl MetadataState {
     /// Stops a pending synchronization of a channel we left.
     pub(crate) fn forget_channel(&mut self, channel: &str) {
         self.syncs
-            .retain(|sync| !sync.channel.eq_ignore_ascii_case(channel));
+            .retain(|sync| !self.casemapping.same(&sync.channel, channel));
     }
 
     /// Handles a metadata reply or notification. `None` means the message
@@ -775,6 +784,7 @@ impl MetadataState {
         joined: impl Fn(&str) -> bool,
     ) -> Option<String> {
         let channel = args.get(1)?;
+        let casemapping = self.casemapping;
         // Only channels we are in: users' own metadata arrives with the
         // channels they share with us.
         if !valid_channel(channel) || !joined(channel) {
@@ -790,7 +800,7 @@ impl MetadataState {
         if let Some(sync) = self
             .syncs
             .iter_mut()
-            .find(|sync| sync.channel.eq_ignore_ascii_case(channel))
+            .find(|sync| casemapping.same(&sync.channel, channel))
         {
             sync.due = sync.due.max(due);
             return None;
@@ -798,7 +808,7 @@ impl MetadataState {
         let attempts = self
             .attempted
             .iter()
-            .filter(|done| done.eq_ignore_ascii_case(channel))
+            .filter(|done| casemapping.same(done, channel))
             .count() as u8;
         if attempts >= MAX_SYNC_ATTEMPTS {
             return Some(format!(

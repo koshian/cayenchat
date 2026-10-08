@@ -33,6 +33,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use cayenchat_model::names::CaseMapping;
 use encoding::{EncoderTrap, label::encoding_from_whatwg_label};
 use futures_util::StreamExt;
 use irc::{
@@ -357,6 +358,28 @@ fn validate_tagged_wire(message: &IrcMessage, label: &str) -> Result<(), String>
     Ok(())
 }
 
+/// The channel-name comparison a RPL_ISUPPORT line sets: `CASEMAPPING=<name>`,
+/// or the default again when `-CASEMAPPING` withdraws it.
+fn advertised_casemapping(message: &IrcMessage) -> Option<CaseMapping> {
+    let IrcCommand::Response(Response::RPL_ISUPPORT, args) = &message.command else {
+        return None;
+    };
+    // The first argument is our nickname, the last the trailing text.
+    args.iter()
+        .skip(1)
+        .flat_map(|arg| arg.split_whitespace())
+        .filter_map(|token| {
+            if token.eq_ignore_ascii_case("-CASEMAPPING") {
+                Some(CaseMapping::default())
+            } else {
+                let (name, value) = token.split_once('=')?;
+                name.eq_ignore_ascii_case("CASEMAPPING")
+                    .then(|| CaseMapping::parse(value))
+            }
+        })
+        .next_back()
+}
+
 fn requires_utf8(message: &IrcMessage) -> bool {
     matches!(&message.command, IrcCommand::Response(Response::RPL_ISUPPORT, args)
         if args.iter().any(|arg| arg.split_whitespace().any(|token| token == "UTF8ONLY")))
@@ -411,6 +434,9 @@ pub enum Event {
     Registered {
         nickname: String,
     },
+    /// The server advertised how it compares channel names. Until then (and
+    /// on each new connection) RFC 1459 applies.
+    CaseMapping(CaseMapping),
     Joined {
         channel: String,
     },
@@ -825,6 +851,14 @@ fn error_chain(error: &dyn std::error::Error) -> String {
         source = next.source();
     }
     result
+}
+
+/// Whether we are in `channel`, under IRC case mapping. The library's channel
+/// list is copied only when this is asked, not for every message.
+fn is_joined(client: &Client, casemapping: CaseMapping, channel: &str) -> bool {
+    client
+        .list_channels()
+        .is_some_and(|joined| joined.iter().any(|name| casemapping.same(name, channel)))
 }
 
 fn stream_error_detail(error: &irc::error::Error) -> String {
@@ -1699,6 +1733,7 @@ async fn run_cancellable(
     let mut batch_negotiated = false;
     let mut metadata = metadata::MetadataState::new(wire_encoding.eq_ignore_ascii_case("UTF-8"));
     let mut metadata_enabled = false;
+    let mut casemapping = CaseMapping::default();
     let mut history = history::HistoryRequests::with_resume(config.resume_history);
     let mut history_enabled = false;
     let mut echoes = echo::Echoes::default();
@@ -1953,6 +1988,18 @@ async fn run_cancellable(
                         history.isupport(&message);
                         modes::observe(&message, &modes_per_line);
                         accounts.isupport(&message);
+                        if let Some(announced) = advertised_casemapping(&message)
+                            && announced != casemapping
+                        {
+                            casemapping = announced;
+                            metadata.set_casemapping(announced);
+                            roster.presence.set_casemapping(announced);
+                            history.set_casemapping(announced);
+                            accounts.set_casemapping(announced);
+                            if events.send(Event::CaseMapping(announced)).await.is_err() {
+                                return;
+                            }
+                        }
                         if !registered && let Some(reason) = registration_refusal(&message) {
                             refusal = Some(reason);
                         }
@@ -2059,9 +2106,8 @@ async fn run_cancellable(
                             _ => {}
                         }
                         if metadata_enabled {
-                            let joined = client.list_channels().unwrap_or_default();
                             let handled = metadata.observe(&message, tokio::time::Instant::now(), &current_nick, |channel| {
-                                joined.iter().any(|name| name.eq_ignore_ascii_case(channel))
+                                is_joined(&client, casemapping, channel)
                             });
                             if let Some(handled) = handled {
                                 for note in handled.notes {
@@ -2258,9 +2304,8 @@ async fn run_cancellable(
             // Deferred avatar synchronizations (774), request timeouts and
             // spaced-out lookups; no timer runs while none is pending.
             _ = tokio::time::sleep_until(metadata.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if metadata_enabled && metadata.next_deadline().is_some() => {
-                let joined = client.list_channels().unwrap_or_default();
                 let handled = metadata.tick(tokio::time::Instant::now(), |channel| {
-                    joined.iter().any(|name| name.eq_ignore_ascii_case(channel))
+                    is_joined(&client, casemapping, channel)
                 });
                 for command in handled.send {
                     let message = IrcMessage::from(command);
@@ -3394,6 +3439,32 @@ mod tests {
             .parse()
             .unwrap();
         assert!(!requires_utf8(&message));
+    }
+
+    #[test]
+    fn casemapping_is_read_from_isupport_and_withdrawn_by_its_removal() {
+        let read = |line: &str| {
+            let message: IrcMessage = line.parse().unwrap();
+            advertised_casemapping(&message)
+        };
+        assert_eq!(
+            read(":srv 005 alice CHANTYPES=# CASEMAPPING=ascii :are supported"),
+            Some(CaseMapping::Ascii)
+        );
+        assert_eq!(
+            read(":srv 005 alice casemapping=rfc1459-strict :are supported"),
+            Some(CaseMapping::Rfc1459Strict)
+        );
+        assert_eq!(
+            read(":srv 005 alice CASEMAPPING=rfc7613 :are supported"),
+            Some(CaseMapping::Ascii)
+        );
+        assert_eq!(
+            read(":srv 005 alice -CASEMAPPING :are supported"),
+            Some(CaseMapping::Rfc1459)
+        );
+        assert_eq!(read(":srv 005 alice CHANTYPES=# :are supported"), None);
+        assert_eq!(read(":srv 001 alice :CASEMAPPING=ascii"), None);
     }
 
     /// IRC lines reach the transcript during registration, and afterwards

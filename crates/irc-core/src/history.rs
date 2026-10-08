@@ -43,6 +43,8 @@ use std::{collections::VecDeque, time::Duration, time::SystemTime};
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Prefix, Response};
 use tokio::time::Instant;
 
+use cayenchat_model::names::CaseMapping;
+
 use crate::tags;
 
 /// Lines asked for per request. The server's `CHATHISTORY` limit lowers it;
@@ -269,9 +271,16 @@ pub(crate) struct HistoryRequests {
     abandoned: VecDeque<String>,
     /// A late reply being swallowed, and its nested batches.
     discarding: Vec<String>,
+    /// How the server compares channel names.
+    casemapping: CaseMapping,
 }
 
 impl HistoryRequests {
+    /// Compares the channels of requests with `casemapping` from now on.
+    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+        self.casemapping = casemapping;
+    }
+
     /// Requests for a connection that resumes `resume` (at most
     /// [`MAX_RESUME`] channels).
     pub(crate) fn with_resume(mut resume: Vec<HistoryResume>) -> Self {
@@ -346,8 +355,9 @@ impl HistoryRequests {
     /// later joins, for the latest lines. Returns a note when the queue is
     /// full.
     pub(crate) fn enqueue(&mut self, channel: &str) -> Option<String> {
+        let mapping = self.casemapping;
         let latest = |name: &str, page: &Page| {
-            matches!(page, Page::Latest | Page::Resume) && crate::text::same_nickname(name, channel)
+            matches!(page, Page::Latest | Page::Resume) && mapping.same(name, channel)
         };
         if self
             .queue
@@ -368,7 +378,7 @@ impl HistoryRequests {
         let resume = self
             .resume
             .iter()
-            .position(|resume| crate::text::same_nickname(&resume.channel, channel))
+            .position(|resume| mapping.same(&resume.channel, channel))
             .map(|index| self.resume.swap_remove(index));
         let resumed = resume.and_then(|resume| {
             let mut after = resume.after;
@@ -470,8 +480,9 @@ impl HistoryRequests {
                 "Older history for {channel} was not requested: the server accepts no reference this client has."
             )));
         };
+        let mapping = self.casemapping;
         let older = |name: &str, page: &Page| {
-            matches!(page, Page::Before { .. }) && crate::text::same_nickname(name, channel)
+            matches!(page, Page::Before { .. }) && mapping.same(name, channel)
         };
         if self
             .queue
@@ -504,8 +515,9 @@ impl HistoryRequests {
     /// among them end as failures.
     pub(crate) fn forget(&mut self, channel: &str) -> Vec<Finished> {
         let mut ended = Vec::new();
+        let mapping = self.casemapping;
         self.queue.retain(|queued| {
-            if !crate::text::same_nickname(&queued.channel, channel) {
+            if !mapping.same(&queued.channel, channel) {
                 return true;
             }
             if let Page::Before { .. } = queued.page {
@@ -614,6 +626,7 @@ impl HistoryRequests {
         *self = Self {
             server_limit: self.server_limit,
             reference_types: self.reference_types,
+            casemapping: self.casemapping,
             resume: std::mem::take(&mut self.resume),
             ..Self::default()
         };
@@ -636,6 +649,7 @@ impl HistoryRequests {
         {
             return Observed::Consumed;
         }
+        let mapping = self.casemapping;
         let Some(outstanding) = self.outstanding.as_mut() else {
             return Observed::Unrelated;
         };
@@ -653,7 +667,7 @@ impl HistoryRequests {
             }
             // Without event-playback only PRIVMSG and NOTICE may appear;
             // anything else is dropped rather than applied as live state.
-            if let Some(line) = history_line(message, &outstanding.channel) {
+            if let Some(line) = history_line(message, &outstanding.channel, mapping) {
                 if outstanding.messages.len() < MAX_HISTORY_LINES {
                     outstanding.messages.push(line);
                 } else {
@@ -782,9 +796,10 @@ impl HistoryRequests {
         let Some(target) = params.as_ref().and_then(|params| params.first()) else {
             return Observed::Unrelated;
         };
+        let mapping = self.casemapping;
         if let Some(outstanding) = self.outstanding.as_mut()
             && outstanding.reference.is_none()
-            && crate::text::same_nickname(&outstanding.channel, target)
+            && mapping.same(&outstanding.channel, target)
         {
             outstanding.reference = Some(reference.to_owned());
             outstanding.end = end;
@@ -793,7 +808,7 @@ impl HistoryRequests {
         if let Some(index) = self
             .abandoned
             .iter()
-            .position(|channel| crate::text::same_nickname(channel, target))
+            .position(|channel| mapping.same(channel, target))
         {
             self.abandoned.remove(index);
             self.discarding.push(reference.to_owned());
@@ -826,14 +841,18 @@ fn target_line(message: &IrcMessage) -> Option<HistoryTarget> {
 
 /// A PRIVMSG or NOTICE in a reply about `channel` (a channel, or a peer's
 /// nickname for a direct-message conversation).
-fn history_line(message: &IrcMessage, channel: &str) -> Option<HistoryMessage> {
+fn history_line(
+    message: &IrcMessage,
+    channel: &str,
+    mapping: CaseMapping,
+) -> Option<HistoryMessage> {
     let (target, text, notice) = match &message.command {
         IrcCommand::PRIVMSG(target, text) => (target, text, false),
         IrcCommand::NOTICE(target, text) => (target, text, true),
         _ => return None,
     };
     if crate::valid_channel(channel) {
-        if !crate::text::same_nickname(target, channel) {
+        if !mapping.same(target, channel) {
             return None;
         }
     } else {
@@ -916,6 +935,19 @@ mod tests {
         requests
             .next_request(now)
             .map(|(_, _, command)| IrcMessage::from(command).to_string().trim_end().to_owned())
+    }
+
+    #[test]
+    fn channels_are_deduplicated_under_the_servers_case_mapping() {
+        let queued = |mapping| {
+            let mut requests = HistoryRequests::default();
+            requests.set_casemapping(mapping);
+            requests.enqueue("#foo[1]");
+            requests.enqueue("#FOO{1}");
+            requests.queue.len()
+        };
+        assert_eq!(queued(CaseMapping::Rfc1459), 1);
+        assert_eq!(queued(CaseMapping::Ascii), 2);
     }
 
     #[test]
@@ -1508,8 +1540,14 @@ mod tests {
 
     #[test]
     fn history_lines_keep_the_account_they_were_sent_under() {
-        let line =
-            |text: &str| history_line(&text.parse::<IrcMessage>().unwrap(), "#test").unwrap();
+        let line = |text: &str| {
+            history_line(
+                &text.parse::<IrcMessage>().unwrap(),
+                "#test",
+                CaseMapping::default(),
+            )
+            .unwrap()
+        };
         let with =
             line("@account=alice;time=2026-09-28T00:00:00.000Z :alice!u@h PRIVMSG #test :hi");
         assert_eq!(with.account.as_deref(), Some("alice"));
