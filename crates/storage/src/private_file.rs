@@ -7,10 +7,14 @@ use std::{
 };
 
 /// Writes `bytes` to `path`: a fresh user-only (`0600`) file next to it is
-/// written and flushed to disk, then renamed over `path`. A crash or power
-/// loss leaves either the old file or the new one, never half of one, and
-/// the contents are never in a file with broader permissions. Missing
-/// directories are created user-only (`0700`).
+/// written and flushed to disk, then renamed over `path`. A crash during the
+/// write leaves the old file, and the rename replaces it whole, so no reader
+/// sees half of a file. The directory is not flushed, so after a power loss
+/// the rename itself may not have happened yet. The contents are never in a
+/// file with broader permissions. Missing directories are created user-only
+/// (`0700`).
+///
+/// This waits for the disk: do not call it on the UI thread.
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()

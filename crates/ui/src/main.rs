@@ -1029,6 +1029,9 @@ struct ChatWindow {
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
+    /// What startup reported, such as where unreadable settings were kept.
+    /// It is shown again when the settings cannot be opened for the same reason.
+    startup_notice: Option<String>,
     /// Connection state of every configured server, keyed like the tree.
     sessions: HashMap<NetworkId, ServerSession>,
     next_network_id: u32,
@@ -1054,6 +1057,10 @@ struct ChatWindow {
     restore_layout: bool,
     layout_file: Option<std::path::PathBuf>,
     layout_save: Option<Task<()>>,
+    /// Layout writes made so far, and the number of the newest one written.
+    /// A write that is late finds a newer one done and leaves it alone.
+    layout_writes: u64,
+    layout_written: Arc<std::sync::Mutex<u64>>,
     /// Where the window was last seen, for writing the layout without it.
     window_bounds: Option<WindowBounds>,
     /// The native window title last set from `render`.
@@ -1480,6 +1487,7 @@ impl ChatWindow {
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
+            startup_notice: feedback.clone(),
             feedback,
             sessions,
             next_network_id,
@@ -1496,6 +1504,8 @@ impl ChatWindow {
             restore_layout: saved.restore_window_layout,
             layout_file: None,
             layout_save: None,
+            layout_writes: 0,
+            layout_written: Default::default(),
             window_bounds: None,
             shown_title: String::new(),
             whois_windows: HashMap::new(),
@@ -1597,21 +1607,35 @@ impl ChatWindow {
         }
         self.layout_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LAYOUT_SAVE_DELAY).await;
-            let _ = this.update(cx, |this, _| this.save_layout_now());
+            // The write waits for the disk, so it runs off the UI thread.
+            let Ok(Some(write)) = this.update(cx, |this, _| this.take_layout_write()) else {
+                return;
+            };
+            cx.background_executor().spawn(async move { write() }).await;
         }));
     }
 
     /// Writes the window's position and size (as last noted) and the pane
-    /// sizes now. A failure only means the layout is not remembered, so it
-    /// is not shown.
+    /// sizes now, and returns once they are on disk; a write that is already
+    /// under way finishes first. A failure only means the layout is not
+    /// remembered, so it is not shown.
     fn save_layout_now(&mut self) {
         self.layout_save = None;
+        if let Some(write) = self.take_layout_write() {
+            write();
+        }
+    }
+
+    /// The write of the layout as it is now, or `None` when it is not kept.
+    /// Writes run one at a time and the newest one wins, so an older layout
+    /// never replaces a newer one.
+    fn take_layout_write(&mut self) -> Option<Box<dyn FnOnce() + Send>> {
         let (true, Some(path), Some(window_bounds)) = (
             self.restore_layout,
-            self.layout_file.as_ref(),
+            self.layout_file.clone(),
             self.window_bounds,
         ) else {
-            return;
+            return None;
         };
         let (bounds, maximized) = match window_bounds {
             WindowBounds::Windowed(bounds) => (bounds, false),
@@ -1632,9 +1656,19 @@ impl ChatWindow {
             log_split: Some(self.log_split),
             ..Default::default()
         };
-        if let Err(error) = cayenchat_storage::layout::save_layout_to(path, &layout) {
-            eprintln!("CayenChat: {error}");
-        }
+        self.layout_writes += 1;
+        let number = self.layout_writes;
+        let written = self.layout_written.clone();
+        Some(Box::new(move || {
+            let mut newest = written.lock().unwrap_or_else(|error| error.into_inner());
+            if *newest > number {
+                return;
+            }
+            *newest = number;
+            if let Err(error) = cayenchat_storage::layout::save_layout_to(&path, &layout) {
+                eprintln!("CayenChat: {error}");
+            }
+        }))
     }
 
     /// Our current nickname on `network`.
@@ -2895,7 +2929,11 @@ impl ChatWindow {
         let mut settings = match settings_file::load() {
             Ok(value) => value.unwrap_or_default(),
             Err(error) => {
-                self.feedback = Some(error);
+                // The startup notice is this error plus where a copy was kept.
+                self.feedback = Some(match &self.startup_notice {
+                    Some(notice) if notice.starts_with(&error) => notice.clone(),
+                    _ => error,
+                });
                 cx.notify();
                 return;
             }
@@ -10828,6 +10866,45 @@ mod pane_tests {
         let dragged = load_layout_from(&file);
         let widened = dragged.right_width.expect("saved after the drag");
         assert!((295.0..=305.0).contains(&widened), "{widened}");
+    }
+
+    #[gpui::test]
+    fn an_older_layout_write_never_replaces_a_newer_one(cx: &mut TestAppContext) {
+        use cayenchat_storage::layout::load_layout_from;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        cx.run_until_parked();
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("window.json");
+        let (older, newer) = chat.update(cx, |chat, _| {
+            chat.layout_file = Some(file.clone());
+            chat.right_width = 250.;
+            let older = chat.take_layout_write().expect("kept");
+            chat.right_width = 350.;
+            let newer = chat.take_layout_write().expect("kept");
+            (older, newer)
+        });
+        // The newer write lands first, as when the older one was left waiting.
+        newer();
+        older();
+        assert_eq!(load_layout_from(&file).right_width, Some(350.));
+        // Saving at quit returns with the file written.
+        chat.update(cx, |chat, _| {
+            chat.right_width = 400.;
+            chat.save_layout_now();
+        });
+        assert_eq!(load_layout_from(&file).right_width, Some(400.));
     }
 
     #[gpui::test]
