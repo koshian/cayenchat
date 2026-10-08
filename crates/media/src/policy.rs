@@ -9,7 +9,7 @@
 //! `decode`). Web pages are never fetched to discover images.
 //!
 //! Every request, including each redirect target, must pass
-//! [`check_request`], and the resolver only connects to addresses for which
+//! `check_request`, and the resolver only connects to addresses for which
 //! [`is_public_ip`] holds, so names that resolve to loopback, private or
 //! link-local addresses are refused too.
 
@@ -58,7 +58,7 @@ pub const AVATAR_SIZE_PLACEHOLDER: &str = "{size}";
 /// Unlike [`image_link`], no file extension is required: avatar endpoints
 /// often have none, and the URL was given as an image rather than found in
 /// chat text. Everything that keeps fetching safe still applies, here and
-/// for every redirect ([`check_request`]), and the response must still be
+/// for every redirect (`check_request`), and the response must still be
 /// a PNG, JPEG, GIF or WebP image.
 pub fn avatar_url(template: &str, size: u32) -> Option<MediaRef> {
     if template.len() > MAX_URL_LEN {
