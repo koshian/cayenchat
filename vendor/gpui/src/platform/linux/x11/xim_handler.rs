@@ -12,6 +12,7 @@ pub enum XimCallbackEvent {
 pub struct XimHandler {
     pub im_id: u16,
     pub ic_id: u16,
+    pub input_style: InputStyle,
     pub connected: bool,
     pub window: xproto::Window,
     pub last_callback_event: Option<XimCallbackEvent>,
@@ -22,6 +23,7 @@ impl XimHandler {
         Self {
             im_id: Default::default(),
             ic_id: Default::default(),
+            input_style: InputStyle::PREEDIT_CALLBACKS,
             connected: false,
             window: Default::default(),
             last_callback_event: None,
@@ -44,11 +46,16 @@ impl<C: Client<XEvent = xproto::KeyPressEvent>> ClientHandler<C> for XimHandler 
         &mut self,
         client: &mut C,
         input_method_id: u16,
-        _attributes: AHashMap<AttributeName, Vec<u8>>,
+        attributes: AHashMap<AttributeName, Vec<u8>>,
     ) -> Result<(), ClientError> {
+        self.input_style = xim::choose_input_style(
+            attributes
+                .get(&AttributeName::QueryInputStyle)
+                .map(Vec::as_slice),
+        );
         let ic_attributes = client
             .build_ic_attributes()
-            .push(AttributeName::InputStyle, InputStyle::PREEDIT_CALLBACKS)
+            .push(AttributeName::InputStyle, self.input_style)
             .push(AttributeName::ClientWindow, self.window)
             .push(AttributeName::FocusWindow, self.window)
             .build();

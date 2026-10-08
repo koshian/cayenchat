@@ -73,6 +73,7 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
+          components: clippy
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -85,6 +86,10 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --locked --verbose
+
+      # Each platform compiles its own `cfg` code, so lint it on every one.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       # Verify the release artifact too: Rust defaults to the console
       # subsystem, and that metadata is the cause of the startup terminal.
@@ -122,6 +127,15 @@ jobs:
       # upload, irc-core and app also run on each platform.
       - name: Test
         run: cargo test --workspace --locked --verbose
+
+      # The vendored XIM client is outside the workspace; keep its decoder tests.
+      # XIM is only used on X11, and the crate does not resolve on other hosts.
+      - name: Test vendored zed-xim
+        if: runner.os == 'Linux'
+        run: cargo test -p zed-xim --locked
+
+      - name: Test vendored irc-proto
+        run: cargo test -p irc-proto --locked
 
       # Probes the real Windows Credential Manager through the keyring crate.
       - name: Test system credential store

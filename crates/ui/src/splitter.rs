@@ -91,6 +91,7 @@ fn along(axis: Axis, point: gpui::Point<gpui::Pixels>) -> f32 {
 /// A handle for a pane currently `size` pixels long, within `limits`. While
 /// it is dragged, `on_resize` gets the new size; it is called again for
 /// every pointer move and the window redraws afterwards.
+#[allow(clippy::too_many_arguments)] // Each is one independent handle property.
 pub fn splitter<V: 'static>(
     id: impl Into<ElementId>,
     axis: Axis,

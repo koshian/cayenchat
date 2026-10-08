@@ -123,16 +123,12 @@ impl AvatarSource {
     pub fn preview(&self, max_side: u32) -> Thumbnail {
         let (width, height) = crate::decode::fit(self.width(), self.height(), max_side, max_side);
         let small = self.image.thumbnail_exact(width, height);
-        let mut bgra = small.into_rgba8().into_raw();
-        for pixel in bgra.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
         Thumbnail {
             width,
             height,
             source_width: self.width(),
             source_height: self.height(),
-            bgra,
+            bgra: crate::decode::into_bgra(small),
         }
     }
 
@@ -148,16 +144,12 @@ impl AvatarSource {
             .image
             .crop_imm(x, y, side, side)
             .thumbnail_exact(out, out);
-        let mut bgra = small.into_rgba8().into_raw();
-        for pixel in bgra.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
         Thumbnail {
             width: out,
             height: out,
             source_width: side,
             source_height: side,
-            bgra,
+            bgra: crate::decode::into_bgra(small),
         }
     }
 

@@ -99,6 +99,27 @@ Upstream logged a warning and returned; the dead socket stayed readable, so
 the same warning repeated forever at 100% CPU after the X server exited
 (issue #196).
 
+## Local zed-xim
+
+`vendor/zed-xim` is a copy of `zed-xim` 0.4.0-zed (MIT, used through
+`[patch.crates-io]`) without its examples and benches. Its client called
+`xim_ctext::compound_text_to_utf8(..).expect(..)` on preedit and commit text, so
+IBus/Mozc text that mixes ASCII with UTF-8 or JIS X 0208 segments panicked the
+whole app on X11 (issue #227). `src/ctext.rs` now decodes COMPOUND_TEXT leniently
+(UTF-8, ASCII, Latin-1, JIS X 0201 katakana, JIS X 0208, GB2312 and KS C 5601, with GL and GR tracked separately; others are dropped) and never fails.
+
+In `src/platform/linux/x11/{xim_handler,client}.rs`, the XIM input context is
+created with a style chosen from the server's `XNQueryInputStyle` reply
+(preedit callbacks + status nothing; `xim::choose_input_style` in zed-xim so its tests run in CI) instead of a hard-coded
+`PREEDIT_CALLBACKS`, which IBus does not offer. `set_ic_values` no longer
+resends `InputStyle`/`ClientWindow`, which are creation-time only (issue #227).
+
+Requests too large for a ClientMessage are passed through `_XIM_DATA_N`
+properties. `src/property.rs` limits N to 21 names (as Xlib's `_clientN` does)
+instead of a new atom per request: IBus' IMdkit offset cache corrupts the heap
+of `ibus-x11` past 22 atoms, which dropped the IME connection after a few dozen
+keystrokes (issue #227).
+
 In `src/elements/text.rs`, `InteractiveText::hoverable_tooltip` is `tooltip`
 whose bubble stays while the pointer moves onto it (upstream hardcoded
 non-hoverable text tooltips), so a click on it can be handled. CayenChat's

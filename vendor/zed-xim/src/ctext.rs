@@ -1,0 +1,194 @@
+//! Lenient COMPOUND_TEXT decoding for text received from an input method.
+//!
+//! `xim_ctext::compound_text_to_utf8` only accepts a single UTF-8 or JIS segment and
+//! the client used to `expect` it to succeed. IBus (Mozc) sends mixed strings such
+//! as ASCII followed by a UTF-8 or JIS X 0208 segment, which made the whole
+//! application panic. This decoder tracks the G0 (GL) and G1 (GR) designations
+//! separately, supports ASCII, Latin-1, JIS X 0201 katakana, JIS X 0208 and UTF-8
+//! segments, and never fails: unsupported segments are dropped.
+
+use alloc::string::String;
+
+const ESC: u8 = 0x1B;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Set {
+    Ascii,
+    Latin1,
+    Kana,
+    Jis,
+    Gb,
+    Ks,
+    Skip,
+}
+
+pub(crate) fn decode(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut gl = Set::Ascii;
+    let mut gr = Set::Latin1;
+    let mut utf8 = false;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == ESC {
+            // ESC, intermediate bytes (0x20..=0x2F), final byte (0x30..=0x7E).
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && (0x20..=0x2F).contains(&bytes[end]) {
+                end += 1;
+            }
+            let intermediates = &bytes[start..end];
+            let final_byte = bytes.get(end).copied();
+            i = (end + 1).min(bytes.len());
+            if utf8 {
+                if (intermediates, final_byte) == (b"%".as_slice(), Some(b'@')) {
+                    utf8 = false;
+                }
+                continue;
+            }
+            match (intermediates, final_byte) {
+                (b"%", Some(b'G')) => utf8 = true,
+                (b"(", Some(b'B' | b'J')) => gl = Set::Ascii,
+                (b"(", Some(b'I')) => gl = Set::Kana,
+                (b"$(" | b"$", Some(b'B')) => gl = Set::Jis,
+                (b"$(" | b"$", Some(b'A')) => gl = Set::Gb,
+                (b"$(", Some(b'C')) => gl = Set::Ks,
+                (b"$(" | b"$" | b"(", _) => gl = Set::Skip,
+                (b")", Some(b'I')) => gr = Set::Kana,
+                (b")", Some(b'B' | b'J')) => gr = Set::Ascii,
+                (b"$)", Some(b'B')) => gr = Set::Jis,
+                (b"$)", Some(b'A')) => gr = Set::Gb,
+                (b"$)", Some(b'C')) => gr = Set::Ks,
+                (b"-", Some(b'A')) => gr = Set::Latin1,
+                (b"$)" | b")" | b"-", _) => gr = Set::Skip,
+                _ => {}
+            }
+            continue;
+        }
+
+        if utf8 {
+            let end = bytes[i..]
+                .iter()
+                .position(|&c| c == ESC)
+                .map_or(bytes.len(), |p| i + p);
+            out.push_str(&String::from_utf8_lossy(&bytes[i..end]));
+            i = end;
+            continue;
+        }
+
+        let set = if b < 0x80 { gl } else { gr };
+        // Controls, space and DEL are not part of the graphic sets.
+        if b < 0x21 || b == 0x7F || b == 0xA0 || b == 0xFF {
+            if b < 0x80 || set == Set::Latin1 {
+                out.push(char::from(b));
+            }
+            i += 1;
+            continue;
+        }
+        let low = b & 0x7F;
+        i += 1;
+        match set {
+            Set::Ascii => out.push(char::from(low)),
+            Set::Latin1 => {
+                if b >= 0x80 {
+                    out.push(char::from(b));
+                }
+            }
+            Set::Kana => {
+                if (0x21..=0x5F).contains(&low) {
+                    out.push(char::from_u32(0xFF61 + u32::from(low) - 0x21).unwrap_or('\u{FFFD}'));
+                }
+            }
+            Set::Jis | Set::Gb | Set::Ks => match bytes.get(i) {
+                Some(&second) if second != ESC && (0x21..=0x7E).contains(&(second & 0x7F)) => {
+                    i += 1;
+                    // All three 94x94 sets are the 7-bit form of their EUC encodings.
+                    let encoding = match set {
+                        Set::Jis => encoding_rs::EUC_JP,
+                        Set::Gb => encoding_rs::GBK,
+                        _ => encoding_rs::EUC_KR,
+                    };
+                    let pair = [low | 0x80, (second & 0x7F) | 0x80];
+                    let (text, _) = encoding.decode_without_bom_handling(&pair);
+                    out.push_str(&text);
+                }
+                _ => {}
+            },
+            Set::Skip => {}
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode;
+    use alloc::string::String;
+
+    #[test]
+    fn plain_and_utf8() {
+        assert_eq!(decode(b"abc"), "abc");
+        assert_eq!(decode(b""), "");
+        assert_eq!(decode(b"\x1b%G\xe3\x81\xa6\x1b%@"), "て");
+    }
+
+    #[test]
+    fn mixed_ascii_and_utf8() {
+        assert_eq!(decode(b"\x1b%G\xe3\x81\xa6\x1b%@t"), "てt");
+        assert_eq!(decode(b"t\x1b%G\xe3\x81\xa6"), "tて");
+        assert_eq!(decode(b"\x1b(B\x1b%G\xe3\x81\xa6\x1b%@\x1b(Bt"), "てt");
+    }
+
+    #[test]
+    fn jis_x0208() {
+        assert_eq!(decode(b"\x1b$(B\x24\x22\x1b(Bt"), "あt");
+    }
+
+    // Generated by Xlib Xutf8TextListToTextProperty.
+    #[test]
+    fn xlib_tesuto_is_not_duplicated() {
+        let bytes = b"\x1b$(B\x24\x46\x24\x39\x24\x48\x24\x46\x24\x39\x24\x48";
+        assert_eq!(decode(bytes), "てすとてすと");
+    }
+
+    #[test]
+    fn long_jis_and_mixed_ascii() {
+        let mut v = b"ab\x1b$(B".to_vec();
+        for _ in 0..200 {
+            v.extend_from_slice(b"\x24\x46\x24\x39");
+        }
+        v.extend_from_slice(b"\x1b(Bxy");
+        let mut want = String::from("ab");
+        want.push_str(&"てす".repeat(200));
+        want.push_str("xy");
+        assert_eq!(decode(&v), want);
+    }
+
+    // Xlib output for half-width katakana (ESC ) I, GR) and Latin-1 default GR.
+    #[test]
+    fn halfwidth_katakana_and_latin1() {
+        assert_eq!(decode(b"\x1b)I\xb1\xb2\xb3"), "ｱｲｳ");
+        assert_eq!(decode(b"\x1b$(B\x46\x7c\x1b(B caf\xe9"), "日 café");
+    }
+
+    // Sent by IBus with Mozc for "tesutotesuto" (ESC $ ( A, GB2312).
+    #[test]
+    fn ibus_mozc_gb2312_designation() {
+        let bytes = b"\x1b$(A\x24\x46\x24\x39\x24\x48\x24\x46\x24\x39\x24\x48";
+        assert_eq!(decode(bytes), "てすとてすと");
+        assert_eq!(decode(b"\x1b$)A\xa4\xc6\x1b(Bx"), "てx");
+        assert_eq!(decode(b"\x1b$(A\x30\x21"), "啊");
+    }
+
+    #[test]
+    fn malformed_input_does_not_panic() {
+        decode(b"\x1b");
+        decode(b"\x1b%");
+        decode(b"\x1b$(");
+        decode(b"\x1b%G\xff\xfe");
+        decode(b"\x1b$(A\x30\x30abc");
+        decode(b"\x1b$(B\x24");
+        decode(b"\x1b$(B\x24\x1b(B");
+    }
+}

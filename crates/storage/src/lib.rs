@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod credentials;
 pub mod layout;
+pub mod order;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -1185,6 +1186,8 @@ pub fn test_build_directory() -> Result<PathBuf, String> {
             let directory =
                 std::env::temp_dir().join(format!("cayenchat-test-{}-{stamp}", std::process::id()));
             let mut builder = fs::DirBuilder::new();
+            // A fresh directory: creating one that exists fails.
+            builder.recursive(false);
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
@@ -1352,8 +1355,10 @@ mod tests {
 
     #[test]
     fn disabled_auto_join_entries_stay_saved_but_are_not_joined() {
-        let mut profile = ServerProfile::default();
-        profile.channels = "#a, -#b ,#c,,-".into();
+        let mut profile = ServerProfile {
+            channels: "#a, -#b ,#c,,-".into(),
+            ..Default::default()
+        };
         let entries = profile.auto_join_entries();
         assert_eq!(
             entries.iter().map(|e| e.enabled).collect::<Vec<_>>(),
