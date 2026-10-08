@@ -52,8 +52,8 @@ const EVENT_CAPACITY: usize = 512;
 const TARGETS_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const TARGETS_MAX_WINDOW: Duration = Duration::from_secs(7 * 24 * 3600);
 const USER_DISCONNECT: &str = "Disconnected by user.";
-/// How long the stream may stay quiet after QUIT before it is taken as flushed.
-const QUIT_IDLE: Duration = Duration::from_millis(50);
+/// The longest the worker keeps writing a queued QUIT before giving up.
+const QUIT_FLUSH_LIMIT: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
 /// finish. IRCnet waits about 30 seconds when the client's port 113 silently
@@ -1992,17 +1992,17 @@ async fn run_cancellable(
                         if client.send(quit).is_ok() {
                             transcript.record(WireDirection::Sent, line).await;
                         }
-                        // ClientStream drives the library's outgoing queue, and the library
-                        // gives no signal when it has been written. Keep polling it, ignoring
-                        // anything received, until the stream is idle or closed, so QUIT behind
-                        // a backlog is written before the runtime and socket are dropped.
-                        let flush_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-                        while let Ok(Some(Ok(_))) = tokio::time::timeout(
-                            QUIT_IDLE.min(flush_deadline - tokio::time::Instant::now()),
-                            stream.next(),
-                        )
-                        .await
-                        {}
+                        // The library writes the outgoing queue only while ClientStream is
+                        // polled, and ends the stream once every sender is gone and the queue
+                        // is flushed. Dropping the client and polling to that end (or an
+                        // error) means QUIT, even behind a backlog, has been written before
+                        // the socket is dropped.
+                        drop(client);
+                        let flush_deadline = tokio::time::Instant::now() + QUIT_FLUSH_LIMIT;
+                        let _ = tokio::time::timeout_at(flush_deadline, async {
+                            while let Some(Ok(_)) = stream.next().await {}
+                        })
+                        .await;
                         let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
                         break;
                     }
@@ -4363,17 +4363,19 @@ mod tests {
     /// connection and the worker has finished.
     fn quit_line_after(
         configure: impl FnOnce(&mut ConnectionConfig),
-        end: impl FnOnce(&Connection),
+        end: impl FnOnce(&mut Connection),
     ) -> Vec<u8> {
-        quit_line_after_flood(configure, end, 0)
+        quit_line_after_flood(configure, end, 0, Duration::ZERO)
     }
 
     /// As [`quit_line_after`], with the server sending `flood` NOTICE lines
-    /// after registering that nobody drains from the connection.
+    /// after registering that nobody drains from the connection, and not
+    /// reading anything from the client for `read_delay` after that.
     fn quit_line_after_flood(
         configure: impl FnOnce(&mut ConnectionConfig),
-        end: impl FnOnce(&Connection),
+        end: impl FnOnce(&mut Connection),
         flood: usize,
+        read_delay: Duration,
     ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -4399,6 +4401,7 @@ mod tests {
                     .write_all(format!(":server NOTICE alice :flood {index}\r\n").as_bytes())
                     .unwrap();
             }
+            thread::sleep(read_delay);
             loop {
                 line.clear();
                 lines.read_until(b'\n', &mut line).unwrap();
@@ -4429,7 +4432,7 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(registered, "client did not register");
-        end(&connection);
+        end(&mut connection);
         assert!(connection.wait_closed(Duration::from_secs(5)));
         server.join().unwrap()
     }
@@ -4460,6 +4463,33 @@ mod tests {
                 assert!(connection.wait_closed(Duration::from_millis(500)));
             },
             EVENT_CAPACITY * 4,
+            Duration::ZERO,
+        );
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
+    }
+
+    #[test]
+    fn shutdown_writes_quit_behind_a_send_backlog_while_lines_arrive() {
+        // The server reads nothing for a while, so the socket fills up and
+        // the writer stalls with QUIT queued behind the messages.
+        let text = "x".repeat(400);
+        let line = quit_line_after_flood(
+            |_| {},
+            |connection| {
+                let stop = Instant::now() + Duration::from_secs(3);
+                let mut queued = 0;
+                while queued < 20_000 && Instant::now() < stop {
+                    while connection.try_recv().is_some() {}
+                    match connection.send_message("#test", &text, false) {
+                        Ok(()) => queued += 1,
+                        Err(_) => thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+                assert!(queued > 10_000, "only {queued} messages were queued");
+                connection.shutdown();
+            },
+            EVENT_CAPACITY * 4,
+            Duration::from_millis(800),
         );
         assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
     }

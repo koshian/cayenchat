@@ -553,7 +553,10 @@ main window or quitting sends QUIT on every connection and waits up to 500 ms in
 total for the workers to flush it (`Connection::wait_closed`; issue #234). That path
 uses `Connection::shutdown`, a flag the worker checks before the command queue, and
 the worker then drops events instead of waiting for the UI, so QUIT still goes out
-when the UI stopped draining a full event queue or the command queue is full. It is validated with the connection
+when the UI stopped draining a full event queue or the command queue is full. After queuing QUIT the
+worker drops its client handle and polls the library stream until it ends, which the library does
+only once its outgoing queue is written (at most 2 s), so QUIT behind a send backlog is not lost;
+lines arriving meanwhile are ignored, and nothing is read from the server afterwards. It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
 connection starts, so an edit applies from the next connection. Lost connections
 send no QUIT.
