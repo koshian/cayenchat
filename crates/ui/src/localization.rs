@@ -49,6 +49,18 @@ impl Localizer {
         fill(&self.text(key), values)
     }
 
+    /// Fills `{nickname}` for display: the nickname comes from a server, so
+    /// bidirectional controls are neutralized. Callers keep the raw value.
+    pub fn format_nickname(&self, key: &str, nickname: &str) -> String {
+        self.format(
+            key,
+            &[(
+                "nickname",
+                &cayenchat_model::display::neutralize_bidi(nickname),
+            )],
+        )
+    }
+
     pub fn preference_label(&self, preference: Language) -> String {
         self.text(match preference {
             Language::System => "language_system",
