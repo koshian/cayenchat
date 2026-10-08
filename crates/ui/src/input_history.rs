@@ -34,6 +34,8 @@ pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
     let Some(command) = text.strip_prefix('/') else {
         return private_peer.is_some_and(is_credential_service);
     };
+    // The sender trims what follows the slash, so `/ msg …` is `/msg …`.
+    let command = command.trim();
     let mut words = command.split_whitespace();
     let verb = words.next().unwrap_or("").to_ascii_uppercase();
     match verb.as_str() {
@@ -233,6 +235,10 @@ mod tests {
             ("/me x", "X"),
             ("/msg :AUTH alice pw", "Q"),
             ("/notice :AUTH alice pw", "Q"),
+            ("/ msg :AUTH alice pw", "Q"),
+            ("/ notice :AUTH alice pw", "Q"),
+            ("/\tmsg \t :AUTH alice pw", "Q"),
+            ("/  PRIVMSG   :AUTH alice pw  ", "Q"),
         ] {
             assert!(is_sensitive(line, Some(peer)), "{line}");
             history.record(line, Some(peer));
@@ -242,6 +248,7 @@ mod tests {
             "hello NickServ",
             "NickServ identify is how you log in",
             "/msg alice identify yourself",
+            "/ msg alice identify yourself",
             "/join #nickserv",
             "/me waves",
             "/raw WHO #c",
