@@ -43,7 +43,8 @@ Do not build a second mechanism for any of these; extend them instead.
 | Event pump awaits events; no timer polling. One pump task per connection, up to 256 events per update, yielding between batches | `ui` `spawn_event_pump`, `EVENT_BATCH_LIMIT` | An idle connection wakes nothing; input, redraws and other servers interleave with bursts. The earlier 50 ms poll capped throughput and woke 20 times a second. |
 | No periodic timers while idle | registration progress/timeout timers stop at 001; the watchdog ends once connected; menu-bar hover polling runs only while the bar is hover-revealed | Idle CPU and wakeups stay near zero. The `irc` crate still sends its own PING every 180 s per connection. |
 | Per-channel log cap: 2,000 lines, trimmed to 1,000 when exceeded; server log the same | `app` `push_bounded` | Memory per log is bounded; trimming in chunks amortizes the shift. |
-| Diagnostics transcript: newest 1,000 lines per server in a `VecDeque` | `ui::session` `DIAGNOSTIC_LIMIT` | Every IRC line is recorded, so it must be bounded and O(1) to trim. |
+| Diagnostics transcript: newest 1,000 lines per server in a `VecDeque` | `ui::session` `DIAGNOSTIC_LIMIT` | While the transcript is on every IRC line is recorded, so it must be bounded and O(1) to trim. |
+| IRC lines reach the transcript only during registration or while the debug transcript is on | `irc-core` `Transcript`, `Connection::set_transcript` | An established session does no per-line formatting, allocation or extra event for the transcript, which halves the worker→UI events of incoming traffic. |
 | Combined subwindow: newest 1,000 lines across other channels, rebuilt only when the last message sequence or the selection changes, by merging conversation tails newest-first | `ui` `SUB_LOG_LIMIT`, `sync_log_lists`, `newest_lines` | Keystrokes do not rebuild it, and the rebuild does not grow with every retained line when there are many conversations. |
 | At most 1,000 conversations per network; messages for unknown channels go to the bounded server log | `app` `MAX_CONVERSATIONS_PER_NETWORK` | A hostile server or bouncer cannot grow memory without limit. |
 | WHOIS collection capped (32 pending nicknames, 512 items each); rosters cached only for joined channels | `irc-core` `MAX_PENDING_WHOIS`, `MAX_WHOIS_ITEMS` | Same. |
@@ -65,7 +66,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Channel log | 2,000 messages, trimmed to 1,000 | per conversation | No application-wide bound: 1,000 conversations × 2,000 lines is allowed. Older history pages fill it up to 2,000 and never trim it. |
 | Server log | 2,000 messages, trimmed to 1,000 | per network | |
 | Conversations | 1,000 | per network | |
-| Diagnostics transcript | 1,000 lines | per server | Formatted eagerly for every IRC line, shown or not. No application-wide bound. |
+| Diagnostics transcript | 1,000 lines | per server | IRC lines are formatted and sent to the UI only during registration and while the debug transcript is on. No application-wide bound. |
 | Combined subwindow | 1,000 rows (indices only) | window | Rebuilt by a heap merge of conversation tails that stops at 1,000 rows. |
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
@@ -651,7 +652,7 @@ the image preview section above); icons are still open.
 | --- | --- | --- |
 | Application-wide retained-message budget | Keep 2,000 per conversation, and add a total across all networks (for example 100,000 lines, about 25–55 MiB at the measured 250–550 bytes per line), evicting from conversations viewed least recently | Today only per-conversation and per-network bounds exist: 1,000 conversations × 2,000 lines is allowed per network, and multi-server multiplies it. |
 | Conversations | Keep 1,000 per network; add an application-wide ceiling | Same; each conversation also owns a `TextInput` entity and a `LogList`. |
-| Diagnostics | 1,000 lines per server plus an application-wide ceiling; store the wire line and format on display | Every IRC line is formatted into a `String` whether the transcript is shown or not; with several servers this repeats per server. |
+| Diagnostics | 1,000 lines per server plus an application-wide ceiling | IRC lines are formatted only while the transcript can be shown (registration, or the debug transcript on), so the remaining cost is the retained lines. |
 | Event handling fairness | Keep 512 events per connection; drain connections round-robin so one flooded server cannot delay another | Measured: a single overloaded connection builds about 1–2 s of worker-side lag. |
 | Redraw rate under traffic | Coalesce redraws caused by incoming lines (for example at most 30 per second while not interacting) | 200 lines/s costs 16 % of a core when drawn versus 2–3 % when hidden. Needs a decision because it trades latency for CPU. |
 | Rosters | Keep one copy per channel, or bound the extra copies | Rosters are stored three times today; large channels multiply this with every added server. |

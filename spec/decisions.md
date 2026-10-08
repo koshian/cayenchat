@@ -200,6 +200,8 @@ The library generates some maintenance traffic internally; PONG and configured
 JOIN are included, but the transcript is not a complete byte-for-byte capture.
 The trace is visible by default until registration succeeds and after failures;
 the View menu controls the full transcript during an established session.
+IRC lines of an established session are recorded only while the transcript is
+on, so the per-message path does no transcript work otherwise.
 GPUI 0.2.2 has no rendered native menus on Windows/Linux, so Ctrl+, opens settings
 and Ctrl+Shift+D/L controls the trace there.
 

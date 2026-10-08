@@ -123,8 +123,11 @@ impl Client {
         let mut config = ConnectionConfig::tls(host.into(), nick.into(), vec![channel.into()]);
         config.port = port;
         config.use_tls = false;
+        let connection = Connection::connect(config).unwrap();
+        // The checks read IRC lines sent after registration.
+        connection.set_transcript(true);
         Self {
-            connection: Connection::connect(config).unwrap(),
+            connection,
             events: Vec::new(),
         }
     }
