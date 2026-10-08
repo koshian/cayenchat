@@ -132,3 +132,9 @@ that only bridges the gap to the pointer. A pointer on another range with a
 tooltip of its own, outside the visible part of the shown one, replaces the
 tooltip at once (`TooltipRetarget` in `src/elements/div.rs`: the shown tooltip
 is cleared and the next one is scheduled without another mouse move).
+
+In `src/platform/windows/destination_list.rs`, the jump list's removed-item
+descriptions are measured up to their NUL in Rust instead of with ICU's
+`u_strlen`. That one call made the executable import `icuuc.dll`, which
+Windows only ships since Windows 10 1703 and Wine does not provide, so the
+Windows build did not start under Wine at all. Nothing else uses ICU.
