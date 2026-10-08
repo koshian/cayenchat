@@ -1583,6 +1583,11 @@ impl ChatWindow {
             .values_mut()
             .filter_map(ServerSession::close)
             .collect();
+        // The UI no longer drains events and the queues may be full, so ask
+        // the workers directly.
+        for connection in &closing {
+            connection.shutdown();
+        }
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
         for connection in closing {
             connection.wait_closed(deadline.saturating_duration_since(std::time::Instant::now()));

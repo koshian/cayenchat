@@ -546,7 +546,10 @@ without a version change). Disconnect and quitting the app send it as the `QUIT`
 reason; blank means "Leaving CayenChat". `/quit [reason]` takes the same path (a
 typed reason wins, and the UI does not reconnect afterwards), and closing the
 main window or quitting sends QUIT on every connection and waits up to 500 ms in
-total for the workers to flush it (`Connection::wait_closed`; issue #234). It is validated with the connection
+total for the workers to flush it (`Connection::wait_closed`; issue #234). That path
+uses `Connection::shutdown`, a flag the worker checks before the command queue, and
+the worker then drops events instead of waiting for the UI, so QUIT still goes out
+when the UI stopped draining a full event queue or the command queue is full. It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
 connection starts, so an edit applies from the next connection. Lost connections
 send no QUIT.

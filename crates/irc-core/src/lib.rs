@@ -25,7 +25,11 @@ pub use peer_avatar::shareable as shareable_avatar;
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, Mutex, atomic::AtomicUsize, mpsc as std_mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc as std_mpsc,
+    },
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -688,7 +692,76 @@ pub enum MemberCommand {
     Deop { channel: String },
 }
 
-async fn diagnostic(events: &mpsc::Sender<Event>, started: Instant, message: impl Into<String>) {
+/// Set by [`Connection::shutdown`]. It reaches the worker without going
+/// through the command or event queues, which a flooded or undrained
+/// connection can leave full.
+#[derive(Default)]
+struct QuitSignal {
+    requested: AtomicBool,
+    wake: Notify,
+}
+
+impl QuitSignal {
+    fn request(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    async fn requested(&self) {
+        if !self.is_requested() {
+            self.wake.notified().await;
+        }
+    }
+}
+
+/// The worker's event queue. Once a shutdown was requested nobody needs the
+/// events, so sending no longer waits for the UI to drain them; otherwise a
+/// full queue would keep the worker from writing QUIT.
+#[derive(Clone)]
+struct EventSender {
+    events: mpsc::Sender<Event>,
+    quit: Arc<QuitSignal>,
+}
+
+impl EventSender {
+    #[cfg(test)]
+    fn new(events: mpsc::Sender<Event>) -> Self {
+        Self {
+            events,
+            quit: Arc::default(),
+        }
+    }
+
+    async fn send(&self, event: Event) -> Result<(), mpsc::error::SendError<Event>> {
+        if self.quit.is_requested() {
+            // Dropping the event is fine; a closed receiver is not an error here.
+            let _ = self.events.try_send(event);
+            return Ok(());
+        }
+        tokio::select! {
+            sent = self.events.send(event) => sent,
+            _ = self.quit.requested() => Ok(()),
+        }
+    }
+}
+
+/// The next command, with a shutdown request counting as a plain quit.
+async fn next_command(
+    commands: &mut mpsc::Receiver<Outgoing>,
+    quit: &QuitSignal,
+) -> Option<Outgoing> {
+    tokio::select! {
+        biased;
+        _ = quit.requested() => Some(Outgoing::Quit),
+        command = commands.recv() => command,
+    }
+}
+
+async fn diagnostic(events: &EventSender, started: Instant, message: impl Into<String>) {
     let _ = events
         .send(Event::Diagnostic {
             elapsed: started.elapsed(),
@@ -777,12 +850,7 @@ fn echo_text(target: &str, text: String) -> String {
     }
 }
 
-async fn wire(
-    events: &mpsc::Sender<Event>,
-    started: Instant,
-    direction: WireDirection,
-    line: String,
-) {
+async fn wire(events: &EventSender, started: Instant, direction: WireDirection, line: String) {
     let _ = events
         .send(Event::Wire {
             elapsed: started.elapsed(),
@@ -1124,6 +1192,8 @@ pub struct Connection {
     /// Stops a worker that is still resolving or opening the transport,
     /// before it reads queued commands.
     cancel: Arc<Notify>,
+    /// Asks the worker to quit even when both queues are full.
+    quit: Arc<QuitSignal>,
     /// `None` after [`Connection::take_events`].
     events: Option<Events>,
     encoding: String,
@@ -1150,6 +1220,11 @@ impl Connection {
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
         let cancel = Arc::new(Notify::new());
         let worker_cancel = cancel.clone();
+        let quit = Arc::new(QuitSignal::default());
+        let worker_events = EventSender {
+            events: event_tx.clone(),
+            quit: quit.clone(),
+        };
         let modes_per_line = Arc::new(AtomicUsize::new(0));
         let worker_modes = modes_per_line.clone();
         let (alive, closed) = std_mpsc::channel::<()>();
@@ -1167,7 +1242,7 @@ impl Connection {
                         Ok(runtime) => runtime.block_on(run_cancellable(
                             config,
                             command_rx,
-                            event_tx,
+                            worker_events,
                             worker_cancel,
                             worker_modes,
                         )),
@@ -1186,6 +1261,7 @@ impl Connection {
         Ok(Self {
             commands,
             cancel,
+            quit,
             events: Some(Events(events)),
             encoding,
             modes_per_line,
@@ -1413,6 +1489,14 @@ impl Connection {
             .map_err(|error| format!("Could not queue history request: {error}"))
     }
 
+    /// Like [`Connection::disconnect`] for an application that is exiting:
+    /// QUIT goes out even when the command or event queue is full, and the
+    /// remaining events are dropped. Follow with [`Connection::wait_closed`].
+    pub fn shutdown(&self) {
+        self.cancel.notify_one();
+        self.quit.request();
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
@@ -1448,7 +1532,7 @@ async fn run(
     run_cancellable(
         config,
         commands,
-        events,
+        EventSender::new(events),
         Arc::new(Notify::new()),
         Arc::new(AtomicUsize::new(0)),
     )
@@ -1458,7 +1542,7 @@ async fn run(
 async fn run_cancellable(
     config: ConnectionConfig,
     mut commands: mpsc::Receiver<Outgoing>,
-    events: mpsc::Sender<Event>,
+    events: EventSender,
     cancel: Arc<Notify>,
     modes_per_line: Arc<AtomicUsize>,
 ) {
@@ -1710,7 +1794,7 @@ async fn run_cancellable(
 
     loop {
         tokio::select! {
-            command = commands.recv() => {
+            command = next_command(&mut commands, &events.quit) => {
                 let Some(command) = command else { break; };
                 match command {
                     Outgoing::Message {target, text, display_text, notice} => {
@@ -2319,7 +2403,7 @@ async fn run_cancellable(
 /// reports it. `false` means the connection or the event channel failed.
 async fn request_history(
     client: &Client,
-    events: &mpsc::Sender<Event>,
+    events: &EventSender,
     started: Instant,
     history: &mut history::HistoryRequests,
     registered: bool,
@@ -2350,7 +2434,7 @@ async fn request_history(
 /// Reports a finished history request. `false` means the event channel
 /// closed.
 async fn history_finished(
-    events: &mpsc::Sender<Event>,
+    events: &EventSender,
     started: Instant,
     finished: history::Finished,
 ) -> bool {
@@ -2389,7 +2473,7 @@ fn merged(peers: &mut Option<peer_avatar::PeerAvatars>, events: Vec<Event>) -> V
 /// transcript; `Err` means the link failed.
 async fn send_all(
     client: &Client,
-    events: &mpsc::Sender<Event>,
+    events: &EventSender,
     started: Instant,
     commands: Vec<IrcCommand>,
 ) -> Result<(), String> {
@@ -3167,6 +3251,7 @@ mod tests {
         let mut connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
@@ -3187,6 +3272,7 @@ mod tests {
         let connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(2)),
@@ -3223,6 +3309,7 @@ mod tests {
         let connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(1)),
@@ -3249,6 +3336,7 @@ mod tests {
         let mut connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
@@ -4132,6 +4220,16 @@ mod tests {
         configure: impl FnOnce(&mut ConnectionConfig),
         end: impl FnOnce(&Connection),
     ) -> Vec<u8> {
+        quit_line_after_flood(configure, end, 0)
+    }
+
+    /// As [`quit_line_after`], with the server sending `flood` NOTICE lines
+    /// after registering that nobody drains from the connection.
+    fn quit_line_after_flood(
+        configure: impl FnOnce(&mut ConnectionConfig),
+        end: impl FnOnce(&Connection),
+        flood: usize,
+    ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4151,6 +4249,11 @@ mod tests {
             socket
                 .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
                 .unwrap();
+            for index in 0..flood {
+                socket
+                    .write_all(format!(":server NOTICE alice :flood {index}\r\n").as_bytes())
+                    .unwrap();
+            }
             loop {
                 line.clear();
                 lines.read_until(b'\n', &mut line).unwrap();
@@ -4198,6 +4301,21 @@ mod tests {
             |connection| connection.send_command("/QUIT :Bye now", None).unwrap(),
         );
         assert_eq!(line, b"QUIT :Bye now".to_vec());
+    }
+
+    #[test]
+    fn shutdown_sends_quit_while_the_event_queue_is_full() {
+        // More lines than EVENT_CAPACITY, and the test never drains them.
+        let line = quit_line_after_flood(
+            |_| {},
+            |connection| {
+                thread::sleep(Duration::from_millis(500));
+                connection.shutdown();
+                assert!(connection.wait_closed(Duration::from_secs(2)));
+            },
+            EVENT_CAPACITY * 4,
+        );
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
     }
 
     #[test]
