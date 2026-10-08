@@ -9,8 +9,10 @@ license.workspace = true
 [dependencies]
 cayenchat-model.workspace = true
 irc.workspace = true
+# Not used directly: enables the codec's legacy charsets for `irc`.
+irc-proto.workspace = true
 rustls.workspace = true
-encoding.workspace = true
+encoding_rs.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
 base64.workspace = true

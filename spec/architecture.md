@@ -674,8 +674,11 @@ no chat row, unread mark, notification or preview request; it remains in
 the diagnostic transcript, where long tag sections are shortened to 512
 bytes. Server log lines are shown without their tags.
 
-Legacy encodings: the `irc` codec decodes a whole line with the connection's
-encoding before tags are parsed, while tag values are UTF-8. Replacing that
+Legacy encodings: the line codec (vendored irc-proto, with `encoding_rs`;
+malformed bytes become U+FFFD) decodes a whole line with the connection's
+encoding before tags are parsed, while tag values are UTF-8. Outgoing lines
+are checked with the same `encoding_rs` encoders before they are queued, so
+a character the encoding cannot hold is refused instead of replaced. Replacing that
 codec would mean a transport rewrite, so the policy is narrow: `message-tags`
 (which lets other users' arbitrary client tags through, which could contain
 bytes such as ISO-2022-JP escapes that change the decoder's state for the

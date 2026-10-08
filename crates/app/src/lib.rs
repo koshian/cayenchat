@@ -12,7 +12,7 @@ use std::{
 
 use cayenchat_model::{
     Conversation, ConversationId, ConversationKind, Message, NativeMessageId, Network, NetworkId,
-    Provenance, TimeOfDay, Timestamp, names::CaseMapping,
+    Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -1169,7 +1169,7 @@ impl AppState {
                 .iter_mut()
                 .find(|channel| channel.id == id)
         {
-            channel.topic = topic.to_owned();
+            channel.topic = display::neutralize_bidi(topic).into_owned();
         }
     }
 
@@ -1277,6 +1277,7 @@ impl AppState {
         };
         let message = &mut conversation.messages[index];
         if let Some(text) = text {
+            let text = display::neutralize_bidi_owned(text);
             message.text = if notice {
                 format!("[NOTICE] {text}")
             } else {
@@ -1994,6 +1995,8 @@ fn display_time(received: Option<SystemTime>) -> TimeOfDay {
 }
 
 /// A timeline item from `meta`, without its sequence yet.
+/// Every retained line is built here, so its text never carries
+/// bidirectional controls (`display::neutralize_bidi`).
 fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) -> Message {
     Message {
         time: display_time(meta.server_time),
@@ -2001,8 +2004,10 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         timestamp: meta.server_time.and_then(Timestamp::from_system_time),
         native_id: meta.native_id,
         account: meta.account,
+        // The sender stays as sent: it keys self checks and avatars. It is
+        // neutralized where it is drawn.
         sender,
-        text,
+        text: display::neutralize_bidi_owned(text),
         activity,
         notice: false,
         provenance: meta.provenance,
@@ -2232,6 +2237,35 @@ mod tests {
         assert!(channel.messages[0].sequence < channel.messages[1].sequence);
         assert_eq!(channel.messages[0].text, "alice has joined (u@h)");
         assert!(!channel.messages[1].activity);
+    }
+
+    /// Lines and topics are retained without bidirectional controls; the
+    /// sender is kept as sent, as it identifies the user.
+    #[test]
+    fn retained_text_has_no_bidirectional_controls() {
+        let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+        let id = state.channel_id(NetworkId(1), "#one").unwrap();
+        state.append_channel_message(
+            NetworkId(1),
+            "#one",
+            "mal\u{202E}lory",
+            "see invoice\u{202E}fdp.exe",
+            false,
+            false,
+        );
+        state.append_server_message(NetworkId(1), "motd \u{2067}x".into());
+        state.set_topic(NetworkId(1), "#one", "topic\u{202D}");
+        let channel = state.conversations().iter().find(|c| c.id == id).unwrap();
+        let message = &channel.messages[0];
+        assert_eq!(message.sender, "mal\u{202E}lory");
+        assert_eq!(message.text, "see invoice\u{200B}fdp.exe");
+        assert_eq!(channel.topic, "topic\u{200B}");
+        assert_eq!(
+            state.server_messages(NetworkId(1)).last().unwrap().text,
+            "motd \u{200B}x"
+        );
+        // The conversation keeps the server's name: it is what we send to.
+        assert_eq!(channel.name, "#one");
     }
 
     #[test]

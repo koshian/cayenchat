@@ -1,6 +1,7 @@
 //! Small, UI-independent domain types. These are not IRC wire types.
 
 pub mod attachment;
+pub mod display;
 pub mod names;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

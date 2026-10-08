@@ -1,6 +1,6 @@
 use crate::{ChatWindow, localization::Localizer};
 use cayenchat_irc_core::WhoisInfo;
-use cayenchat_model::{NetworkId, names::CaseMapping};
+use cayenchat_model::{NetworkId, display, names::CaseMapping};
 use gpui::{prelude::*, *};
 use std::collections::HashSet;
 
@@ -47,7 +47,7 @@ impl WhoisWindow {
         cx: &mut App,
     ) -> Result<WindowHandle<Self>, String> {
         let bounds = Bounds::centered(None, size(px(460.), px(480.)), cx);
-        let title = info.nickname.clone();
+        let title = window_title(&info);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -87,7 +87,7 @@ impl WhoisWindow {
     /// Replaces the shown reply; a missing nickname keeps the last known details.
     pub fn set_info(&mut self, info: WhoisInfo, window: &mut Window, cx: &mut Context<Self>) {
         if info.found() {
-            window.set_window_title(&info.nickname);
+            window.set_window_title(&window_title(&info));
             let selected = self.info.channels.get(self.selected_channel).cloned();
             self.selected_channel = selected
                 .and_then(|entry| info.channels.iter().position(|other| *other == entry))
@@ -96,10 +96,7 @@ impl WhoisWindow {
             self.info = info;
             self.status = None;
         } else {
-            self.status = Some(
-                self.i18n
-                    .format("whois_not_found", &[("nickname", &info.nickname)]),
-            );
+            self.status = Some(self.i18n.format_nickname("whois_not_found", &info.nickname));
         }
         cx.notify();
     }
@@ -163,10 +160,12 @@ impl WhoisWindow {
             .child(div().flex_1().min_w_0().child(value))
     }
 
+    /// Values come from the server and the user themselves (real name, away
+    /// text), so bidirectional controls are neutralized before drawing.
     fn text_row(&self, key: &str, value: Option<String>) -> Option<Div> {
         value
             .filter(|value| !value.is_empty())
-            .map(|value| self.row(key, value))
+            .map(|value| self.row(key, display::neutralize_bidi_owned(value)))
     }
 
     fn channel_selector(&self, cx: &mut Context<Self>) -> Div {
@@ -204,7 +203,13 @@ impl WhoisWindow {
                         .border_1()
                         .border_color(theme.border)
                         .cursor_pointer()
-                        .child(div().flex_1().min_w_0().truncate().child(entry))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(display::neutralize_bidi_owned(entry)),
+                        )
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -240,7 +245,13 @@ impl WhoisWindow {
                         .cursor_pointer()
                         .when(option == index, |d| d.bg(theme.selected))
                         .hover(|d| d.bg(theme.hover_strong))
-                        .child(div().flex_1().min_w_0().truncate().child(entry.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(display::neutralize_bidi(entry).into_owned()),
+                        )
                         .when(joined, |d| {
                             d.child(
                                 div()
@@ -266,6 +277,11 @@ impl WhoisWindow {
         }
         selector
     }
+}
+
+/// The window title, at open and on every refresh: the nickname as drawn.
+fn window_title(info: &WhoisInfo) -> String {
+    display::neutralize_bidi(&info.nickname).into_owned()
 }
 
 /// Strips the membership prefix a 319 reply puts before each channel.
@@ -321,7 +337,7 @@ fn button(
 
 impl Render for WhoisWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.info.nickname.clone();
+        let title = window_title(&self.info);
         let content = self.render_content(cx);
         crate::decorations::window_frame(window, cx, title, content)
     }
@@ -363,10 +379,11 @@ impl WhoisWindow {
             details = details.child(
                 self.row(
                     "whois_other",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .children(info.extra.iter().map(|line| div().child(line.clone()))),
+                    div().flex().flex_col().children(
+                        info.extra
+                            .iter()
+                            .map(|line| div().child(display::neutralize_bidi(line).into_owned())),
+                    ),
                 ),
             );
         }
@@ -448,7 +465,7 @@ impl WhoisWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{channel_name, idle_text};
+    use super::{WhoisInfo, channel_name, idle_text, window_title};
 
     #[test]
     fn strips_membership_prefixes_but_keeps_channel_prefixes() {
@@ -466,6 +483,16 @@ mod tests {
         assert_eq!(channel_name("@+!ABCDE日本語"), "!ABCDE日本語");
         assert_eq!(channel_name("&!ABCDEtest"), "!ABCDEtest");
         assert_eq!(channel_name("!#test"), "#test");
+    }
+
+    #[test]
+    fn window_title_neutralizes_bidi_but_leaves_the_nickname_alone() {
+        let info = WhoisInfo {
+            nickname: "mal\u{202E}lory".to_owned(),
+            ..WhoisInfo::default()
+        };
+        assert_eq!(window_title(&info), "mal\u{200B}lory");
+        assert_eq!(info.nickname, "mal\u{202E}lory");
     }
 
     #[test]
