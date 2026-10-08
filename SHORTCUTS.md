@@ -15,6 +15,7 @@
 | Previous / next active server | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
 | Previous / next server | `Cmd+Shift+[` / `Cmd+Shift+]` or `Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
 | First through tenth channel | `Cmd+1..9, 0` | `Ctrl+1..9, 0` (configurable) |
+| First through tenth channel (order) | Drag channels in the right-hand tree (digits show while dragging), or use the context menu | same |
 | First through tenth server | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | Send a channel message (`PRIVMSG`) | `Enter` | `Enter` |
 | Send as IRC `NOTICE` | `Ctrl+Enter` | `Ctrl+Enter` |
