@@ -68,8 +68,6 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ABANDONED: usize = 8;
 /// Nested batches followed inside one reply.
 const MAX_NESTED: usize = 16;
-/// Longest batch reference followed.
-const MAX_REFERENCE_BYTES: usize = 64;
 /// Longest msgid used as a reference; longer ones are not kept by the
 /// application either (`model::NativeMessageId`).
 const MAX_MSGID_BYTES: usize = 128;
@@ -745,7 +743,7 @@ impl HistoryRequests {
         let Some(reference) = reference.strip_prefix('+') else {
             return Observed::Unrelated;
         };
-        if reference.is_empty() || reference.len() > MAX_REFERENCE_BYTES {
+        if !tags::followed_batch(reference) {
             return Observed::Unrelated;
         }
         // A batch inside a reply belongs to it.
