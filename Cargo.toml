@@ -25,9 +25,13 @@ cayenchat-irc-core = { path = "crates/irc-core" }
 cayenchat-upload = { path = "crates/upload" }
 cayenchat-media = { path = "crates/media" }
 gpui = { version = "=0.2.2", default-features = false, features = ["runtime_shaders", "font-kit"] }
-irc = { version = "=1.1.0", default-features = false, features = ["tls-rust", "channel-lists", "encoding"] }
+irc = { version = "=1.1.0", default-features = false, features = ["tls-rust", "channel-lists"] }
+# Legacy charsets: `irc`'s own `encoding` feature would pull in the
+# unmaintained `encoding` crate (it uses it only for mock connections), so the
+# vendored irc-proto's codec feature is enabled directly; it uses encoding_rs.
+irc-proto = { version = "=1.1.0", default-features = false, features = ["encoding"] }
+encoding_rs = "0.8.33"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-encoding = "0.2"
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"] }
 futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -41,7 +45,8 @@ base64 = "0.22"
 gpui = { path = "vendor/gpui" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
-# The published codec buffers a line without any length limit.
+# The published codec buffers a line without any length limit and decodes
+# legacy charsets with the unmaintained `encoding` crate.
 irc-proto = { path = "vendor/irc-proto" }
 
 [profile.dev]

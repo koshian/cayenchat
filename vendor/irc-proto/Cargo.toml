@@ -30,8 +30,10 @@ repository = "https://github.com/aatxe/irc"
 version = "1.4.0"
 optional = true
 
-[dependencies.encoding]
-version = "0.2.33"
+# CayenChat: the legacy-charset codec uses encoding_rs instead of the
+# unmaintained `encoding` crate (RUSTSEC-2021-0153); see vendor/README.md.
+[dependencies.encoding_rs]
+version = "0.8.33"
 optional = true
 
 [dependencies.thiserror]
@@ -48,6 +50,7 @@ optional = true
 
 [features]
 default = ["tokio"]
+encoding = ["dep:encoding_rs"]
 tokio = [
     "bytes",
     "dep:tokio",

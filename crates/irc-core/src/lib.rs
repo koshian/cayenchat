@@ -33,7 +33,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use encoding::{EncoderTrap, label::encoding_from_whatwg_label};
+use encoding_rs::Encoding;
 use futures_util::StreamExt;
 use irc::{
     client::{
@@ -316,12 +316,24 @@ fn check_realname(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
-    let codec = encoding_from_whatwg_label(label)
+/// `text` in the connection's encoding (a WHATWG label, as the line codec
+/// takes it), or why it cannot be sent: an unknown label, or a character the
+/// encoding cannot hold.
+fn encode_strict<'a>(text: &'a str, label: &str) -> Result<std::borrow::Cow<'a, [u8]>, String> {
+    let encoding = Encoding::for_label(label.as_bytes())
+        .filter(|encoding| encoding.output_encoding() == *encoding)
         .ok_or_else(|| format!("Unsupported character encoding: {label}"))?;
-    let bytes = codec
-        .encode(wire, EncoderTrap::Strict)
-        .map_err(|_| format!("Text contains a character that cannot be encoded as {label}."))?;
+    let (bytes, _, unmappable) = encoding.encode(text);
+    if unmappable {
+        return Err(format!(
+            "Text contains a character that cannot be encoded as {label}."
+        ));
+    }
+    Ok(bytes)
+}
+
+fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
+    let bytes = encode_strict(wire, label)?;
     if bytes.len() > 512 {
         return Err("IRC command exceeds the 512-byte wire limit.".into());
     }
@@ -348,11 +360,7 @@ fn validate_tagged_wire(message: &IrcMessage, label: &str) -> Result<(), String>
         }
         // The line as a whole, for encodability only: tags are not part of
         // the 512 bytes.
-        let codec = encoding_from_whatwg_label(label)
-            .ok_or_else(|| format!("Unsupported character encoding: {label}"))?;
-        codec
-            .encode(&message.to_string(), EncoderTrap::Strict)
-            .map_err(|_| format!("Text contains a character that cannot be encoded as {label}."))?;
+        encode_strict(&message.to_string(), label)?;
     }
     Ok(())
 }
@@ -4290,10 +4298,9 @@ mod tests {
         });
         // The whole line goes through the codec; a message without spaces
         // needs no leading colon.
-        let mut want = encoding_from_whatwg_label("ISO-2022-JP")
+        let mut want = encode_strict("QUIT さよなら\r\n", "ISO-2022-JP")
             .unwrap()
-            .encode("QUIT さよなら\r\n", EncoderTrap::Strict)
-            .unwrap();
+            .into_owned();
         assert!(want.contains(&0x1b), "ISO-2022-JP uses escape sequences");
         want.truncate(want.len() - 2);
         assert_eq!(line, want);
@@ -5971,11 +5978,10 @@ mod tests {
     fn legacy_encoding_keeps_server_time_and_skips_message_tags() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let codec = encoding_from_whatwg_label("iso-2022-jp").unwrap();
-        let body = codec
-            // Encoded with the line ending so the encoder returns to ASCII.
-            .encode("日本語の本文\r\n", EncoderTrap::Strict)
-            .unwrap();
+        // Encoded with the line ending so the encoder returns to ASCII.
+        let body = encode_strict("日本語の本文\r\n", "iso-2022-jp")
+            .unwrap()
+            .into_owned();
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket
