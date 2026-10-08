@@ -132,7 +132,9 @@
 
 **確認事項・メモ**: 導入時点で脆弱性の勧告はなく、直接依存のメンテナンス終了は `encoding` だけ。`irc` クレートが `encoding` を使うのはテスト用の擬似接続だけで、実際の変換は vendor した irc-proto の `LineCodec` と irc-core の検証なので、`encoding_rs` に置き換えられる。置き換えるまで RUSTSEC-2021-0153 を理由付きで `deny.toml` の無視リストに入れる。
 
-**判断**: 採用（`encoding_rs` への置き換えは irc-proto の vendor（#238）の後）
+その後、vendor した irc-proto の `encoding` 機能を `encoding_rs` で実装し直し、ワークスペースから直接有効にした（`irc` の `encoding` 機能は外した）。irc-core の送信前検証も `encoding_rs` に移し、`encoding` クレートは依存関係から消えた。無視リストの項目も削除した。ISO-2022-JP / Shift_JIS / EUC-JP の往復は既存の通信テストと irc-proto のテストで確認している。
+
+**判断**: 採用（完了）
 
 ---
 
