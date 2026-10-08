@@ -5,6 +5,7 @@
 //!
 //! [`x11rb`]: https://crates.io/crates/x11rb
 
+#[cfg(feature = "x11rb-server")]
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;

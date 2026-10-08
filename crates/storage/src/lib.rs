@@ -1352,8 +1352,10 @@ mod tests {
 
     #[test]
     fn disabled_auto_join_entries_stay_saved_but_are_not_joined() {
-        let mut profile = ServerProfile::default();
-        profile.channels = "#a, -#b ,#c,,-".into();
+        let mut profile = ServerProfile {
+            channels: "#a, -#b ,#c,,-".into(),
+            ..Default::default()
+        };
         let entries = profile.auto_join_entries();
         assert_eq!(
             entries.iter().map(|e| e.enabled).collect::<Vec<_>>(),

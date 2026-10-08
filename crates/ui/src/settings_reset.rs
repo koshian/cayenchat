@@ -332,8 +332,10 @@ mod tests {
     fn each_page_reset_covers_its_own_items_and_no_others(cx: &mut gpui::TestAppContext) {
         use cayenchat_storage::{ChannelNumberModifier, Language, LinuxDisplay, Settings};
 
+        type Change = fn(&mut Settings);
+
         // Each page's items, changed from their defaults.
-        let dirty: [(SettingsTab, fn(&mut Settings)); 8] = [
+        let dirty: [(SettingsTab, Change); 8] = [
             (SettingsTab::Application, |values| {
                 values.language = Language::English;
                 values.restore_window_layout = !values.restore_window_layout;

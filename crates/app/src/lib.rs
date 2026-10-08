@@ -3127,10 +3127,7 @@ mod tests {
     fn older_pages_stay_within_the_log_bound() {
         let (mut state, _, id) = paging_channel();
         let mut next = 1_000_000u64;
-        loop {
-            let Some(request) = state.request_older_history(id) else {
-                break;
-            };
+        while let Some(request) = state.request_older_history(id) {
             assert!(request.limit <= OLDER_PAGE_LIMIT && request.limit > 0);
             // A server returning more than asked for.
             let lines = page(next - 80..next);

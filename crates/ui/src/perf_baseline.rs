@@ -75,7 +75,7 @@ fn incoming(sequence: usize, images: bool, long_urls: bool) -> [Event; 2] {
     let text = if images && line.is_multiple_of(IMAGE_EVERY) {
         let link = (line / IMAGE_EVERY + sequence % CHANNELS * 7) % IMAGE_LINKS;
         format!("see {}", image_link(link))
-    } else if long_urls && sequence % 2 == 0 {
+    } else if long_urls && sequence.is_multiple_of(2) {
         format!(
             "read https://docs.load.example/guides/{line:04}/section/with/a/long/path?q={sequence} and https://other.load.example/{sequence}/another/long/path/to/page"
         )

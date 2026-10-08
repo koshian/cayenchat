@@ -129,17 +129,22 @@ pub fn thumbnail(
         drop(image);
         small
     };
-    let mut pixels = DynamicImage::into_rgba8(small).into_raw();
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
     Ok(Thumbnail {
         width: thumb_width,
         height: thumb_height,
         source_width: width,
         source_height: height,
-        bgra: pixels,
+        bgra: into_bgra(small),
     })
+}
+
+/// The pixels of `image` in the BGRA order GPUI draws.
+pub(crate) fn into_bgra(image: DynamicImage) -> Vec<u8> {
+    let mut pixels = image.into_rgba8().into_raw();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    pixels
 }
 
 #[cfg(test)]
