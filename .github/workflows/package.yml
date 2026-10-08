@@ -37,6 +37,13 @@ on:
         required: false
         type: string
         default: cayenchat
+      profile:
+        description: >-
+          Cargo profile: release (beta and test builds) or dist (versioned
+          releases: fat LTO, one codegen unit, stripped)
+        required: false
+        type: string
+        default: release
 
 # The build runs code from an arbitrary ref, so the token can only read.
 permissions:
@@ -48,6 +55,7 @@ env:
   SUFFIX: ${{ inputs.isolated && '-isolated' || '' }}
   TEST: ${{ inputs.test && 'true' || 'false' }}
   PREFIX: ${{ inputs.prefix }}
+  BUILD_PROFILE: ${{ inputs.profile }}
 
 jobs:
   linux-x86_64:
@@ -90,14 +98,14 @@ jobs:
         run: cargo install cargo-deb --version 3.8.0 --locked
 
       - name: Build release binary
-        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
+        run: cargo build --profile "$BUILD_PROFILE" --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Build Debian package
         shell: bash
         run: |
           set -euxo pipefail
           if [ "$TEST" != true ]; then
-            cargo deb --no-build
+            cargo deb --no-build --profile "$BUILD_PROFILE"
             exit 0
           fi
           # The variant is defined here, not read from the ref, so that refs
@@ -109,7 +117,7 @@ jobs:
           name = "cayenchat-test"
           conflicts = "cayenchat-ui"
           EOF_VARIANT
-          cargo deb --no-build --variant test
+          cargo deb --no-build --profile "$BUILD_PROFILE" --variant test
           mv target/debian/*.deb "$PACKAGE.deb"
 
       - name: Upload package
@@ -157,13 +165,13 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
+        run: cargo build --profile "$BUILD_PROFILE" --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path package\locales
-          Copy-Item target\release\cayenchat.exe package\
+          Copy-Item "target\$env:BUILD_PROFILE\cayenchat.exe" package\
           Copy-Item locales\*.json package\locales\
           Compress-Archive `
             -Path package\* `
@@ -214,13 +222,13 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
+        run: cargo build --profile "$BUILD_PROFILE" --locked ${FEATURES:+--features "$FEATURES"}
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path package\locales
-          Copy-Item target\release\cayenchat.exe package\
+          Copy-Item "target\$env:BUILD_PROFILE\cayenchat.exe" package\
           Copy-Item locales\*.json package\locales\
           Compress-Archive `
             -Path package\* `
@@ -270,7 +278,7 @@ jobs:
           toolchain: stable
 
       - name: Build release binary
-        run: cargo build --release --locked ${FEATURES:+--features "$FEATURES"}
+        run: cargo build --profile "$BUILD_PROFILE" --locked ${FEATURES:+--features "$FEATURES"}
 
       # The Test Build bundle has a separate name and identifier, so that it
       # is never mistaken for (or dragged over) an installed CayenChat.app.
@@ -290,7 +298,7 @@ jobs:
           APP="$NAME.app"
 
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/locales"
-          cp target/release/cayenchat "$APP/Contents/MacOS/CayenChat"
+          cp "target/$BUILD_PROFILE/cayenchat" "$APP/Contents/MacOS/CayenChat"
           cp crates/ui/resources/macos/CayenChat.icns "$APP/Contents/Resources/CayenChat.icns"
           cp locales/*.json "$APP/Contents/Resources/locales/"
           chmod +x "$APP/Contents/MacOS/CayenChat"

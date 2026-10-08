@@ -43,7 +43,8 @@ Do not build a second mechanism for any of these; extend them instead.
 | Event pump awaits events; no timer polling. One pump task per connection, up to 256 events per update, yielding between batches | `ui` `spawn_event_pump`, `EVENT_BATCH_LIMIT` | An idle connection wakes nothing; input, redraws and other servers interleave with bursts. The earlier 50 ms poll capped throughput and woke 20 times a second. |
 | No periodic timers while idle | registration progress/timeout timers stop at 001; the watchdog ends once connected; menu-bar hover polling runs only while the bar is hover-revealed | Idle CPU and wakeups stay near zero. The `irc` crate still sends its own PING every 180 s per connection. |
 | Per-channel log cap: 2,000 lines, trimmed to 1,000 when exceeded; server log the same | `app` `push_bounded` | Memory per log is bounded; trimming in chunks amortizes the shift. |
-| Diagnostics transcript: newest 1,000 lines per server in a `VecDeque` | `ui::session` `DIAGNOSTIC_LIMIT` | Every IRC line is recorded, so it must be bounded and O(1) to trim. |
+| Diagnostics transcript: newest 1,000 lines per server in a `VecDeque` | `ui::session` `DIAGNOSTIC_LIMIT` | While the transcript is on every IRC line is recorded, so it must be bounded and O(1) to trim. |
+| IRC lines reach the transcript only during registration or while the debug transcript is on | `irc-core` `Transcript`, `Connection::set_transcript` | An established session does no per-line formatting, allocation or extra event for the transcript, which halves the worker→UI events of incoming traffic. |
 | Combined subwindow: newest 1,000 lines across other channels, rebuilt only when the last message sequence or the selection changes, by merging conversation tails newest-first | `ui` `SUB_LOG_LIMIT`, `sync_log_lists`, `newest_lines` | Keystrokes do not rebuild it, and the rebuild does not grow with every retained line when there are many conversations. |
 | At most 1,000 conversations per network; messages for unknown channels go to the bounded server log | `app` `MAX_CONVERSATIONS_PER_NETWORK` | A hostile server or bouncer cannot grow memory without limit. |
 | WHOIS collection capped (32 pending nicknames, 512 items each); rosters cached only for joined channels | `irc-core` `MAX_PENDING_WHOIS`, `MAX_WHOIS_ITEMS` | Same. |
@@ -65,8 +66,9 @@ Do not build a second mechanism for any of these; extend them instead.
 | Channel log | 2,000 messages, trimmed to 1,000 | per conversation | No application-wide bound: 1,000 conversations × 2,000 lines is allowed. Older history pages fill it up to 2,000 and never trim it. |
 | Server log | 2,000 messages, trimmed to 1,000 | per network | |
 | Conversations | 1,000 | per network | |
-| Diagnostics transcript | 1,000 lines | per server | Formatted eagerly for every IRC line, shown or not. No application-wide bound. |
+| Diagnostics transcript | 1,000 lines | per server | IRC lines are formatted and sent to the UI only during registration and while the debug transcript is on. No application-wide bound. |
 | Combined subwindow | 1,000 rows (indices only) | window | Rebuilt by a heap merge of conversation tails that stops at 1,000 rows. |
+| Received IRC line | 16 KiB including the line ending | per connection | Enforced by the vendored irc-proto codec while reading; a longer line ends the connection. Also bounds the text of every message. |
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
 | WHOIS collection | 32 nicknames × 512 items | per connection | |
@@ -641,6 +643,59 @@ or NICK.
   "Resource limit candidates"; the index is not bounded separately because
   it holds exactly the channels the library tracks as joined.
 
+## Received line limit (2026-10-08, PR #238)
+
+The vendored `irc-proto` codec now fails a line over 16 KiB (see "Resource
+bounds today"); the only cost on the read path is one length comparison per
+`decode` call. Compared against `38cc09e` (parent, master) and `83b2860`
+(branch) in the Linux x86_64 container (12 vCPUs, rustc 1.99.0, Xvfb, not a
+visible desktop window, so `window visible` is 0/1 and the CPU numbers are
+only comparable between these builds). Both binaries are
+`cargo build --release --locked -p cayenchat-ui`; the parent was built in a
+separate worktree and target directory. Parent and branch alternate, three
+runs each.
+
+```sh
+xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/perf/run_baseline.py --runs 1 --binary BIN --out OUT
+cargo test --release --locked -p cayenchat-ui perf_baseline::perf_baseline -- --ignored --exact --nocapture
+```
+
+Process (`run_baseline.py`, one run per invocation; parent / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 113.8, 113.9, 113.9 / 114.0, 113.5, 113.6 | 0.00–0.03 both |
+| S3 after 2,000 lines per channel | 118.4, 118.7, 118.5 / 118.6, 118.1, 118.1 | 0.00–0.03 both |
+| S4a 200 lines/s | 118.4, 118.7, 118.5 / 118.6, 118.1, 118.1 | 3.82–4.38 / 3.65–4.41 |
+| S4b overload | 119.5, 119.4, 119.7 / 119.7, 119.5, 119.4 | 190, 78, 190 / 84, 190, 190 |
+| S5 after saturation | 119.5, 119.6, 119.7 / 119.7, 119.5, 119.4 | 0.00–0.03 both |
+| S6 second overload, idle | 119.8, 120.3, 119.9 / 119.7, 119.8, 119.6 | 0.00–0.03 both |
+
+- Memory and idle CPU agree within a few tenths of a MiB; S5 to S6 stays on a
+  plateau in every run. Peak RSS is not recorded by the runner.
+- S4b throughput: in four of the six runs (two parent, two branch) the
+  fixture saw two connections and a 15 s median PING round trip with about
+  4.9 million lines read at 162,000–164,500 lines/s; in the other two (one
+  each) the fixture saw one connection and read 1.5–1.8 million lines at
+  51,000–60,000 lines/s. This split appears in both builds, so it comes from
+  the fixture or Xvfb run and not from the change; within each group the
+  parent and branch rates are the same (for example 162,697 / 163,900 lines/s
+  in the two-connection group).
+
+Headless UI test (medians in µs; parent / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 248 / 247, 285 / 246, 244 / 294 | 1,653 / 1,685, 1,992 / 1,651, 1,658 / 1,649 | 1,414 / 1,223, 1,250 / 1,239, 1,240 / 1,257 | 2,244 / 2,101, 1,643 / 1,661, 1,676 / 1,691 | 260 / 329, 256 / 260, 259 / 258 |
+
+- Equal within run-to-run noise (single outliers on either side, such as the
+  parent's 285 µs typing in run 2 and the branch's 294 µs in run 3). The test
+  bypasses the IRC worker, so it shows that nothing changed above the codec;
+  the process runs above are what exercise the receive path.
+- Not measured: a single line near the limit under load, and a real server.
+  `irc-core`'s worker test checks that an endless line without a newline
+  ends the connection with the reason.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The
@@ -651,7 +706,7 @@ the image preview section above); icons are still open.
 | --- | --- | --- |
 | Application-wide retained-message budget | Keep 2,000 per conversation, and add a total across all networks (for example 100,000 lines, about 25–55 MiB at the measured 250–550 bytes per line), evicting from conversations viewed least recently | Today only per-conversation and per-network bounds exist: 1,000 conversations × 2,000 lines is allowed per network, and multi-server multiplies it. |
 | Conversations | Keep 1,000 per network; add an application-wide ceiling | Same; each conversation also owns a `TextInput` entity and a `LogList`. |
-| Diagnostics | 1,000 lines per server plus an application-wide ceiling; store the wire line and format on display | Every IRC line is formatted into a `String` whether the transcript is shown or not; with several servers this repeats per server. |
+| Diagnostics | 1,000 lines per server plus an application-wide ceiling | IRC lines are formatted only while the transcript can be shown (registration, or the debug transcript on), so the remaining cost is the retained lines. |
 | Event handling fairness | Keep 512 events per connection; drain connections round-robin so one flooded server cannot delay another | Measured: a single overloaded connection builds about 1–2 s of worker-side lag. |
 | Redraw rate under traffic | Coalesce redraws caused by incoming lines (for example at most 30 per second while not interacting) | 200 lines/s costs 16 % of a core when drawn versus 2–3 % when hidden. Needs a decision because it trades latency for CPU. |
 | Rosters | Keep one copy per channel, or bound the extra copies | Rosters are stored three times today; large channels multiply this with every added server. |

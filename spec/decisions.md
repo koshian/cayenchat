@@ -112,7 +112,9 @@ that published crate in `vendor/gpui` to patch Windows IME key-message handling
 and Linux issues, including enabling cosmic-text's bounded per-word shaping
 cache for faster channel switching; see `vendor/gpui/PATCHES.md`. A local
 `vendor/zed-xim` likewise replaces the XIM client's panicking COMPOUND_TEXT
-decoding (IBus/Mozc on X11). Use Rust edition 2024
+decoding (IBus/Mozc on X11), and `vendor/irc-proto` limits the received line
+length. Every vendored copy is temporary; `vendor/README.md` says when to
+switch back to an upstream release. Use Rust edition 2024
 and resolver 3. Enable `font-kit` for macOS glyph rendering and `runtime_shaders` for
 Metal shader compilation at application startup. Keep unused default features off;
 enable Wayland and X11 on Linux and the window manifest on Windows. This avoids
@@ -200,6 +202,8 @@ The library generates some maintenance traffic internally; PONG and configured
 JOIN are included, but the transcript is not a complete byte-for-byte capture.
 The trace is visible by default until registration succeeds and after failures;
 the View menu controls the full transcript during an established session.
+IRC lines of an established session are recorded only while the transcript is
+on, so the per-message path does no transcript work otherwise.
 GPUI 0.2.2 has no rendered native menus on Windows/Linux, so Ctrl+, opens settings
 and Ctrl+Shift+D/L controls the trace there.
 
@@ -1171,6 +1175,50 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D041 — Reordering the channel tree (#237)
+
+Status: implemented.
+
+The tree order is also the order of channel navigation and of the numbered
+channel shortcuts (D009), so the user can change it.
+
+- **Scope.** Channels move only within their own server, and private
+  conversations only among themselves (they stay after the channels). Nothing
+  moves between servers. Servers are reordered one place at a time with
+  Move up / Move down in the server's context menu (no dragging: the
+  distance is too large); this reorders the saved profiles, so it is also the
+  order in the settings window.
+- **Drag.** Pressing a channel row and moving more than GPUI's drag threshold
+  starts a drag (a plain click still selects); there is no long-press mode.
+  While dragging, every row shows the digit that numbered shortcut reaches
+  (1–9, then 0 for the tenth; none beyond) and the row under the pointer
+  shows an insertion line. Dropping puts the dragged row into the target's
+  place. The same moves (up, down, to top, to bottom) are in the channel and
+  private-conversation context menu, so dragging is not the only way.
+- **Saving.** The order is in its own file, `channel-order.json` beside the
+  settings (as `window.json`, D037: it never races the settings autosave and
+  a damaged file reads as nothing saved). It maps a server profile ID to
+  channel names, lowercased ASCII, and keeps the names of parted channels so
+  a channel joined again returns to its place; they stay anchored after the
+  channel that preceded them. Channels it does not list go to the end in
+  join order. The file is refused unparsed beyond 1 MiB and bounded in
+  entries on load, the remembered names per server are capped in memory too,
+  and entries of removed profiles are dropped on the next save. Tests write
+  nothing without an explicit path. A joining channel finds its place by a
+  rank table and a binary search, not by sorting the group, so joining a
+  thousand channels stays linear.
+- **Settings window.** A server move is written to the settings file at
+  once; a settings window with unsaved edits takes over the file's server
+  order (keeping its other edits) before it saves, so it cannot put the old
+  order back.
+- **Tree list.** Row keys follow the chosen order and need not ascend, so the
+  tree syncs with `LogList::sync_unordered`, which replaces only the span
+  that changed and keeps the top row.
+- **Auto-join.** The auto-join list and the order of JOIN commands are not
+  affected.
+- **Not done.** Reordering with shortcut keys (the context menu is the
+  non-drag way), and moving servers by dragging.
+
 ## D040 — Standard keys in the channel tree and member list
 
 Status: implemented (#132).
@@ -1342,7 +1390,8 @@ message to ourselves is labeled only on the echo).
   (`ServerSession::pending_sends`).
 - **Matching** (`irc-core::echo::Echoes`): with labels, the echo, `ACK`,
   4xx/5xx numeric or `FAIL` carrying our label, or any of them inside a
-  `labeled-response` batch. Labels are `c` plus a per-connection counter in
+  batch whose start carries it (of type `labeled-response` or, as the
+  specification allows, an existing type covering the whole reply). Labels are `c` plus a per-connection counter in
   base 36, so one is never reused. An unlabeled own-nick message is another
   client's and is shown as before. Without labels: the oldest pending message
   to the same casemapped target with identical text and kind; a message the
@@ -1516,3 +1565,9 @@ username (ident) and the SASL account.
 box it scrolls horizontally (`scroll_x`, computed in `prepaint`) so the caret
 stays visible, i.e. the end of what is being typed; painting is clipped to the
 box, and mouse and IME positions add `scroll_x`.
+
+In the dark theme the caret uses the text color in every text input, including
+the native settings-style ones, because blue and the OS theme's caret color are
+hard to tell from the dark input backgrounds (issue #219). In the light theme
+the caret is blue, or the OS theme's caret color for native settings-style
+inputs.

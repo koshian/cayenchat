@@ -99,6 +99,7 @@ jobs:
     with:
       ref: ${{ needs.check.outputs.sha }}
       prefix: cayenchat-${{ needs.check.outputs.version }}
+      profile: dist
 
   publish:
     name: Publish release

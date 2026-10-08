@@ -907,15 +907,19 @@ impl Element for TextElement {
                         point(origin_x + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    if input.native_settings_style {
-                        crate::settings_theme::current(cx)
-                            .map(|n| {
-                                gpui::Hsla::from(crate::settings_theme::color(n.input.caret_color))
-                            })
-                            .unwrap_or_else(gpui::blue)
-                    } else {
-                        gpui::blue()
-                    },
+                    caret_color(
+                        input.palette(cx).dark,
+                        input.native_settings_style.then(|| {
+                            crate::settings_theme::current(cx)
+                                .map(|n| {
+                                    gpui::Hsla::from(crate::settings_theme::color(
+                                        n.input.caret_color,
+                                    ))
+                                })
+                                .unwrap_or_else(gpui::blue)
+                        }),
+                        style.color,
+                    ),
                 )),
             )
         } else {
@@ -1222,9 +1226,29 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
     }
 }
 
+/// Caret color: the text color on dark backgrounds, where blue and the OS
+/// theme's caret color are hard to see; otherwise the OS color or blue.
+fn caret_color(dark: bool, native: Option<gpui::Hsla>, text: gpui::Hsla) -> gpui::Hsla {
+    if dark {
+        text
+    } else {
+        native.unwrap_or_else(gpui::blue)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caret_uses_text_color_in_dark_inputs_only() {
+        let text = gpui::white();
+        let native = gpui::black();
+        assert_eq!(caret_color(true, None, text), text);
+        assert_eq!(caret_color(true, Some(native), text), text);
+        assert_eq!(caret_color(false, None, text), gpui::blue());
+        assert_eq!(caret_color(false, Some(native), text), native);
+    }
 
     #[test]
     fn word_motion_respects_unicode_boundaries_and_skips_spaces() {
