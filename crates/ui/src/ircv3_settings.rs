@@ -1767,7 +1767,7 @@ mod own_avatar_tests {
                 .disconnect()
                 .unwrap();
         });
-        pump(&chat, cx, |event| matches!(event, Event::Disconnected(_)));
+        pump(&chat, cx, |event| matches!(event, Event::Closed(_)));
         let offline = status(&chat, cx);
         assert!(!offline.can_request && !offline.waiting);
         assert_eq!(offline.confirmed, Confirmed::Unknown);
