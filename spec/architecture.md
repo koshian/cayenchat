@@ -26,6 +26,27 @@ The exact crate boundaries may evolve as implementation experience accumulates.
 
 Small domain types shared by the application, such as networks, conversations, users, messages, IDs, and connection state.
 
+`model::names` is the one definition of "the same nickname or channel".
+Nicknames always use RFC 1459 case mapping (ASCII letters, and `[]\~` as the
+uppercase forms of `{}|^`). Channel names use the network's `CaseMapping`, the
+server's `CASEMAPPING` token (`ascii`, `rfc1459-strict`, `rfc1459`; an unknown
+value counts as `ascii`, which merges the fewest names). RFC 1459 applies
+until the server advertises one, and again on each new connection. The worker
+sends `Event::CaseMapping` when it changes; `AppState::set_casemapping` re-keys
+the network's channel index (behind `AppState::channel_id`, a hash lookup
+rather than a scan of every conversation), the metadata state uses the same
+value, and so do the worker's presence index, accounts and history requests
+(channel names only), and WHOIS's joined marks, request keys and window keys
+(the nickname there follows the server too). Rebuilding the index reads only
+names and IDs. Configured channels are added before the server advertises
+anything and are never merged then (only an identical name is the same
+conversation); `set_casemapping` decides which one the index reaches. Channels
+the mapping keeps apart stay separate conversations with their own logs,
+rosters and send target; where names fold alike, the first conversation keeps
+the index entry. The saved tree order and rank are still ASCII-folded (earlier
+behaviour, unchanged). `irc-core`'s `text::same_nickname` and `nickname_key`
+delegate to the nickname form.
+
 Keep dependencies minimal.
 
 ### irc-core
@@ -184,8 +205,11 @@ navigation commands are independent of GPUI. The UI binds macOS shortcuts from t
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft; Up/Down there recall the last 20 sent drafts
 (in memory only, shared by all conversations, but browsing ends when the
-conversation changes). Commands that carry credentials (to NickServ or
-ChanServ, `/oper`, `/pass`, and `/raw` forms of those) are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+conversation changes). Commands that carry credentials (to the services
+`irc-core::is_credential_service` names: NickServ, ChanServ, UserServ,
+QuakeNet's Q, Undernet's X, GameSurge's AuthServ; `/oper`, `/pass`,
+`/auth`, and `/raw` forms of those) and anything typed in a private
+conversation with such a service are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
 On macOS Cmd+[ / Cmd+] move to the previous / next channel and Cmd+Shift+[ /
 Cmd+Shift+] to the previous / next server (decided in #72, which is the source
 for shortcut design; Windows/Linux keys without arrows are still open there).
@@ -289,7 +313,8 @@ produces a wire diagnostic), delayed every line and woke 20 times a second while
 idle. QUIT and NICK republish rosters only for channels that contained the user;
 the worker's `PresenceIndex` (`irc-core/src/presence.rs`, #71) answers that, fed
 from the published NAMES snapshots. It indexes users by nickname and channel
-both ways under the RFC 1459 case mapping. A `UserId` (a `u64` never reused in a
+both ways: nicknames under RFC 1459, channels under the network's
+`CaseMapping`. A `UserId` (a `u64` never reused in a
 connection, never kept across connections) survives re-applied snapshots and NICK
 (the NICK line moves the id); QUIT or leaving the last shared channel ends it, so a
 returning nickname is a new presence. Only presence is held: accounts, metadata and
@@ -568,7 +593,7 @@ the worker then drops events instead of waiting for the UI, so QUIT still goes o
 when the UI stopped draining a full event queue or the command queue is full. After queuing QUIT the
 worker closes the connection with the vendored `ClientStream::close`: it writes the outgoing
 queue (so QUIT behind a send backlog is not lost), shuts down only the sending side so a FIN
-follows QUIT, and discards what the server still sends until it closes or 2 s pass. Dropping a
+follows QUIT, and discards what the server still sends until it closes or 1.5 s pass (the worker ends before the 2 s wait does). Dropping a
 socket that still holds unread data would send an RST, which discards QUIT that is not yet
 sent (the server then reports "EOF From client"); the data read here is never shown. It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
@@ -1019,10 +1044,11 @@ IRC routing (the adapter):
 - Our own messages to a nickname (the draft of a private conversation,
   `/msg nick`, the member and WHOIS "private message" prompt) appear in
   its conversation when the connection accepts them (`OutgoingAccepted`),
-  without an unread mark; credentials sent to NickServ/ChanServ are shown
-  as `[redacted]`, like the transcript. A PRIVMSG/NOTICE from our own
-  nickname to someone else (a bouncer relaying another client of ours, or
-  its playback) is `OwnPrivateMessage` and goes to that conversation too;
+  without an unread mark; credentials sent to those services (`IDENTIFY`,
+  `AUTH`, `LOGIN`, `NEWPASS`, ...) are shown as `[redacted]`, like the
+  transcript. A PRIVMSG/NOTICE from our own nickname to someone else (a
+  bouncer relaying another client of ours, or its playback) is
+  `OwnPrivateMessage`, redacted the same way, and goes to that conversation too;
   after our nickname changed, such old lines stay in the server log.
 - `/me` and `/msg :text` in a private conversation target the peer.
 - NICK of another user renames a conversation with them and adds an

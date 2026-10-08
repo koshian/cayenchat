@@ -1,5 +1,7 @@
 //! IRC message text: formatting codes, CTCP ACTION and nickname mentions.
 
+use cayenchat_model::names;
+
 /// Removes mIRC formatting: bold, italics, underline, strikethrough,
 /// monospace, reverse, reset and color codes with their `fg[,bg]` digits.
 /// CTCP delimiters are dropped as well.
@@ -51,8 +53,8 @@ pub fn mention_ranges(text: &str, nickname: &str) -> Vec<std::ops::Range<usize>>
     if nickname.is_empty() {
         return Vec::new();
     }
-    let lower = irc_lowercase(text);
-    let nickname = irc_lowercase(nickname);
+    let lower = names::fold(text);
+    let nickname = names::fold(nickname);
     lower
         .match_indices(&nickname)
         .map(|(start, found)| start..start + found.len())
@@ -64,15 +66,9 @@ pub fn mention_ranges(text: &str, nickname: &str) -> Vec<std::ops::Range<usize>>
         .collect()
 }
 
-/// Nickname equality under RFC 1459 case mapping.
+/// Nickname equality under RFC 1459 case mapping ([`names::same`]).
 pub fn same_nickname(left: &str, right: &str) -> bool {
-    irc_lowercase(left) == irc_lowercase(right)
-}
-
-/// Channel-name equality, under the same case mapping as nicknames so every
-/// feature judges "the same channel" alike.
-pub fn same_channel(left: &str, right: &str) -> bool {
-    same_nickname(left, right)
+    names::same(left, right)
 }
 
 fn is_nick_char(ch: char) -> bool {
@@ -82,22 +78,7 @@ fn is_nick_char(ch: char) -> bool {
 /// A nickname folded for comparison (RFC 1459 case mapping), usable as a
 /// map key.
 pub fn nickname_key(nickname: &str) -> String {
-    irc_lowercase(nickname)
-}
-
-/// RFC 1459 case mapping: `[]\~` are the uppercase forms of `{}|^`. Every
-/// mapping keeps the byte length, so indexes stay valid in the original.
-fn irc_lowercase(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '[' => '{',
-            ']' => '}',
-            '\\' => '|',
-            '~' => '^',
-            ch => ch.to_ascii_lowercase(),
-        })
-        .collect()
+    names::fold(nickname)
 }
 
 #[cfg(test)]
