@@ -2165,6 +2165,7 @@ impl ChatWindow {
         self.ensure_inputs(cx);
         let outcome = match Connection::connect(config) {
             Ok(connection) => {
+                connection.set_transcript(self.debug_enabled);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.irc = Some(connection);
                 }
@@ -2296,6 +2297,7 @@ impl ChatWindow {
         self.feedback = None;
         match Connection::connect(config) {
             Ok(connection) => {
+                connection.set_transcript(self.debug_enabled);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.irc = Some(connection);
                 }
@@ -3065,9 +3067,22 @@ impl ChatWindow {
             self.show_diagnostics(window, cx);
             return;
         }
-        self.debug_enabled = false;
-        cx.set_menus(app_menus(self.debug_enabled, &self.i18n));
+        self.set_debug(false, cx);
         cx.notify();
+    }
+
+    /// Turns the debug transcript on or off. IRC lines are recorded after
+    /// registration only while it is on.
+    fn set_debug(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.debug_enabled = on;
+        cx.set_menus(app_menus(on, &self.i18n));
+        for connection in self
+            .sessions
+            .values()
+            .filter_map(|session| session.irc.as_ref())
+        {
+            connection.set_transcript(on);
+        }
     }
 
     /// Copies the selected server's transcript.
@@ -3091,8 +3106,7 @@ impl ChatWindow {
     }
 
     fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.debug_enabled = true;
-        cx.set_menus(app_menus(true, &self.i18n));
+        self.set_debug(true, cx);
         if let Some(network) = self.selected_network_id() {
             self.dispatch(Command::SelectServer(network), window, cx);
         }
