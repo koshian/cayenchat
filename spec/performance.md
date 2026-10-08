@@ -698,9 +698,12 @@ Headless UI test (medians in µs; parent / branch, runs 1–3):
 
 ## Bidirectional control neutralization (2026-10-08, PR #250)
 
-`model::display::neutralize_bidi` scans each new message's sender and text
-(and topics, server log lines, notifications and WHOIS rows) and allocates only
-when a control is present. Compared against `c98d39d` (master) and `d6ecb1e`
+`model::display::neutralize_bidi` scans each new message's text (and topics,
+server log lines, notifications and WHOIS rows) when it is stored, and names
+(senders, channels, members, dialog titles) when they are drawn. It allocates
+only when a control is present. The measurements below were taken at `d6ecb1e`,
+which scanned the sender at storage time and not at draw time; a later
+independent UI run at the current head showed no large change. Compared against `c98d39d` (master) and `d6ecb1e`
 (branch) under the same conditions and commands as the received line limit
 above. Builds alternate with #252 (`afe7613`), three runs each, and each run
 starts only after no other measurement or rustc process has been seen for about

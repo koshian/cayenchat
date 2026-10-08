@@ -3911,10 +3911,10 @@ impl ChatWindow {
                     .get_mut(&network)
                     .is_some_and(|session| session.pending_whois.remove(&key.1));
                 if requested && !info.found() && !self.whois_windows.contains_key(&key) {
-                    self.feedback = Some(
-                        self.i18n
-                            .format("whois_not_found", &[("nickname", &info.nickname)]),
-                    );
+                    self.feedback = Some(self.i18n.format(
+                        "whois_not_found",
+                        &[("nickname", &display::neutralize_bidi(&info.nickname))],
+                    ));
                 }
                 if requested || self.whois_windows.contains_key(&key) {
                     self.whois_replies.push((network, info, requested));
@@ -7798,7 +7798,7 @@ impl ChatWindow {
                     MemberPromptKind::Join => "channel_join_title",
                     MemberPromptKind::Nick => "nickname_change_title",
                 },
-                &[("nickname", &prompt.nickname)],
+                &[("nickname", &display::neutralize_bidi(&prompt.nickname))],
             );
             let position = prompt.position.unwrap_or_else(|| {
                 point(
@@ -7973,9 +7973,10 @@ impl ChatWindow {
                 .find(|server| server.id == network)
                 .map(|server| server.name.clone())
                 .unwrap_or_default();
-            let title = self
-                .i18n
-                .format("nick_prompt_title", &[("nickname", &prompt.rejected)]);
+            let title = self.i18n.format(
+                "nick_prompt_title",
+                &[("nickname", &display::neutralize_bidi(&prompt.rejected))],
+            );
             dialog = dialog
                 .when(index > 0, |d| {
                     d.child(div().border_t_1().border_color(theme.separator))

@@ -73,7 +73,7 @@ impl WhoisWindow {
     /// Replaces the shown reply; a missing nickname keeps the last known details.
     pub fn set_info(&mut self, info: WhoisInfo, window: &mut Window, cx: &mut Context<Self>) {
         if info.found() {
-            window.set_window_title(&info.nickname);
+            window.set_window_title(&display::neutralize_bidi(&info.nickname));
             let selected = self.info.channels.get(self.selected_channel).cloned();
             self.selected_channel = selected
                 .and_then(|entry| info.channels.iter().position(|other| *other == entry))
@@ -82,10 +82,10 @@ impl WhoisWindow {
             self.info = info;
             self.status = None;
         } else {
-            self.status = Some(
-                self.i18n
-                    .format("whois_not_found", &[("nickname", &info.nickname)]),
-            );
+            self.status = Some(self.i18n.format(
+                "whois_not_found",
+                &[("nickname", &display::neutralize_bidi(&info.nickname))],
+            ));
         }
         cx.notify();
     }
