@@ -110,11 +110,11 @@
 - **案**: 対象サービス（`Q`、`X`、`AuthServ` など）と命令（`AUTH`、`LOGIN`）を追加する。または、ユーザーが追加できる伏せ字パターンの設定を設ける。
 - **確認したいこと**: よく使うネットワーク（IRCnet など）で使っているサービス名と認証コマンド。
 
-**対応方針**:
+**対応方針**: 対象サービスに UserServ、QuakeNet の Q、Undernet の X、GameSurge の AuthServ を、命令に `AUTH`、`NEWPASS`、`PASS` を加えた。生の `AUTH` と `AUTHSERV` も伏せる。判定は `irc-core::is_credential_service` の 1 か所にまとめ、UI の入力履歴（Up キーで再表示する送信済みの下書き）も同じ判定を使う。
 
-**確認事項・メモ**:
+**確認事項・メモ**: bouncer が中継した自分の送信（`OwnPrivateMessage`）が伏せられておらず、別クライアントの IDENTIFY が会話に平文で出ていたので合わせて直した。サービスとの個別会話で直接打った `AUTH user pass` なども入力履歴に残さない。
 
-**判断**:
+**判断**: 採用
 
 ---
 

@@ -765,13 +765,16 @@ fn redacted_wire_line(message: &IrcMessage) -> String {
                 args.first().map(String::as_str).unwrap_or("")
             )
         }
+        // `/quote AUTH user password` on networks with a server-side AUTH.
+        IrcCommand::Raw(verb, _) if verb.eq_ignore_ascii_case("AUTH") => "AUTH [redacted]".into(),
         IrcCommand::Raw(verb, args)
             if matches!(
                 verb.to_ascii_uppercase().as_str(),
-                "NS" | "NICKSERV" | "CS" | "CHANSERV"
+                "NS" | "NICKSERV" | "CS" | "CHANSERV" | "AUTHSERV"
             ) && args
                 .first()
-                .is_some_and(|arg| is_secret_service_command(arg)) =>
+                .and_then(|arg| arg.split_whitespace().next())
+                .is_some_and(is_secret_service_command) =>
         {
             format!("{verb} [redacted]")
         }
@@ -779,16 +782,39 @@ fn redacted_wire_line(message: &IrcMessage) -> String {
     }
 }
 
+/// Service commands that carry a password: NickServ/ChanServ (Atheme,
+/// Anope), QuakeNet's Q (`AUTH`, `NEWPASS`), Undernet's X (`LOGIN`,
+/// `NEWPASS`) and GameSurge's AuthServ (`AUTH`, `PASS`).
 fn is_secret_service_command(command: &str) -> bool {
     matches!(
         command.to_ascii_uppercase().as_str(),
-        "IDENTIFY" | "ID" | "LOGIN" | "REGISTER" | "GHOST" | "RECOVER" | "RELEASE" | "SET"
+        "IDENTIFY"
+            | "ID"
+            | "LOGIN"
+            | "AUTH"
+            | "REGISTER"
+            | "GHOST"
+            | "RECOVER"
+            | "RELEASE"
+            | "SET"
+            | "NEWPASS"
+            | "PASS"
     )
 }
 
-fn is_service_secret(target: &str, body: &str) -> bool {
+/// Whether `target` is a service that takes passwords, by nickname, also as
+/// `nick@server` (`Q@CServe.quakenet.org`, `X@channels.undernet.org`).
+pub fn is_credential_service(target: &str) -> bool {
     let name = target.split('@').next().unwrap_or(target);
-    matches!(name.to_ascii_uppercase().as_str(), "NICKSERV" | "CHANSERV")
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "NICKSERV" | "CHANSERV" | "USERSERV" | "Q" | "X" | "AUTHSERV"
+    )
+}
+
+/// Whether `body` sent to `target` gives a service a password.
+fn is_service_secret(target: &str, body: &str) -> bool {
+    is_credential_service(target)
         && body
             .split_whitespace()
             .next()
@@ -2695,7 +2721,8 @@ fn private_message(
     {
         return Some(Event::OwnPrivateMessage {
             target: target.clone(),
-            text: text.clone(),
+            // Another client's IDENTIFY, or its playback, is hidden too.
+            text: echo_text(target, text.clone()),
             notice,
             server_time,
             msgid: tags::msgid(message).map(str::to_owned),
@@ -3034,6 +3061,51 @@ mod tests {
             echo_text("bob", "IDENTIFY hunter2".into()),
             "IDENTIFY hunter2"
         );
+        // Other networks' services.
+        for (target, body) in [
+            ("Q@CServe.quakenet.org", "AUTH alice hunter2"),
+            ("Q", "NEWPASS old new new"),
+            ("X@channels.undernet.org", "login alice hunter2"),
+            ("AuthServ", "auth alice hunter2"),
+            ("AuthServ@Services.GameSurge.net", "PASS old new"),
+        ] {
+            assert_eq!(echo_text(target, body.into()), "[redacted]", "{target}");
+        }
+        assert_eq!(echo_text("Q", "WHOIS #chan".into()), "WHOIS #chan");
+    }
+
+    #[test]
+    fn credentials_to_other_networks_services_stay_out_of_the_transcript() {
+        let line = |command| redacted_wire_line(&IrcMessage::from(command));
+        assert_eq!(
+            line(IrcCommand::PRIVMSG(
+                "Q@CServe.quakenet.org".into(),
+                "AUTH alice hunter2".into()
+            )),
+            "PRIVMSG Q@CServe.quakenet.org :[redacted]"
+        );
+        assert_eq!(
+            line(IrcCommand::Raw(
+                "AUTH".into(),
+                vec!["alice".into(), "hunter2".into()]
+            )),
+            "AUTH [redacted]"
+        );
+        assert_eq!(
+            line(IrcCommand::Raw(
+                "AUTHSERV".into(),
+                vec!["AUTH".into(), "alice".into(), "hunter2".into()]
+            )),
+            "AUTHSERV [redacted]"
+        );
+        // `/quote AUTHSERV :AUTH alice hunter2` is one trailing argument.
+        assert_eq!(
+            line(IrcCommand::Raw(
+                "AUTHSERV".into(),
+                vec!["AUTH alice hunter2".into()]
+            )),
+            "AUTHSERV [redacted]"
+        );
     }
 
     #[test]
@@ -3118,6 +3190,10 @@ mod tests {
                 replayed: true,
             })
         );
+        assert!(matches!(
+            own(":me!u@h PRIVMSG NickServ :IDENTIFY hunter2"),
+            Some(Event::OwnPrivateMessage { text, .. }) if text == "[redacted]"
+        ));
         assert_eq!(own(":me!u@h PRIVMSG #chan :channel"), None);
         assert_eq!(own(":me!u@h PRIVMSG bob :\u{1}VERSION\u{1}"), None);
         assert_eq!(translate(":alice!u@h PRIVMSG #chan :hello"), None);

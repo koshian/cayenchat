@@ -4097,6 +4097,9 @@ impl ChatWindow {
             return;
         }
         let selected = self.state.selected_channel();
+        let private_peer = selected
+            .filter(|channel| channel.is_private())
+            .map(|channel| channel.name.clone());
         let network = self.selected_network_id();
         let connection = network
             .and_then(|network| self.sessions.get(&network))
@@ -4124,7 +4127,7 @@ impl ChatWindow {
         };
         self.feedback = match result {
             Ok(()) => {
-                self.input_history.record(&text);
+                self.input_history.record(&text, private_peer.as_deref());
                 input.update(cx, |input, cx| input.clear_after_send(cx));
                 None
             }

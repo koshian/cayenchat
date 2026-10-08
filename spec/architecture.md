@@ -205,8 +205,11 @@ navigation commands are independent of GPUI. The UI binds macOS shortcuts from t
 reference and platform-specific Windows/Linux alternatives; text editing remains
 scoped to the focused draft; Up/Down there recall the last 20 sent drafts
 (in memory only, shared by all conversations, but browsing ends when the
-conversation changes). Commands that carry credentials (to NickServ or
-ChanServ, `/oper`, `/pass`, and `/raw` forms of those) are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
+conversation changes). Commands that carry credentials (to the services
+`irc-core::is_credential_service` names: NickServ, ChanServ, UserServ,
+QuakeNet's Q, Undernet's X, GameSurge's AuthServ; `/oper`, `/pass`,
+`/auth`, and `/raw` forms of those) and anything typed in a private
+conversation with such a service are never kept. Ctrl+Tab / Ctrl+Shift+Tab visit unread channels only.
 On macOS Cmd+[ / Cmd+] move to the previous / next channel and Cmd+Shift+[ /
 Cmd+Shift+] to the previous / next server (decided in #72, which is the source
 for shortcut design; Windows/Linux keys without arrows are still open there).
@@ -1030,10 +1033,11 @@ IRC routing (the adapter):
 - Our own messages to a nickname (the draft of a private conversation,
   `/msg nick`, the member and WHOIS "private message" prompt) appear in
   its conversation when the connection accepts them (`OutgoingAccepted`),
-  without an unread mark; credentials sent to NickServ/ChanServ are shown
-  as `[redacted]`, like the transcript. A PRIVMSG/NOTICE from our own
-  nickname to someone else (a bouncer relaying another client of ours, or
-  its playback) is `OwnPrivateMessage` and goes to that conversation too;
+  without an unread mark; credentials sent to those services (`IDENTIFY`,
+  `AUTH`, `LOGIN`, `NEWPASS`, ...) are shown as `[redacted]`, like the
+  transcript. A PRIVMSG/NOTICE from our own nickname to someone else (a
+  bouncer relaying another client of ours, or its playback) is
+  `OwnPrivateMessage`, redacted the same way, and goes to that conversation too;
   after our nickname changed, such old lines stay in the server log.
 - `/me` and `/msg :text` in a private conversation target the peer.
 - NICK of another user renames a conversation with them and adds an
