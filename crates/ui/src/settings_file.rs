@@ -135,7 +135,6 @@ mod tests {
             assert_eq!(channels(form, cx), "#renamed,-#a");
             form.save_servers(cx);
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
         drop(file);
@@ -190,7 +189,6 @@ mod tests {
             form.settings.values.appearance.alternate_rows = true;
             form.autosave_now(None, cx);
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         assert!(!saved.notifications.mentions);
         assert!(saved.appearance.alternate_rows);
@@ -237,30 +235,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_file_is_written_in_the_background_and_in_order(cx: &mut TestAppContext) {
-        let settings = settings_with_channels("#a");
-        let file = TestFile::with(&settings);
-        let (form, cx) = open(&settings, cx);
-
-        form.update(cx, |form, cx| {
-            form.settings.values.notifications.private_messages = false;
-            form.autosave_now(None, cx);
-            form.settings.values.notifications.mentions = false;
-            form.autosave_now(None, cx);
-            // The call returned without waiting for the disk.
-            let on_disk = super::load().unwrap().unwrap();
-            assert!(on_disk.notifications.private_messages);
-            assert!(form.saving.is_some());
-        });
-        cx.run_until_parked();
-        let saved = super::load().unwrap().unwrap();
-        assert!(!saved.notifications.private_messages);
-        assert!(!saved.notifications.mentions);
-        form.update(cx, |form, _| assert!(form.saving.is_none()));
-        drop(file);
-    }
-
-    #[gpui::test]
     fn leaving_the_window_saves_what_is_pending(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
@@ -302,7 +276,6 @@ mod tests {
             form.autosave_now(None, cx);
             assert!(form.servers_unsaved(cx));
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         assert!(!saved.notifications.private_messages);
         assert_eq!(saved.selected_profile().unwrap().channels, "#a");
@@ -311,7 +284,6 @@ mod tests {
             form.save_servers(cx);
             assert!(!form.servers_unsaved(cx));
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#b");
         drop(file);
@@ -328,9 +300,8 @@ mod tests {
                 .update(cx, |field, cx| field.set_text("bad", cx));
             form.settings.values.notifications.private_messages = false;
             form.autosave_now(None, cx);
+            assert!(form.autosave_error.is_none());
         });
-        cx.run_until_parked();
-        form.update(cx, |form, _| assert!(form.autosave_error.is_none()));
         assert!(
             !super::load()
                 .unwrap()
@@ -356,7 +327,6 @@ mod tests {
             form.autosave_now(None, cx);
             assert!(form.servers_unsaved(cx));
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_server, a_id);
         assert!(!saved.notifications.private_messages);
@@ -376,7 +346,6 @@ mod tests {
             form.save_servers(cx);
             assert!(!form.servers_unsaved(cx));
         });
-        cx.run_until_parked();
         assert!(super::load().unwrap().unwrap().servers.is_empty());
         drop(file);
     }
@@ -421,8 +390,9 @@ mod tests {
                 .update(cx, |field, cx| field.set_text("#draft", cx));
         });
         super::fail_saves(true);
-        form.update(cx, |form, cx| form.connect_from_settings(cx));
-        cx.run_until_parked();
+        form.update_in(cx, |form, window, cx| {
+            form.connect_from_settings(window, cx)
+        });
         form.update(cx, |form, cx| {
             assert!(
                 form.feedback
@@ -439,7 +409,6 @@ mod tests {
             form.settings.values.notifications.private_messages = false;
             form.autosave_now(None, cx);
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         assert!(!saved.notifications.private_messages);
         assert_eq!(saved.selected_profile().unwrap().channels, "#a");
@@ -447,10 +416,9 @@ mod tests {
         // Save tries the draft again.
         form.update(cx, |form, cx| {
             form.save_servers(cx);
+            assert!(form.feedback.is_none());
             assert!(!form.servers_unsaved(cx));
         });
-        cx.run_until_parked();
-        form.update(cx, |form, _| assert!(form.feedback.is_none()));
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#draft");
         drop(file);
@@ -485,7 +453,6 @@ mod tests {
             assert!(form.servers_unsaved(cx));
             form.save_servers(cx);
         });
-        cx.run_until_parked();
         let saved = super::load().unwrap().unwrap();
         let profile = saved.selected_profile().unwrap();
         assert_eq!(profile.host, "changed.example");
@@ -514,9 +481,6 @@ mod tests {
         });
         form.update(cx, |form, cx| {
             form.save_servers(cx);
-        });
-        cx.run_until_parked();
-        form.update(cx, |form, cx| {
             assert!(form.feedback.is_some(), "the failed deletion is shown");
             assert!(form.servers_unsaved(cx));
         });
@@ -534,9 +498,6 @@ mod tests {
         cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
         form.update(cx, |form, cx| {
             form.save_servers(cx);
-        });
-        cx.run_until_parked();
-        form.update(cx, |form, cx| {
             assert!(form.feedback.is_none());
             assert!(!form.servers_unsaved(cx));
         });

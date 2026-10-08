@@ -118,7 +118,7 @@ pub fn save_layout_to(path: &Path, layout: &Layout) -> Result<(), String> {
         ..layout.clone()
     })
     .map_err(|error| format!("Could not serialize the layout: {error}"))?;
-    crate::private_file::write(path, &bytes)
+    crate::private_file::write(path, &bytes, crate::private_file::Flush::Disk)
         .map_err(|error| format!("Could not save the layout: {error}"))
 }
 

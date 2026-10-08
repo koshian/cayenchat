@@ -1324,7 +1324,9 @@ pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
 pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(&settings.clone().normalize())
         .map_err(|error| format!("Could not serialize settings: {error}"))?;
-    private_file::write(path, &bytes).map_err(|error| format!("Could not write settings: {error}"))
+    // The settings window saves on the UI thread, so the file is not flushed.
+    private_file::write(path, &bytes, private_file::Flush::Skip)
+        .map_err(|error| format!("Could not write settings: {error}"))
 }
 
 /// Copies a settings file that could not be loaded next to it, so the next
@@ -1341,7 +1343,7 @@ pub fn keep_unreadable_copy_of(path: &Path) -> Result<PathBuf, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
     let copy = path.with_file_name(format!("settings-unreadable-{seconds}.json"));
-    private_file::write(&copy, &bytes)
+    private_file::write(&copy, &bytes, private_file::Flush::Skip)
         .map_err(|error| format!("Could not copy the unreadable settings: {error}"))?;
     Ok(copy)
 }

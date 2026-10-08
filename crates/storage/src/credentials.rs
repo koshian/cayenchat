@@ -657,7 +657,7 @@ impl LocalFileBackend {
 
     fn write(&self, secrets: BTreeMap<String, String>) -> Result<(), CredentialError> {
         let bytes = SecretsFile::encode(secrets)?.into_bytes();
-        crate::private_file::write(&self.path, &bytes)
+        crate::private_file::write(&self.path, &bytes, crate::private_file::Flush::Disk)
             .map_err(|error| CredentialError::Io(error.kind().to_string()))
     }
 }

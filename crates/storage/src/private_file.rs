@@ -6,16 +6,26 @@ use std::{
     path::Path,
 };
 
+/// Whether [`write`] waits for the data to reach the disk before it renames.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flush {
+    /// Flush the file first, so that a power loss leaves the old or the new
+    /// contents. This waits for the disk: do not use it on the UI thread.
+    Disk,
+    /// Rename without waiting. A crash of the process still leaves the old
+    /// or the new file whole, but after a power loss the file system decides
+    /// whether the new file has its contents.
+    Skip,
+}
+
 /// Writes `bytes` to `path`: a fresh user-only (`0600`) file next to it is
-/// written and flushed to disk, then renamed over `path`. A crash during the
-/// write leaves the old file, and the rename replaces it whole, so no reader
-/// sees half of a file. The directory is not flushed, so after a power loss
-/// the rename itself may not have happened yet. The contents are never in a
-/// file with broader permissions. Missing directories are created user-only
-/// (`0700`).
-///
-/// This waits for the disk: do not call it on the UI thread.
-pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// written (and flushed to disk with [`Flush::Disk`]), then renamed over
+/// `path`. A crash during the write leaves the old file, and the rename
+/// replaces it whole, so no reader sees half of a file. The directory is not
+/// flushed, so after a power loss the rename itself may not have happened
+/// yet. The contents are never in a file with broader permissions. Missing
+/// directories are created user-only (`0700`).
+pub(crate) fn write(path: &Path, bytes: &[u8], flush: Flush) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no directory"))?;
@@ -32,7 +42,9 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let result = (|| {
         let mut file = options.open(&temporary)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if flush == Flush::Disk {
+            file.sync_all()?;
+        }
         // `rename` replaces an existing file on Windows too.
         fs::rename(&temporary, path)
     })();
@@ -63,8 +75,8 @@ mod tests {
     fn replaces_the_whole_file_and_leaves_nothing_else() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested").join("file.json");
-        write(&path, b"a much longer first version").unwrap();
-        write(&path, b"second").unwrap();
+        write(&path, b"a much longer first version", Flush::Disk).unwrap();
+        write(&path, b"second", Flush::Skip).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second");
         let names: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
