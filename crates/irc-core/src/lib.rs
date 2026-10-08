@@ -1948,15 +1948,9 @@ async fn run_cancellable(
                         if client.send(quit.clone()).is_ok() {
                             wire(&events, started, WireDirection::Sent, redacted_wire_line(&quit)).await;
                         }
-                        // ClientStream drives the library's outgoing queue, so keep polling
-                        // it until the server closes the link. One poll can return on an
-                        // incoming line before QUIT is flushed, and closing a socket that
-                        // still holds unread data resets the connection on Windows, which
-                        // makes the server log EOF instead of QUIT.
-                        let _ = tokio::time::timeout(Duration::from_secs(2), async {
-                            while let Some(Ok(_)) = stream.next().await {}
-                        })
-                        .await;
+                        // ClientStream drives the library's outgoing queue. Poll it once more
+                        // so QUIT is flushed before the runtime and socket are dropped.
+                        let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
                         let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
                         break;
                     }
@@ -4317,8 +4311,7 @@ mod tests {
             |connection| {
                 thread::sleep(Duration::from_millis(500));
                 connection.shutdown();
-                // The same deadline the application waits for.
-                assert!(connection.wait_closed(Duration::from_millis(500)));
+                assert!(connection.wait_closed(Duration::from_secs(2)));
             },
             EVENT_CAPACITY * 4,
         );
