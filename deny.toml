@@ -8,6 +8,4 @@
 
 [advisories]
 unmaintained = "workspace"
-ignore = [
-    { id = "RUSTSEC-2021-0153", reason = "`encoding` is unmaintained; irc-core and irc-proto use it for legacy charsets until it is replaced with encoding_rs (spec/security-review-2026-09-26.md, L7)." },
-]
+ignore = []
