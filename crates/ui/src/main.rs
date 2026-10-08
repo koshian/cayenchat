@@ -57,6 +57,7 @@ use cayenchat_storage::{
     CredentialStore, DarkColors, Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret,
     SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
+use futures_util::FutureExt as _;
 use gpui::{prelude::*, *};
 use input::TextInput;
 use ircv3_settings::own_avatar_failure;
@@ -1314,6 +1315,18 @@ struct SettingsWindow {
     saved: Settings,
     window: AnyWindowHandle,
     autosave: Option<Task<()>>,
+    /// The latest settings file write; each write first waits for the one
+    /// before it, so they land in order. They run off the UI thread because
+    /// the file is flushed to disk.
+    saving: Option<Task<()>>,
+    /// The disk side of the newest write, for the next write and for quitting
+    /// to wait on; the task above only reports its outcome.
+    last_write: Option<futures_util::future::Shared<Task<Result<(), String>>>>,
+    /// Counts the writes started, so that only the newest one decides what
+    /// `saved` falls back to when it fails.
+    write_generation: u64,
+    /// What the settings file last received successfully.
+    written: Settings,
     /// Why the latest edits could not be saved, shown until they can be.
     autosave_error: Option<String>,
     /// Why Publish or Remove could not be started for our own avatar, or
@@ -4165,14 +4178,24 @@ impl SettingsWindow {
         // has focus.
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            let _ = view.update(cx, |this, cx| this.autosave_now(None, cx));
+            let _ = view.update(cx, |this, cx| {
+                this.autosave_now(None, cx);
+                this.let_writes_finish();
+            });
             true
         });
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.autosave_now(None, cx);
-            async {}
+            // Quitting waits for the writes under way.
+            let last_write = this.last_write.clone();
+            async move {
+                if let Some(last_write) = last_write {
+                    let _ = last_write.await;
+                }
+            }
         }));
         let saved = settings.values.clone();
+        let written = saved.clone();
         let mut this = Self {
             owner,
             settings,
@@ -4193,6 +4216,10 @@ impl SettingsWindow {
             saved,
             window: window.window_handle(),
             autosave: None,
+            saving: None,
+            last_write: None,
+            write_generation: 0,
+            written,
             autosave_error: None,
             avatar_feedback: None,
             avatar_upload: AttachmentFlow::default(),
@@ -4237,7 +4264,11 @@ impl SettingsWindow {
     /// window was in the background, so a later save does not put the older
     /// values back. Edits this window could not save yet are kept.
     fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.autosave.is_some() || self.autosave_error.is_some() || self.servers_unsaved(cx) {
+        if self.autosave.is_some()
+            || self.saving.is_some()
+            || self.autosave_error.is_some()
+            || self.servers_unsaved(cx)
+        {
             return;
         }
         let Ok(Some(mut loaded)) = settings_file::load() else {
@@ -4275,15 +4306,16 @@ impl SettingsWindow {
 
     /// Saves typed passwords to the credential store, forgets the passwords
     /// of profiles removed since `previous` (what this window last saved, not
-    /// the file, which another process may have added servers to), and
-    /// writes the settings file.
-    fn commit_settings(
+    /// the file, which another process may have added servers to). The
+    /// settings file is written afterwards, off the UI thread. Returns the
+    /// settings to write and the logging setup to go back to if that fails.
+    fn prepare_commit(
         &mut self,
         previous: &Settings,
         mut settings: Settings,
         with_servers: bool,
         cx: &mut Context<Self>,
-    ) -> Result<Settings, String> {
+    ) -> Result<(Settings, cayenchat_storage::Experimental), String> {
         let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
         if with_servers {
@@ -4295,56 +4327,129 @@ impl SettingsWindow {
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
-        if let Err(error) = settings_file::save(&settings) {
-            let _ = diagnostics::configure(&previous_logging);
-            return Err(error);
-        }
-        Ok(settings)
+        Ok((settings, previous_logging))
     }
 
-    fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let result = (|| {
+    /// Writes `settings` to the file off the UI thread, after the writes
+    /// started before it, and then calls `finished` with the outcome. A
+    /// failed write puts `saved` and the logging setup back.
+    fn write_settings(
+        &mut self,
+        previous: Settings,
+        settings: Settings,
+        previous_logging: cayenchat_storage::Experimental,
+        finished: impl FnOnce(&mut Self, Result<(), String>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.write_generation += 1;
+        let generation = self.write_generation;
+        let before = self.last_write.take();
+        let to_write = settings.clone();
+        let write = cx
+            .background_executor()
+            .spawn(async move {
+                if let Some(before) = before {
+                    let _ = before.await;
+                }
+                settings_file::save(&to_write)
+            })
+            .shared();
+        self.last_write = Some(write.clone());
+        self.saving = Some(cx.spawn(async move |this, cx| {
+            let result = write.await;
+            let _ = this.update(cx, |this, cx| {
+                let result = match result {
+                    Ok(()) => {
+                        this.written = settings.clone();
+                        let servers_changed = previous.servers != settings.servers
+                            || previous.selected_server != settings.selected_server;
+                        this.apply_to_chat_window(&previous, settings, servers_changed, cx);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = diagnostics::configure(&previous_logging);
+                        // Try again on the next edit. A newer write decides
+                        // for itself.
+                        if generation == this.write_generation {
+                            this.saved = this.written.clone();
+                        }
+                        Err(error)
+                    }
+                };
+                if generation == this.write_generation {
+                    this.saving = None;
+                    this.last_write = None;
+                }
+                finished(this, result, cx);
+            });
+        }));
+    }
+
+    /// Lets the writes under way finish although this window is closing.
+    fn let_writes_finish(&mut self) {
+        if let Some(saving) = self.saving.take() {
+            saving.detach();
+        }
+    }
+
+    fn connect_from_settings(&mut self, cx: &mut Context<Self>) {
+        let prepared = (|| {
             let settings = self.settings.snapshot(cx)?;
             let config =
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
-            self.autosave = None;
-            // `saved` follows only once the file is written, so a failed
-            // Connect leaves the draft unsaved.
-            let previous = self.saved.clone();
-            let settings = self.commit_settings(&previous, settings, true, cx)?;
-            self.saved = settings.clone();
-            self.settings.values = settings.clone();
-            Ok::<_, String>((config, settings))
+            Ok::<_, String>(config)
         })();
-        self.feedback = match result {
-            Ok((config, settings)) => {
+        let config = match prepared {
+            Ok(config) => config,
+            Err(error) => {
+                self.feedback = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        self.autosave = None;
+        // `saved` follows only once the file is written, so a failed
+        // Connect leaves the draft unsaved.
+        self.save_settings(
+            true,
+            move |this, result, cx| {
+                if let Err(error) = result {
+                    this.feedback = Some(error);
+                    cx.notify();
+                    return;
+                }
+                let settings = this.saved.clone();
+                this.settings.values = settings.clone();
                 let (appearance, mode, language) = (
                     settings.appearance.clone(),
                     settings.theme,
                     settings.language,
                 );
                 let profile = settings.selected_server.clone();
-                match self.owner.update(cx, |owner, chat_window, cx| {
+                this.feedback = match this.owner.update(cx, |owner, chat_window, cx| {
                     owner.apply_appearance(appearance, mode, cx);
                     owner.apply_language(language, chat_window, cx);
                     owner.apply_servers(settings, cx);
                     owner.connect_profile(&profile, config, chat_window, cx)
                 }) {
                     Ok(Ok(())) => {
-                        window.remove_window();
+                        let window = this.window;
+                        cx.defer(move |cx| {
+                            let _ = window.update(cx, |_, window, _| window.remove_window());
+                        });
                         return;
                     }
                     Ok(Err(error)) => Some(error),
                     Err(error) => Some(
-                        self.i18n
+                        this.i18n
                             .format("chat_closed", &[("error", &error.to_string())]),
                     ),
-                }
-            }
-            Err(error) => Some(error),
-        };
-        cx.notify();
+                };
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     /// The latest action's feedback, or why edits are not being saved.
@@ -4370,19 +4475,23 @@ impl SettingsWindow {
     /// servers (and typed passwords) wait for Save (D021).
     fn autosave_now(&mut self, _window: Option<&Window>, cx: &mut Context<Self>) {
         self.autosave = None;
-        match self.save_settings(false, cx) {
-            Ok(()) => {
-                if self.autosave_error.take().is_some() {
-                    cx.notify();
+        self.save_settings(
+            false,
+            |this, result, cx| match result {
+                Ok(()) => {
+                    if this.autosave_error.take().is_some() {
+                        cx.notify();
+                    }
                 }
-            }
-            Err(error) => {
-                if self.autosave_error.as_ref() != Some(&error) {
-                    self.autosave_error = Some(error);
-                    cx.notify();
+                Err(error) => {
+                    if this.autosave_error.as_ref() != Some(&error) {
+                        this.autosave_error = Some(error);
+                        cx.notify();
+                    }
                 }
-            }
-        }
+            },
+            cx,
+        );
     }
 
     /// Whether the server list or a typed password has edits that Save has
@@ -4399,51 +4508,65 @@ impl SettingsWindow {
     /// The Save button: writes the servers along with everything else.
     fn save_servers(&mut self, cx: &mut Context<Self>) {
         self.autosave = None;
-        match self.save_settings(true, cx) {
-            Ok(()) => {
-                self.autosave_error = None;
-                self.feedback = None;
-            }
-            Err(error) => self.feedback = Some(error),
-        }
-        cx.notify();
+        self.save_settings(
+            true,
+            |this, result, cx| {
+                match result {
+                    Ok(()) => {
+                        this.autosave_error = None;
+                        this.feedback = None;
+                    }
+                    Err(error) => this.feedback = Some(error),
+                }
+                cx.notify();
+            },
+            cx,
+        );
     }
 
     /// Writes the form, with the servers only when `with_servers`; without,
     /// the saved server list stays as it is. A server without a host cannot
-    /// be saved.
-    fn save_settings(&mut self, with_servers: bool, cx: &mut Context<Self>) -> Result<(), String> {
-        let mut settings = self.settings.snapshot_with(cx, with_servers)?;
+    /// be saved. The file is written off the UI thread; `finished` gets the
+    /// outcome once it is known, at once when there is nothing to write.
+    fn save_settings(
+        &mut self,
+        with_servers: bool,
+        finished: impl FnOnce(&mut Self, Result<(), String>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let mut settings = match self.settings.snapshot_with(cx, with_servers) {
+            Ok(settings) => settings,
+            Err(error) => return finished(self, Err(error), cx),
+        };
         if with_servers {
             if settings
                 .selected_profile()
                 .is_some_and(|profile| profile.host.is_empty())
             {
-                return Err(self.i18n.text("server_required"));
+                let error = self.i18n.text("server_required");
+                return finished(self, Err(error), cx);
             }
         } else {
             settings.servers = self.saved.servers.clone();
             settings.selected_server = self.saved.selected_server.clone();
         }
         if settings == self.saved && !(with_servers && self.servers_unsaved(cx)) {
-            return Ok(());
+            return finished(self, Ok(()), cx);
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
-        let saved = match self.commit_settings(&previous, settings, with_servers, cx) {
-            Ok(saved) => saved,
-            Err(error) => {
-                // Try again on the next edit.
-                self.saved = previous;
-                return Err(error);
-            }
-        };
+        let (settings, previous_logging) =
+            match self.prepare_commit(&previous, settings, with_servers, cx) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    // Try again on the next edit.
+                    self.saved = previous;
+                    return finished(self, Err(error), cx);
+                }
+            };
         if with_servers {
-            self.saved = saved.clone();
+            self.saved = settings.clone();
         }
-        let servers_changed = previous.servers != self.saved.servers
-            || previous.selected_server != self.saved.selected_server;
-        self.apply_to_chat_window(&previous, saved, servers_changed, cx);
-        Ok(())
+        self.write_settings(previous, settings, previous_logging, finished, cx);
     }
 
     /// Applies what differs between `previous` and `saved` to the chat window:
@@ -4479,9 +4602,10 @@ impl SettingsWindow {
             }
             if layout_changed {
                 owner.restore_layout = restore_layout;
-                // Turning it on remembers where the window is right away.
+                // Turning it on remembers where the window is shortly, in the
+                // background like any other layout change.
                 owner.note_window_bounds(window);
-                owner.save_layout_now();
+                owner.schedule_layout_save(cx);
             }
             if appearance_changed {
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
@@ -4497,6 +4621,7 @@ impl SettingsWindow {
 
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.autosave_now(None, cx);
+        self.let_writes_finish();
         window.remove_window();
     }
 
@@ -5206,9 +5331,9 @@ impl SettingsWindow {
                                 } else {
                                     "connect"
                                 }))
-                                .on_click(cx.listener(move |this, _, window, cx| {
+                                .on_click(cx.listener(move |this, _, _, cx| {
                                     if !connected {
-                                        this.connect_from_settings(window, cx);
+                                        this.connect_from_settings(cx);
                                         return;
                                     }
                                     // Disconnects the server being edited.

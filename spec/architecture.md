@@ -48,7 +48,10 @@ through `private_file::write`: a fresh `0600` temporary file, flushed, then
 renamed over the old one, so an interrupted save leaves the old or the new
 file whole. Settings that cannot be loaded at startup are copied to
 `settings-unreadable-<seconds>.json` before the defaults are used, since the
-next save replaces the file.
+next save replaces the file. The write waits for the disk, so the UI never
+calls it directly: the settings window writes the settings file, and the chat
+window the layout, on the background executor, one write after another;
+quitting waits for the writes under way.
 
 ### media
 
