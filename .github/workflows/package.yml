@@ -92,8 +92,10 @@ jobs:
             libxkbcommon-dev \
             libxkbcommon-x11-dev
 
+      # Pinned: the packaging tool writes the published .deb, so a new
+      # release is taken only by changing this version on purpose.
       - name: Install cargo-deb
-        run: cargo install cargo-deb --locked
+        run: cargo install cargo-deb --version 3.8.0 --locked
 
       - name: Build release binary
         run: cargo build --profile "$BUILD_PROFILE" --locked ${FEATURES:+--features "$FEATURES"}
