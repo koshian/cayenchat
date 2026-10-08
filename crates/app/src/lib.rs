@@ -20,6 +20,8 @@ pub use timeline::MessageMeta;
 /// Upper bound on conversations per network, so a hostile server or bouncer
 /// cannot grow memory without limit by announcing endless channel joins.
 const MAX_CONVERSATIONS_PER_NETWORK: usize = 1_000;
+/// Channel names remembered per network for the chosen tree order.
+const MAX_ORDER_NAMES: usize = 2_000;
 /// Upper bound on private conversations per network (within the limit
 /// above), so a flood of messages from new nicknames cannot fill the channel
 /// tree; further ones go to the server log.
@@ -125,6 +127,8 @@ pub struct AppState {
     /// The channel order the user chose per network (lowercased names, parted
     /// channels included so a rejoined one returns to its place).
     channel_orders: HashMap<NetworkId, Vec<String>>,
+    /// Each name of `channel_orders` to its position there.
+    channel_ranks: HashMap<NetworkId, HashMap<String, usize>>,
 }
 
 /// Where a channel or private conversation moves within its group.
@@ -339,6 +343,7 @@ impl AppState {
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
             channel_orders: HashMap::new(),
+            channel_ranks: HashMap::new(),
         }
     }
 
@@ -387,6 +392,7 @@ impl AppState {
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
             channel_orders: HashMap::new(),
+            channel_ranks: HashMap::new(),
         }
     }
 
@@ -427,6 +433,7 @@ impl AppState {
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
             channel_orders: HashMap::new(),
+            channel_ranks: HashMap::new(),
         };
         for config in networks {
             state.networks.push(Network {
@@ -471,6 +478,7 @@ impl AppState {
             self.active_servers.remove(&id);
             self.avatars.remove_network(id);
             self.channel_orders.remove(&id);
+            self.channel_ranks.remove(&id);
         }
         self.networks = networks
             .iter()
@@ -620,7 +628,7 @@ impl AppState {
         let network = self.conversations.iter().find(|c| c.id == id)?.network;
         if !self.conversations.iter().find(|c| c.id == id)?.is_private() {
             let order = self.merged_channel_order(network);
-            self.channel_orders.insert(network, order);
+            self.store_channel_order(network, order);
         }
         Some(network)
     }
@@ -662,21 +670,53 @@ impl AppState {
     /// Adopts a saved channel order for `network` and arranges its channels
     /// by it. Channels it does not list stay at the end in their current order.
     pub fn set_channel_order(&mut self, network: NetworkId, order: Vec<String>) {
-        if order.is_empty() {
-            self.channel_orders.remove(&network);
-        } else {
-            self.channel_orders.insert(network, order);
-        }
+        self.store_channel_order(network, order);
         self.apply_channel_order(network);
     }
 
+    /// Remembers `order` for `network` (bounded) with a rank table, so a
+    /// channel's place is found without searching the list.
+    fn store_channel_order(&mut self, network: NetworkId, mut order: Vec<String>) {
+        order.truncate(MAX_ORDER_NAMES);
+        if order.is_empty() {
+            self.channel_orders.remove(&network);
+            self.channel_ranks.remove(&network);
+            return;
+        }
+        let mut ranks = HashMap::with_capacity(order.len());
+        for (rank, name) in order.iter().enumerate() {
+            ranks.entry(name.clone()).or_insert(rank);
+        }
+        self.channel_orders.insert(network, order);
+        self.channel_ranks.insert(network, ranks);
+    }
+
+    /// Where a new channel named `name` goes among `network`'s channels
+    /// (`start..end` in `conversations`): after those ranked before it, and
+    /// at the end when the order does not list it.
+    fn channel_slot(&self, network: NetworkId, name: &str, start: usize, end: usize) -> usize {
+        let Some(ranks) = self.channel_ranks.get(&network) else {
+            return end;
+        };
+        let rank = |name: &str| {
+            ranks
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or(usize::MAX)
+        };
+        let new = rank(name);
+        start + self.conversations[start..end].partition_point(|c| rank(&c.name) <= new)
+    }
+
     fn apply_channel_order(&mut self, network: NetworkId) {
-        let Some(order) = self.channel_orders.get(&network) else {
+        let Some(ranks) = self.channel_ranks.get(&network) else {
             return;
         };
         let rank = |name: &str| {
-            let key = name.to_ascii_lowercase();
-            order.iter().position(|n| *n == key).unwrap_or(usize::MAX)
+            ranks
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or(usize::MAX)
         };
         let Some(start) = self
             .conversations
@@ -1003,6 +1043,14 @@ impl AppState {
                     })
                     .unwrap_or(self.conversations.len())
             });
+        let index = match self
+            .conversations
+            .iter()
+            .position(|c| c.network == network && !c.is_private())
+        {
+            Some(start) if !private => self.channel_slot(network, name, start, index),
+            _ => index,
+        };
         self.conversations.insert(
             index,
             Conversation {
@@ -1015,9 +1063,6 @@ impl AppState {
                 members: Vec::new(),
             },
         );
-        if !private {
-            self.apply_channel_order(network);
-        }
         Some(id)
     }
 
@@ -2197,6 +2242,25 @@ mod tests {
         next.joined_channel(NetworkId(1), "#D");
         next.joined_channel(NetworkId(1), "#c");
         assert_eq!(channel_names(&next, 1), ["#a", "#D", "#b", "#c", "#new"]);
+    }
+
+    #[test]
+    fn many_channels_join_by_a_saved_order_without_sorting_each_time() {
+        let mut state = two_networks();
+        let names: Vec<String> = (0..MAX_CONVERSATIONS_PER_NETWORK - 2)
+            .map(|n| format!("#c{n}"))
+            .collect();
+        // Saved in reverse, so every join lands at the front.
+        let order: Vec<String> = names.iter().rev().cloned().collect();
+        state.set_channel_order(NetworkId(1), order);
+        let started = std::time::Instant::now();
+        let id = state.reset_network(NetworkId(1), names.clone());
+        drop(id);
+        let shown = channel_names(&state, 1);
+        assert_eq!(shown.len(), names.len());
+        assert_eq!(shown[0], names[names.len() - 1]);
+        assert_eq!(shown[shown.len() - 1], "#c0");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

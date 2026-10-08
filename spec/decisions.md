@@ -1201,8 +1201,19 @@ channel shortcuts (D009), so the user can change it.
   channel names, lowercased ASCII, and keeps the names of parted channels so
   a channel joined again returns to its place; they stay anchored after the
   channel that preceded them. Channels it does not list go to the end in
-  join order. The file is bounded on load, and entries of removed profiles
-  are dropped on the next save. Tests write nothing without an explicit path.
+  join order. The file is refused unparsed beyond 1 MiB and bounded in
+  entries on load, the remembered names per server are capped in memory too,
+  and entries of removed profiles are dropped on the next save. Tests write
+  nothing without an explicit path. A joining channel finds its place by a
+  rank table and a binary search, not by sorting the group, so joining a
+  thousand channels stays linear.
+- **Settings window.** A server move is written to the settings file at
+  once; a settings window with unsaved edits takes over the file's server
+  order (keeping its other edits) before it saves, so it cannot put the old
+  order back.
+- **Tree list.** Row keys follow the chosen order and need not ascend, so the
+  tree syncs with `LogList::sync_unordered`, which replaces only the span
+  that changed and keeps the top row.
 - **Auto-join.** The auto-join list and the order of JOIN commands are not
   affected.
 - **Not done.** Reordering with shortcut keys (the context menu is the

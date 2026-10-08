@@ -735,6 +735,29 @@ impl SettingsForm {
 }
 
 /// Whether the profile has saved server and SASL passwords.
+/// Arranges `servers` like `file` where both have a server, so a move made
+/// in the chat window (D041) is not undone by a window holding older
+/// settings. Servers the file lacks keep their relative order, at the end.
+/// Returns whether anything moved.
+fn follow_server_order(servers: &mut [ServerProfile], file: &[ServerProfile]) -> bool {
+    let position = |id: &str| file.iter().position(|p| p.id == id);
+    let ours: Vec<&str> = servers
+        .iter()
+        .filter(|p| position(&p.id).is_some())
+        .map(|p| p.id.as_str())
+        .collect();
+    let theirs: Vec<&str> = file
+        .iter()
+        .filter(|p| servers.iter().any(|s| s.id == p.id))
+        .map(|p| p.id.as_str())
+        .collect();
+    if ours == theirs {
+        return false;
+    }
+    servers.sort_by_key(|p| position(&p.id).unwrap_or(usize::MAX));
+    true
+}
+
 fn saved_passwords(profile: &ServerProfile, store: &CredentialStore) -> (bool, bool) {
     if !profile.remember_passwords {
         return (false, false);
@@ -4322,7 +4345,19 @@ impl SettingsWindow {
     /// Shows what another process wrote to the settings file while this
     /// window was in the background, so a later save does not put the older
     /// values back. Edits this window could not save yet are kept.
+    /// Takes over the server order the file has, keeping every other edit
+    /// in the form, so that saving cannot put back an older order.
+    fn follow_saved_server_order(&mut self) {
+        let Ok(Some(file)) = settings_file::load() else {
+            return;
+        };
+        if follow_server_order(&mut self.saved.servers, &file.servers) {
+            follow_server_order(&mut self.settings.values.servers, &file.servers);
+        }
+    }
+
     fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.follow_saved_server_order();
         if self.autosave.is_some() || self.autosave_error.is_some() || self.servers_unsaved(cx) {
             return;
         }
@@ -4389,6 +4424,7 @@ impl SettingsWindow {
     }
 
     fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.follow_saved_server_order();
         let result = (|| {
             let settings = self.settings.snapshot(cx)?;
             let config =
@@ -4499,6 +4535,7 @@ impl SettingsWindow {
     /// the saved server list stays as it is. A server without a host cannot
     /// be saved.
     fn save_settings(&mut self, with_servers: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        self.follow_saved_server_order();
         let mut settings = self.settings.snapshot_with(cx, with_servers)?;
         if with_servers {
             if settings
@@ -6762,9 +6799,10 @@ impl ChatWindow {
     fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         // The tree is virtualized like the logs: it redraws on every state
-        // change, but builds only the rows near the viewport. Keys ascend in
-        // display order (server position, then conversation id), so adding a
-        // channel keeps the other rows' measured heights and the scroll.
+        // change, but builds only the rows near the viewport. Keys identify
+        // rows (server position, then conversation id) and follow the order
+        // the user chose, so they need not ascend; rows that kept their
+        // place keep their measured heights and the scroll.
         if !cx.has_active_drag() {
             self.dragging_channel = None;
             self.drop_target = None;
@@ -6792,7 +6830,7 @@ impl ChatWindow {
                 keys.push(base | private | (u64::from(conversation.id.0) + 1));
             }
         }
-        self.tree_list.sync(0, &keys);
+        self.tree_list.sync_unordered(0, &keys);
         let appearance = &self.appearance;
         div()
             .size_full()
@@ -6932,6 +6970,9 @@ impl ChatWindow {
                 div()
                     .id(("channel", id.0))
                     .relative()
+                    // The whole row width is the drop area, also while the
+                    // digit gutter makes it a flex row.
+                    .w_full()
                     .when(dragging, |d| d.flex().pl_1())
                     .when(!dragging, |d| d.pl_4())
                     .pr_2()
@@ -6964,7 +7005,7 @@ impl ChatWindow {
                                 .absolute()
                                 .left_0()
                                 .right_0()
-                                .h(px(2.))
+                                .h(px(3.))
                                 .bg(theme.text)
                                 .when(on_top, |line| line.top_0())
                                 .when(!on_top, |line| line.bottom_0()),
@@ -12225,6 +12266,26 @@ mod pane_tests {
     fn shortcut_digits_follow_the_numbered_shortcuts() {
         let digits: String = (0..12).filter_map(crate::shortcut_digit).collect();
         assert_eq!(digits, "1234567890");
+    }
+
+    #[test]
+    fn a_window_with_older_settings_follows_the_servers_order_in_the_file() {
+        let profile = |id: &str| {
+            let mut profile = cayenchat_storage::ServerProfile::default();
+            profile.id = id.to_owned();
+            profile
+        };
+        let ids = |servers: &[cayenchat_storage::ServerProfile]| -> Vec<String> {
+            servers.iter().map(|p| p.id.clone()).collect()
+        };
+        let file = [profile("two"), profile("one")];
+        let mut held = vec![profile("one"), profile("two"), profile("new")];
+        assert!(crate::follow_server_order(&mut held, &file));
+        assert_eq!(ids(&held), ["two", "one", "new"]);
+        // Nothing to follow once they agree, or when the file lacks servers.
+        assert!(!crate::follow_server_order(&mut held, &file));
+        assert!(!crate::follow_server_order(&mut held, &[profile("one")]));
+        assert_eq!(ids(&held), ["two", "one", "new"]);
     }
 
     #[gpui::test]

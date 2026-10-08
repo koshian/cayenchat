@@ -11,6 +11,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -21,6 +22,8 @@ const ORDER_VERSION: u32 = 1;
 const MAX_SERVERS: usize = 256;
 const MAX_NAMES: usize = 2_000;
 const MAX_NAME_BYTES: usize = 512;
+/// Larger files are damage and are not parsed.
+const MAX_FILE_BYTES: u64 = 1 << 20;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -86,9 +89,14 @@ pub fn load_orders() -> ChannelOrders {
 }
 
 pub fn load_orders_from(path: &Path) -> ChannelOrders {
-    let Ok(bytes) = fs::read(path) else {
+    // Read at most one byte past the limit so a huge file is refused
+    // without being held in memory.
+    let mut bytes = Vec::new();
+    let read =
+        fs::File::open(path).and_then(|file| file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes));
+    if read.is_err() || bytes.len() as u64 > MAX_FILE_BYTES {
         return ChannelOrders::default();
-    };
+    }
     match serde_json::from_slice::<ChannelOrders>(&bytes) {
         Ok(orders) if orders.version == ORDER_VERSION => orders.sanitized(),
         _ => ChannelOrders::default(),
@@ -135,5 +143,18 @@ mod tests {
         assert_eq!(load_orders_from(&path), ChannelOrders::default());
         fs::write(&path, br##"{"version":1,"servers":{"a":["#x","#x",""]}}"##).unwrap();
         assert_eq!(load_orders_from(&path).order("a"), ["#x"]);
+    }
+
+    #[test]
+    fn a_file_over_the_size_limit_is_not_parsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel-order.json");
+        let names: Vec<String> = (0..MAX_FILE_BYTES as usize / 8)
+            .map(|n| format!("#{n}"))
+            .collect();
+        let text = format!(r#"{{"version":1,"servers":{{"a":{:?}}}}}"#, names);
+        assert!(text.len() as u64 > MAX_FILE_BYTES);
+        fs::write(&path, text).unwrap();
+        assert_eq!(load_orders_from(&path), ChannelOrders::default());
     }
 }
