@@ -59,6 +59,18 @@ Persistent formats should be explicit and versionable.
 Also owns the application's only credential store (`storage::credentials`).
 Secrets never enter the preferences file.
 
+Every file it writes (settings, window layout, local credentials) goes
+through `private_file::write`: a fresh `0600` temporary file, flushed, then
+renamed over the old one, so an interrupted save leaves the old or the new
+file whole. Settings that cannot be loaded at startup are copied to
+`settings-unreadable-<seconds>.json` before the defaults are used, since the
+next save replaces the file. The credential and layout files are flushed to
+disk before the rename, which waits for the disk, so the chat window writes
+the layout on the background executor, one write after another, and quitting
+waits for the writes under way. The settings file is saved from the UI thread
+and is therefore renamed without the flush: a crash of the process cannot
+leave half of it, a power loss may.
+
 ### media
 
 Inline media display without GPUI or protocol types: which links are image

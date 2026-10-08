@@ -46,11 +46,7 @@ impl Localizer {
     }
 
     pub fn format(&self, key: &str, values: &[(&str, &str)]) -> String {
-        let mut text = self.text(key);
-        for (name, value) in values {
-            text = text.replace(&format!("{{{name}}}"), value);
-        }
-        text
+        fill(&self.text(key), values)
     }
 
     pub fn preference_label(&self, preference: Language) -> String {
@@ -60,6 +56,38 @@ impl Localizer {
             Language::English => "language_english",
         })
     }
+}
+
+/// Replaces each `{name}` in `template` with its value in one pass over the
+/// template. Values often come from servers or other users, so a value that
+/// itself contains `{name}` is inserted as it is, never expanded. Unknown
+/// placeholders stay as written.
+fn fill(template: &str, values: &[(&str, &str)]) -> String {
+    let mut text = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        text.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let value = after.find('}').and_then(|close| {
+            let name = &after[..close];
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value, close))
+        });
+        match value {
+            Some((value, close)) => {
+                text.push_str(value);
+                rest = &after[close + 1..];
+            }
+            None => {
+                text.push('{');
+                rest = after;
+            }
+        }
+    }
+    text.push_str(rest);
+    text
 }
 
 fn language_for_tag(tag: Option<&str>) -> Language {
@@ -110,5 +138,22 @@ mod tests {
         assert_eq!(language_for_tag(Some("ja-JP")), Language::Japanese);
         assert_eq!(language_for_tag(Some("en-US")), Language::English);
         assert_eq!(language_for_tag(None), Language::English);
+    }
+
+    #[test]
+    fn values_are_inserted_once_and_never_expanded() {
+        let quit = "{nick} quit ({reason})";
+        assert_eq!(
+            fill(quit, &[("nick", "{reason}"), ("reason", "bye")]),
+            "{reason} quit (bye)"
+        );
+        assert_eq!(
+            fill(quit, &[("reason", "{nick}"), ("nick", "bob")]),
+            "bob quit ({nick})"
+        );
+        // Unknown placeholders and lone braces stay as written.
+        assert_eq!(fill("{a} {b} { x}", &[("a", "1")]), "1 {b} { x}");
+        assert_eq!(fill("{a", &[("a", "1")]), "{a");
+        assert_eq!(fill("日本{a}語", &[("a", "🙂")]), "日本🙂語");
     }
 }
