@@ -1560,16 +1560,33 @@ impl ChatWindow {
             let _ = view.update(cx, |this, _| {
                 this.note_window_bounds(window);
                 this.save_layout_now();
+                this.quit_connections();
             });
             true
         });
         cx.on_app_quit(|this, _| {
             this.save_layout_now();
+            this.quit_connections();
             async {}
         })
         .detach();
         this.note_window_bounds(window);
         this
+    }
+
+    /// Sends QUIT on every connection and waits briefly for it to be
+    /// written, since the process ends right after the window closes. The
+    /// wait is bounded and only happens on the way out.
+    fn quit_connections(&mut self) {
+        let closing: Vec<_> = self
+            .sessions
+            .values_mut()
+            .filter_map(ServerSession::close)
+            .collect();
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        for connection in closing {
+            connection.wait_closed(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
     }
 
     /// Remembers where the window is, for the next layout write.
@@ -3906,6 +3923,20 @@ impl ChatWindow {
         };
         self.feedback = match result {
             Ok(()) => {
+                // /quit ends the connection like Disconnect: no reconnecting.
+                let quits = text.strip_prefix('/').is_some_and(|body| {
+                    body.split_whitespace()
+                        .next()
+                        .is_some_and(|verb| verb.eq_ignore_ascii_case("quit"))
+                });
+                if quits
+                    && let Some(session) =
+                        network.and_then(|network| self.sessions.get_mut(&network))
+                {
+                    session.manual_disconnect = true;
+                    session.retry_pending = false;
+                    session.retry_token += 1;
+                }
                 self.input_history.record(&text);
                 input.update(cx, |input, cx| input.clear_after_send(cx));
                 None

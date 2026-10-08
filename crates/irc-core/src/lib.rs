@@ -25,7 +25,7 @@ pub use peer_avatar::shareable as shareable_avatar;
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{Arc, Mutex, atomic::AtomicUsize, mpsc as std_mpsc},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -847,6 +847,8 @@ enum Outgoing {
         limit: usize,
     },
     Quit,
+    /// `Quit` with the reason the user typed instead of the configured one.
+    QuitWith(String),
 }
 
 fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> {
@@ -883,6 +885,7 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
             vec![peer_avatar::realname(base_realname(realname), true)],
         )),
         Outgoing::Quit => return Ok(()),
+        Outgoing::QuitWith(reason) => IrcMessage::from(IrcCommand::QUIT(Some(reason.clone()))),
     };
     validate_wire(&message.to_string(), encoding)
 }
@@ -1081,6 +1084,16 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
             }
             checked_command(IrcCommand::INVITE(nickname.into(), channel.into()))
         }
+        // Goes through the worker so the reason defaults to the configured
+        // QUIT message and the connection ends as a user disconnect.
+        "QUIT" => {
+            let reason = rest.trim_start_matches(':').trim();
+            if reason.is_empty() {
+                return Ok(Outgoing::Quit);
+            }
+            checked_command(IrcCommand::QUIT(Some(reason.into())))?;
+            Ok(Outgoing::QuitWith(reason.into()))
+        }
         "RAW" | "QUOTE" => checked_raw(rest),
         _ => checked_raw(body),
     }
@@ -1116,6 +1129,8 @@ pub struct Connection {
     encoding: String,
     /// The server's announced `MODES` limit; 0 until one is seen.
     modes_per_line: Arc<AtomicUsize>,
+    /// Disconnects once the worker thread has ended.
+    closed: Option<Mutex<std_mpsc::Receiver<()>>>,
 }
 
 impl fmt::Debug for Connection {
@@ -1137,9 +1152,12 @@ impl Connection {
         let worker_cancel = cancel.clone();
         let modes_per_line = Arc::new(AtomicUsize::new(0));
         let worker_modes = modes_per_line.clone();
+        let (alive, closed) = std_mpsc::channel::<()>();
         thread::Builder::new()
             .name("cayenchat-irc".into())
             .spawn(move || {
+                // Dropped when the worker ends, which `wait_closed` observes.
+                let _alive = alive;
                 let failure_events = event_tx.clone();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1171,7 +1189,25 @@ impl Connection {
             events: Some(Events(events)),
             encoding,
             modes_per_line,
+            closed: Some(Mutex::new(closed)),
         })
+    }
+
+    /// Blocks up to `timeout` until the worker has ended, which after
+    /// [`Connection::disconnect`] means QUIT was flushed. For quitting the
+    /// application, where the process would otherwise end before the worker
+    /// writes it. Returns whether the worker ended in time.
+    pub fn wait_closed(&self, timeout: Duration) -> bool {
+        let Some(closed) = &self.closed else {
+            return true;
+        };
+        let Ok(closed) = closed.lock() else {
+            return true;
+        };
+        matches!(
+            closed.recv_timeout(timeout),
+            Err(std_mpsc::RecvTimeoutError::Disconnected)
+        )
     }
 
     /// Moves the event stream out; afterwards `try_recv` returns `None` and
@@ -1819,8 +1855,12 @@ async fn run_cancellable(
                             return;
                         }
                     }
-                    Outgoing::Quit => {
-                        let quit = IrcMessage::from(IrcCommand::QUIT(Some(quit_message.clone())));
+                    outgoing @ (Outgoing::Quit | Outgoing::QuitWith(_)) => {
+                        let reason = match outgoing {
+                            Outgoing::QuitWith(reason) => reason,
+                            _ => quit_message.clone(),
+                        };
+                        let quit = IrcMessage::from(IrcCommand::QUIT(Some(reason)));
                         if client.send(quit.clone()).is_ok() {
                             wire(&events, started, WireDirection::Sent, redacted_wire_line(&quit)).await;
                         }
@@ -3130,6 +3170,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
+            closed: None,
         };
         assert!(!connection.is_closed());
         assert!(matches!(
@@ -3149,6 +3190,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(2)),
+            closed: None,
         };
         let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
         connection
@@ -3184,6 +3226,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(1)),
+            closed: None,
         };
         let names = ["a", "b", "c"].map(str::to_owned).to_vec();
         assert!(
@@ -3209,6 +3252,7 @@ mod tests {
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
+            closed: None,
         };
         let mut events = connection.take_events().unwrap();
         assert!(connection.take_events().is_none());
@@ -4079,6 +4123,15 @@ mod tests {
     /// Connects to a local server, disconnects, and returns the raw `QUIT`
     /// line the server received (without its line ending).
     fn quit_line_sent_with(configure: impl FnOnce(&mut ConnectionConfig)) -> Vec<u8> {
+        quit_line_after(configure, |connection| connection.disconnect().unwrap())
+    }
+
+    /// The QUIT line a server receives after `end` ends a registered
+    /// connection and the worker has finished.
+    fn quit_line_after(
+        configure: impl FnOnce(&mut ConnectionConfig),
+        end: impl FnOnce(&Connection),
+    ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4128,8 +4181,23 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(registered, "client did not register");
-        connection.disconnect().unwrap();
+        end(&connection);
+        assert!(connection.wait_closed(Duration::from_secs(5)));
         server.join().unwrap()
+    }
+
+    #[test]
+    fn the_quit_command_sends_the_default_or_the_given_reason() {
+        let line = quit_line_after(
+            |config| config.quit_message = "Back soon".into(),
+            |connection| connection.send_command("/quit", None).unwrap(),
+        );
+        assert_eq!(line, b"QUIT :Back soon".to_vec());
+        let line = quit_line_after(
+            |_| {},
+            |connection| connection.send_command("/QUIT :Bye now", None).unwrap(),
+        );
+        assert_eq!(line, b"QUIT :Bye now".to_vec());
     }
 
     #[test]

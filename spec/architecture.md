@@ -543,7 +543,10 @@ see `performance.md`.
 
 Each server profile has an optional QUIT message (`quit_message`, issue #148; added
 without a version change). Disconnect and quitting the app send it as the `QUIT`
-reason; blank means "Leaving CayenChat". It is validated with the connection
+reason; blank means "Leaving CayenChat". `/quit [reason]` takes the same path (a
+typed reason wins, and the UI does not reconnect afterwards), and closing the
+main window or quitting sends QUIT on every connection and waits up to 500 ms in
+total for the workers to flush it (`Connection::wait_closed`; issue #234). It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
 connection starts, so an edit applies from the next connection. Lost connections
 send no QUIT.
