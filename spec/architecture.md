@@ -43,6 +43,13 @@ Persistent formats should be explicit and versionable.
 Also owns the application's only credential store (`storage::credentials`).
 Secrets never enter the preferences file.
 
+Every file it writes (settings, window layout, local credentials) goes
+through `private_file::write`: a fresh `0600` temporary file, flushed, then
+renamed over the old one, so an interrupted save leaves the old or the new
+file whole. Settings that cannot be loaded at startup are copied to
+`settings-unreadable-<seconds>.json` before the defaults are used, since the
+next save replaces the file.
+
 ### media
 
 Inline media display without GPUI or protocol types: which links are image

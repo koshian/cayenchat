@@ -110,20 +110,16 @@ pub fn save_layout(layout: &Layout) -> Result<(), String> {
     save_layout_to(&layout_path()?, layout)
 }
 
-/// Writes the file whole or not at all (a temporary file, then a rename), so
-/// closing the window in the middle of a save cannot leave half a file.
+/// Writes the file whole or not at all, so closing the window in the middle
+/// of a save cannot leave half a file.
 pub fn save_layout_to(path: &Path, layout: &Layout) -> Result<(), String> {
-    let parent = path.parent().ok_or("The layout path has no directory.")?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not create the layout directory: {error}"))?;
     let bytes = serde_json::to_vec_pretty(&Layout {
         version: LAYOUT_VERSION,
         ..layout.clone()
     })
     .map_err(|error| format!("Could not serialize the layout: {error}"))?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, bytes).map_err(|error| format!("Could not write the layout: {error}"))?;
-    fs::rename(&temporary, path).map_err(|error| format!("Could not save the layout: {error}"))
+    crate::private_file::write(path, &bytes)
+        .map_err(|error| format!("Could not save the layout: {error}"))
 }
 
 #[cfg(test)]
