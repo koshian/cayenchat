@@ -129,6 +129,9 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test -p zed-xim --locked
 
+      - name: Test vendored irc-proto
+        run: cargo test -p irc-proto --locked
+
       # Probes the real Windows Credential Manager through the keyring crate.
       - name: Test system credential store
         if: runner.os == 'Windows'
