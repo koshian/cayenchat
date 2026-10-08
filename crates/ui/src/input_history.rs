@@ -39,7 +39,19 @@ pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
     match verb.as_str() {
         "OPER" | "PASS" | "AUTH" | "AUTHENTICATE" | "NS" | "NICKSERV" | "CS" | "CHANSERV"
         | "AUTHSERV" => true,
-        "MSG" | "PRIVMSG" | "NOTICE" | "SQUERY" => words.next().is_some_and(is_credential_service),
+        "MSG" | "PRIVMSG" | "NOTICE" | "SQUERY" => {
+            // `/msg :text` and `/msg text` leave out the target: the
+            // conversation's peer.
+            let rest = command
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, r)| r.trim_start());
+            let omitted = rest.starts_with(':') || rest.split_whitespace().count() == 1;
+            if omitted {
+                private_peer.is_some_and(is_credential_service)
+            } else {
+                words.next().is_some_and(is_credential_service)
+            }
+        }
         // `/me` and `/msg :text` in a service conversation go to the service.
         _ if private_peer.is_some_and(is_credential_service) => true,
         "RAW" | "QUOTE" => command
@@ -219,6 +231,8 @@ mod tests {
             ("AUTH alice pw", "Q"),
             ("identify pw", "NickServ"),
             ("/me x", "X"),
+            ("/msg :AUTH alice pw", "Q"),
+            ("/notice :AUTH alice pw", "Q"),
         ] {
             assert!(is_sensitive(line, Some(peer)), "{line}");
             history.record(line, Some(peer));

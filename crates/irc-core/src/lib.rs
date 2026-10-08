@@ -747,7 +747,8 @@ fn redacted_wire_line(message: &IrcMessage) -> String {
                 "NS" | "NICKSERV" | "CS" | "CHANSERV" | "AUTHSERV"
             ) && args
                 .first()
-                .is_some_and(|arg| is_secret_service_command(arg)) =>
+                .and_then(|arg| arg.split_whitespace().next())
+                .is_some_and(is_secret_service_command) =>
         {
             format!("{verb} [redacted]")
         }
@@ -3049,6 +3050,14 @@ mod tests {
             line(IrcCommand::Raw(
                 "AUTHSERV".into(),
                 vec!["AUTH".into(), "alice".into(), "hunter2".into()]
+            )),
+            "AUTHSERV [redacted]"
+        );
+        // `/quote AUTHSERV :AUTH alice hunter2` is one trailing argument.
+        assert_eq!(
+            line(IrcCommand::Raw(
+                "AUTHSERV".into(),
+                vec!["AUTH alice hunter2".into()]
             )),
             "AUTHSERV [redacted]"
         );

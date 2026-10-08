@@ -854,9 +854,15 @@ fn history_line(message: &IrcMessage, channel: &str) -> Option<HistoryMessage> {
         Some(Prefix::ServerName(name)) => name.clone(),
         None => "server".into(),
     };
+    // What we sent to a password service (replayed by a bouncer) is not kept.
+    let text = if crate::valid_channel(channel) {
+        text.clone()
+    } else {
+        crate::echo_text(target, text.clone())
+    };
     Some(HistoryMessage {
         sender,
-        text: text.clone(),
+        text,
         notice,
         // The reply carries the time the server recorded; a missing or
         // invalid one shows the receipt time.
@@ -1514,6 +1520,32 @@ mod tests {
             line("@account=alice;time=2026-09-28T00:00:00.000Z :alice!u@h PRIVMSG #test :hi");
         assert_eq!(with.account.as_deref(), Some("alice"));
         assert_eq!(line(":bob!u@h PRIVMSG #test :hi").account, None);
+    }
+
+    #[test]
+    fn history_lines_do_not_keep_credentials_sent_to_services() {
+        let line = |text: &str, channel: &str| {
+            history_line(&text.parse::<IrcMessage>().unwrap(), channel)
+                .unwrap()
+                .text
+        };
+        assert_eq!(
+            line(":me!u@h PRIVMSG Q :AUTH alice dummy", "Q"),
+            "[redacted]"
+        );
+        assert_eq!(
+            line(":me!u@h NOTICE NickServ :IDENTIFY dummy", "NickServ"),
+            "[redacted]"
+        );
+        assert_eq!(line(":me!u@h PRIVMSG Q :WHOIS #chan", "Q"), "WHOIS #chan");
+        assert_eq!(
+            line(
+                ":Q!TheQBot@CServe.quakenet.org NOTICE me :You are now logged in",
+                "Q"
+            ),
+            "You are now logged in"
+        );
+        assert_eq!(line(":me!u@h PRIVMSG bob :AUTH x y", "bob"), "AUTH x y");
     }
 
     #[test]
