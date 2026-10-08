@@ -12798,7 +12798,7 @@ mod navigation_binding_tests {
         let bindings = shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
         let matching: Vec<_> = bindings
             .iter()
-            .filter(|binding| binding.match_keystrokes(&[typed.clone()]) == Some(false))
+            .filter(|binding| binding.match_keystrokes(std::slice::from_ref(&typed)) == Some(false))
             .collect();
         assert!(
             matching.len() <= 1,
