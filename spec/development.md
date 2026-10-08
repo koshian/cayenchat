@@ -85,6 +85,17 @@ x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
 system credential store probe against Credential Manager. CI does not exercise
 GUI interaction, IME, drag and drop or clipboard images.
 
+The "Dependency advisories" job runs `cargo deny check advisories` against
+the RustSec database on every pull request and push, whatever changed, since
+new advisories appear without any change here. `deny.toml` fails on every
+vulnerability and on unmaintained crates that a workspace crate uses
+directly; unmaintained crates further down (mostly through GPUI) are not
+failures. Accepted advisories are listed there with a reason. Locally:
+`cargo install --locked cargo-deny --root target/tmp/tools` and
+`target/tmp/tools/bin/cargo-deny --locked check advisories`. The packaging
+workflow installs a pinned cargo-deb version, since it writes the published
+`.deb`.
+
 On pull requests, CI runs only the jobs the changed paths can affect
 (`scripts/ci-jobs.sh`): documentation (`*.md`, `spec/`, `.claude/`,
 `licenses/`) runs nothing, GPUI's per-platform sources under
