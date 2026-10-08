@@ -51,7 +51,7 @@ use cayenchat_irc_core::{
     Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, RealNameFailure,
     SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
-use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
+use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp, display};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
     CredentialStore, DarkColors, Ircv3Preferences, Language, Notifications, Secret, SecretKey,
@@ -1469,6 +1469,7 @@ impl ChatWindow {
                 } else {
                     format!("{} ({})", channel.name, channel.members.len())
                 };
+                let name = display::neutralize_bidi_owned(name);
                 let topic = cayenchat_irc_core::text::strip_formatting(&channel.topic);
                 let topic = topic.split_whitespace().collect::<Vec<_>>().join(" ");
                 if topic.is_empty() {
@@ -1805,7 +1806,7 @@ impl ChatWindow {
             replayed,
         } = message;
 
-        let plain = cayenchat_model::display::neutralize_bidi_owned(match action_text(text) {
+        let plain = display::neutralize_bidi_owned(match action_text(text) {
             Some(action) => format!("* {sender} {}", strip_formatting(action)),
             None => strip_formatting(text),
         });
@@ -1835,7 +1836,7 @@ impl ChatWindow {
                 .format("notification_private_title", &[("sender", sender)]),
         };
         self.notifier.show(DesktopNotification {
-            summary: cayenchat_model::display::neutralize_bidi_owned(summary),
+            summary: display::neutralize_bidi_owned(summary),
             body: notifications::body_text(&plain),
             sound: self.notification_rules.sound,
         });
@@ -7036,7 +7037,7 @@ impl ChatWindow {
                     .child(format!(
                         "{}{}",
                         if unread { "● " } else { "" },
-                        conversation.name
+                        display::neutralize_bidi(&conversation.name)
                     ))
                     .when_some(drop_line_on_top, |d, on_top| {
                         d.child(
@@ -8413,7 +8414,7 @@ impl ChatWindow {
         let prefix = if message.activity || reiwa {
             String::new()
         } else {
-            format!("{}: ", message.sender)
+            format!("{}: ", display::neutralize_bidi(&message.sender))
         };
         let prefix_len = prefix.len();
         let styled = styled_log_text(
@@ -8595,7 +8596,7 @@ impl ChatWindow {
                                 div()
                                     .min_w_0()
                                     .text_color(theme.nickname)
-                                    .child(message.sender.clone()),
+                                    .child(display::neutralize_bidi(&message.sender).into_owned()),
                             )
                             .child(
                                 div()
@@ -8666,9 +8667,16 @@ impl ChatWindow {
         // Same flow as the main log's default layout: channel, network and
         // nickname lead the text, so wrapped lines return to the text column.
         let prefix = if message.activity {
-            format!("{} [{network}] ", conversation.name)
+            format!(
+                "{} [{network}] ",
+                display::neutralize_bidi(&conversation.name)
+            )
         } else {
-            format!("{} [{network}] {}: ", conversation.name, message.sender)
+            format!(
+                "{} [{network}] {}: ",
+                display::neutralize_bidi(&conversation.name),
+                display::neutralize_bidi(&message.sender)
+            )
         };
         // Long URLs are shortened as in the channel log, but stay plain text.
         let compact = compact_urls::Compact::new(
@@ -8784,11 +8792,12 @@ impl ChatWindow {
                             .when(has_avatar, |name| name.flex_1())
                             .min_w_0()
                             .truncate()
-                            .child(member.clone()),
+                            .child(display::neutralize_bidi(&member).into_owned()),
                     )
                     // A shortened name is read in full on hover.
                     .tooltip({
-                        let full: SharedString = member.into();
+                        let full: SharedString =
+                            display::neutralize_bidi(&member).into_owned().into();
                         move |_, cx| {
                             let full = full.clone();
                             cx.new(|_| ircv3_settings::TextTooltip(full)).into()

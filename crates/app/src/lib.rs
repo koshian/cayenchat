@@ -1915,8 +1915,8 @@ fn display_time(received: Option<SystemTime>) -> TimeOfDay {
 }
 
 /// A timeline item from `meta`, without its sequence yet.
-/// Every retained line is built here, so its shown sender and text never
-/// carry bidirectional controls (`display::neutralize_bidi`).
+/// Every retained line is built here, so its text never carries
+/// bidirectional controls (`display::neutralize_bidi`).
 fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) -> Message {
     Message {
         time: display_time(meta.server_time),
@@ -1924,7 +1924,9 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         timestamp: meta.server_time.and_then(Timestamp::from_system_time),
         native_id: meta.native_id,
         account: meta.account,
-        sender: display::neutralize_bidi_owned(sender),
+        // The sender stays as sent: it keys self checks and avatars. It is
+        // neutralized where it is drawn.
+        sender,
         text: display::neutralize_bidi_owned(text),
         activity,
         notice: false,
@@ -2157,8 +2159,8 @@ mod tests {
         assert!(!channel.messages[1].activity);
     }
 
-    /// Lines, senders and topics are retained without bidirectional
-    /// controls, so a line cannot reorder how it or its sender is drawn.
+    /// Lines and topics are retained without bidirectional controls; the
+    /// sender is kept as sent, as it identifies the user.
     #[test]
     fn retained_text_has_no_bidirectional_controls() {
         let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
@@ -2175,7 +2177,7 @@ mod tests {
         state.set_topic(NetworkId(1), "#one", "topic\u{202D}");
         let channel = state.conversations().iter().find(|c| c.id == id).unwrap();
         let message = &channel.messages[0];
-        assert_eq!(message.sender, "mal\u{200B}lory");
+        assert_eq!(message.sender, "mal\u{202E}lory");
         assert_eq!(message.text, "see invoice\u{200B}fdp.exe");
         assert_eq!(channel.topic, "topic\u{200B}");
         assert_eq!(

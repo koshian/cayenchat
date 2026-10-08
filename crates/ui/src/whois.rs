@@ -33,7 +33,7 @@ impl WhoisWindow {
         cx: &mut App,
     ) -> Result<WindowHandle<Self>, String> {
         let bounds = Bounds::centered(None, size(px(460.), px(480.)), cx);
-        let title = info.nickname.clone();
+        let title = display::neutralize_bidi(&info.nickname).into_owned();
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -192,7 +192,13 @@ impl WhoisWindow {
                         .border_1()
                         .border_color(theme.border)
                         .cursor_pointer()
-                        .child(div().flex_1().min_w_0().truncate().child(entry))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(display::neutralize_bidi_owned(entry)),
+                        )
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -228,7 +234,13 @@ impl WhoisWindow {
                         .cursor_pointer()
                         .when(option == index, |d| d.bg(theme.selected))
                         .hover(|d| d.bg(theme.hover_strong))
-                        .child(div().flex_1().min_w_0().truncate().child(entry.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(display::neutralize_bidi(entry).into_owned()),
+                        )
                         .when(joined, |d| {
                             d.child(
                                 div()
@@ -309,7 +321,7 @@ fn button(
 
 impl Render for WhoisWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.info.nickname.clone();
+        let title = display::neutralize_bidi(&self.info.nickname).into_owned();
         let content = self.render_content(cx);
         crate::decorations::window_frame(window, cx, title, content)
     }
@@ -351,10 +363,11 @@ impl WhoisWindow {
             details = details.child(
                 self.row(
                     "whois_other",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .children(info.extra.iter().map(|line| div().child(line.clone()))),
+                    div().flex().flex_col().children(
+                        info.extra
+                            .iter()
+                            .map(|line| div().child(display::neutralize_bidi(line).into_owned())),
+                    ),
                 ),
             );
         }

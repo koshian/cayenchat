@@ -52,6 +52,13 @@ mod tests {
     }
 
     #[test]
+    fn every_embedding_override_and_isolate_control_is_replaced() {
+        let controls = "\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}";
+        assert_eq!(controls.chars().count(), 9);
+        assert_eq!(neutralize_bidi(controls), "\u{200B}".repeat(9));
+    }
+
+    #[test]
     fn right_to_left_text_and_marks_are_untouched() {
         for text in ["שלום עולם", "مرحبا \u{200F}(1)", "abc\u{200E}", "日本語"] {
             assert!(matches!(neutralize_bidi(text), Cow::Borrowed(t) if t == text));
