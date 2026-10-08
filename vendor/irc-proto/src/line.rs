@@ -152,4 +152,39 @@ mod tests {
         let line = format!("{}\r\n", "a".repeat(MAX_LINE_BYTES - 1));
         assert!(codec.decode(&mut BytesMut::from(line.as_bytes())).is_err());
     }
+
+    #[test]
+    fn the_limit_applies_to_each_line_not_to_the_buffer() {
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let line = format!("{}\r\n", "a".repeat(MAX_LINE_BYTES - 2));
+        let mut src = BytesMut::from(format!("{line}{line}").as_bytes());
+        assert_eq!(codec.decode(&mut src).unwrap(), Some(line.clone()));
+        assert_eq!(codec.decode(&mut src).unwrap(), Some(line));
+    }
+
+    #[test]
+    fn a_line_ending_split_across_reads_counts_toward_the_limit() {
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let mut src = BytesMut::from("a".repeat(MAX_LINE_BYTES - 2).as_bytes());
+        src.extend_from_slice(b"\r");
+        assert_eq!(codec.decode(&mut src).unwrap(), None);
+        src.extend_from_slice(b"\n");
+        assert_eq!(codec.decode(&mut src).unwrap().unwrap().len(), MAX_LINE_BYTES);
+
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let mut src = BytesMut::from("a".repeat(MAX_LINE_BYTES - 1).as_bytes());
+        src.extend_from_slice(b"\r");
+        assert_eq!(codec.decode(&mut src).unwrap(), None);
+        src.extend_from_slice(b"\n");
+        assert!(codec.decode(&mut src).is_err());
+    }
+
+    #[test]
+    fn a_long_line_after_a_normal_one_is_an_error() {
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let mut src = BytesMut::from("PING x\r\n".as_bytes());
+        src.extend_from_slice("a".repeat(MAX_LINE_BYTES + 1).as_bytes());
+        assert_eq!(codec.decode(&mut src).unwrap(), Some("PING x\r\n".into()));
+        assert!(codec.decode(&mut src).is_err());
+    }
 }

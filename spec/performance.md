@@ -642,6 +642,59 @@ or NICK.
   "Resource limit candidates"; the index is not bounded separately because
   it holds exactly the channels the library tracks as joined.
 
+## Received line limit (2026-10-08, PR #238)
+
+The vendored `irc-proto` codec now fails a line over 16 KiB (see "Resource
+bounds today"); the only cost on the read path is one length comparison per
+`decode` call. Compared against `38cc09e` (parent, master) and `83b2860`
+(branch) in the Linux x86_64 container (12 vCPUs, rustc 1.99.0, Xvfb, not a
+visible desktop window, so `window visible` is 0/1 and the CPU numbers are
+only comparable between these builds). Both binaries are
+`cargo build --release --locked -p cayenchat-ui`; the parent was built in a
+separate worktree and target directory. Parent and branch alternate, three
+runs each.
+
+```sh
+xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/perf/run_baseline.py --runs 1 --binary BIN --out OUT
+cargo test --release --locked -p cayenchat-ui perf_baseline::perf_baseline -- --ignored --exact --nocapture
+```
+
+Process (`run_baseline.py`, one run per invocation; parent / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 113.8, 113.9, 113.9 / 114.0, 113.5, 113.6 | 0.00–0.03 both |
+| S3 after 2,000 lines per channel | 118.4, 118.7, 118.5 / 118.6, 118.1, 118.1 | 0.00–0.03 both |
+| S4a 200 lines/s | 118.4, 118.7, 118.5 / 118.6, 118.1, 118.1 | 3.82–4.38 / 3.65–4.41 |
+| S4b overload | 119.5, 119.4, 119.7 / 119.7, 119.5, 119.4 | 190, 78, 190 / 84, 190, 190 |
+| S5 after saturation | 119.5, 119.6, 119.7 / 119.7, 119.5, 119.4 | 0.00–0.03 both |
+| S6 second overload, idle | 119.8, 120.3, 119.9 / 119.7, 119.8, 119.6 | 0.00–0.03 both |
+
+- Memory and idle CPU agree within a few tenths of a MiB; S5 to S6 stays on a
+  plateau in every run. Peak RSS is not recorded by the runner.
+- S4b throughput: in four of the six runs (two parent, two branch) the
+  fixture saw two connections and a 15 s median PING round trip with about
+  4.9 million lines read at 162,000–164,500 lines/s; in the other two (one
+  each) the fixture saw one connection and read 1.5–1.8 million lines at
+  51,000–60,000 lines/s. This split appears in both builds, so it comes from
+  the fixture or Xvfb run and not from the change; within each group the
+  parent and branch rates are the same (for example 162,697 / 163,900 lines/s
+  in the two-connection group).
+
+Headless UI test (medians in µs; parent / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 248 / 247, 285 / 246, 244 / 294 | 1,653 / 1,685, 1,992 / 1,651, 1,658 / 1,649 | 1,414 / 1,223, 1,250 / 1,239, 1,240 / 1,257 | 2,244 / 2,101, 1,643 / 1,661, 1,676 / 1,691 | 260 / 329, 256 / 260, 259 / 258 |
+
+- Equal within run-to-run noise (single outliers on either side, such as the
+  parent's 285 µs typing in run 2 and the branch's 294 µs in run 3). The test
+  bypasses the IRC worker, so it shows that nothing changed above the codec;
+  the process runs above are what exercise the receive path.
+- Not measured: a single line near the limit under load, and a real server.
+  `irc-core`'s worker test checks that an endless line without a newline
+  ends the connection with the reason.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The
