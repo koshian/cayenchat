@@ -10,8 +10,8 @@
 //!
 //! 1. With `labeled-response`, each sent message carries a `label` tag (a
 //!    short opaque counter, never reused on a connection). The echo, a
-//!    labeled `ACK`, an error reply, or any of them inside a
-//!    `labeled-response` batch names the label. Text is not compared, so a
+//!    labeled `ACK`, an error reply, or any of them inside a batch whose
+//!    start carries the label names it. Text is not compared, so a
 //!    message the server rewrote still matches. While the capability is on,
 //!    only labeled lines match a labeled message: an unlabeled copy of our
 //!    own nickname's message is another client's.
@@ -46,8 +46,6 @@ pub(crate) const MAX_PENDING: usize = 32;
 const PENDING_TTL: Duration = Duration::from_secs(60);
 /// Label batches followed at once.
 const MAX_BATCHES: usize = 16;
-/// Longest batch reference followed.
-const MAX_REFERENCE_BYTES: usize = 64;
 
 #[derive(Debug)]
 struct Pending {
@@ -66,7 +64,7 @@ struct Pending {
 pub(crate) struct Echoes {
     pending: VecDeque<Pending>,
     next_label: u64,
-    /// Open `labeled-response` batches: (reference, label).
+    /// Open batches started with one of our labels: (reference, label).
     batches: Vec<(String, String)>,
 }
 
@@ -205,25 +203,17 @@ impl Echoes {
         labeled: bool,
     ) -> Option<Vec<Event>> {
         let mut events = Vec::new();
-        // The start and end of a labeled batch.
-        if let IrcCommand::BATCH(reference, kind, _) = &message.command {
+        // The start and end of a labeled batch. The batch type does not
+        // matter: labeled-response allows `labeled-response` or an existing
+        // type that covers the whole reply (such as `chathistory`).
+        if let IrcCommand::BATCH(reference, _, _) = &message.command {
             if let Some(reference) = reference.strip_prefix('+') {
-                let label = tags::tag_value(message, "label");
-                let is_labeled = kind
-                    .as_ref()
-                    .is_some_and(|k| k.to_str() == "LABELED-RESPONSE");
-                if let Some(label) = label
-                    && (is_labeled
-                        || self
-                            .pending
-                            .iter()
-                            .any(|p| p.label.as_deref() == Some(label)))
+                if let Some(label) = tags::tag_value(message, "label")
                     && self
                         .pending
                         .iter()
                         .any(|p| p.label.as_deref() == Some(label))
-                    && !reference.is_empty()
-                    && reference.len() <= MAX_REFERENCE_BYTES
+                    && tags::followed_batch(reference)
                 {
                     if self.batches.len() >= MAX_BATCHES {
                         self.batches.remove(0);
@@ -456,6 +446,22 @@ mod tests {
             Some(Vec::new())
         );
         assert!(echoes.batches.is_empty());
+        // The labeled batch may have another type covering the whole reply.
+        let e = echoes
+            .track(5, "bob", true, "five", false, true)
+            .unwrap()
+            .unwrap();
+        let start = format!("@label={e} :srv BATCH +y chathistory bob");
+        assert_eq!(echoes.observe(&line(&start), "me", true), Some(Vec::new()));
+        assert_eq!(
+            describe(echoes.observe(
+                &line("@batch=y;msgid=m5 :me!u@h PRIVMSG bob :five"),
+                "me",
+                true
+            )),
+            ["5 ok = m5"]
+        );
+        echoes.observe(&line(":srv BATCH -y"), "me", true);
         // FAIL replies too.
         let d = echoes
             .track(4, "#a", false, "four", false, true)
