@@ -26,11 +26,21 @@ The exact crate boundaries may evolve as implementation experience accumulates.
 
 Small domain types shared by the application, such as networks, conversations, users, messages, IDs, and connection state.
 
-`model::names` is the one definition of "the same nickname or channel": RFC
-1459 case mapping (ASCII letters, and `[]\~` as the uppercase forms of
-`{}|^`). `irc-core` (`text::same_channel`, `same_nickname`, `nickname_key`),
-`app` (the channel index behind `AppState::channel_id`, a hash lookup rather
-than a scan of every conversation) and `ui` (WHOIS) all use it.
+`model::names` is the one definition of "the same nickname or channel".
+Nicknames always use RFC 1459 case mapping (ASCII letters, and `[]\~` as the
+uppercase forms of `{}|^`). Channel names use the network's `CaseMapping`, the
+server's `CASEMAPPING` token (`ascii`, `rfc1459-strict`, `rfc1459`; an unknown
+value counts as `ascii`, which merges the fewest names). RFC 1459 applies
+until the server advertises one, and again on each new connection. The worker
+sends `Event::CaseMapping` when it changes; `AppState::set_casemapping` re-keys
+the network's channel index (behind `AppState::channel_id`, a hash lookup
+rather than a scan of every conversation), the metadata state uses the same
+value, and so do WHOIS's joined marks and auto-join entries. Channels the
+mapping keeps apart stay separate conversations with their own logs, rosters
+and send target; where names fold alike, the first conversation keeps the
+index entry. The saved tree order and rank are still ASCII-folded (earlier
+behaviour, unchanged). `irc-core`'s `text::same_nickname` and `nickname_key`
+delegate to the nickname form.
 
 Keep dependencies minimal.
 

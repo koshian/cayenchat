@@ -828,3 +828,53 @@ before. Thread count stayed at 47.
   is the second bubble that the branch now draws.
 - Those one-off figures came from throwaway scripts that are not committed;
   the committed script gives the cycle figures.
+
+## Channel case mapping and index (2026-10-08, PR #247)
+
+Channel names are compared with the network's advertised `CASEMAPPING`, and
+`AppState::channel_id` is one hash lookup instead of a scan of every
+conversation (one folded `String` per lookup); the worker copies the joined
+list only when a check is made. Compared against `5587533` (parent, master)
+and `fcd0eac` (branch) in the Linux x86_64 container (12 vCPUs, rustc 1.99.0,
+Xvfb, no visible window, so `window visible` is 0/1 and CPU numbers are only
+comparable between these builds). Release builds in separate worktrees,
+parent and branch alternating, three runs each, nothing else running
+(`pgrep` checked before).
+
+```sh
+xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/perf/run_baseline.py --runs 1 --binary BIN --out OUT
+cargo test --release --locked -p cayenchat-ui perf_baseline::perf_baseline -- --ignored --exact --nocapture
+```
+
+Process (parent / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 108.2, 108.4, 108.4 / 108.3, 108.1, 108.1 | 0.00–0.03 both |
+| S3 after 2,000 lines per channel | 113.1, 113.2, 113.1 / 113.0, 113.0, 112.7 | 0.00–0.03 both |
+| S4a 200 lines/s | 113.1, 113.2, 113.2 / 113.0, 113.1, 112.7 | 4.03, 4.03, 3.96 / 3.93, 3.89, 4.20 |
+| S4b overload | 113.4, 113.4, 113.5 / 113.4, 113.4, 113.0 | 195, 196, 197 / 191, 190, 190 |
+| S5 after saturation | 113.4, 113.4, 113.5 / 113.4, 113.4, 113.0 | 0.00–0.03 both |
+| S6 second overload, idle | 113.6, 113.6, 113.6 / 113.5, 113.7, 113.3 | 0.00–0.03 both |
+
+- Memory and idle CPU agree within a few tenths of a MiB; S5 to S6 stays on a
+  plateau. S4a CPU is the same within noise.
+- S4b throughput (all six runs saw two connections): parent 160,267 /
+  159,599 / 162,625 lines/s, branch 156,848 / 157,839 / 158,262 lines/s, i.e.
+  about 2–3 % fewer lines read per second on the branch, with CPU also about
+  3 % lower. The fixture, not the client, paces this overload, so it is not
+  evidence of a slower receive path; but the spread between the groups does
+  not overlap, so a small cost on the saturated path cannot be ruled out. The
+  fixture's lines go to joined channels, so the folded key allocation per
+  lookup is exercised here.
+
+Headless UI test (medians in µs; parent / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 241 / 244, 238 / 224, 232 / 240 | 1,612 / 1,592, 1,571 / 1,468, 1,505 / 1,588 | 1,192 / 1,209, 1,153 / 1,142, 1,179 / 1,195 | 1,589 / 1,606, 1,600 / 1,566, 1,510 / 1,586 | 251 / 254, 257 / 314, 254 / 252 |
+
+- Equal within run-to-run noise (the branch's 314 µs typing-after in run 2 is
+  a single outlier). The 256-event batch goes through `channel_id`.
+- Not measured: a real server, and a network with many hundreds of channels
+  (where the index replaces a linear scan).
