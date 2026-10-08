@@ -696,6 +696,40 @@ Headless UI test (medians in µs; parent / branch, runs 1–3):
   `irc-core`'s worker test checks that an endless line without a newline
   ends the connection with the reason.
 
+## encoding_rs codec (2026-10-08, PR #252)
+
+The vendored `irc-proto` codec decodes and encodes each line with
+`encoding_rs` instead of the `encoding` crate. Compared against `c98d39d`
+(master) and `afe7613` (branch) under the same conditions and commands as the
+received line limit above. Builds alternate with #250 (`d6ecb1e`), three runs
+each, and each run starts only after no other measurement or rustc process has
+been seen for about a minute.
+
+Process (RSS MiB at the end of each scenario / CPU %; master / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 108.9, 109.0, 108.6 / 109.0, 113.6, 109.0 | 0.00–0.03 both |
+| S3 after 2,000 lines per channel | 122.7, 113.7, 113.3 / 113.8, 138.4, 114.0 | 0.00–0.03 both |
+| S4a 200 lines/s | 138.3, 113.7, 113.3 / 113.8, 138.4, 114.0 | 3.96–4.17 / 2.90–3.96 |
+| S4b overload | 138.6, 114.1, 113.6 / 114.1, 138.7, 115.0 | 196, 196, 196 / 194, 194, 188 |
+| S6 second overload, idle | 138.7, 114.3, 113.8 / 114.2, 138.8, 139.4 | 0.00–0.03 both |
+
+- RSS settles at either about 114 MiB or about 139 MiB in both builds (and in
+  #250), so the step comes from the allocator or Xvfb run, not the codec.
+- Binary size: 55,435,288 / 54,900,616 bytes (−535 KB without the `encoding`
+  crate's tables).
+
+Headless UI test (medians in µs; master / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 232 / 233, 227 / 269, 234 / 239 | 1,548 / 1,591, 1,560 / 1,890, 1,583 / 1,611 | 1,218 / 1,219, 1,137 / 1,400, 1,215 / 1,226 | 1,574 / 1,606, 1,585 / 2,175, 1,656 / 1,601 | 262 / 291, 253 / 340, 254 / 253 |
+
+- Branch run 2 is slower on every step, including typing, which the test runs
+  without the codec; runs 1 and 3 match master within noise. The test bypasses
+  the IRC worker, so the process runs are what exercise the codec.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The
