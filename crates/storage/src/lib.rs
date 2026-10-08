@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod credentials;
 pub mod layout;
 pub mod order;
+mod private_file;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -1321,32 +1322,33 @@ pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
     Ok(Some(settings))
 }
 
-/// Writes settings to `path`, readable only by the user.
+/// Writes settings to `path`, readable only by the user, replacing the file
+/// whole or not at all.
 pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or("Settings path has no parent directory.")?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not create settings directory: {error}"))?;
     let bytes = serde_json::to_vec_pretty(&settings.clone().normalize())
         .map_err(|error| format!("Could not serialize settings: {error}"))?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("Could not open settings file: {error}"))?;
-    #[cfg(unix)]
-    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
-        .map_err(|error| format!("Could not protect settings file: {error}"))?;
-    use std::io::Write;
-    file.write_all(&bytes)
-        .map_err(|error| format!("Could not write settings: {error}"))?;
-    Ok(())
+    // The settings window saves on the UI thread, so the file is not flushed.
+    private_file::write(path, &bytes, private_file::Flush::Skip)
+        .map_err(|error| format!("Could not write settings: {error}"))
+}
+
+/// Copies a settings file that could not be loaded next to it, so the next
+/// save, which replaces it, does not lose it (for example settings from a
+/// newer version, or a file edited by hand). Returns the copy's path.
+pub fn keep_unreadable_copy() -> Result<PathBuf, String> {
+    keep_unreadable_copy_of(&settings_path()?)
+}
+
+/// [`keep_unreadable_copy`] for the settings file at `path`.
+pub fn keep_unreadable_copy_of(path: &Path) -> Result<PathBuf, String> {
+    let bytes = fs::read(path).map_err(|error| format!("Could not read settings: {error}"))?;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let copy = path.with_file_name(format!("settings-unreadable-{seconds}.json"));
+    private_file::write(&copy, &bytes, private_file::Flush::Skip)
+        .map_err(|error| format!("Could not copy the unreadable settings: {error}"))?;
+    Ok(copy)
 }
 
 #[cfg(test)]
@@ -1440,6 +1442,19 @@ mod tests {
             .map(|server| server.realname.as_str())
             .collect();
         assert_eq!(realnames, ["Alice Liddell", ""]);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_copied_before_a_save_replaces_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let newer = br#"{"version": 9999, "servers": []}"#;
+        fs::write(&path, newer).unwrap();
+        assert!(load_from(&path).is_err());
+        let copy = keep_unreadable_copy_of(&path).unwrap();
+        save_to(&path, &Settings::default()).unwrap();
+        assert_eq!(fs::read(copy).unwrap(), newer);
+        assert_eq!(load_from(&path).unwrap(), Some(Settings::default()));
     }
 
     #[test]

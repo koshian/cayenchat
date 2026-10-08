@@ -16,7 +16,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -657,50 +656,10 @@ impl LocalFileBackend {
     }
 
     fn write(&self, secrets: BTreeMap<String, String>) -> Result<(), CredentialError> {
-        let io = |error: std::io::Error| CredentialError::Io(error.kind().to_string());
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| CredentialError::Io("the credential path has no directory".into()))?;
-        create_private_dir(parent).map_err(io)?;
         let bytes = SecretsFile::encode(secrets)?.into_bytes();
-        // Write a fresh user-only file, then atomically replace the old one, so
-        // the secrets are never in a file with broader permissions.
-        let temporary = self
-            .path
-            .with_extension(format!("tmp{}", std::process::id()));
-        let _ = fs::remove_file(&temporary);
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let result = (|| {
-            let mut file = options.open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temporary, &self.path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result.map_err(io)
+        crate::private_file::write(&self.path, &bytes, crate::private_file::Flush::Disk)
+            .map_err(|error| CredentialError::Io(error.kind().to_string()))
     }
-}
-
-/// Creates missing directories as user-only (`0700`) on Unix. Existing
-/// directories keep their permissions.
-fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(path)
 }
 
 /// Removes group/other access from an existing credential file.

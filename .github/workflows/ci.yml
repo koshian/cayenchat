@@ -142,6 +142,24 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test -p cayenchat-storage --locked -- --ignored --nocapture
 
+  # Security advisories (RustSec) for every locked dependency. Runs on every
+  # pull request and push, since new advisories appear without any change
+  # here; accepted ones are listed with reasons in deny.toml.
+  advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+
   # The real app under a virtual X display (Xvfb, software Vulkan) against a
   # local Ergo: older history pages keep the view in place, and a reconnect
   # recovers the missed lines where the log was cut off. Linux only: it drives

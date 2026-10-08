@@ -1,0 +1,13 @@
+# cargo-deny configuration. CI runs `cargo deny check advisories` (the
+# "Dependency advisories" job); licenses, bans and sources are not checked.
+#
+# Every vulnerability fails the check. Unmaintained crates fail only when a
+# workspace crate depends on them directly: most of the dependency tree comes
+# through GPUI, where nothing here can replace them. Ignored advisories need a
+# reason and are removed once they no longer apply.
+
+[advisories]
+unmaintained = "workspace"
+ignore = [
+    { id = "RUSTSEC-2021-0153", reason = "`encoding` is unmaintained; irc-core and irc-proto use it for legacy charsets until it is replaced with encoding_rs (spec/security-review-2026-09-26.md, L7)." },
+]
