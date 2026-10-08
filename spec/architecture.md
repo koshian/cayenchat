@@ -35,10 +35,15 @@ until the server advertises one, and again on each new connection. The worker
 sends `Event::CaseMapping` when it changes; `AppState::set_casemapping` re-keys
 the network's channel index (behind `AppState::channel_id`, a hash lookup
 rather than a scan of every conversation), the metadata state uses the same
-value, and so do WHOIS's joined marks and auto-join entries. Channels the
-mapping keeps apart stay separate conversations with their own logs, rosters
-and send target; where names fold alike, the first conversation keeps the
-index entry. The saved tree order and rank are still ASCII-folded (earlier
+value, and so do the worker's presence index, accounts and history requests
+(channel names only), and WHOIS's joined marks, request keys and window keys
+(the nickname there follows the server too). Rebuilding the index reads only
+names and IDs. Configured channels are added before the server advertises
+anything and are never merged then (only an identical name is the same
+conversation); `set_casemapping` decides which one the index reaches. Channels
+the mapping keeps apart stay separate conversations with their own logs,
+rosters and send target; where names fold alike, the first conversation keeps
+the index entry. The saved tree order and rank are still ASCII-folded (earlier
 behaviour, unchanged). `irc-core`'s `text::same_nickname` and `nickname_key`
 delegate to the nickname form.
 
@@ -305,7 +310,8 @@ produces a wire diagnostic), delayed every line and woke 20 times a second while
 idle. QUIT and NICK republish rosters only for channels that contained the user;
 the worker's `PresenceIndex` (`irc-core/src/presence.rs`, #71) answers that, fed
 from the published NAMES snapshots. It indexes users by nickname and channel
-both ways under the RFC 1459 case mapping. A `UserId` (a `u64` never reused in a
+both ways: nicknames under RFC 1459, channels under the network's
+`CaseMapping`. A `UserId` (a `u64` never reused in a
 connection, never kept across connections) survives re-applied snapshots and NICK
 (the NICK line moves the id); QUIT or leaving the last shared channel ends it, so a
 returning nickname is a new presence. Only presence is held: accounts, metadata and

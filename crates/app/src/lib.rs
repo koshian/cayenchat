@@ -457,7 +457,7 @@ impl AppState {
                 ConnectionStatus::Disconnected("Not connected.".into()),
             );
             for channel in config.channels {
-                state.ensure_channel(config.id, &channel);
+                state.ensure_configured_channel(config.id, &channel);
             }
         }
         if let Some(first) = state.conversations.first() {
@@ -507,7 +507,7 @@ impl AppState {
         self.sort_conversations();
         for config in added {
             for channel in &config.channels {
-                self.ensure_channel(config.id, channel);
+                self.ensure_configured_channel(config.id, channel);
             }
         }
         self.repair_selection();
@@ -535,7 +535,7 @@ impl AppState {
         self.statuses.insert(network, ConnectionStatus::Connecting);
         let mut first = None;
         for channel in channels {
-            let id = self.ensure_channel(network, &channel);
+            let id = self.ensure_configured_channel(network, &channel);
             first = first.or(id);
         }
         match (selected_here, first) {
@@ -850,25 +850,24 @@ impl AppState {
     }
 
     /// Records the server's channel-name comparison and re-keys the network's
-    /// channels under it. Channels that differ under the new mapping stay
-    /// separate conversations; where they fold alike, the first one is kept.
+    /// channels under it, also when it is the default: configured channels
+    /// were added without merging. Channels that differ under the new mapping
+    /// stay separate conversations; where they fold alike, the first one is
+    /// reached. Only names and IDs are read, never the logs.
     pub fn set_casemapping(&mut self, network: NetworkId, mapping: CaseMapping) {
-        if self.casemapping(network) == mapping {
-            return;
-        }
         if mapping == CaseMapping::default() {
             self.casemappings.remove(&network);
         } else {
             self.casemappings.insert(network, mapping);
         }
         self.channel_ids.retain(|(owner, _), _| *owner != network);
-        let own: Vec<Conversation> = self
-            .conversations
-            .iter()
-            .filter(|conversation| conversation.network == network)
-            .cloned()
-            .collect();
-        self.channel_ids.extend(channel_index(&own, |_| mapping));
+        for conversation in &self.conversations {
+            if conversation.network == network && conversation.kind == ConversationKind::Channel {
+                self.channel_ids
+                    .entry((network, mapping.fold(&conversation.name)))
+                    .or_insert(conversation.id);
+            }
+        }
     }
 
     /// The channel conversation `name` of `network`.
@@ -1022,6 +1021,26 @@ impl AppState {
         {
             self.highlighted.insert(id);
         }
+    }
+
+    /// A configured channel, added before the server has said how it
+    /// compares names. Only an identical name is the same conversation, so
+    /// names the server may keep apart are not merged; [`Self::set_casemapping`]
+    /// then decides which of them the index reaches.
+    fn ensure_configured_channel(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+    ) -> Option<ConversationId> {
+        let exact = self.conversations.iter().find(|conversation| {
+            conversation.network == network
+                && conversation.kind == ConversationKind::Channel
+                && conversation.name == name
+        });
+        if let Some(conversation) = exact {
+            return Some(conversation.id);
+        }
+        self.add_conversation(network, ConversationKind::Channel, name)
     }
 
     fn ensure_channel(&mut self, network: NetworkId, name: &str) -> Option<ConversationId> {
@@ -2308,6 +2327,43 @@ mod tests {
 
         state.reset_network(NetworkId(1), vec!["#x".into()]);
         assert_eq!(state.casemapping(NetworkId(1)), CaseMapping::default());
+    }
+
+    /// Configured channels exist before the server advertises its mapping;
+    /// they must not be merged then, or an `ascii` server's two channels
+    /// could never both be shown.
+    #[test]
+    fn configured_channels_are_not_merged_before_the_mapping_is_known() {
+        let configured = |channels: &[&str]| NetworkConfig {
+            id: NetworkId(1),
+            name: "one.example".into(),
+            channels: channels.iter().map(|name| (*name).into()).collect(),
+        };
+        let count = |state: &AppState| state.conversations().len();
+        let mut state = AppState::with_networks(vec![configured(&["#foo[1]", "#foo{1}"])]);
+        assert_eq!(count(&state), 2);
+        state.set_casemapping(NetworkId(1), CaseMapping::Ascii);
+        let square = state.channel_id(NetworkId(1), "#foo[1]").unwrap();
+        let curly = state.channel_id(NetworkId(1), "#foo{1}").unwrap();
+        assert_ne!(square, curly);
+
+        // An advertised default mapping also re-keys, and both stay listed.
+        let mut state = AppState::with_networks(vec![configured(&["#foo[1]", "#foo{1}"])]);
+        state.set_casemapping(NetworkId(1), CaseMapping::Rfc1459);
+        assert_eq!(count(&state), 2);
+        assert_eq!(
+            state.channel_id(NetworkId(1), "#foo{1}"),
+            state.channel_id(NetworkId(1), "#foo[1]")
+        );
+
+        // A reset keeps them apart as well, and a refused join leaves both.
+        state.reset_network(NetworkId(1), vec!["#foo[1]".into(), "#foo{1}".into()]);
+        assert_eq!(count(&state), 2);
+        state.set_casemapping(NetworkId(1), CaseMapping::Ascii);
+        assert_ne!(
+            state.channel_id(NetworkId(1), "#foo[1]"),
+            state.channel_id(NetworkId(1), "#foo{1}")
+        );
     }
 
     fn two_networks() -> AppState {

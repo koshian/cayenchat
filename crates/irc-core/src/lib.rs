@@ -1993,6 +1993,9 @@ async fn run_cancellable(
                         {
                             casemapping = announced;
                             metadata.set_casemapping(announced);
+                            roster.presence.set_casemapping(announced);
+                            history.set_casemapping(announced);
+                            accounts.set_casemapping(announced);
                             if events.send(Event::CaseMapping(announced)).await.is_err() {
                                 return;
                             }

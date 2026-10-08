@@ -14,6 +14,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use cayenchat_model::names::CaseMapping;
+
 use crate::text::nickname_key;
 
 /// One user's presence on this connection.
@@ -42,9 +44,48 @@ pub(crate) struct PresenceIndex {
     by_nick: HashMap<String, UserId>,
     users: HashMap<UserId, Presence>,
     channels: HashMap<String, Members>,
+    /// How the server compares channel names; nicknames always use RFC 1459.
+    casemapping: CaseMapping,
 }
 
 impl PresenceIndex {
+    fn channel_key(&self, channel: &str) -> String {
+        self.casemapping.fold(channel)
+    }
+
+    /// Compares channel names with `casemapping` from now on, re-keying the
+    /// channels held. Channels that fold alike under it become one.
+    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+        if self.casemapping == casemapping {
+            return;
+        }
+        self.casemapping = casemapping;
+        let mut moved: HashMap<Arc<str>, Arc<str>> = HashMap::new();
+        let mut channels: HashMap<String, Members> = HashMap::new();
+        for (_, members) in std::mem::take(&mut self.channels) {
+            let key = casemapping.fold(&members.name);
+            let merged = channels.entry(key.clone()).or_default();
+            if merged.key.is_empty() {
+                merged.key = Arc::from(key.as_str());
+                merged.name.clone_from(&members.name);
+            }
+            moved.insert(members.key, merged.key.clone());
+            merged.users.extend(members.users);
+        }
+        self.channels = channels;
+        for presence in self.users.values_mut() {
+            let mut kept: Vec<Arc<str>> = Vec::new();
+            for old in &presence.channels {
+                if let Some(new) = moved.get(old)
+                    && !kept.contains(new)
+                {
+                    kept.push(new.clone());
+                }
+            }
+            presence.channels = kept;
+        }
+    }
+
     pub(crate) fn user(&self, nickname: &str) -> Option<UserId> {
         self.by_nick.get(&nickname_key(nickname)).copied()
     }
@@ -53,7 +94,7 @@ impl PresenceIndex {
     pub(crate) fn in_channel(&self, channel: &str, nickname: &str) -> bool {
         self.user(nickname).is_some_and(|id| {
             self.channels
-                .get(&nickname_key(channel))
+                .get(&self.channel_key(channel))
                 .is_some_and(|members| members.users.contains(&id))
         })
     }
@@ -70,7 +111,7 @@ impl PresenceIndex {
 
     /// The users (as spelled) in `channel` and in no other channel.
     pub(crate) fn only_in(&self, channel: &str) -> Vec<String> {
-        let key = nickname_key(channel);
+        let key = self.channel_key(channel);
         let mut only: Vec<String> = self
             .channels
             .get(&key)
@@ -86,7 +127,7 @@ impl PresenceIndex {
 
     /// Whether `nickname` is in a channel other than `except`.
     pub(crate) fn shares(&self, nickname: &str, except: Option<&str>) -> bool {
-        let except = except.map(nickname_key);
+        let except = except.map(|channel| self.channel_key(channel));
         self.user(nickname)
             .and_then(|id| self.users.get(&id))
             .is_some_and(|presence| {
@@ -116,7 +157,7 @@ impl PresenceIndex {
     /// Replaces the membership of `channel` with `members` (nicknames,
     /// possibly with rank prefixes). Users already known keep their id.
     pub(crate) fn replace_channel(&mut self, channel: &str, members: &[String]) {
-        let channel_key = nickname_key(channel);
+        let channel_key = self.channel_key(channel);
         let mut present = HashSet::new();
         for member in members {
             let nickname = member.trim_start_matches(['~', '&', '@', '%', '+']);
@@ -170,7 +211,7 @@ impl PresenceIndex {
 
     /// Forgets `channel` and everybody only there (we left it).
     pub(crate) fn remove_channel(&mut self, channel: &str) {
-        let channel_key = nickname_key(channel);
+        let channel_key = self.channel_key(channel);
         if let Some(members) = self.channels.remove(&channel_key) {
             for id in members.users {
                 self.leave(id, &channel_key);
@@ -256,7 +297,7 @@ impl PresenceIndex {
                         presence
                             .channels
                             .iter()
-                            .any(|c| **c == *nickname_key(&members.name))
+                            .any(|c| **c == *self.channel_key(&members.name))
                     })
                 })
             })
@@ -279,6 +320,27 @@ mod tests {
         assert!(bob.is_some());
         index.replace_channel("#a", &names(&["bob", "carol", "dave"]));
         assert_eq!(index.user("BOB"), bob);
+        assert!(index.consistent());
+    }
+
+    #[test]
+    fn channels_the_server_keeps_apart_have_their_own_members() {
+        let mut index = PresenceIndex::default();
+        index.set_casemapping(CaseMapping::Ascii);
+        index.replace_channel("#foo[1]", &names(&["bob"]));
+        index.replace_channel("#foo{1}", &names(&["carol"]));
+        assert!(index.in_channel("#foo[1]", "bob"));
+        assert!(!index.in_channel("#foo{1}", "bob"));
+        assert!(index.consistent());
+        index.remove_channel("#foo{1}");
+        assert!(index.in_channel("#foo[1]", "bob"));
+        assert!(index.user("carol").is_none());
+
+        // A mapping that folds them together merges what is held.
+        index.replace_channel("#foo{1}", &names(&["carol"]));
+        index.set_casemapping(CaseMapping::Rfc1459);
+        assert!(index.in_channel("#FOO{1}", "bob"));
+        assert!(index.in_channel("#foo[1]", "carol"));
         assert!(index.consistent());
     }
 

@@ -2536,8 +2536,9 @@ impl ChatWindow {
     ) -> Result<(), String> {
         self.registered_connection(network)?
             .send_member_command(nickname, MemberCommand::Whois)?;
+        let key = self.state.casemapping(network).fold(nickname);
         if let Some(session) = self.sessions.get_mut(&network) {
-            session.pending_whois.insert(names::fold(nickname));
+            session.pending_whois.insert(key);
         }
         cx.notify();
         Ok(())
@@ -2701,7 +2702,10 @@ impl ChatWindow {
         requested: bool,
         cx: &mut Context<Self>,
     ) {
-        let key = (network, names::fold(&info.nickname));
+        let key = (
+            network,
+            self.state.casemapping(network).fold(&info.nickname),
+        );
         if let Some(handle) = self.whois_windows.get(&key).copied() {
             let shown = handle.update(cx, |view, window, cx| {
                 view.set_info(info.clone(), window, cx);
@@ -3916,7 +3920,10 @@ impl ChatWindow {
                 if let Some(session) = self.sessions.get(&network) {
                     complete_whois(&mut info, &session.user_accounts);
                 }
-                let key = (network, names::fold(&info.nickname));
+                let key = (
+                    network,
+                    self.state.casemapping(network).fold(&info.nickname),
+                );
                 let requested = self
                     .sessions
                     .get_mut(&network)
