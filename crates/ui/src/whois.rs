@@ -1,6 +1,6 @@
 use crate::{ChatWindow, localization::Localizer};
 use cayenchat_irc_core::WhoisInfo;
-use cayenchat_model::NetworkId;
+use cayenchat_model::{NetworkId, display};
 use gpui::{prelude::*, *};
 use std::collections::HashSet;
 
@@ -149,10 +149,12 @@ impl WhoisWindow {
             .child(div().flex_1().min_w_0().child(value))
     }
 
+    /// Values come from the server and the user themselves (real name, away
+    /// text), so bidirectional controls are neutralized before drawing.
     fn text_row(&self, key: &str, value: Option<String>) -> Option<Div> {
         value
             .filter(|value| !value.is_empty())
-            .map(|value| self.row(key, value))
+            .map(|value| self.row(key, display::neutralize_bidi_owned(value)))
     }
 
     fn channel_selector(&self, cx: &mut Context<Self>) -> Div {

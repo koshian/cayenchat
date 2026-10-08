@@ -1704,10 +1704,10 @@ impl ChatWindow {
             replayed,
         } = message;
 
-        let plain = match action_text(text) {
+        let plain = cayenchat_model::display::neutralize_bidi_owned(match action_text(text) {
             Some(action) => format!("* {sender} {}", strip_formatting(action)),
             None => strip_formatting(text),
-        };
+        });
         let Some(trigger) = self.notification_rules.trigger(IncomingMessage {
             text: &plain,
             channel: channel.is_some(),
@@ -1734,7 +1734,7 @@ impl ChatWindow {
                 .format("notification_private_title", &[("sender", sender)]),
         };
         self.notifier.show(DesktopNotification {
-            summary,
+            summary: cayenchat_model::display::neutralize_bidi_owned(summary),
             body: notifications::body_text(&plain),
             sound: self.notification_rules.sound,
         });
