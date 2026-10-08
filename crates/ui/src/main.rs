@@ -8735,7 +8735,14 @@ fn select_linux_display(saved: LinuxDisplay) {
 fn load_settings_at_startup() -> (Settings, Option<String>) {
     let mut saved = match cayenchat_storage::load() {
         Ok(saved) => saved.unwrap_or_default(),
-        Err(error) => return (Settings::default(), Some(error)),
+        Err(error) => {
+            // The next save replaces the file, so keep what could not be read.
+            let error = match cayenchat_storage::keep_unreadable_copy() {
+                Ok(copy) => format!("{error}\nA copy was kept at {}.", copy.display()),
+                Err(_) => error,
+            };
+            return (Settings::default(), Some(error));
+        }
     };
     let i18n = Localizer::new(saved.language);
     let logging_error = diagnostics::configure(&saved.experimental)
