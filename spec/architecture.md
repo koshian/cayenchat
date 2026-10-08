@@ -26,6 +26,12 @@ The exact crate boundaries may evolve as implementation experience accumulates.
 
 Small domain types shared by the application, such as networks, conversations, users, messages, IDs, and connection state.
 
+`model::names` is the one definition of "the same nickname or channel": RFC
+1459 case mapping (ASCII letters, and `[]\~` as the uppercase forms of
+`{}|^`). `irc-core` (`text::same_channel`, `same_nickname`, `nickname_key`),
+`app` (the channel index behind `AppState::channel_id`, a hash lookup rather
+than a scan of every conversation) and `ui` (WHOIS) all use it.
+
 Keep dependencies minimal.
 
 ### irc-core

@@ -12,7 +12,7 @@ use std::{
 
 use cayenchat_model::{
     Conversation, ConversationId, ConversationKind, Message, NativeMessageId, Network, NetworkId,
-    Provenance, TimeOfDay, Timestamp,
+    Provenance, TimeOfDay, Timestamp, names,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -90,6 +90,10 @@ enum ChannelFilter {
 pub struct AppState {
     networks: Vec<Network>,
     conversations: Vec<Conversation>,
+    /// Channel conversations by network and folded name (`names::fold`), so
+    /// an incoming line finds its channel under IRC case mapping without
+    /// comparing it with every conversation.
+    channel_ids: HashMap<(NetworkId, String), ConversationId>,
     selected: Selection,
     previous_channel: Option<ConversationId>,
     unread: HashSet<ConversationId>,
@@ -304,6 +308,7 @@ impl AppState {
             .collect();
         Self {
             networks,
+            channel_ids: channel_index(&conversations),
             conversations,
             selected: Selection::Channel(ConversationId(1)),
             previous_channel: None,
@@ -353,6 +358,7 @@ impl AppState {
         Self {
             statuses: HashMap::from([(network.id, ConnectionStatus::Connecting)]),
             networks: vec![network],
+            channel_ids: channel_index(&conversations),
             conversations,
             selected,
             previous_channel: None,
@@ -390,6 +396,7 @@ impl AppState {
         let mut state = Self {
             networks: Vec::new(),
             conversations: Vec::new(),
+            channel_ids: HashMap::new(),
             selected: networks
                 .first()
                 .map_or(Selection::None, |network| Selection::Server(network.id)),
@@ -518,6 +525,7 @@ impl AppState {
             .collect();
         self.conversations
             .retain(|channel| channel.network != network);
+        self.channel_ids.retain(|(owner, _), _| *owner != network);
         for id in &removed {
             self.duplicates.remove(id);
             self.pending_history.remove(id);
@@ -648,15 +656,9 @@ impl AppState {
     }
 
     /// The channel conversation `name` of `network`.
+    /// Names compare under IRC case mapping, as on the server.
     pub fn channel_id(&self, network: NetworkId, name: &str) -> Option<ConversationId> {
-        self.conversations
-            .iter()
-            .find(|channel| {
-                channel.network == network
-                    && channel.kind == ConversationKind::Channel
-                    && channel.name.eq_ignore_ascii_case(name)
-            })
-            .map(|channel| channel.id)
+        self.channel_ids.get(&(network, names::fold(name))).copied()
     }
 
     /// The private conversation with `peer_key` on `network`.
@@ -835,6 +837,9 @@ impl AppState {
         let id = ConversationId(self.next_conversation_id);
         self.next_conversation_id += 1;
         let private = kind != ConversationKind::Channel;
+        if !private {
+            self.channel_ids.insert((network, names::fold(name)), id);
+        }
         let index = self
             .conversations
             .iter()
@@ -1694,6 +1699,20 @@ impl AppState {
     }
 }
 
+/// [`AppState::channel_ids`] for conversations built directly.
+fn channel_index(conversations: &[Conversation]) -> HashMap<(NetworkId, String), ConversationId> {
+    conversations
+        .iter()
+        .filter(|conversation| conversation.kind == ConversationKind::Channel)
+        .map(|conversation| {
+            (
+                (conversation.network, names::fold(&conversation.name)),
+                conversation.id,
+            )
+        })
+        .collect()
+}
+
 fn sorted_members(mut members: Vec<String>) -> Vec<String> {
     // Servers can pad NAMES with extra spaces; an entry without a nickname is
     // not a member and must not become a row.
@@ -1982,6 +2001,32 @@ mod tests {
             state.joined_channel(NetworkId(1), &format!("#c{index}"));
         }
         assert_eq!(state.conversations().len(), MAX_CONVERSATIONS_PER_NETWORK);
+    }
+
+    /// Servers compare channel names under RFC 1459 case mapping, so a line
+    /// for `#FOO{1}` belongs to the joined `#foo[1]`; other networks and
+    /// removed networks never match.
+    #[test]
+    fn channels_are_found_under_irc_case_mapping() {
+        let mut state = two_networks();
+        state.joined_channel(NetworkId(1), "#foo[1]");
+        state.joined_channel(NetworkId(1), "#FOO{1}");
+        let id = state.channel_id(NetworkId(1), "#foo[1]").unwrap();
+        assert_eq!(state.channel_id(NetworkId(1), "#Foo{1}"), Some(id));
+        assert_eq!(state.channel_id(NetworkId(2), "#foo[1]"), None);
+        state.append_channel_message(NetworkId(1), "#FOO{1}", "bob", "hi", false, false);
+        let channel = state.conversations().iter().find(|c| c.id == id).unwrap();
+        assert_eq!(channel.messages.len(), 1);
+        assert_eq!(
+            state
+                .conversations()
+                .iter()
+                .filter(|c| c.network == NetworkId(1) && names::same(&c.name, "#foo[1]"))
+                .count(),
+            1
+        );
+        state.reset_network(NetworkId(1), Vec::new());
+        assert_eq!(state.channel_id(NetworkId(1), "#foo[1]"), None);
     }
 
     fn two_networks() -> AppState {
