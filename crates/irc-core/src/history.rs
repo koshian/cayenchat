@@ -1563,9 +1563,13 @@ mod tests {
     #[test]
     fn history_lines_do_not_keep_credentials_sent_to_services() {
         let line = |text: &str, channel: &str| {
-            history_line(&text.parse::<IrcMessage>().unwrap(), channel)
-                .unwrap()
-                .text
+            history_line(
+                &text.parse::<IrcMessage>().unwrap(),
+                channel,
+                CaseMapping::default(),
+            )
+            .unwrap()
+            .text
         };
         assert_eq!(
             line(":me!u@h PRIVMSG Q :AUTH alice dummy", "Q"),
