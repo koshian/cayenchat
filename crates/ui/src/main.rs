@@ -54,8 +54,8 @@ use cayenchat_irc_core::{
 use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
-    CredentialStore, DarkColors, Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret,
-    SecretKey, ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    CredentialStore, DarkColors, Ircv3Preferences, Language, Notifications, Secret, SecretKey,
+    ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -8727,7 +8727,8 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
 /// Chooses the Linux display server before GPUI picks one from the
 /// environment. `CAYENCHAT_DISPLAY=x11|wayland` overrides the saved choice.
 #[cfg(target_os = "linux")]
-fn select_linux_display(saved: LinuxDisplay) {
+fn select_linux_display(saved: cayenchat_storage::LinuxDisplay) {
+    use cayenchat_storage::LinuxDisplay;
     let choice = match std::env::var("CAYENCHAT_DISPLAY")
         .map(|value| value.to_ascii_lowercase())
         .as_deref()
@@ -12811,7 +12812,7 @@ mod navigation_binding_tests {
         let bindings = shortcut_bindings(ChannelNumberModifier::Ctrl, &Default::default());
         let matching: Vec<_> = bindings
             .iter()
-            .filter(|binding| binding.match_keystrokes(&[typed.clone()]) == Some(false))
+            .filter(|binding| binding.match_keystrokes(std::slice::from_ref(&typed)) == Some(false))
             .collect();
         assert!(
             matching.len() <= 1,
