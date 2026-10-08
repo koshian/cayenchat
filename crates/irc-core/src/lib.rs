@@ -736,14 +736,14 @@ impl EventSender {
         }
     }
 
-    async fn send(&self, event: Event) -> Result<(), mpsc::error::SendError<Event>> {
+    async fn send(&self, event: Event) -> Result<(), ()> {
         if self.quit.is_requested() {
             // Dropping the event is fine; a closed receiver is not an error here.
             let _ = self.events.try_send(event);
             return Ok(());
         }
         tokio::select! {
-            sent = self.events.send(event) => sent,
+            sent = self.events.send(event) => sent.map_err(|_| ()),
             _ = self.quit.requested() => Ok(()),
         }
     }
