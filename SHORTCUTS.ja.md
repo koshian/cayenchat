@@ -15,6 +15,7 @@
 | 前後のアクティブなサーバー | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
 | 前後のサーバー | `Cmd+Shift+[` / `Cmd+Shift+]`、`Ctrl+Left/Right` | `Alt+PageUp/PageDown` |
 | 1～10番目のチャンネル | `Cmd+1..9, 0` | `Ctrl+1..9, 0`（変更可） |
+| 1～10番目のチャンネル（順序の変更） | 右のツリーでチャンネルをドラッグ（ドラッグ中に番号を表示）、またはコンテキストメニュー | 同左 |
 | 1～10番目のサーバー | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
 | チャンネル発言（`PRIVMSG`）を送信 | `Enter` | `Enter` |
 | IRC `NOTICE` を送信 | `Ctrl+Enter` | `Ctrl+Enter` |

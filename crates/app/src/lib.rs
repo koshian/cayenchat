@@ -20,6 +20,8 @@ pub use timeline::MessageMeta;
 /// Upper bound on conversations per network, so a hostile server or bouncer
 /// cannot grow memory without limit by announcing endless channel joins.
 const MAX_CONVERSATIONS_PER_NETWORK: usize = 1_000;
+/// Channel names remembered per network for the chosen tree order.
+const MAX_ORDER_NAMES: usize = 2_000;
 /// Upper bound on private conversations per network (within the limit
 /// above), so a flood of messages from new nicknames cannot fill the channel
 /// tree; further ones go to the server log.
@@ -122,6 +124,22 @@ pub struct AppState {
     /// Channels whose log a disconnect cut off, until the missed lines
     /// arrive or recovery is given up.
     resume_points: HashMap<ConversationId, ResumePoint>,
+    /// The channel order the user chose per network (lowercased names, parted
+    /// channels included so a rejoined one returns to its place).
+    channel_orders: HashMap<NetworkId, Vec<String>>,
+    /// Each name of `channel_orders` to its position there.
+    channel_ranks: HashMap<NetworkId, HashMap<String, usize>>,
+}
+
+/// Where a channel or private conversation moves within its group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveTo {
+    Up,
+    Down,
+    First,
+    Last,
+    /// Into the place of another conversation of the same group.
+    Place(ConversationId),
 }
 
 /// Where a disconnect cut a channel's log off: the newest message its
@@ -324,6 +342,8 @@ impl AppState {
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
+            channel_orders: HashMap::new(),
+            channel_ranks: HashMap::new(),
         }
     }
 
@@ -371,6 +391,8 @@ impl AppState {
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
+            channel_orders: HashMap::new(),
+            channel_ranks: HashMap::new(),
         }
     }
 
@@ -410,6 +432,8 @@ impl AppState {
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
+            channel_orders: HashMap::new(),
+            channel_ranks: HashMap::new(),
         };
         for config in networks {
             state.networks.push(Network {
@@ -453,6 +477,8 @@ impl AppState {
             self.server_messages.remove(&id);
             self.active_servers.remove(&id);
             self.avatars.remove_network(id);
+            self.channel_orders.remove(&id);
+            self.channel_ranks.remove(&id);
         }
         self.networks = networks
             .iter()
@@ -548,6 +574,162 @@ impl AppState {
         let networks = &self.networks;
         self.conversations
             .sort_by_key(|channel| position(channel.network, networks));
+    }
+
+    /// The conversations of `network` that share `id`'s group (channels, or
+    /// private conversations), as the range they occupy. Each group is
+    /// contiguous in `conversations`.
+    fn group_range(&self, id: ConversationId) -> Option<std::ops::Range<usize>> {
+        let at = self.conversations.iter().position(|c| c.id == id)?;
+        let (network, private) = (
+            self.conversations[at].network,
+            self.conversations[at].is_private(),
+        );
+        let same = |c: &Conversation| c.network == network && c.is_private() == private;
+        let start = self.conversations[..at]
+            .iter()
+            .rposition(|c| !same(c))
+            .map_or(0, |i| i + 1);
+        let end = self.conversations[at..]
+            .iter()
+            .position(|c| !same(c))
+            .map_or(self.conversations.len(), |i| at + i);
+        Some(start..end)
+    }
+
+    /// Moves a conversation within its network's channels (or private
+    /// conversations); channels never cross servers or pass private
+    /// conversations. Returns the network when the order changed, after
+    /// recording it as that network's chosen order.
+    pub fn move_conversation(&mut self, id: ConversationId, to: MoveTo) -> Option<NetworkId> {
+        let range = self.group_range(id)?;
+        let from = self.conversations[range.clone()]
+            .iter()
+            .position(|c| c.id == id)?;
+        let last = range.len() - 1;
+        let target = match to {
+            MoveTo::Up => from.saturating_sub(1),
+            MoveTo::Down => (from + 1).min(last),
+            MoveTo::First => 0,
+            MoveTo::Last => last,
+            MoveTo::Place(other) => self.conversations[range.clone()]
+                .iter()
+                .position(|c| c.id == other)?,
+        };
+        if target == from {
+            return None;
+        }
+        let group = &mut self.conversations[range];
+        if from < target {
+            group[from..=target].rotate_left(1);
+        } else {
+            group[target..=from].rotate_right(1);
+        }
+        let network = self.conversations.iter().find(|c| c.id == id)?.network;
+        if !self.conversations.iter().find(|c| c.id == id)?.is_private() {
+            let order = self.merged_channel_order(network);
+            self.store_channel_order(network, order);
+        }
+        Some(network)
+    }
+
+    /// The order to remember for `network`: its channels as shown, with
+    /// remembered channels that are not present kept after the shown channel
+    /// that preceded them.
+    fn merged_channel_order(&self, network: NetworkId) -> Vec<String> {
+        let mut order: Vec<String> = self
+            .conversations
+            .iter()
+            .filter(|c| c.network == network && !c.is_private())
+            .map(|c| c.name.to_ascii_lowercase())
+            .collect();
+        let mut previous: Option<String> = None;
+        for name in self.channel_orders.get(&network).into_iter().flatten() {
+            if let Some(position) = order.iter().position(|n| n == name) {
+                previous = Some(order[position].clone());
+                continue;
+            }
+            let at = previous
+                .as_ref()
+                .and_then(|p| order.iter().position(|n| n == p))
+                .map_or(0, |i| i + 1);
+            order.insert(at, name.clone());
+            previous = Some(name.clone());
+        }
+        order
+    }
+
+    /// The chosen channel order of `network` to save.
+    pub fn channel_order(&self, network: NetworkId) -> Vec<String> {
+        self.channel_orders
+            .get(&network)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Adopts a saved channel order for `network` and arranges its channels
+    /// by it. Channels it does not list stay at the end in their current order.
+    pub fn set_channel_order(&mut self, network: NetworkId, order: Vec<String>) {
+        self.store_channel_order(network, order);
+        self.apply_channel_order(network);
+    }
+
+    /// Remembers `order` for `network` (bounded) with a rank table, so a
+    /// channel's place is found without searching the list.
+    fn store_channel_order(&mut self, network: NetworkId, mut order: Vec<String>) {
+        order.truncate(MAX_ORDER_NAMES);
+        if order.is_empty() {
+            self.channel_orders.remove(&network);
+            self.channel_ranks.remove(&network);
+            return;
+        }
+        let mut ranks = HashMap::with_capacity(order.len());
+        for (rank, name) in order.iter().enumerate() {
+            ranks.entry(name.clone()).or_insert(rank);
+        }
+        self.channel_orders.insert(network, order);
+        self.channel_ranks.insert(network, ranks);
+    }
+
+    /// Where a new channel named `name` goes among `network`'s channels
+    /// (`start..end` in `conversations`): after those ranked before it, and
+    /// at the end when the order does not list it.
+    fn channel_slot(&self, network: NetworkId, name: &str, start: usize, end: usize) -> usize {
+        let Some(ranks) = self.channel_ranks.get(&network) else {
+            return end;
+        };
+        let rank = |name: &str| {
+            ranks
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or(usize::MAX)
+        };
+        let new = rank(name);
+        start + self.conversations[start..end].partition_point(|c| rank(&c.name) <= new)
+    }
+
+    fn apply_channel_order(&mut self, network: NetworkId) {
+        let Some(ranks) = self.channel_ranks.get(&network) else {
+            return;
+        };
+        let rank = |name: &str| {
+            ranks
+                .get(&name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or(usize::MAX)
+        };
+        let Some(start) = self
+            .conversations
+            .iter()
+            .position(|c| c.network == network && !c.is_private())
+        else {
+            return;
+        };
+        let end = self.conversations[start..]
+            .iter()
+            .position(|c| c.network != network || c.is_private())
+            .map_or(self.conversations.len(), |i| start + i);
+        self.conversations[start..end].sort_by_cached_key(|c| rank(&c.name));
     }
 
     fn repair_selection(&mut self) {
@@ -861,6 +1043,14 @@ impl AppState {
                     })
                     .unwrap_or(self.conversations.len())
             });
+        let index = match self
+            .conversations
+            .iter()
+            .position(|c| c.network == network && !c.is_private())
+        {
+            Some(start) if !private => self.channel_slot(network, name, start, index),
+            _ => index,
+        };
         self.conversations.insert(
             index,
             Conversation {
@@ -2005,6 +2195,95 @@ mod tests {
             .iter()
             .map(|c| (c.network.0, c.name.clone()))
             .collect()
+    }
+
+    fn channel_names(state: &AppState, network: u32) -> Vec<String> {
+        state
+            .conversations()
+            .iter()
+            .filter(|c| c.network.0 == network)
+            .map(|c| c.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn channels_move_within_their_server_and_the_order_is_remembered() {
+        let mut state = two_networks();
+        for name in ["#c", "#d"] {
+            state.joined_channel(NetworkId(1), name);
+        }
+        let a = state.channel_id(NetworkId(1), "#a").unwrap();
+        let d = state.channel_id(NetworkId(1), "#d").unwrap();
+        // Up at the top and moving onto itself change nothing.
+        assert_eq!(state.move_conversation(a, MoveTo::Up), None);
+        assert_eq!(state.move_conversation(a, MoveTo::Place(a)), None);
+        assert_eq!(
+            state.move_conversation(d, MoveTo::First),
+            Some(NetworkId(1))
+        );
+        assert_eq!(channel_names(&state, 1), ["#d", "#a", "#b", "#c"]);
+        state.move_conversation(d, MoveTo::Down);
+        state.move_conversation(a, MoveTo::Last);
+        assert_eq!(channel_names(&state, 1), ["#d", "#b", "#c", "#a"]);
+        state.move_conversation(a, MoveTo::Place(d));
+        assert_eq!(channel_names(&state, 1), ["#a", "#d", "#b", "#c"]);
+        // The other server is untouched and a channel never crosses over.
+        assert_eq!(channel_names(&state, 2), ["#a"]);
+        let other = state.channel_id(NetworkId(2), "#a").unwrap();
+        assert_eq!(state.move_conversation(a, MoveTo::Place(other)), None);
+        assert_eq!(state.channel_order(NetworkId(1)), ["#a", "#d", "#b", "#c"]);
+
+        // A new state adopts the saved order; unknown channels go last, and
+        // a parted channel's place is kept for when it joins again.
+        let mut next = two_networks();
+        next.set_channel_order(NetworkId(1), state.channel_order(NetworkId(1)));
+        assert_eq!(channel_names(&next, 1), ["#a", "#b"]);
+        next.joined_channel(NetworkId(1), "#new");
+        next.joined_channel(NetworkId(1), "#D");
+        next.joined_channel(NetworkId(1), "#c");
+        assert_eq!(channel_names(&next, 1), ["#a", "#D", "#b", "#c", "#new"]);
+    }
+
+    #[test]
+    fn many_channels_join_by_a_saved_order_without_sorting_each_time() {
+        let mut state = two_networks();
+        let names: Vec<String> = (0..MAX_CONVERSATIONS_PER_NETWORK - 2)
+            .map(|n| format!("#c{n}"))
+            .collect();
+        // Saved in reverse, so every join lands at the front.
+        let order: Vec<String> = names.iter().rev().cloned().collect();
+        state.set_channel_order(NetworkId(1), order);
+        let started = std::time::Instant::now();
+        let id = state.reset_network(NetworkId(1), names.clone());
+        drop(id);
+        let shown = channel_names(&state, 1);
+        assert_eq!(shown.len(), names.len());
+        assert_eq!(shown[0], names[names.len() - 1]);
+        assert_eq!(shown[shown.len() - 1], "#c0");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_parted_channels_place_survives_another_move() {
+        let mut state = two_networks();
+        state.set_channel_order(NetworkId(1), vec!["#b".into(), "#gone".into(), "#a".into()]);
+        assert_eq!(channel_names(&state, 1), ["#b", "#a"]);
+        let a = state.channel_id(NetworkId(1), "#a").unwrap();
+        state.move_conversation(a, MoveTo::First);
+        assert_eq!(state.channel_order(NetworkId(1)), ["#a", "#b", "#gone"]);
+    }
+
+    #[test]
+    fn private_conversations_stay_after_channels() {
+        let mut state = two_networks();
+        let query = state
+            .private_conversation(NetworkId(1), "alice", "alice", true)
+            .unwrap();
+        let a = state.channel_id(NetworkId(1), "#a").unwrap();
+        assert_eq!(state.move_conversation(a, MoveTo::Place(query)), None);
+        assert_eq!(state.move_conversation(query, MoveTo::Up), None);
+        state.move_conversation(a, MoveTo::Last);
+        assert_eq!(channel_names(&state, 1), ["#b", "#a", "alice"]);
     }
 
     #[test]

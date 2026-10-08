@@ -253,7 +253,12 @@ release only holds the latest build and is never empty if an upload fails.
 #### Versioned releases
 
 `release.yml` publishes an immutable release for every pushed `v*` tag; the
-rolling `beta` is separate and unchanged. To release:
+rolling `beta` is separate and unchanged. Only versioned releases build with
+the `dist` Cargo profile (`package.yml` input `profile`): fat LTO, one codegen
+unit and stripped symbols, about half the size of `release` (28.6 MB against
+55.3 MB on Linux x86_64) at the cost of a much slower build. The beta and Test
+Builds keep `release`. A rehearsal builds with `dist` too, so it checks that
+profile on every platform. To release:
 
 1. Check that CI passed on the master commit that bumped the version, and that
    its beta artifacts are good. Optionally rehearse with
