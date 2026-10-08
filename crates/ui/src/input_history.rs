@@ -24,25 +24,27 @@ struct Browsing {
 
 /// Whether `text` carries a credential and must not be kept where an Up key
 /// (or a shared screen) could show it again: commands to the services that
-/// log in, register or change settings, `/oper`, `/pass`, and `/raw` forms
-/// of those. Mirrors what the core hides from the transcript, but wider: any
-/// message to NickServ or ChanServ counts.
-pub fn is_sensitive(text: &str) -> bool {
+/// take passwords (`cayenchat_irc_core::is_credential_service`), `/oper`,
+/// `/pass`, `/auth`, and `/raw` forms of those, or anything typed in a
+/// private conversation with such a service (`private_peer`). Mirrors what
+/// the core hides from the transcript, but wider: any message to those
+/// services counts.
+pub fn is_sensitive(text: &str, private_peer: Option<&str>) -> bool {
+    use cayenchat_irc_core::is_credential_service;
     let Some(command) = text.strip_prefix('/') else {
-        return false;
+        return private_peer.is_some_and(is_credential_service);
     };
     let mut words = command.split_whitespace();
     let verb = words.next().unwrap_or("").to_ascii_uppercase();
-    let service = |name: &str| {
-        let name = name.split('@').next().unwrap_or(name).to_ascii_uppercase();
-        matches!(name.as_str(), "NICKSERV" | "CHANSERV")
-    };
     match verb.as_str() {
-        "OPER" | "PASS" | "AUTHENTICATE" | "NS" | "NICKSERV" | "CS" | "CHANSERV" => true,
-        "MSG" | "PRIVMSG" | "NOTICE" | "SQUERY" => words.next().is_some_and(service),
+        "OPER" | "PASS" | "AUTH" | "AUTHENTICATE" | "NS" | "NICKSERV" | "CS" | "CHANSERV"
+        | "AUTHSERV" => true,
+        "MSG" | "PRIVMSG" | "NOTICE" | "SQUERY" => words.next().is_some_and(is_credential_service),
+        // `/me` and `/msg :text` in a service conversation go to the service.
+        _ if private_peer.is_some_and(is_credential_service) => true,
         "RAW" | "QUOTE" => command
             .split_once(char::is_whitespace)
-            .is_some_and(|(_, raw)| is_sensitive(&format!("/{}", raw.trim_start()))),
+            .is_some_and(|(_, raw)| is_sensitive(&format!("/{}", raw.trim_start()), None)),
         _ => false,
     }
 }
@@ -50,10 +52,11 @@ pub fn is_sensitive(text: &str) -> bool {
 impl InputHistory {
     /// Remembers a sent draft and ends any browsing. Repeating the latest
     /// entry does not add another, and drafts with credentials are not kept.
-    pub fn record(&mut self, text: &str) {
+    /// `private_peer` is the peer of the private conversation it was sent in.
+    pub fn record(&mut self, text: &str, private_peer: Option<&str>) {
         self.browsing = None;
         if text.trim().is_empty()
-            || is_sensitive(text)
+            || is_sensitive(text, private_peer)
             || self.entries.last().is_some_and(|last| last == text)
         {
             return;
@@ -123,7 +126,7 @@ mod tests {
     fn history(entries: &[&str]) -> InputHistory {
         let mut history = InputHistory::default();
         for entry in entries {
-            history.record(entry);
+            history.record(entry, None);
         }
         history
     }
@@ -147,11 +150,11 @@ mod tests {
     #[test]
     fn is_bounded_and_skips_blanks_and_immediate_repeats() {
         let mut history = InputHistory::default();
-        history.record("   ");
+        history.record("   ", None);
         assert_eq!(history.previous(HERE, ""), None);
         for n in 0..LIMIT + 5 {
-            history.record(&n.to_string());
-            history.record(&n.to_string());
+            history.record(&n.to_string(), None);
+            history.record(&n.to_string(), None);
         }
         assert_eq!(history.entries.len(), LIMIT);
         assert_eq!(history.entries[0], "5");
@@ -170,7 +173,7 @@ mod tests {
     fn sending_ends_browsing() {
         let mut history = history(&["one", "two"]);
         assert_eq!(history.previous(HERE, "").as_deref(), Some("two"));
-        history.record("two");
+        history.record("two", None);
         assert_eq!(history.next(HERE, "two"), None);
     }
 
@@ -200,11 +203,25 @@ mod tests {
             "/quote OPER admin pw",
             "/raw PRIVMSG NickServ :IDENTIFY pw",
             "/raw   ns identify pw",
+            "/msg Q@CServe.quakenet.org AUTH alice pw",
+            "/msg X@channels.undernet.org login alice pw",
+            "/msg AuthServ auth alice pw",
+            "/authserv auth alice pw",
+            "/quote AUTH alice pw",
         ];
         let mut history = InputHistory::default();
         for line in secret {
-            assert!(is_sensitive(line), "{line}");
-            history.record(line);
+            assert!(is_sensitive(line, None), "{line}");
+            history.record(line, None);
+        }
+        // Typed in a private conversation with a service.
+        for (line, peer) in [
+            ("AUTH alice pw", "Q"),
+            ("identify pw", "NickServ"),
+            ("/me x", "X"),
+        ] {
+            assert!(is_sensitive(line, Some(peer)), "{line}");
+            history.record(line, Some(peer));
         }
         assert_eq!(history.previous(HERE, ""), None, "nothing was kept");
         let harmless = [
@@ -217,8 +234,9 @@ mod tests {
             "/nick alice",
         ];
         for line in harmless {
-            assert!(!is_sensitive(line), "{line}");
-            history.record(line);
+            assert!(!is_sensitive(line, None), "{line}");
+            assert!(!is_sensitive(line, Some("alice")), "{line}");
+            history.record(line, None);
         }
         assert_eq!(history.previous(HERE, "").as_deref(), Some("/nick alice"));
     }
