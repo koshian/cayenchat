@@ -2,6 +2,7 @@
 
 pub mod attachment;
 pub mod display;
+pub mod names;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NetworkId(pub u32);

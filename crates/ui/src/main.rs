@@ -51,7 +51,7 @@ use cayenchat_irc_core::{
     Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, RealNameFailure,
     SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
-use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp, display};
+use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp, display, names};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
     CredentialStore, DarkColors, Ircv3Preferences, Language, Notifications, Secret, SecretKey,
@@ -66,13 +66,13 @@ use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use std::{
     cell::Cell,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 use theme::Theme;
-use whois::WhoisWindow;
+use whois::{JoinedChannels, WhoisWindow};
 
 /// The channel log's share of the log height when nothing was dragged, and
 /// the bounds of what dragging may leave to either log.
@@ -1177,6 +1177,13 @@ struct DraggedChannel {
 
 /// The label that follows the pointer while a channel is dragged.
 struct ChannelDragPreview(String);
+
+impl ChannelDragPreview {
+    /// The name is drawn, so bidirectional controls in it are neutralized.
+    fn new(name: &str) -> Self {
+        Self(display::neutralize_bidi(name).into_owned())
+    }
+}
 
 impl Render for ChannelDragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2537,24 +2544,30 @@ impl ChatWindow {
     ) -> Result<(), String> {
         self.registered_connection(network)?
             .send_member_command(nickname, MemberCommand::Whois)?;
+        let key = self.state.casemapping(network).fold(nickname);
         if let Some(session) = self.sessions.get_mut(&network) {
-            session.pending_whois.insert(nickname.to_lowercase());
+            session.pending_whois.insert(key);
         }
         cx.notify();
         Ok(())
     }
 
-    fn joined_channels(&self, network: NetworkId) -> HashSet<String> {
-        self.state
-            .conversations()
-            .iter()
-            .filter(|conversation| {
-                conversation.network == network
-                    && !conversation.is_private()
-                    && self.state.is_active_channel(conversation.id)
-            })
-            .map(|conversation| conversation.name.to_lowercase())
-            .collect()
+    fn joined_channels(&self, network: NetworkId) -> JoinedChannels {
+        let mapping = self.state.casemapping(network);
+        JoinedChannels {
+            mapping,
+            names: self
+                .state
+                .conversations()
+                .iter()
+                .filter(|conversation| {
+                    conversation.network == network
+                        && !conversation.is_private()
+                        && self.state.is_active_channel(conversation.id)
+                })
+                .map(|conversation| mapping.fold(&conversation.name))
+                .collect(),
+        }
     }
 
     fn dismiss_menus(&mut self) -> bool {
@@ -2582,6 +2595,7 @@ impl ChatWindow {
 
     /// Whether `channel` is an enabled auto-join entry of `network`'s server.
     fn auto_join_enabled(&self, network: NetworkId, channel: &str) -> bool {
+        let mapping = self.state.casemapping(network);
         self.sessions
             .get(&network)
             .and_then(|session| self.saved.profile(&session.profile_id))
@@ -2589,7 +2603,7 @@ impl ChatWindow {
                 profile
                     .channels()
                     .iter()
-                    .any(|name| cayenchat_irc_core::text::same_channel(name, channel))
+                    .any(|name| mapping.same(name, channel))
             })
     }
 
@@ -2607,6 +2621,7 @@ impl ChatWindow {
         else {
             return;
         };
+        let mapping = self.state.casemapping(menu.network);
         // Start from the file, which a settings window may have updated.
         let mut settings = match settings_file::load() {
             Ok(Some(settings)) => settings,
@@ -2624,7 +2639,7 @@ impl ChatWindow {
         let mut entries = profile.auto_join_entries();
         let found = entries
             .iter_mut()
-            .filter(|entry| cayenchat_irc_core::text::same_channel(&entry.name, &menu.channel))
+            .filter(|entry| mapping.same(&entry.name, &menu.channel))
             .map(|entry| entry.enabled = add)
             .count();
         if found == 0 && add {
@@ -2695,7 +2710,10 @@ impl ChatWindow {
         requested: bool,
         cx: &mut Context<Self>,
     ) {
-        let key = (network, info.nickname.to_lowercase());
+        let key = (
+            network,
+            self.state.casemapping(network).fold(&info.nickname),
+        );
         if let Some(handle) = self.whois_windows.get(&key).copied() {
             let shown = handle.update(cx, |view, window, cx| {
                 view.set_info(info.clone(), window, cx);
@@ -3591,7 +3609,12 @@ impl ChatWindow {
                     format!("[{:.1}s] {arrow} {line}", elapsed.as_secs_f32()),
                 );
             }
+            Event::CaseMapping(mapping) => self.state.set_casemapping(network, mapping),
             Event::TransportConnected => {
+                // A new connection compares names as RFC 1459 until the
+                // server advertises otherwise.
+                self.state
+                    .set_casemapping(network, names::CaseMapping::default());
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.connection_started = None;
                 }
@@ -3905,7 +3928,10 @@ impl ChatWindow {
                 if let Some(session) = self.sessions.get(&network) {
                     complete_whois(&mut info, &session.user_accounts);
                 }
-                let key = (network, info.nickname.to_lowercase());
+                let key = (
+                    network,
+                    self.state.casemapping(network).fold(&info.nickname),
+                );
                 let requested = self
                     .sessions
                     .get_mut(&network)
@@ -4079,6 +4105,9 @@ impl ChatWindow {
             return;
         }
         let selected = self.state.selected_channel();
+        let private_peer = selected
+            .filter(|channel| channel.is_private())
+            .map(|channel| channel.name.clone());
         let network = self.selected_network_id();
         let connection = network
             .and_then(|network| self.sessions.get(&network))
@@ -4106,7 +4135,7 @@ impl ChatWindow {
         };
         self.feedback = match result {
             Ok(()) => {
-                self.input_history.record(&text);
+                self.input_history.record(&text, private_peer.as_deref());
                 input.update(cx, |input, cx| input.clear_after_send(cx));
                 None
             }
@@ -7058,7 +7087,7 @@ impl ChatWindow {
                             this.drop_target = None;
                             cx.notify();
                         });
-                        cx.new(|_| ChannelDragPreview(label))
+                        cx.new(|_| ChannelDragPreview::new(&label))
                     })
                     .on_drag_move(cx.listener(
                         move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
@@ -8326,7 +8355,8 @@ impl ChatWindow {
                 .text_color(theme.text_secondary)
                 .child(
                     self.selected_session()
-                        .and_then(|session| session.diagnostics.get(index).cloned())
+                        .and_then(|session| session.diagnostics.get(index))
+                        .map(|line| display::neutralize_bidi(line).into_owned())
                         .unwrap_or_default(),
                 )
                 .into_any_element(),
@@ -13332,5 +13362,16 @@ mod navigation_binding_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bidi_display_tests {
+    use super::ChannelDragPreview;
+
+    #[test]
+    fn drag_preview_neutralizes_bidi_controls_in_channel_names() {
+        let preview = ChannelDragPreview::new("#invoice\u{202E}fdp.exe");
+        assert_eq!(preview.0, "#invoice\u{200B}fdp.exe");
     }
 }

@@ -12,7 +12,7 @@ use std::{
 
 use cayenchat_model::{
     Conversation, ConversationId, ConversationKind, Message, NativeMessageId, Network, NetworkId,
-    Provenance, TimeOfDay, Timestamp, display,
+    Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -92,6 +92,12 @@ enum ChannelFilter {
 pub struct AppState {
     networks: Vec<Network>,
     conversations: Vec<Conversation>,
+    /// Channel conversations by network and folded name (`CaseMapping::fold`), so
+    /// an incoming line finds its channel under IRC case mapping without
+    /// comparing it with every conversation.
+    channel_ids: HashMap<(NetworkId, String), ConversationId>,
+    /// Networks whose server advertised other than the default mapping.
+    casemappings: HashMap<NetworkId, CaseMapping>,
     selected: Selection,
     previous_channel: Option<ConversationId>,
     unread: HashSet<ConversationId>,
@@ -322,6 +328,8 @@ impl AppState {
             .collect();
         Self {
             networks,
+            channel_ids: channel_index(&conversations, |_| CaseMapping::default()),
+            casemappings: HashMap::new(),
             conversations,
             selected: Selection::Channel(ConversationId(1)),
             previous_channel: None,
@@ -373,6 +381,8 @@ impl AppState {
         Self {
             statuses: HashMap::from([(network.id, ConnectionStatus::Connecting)]),
             networks: vec![network],
+            channel_ids: channel_index(&conversations, |_| CaseMapping::default()),
+            casemappings: HashMap::new(),
             conversations,
             selected,
             previous_channel: None,
@@ -412,6 +422,8 @@ impl AppState {
         let mut state = Self {
             networks: Vec::new(),
             conversations: Vec::new(),
+            channel_ids: HashMap::new(),
+            casemappings: HashMap::new(),
             selected: networks
                 .first()
                 .map_or(Selection::None, |network| Selection::Server(network.id)),
@@ -445,7 +457,7 @@ impl AppState {
                 ConnectionStatus::Disconnected("Not connected.".into()),
             );
             for channel in config.channels {
-                state.ensure_channel(config.id, &channel);
+                state.ensure_configured_channel(config.id, &channel);
             }
         }
         if let Some(first) = state.conversations.first() {
@@ -495,7 +507,7 @@ impl AppState {
         self.sort_conversations();
         for config in added {
             for channel in &config.channels {
-                self.ensure_channel(config.id, channel);
+                self.ensure_configured_channel(config.id, channel);
             }
         }
         self.repair_selection();
@@ -523,7 +535,7 @@ impl AppState {
         self.statuses.insert(network, ConnectionStatus::Connecting);
         let mut first = None;
         for channel in channels {
-            let id = self.ensure_channel(network, &channel);
+            let id = self.ensure_configured_channel(network, &channel);
             first = first.or(id);
         }
         match (selected_here, first) {
@@ -544,6 +556,8 @@ impl AppState {
             .collect();
         self.conversations
             .retain(|channel| channel.network != network);
+        self.channel_ids.retain(|(owner, _), _| *owner != network);
+        self.casemappings.remove(&network);
         for id in &removed {
             self.duplicates.remove(id);
             self.pending_history.remove(id);
@@ -829,16 +843,38 @@ impl AppState {
         self.next_message_sequence
     }
 
+    /// How `network`'s server compares channel names: RFC 1459 until it
+    /// advertises otherwise.
+    pub fn casemapping(&self, network: NetworkId) -> CaseMapping {
+        self.casemappings.get(&network).copied().unwrap_or_default()
+    }
+
+    /// Records the server's channel-name comparison and re-keys the network's
+    /// channels under it, also when it is the default: configured channels
+    /// were added without merging. Channels that differ under the new mapping
+    /// stay separate conversations; where they fold alike, the first one is
+    /// reached. Only names and IDs are read, never the logs.
+    pub fn set_casemapping(&mut self, network: NetworkId, mapping: CaseMapping) {
+        if mapping == CaseMapping::default() {
+            self.casemappings.remove(&network);
+        } else {
+            self.casemappings.insert(network, mapping);
+        }
+        self.channel_ids.retain(|(owner, _), _| *owner != network);
+        for conversation in &self.conversations {
+            if conversation.network == network && conversation.kind == ConversationKind::Channel {
+                self.channel_ids
+                    .entry((network, mapping.fold(&conversation.name)))
+                    .or_insert(conversation.id);
+            }
+        }
+    }
+
     /// The channel conversation `name` of `network`.
+    /// Names compare as the server compares them ([`Self::casemapping`]).
     pub fn channel_id(&self, network: NetworkId, name: &str) -> Option<ConversationId> {
-        self.conversations
-            .iter()
-            .find(|channel| {
-                channel.network == network
-                    && channel.kind == ConversationKind::Channel
-                    && channel.name.eq_ignore_ascii_case(name)
-            })
-            .map(|channel| channel.id)
+        let key = (network, self.casemapping(network).fold(name));
+        self.channel_ids.get(&key).copied()
     }
 
     /// The private conversation with `peer_key` on `network`.
@@ -987,6 +1023,26 @@ impl AppState {
         }
     }
 
+    /// A configured channel, added before the server has said how it
+    /// compares names. Only an identical name is the same conversation, so
+    /// names the server may keep apart are not merged; [`Self::set_casemapping`]
+    /// then decides which of them the index reaches.
+    fn ensure_configured_channel(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+    ) -> Option<ConversationId> {
+        let exact = self.conversations.iter().find(|conversation| {
+            conversation.network == network
+                && conversation.kind == ConversationKind::Channel
+                && conversation.name == name
+        });
+        if let Some(conversation) = exact {
+            return Some(conversation.id);
+        }
+        self.add_conversation(network, ConversationKind::Channel, name)
+    }
+
     fn ensure_channel(&mut self, network: NetworkId, name: &str) -> Option<ConversationId> {
         if let Some(id) = self.channel_id(network, name) {
             return Some(id);
@@ -1017,6 +1073,10 @@ impl AppState {
         let id = ConversationId(self.next_conversation_id);
         self.next_conversation_id += 1;
         let private = kind != ConversationKind::Channel;
+        if !private {
+            let key = (network, self.casemapping(network).fold(name));
+            self.channel_ids.entry(key).or_insert(id);
+        }
         let index = self
             .conversations
             .iter()
@@ -1885,6 +1945,26 @@ impl AppState {
     }
 }
 
+/// [`AppState::channel_ids`] for conversations built directly.
+/// Where two conversations fold alike, the first one is kept.
+fn channel_index(
+    conversations: &[Conversation],
+    mapping: impl Fn(NetworkId) -> CaseMapping,
+) -> HashMap<(NetworkId, String), ConversationId> {
+    let mut index = HashMap::new();
+    for conversation in conversations
+        .iter()
+        .filter(|conversation| conversation.kind == ConversationKind::Channel)
+    {
+        let key = (
+            conversation.network,
+            mapping(conversation.network).fold(&conversation.name),
+        );
+        index.entry(key).or_insert(conversation.id);
+    }
+    index
+}
+
 fn sorted_members(mut members: Vec<String>) -> Vec<String> {
     // Servers can pad NAMES with extra spaces; an entry without a nickname is
     // not a member and must not become a row.
@@ -2206,6 +2286,118 @@ mod tests {
             state.joined_channel(NetworkId(1), &format!("#c{index}"));
         }
         assert_eq!(state.conversations().len(), MAX_CONVERSATIONS_PER_NETWORK);
+    }
+
+    /// Servers compare channel names under RFC 1459 case mapping, so a line
+    /// for `#FOO{1}` belongs to the joined `#foo[1]`; other networks and
+    /// removed networks never match.
+    #[test]
+    fn channels_are_found_under_irc_case_mapping() {
+        let mut state = two_networks();
+        state.joined_channel(NetworkId(1), "#foo[1]");
+        state.joined_channel(NetworkId(1), "#FOO{1}");
+        let id = state.channel_id(NetworkId(1), "#foo[1]").unwrap();
+        assert_eq!(state.channel_id(NetworkId(1), "#Foo{1}"), Some(id));
+        assert_eq!(state.channel_id(NetworkId(2), "#foo[1]"), None);
+        state.append_channel_message(NetworkId(1), "#FOO{1}", "bob", "hi", false, false);
+        let channel = state.conversations().iter().find(|c| c.id == id).unwrap();
+        assert_eq!(channel.messages.len(), 1);
+        assert_eq!(
+            state
+                .conversations()
+                .iter()
+                .filter(|c| c.network == NetworkId(1)
+                    && cayenchat_model::names::same(&c.name, "#foo[1]"))
+                .count(),
+            1
+        );
+        state.reset_network(NetworkId(1), Vec::new());
+        assert_eq!(state.channel_id(NetworkId(1), "#foo[1]"), None);
+    }
+
+    /// A server that advertises another `CASEMAPPING` keeps the channels
+    /// RFC 1459 would merge apart, per network, and the mapping is forgotten
+    /// when the network is reset.
+    #[test]
+    fn advertised_casemapping_keeps_distinct_channels_apart() {
+        let mut state = two_networks();
+        state.set_casemapping(NetworkId(1), CaseMapping::Ascii);
+        state.joined_channel(NetworkId(1), "#foo[1]");
+        state.joined_channel(NetworkId(1), "#foo{1}");
+        state.joined_channel(NetworkId(2), "#foo[1]");
+        state.joined_channel(NetworkId(2), "#foo{1}");
+        let square = state.channel_id(NetworkId(1), "#FOO[1]").unwrap();
+        let curly = state.channel_id(NetworkId(1), "#Foo{1}").unwrap();
+        assert_ne!(square, curly);
+        // Another network still uses the default mapping.
+        assert_eq!(
+            state.channel_id(NetworkId(2), "#foo[1]"),
+            state.channel_id(NetworkId(2), "#foo{1}")
+        );
+        state.append_channel_message(NetworkId(1), "#foo{1}", "bob", "hi", false, false);
+        let messages = |id| {
+            state
+                .conversations()
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .messages
+                .len()
+        };
+        assert_eq!((messages(square), messages(curly)), (0, 1));
+
+        // Strict RFC 1459 merges brackets but not `~` and `^`.
+        state.set_casemapping(NetworkId(1), CaseMapping::Rfc1459Strict);
+        assert_eq!(
+            state.channel_id(NetworkId(1), "#foo[1]"),
+            state.channel_id(NetworkId(1), "#foo{1}")
+        );
+        state.joined_channel(NetworkId(1), "#t~");
+        state.joined_channel(NetworkId(1), "#t^");
+        assert_ne!(
+            state.channel_id(NetworkId(1), "#t~"),
+            state.channel_id(NetworkId(1), "#t^")
+        );
+
+        state.reset_network(NetworkId(1), vec!["#x".into()]);
+        assert_eq!(state.casemapping(NetworkId(1)), CaseMapping::default());
+    }
+
+    /// Configured channels exist before the server advertises its mapping;
+    /// they must not be merged then, or an `ascii` server's two channels
+    /// could never both be shown.
+    #[test]
+    fn configured_channels_are_not_merged_before_the_mapping_is_known() {
+        let configured = |channels: &[&str]| NetworkConfig {
+            id: NetworkId(1),
+            name: "one.example".into(),
+            channels: channels.iter().map(|name| (*name).into()).collect(),
+        };
+        let count = |state: &AppState| state.conversations().len();
+        let mut state = AppState::with_networks(vec![configured(&["#foo[1]", "#foo{1}"])]);
+        assert_eq!(count(&state), 2);
+        state.set_casemapping(NetworkId(1), CaseMapping::Ascii);
+        let square = state.channel_id(NetworkId(1), "#foo[1]").unwrap();
+        let curly = state.channel_id(NetworkId(1), "#foo{1}").unwrap();
+        assert_ne!(square, curly);
+
+        // An advertised default mapping also re-keys, and both stay listed.
+        let mut state = AppState::with_networks(vec![configured(&["#foo[1]", "#foo{1}"])]);
+        state.set_casemapping(NetworkId(1), CaseMapping::Rfc1459);
+        assert_eq!(count(&state), 2);
+        assert_eq!(
+            state.channel_id(NetworkId(1), "#foo{1}"),
+            state.channel_id(NetworkId(1), "#foo[1]")
+        );
+
+        // A reset keeps them apart as well, and a refused join leaves both.
+        state.reset_network(NetworkId(1), vec!["#foo[1]".into(), "#foo{1}".into()]);
+        assert_eq!(count(&state), 2);
+        state.set_casemapping(NetworkId(1), CaseMapping::Ascii);
+        assert_ne!(
+            state.channel_id(NetworkId(1), "#foo[1]"),
+            state.channel_id(NetworkId(1), "#foo{1}")
+        );
     }
 
     fn two_networks() -> AppState {
