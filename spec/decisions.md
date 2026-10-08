@@ -1342,7 +1342,8 @@ message to ourselves is labeled only on the echo).
   (`ServerSession::pending_sends`).
 - **Matching** (`irc-core::echo::Echoes`): with labels, the echo, `ACK`,
   4xx/5xx numeric or `FAIL` carrying our label, or any of them inside a
-  `labeled-response` batch. Labels are `c` plus a per-connection counter in
+  batch whose start carries it (of type `labeled-response` or, as the
+  specification allows, an existing type covering the whole reply). Labels are `c` plus a per-connection counter in
   base 36, so one is never reused. An unlabeled own-nick message is another
   client's and is shown as before. Without labels: the oldest pending message
   to the same casemapped target with identical text and kind; a message the
