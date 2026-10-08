@@ -19,6 +19,16 @@ pub const MAX_TAG_BYTES: usize = 8191;
 /// keeps 1,000 lines per server.
 const TRANSCRIPT_TAG_BYTES: usize = 512;
 
+/// Longest batch reference followed. References are short opaque
+/// identifiers; a batch with a longer or an empty one is not followed, so its
+/// messages are handled as if outside any batch.
+pub(crate) const MAX_BATCH_REFERENCE_BYTES: usize = 64;
+
+/// Whether a batch opened as `BATCH +reference` is followed.
+pub(crate) fn followed_batch(reference: &str) -> bool {
+    !reference.is_empty() && reference.len() <= MAX_BATCH_REFERENCE_BYTES
+}
+
 /// The value of `key`, or `None` when absent, empty, over the size limit or
 /// not valid UTF-8. The line codec replaces undecodable bytes with U+FFFD
 /// before tags are parsed; such values are dropped rather than used.

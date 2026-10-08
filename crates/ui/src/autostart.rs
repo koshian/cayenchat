@@ -10,7 +10,9 @@
 //! Registered launches pass `--autostart`, so a later change can tell them
 //! from a launch by hand. The flag does nothing yet.
 
-/// The argument given to a launch made by the login registration.
+/// The argument given to a launch made by the login registration. macOS's
+/// login item has no arguments.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub const AUTOSTART_ARG: &str = "--autostart";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
