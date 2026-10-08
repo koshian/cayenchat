@@ -1235,6 +1235,24 @@ enum MemberPromptKind {
     Nick,
 }
 
+/// The dialog heading, with the nickname as drawn.
+fn member_prompt_title(i18n: &Localizer, kind: MemberPromptKind, nickname: &str) -> String {
+    i18n.format_nickname(
+        match kind {
+            MemberPromptKind::PrivateMessage => "member_message_title",
+            MemberPromptKind::Invite => "member_invite_title",
+            MemberPromptKind::Join => "channel_join_title",
+            MemberPromptKind::Nick => "nickname_change_title",
+        },
+        nickname,
+    )
+}
+
+/// A connection diagnostics line as drawn; copying keeps the original.
+fn diagnostic_text(line: &str) -> String {
+    display::neutralize_bidi(line).into_owned()
+}
+
 /// Another nickname for a server that rejected `rejected` (432/433) during
 /// registration. Several servers can wait for one at the same time.
 struct NickPrompt {
@@ -3937,10 +3955,8 @@ impl ChatWindow {
                     .get_mut(&network)
                     .is_some_and(|session| session.pending_whois.remove(&key.1));
                 if requested && !info.found() && !self.whois_windows.contains_key(&key) {
-                    self.feedback = Some(self.i18n.format(
-                        "whois_not_found",
-                        &[("nickname", &display::neutralize_bidi(&info.nickname))],
-                    ));
+                    self.feedback =
+                        Some(self.i18n.format_nickname("whois_not_found", &info.nickname));
                 }
                 if requested || self.whois_windows.contains_key(&key) {
                     self.whois_replies.push((network, info, requested));
@@ -7820,15 +7836,7 @@ impl ChatWindow {
         }
         let viewport = window.viewport_size();
         let member_prompt = self.member_prompt.as_ref().map(|prompt| {
-            let title = self.i18n.format(
-                match prompt.kind {
-                    MemberPromptKind::PrivateMessage => "member_message_title",
-                    MemberPromptKind::Invite => "member_invite_title",
-                    MemberPromptKind::Join => "channel_join_title",
-                    MemberPromptKind::Nick => "nickname_change_title",
-                },
-                &[("nickname", &display::neutralize_bidi(&prompt.nickname))],
-            );
+            let title = member_prompt_title(&self.i18n, prompt.kind, &prompt.nickname);
             let position = prompt.position.unwrap_or_else(|| {
                 point(
                     ((viewport.width - px(300.)) / 2.).max(px(0.)),
@@ -8002,10 +8010,9 @@ impl ChatWindow {
                 .find(|server| server.id == network)
                 .map(|server| server.name.clone())
                 .unwrap_or_default();
-            let title = self.i18n.format(
-                "nick_prompt_title",
-                &[("nickname", &display::neutralize_bidi(&prompt.rejected))],
-            );
+            let title = self
+                .i18n
+                .format_nickname("nick_prompt_title", &prompt.rejected);
             dialog = dialog
                 .when(index > 0, |d| {
                     d.child(div().border_t_1().border_color(theme.separator))
@@ -8356,7 +8363,7 @@ impl ChatWindow {
                 .child(
                     self.selected_session()
                         .and_then(|session| session.diagnostics.get(index))
-                        .map(|line| display::neutralize_bidi(line).into_owned())
+                        .map(|line| diagnostic_text(line))
                         .unwrap_or_default(),
                 )
                 .into_any_element(),
@@ -13367,7 +13374,46 @@ mod navigation_binding_tests {
 
 #[cfg(test)]
 mod bidi_display_tests {
-    use super::ChannelDragPreview;
+    use super::{ChannelDragPreview, MemberPromptKind, diagnostic_text, member_prompt_title};
+    use crate::localization::Localizer;
+    use cayenchat_storage::Language;
+
+    const RAW: &str = "mal\u{202E}lory";
+    const SAFE: &str = "mal\u{200B}lory";
+
+    #[test]
+    fn dialog_headings_neutralize_the_nickname() {
+        let i18n = Localizer::new(Language::English);
+        for kind in [
+            MemberPromptKind::PrivateMessage,
+            MemberPromptKind::Invite,
+            MemberPromptKind::Join,
+            MemberPromptKind::Nick,
+        ] {
+            let title = member_prompt_title(&i18n, kind, RAW);
+            assert!(!title.contains('\u{202E}'), "{title}");
+        }
+        let title = member_prompt_title(&i18n, MemberPromptKind::PrivateMessage, RAW);
+        assert!(title.contains(SAFE), "{title}");
+    }
+
+    #[test]
+    fn not_found_and_rejected_headings_neutralize_the_nickname() {
+        let i18n = Localizer::new(Language::English);
+        for key in ["whois_not_found", "nick_prompt_title"] {
+            let text = i18n.format_nickname(key, RAW);
+            assert!(text.contains(SAFE), "{text}");
+            assert!(!text.contains('\u{202E}'), "{text}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_lines_neutralize_bidi_controls() {
+        assert_eq!(
+            diagnostic_text("311 mal\u{202E}lory"),
+            "311 mal\u{200B}lory"
+        );
+    }
 
     #[test]
     fn drag_preview_neutralizes_bidi_controls_in_channel_names() {

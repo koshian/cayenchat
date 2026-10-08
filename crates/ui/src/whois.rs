@@ -96,10 +96,7 @@ impl WhoisWindow {
             self.info = info;
             self.status = None;
         } else {
-            self.status = Some(self.i18n.format(
-                "whois_not_found",
-                &[("nickname", &display::neutralize_bidi(&info.nickname))],
-            ));
+            self.status = Some(self.i18n.format_nickname("whois_not_found", &info.nickname));
         }
         cx.notify();
     }
