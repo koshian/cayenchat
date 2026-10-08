@@ -52,6 +52,8 @@ const EVENT_CAPACITY: usize = 512;
 const TARGETS_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const TARGETS_MAX_WINDOW: Duration = Duration::from_secs(7 * 24 * 3600);
 const USER_DISCONNECT: &str = "Disconnected by user.";
+/// How long the stream may stay quiet after QUIT before it is taken as flushed.
+const QUIT_IDLE: Duration = Duration::from_millis(50);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
 /// finish. IRCnet waits about 30 seconds when the client's port 113 silently
@@ -1990,9 +1992,17 @@ async fn run_cancellable(
                         if client.send(quit).is_ok() {
                             transcript.record(WireDirection::Sent, line).await;
                         }
-                        // ClientStream drives the library's outgoing queue. Poll it once more
-                        // so QUIT is flushed before the runtime and socket are dropped.
-                        let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
+                        // ClientStream drives the library's outgoing queue, and the library
+                        // gives no signal when it has been written. Keep polling it, ignoring
+                        // anything received, until the stream is idle or closed, so QUIT behind
+                        // a backlog is written before the runtime and socket are dropped.
+                        let flush_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                        while let Ok(Some(Ok(_))) = tokio::time::timeout(
+                            QUIT_IDLE.min(flush_deadline - tokio::time::Instant::now()),
+                            stream.next(),
+                        )
+                        .await
+                        {}
                         let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
                         break;
                     }
@@ -4446,7 +4456,8 @@ mod tests {
             |connection| {
                 thread::sleep(Duration::from_millis(500));
                 connection.shutdown();
-                assert!(connection.wait_closed(Duration::from_secs(2)));
+                // The same deadline the application waits for on exit.
+                assert!(connection.wait_closed(Duration::from_millis(500)));
             },
             EVENT_CAPACITY * 4,
         );
