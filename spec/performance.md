@@ -696,6 +696,40 @@ Headless UI test (medians in µs; parent / branch, runs 1–3):
   `irc-core`'s worker test checks that an endless line without a newline
   ends the connection with the reason.
 
+## Bidirectional control neutralization (2026-10-08, PR #250)
+
+`model::display::neutralize_bidi` scans each new message's sender and text
+(and topics, server log lines, notifications and WHOIS rows) and allocates only
+when a control is present. Compared against `c98d39d` (master) and `d6ecb1e`
+(branch) under the same conditions and commands as the received line limit
+above. Builds alternate with #252 (`afe7613`), three runs each, and each run
+starts only after no other measurement or rustc process has been seen for about
+a minute.
+
+Process (RSS MiB at the end of each scenario / CPU %; master / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 108.9, 109.0, 108.6 / 109.4, 108.9, 108.6 | 0.00–0.03 both |
+| S3 after 2,000 lines per channel | 122.7, 113.7, 113.3 / 138.4, 113.7, 113.4 | 0.00–0.03 both |
+| S4a 200 lines/s | 138.3, 113.7, 113.3 / 138.5, 113.7, 113.4 | 3.96–4.17 / 2.89–4.13 |
+| S4b overload | 138.6, 114.1, 113.6 / 138.8, 114.2, 113.7 | 196, 196, 196 / 196, 195, 194 |
+| S6 second overload, idle | 138.7, 114.3, 113.8 / 138.9, 114.3, 113.8 | 0.00–0.03 both |
+
+- RSS settles at either about 114 MiB or about 139 MiB in both builds (and in
+  #252), so the step comes from the allocator or Xvfb run, not the change.
+- Binary size: 55,435,288 / 55,442,672 bytes.
+
+Headless UI test (medians in µs; master / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 232 / 242, 227 / 232, 234 / 1,074 | 1,548 / 1,585, 1,560 / 1,529, 1,583 / 4,678 | 1,218 / 1,200, 1,137 / 1,165, 1,215 / 3,690 | 1,574 / 1,627, 1,585 / 1,528, 1,656 / 4,866 | 262 / 254, 253 / 243, 254 / 676 |
+
+- Branch run 3 is about three times slower on every step, typing included,
+  which the change does not touch: outside load. Runs 1 and 2 match master
+  within noise, including the 256-event batch that goes through `new_message`.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The
