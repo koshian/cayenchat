@@ -101,14 +101,51 @@ impl LogList {
         if let Some((sequence, offset_in_item)) = anchor
             && let Ok(index) = self.sequences.binary_search(&sequence)
         {
-            let top = ListOffset {
-                item_ix: prefix + index,
+            self.scroll_to_row(prefix + index, offset_in_item);
+        }
+    }
+
+    /// Like [`sync`](Self::sync) for keys in any order, such as the channel
+    /// tree after the user reordered it. Rows equal at the start and at the
+    /// end of both lists are kept; the span between them is replaced. The row
+    /// at the top stays there when it still exists.
+    pub fn sync_unordered(&mut self, prefix: usize, keys: &[u64]) {
+        let anchor = self.anchor();
+        if prefix != self.prefix {
+            self.state.splice(0..self.prefix, prefix);
+            self.prefix = prefix;
+        }
+        if keys == self.sequences.as_slice() {
+            return;
+        }
+        let old = &self.sequences;
+        let head = old.iter().zip(keys).take_while(|(a, b)| a == b).count();
+        let tail = old[head..]
+            .iter()
+            .rev()
+            .zip(keys[head..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        self.state.splice(
+            prefix + head..prefix + old.len() - tail,
+            keys.len() - head - tail,
+        );
+        self.sequences.clear();
+        self.sequences.extend_from_slice(keys);
+        if let Some((key, offset_in_item)) = anchor
+            && let Some(index) = self.sequences.iter().position(|k| *k == key)
+        {
+            self.scroll_to_row(prefix + index, offset_in_item);
+        }
+    }
+
+    fn scroll_to_row(&self, item_ix: usize, offset_in_item: Pixels) {
+        let current = self.state.logical_scroll_top();
+        if (current.item_ix, current.offset_in_item) != (item_ix, offset_in_item) {
+            self.state.scroll_to(ListOffset {
+                item_ix,
                 offset_in_item,
-            };
-            let current = self.state.logical_scroll_top();
-            if (current.item_ix, current.offset_in_item) != (top.item_ix, top.offset_in_item) {
-                self.state.scroll_to(top);
-            }
+            });
         }
     }
 
@@ -179,6 +216,25 @@ mod tests {
         assert_eq!(log.sequences, [1, 5, 6, 7, 8]);
 
         log.sync(0, &[]);
+        assert_eq!(log.state.item_count(), 0);
+    }
+
+    #[test]
+    fn unordered_keys_keep_the_row_count_and_the_row_at_the_top() {
+        let mut log = LogList::new();
+        log.sync_unordered(0, &[1, 2, 3, 4, 5, 6]);
+        log.state.scroll_to(ListOffset {
+            item_ix: 4,
+            offset_in_item: px(3.),
+        });
+        // Key 5 moves from index 4 to index 1; the top row follows it.
+        log.sync_unordered(0, &[1, 5, 2, 3, 4, 6]);
+        assert_eq!(log.state.item_count(), 6);
+        assert_eq!(log.sequences, [1, 5, 2, 3, 4, 6]);
+        assert_eq!(log.state.logical_scroll_top().item_ix, 1);
+        log.sync_unordered(0, &[6, 1, 5, 2, 3]);
+        assert_eq!(log.state.item_count(), 5);
+        log.sync_unordered(0, &[]);
         assert_eq!(log.state.item_count(), 0);
     }
 

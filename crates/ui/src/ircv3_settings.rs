@@ -1547,6 +1547,8 @@ mod own_avatar_tests {
         config.shared_avatar = crate::shared_peer_avatar(&settings.servers[0]);
         assert_eq!(config.shared_avatar, None);
         let connection = Connection::connect(config.clone()).unwrap();
+        // The answer is checked on the wire.
+        connection.set_transcript(true);
         chat.update(cx, |chat, _| {
             let session = chat.sessions.get_mut(&NetworkId(1)).unwrap();
             session.connection_starting(&config);
