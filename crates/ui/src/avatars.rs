@@ -421,7 +421,6 @@ mod tests {
             sender: sender.into(),
             text: text.into(),
             notice: false,
-            mentioned: false,
             server_time: None,
             msgid: None,
             account: None,

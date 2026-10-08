@@ -11,8 +11,8 @@ use std::{
 };
 
 use cayenchat_model::{
-    Conversation, ConversationId, ConversationKind, Message, NativeMessageId, Network, NetworkId,
-    Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
+    Conversation, ConversationId, ConversationKind, Highlights, Message, NativeMessageId, Network,
+    NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -309,6 +309,7 @@ impl AppState {
                             account: None,
                             sender: sender.into(),
                             text: text.into(),
+                            highlights: Default::default(),
                             activity: false,
                             notice: false,
                             provenance: Provenance::Live,
@@ -991,11 +992,7 @@ impl AppState {
         meta: MessageMeta,
         unread: bool,
     ) -> bool {
-        let text = if notice {
-            format!("[NOTICE] {text}")
-        } else {
-            text.into()
-        };
+        let (text, meta) = notice_marked(text, notice, meta);
         let mut message = new_message(sender.into(), text, false, meta);
         message.notice = notice;
         if !self.append_to_conversation(id, message) {
@@ -1208,19 +1205,12 @@ impl AppState {
     ) -> bool {
         // Only joined or configured channels get a conversation; anything else
         // a server sends lands in the bounded server log instead.
+        let (text, meta) = notice_marked(text, notice, meta);
         let Some(id) = self.channel_id(network, name) else {
-            let prefix = if notice { "[NOTICE] " } else { "" };
-            self.append_server_message_at(
-                network,
-                format!("{name} <{sender}> {prefix}{text}"),
-                meta,
-            );
+            let prefix = format!("{name} <{sender}> ");
+            let meta = meta.after_prefix(prefix.len());
+            self.append_server_message_at(network, prefix + &text, meta);
             return true;
-        };
-        let text = if notice {
-            format!("[NOTICE] {text}")
-        } else {
-            text.into()
         };
         let mut message = new_message(sender.into(), text, false, meta);
         message.notice = notice;
@@ -1997,6 +1987,17 @@ fn display_time(received: Option<SystemTime>) -> TimeOfDay {
 /// A timeline item from `meta`, without its sequence yet.
 /// Every retained line is built here, so its text never carries
 /// bidirectional controls (`display::neutralize_bidi`).
+/// The text a NOTICE is shown with (behind a `[NOTICE]` marker) and its
+/// metadata.
+fn notice_marked(text: &str, notice: bool, meta: MessageMeta) -> (String, MessageMeta) {
+    const MARKER: &str = "[NOTICE] ";
+    if notice {
+        (format!("{MARKER}{text}"), meta.after_prefix(MARKER.len()))
+    } else {
+        (text.into(), meta)
+    }
+}
+
 fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) -> Message {
     Message {
         time: display_time(meta.server_time),
@@ -2008,6 +2009,7 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         // neutralized where it is drawn.
         sender,
         text: display::neutralize_bidi_owned(text),
+        highlights: Highlights::new(meta.highlights),
         activity,
         notice: false,
         provenance: meta.provenance,
@@ -2716,6 +2718,38 @@ mod tests {
             native_id: msgid.and_then(cayenchat_model::NativeMessageId::new),
             account: None,
             provenance,
+            highlights: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn highlights_follow_markers_and_server_log_prefixes() {
+        let mut state = AppState::live("irc.example.org".into(), vec!["#a".into()]);
+        let network = state.networks()[0].id;
+        let alice = 3..8;
+        let marked = || MessageMeta {
+            highlights: vec![alice.clone()],
+            ..MessageMeta::live()
+        };
+        for (channel, notice) in [("#a", false), ("#a", true), ("#elsewhere", true)] {
+            let text = "hi alice";
+            assert!(state.append_channel_message_at(
+                network,
+                channel,
+                "bob",
+                text,
+                notice,
+                marked()
+            ));
+        }
+        let channel = state.conversations().iter().find(|c| c.name == "#a");
+        let logs = channel.unwrap().messages.iter();
+        let server = state.server_messages(network).iter();
+        for message in logs.chain(server) {
+            let [range] = message.highlights.as_slice() else {
+                panic!("one highlight in {:?}", message.text);
+            };
+            assert_eq!(&message.text[range.clone()], "alice", "{:?}", message.text);
         }
     }
 

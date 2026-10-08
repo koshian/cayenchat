@@ -459,9 +459,6 @@ pub enum Event {
         sender: String,
         text: String,
         notice: bool,
-        /// Someone else named our nickname as a word (for example `nick:` or
-        /// `@nick`), ignoring formatting codes.
-        mentioned: bool,
         /// The server's `time` tag when server-time is negotiated and the
         /// tag is valid; `None` means use the receipt time.
         server_time: Option<SystemTime>,
@@ -2908,11 +2905,6 @@ fn translate_message(
                 sender: sender.to_owned(),
                 text: text.clone(),
                 notice: matches!(message.command, IrcCommand::NOTICE(_, _)),
-                mentioned: !crate::text::same_nickname(sender, current_nick)
-                    && crate::text::mentions_nickname(
-                        &crate::text::strip_formatting(text),
-                        current_nick,
-                    ),
                 server_time,
                 msgid: tags::msgid(&message).map(str::to_owned),
                 account: tags::account(&message).map(str::to_owned),
@@ -6316,9 +6308,6 @@ mod tests {
                 ("alice: after del", false),
             ])
         );
-        // History is still a mention; the app suppresses only its alerts.
-        assert!(events.iter().any(|event| matches!(event,
-            Event::ChannelMessage { text, mentioned: true, replayed: true, .. } if text == "alice: old")));
         // server-time was not requested, so its tag is ignored.
         assert!(
             channel_messages(&events)

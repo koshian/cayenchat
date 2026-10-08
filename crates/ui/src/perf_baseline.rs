@@ -93,7 +93,6 @@ fn incoming(sequence: usize, images: bool, long_urls: bool) -> [Event; 2] {
             sender,
             text,
             notice: false,
-            mentioned: false,
             server_time: None,
             msgid: None,
             account: None,
