@@ -41,6 +41,8 @@ base64 = "0.22"
 gpui = { path = "vendor/gpui" }
 # The published client panics on COMPOUND_TEXT it cannot decode (Mozc via IBus).
 zed-xim = { path = "vendor/zed-xim" }
+# The published codec buffers a line without any length limit.
+irc-proto = { path = "vendor/irc-proto" }
 
 [profile.dev]
 debug = 1
