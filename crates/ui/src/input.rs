@@ -446,15 +446,18 @@ impl TextInput {
         }
     }
 
+    // A secret never reaches the clipboard, where clipboard history and other
+    // applications could read it; copy and cut do nothing, like the system
+    // password fields.
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.secret && !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.secret && !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -623,8 +626,15 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
-        actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        let range_utf16 = self.range_to_utf16(&range);
+        // The input method sees a secret only as masks of the same length.
+        let text = if self.secret {
+            "*".repeat(range_utf16.len())
+        } else {
+            self.content[range].to_string()
+        };
+        actual_range.replace(range_utf16);
+        Some(text)
     }
 
     fn selected_text_range(
@@ -1261,6 +1271,40 @@ mod tests {
                 &["@alice".into(), "alex".into(), "+bob".into()]
             ),
             ["alice", "alex"]
+        );
+    }
+
+    #[gpui::test]
+    fn secret_fields_keep_their_text_from_the_clipboard_and_input_method(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let text_seen = |secret: bool, cx: &mut gpui::TestAppContext| {
+            let (input, cx) =
+                cx.add_window_view(|_, cx| TextInput::new_field("", "pä55", secret, cx));
+            cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+            input.update_in(cx, |input, window, cx| {
+                input.selected_range = 0..input.content.len();
+                input.copy(&Copy, window, cx);
+                let copied = cx.read_from_clipboard().and_then(|item| item.text());
+                input.cut(&Cut, window, cx);
+                let shown = input.text_for_range(0..4, &mut None, window, cx);
+                (copied, input.content.to_string(), shown)
+            })
+        };
+        assert_eq!(
+            text_seen(true, cx),
+            (Some("before".into()), "pä55".into(), Some("****".into()))
+        );
+        assert_eq!(
+            text_seen(false, cx),
+            (Some("pä55".into()), String::new(), Some(String::new()))
         );
     }
 
