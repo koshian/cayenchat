@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod credentials;
 pub mod layout;
+pub mod order;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
