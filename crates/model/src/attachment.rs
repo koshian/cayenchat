@@ -92,7 +92,8 @@ impl ImageFormat {
         let size = u32::from_be_bytes(bytes[..4].try_into().ok()?) as usize;
         let end = size.clamp(16, bytes.len().min(256));
         // The major brand, then compatible brands after the minor version.
-        let brands = std::iter::once(&bytes[8..12]).chain(bytes[16..end].chunks_exact(4));
+        let (compatible, _) = bytes[16..end].as_chunks();
+        let brands = bytes[8..].first_chunk::<4>().into_iter().chain(compatible);
         let mut heif = false;
         for brand in brands {
             match brand {
