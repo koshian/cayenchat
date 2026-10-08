@@ -1,6 +1,6 @@
 use crate::{ChatWindow, localization::Localizer};
 use cayenchat_irc_core::WhoisInfo;
-use cayenchat_model::NetworkId;
+use cayenchat_model::{NetworkId, names};
 use gpui::{prelude::*, *};
 use std::collections::HashSet;
 
@@ -9,7 +9,7 @@ pub struct WhoisWindow {
     /// Server the reply came from; actions go back to the same server.
     network: NetworkId,
     info: WhoisInfo,
-    // Lowercase joined channel names pushed by the owner; reading the owner
+    // Folded (`names::fold`) joined channel names pushed by the owner; reading the owner
     // while rendering would re-enter it during its own update.
     joined: HashSet<String>,
     selected_channel: usize,
@@ -160,7 +160,7 @@ impl WhoisWindow {
         let index = self.selected_channel.min(self.info.channels.len() - 1);
         let entry = self.info.channels[index].clone();
         let channel = channel_name(&entry).to_owned();
-        let action = if self.joined.contains(&channel.to_lowercase()) {
+        let action = if self.joined.contains(&names::fold(&channel)) {
             div()
                 .flex_shrink_0()
                 .text_color(theme.text_secondary)
@@ -215,7 +215,7 @@ impl WhoisWindow {
                 .border_t_0()
                 .border_color(theme.border);
             for (option, entry) in self.info.channels.iter().enumerate() {
-                let joined = self.joined.contains(&channel_name(entry).to_lowercase());
+                let joined = self.joined.contains(&names::fold(channel_name(entry)));
                 menu = menu.child(
                     div()
                         .id(("whois-channel-option", option))

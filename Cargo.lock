@@ -880,6 +880,7 @@ name = "cayenchat-irc-core"
 version = "0.9.1"
 dependencies = [
  "base64 0.22.1",
+ "cayenchat-model",
  "chrono",
  "encoding",
  "futures-util",

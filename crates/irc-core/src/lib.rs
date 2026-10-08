@@ -807,6 +807,14 @@ fn error_chain(error: &dyn std::error::Error) -> String {
     result
 }
 
+/// Whether we are in `channel`, under IRC case mapping. The library's channel
+/// list is copied only when this is asked, not for every message.
+fn is_joined(client: &Client, channel: &str) -> bool {
+    client
+        .list_channels()
+        .is_some_and(|joined| joined.iter().any(|name| text::same_channel(name, channel)))
+}
+
 fn stream_error_detail(error: &irc::error::Error) -> String {
     match error {
         irc::error::Error::CodecFailed { codec, .. } => {
@@ -2018,9 +2026,8 @@ async fn run_cancellable(
                             _ => {}
                         }
                         if metadata_enabled {
-                            let joined = client.list_channels().unwrap_or_default();
                             let handled = metadata.observe(&message, tokio::time::Instant::now(), &current_nick, |channel| {
-                                joined.iter().any(|name| name.eq_ignore_ascii_case(channel))
+                                is_joined(&client, channel)
                             });
                             if let Some(handled) = handled {
                                 for note in handled.notes {
@@ -2217,9 +2224,8 @@ async fn run_cancellable(
             // Deferred avatar synchronizations (774), request timeouts and
             // spaced-out lookups; no timer runs while none is pending.
             _ = tokio::time::sleep_until(metadata.next_deadline().unwrap_or_else(tokio::time::Instant::now)), if metadata_enabled && metadata.next_deadline().is_some() => {
-                let joined = client.list_channels().unwrap_or_default();
                 let handled = metadata.tick(tokio::time::Instant::now(), |channel| {
-                    joined.iter().any(|name| name.eq_ignore_ascii_case(channel))
+                    is_joined(&client, channel)
                 });
                 for command in handled.send {
                     let message = IrcMessage::from(command);

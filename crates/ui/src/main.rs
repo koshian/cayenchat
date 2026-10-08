@@ -51,7 +51,7 @@ use cayenchat_irc_core::{
     Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus, RealNameFailure,
     SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
-use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp};
+use cayenchat_model::{ConversationId, Network, NetworkId, TimeOfDay, Timestamp, names};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialError,
     CredentialStore, DarkColors, Ircv3Preferences, Language, LinuxDisplay, Notifications, Secret,
@@ -2360,7 +2360,7 @@ impl ChatWindow {
         self.registered_connection(network)?
             .send_member_command(nickname, MemberCommand::Whois)?;
         if let Some(session) = self.sessions.get_mut(&network) {
-            session.pending_whois.insert(nickname.to_lowercase());
+            session.pending_whois.insert(names::fold(nickname));
         }
         cx.notify();
         Ok(())
@@ -2375,7 +2375,7 @@ impl ChatWindow {
                     && !conversation.is_private()
                     && self.state.is_active_channel(conversation.id)
             })
-            .map(|conversation| conversation.name.to_lowercase())
+            .map(|conversation| names::fold(&conversation.name))
             .collect()
     }
 
@@ -2511,7 +2511,7 @@ impl ChatWindow {
         requested: bool,
         cx: &mut Context<Self>,
     ) {
-        let key = (network, info.nickname.to_lowercase());
+        let key = (network, names::fold(&info.nickname));
         if let Some(handle) = self.whois_windows.get(&key).copied() {
             let shown = handle.update(cx, |view, window, cx| {
                 view.set_info(info.clone(), window, cx);
@@ -3705,7 +3705,7 @@ impl ChatWindow {
                 if let Some(session) = self.sessions.get(&network) {
                     complete_whois(&mut info, &session.user_accounts);
                 }
-                let key = (network, info.nickname.to_lowercase());
+                let key = (network, names::fold(&info.nickname));
                 let requested = self
                     .sessions
                     .get_mut(&network)

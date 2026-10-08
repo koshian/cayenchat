@@ -58,7 +58,7 @@ use tokio::time::Instant;
 use crate::{
     Event,
     presence::PresenceIndex,
-    text::{nickname_key, same_nickname},
+    text::{nickname_key, same_channel, same_nickname},
     valid_channel, valid_nickname,
 };
 
@@ -342,7 +342,7 @@ impl MetadataState {
     /// Stops a pending synchronization of a channel we left.
     pub(crate) fn forget_channel(&mut self, channel: &str) {
         self.syncs
-            .retain(|sync| !sync.channel.eq_ignore_ascii_case(channel));
+            .retain(|sync| !same_channel(&sync.channel, channel));
     }
 
     /// Handles a metadata reply or notification. `None` means the message
@@ -790,7 +790,7 @@ impl MetadataState {
         if let Some(sync) = self
             .syncs
             .iter_mut()
-            .find(|sync| sync.channel.eq_ignore_ascii_case(channel))
+            .find(|sync| same_channel(&sync.channel, channel))
         {
             sync.due = sync.due.max(due);
             return None;
@@ -798,7 +798,7 @@ impl MetadataState {
         let attempts = self
             .attempted
             .iter()
-            .filter(|done| done.eq_ignore_ascii_case(channel))
+            .filter(|done| same_channel(done, channel))
             .count() as u8;
         if attempts >= MAX_SYNC_ATTEMPTS {
             return Some(format!(
