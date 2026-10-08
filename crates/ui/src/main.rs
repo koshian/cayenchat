@@ -40,7 +40,7 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, MessageMeta, NetworkConfig, Selection,
+    AppState, Command, ConnectionStatus, MessageMeta, MoveTo, NetworkConfig, Selection,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::{Confirmed, OwnAvatar},
@@ -1053,6 +1053,14 @@ struct ChatWindow {
     /// moment before startup supplies the path.
     restore_layout: bool,
     layout_file: Option<std::path::PathBuf>,
+    /// The channel order chosen by dragging or the menu, and the file it is
+    /// written to (`None` writes nothing, as for `layout_file`).
+    channel_orders: cayenchat_storage::order::ChannelOrders,
+    order_file: Option<std::path::PathBuf>,
+    /// The channel being dragged in the tree, while its numbers are shown.
+    dragging_channel: Option<ConversationId>,
+    /// The tree row under the pointer during that drag.
+    drop_target: Option<ConversationId>,
     layout_save: Option<Task<()>>,
     /// Where the window was last seen, for writing the layout without it.
     window_bounds: Option<WindowBounds>,
@@ -1125,6 +1133,38 @@ struct ReceivedMessage<'a> {
 struct ServerMenu {
     position: Point<Pixels>,
     network: NetworkId,
+}
+
+/// What a drag in the channel tree carries: the conversation and the place
+/// it was picked up from.
+#[derive(Clone)]
+struct DraggedChannel {
+    id: ConversationId,
+    network: NetworkId,
+    private: bool,
+    name: String,
+}
+
+/// The label that follows the pointer while a channel is dragged.
+struct ChannelDragPreview(String);
+
+impl Render for ChannelDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::current(cx);
+        div()
+            .px_2()
+            .py(px(2.))
+            .bg(theme.selected)
+            .border_1()
+            .border_color(theme.border)
+            .child(self.0.clone())
+    }
+}
+
+/// The digit a numbered channel shortcut gives the conversation at `index`
+/// of the tree (D009): 1 to 9, then 0; none beyond the tenth.
+fn shortcut_digit(index: usize) -> Option<char> {
+    char::from_digit(((index + 1) % 10) as u32, 10).filter(|_| index < 10)
 }
 
 struct ChannelMenu {
@@ -1495,6 +1535,10 @@ impl ChatWindow {
             window_handle: window.window_handle().downcast::<ChatWindow>(),
             restore_layout: saved.restore_window_layout,
             layout_file: None,
+            channel_orders: Default::default(),
+            order_file: None,
+            dragging_channel: None,
+            drop_target: None,
             layout_save: None,
             window_bounds: None,
             shown_title: String::new(),
@@ -1853,6 +1897,79 @@ impl ChatWindow {
             .map(|(id, _)| *id)
     }
 
+    /// Gives every network its saved channel order (D041).
+    fn restore_channel_orders(&mut self) {
+        let orders: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|(id, session)| (*id, self.channel_orders.order(&session.profile_id).to_vec()))
+            .collect();
+        for (network, order) in orders {
+            self.state.set_channel_order(network, order);
+        }
+    }
+
+    /// Moves a channel or private conversation within its server's tree
+    /// group and remembers the order of channels.
+    fn move_conversation(&mut self, id: ConversationId, to: MoveTo, cx: &mut Context<Self>) {
+        let Some(network) = self.state.move_conversation(id, to) else {
+            return;
+        };
+        if let Some(profile_id) = self.sessions.get(&network).map(|s| s.profile_id.clone()) {
+            self.channel_orders
+                .set(&profile_id, self.state.channel_order(network));
+            self.channel_orders
+                .retain_servers(|id| self.sessions.values().any(|s| s.profile_id == id));
+            if let Some(path) = &self.order_file
+                && let Err(error) =
+                    cayenchat_storage::order::save_orders_to(path, &self.channel_orders)
+            {
+                self.feedback = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Moves a server one place up or down the tree by reordering the saved
+    /// profiles.
+    fn move_server(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some(menu) = self.server_menu.take() else {
+            return;
+        };
+        let Some(profile_id) = self
+            .sessions
+            .get(&menu.network)
+            .map(|session| session.profile_id.clone())
+        else {
+            return;
+        };
+        // Start from the file, which a settings window may have updated.
+        let mut settings = match settings_file::load() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => self.saved.clone(),
+            Err(error) => {
+                self.feedback = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let Some(at) = settings.servers.iter().position(|p| p.id == profile_id) else {
+            return;
+        };
+        let to = if up { at.checked_sub(1) } else { Some(at + 1) };
+        let Some(to) = to.filter(|to| *to < settings.servers.len()) else {
+            return;
+        };
+        settings.servers.swap(at, to);
+        match settings_file::save(&settings) {
+            Ok(()) => self.apply_servers(settings, cx),
+            Err(error) => {
+                self.feedback = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
     /// Creates draft inputs for servers and conversations that lack one.
     fn ensure_inputs(&mut self, cx: &mut Context<Self>) {
         let placeholder = self.i18n.text("draft_placeholder");
@@ -1976,6 +2093,7 @@ impl ChatWindow {
             }
         }
         let removed = self.state.sync_networks(&networks);
+        self.restore_channel_orders();
         self.forget_conversations(&removed);
         self.ensure_inputs(cx);
         self.saved = settings;
@@ -2480,6 +2598,12 @@ impl ChatWindow {
             Err(error) => Some(error),
         };
         cx.notify();
+    }
+
+    fn move_menu_conversation(&mut self, to: MoveTo, cx: &mut Context<Self>) {
+        if let Some(menu) = self.channel_menu.take() {
+            self.move_conversation(menu.conversation, to, cx);
+        }
     }
 
     fn close_private_conversation(&mut self, cx: &mut Context<Self>) {
@@ -6627,6 +6751,10 @@ impl ChatWindow {
         // change, but builds only the rows near the viewport. Keys ascend in
         // display order (server position, then conversation id), so adding a
         // channel keeps the other rows' measured heights and the scroll.
+        if !cx.has_active_drag() {
+            self.dragging_channel = None;
+            self.drop_target = None;
+        }
         self.tree_rows.clear();
         let mut keys = Vec::new();
         for (index, network) in self.state.networks().iter().enumerate() {
@@ -6767,9 +6895,31 @@ impl ChatWindow {
                 let network = conversation.network;
                 let private = conversation.is_private();
                 let joined = self.state.is_active_channel(id);
+                let conversations = self.state.conversations();
+                let index = conversations.iter().position(|c| c.id == id).unwrap_or(0);
+                // While a channel is dragged, every row shows the digit that
+                // reaches it, and the row under the pointer shows where the
+                // drop would put the dragged channel.
+                let dragging = self.dragging_channel.is_some();
+                let digit = shortcut_digit(index).filter(|_| dragging);
+                let drop_line_on_top = self
+                    .dragging_channel
+                    .zip(self.drop_target)
+                    .filter(|(dragged, target)| dragged != target && *target == id)
+                    .and_then(|(dragged, _)| conversations.iter().position(|c| c.id == dragged))
+                    .map(|from| from > index);
+                let dragged = DraggedChannel {
+                    id,
+                    network,
+                    private,
+                    name: name.clone(),
+                };
+                let chat = cx.weak_entity();
                 div()
                     .id(("channel", id.0))
-                    .pl_4()
+                    .relative()
+                    .when(dragging, |d| d.flex().pl_1())
+                    .when(!dragging, |d| d.pl_4())
                     .pr_2()
                     .py(px(2.))
                     .cursor_pointer()
@@ -6780,11 +6930,65 @@ impl ChatWindow {
                     .when(!joined, |d| d.text_color(theme.text_muted))
                     .when(highlighted, |d| d.text_color(theme.panes.highlight))
                     .hover(|d| d.bg(theme.hover_strong))
+                    .when(dragging, |d| {
+                        d.child(
+                            div()
+                                .w(px(12.))
+                                .flex_none()
+                                .text_color(theme.text_muted)
+                                .children(digit.map(|digit| digit.to_string())),
+                        )
+                    })
                     .child(format!(
                         "{}{}",
                         if unread { "● " } else { "" },
                         conversation.name
                     ))
+                    .when_some(drop_line_on_top, |d, on_top| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .h(px(2.))
+                                .bg(theme.text)
+                                .when(on_top, |line| line.top_0())
+                                .when(!on_top, |line| line.bottom_0()),
+                        )
+                    })
+                    .on_drag(dragged, move |dragged, _, _, cx| {
+                        let (id, label) = (dragged.id, dragged.name.clone());
+                        let _ = chat.update(cx, |this, cx| {
+                            this.dragging_channel = Some(id);
+                            this.drop_target = None;
+                            cx.notify();
+                        });
+                        cx.new(|_| ChannelDragPreview(label))
+                    })
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
+                            let dragged = event.drag(cx);
+                            let target = (event.bounds.contains(&event.event.position)
+                                && dragged.network == network
+                                && dragged.private == private)
+                                .then_some(id);
+                            if target.is_some() && this.drop_target != target {
+                                this.drop_target = target;
+                                cx.notify();
+                            } else if target.is_none() && this.drop_target == Some(id) {
+                                this.drop_target = None;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedChannel, _, cx| {
+                        this.dragging_channel = None;
+                        this.drop_target = None;
+                        if dragged.network == network && dragged.private == private {
+                            this.move_conversation(dragged.id, MoveTo::Place(id), cx);
+                        }
+                        cx.notify();
+                    }))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -7260,6 +7464,32 @@ impl ChatWindow {
                             .when(!registered, |d| d.text_color(theme.text_muted))
                     }),
                 )
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .children(
+                    [(true, "tree_move_up"), (false, "tree_move_down")].map(|(up, key)| {
+                        let position = self
+                            .state
+                            .networks()
+                            .iter()
+                            .position(|server| server.id == network);
+                        let last = self.state.networks().len().saturating_sub(1);
+                        let enabled =
+                            position.is_some_and(|at| if up { at > 0 } else { at < last });
+                        div()
+                            .id(key)
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover_strong))
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.move_server(up, cx)),
+                                    )
+                            })
+                            .when(!enabled, |d| d.text_color(theme.text_muted))
+                    }),
+                )
         });
         let channel_menu = self.channel_menu.as_ref().map(|menu| {
             let registered = self.registered_connection(menu.network).is_ok();
@@ -7272,19 +7502,40 @@ impl ChatWindow {
                 .border_1()
                 .border_color(border)
                 .shadow_md();
+            let moves = [
+                (MoveTo::Up, "tree_move_up"),
+                (MoveTo::Down, "tree_move_down"),
+                (MoveTo::First, "tree_move_first"),
+                (MoveTo::Last, "tree_move_last"),
+            ]
+            .map(|(to, key)| {
+                div()
+                    .id(key)
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.hover_strong))
+                    .child(self.i18n.text(key))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.move_menu_conversation(to, cx)),
+                    )
+            });
             if menu.private {
-                return popup.child(
-                    div()
-                        .id("channel-menu-close")
-                        .px_2()
-                        .py_1()
-                        .cursor_pointer()
-                        .hover(|d| d.bg(theme.hover_strong))
-                        .child(self.i18n.text("conversation_close"))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.close_private_conversation(cx)),
-                        ),
-                );
+                return popup
+                    .child(
+                        div()
+                            .id("channel-menu-close")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover_strong))
+                            .child(self.i18n.text("conversation_close"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.close_private_conversation(cx)),
+                            ),
+                    )
+                    .child(div().my_1().border_t_1().border_color(theme.separator))
+                    .children(moves);
             }
             for (join, key) in [(true, "channel_join"), (false, "channel_part")] {
                 let enabled = registered && menu.joined != join;
@@ -7330,6 +7581,8 @@ impl ChatWindow {
                         })
                         .when(!registered, |d| d.text_color(theme.text_muted)),
                 )
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .children(moves)
         });
         let member_menu = self.member_menu.as_ref().map(|menu| {
             let mut popup = div()
@@ -8826,6 +9079,9 @@ fn main() {
         let settings_for = chat_window
             .update(cx, |chat, window, cx| {
                 chat.layout_file = cayenchat_storage::layout::layout_path().ok();
+                chat.order_file = cayenchat_storage::order::order_path().ok();
+                chat.channel_orders = cayenchat_storage::order::load_orders();
+                chat.restore_channel_orders();
                 chat.apply_layout(&layout);
                 cx.set_menus(app_menus(false, &chat.i18n));
                 let startup = std::mem::take(&mut chat.startup_connections);
@@ -11948,6 +12204,52 @@ mod pane_tests {
             chat.close_private_conversation(cx);
             assert!(chat.state.private_id(one, "bob").is_none());
             assert!(!chat.inputs.contains_key(&Selection::Channel(new_bob)));
+        });
+    }
+
+    #[test]
+    fn shortcut_digits_follow_the_numbered_shortcuts() {
+        let digits: String = (0..12).filter_map(crate::shortcut_digit).collect();
+        assert_eq!(digits, "1234567890");
+    }
+
+    #[gpui::test]
+    fn moving_channels_is_saved_per_server_and_restored(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a,#b,#c");
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("channel-order.json");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update(cx, |chat, cx| {
+            let profile = chat.saved.selected_profile().unwrap().id.clone();
+            let c = chat.state.conversations()[2].id;
+            // Without a path nothing is written, but the tree still moves.
+            chat.move_conversation(c, cayenchat_app::MoveTo::First, cx);
+            assert!(!file.exists());
+            chat.order_file = Some(file.clone());
+            chat.move_conversation(c, cayenchat_app::MoveTo::Last, cx);
+            let names = |chat: &ChatWindow| {
+                chat.state
+                    .conversations()
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(names(chat), ["#a", "#b", "#c"]);
+            let a = chat.state.conversations()[0].id;
+            chat.move_conversation(a, cayenchat_app::MoveTo::Down, cx);
+            assert_eq!(names(chat), ["#b", "#a", "#c"]);
+            let saved = cayenchat_storage::order::load_orders_from(&file);
+            assert_eq!(saved.order(&profile), ["#b", "#a", "#c"]);
         });
     }
 

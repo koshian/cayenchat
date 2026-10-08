@@ -1171,6 +1171,39 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D041 — Reordering the channel tree (#237)
+
+Status: implemented.
+
+The tree order is also the order of channel navigation and of the numbered
+channel shortcuts (D009), so the user can change it.
+
+- **Scope.** Channels move only within their own server, and private
+  conversations only among themselves (they stay after the channels). Nothing
+  moves between servers. Servers are reordered one place at a time with
+  Move up / Move down in the server's context menu (no dragging: the
+  distance is too large); this reorders the saved profiles, so it is also the
+  order in the settings window.
+- **Drag.** Pressing a channel row and moving more than GPUI's drag threshold
+  starts a drag (a plain click still selects); there is no long-press mode.
+  While dragging, every row shows the digit that numbered shortcut reaches
+  (1–9, then 0 for the tenth; none beyond) and the row under the pointer
+  shows an insertion line. Dropping puts the dragged row into the target's
+  place. The same moves (up, down, to top, to bottom) are in the channel and
+  private-conversation context menu, so dragging is not the only way.
+- **Saving.** The order is in its own file, `channel-order.json` beside the
+  settings (as `window.json`, D037: it never races the settings autosave and
+  a damaged file reads as nothing saved). It maps a server profile ID to
+  channel names, lowercased ASCII, and keeps the names of parted channels so
+  a channel joined again returns to its place; they stay anchored after the
+  channel that preceded them. Channels it does not list go to the end in
+  join order. The file is bounded on load, and entries of removed profiles
+  are dropped on the next save. Tests write nothing without an explicit path.
+- **Auto-join.** The auto-join list and the order of JOIN commands are not
+  affected.
+- **Not done.** Reordering with shortcut keys (the context menu is the
+  non-drag way), and moving servers by dragging.
+
 ## D040 — Standard keys in the channel tree and member list
 
 Status: implemented (#132).
