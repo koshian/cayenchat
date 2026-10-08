@@ -259,10 +259,9 @@ pub fn conflicts(overrides: &Overrides, fixed: &[KeyBinding]) -> Vec<Conflict> {
     by_key
         .into_iter()
         .filter_map(|(key, keystroke, mut owners)| {
-            if fixed
-                .iter()
-                .any(|binding| binding.match_keystrokes(&[keystroke.clone()]) == Some(false))
-            {
+            if fixed.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+            }) {
                 owners.push(Owner::Fixed);
             }
             (owners.len() > 1).then_some(Conflict { key, owners })
