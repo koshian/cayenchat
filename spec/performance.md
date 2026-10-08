@@ -67,6 +67,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Conversations | 1,000 | per network | |
 | Diagnostics transcript | 1,000 lines | per server | Formatted eagerly for every IRC line, shown or not. No application-wide bound. |
 | Combined subwindow | 1,000 rows (indices only) | window | Rebuilt by a heap merge of conversation tails that stops at 1,000 rows. |
+| Received IRC line | 16 KiB including the line ending | per connection | Enforced by the vendored irc-proto codec while reading; a longer line ends the connection. Also bounds the text of every message. |
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
 | WHOIS collection | 32 nicknames × 512 items | per connection | |

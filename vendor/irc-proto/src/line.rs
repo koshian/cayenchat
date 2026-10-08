@@ -11,6 +11,12 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::error;
 
+/// The longest line accepted, in bytes including the line ending: the 8,191
+/// bytes of tags IRCv3 allows plus the 512-byte message, with room to spare.
+/// A longer line is a protocol error, so a peer that never sends a newline
+/// cannot make the buffer grow without bound.
+pub const MAX_LINE_BYTES: usize = 16 * 1024;
+
 /// A line-based codec parameterized by an encoding.
 pub struct LineCodec {
     #[cfg(feature = "encoding")]
@@ -42,7 +48,15 @@ impl Decoder for LineCodec {
     type Error = error::ProtocolError;
 
     fn decode(&mut self, src: &mut BytesMut) -> error::Result<Option<String>> {
-        if let Some(offset) = src[self.next_index..].iter().position(|b| *b == b'\n') {
+        let newline = src[self.next_index..].iter().position(|b| *b == b'\n');
+        if newline.map_or(src.len(), |offset| self.next_index + offset + 1) > MAX_LINE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Received a line longer than {MAX_LINE_BYTES} bytes."),
+            )
+            .into());
+        }
+        if let Some(offset) = newline {
             // Remove the next frame from the buffer.
             let line = src.split_to(self.next_index + offset + 1);
 
@@ -109,5 +123,33 @@ impl Encoder<String> for LineCodec {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LineCodec, MAX_LINE_BYTES};
+    use bytes::BytesMut;
+    use tokio_util::codec::Decoder;
+
+    #[test]
+    fn a_line_up_to_the_limit_is_decoded() {
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let line = format!("{}\r\n", "a".repeat(MAX_LINE_BYTES - 2));
+        let mut src = BytesMut::from(line.as_bytes());
+        assert_eq!(codec.decode(&mut src).unwrap(), Some(line));
+    }
+
+    #[test]
+    fn a_longer_line_is_an_error_with_or_without_its_newline() {
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let mut src = BytesMut::from("a".repeat(MAX_LINE_BYTES).as_bytes());
+        assert_eq!(codec.decode(&mut src).unwrap(), None);
+        src.extend_from_slice(b"a");
+        assert!(codec.decode(&mut src).is_err());
+
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let line = format!("{}\r\n", "a".repeat(MAX_LINE_BYTES - 1));
+        assert!(codec.decode(&mut BytesMut::from(line.as_bytes())).is_err());
     }
 }

@@ -612,8 +612,11 @@ occurrence of a key wins, an empty value equals a missing one, a value
 containing U+FFFD (bytes the line codec could not decode) is dropped instead
 of used, and a tag section over 8,191 bytes (measured on the re-escaped
 tags, including `@` and the trailing space) is ignored as a whole while the
-body is still processed. The library enforces no line length at all, so
-neither limit truncates a line. Unknown tags are ignored. Only the values
+body is still processed. Neither limit truncates a line. The line codec
+(vendored irc-proto, `MAX_LINE_BYTES`) rejects a line over 16 KiB including
+its ending, whether or not its newline has arrived: the stream fails, the
+connection ends with the reason, and the usual reconnect applies, so a
+server cannot make the receive buffer grow without bound. Unknown tags are ignored. Only the values
 this client uses are read; no tag map is retained. TAGMSG produces no event:
 no chat row, unread mark, notification or preview request; it remains in
 the diagnostic transcript, where long tag sections are shortened to 512
