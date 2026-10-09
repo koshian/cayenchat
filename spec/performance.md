@@ -54,7 +54,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Message times stored as minutes (`TimeOfDay`); a retained `Message` is 64 bytes plus its sender and text | `model` | Smaller logs, one fewer allocation per line. |
 | QUIT/NICK republish rosters only for channels that contained the user; roster sort keys computed once per member | `irc-core` `RosterTracker`, `app` `sorted_members` | Large channels. |
 | Linux: bounded per-word shaping cache in the vendored GPUI (swept every 128 lines, entries unused for four sweeps dropped) | `vendor/gpui`, see `PATCHES.md` | A channel switch does not reshape every newly visible line from scratch (issue #5). |
-| Image previews are requested only by main-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Receiving or retaining image links costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
+| Image previews are requested only by main-log rows being drawn; one application-wide `PreviewCache` bounds loads, queue, records and decoded bytes; loads run on GPUI's background executor | `media::cache`, `ui::previews` | Links are found once when a message's text is set (`app::links`); requesting, fetching and decoding image previews costs nothing until a row is on screen; nothing exists while previews are off (no timer, thread or HTTP agent). |
 | A pending preview reserves its full height; rows whose height changes after loading get only their own measured height replaced | `ui::previews`, `LogList::invalidate` | Images arriving do not move the scroll anchor, reset the list or relayout the history. |
 | Avatars are requested only by drawn main-log message rows and member rows, from their own small cache; the slot has a fixed size below the line height; image fetches in flight are shared with previews | `ui::avatars`, `media::cache` | A roster or history full of avatars costs nothing until rows are shown; an arriving avatar never changes a row's height; both features on do not add up their fetch concurrency. Nothing exists while avatars are off. |
 | Avatar references live once per network in `app::avatars`, keyed by user, not in messages | `app::avatars` | `model::Message` stays 64 bytes plus sender and text. |
@@ -826,6 +826,82 @@ Headless UI test (medians in µs; parent / branch, runs 1–3):
   lines carry no mentions or formatting codes, so the cost of lines that do
   have highlights (the `Highlights` allocation) is not measured. Real servers
   were not used.
+
+## Links once per message (2026-10-09, PR #257)
+
+The links of a message (`app::links::find`: scan, `url::Url::parse` per
+candidate, one `String` each) are found once when its text is set, in
+`new_message` and `confirm_message`, and stored in `Message::links`. The logs,
+previews and short-URL chips no longer search text while drawing. This moves
+the work from every draw of a row to the arrival of a message, including
+messages of hidden channels and history. `Message` grows from 112 to 120
+bytes (`message_size`); a message with links also owns a boxed slice and one
+`String` per link (at most about the text length in total). Compared against
+`b6afc99` (parent, #255) and `c107b54` (branch) in the Linux x86_64 container
+(12 vCPUs, rustc 1.99.0, Xvfb, not a visible desktop window, so the CPU
+numbers are only comparable between these builds). Both are
+`cargo build --release --locked -p cayenchat-ui`, the parent built from
+`git archive` in a separate directory. Parent and branch alternate, three
+runs each, same commands as the received line limit above (the UI test
+also as `perf_baseline_short_urls`, whose lines carry short URLs).
+
+Process (`run_baseline.py`, one run per invocation; parent / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 116.3, 115.8, 116.0 / 115.9, 116.1, 116.1 | 0.00–0.03 both |
+| S3 after 2,000 lines per channel | 121.2, 120.6, 120.6 / 121.2, 121.4, 121.0 | 0.00–0.03 both |
+| S4a 200 lines/s | 121.2, 120.6, 120.6 / 121.2, 121.4, 121.1 | 3.96, 4.14, 3.93 / 4.13, 4.17, 4.20 |
+| S4b overload | 121.4, 120.8, 120.9 / 123.4, 124.5, 124.2 | 181.7, 183.6, 183.3 / 184.9, 184.2, 184.7 |
+| S6 second overload, idle | 121.5, 120.9, 121.0 / 125.2, 125.9, 125.5 | 0.00–0.03 both |
+
+- S4a: the branch uses about 4 % more CPU (median 4.13 versus 3.96) at the
+  same PING round trip (max 1.2–1.5 ms both). That is 0.2 percentage points
+  of one core.
+- S4b throughput: 150,947, 153,167, 151,785 / 152,098, 153,127, 151,560
+  lines/s, the same within noise; CPU about 1 % higher on the branch.
+- RSS after the overloads is 3–4.5 MiB higher on the branch (S6: 120.9–121.5
+  versus 125.2–125.9), in all three runs, while S2 and S3 match. This is the
+  retained links: one in five fixture bodies contains a URL, so a quarter of
+  the 20,000 retained lines own a slice and a `String` (plus the 8 bytes per
+  message). It was not profiled. Real traffic has fewer links per line, but
+  the cost is proportional to retained linked lines and bounded by the
+  existing log caps.
+- Binary size: 55,002,184 / 55,010,448 bytes.
+
+Headless UI test, `perf_baseline` (medians in µs; parent / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 236 / 246, 254 / 258, 248 / 245 | 1,575 / 1,576, 1,579 / 1,589, 2,173 / 1,593 | 1,162 / 1,188, 1,585 / 1,206, 1,373 / 1,211 | 1,577 / 1,630, 2,136 / 1,635, 1,565 / 1,639 | 255 / 251, 293 / 259, 250 / 256 |
+
+`perf_baseline_short_urls`:
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 263 / 268, 277 / 268, 261 / 263 | 1,725 / 1,709, 1,723 / 1,749, 1,755 / 1,786 | 1,401 / 1,369, 1,389 / 1,404, 1,381 / 1,389 | 2,080 / 1,906, 1,863 / 1,966, 1,864 / 1,979 | 414 / 283, 292 / 280, 279 / 287 |
+
+- Drawing did not get cheaper in this test, even with short URLs: scrolling
+  is the same within noise (the parent's 1,585 and 1,373 in `perf_baseline`
+  are outliers; its other run matches the branch). The test platform has a
+  no-op text system and draws only the visible rows, so searching a short
+  line costs little next to the rest of the frame; the saving is a few
+  microseconds per row and is not visible here. A real window shapes text and
+  redraws on every incoming line, which is where the saved scans accumulate,
+  but that was not measured.
+- The 256-event batch is the price on the receive side: in
+  `perf_baseline_short_urls` the branch is about 6 % slower in two of three runs
+  (1,966 and 1,979 versus 1,863 and 1,864 µs; the first run is the other way
+  round because the parent's 2,080 is an outlier) and 3–5 % slower in two of three runs in
+  `perf_baseline` (1,630–1,639 versus 1,565–1,577 µs, apart from the parent's
+  2,136 outlier). That is about 0.3–0.5 µs per line for lines with a URL.
+- Trade: a few percent of receive-side CPU and a few MiB of RSS in a full,
+  link-heavy log buy a draw path that no longer parses URLs for every visible
+  row on every redraw. The gain is expected, not demonstrated, by these
+  measurements; accepted for 1.0 because per-frame work grows with redraws
+  (scrolling, typing, traffic) and the receive-side work does not.
+- Limits: one container, Xvfb, not a visible window; the test bypasses the IRC
+  worker; no real window shaping; real servers were not used.
 
 ## Resource limit candidates (proposal)
 
