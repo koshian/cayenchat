@@ -1691,3 +1691,52 @@ lists (`Event::Names`) and our own JOINs, and emits `Event::UserAccount` /
 `irc_message_meta` in the UI turns it into `model::ServicesAccount`, and
 `new_message` retains it in `Message::account`. There is no per-user account
 table in this step.
+
+## Known structural debt (after 1.0)
+
+Found in the 1.0 review (2026-10-09). None of these is a user-visible defect,
+and none is planned before 1.0. The ones that cost performance per message,
+per draw or per roster change are handled before 1.0 and are not listed here.
+Each item is its own task; the order is the suggested one.
+
+1. **Move IRC event handling and session lifecycle from `ui` into `app`.**
+   "Responsibilities" gives `app` event routing and network lifecycle.
+   Today, though, `app` does not depend on `irc-core`, and the chat window
+   does both jobs:
+   - `ChatWindow::handle_event` (about 480 lines) turns `irc-core` events into
+     state changes;
+   - reconnect timing, the watchdog, connection generations and
+     `ServerSession` live in `ui`;
+   - `ChatWindow` has about 66 fields that mix drawing state with session
+     state.
+
+   As a result, IRC behaviour can only be tested through GPUI, and most
+   changes meet in `crates/ui/src/main.rs`. Steps:
+   1. `AppState::apply(network, Event)` updates state and returns the effects
+      the UI must carry out: notify, open a WHOIS window, schedule a retry.
+   2. Move reconnect and watchdog decisions into `app`.
+   3. Leave `ChatWindow` with drawing and window management.
+
+   Every step reduces redraws as well: each one leaves fewer `cx.notify()`
+   calls on unrelated state.
+2. **Split the `irc-core` worker loop.** `run_cancellable` is about 880 lines
+   and handles registration, CAP, ISUPPORT, history requests and shutdown
+   together. Split it by concern. This is easier after item 1, which settles
+   the events.
+3. **Keep presentation out of message text.** `Message::text` carries the
+   `[NOTICE]` marker, server-log lines are formatted as `<sender> text` or
+   `#channel <sender> text`, and IRC formatting codes are stored raw. Range
+   data (highlights, URLs) therefore has to be shifted past prefixes, and
+   formatting would have to be parsed on every draw.
+
+   Instead, keep the body without formatting codes, with the formatting spans
+   and the marker or sender as separate fields, and compose them when
+   drawing. Do this together with showing mIRC colors (L4 in
+   `security-review-2026-09-26.md`).
+4. **One owner for per-connection protocol state.** Our nickname is held by
+   the worker (`current_nick`) and by `ServerSession::own_nickname`. Other
+   ISUPPORT values could follow `CaseMapping`: one value per network, reported
+   by an event.
+5. **Vendored crates.** `vendor/gpui`, `vendor/irc-proto` and
+   `vendor/zed-xim` cost a merge on every upstream update. Check the
+   switch-back conditions in `vendor/README.md` when updating dependencies.
