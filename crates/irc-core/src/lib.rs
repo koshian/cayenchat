@@ -2501,7 +2501,11 @@ fn display_nickname(member: &str) -> &str {
 
 #[derive(Default)]
 struct RosterTracker {
-    last: HashMap<String, Vec<String>>,
+    /// The members with a role prefix (`@nick`) in each channel's last
+    /// published roster, so a NICK change can carry the role over. Members
+    /// without a role are not kept: large channels republish on every
+    /// change, and most of their members have none.
+    ranked: HashMap<String, Vec<String>>,
     presence: presence::PresenceIndex,
     renamed_roles: HashMap<(String, String), char>,
 }
@@ -2511,7 +2515,7 @@ impl RosterTracker {
         for channel in channels {
             let old_key = (channel.clone(), old_nick.to_lowercase());
             let role = self.renamed_roles.remove(&old_key).or_else(|| {
-                self.last.get(channel).and_then(|members| {
+                self.ranked.get(channel).and_then(|members| {
                     members
                         .iter()
                         .find(|member| display_nickname(member).eq_ignore_ascii_case(old_nick))
@@ -2542,7 +2546,7 @@ impl RosterTracker {
     }
 
     fn forget_channel(&mut self, channel: &str) {
-        self.last.remove(channel);
+        self.ranked.remove(channel);
         self.presence.remove_channel(channel);
         self.renamed_roles
             .retain(|(known_channel, _), _| known_channel != channel);
@@ -2693,7 +2697,12 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
     // end-of-NAMES replies cannot grow the roster cache.
     if known {
         roster.presence.replace_channel(channel, &users);
-        roster.last.insert(channel.to_owned(), users.clone());
+        let ranked = users
+            .iter()
+            .filter(|user| display_nickname(user).len() < user.len());
+        roster
+            .ranked
+            .insert(channel.to_owned(), ranked.cloned().collect());
     }
     Event::Names {
         channel: channel.to_owned(),

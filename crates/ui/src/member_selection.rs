@@ -105,7 +105,9 @@ impl MemberSelection {
     /// changed nickname) must not stay chosen for whoever takes the nickname
     /// next, who would then receive whatever is done to the choice.
     pub fn retain_present(&mut self, conversation: ConversationId, members: &[String]) {
-        if self.conversation != Some(conversation) {
+        if self.conversation != Some(conversation)
+            || (self.chosen.is_empty() && self.anchor.is_none())
+        {
             return;
         }
         let present: Vec<String> = members

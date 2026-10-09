@@ -351,15 +351,18 @@ impl Accounts {
             .iter()
             .map(|user| nickname_key(display_nickname(user)))
             .collect();
-        let keys: Vec<String> = self.users.keys().cloned().collect();
-        for user in keys {
-            if present.contains(&user) {
-                if let Some(known) = self.users.get_mut(&user) {
+        let mut departed = Vec::new();
+        for (user, known) in &mut self.users {
+            if present.contains(user) {
+                if !known.channels.contains(&key) {
                     known.channels.insert(key.clone());
                 }
-            } else if self.users[&user].channels.contains(&key) {
-                self.leave(&user, &key, &mut events);
+            } else if known.channels.contains(&key) {
+                departed.push(user.clone());
             }
+        }
+        for user in departed {
+            self.leave(&user, &key, &mut events);
         }
         events
     }
