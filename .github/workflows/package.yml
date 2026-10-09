@@ -173,6 +173,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path package\locales
           Copy-Item "target\$env:BUILD_PROFILE\cayenchat.exe" package\
           Copy-Item locales\*.json package\locales\
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md package\
+          Copy-Item licenses package\licenses -Recurse
           Compress-Archive `
             -Path package\* `
             -DestinationPath "$env:PACKAGE.zip"
@@ -230,6 +232,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path package\locales
           Copy-Item "target\$env:BUILD_PROFILE\cayenchat.exe" package\
           Copy-Item locales\*.json package\locales\
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md package\
+          Copy-Item licenses package\licenses -Recurse
           Compress-Archive `
             -Path package\* `
             -DestinationPath "$env:PACKAGE.zip"
@@ -301,6 +305,8 @@ jobs:
           cp "target/$BUILD_PROFILE/cayenchat" "$APP/Contents/MacOS/CayenChat"
           cp crates/ui/resources/macos/CayenChat.icns "$APP/Contents/Resources/CayenChat.icns"
           cp locales/*.json "$APP/Contents/Resources/locales/"
+          cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
+          cp -R licenses "$APP/Contents/Resources/licenses"
           chmod +x "$APP/Contents/MacOS/CayenChat"
 
           cat > "$APP/Contents/Info.plist" <<EOF_PLIST

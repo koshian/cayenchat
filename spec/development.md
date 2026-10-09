@@ -418,6 +418,12 @@ packages refresh their caches; no maintainer script is needed. Verify with
 `dpkg-deb -c target/debian/*.deb` and
 `desktop-file-validate assets/linux/cayenchat.desktop`.
 
+Every package carries the licenses and notices the binary must be distributed
+with: `LICENSE`, `THIRD_PARTY_NOTICES.md` and `licenses/`. They go to
+`/usr/share/doc/cayenchat/` in the `.deb`, next to `cayenchat.exe` in the
+Windows zips and to `Contents/Resources/` in the macOS bundle. Adding a file
+to `licenses/` needs no packaging change.
+
 GPUI reports renderer, display-server and font failures through the `log` crate.
 The app installs a small stderr logger (`crates/ui/src/diagnostics.rs`) that
 prints warnings and errors by default; run with `RUST_LOG=info` (or `debug`) from

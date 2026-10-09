@@ -15,6 +15,10 @@ assets = [
   ["../../locales/*.json", "usr/share/cayenchat/locales/", "644"],
   ["../../assets/linux/cayenchat.desktop", "usr/share/applications/", "644"],
   ["../../assets/icons/cayenchat.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+  # The licenses and notices binaries must be distributed with.
+  ["../../LICENSE", "usr/share/doc/cayenchat/", "644"],
+  ["../../THIRD_PARTY_NOTICES.md", "usr/share/doc/cayenchat/", "644"],
+  ["../../licenses/*", "usr/share/doc/cayenchat/licenses/", "644"],
 ]
 # The Test Build package (`cayenchat-test`) installs the same paths.
 conflicts = "cayenchat-test"
