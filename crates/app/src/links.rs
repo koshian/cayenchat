@@ -28,16 +28,20 @@ pub fn find(text: &str) -> Vec<(Range<usize>, String)> {
             .find(|(_, ch)| ch.is_whitespace() || "<>[]\"'。、".contains(*ch))
             .map(|(offset, _)| scan_from + offset)
             .unwrap_or(text.len());
+        // Counted once and updated as characters are trimmed, so a run of
+        // closing brackets stays linear.
+        let opens = text[start..end].matches('(').count();
+        let mut closes = text[start..end].matches(')').count();
         while end > start {
             let Some(last) = text[..end].chars().last() else {
                 break;
             };
-            let closes_bracket = last == ')' && {
-                let candidate = &text[start..end];
-                candidate.matches(')').count() > candidate.matches('(').count()
-            };
+            let closes_bracket = last == ')' && closes > opens;
             if !(closes_bracket || ".,;:!?}」』".contains(last)) {
                 break;
+            }
+            if last == ')' {
+                closes -= 1;
             }
             end -= last.len_utf8();
         }
@@ -81,6 +85,19 @@ mod tests {
         let urls = find(text);
         assert_eq!(urls[0].1, "https://example.org/a_(b)");
         assert_eq!(urls[1].1, "https://example.org/c");
+    }
+
+    #[test]
+    fn long_runs_of_closing_brackets_are_trimmed_in_linear_time() {
+        let text = format!("https://example.org/{}", ")".repeat(16_000));
+        let started = std::time::Instant::now();
+        let urls = find(&text);
+        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].1, "https://example.org/");
+        assert_eq!(urls[0].0, 0.."https://example.org/".len());
+        let text = format!("https://example.org/(a{}", ")".repeat(16_000));
+        assert_eq!(find(&text)[0].1, "https://example.org/(a)");
     }
 
     #[test]
