@@ -121,6 +121,21 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
     }
 }
 
+/// Positions in `batch` of member lists that a later member list of the same
+/// channel in the batch replaces.
+fn superseded_rosters(batch: &[Event]) -> std::collections::HashSet<usize> {
+    let mut later = std::collections::HashSet::new();
+    let mut superseded = std::collections::HashSet::new();
+    for (index, event) in batch.iter().enumerate().rev() {
+        if let Event::Names { channel, .. } = event
+            && !later.insert(channel.as_str())
+        {
+            superseded.insert(index);
+        }
+    }
+    superseded
+}
+
 actions!(
     cayenchat,
     [
@@ -3544,7 +3559,19 @@ impl ChatWindow {
                     | Event::OwnAvatarFailed { .. }
             )
         });
-        for event in batch {
+        let superseded = superseded_rosters(&batch);
+        for (index, event) in batch.into_iter().enumerate() {
+            if superseded.contains(&index)
+                && let Event::Names { channel, users } = &event
+            {
+                // A later roster of the channel in this batch replaces this
+                // one (large channels republish on every JOIN and PART);
+                // only who left in between still matters.
+                if let Some(id) = self.state.channel_id(network, channel) {
+                    self.member_selection.retain_present(id, users);
+                }
+                continue;
+            }
             match &event {
                 Event::Disconnected(_) => disconnected = true,
                 Event::Refused(_) => {
@@ -10835,6 +10862,36 @@ mod pane_tests {
             cx.run_until_parked();
         }
         assert!(chosen(&chat, cx).is_empty());
+
+        // The same when both rosters arrive in one batch: only the last is
+        // applied, but the one before still ends her choice.
+        cx.simulate_mouse_move(alice, None, none);
+        cx.simulate_mouse_down(alice, MouseButton::Left, none);
+        cx.simulate_mouse_up(alice, MouseButton::Left, none);
+        cx.run_until_parked();
+        assert_eq!(chosen(&chat, cx), ["alice"]);
+        chat.update(cx, |chat, cx| {
+            let batch = vec![
+                names(&["@op", "bob"]),
+                names(&["@op", "alice", "bob", "carol"]),
+            ];
+            chat.handle_events(NetworkId(1), batch, false, cx)
+        });
+        cx.run_until_parked();
+        assert!(chosen(&chat, cx).is_empty());
+        chat.read_with(cx, |chat, _| {
+            let members = &chat.state.selected_channel().unwrap().members;
+            assert_eq!(members, &["@op", "alice", "bob", "carol"]);
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![names(&["@op", "alice", "bob"])],
+                false,
+                cx,
+            )
+        });
+        cx.run_until_parked();
 
         // The same while a group menu is open: it keeps the nicknames it was
         // opened with, but what it acts on is who is still chosen when an item
