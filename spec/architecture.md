@@ -613,7 +613,10 @@ channel (no polling), which calls `App::quit`, so the layout is saved and
 `quit_connections` runs; with no connections it ends at once. Two safeguards keep the
 process from lingering (systemd waits 90 s by default): a watchdog calls
 `process::exit` 3 s after the first signal in case the UI thread is blocked, and a
-second signal exits immediately. The exit code is 128 plus the signal number. A
+second signal exits immediately. Those forced exits use 128 plus the signal number;
+a normal quit exits with 0. If the signal thread cannot be started, no handler is
+installed and the default action stays; if the watchdog cannot be started, the
+process exits at once. A
 desktop logout that drops the X or Wayland connection before signalling still ends
 GPUI with an error and sends no QUIT.
 
