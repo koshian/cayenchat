@@ -26,8 +26,9 @@ use std::{
     collections::HashMap,
     fmt,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc as std_mpsc,
     },
     thread,
     time::{Duration, Instant, SystemTime},
@@ -52,6 +53,13 @@ const EVENT_CAPACITY: usize = 512;
 const TARGETS_DEFAULT_WINDOW: Duration = Duration::from_secs(24 * 3600);
 const TARGETS_MAX_WINDOW: Duration = Duration::from_secs(7 * 24 * 3600);
 const USER_DISCONNECT: &str = "Disconnected by user.";
+/// How long the application waits for workers to finish after
+/// [`Connection::shutdown`], shared by all connections.
+pub const QUIT_WAIT: Duration = Duration::from_secs(2);
+/// The longest the worker writes QUIT and waits for the server to close
+/// after it. Kept below [`QUIT_WAIT`] so the worker ends on its own before
+/// the wait does.
+const QUIT_FLUSH_LIMIT: Duration = Duration::from_millis(1500);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
 /// finish. IRCnet waits about 30 seconds when the client's port 113 silently
@@ -459,9 +467,6 @@ pub enum Event {
         sender: String,
         text: String,
         notice: bool,
-        /// Someone else named our nickname as a word (for example `nick:` or
-        /// `@nick`), ignoring formatting codes.
-        mentioned: bool,
         /// The server's `time` tag when server-time is negotiated and the
         /// tag is valid; `None` means use the receipt time.
         server_time: Option<SystemTime>,
@@ -654,6 +659,9 @@ pub enum Event {
         reason: String,
     },
     Disconnected(String),
+    /// The user ended the connection (Disconnect, `/quit`, quitting the
+    /// app). Terminal like `Disconnected`; nothing should reconnect.
+    Closed(String),
     /// The server rejected credentials or this configuration. Terminal like
     /// `Disconnected`, but reconnecting with the same settings would only be
     /// rejected again, so callers must not retry automatically.
@@ -725,7 +733,76 @@ pub enum MemberCommand {
     Deop { channel: String },
 }
 
-async fn diagnostic(events: &mpsc::Sender<Event>, started: Instant, message: impl Into<String>) {
+/// Set by [`Connection::shutdown`]. It reaches the worker without going
+/// through the command or event queues, which a flooded or undrained
+/// connection can leave full.
+#[derive(Default)]
+struct QuitSignal {
+    requested: AtomicBool,
+    wake: Notify,
+}
+
+impl QuitSignal {
+    fn request(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    async fn requested(&self) {
+        if !self.is_requested() {
+            self.wake.notified().await;
+        }
+    }
+}
+
+/// The worker's event queue. Once a shutdown was requested nobody needs the
+/// events, so sending no longer waits for the UI to drain them; otherwise a
+/// full queue would keep the worker from writing QUIT.
+#[derive(Clone)]
+struct EventSender {
+    events: mpsc::Sender<Event>,
+    quit: Arc<QuitSignal>,
+}
+
+impl EventSender {
+    #[cfg(test)]
+    fn new(events: mpsc::Sender<Event>) -> Self {
+        Self {
+            events,
+            quit: Arc::default(),
+        }
+    }
+
+    async fn send(&self, event: Event) -> Result<(), ()> {
+        if self.quit.is_requested() {
+            // Dropping the event is fine; a closed receiver is not an error here.
+            let _ = self.events.try_send(event);
+            return Ok(());
+        }
+        tokio::select! {
+            sent = self.events.send(event) => sent.map_err(|_| ()),
+            _ = self.quit.requested() => Ok(()),
+        }
+    }
+}
+
+/// The next command, with a shutdown request counting as a plain quit.
+async fn next_command(
+    commands: &mut mpsc::Receiver<Outgoing>,
+    quit: &QuitSignal,
+) -> Option<Outgoing> {
+    tokio::select! {
+        biased;
+        _ = quit.requested() => Some(Outgoing::Quit),
+        command = commands.recv() => command,
+    }
+}
+
+async fn diagnostic(events: &EventSender, started: Instant, message: impl Into<String>) {
     let _ = events
         .send(Event::Diagnostic {
             elapsed: started.elapsed(),
@@ -845,7 +922,7 @@ fn echo_text(target: &str, text: String) -> String {
 /// completes (the transcript is shown while a connection does not come up)
 /// and while the UI asks for them ([`Connection::set_transcript`]).
 struct Transcript {
-    events: mpsc::Sender<Event>,
+    events: EventSender,
     started: Instant,
     requested: Arc<AtomicBool>,
     registered: bool,
@@ -935,6 +1012,8 @@ enum Outgoing {
         limit: usize,
     },
     Quit,
+    /// `Quit` with the reason the user typed instead of the configured one.
+    QuitWith(String),
 }
 
 fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> {
@@ -971,6 +1050,7 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
             vec![peer_avatar::realname(base_realname(realname), true)],
         )),
         Outgoing::Quit => return Ok(()),
+        Outgoing::QuitWith(reason) => IrcMessage::from(IrcCommand::QUIT(Some(reason.clone()))),
     };
     validate_wire(&message.to_string(), encoding)
 }
@@ -1169,6 +1249,16 @@ fn parse_slash_command(line: &str, selected: Option<&str>) -> Result<Outgoing, S
             }
             checked_command(IrcCommand::INVITE(nickname.into(), channel.into()))
         }
+        // Goes through the worker so the reason defaults to the configured
+        // QUIT message and the connection ends as a user disconnect.
+        "QUIT" => {
+            let reason = rest.trim_start_matches(':').trim();
+            if reason.is_empty() {
+                return Ok(Outgoing::Quit);
+            }
+            checked_command(IrcCommand::QUIT(Some(reason.into())))?;
+            Ok(Outgoing::QuitWith(reason.into()))
+        }
         "RAW" | "QUOTE" => checked_raw(rest),
         _ => checked_raw(body),
     }
@@ -1199,11 +1289,15 @@ pub struct Connection {
     /// Stops a worker that is still resolving or opening the transport,
     /// before it reads queued commands.
     cancel: Arc<Notify>,
+    /// Asks the worker to quit even when both queues are full.
+    quit: Arc<QuitSignal>,
     /// `None` after [`Connection::take_events`].
     events: Option<Events>,
     encoding: String,
     /// The server's announced `MODES` limit; 0 until one is seen.
     modes_per_line: Arc<AtomicUsize>,
+    /// Disconnects once the worker thread has ended.
+    closed: Option<Mutex<std_mpsc::Receiver<()>>>,
     /// Whether IRC lines are recorded after registration.
     transcript: Arc<AtomicBool>,
 }
@@ -1225,13 +1319,21 @@ impl Connection {
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
         let cancel = Arc::new(Notify::new());
         let worker_cancel = cancel.clone();
+        let quit = Arc::new(QuitSignal::default());
+        let worker_events = EventSender {
+            events: event_tx.clone(),
+            quit: quit.clone(),
+        };
         let modes_per_line = Arc::new(AtomicUsize::new(0));
         let worker_modes = modes_per_line.clone();
+        let (alive, closed) = std_mpsc::channel::<()>();
         let transcript = Arc::new(AtomicBool::new(false));
         let worker_transcript = transcript.clone();
         thread::Builder::new()
             .name("cayenchat-irc".into())
             .spawn(move || {
+                // Dropped when the worker ends, which `wait_closed` observes.
+                let _alive = alive;
                 let failure_events = event_tx.clone();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1241,7 +1343,7 @@ impl Connection {
                         Ok(runtime) => runtime.block_on(run_cancellable(
                             config,
                             command_rx,
-                            event_tx,
+                            worker_events,
                             worker_cancel,
                             worker_modes,
                             worker_transcript,
@@ -1261,11 +1363,30 @@ impl Connection {
         Ok(Self {
             commands,
             cancel,
+            quit,
             events: Some(Events(events)),
             encoding,
             modes_per_line,
+            closed: Some(Mutex::new(closed)),
             transcript,
         })
+    }
+
+    /// Blocks up to `timeout` until the worker has ended, which after
+    /// [`Connection::disconnect`] means QUIT was flushed. For quitting the
+    /// application, where the process would otherwise end before the worker
+    /// writes it. Returns whether the worker ended in time.
+    pub fn wait_closed(&self, timeout: Duration) -> bool {
+        let Some(closed) = &self.closed else {
+            return true;
+        };
+        let Ok(closed) = closed.lock() else {
+            return true;
+        };
+        matches!(
+            closed.recv_timeout(timeout),
+            Err(std_mpsc::RecvTimeoutError::Disconnected)
+        )
     }
 
     /// Whether `Event::Wire` lines are sent after registration; they always
@@ -1476,6 +1597,14 @@ impl Connection {
             .map_err(|error| format!("Could not queue history request: {error}"))
     }
 
+    /// Like [`Connection::disconnect`] for an application that is exiting:
+    /// QUIT goes out even when the command or event queue is full, and the
+    /// remaining events are dropped. Follow with [`Connection::wait_closed`].
+    pub fn shutdown(&self) {
+        self.cancel.notify_one();
+        self.quit.request();
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
@@ -1511,7 +1640,7 @@ async fn run(
     run_cancellable(
         config,
         commands,
-        events,
+        EventSender::new(events),
         Arc::new(Notify::new()),
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(true)),
@@ -1522,7 +1651,7 @@ async fn run(
 async fn run_cancellable(
     config: ConnectionConfig,
     mut commands: mpsc::Receiver<Outgoing>,
-    events: mpsc::Sender<Event>,
+    events: EventSender,
     cancel: Arc<Notify>,
     modes_per_line: Arc<AtomicUsize>,
     transcript: Arc<AtomicBool>,
@@ -1662,7 +1791,7 @@ async fn run_cancellable(
             _ = &mut connect_timeout => break None,
             _ = cancel.notified() => {
                 diagnostic(&events, started, "Transport setup cancelled by the user.").await;
-                let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
+                let _ = events.send(Event::Closed(USER_DISCONNECT.into())).await;
                 return;
             }
             _ = progress.tick() => diagnostic(&events, started,
@@ -1782,7 +1911,7 @@ async fn run_cancellable(
 
     loop {
         tokio::select! {
-            command = commands.recv() => {
+            command = next_command(&mut commands, &events.quit) => {
                 let Some(command) = command else { break; };
                 match command {
                     Outgoing::Message {target, text, display_text, notice} => {
@@ -1927,16 +2056,28 @@ async fn run_cancellable(
                             return;
                         }
                     }
-                    Outgoing::Quit => {
-                        let quit = IrcMessage::from(IrcCommand::QUIT(Some(quit_message.clone())));
+                    outgoing @ (Outgoing::Quit | Outgoing::QuitWith(_)) => {
+                        let reason = match outgoing {
+                            Outgoing::QuitWith(reason) => reason,
+                            _ => quit_message.clone(),
+                        };
+                        let quit = IrcMessage::from(IrcCommand::QUIT(Some(reason)));
                         let line = transcript.line(&quit);
                         if client.send(quit).is_ok() {
                             transcript.record(WireDirection::Sent, line).await;
                         }
-                        // ClientStream drives the library's outgoing queue. Poll it once more
-                        // so QUIT is flushed before the runtime and socket are dropped.
-                        let _ = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
-                        let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
+                        // Polling the stream writes the queue, QUIT included. The server
+                        // closes after QUIT, which ends the stream; reading (and discarding)
+                        // up to that point leaves nothing unread, since dropping a socket
+                        // with unread data sends RST and can discard a QUIT not yet sent.
+                        // EOF is taken as send completion: the server is assumed to close
+                        // only after receiving QUIT. A close before that is the server's own
+                        // doing, and a write after it would be reset, so waiting is futile.
+                        let _ = tokio::time::timeout(QUIT_FLUSH_LIMIT, async {
+                            while let Some(Ok(_)) = stream.next().await {}
+                        })
+                        .await;
+                        let _ = events.send(Event::Closed(USER_DISCONNECT.into())).await;
                         break;
                     }
                 }
@@ -2399,7 +2540,7 @@ async fn run_cancellable(
 /// reports it. `false` means the connection or the event channel failed.
 async fn request_history(
     client: &Client,
-    events: &mpsc::Sender<Event>,
+    events: &EventSender,
     transcript: &Transcript,
     history: &mut history::HistoryRequests,
     registered: bool,
@@ -2430,7 +2571,7 @@ async fn request_history(
 /// Reports a finished history request. `false` means the event channel
 /// closed.
 async fn history_finished(
-    events: &mpsc::Sender<Event>,
+    events: &EventSender,
     started: Instant,
     finished: history::Finished,
 ) -> bool {
@@ -2917,11 +3058,6 @@ fn translate_message(
                 sender: sender.to_owned(),
                 text: text.clone(),
                 notice: matches!(message.command, IrcCommand::NOTICE(_, _)),
-                mentioned: !crate::text::same_nickname(sender, current_nick)
-                    && crate::text::mentions_nickname(
-                        &crate::text::strip_formatting(text),
-                        current_nick,
-                    ),
                 server_time,
                 msgid: tags::msgid(&message).map(str::to_owned),
                 account: tags::account(&message).map(str::to_owned),
@@ -3305,9 +3441,11 @@ mod tests {
         let mut connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
+            closed: None,
             transcript: Arc::default(),
         };
         assert!(!connection.is_closed());
@@ -3325,9 +3463,11 @@ mod tests {
         let connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(2)),
+            closed: None,
             transcript: Arc::default(),
         };
         let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
@@ -3361,9 +3501,11 @@ mod tests {
         let connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(1)),
+            closed: None,
             transcript: Arc::default(),
         };
         let names = ["a", "b", "c"].map(str::to_owned).to_vec();
@@ -3387,9 +3529,11 @@ mod tests {
         let mut connection = Connection {
             commands,
             cancel: Arc::new(Notify::new()),
+            quit: Arc::default(),
             events: Some(Events(events)),
             encoding: "UTF-8".into(),
             modes_per_line: Arc::new(AtomicUsize::new(0)),
+            closed: None,
             transcript: Arc::default(),
         };
         let mut events = connection.take_events().unwrap();
@@ -4277,7 +4421,10 @@ mod tests {
         let mut reason = None;
         while Instant::now() < deadline && reason.is_none() {
             match connection.try_recv() {
-                Some(Event::Disconnected(detail) | Event::Refused(detail)) => reason = Some(detail),
+                Some(Event::Closed(detail)) => reason = Some(detail),
+                Some(Event::Disconnected(detail) | Event::Refused(detail)) => {
+                    panic!("not a user disconnect: {detail}")
+                }
                 Some(_) => {}
                 None => thread::sleep(Duration::from_millis(10)),
             }
@@ -4376,6 +4523,27 @@ mod tests {
     /// Connects to a local server, disconnects, and returns the raw `QUIT`
     /// line the server received (without its line ending).
     fn quit_line_sent_with(configure: impl FnOnce(&mut ConnectionConfig)) -> Vec<u8> {
+        quit_line_after(configure, |connection| connection.disconnect().unwrap())
+    }
+
+    /// The QUIT line a server receives after `end` ends a registered
+    /// connection and the worker has finished.
+    fn quit_line_after(
+        configure: impl FnOnce(&mut ConnectionConfig),
+        end: impl FnOnce(&mut Connection),
+    ) -> Vec<u8> {
+        quit_line_after_flood(configure, end, 0, Duration::ZERO)
+    }
+
+    /// As [`quit_line_after`], with the server sending `flood` NOTICE lines
+    /// after registering that nobody drains from the connection, and not
+    /// reading anything from the client for `read_delay` after that.
+    fn quit_line_after_flood(
+        configure: impl FnOnce(&mut ConnectionConfig),
+        end: impl FnOnce(&mut Connection),
+        flood: usize,
+        read_delay: Duration,
+    ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4395,6 +4563,12 @@ mod tests {
             socket
                 .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
                 .unwrap();
+            for index in 0..flood {
+                socket
+                    .write_all(format!(":server NOTICE alice :flood {index}\r\n").as_bytes())
+                    .unwrap();
+            }
+            thread::sleep(read_delay);
             loop {
                 line.clear();
                 lines.read_until(b'\n', &mut line).unwrap();
@@ -4405,6 +4579,19 @@ mod tests {
                     {
                         line.pop();
                     }
+                    // Like an IRC server: more lines, ERROR, then it closes. A client
+                    // that drops the socket with these unread sends RST, which shows
+                    // here as an error instead of a clean end.
+                    for index in 0..100 {
+                        let _ = socket.write_all(
+                            format!(":server NOTICE alice :late {index}\r\n").as_bytes(),
+                        );
+                    }
+                    let _ = socket.write_all(b"ERROR :Closing Link: alice (Quit)\r\n");
+                    let reset = "client reset the connection instead of closing it";
+                    socket.shutdown(std::net::Shutdown::Write).expect(reset);
+                    let mut rest = Vec::new();
+                    std::io::Read::read_to_end(&mut lines, &mut rest).expect(reset);
                     return line;
                 }
             }
@@ -4425,8 +4612,69 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(registered, "client did not register");
-        connection.disconnect().unwrap();
+        end(&mut connection);
+        assert!(connection.wait_closed(Duration::from_secs(5)));
         server.join().unwrap()
+    }
+
+    #[test]
+    fn the_quit_command_sends_the_default_or_the_given_reason() {
+        let line = quit_line_after(
+            |config| config.quit_message = "Back soon".into(),
+            |connection| connection.send_command("/quit", None).unwrap(),
+        );
+        assert_eq!(line, b"QUIT :Back soon".to_vec());
+        let line = quit_line_after(
+            |_| {},
+            |connection| connection.send_command("/QUIT :Bye now", None).unwrap(),
+        );
+        assert_eq!(line, b"QUIT :Bye now".to_vec());
+    }
+
+    #[test]
+    fn shutdown_sends_quit_while_the_event_queue_is_full() {
+        // More lines than EVENT_CAPACITY, and the test never drains them.
+        let line = quit_line_after_flood(
+            |_| {},
+            |connection| {
+                thread::sleep(Duration::from_millis(500));
+                connection.shutdown();
+                // The same deadline the application waits for on exit.
+                assert!(connection.wait_closed(QUIT_WAIT));
+            },
+            EVENT_CAPACITY * 4,
+            Duration::ZERO,
+        );
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
+    }
+
+    #[test]
+    fn shutdown_writes_quit_behind_a_send_backlog_while_lines_arrive() {
+        // The server reads nothing for a while, so the socket fills up and
+        // the writer stalls with QUIT queued behind the messages.
+        let text = "x".repeat(400);
+        let line = quit_line_after_flood(
+            |_| {},
+            |connection| {
+                let stop = Instant::now() + Duration::from_secs(3);
+                let mut queued = 0;
+                while queued < 20_000 && Instant::now() < stop {
+                    while connection.try_recv().is_some() {}
+                    match connection.send_message("#test", &text, false) {
+                        Ok(()) => queued += 1,
+                        Err(_) => thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+                assert!(queued > 10_000, "only {queued} messages were queued");
+                connection.shutdown();
+                // The server reads QUIT and the worker ends within the time
+                // the application waits on exit.
+                assert!(connection.wait_closed(QUIT_WAIT));
+            },
+            EVENT_CAPACITY * 4,
+            Duration::from_millis(800),
+        );
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
     }
 
     #[test]
@@ -6325,9 +6573,6 @@ mod tests {
                 ("alice: after del", false),
             ])
         );
-        // History is still a mention; the app suppresses only its alerts.
-        assert!(events.iter().any(|event| matches!(event,
-            Event::ChannelMessage { text, mentioned: true, replayed: true, .. } if text == "alice: old")));
         // server-time was not requested, so its tag is ignored.
         assert!(
             channel_messages(&events)

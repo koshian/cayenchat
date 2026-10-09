@@ -825,6 +825,66 @@ Not done before 1.0: the worker still builds a whole roster per change.
 Sending membership changes instead of rosters belongs with replacing the
 `irc` client's roster (#266), so it is not built twice.
 
+## Mentions and keywords once per message (2026-10-09, PR #255)
+
+`ChatWindow::find_mentions` now runs on the UI thread once per live message
+from someone else (formatting-free text, two `plain_ranges` passes) and
+stores the ranges in `Message::highlights`; the log no longer searches text
+while drawing. `Message` grows from 104 to 112 bytes (`message_size` in the
+UI test output), about 160 KiB at 20,000 retained lines. Compared against
+`45d6f07` (parent, master) and `690dd69` (branch, clean) in the Linux x86_64
+container (12 vCPUs, rustc 1.99.0, Xvfb, not a visible desktop window, so the
+CPU numbers are only comparable between these builds). Both binaries are
+`cargo build --release --locked -p cayenchat-ui`; the parent was built in a
+separate worktree and target directory. Parent and branch alternate, three
+runs each (process runs first, then the UI test), with the same commands as
+the received line limit above.
+
+Process (`run_baseline.py`, one run per invocation; parent / branch, runs 1–3):
+
+| Scenario | RSS MiB | CPU % |
+| --- | --- | --- |
+| S2 connected, idle | 115.7, 115.8, 115.9 / 116.1, 116.2, 115.4 | 0.00 both |
+| S3 after 2,000 lines per channel | 120.4, 120.4, 120.7 / 120.4, 120.5, 119.8 | 0.00–0.03 both |
+| S4a 200 lines/s | 120.4, 120.4, 120.7 / 120.5, 120.5, 119.8 | 4.00, 4.34, 3.96 / 4.03, 4.27, 4.03 |
+| S4b overload | 120.8, 120.8, 121.0 / 121.9, 121.6, 121.0 | 189.6, 189.2, 189.8 / 184.0, 183.8, 184.3 |
+| S6 second overload, idle | 120.8, 121.0, 121.2 / 122.1, 121.8, 121.2 | 0.00–0.03 both |
+
+- S4a (200 lines/s) PING round trip max: 1.3, 1.4, 1.2 ms / 1.1, 1.0, 0.8 ms.
+  CPU and latency at a realistic rate are the same.
+- S4b throughput (lines/s the client read in 30 s): 171,549, 174,956, 180,083
+  / 165,881, 169,114, 172,928, so the branch reads about 3 % fewer lines
+  (medians 174,956 and 169,114) while using about 3 % less CPU. In every run
+  of both builds the fixture saw two connections and a 15 s median PING round
+  trip, so the runs are comparable with each other. Per-line work added on the
+  UI thread (the search; the flood's text rarely contains the nickname) is
+  the likely cause, but it was not profiled. The 3 % applies only to a client
+  that is already behind by seconds.
+- RSS differs by at most 1.3 MiB, within the spread between runs of one build
+  in earlier sections; the branch is slightly above the parent after S4b/S6
+  in all three runs, consistent with the 8 extra bytes per retained message
+  plus allocator noise, but the size of the effect is not separable here.
+- Binary size: 54,915,752 (parent) / 54,940,376 (branch) bytes.
+
+Headless UI test (medians in µs; parent / branch, runs 1–3):
+
+| Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- |
+| 241 / 240, 240 / 242, 239 / 283 | 1,567 / 1,574, 1,604 / 1,535, 1,587 / 1,683 | 1,177 / 1,192, 1,186 / 1,229, 1,206 / 1,240 | 1,564 / 1,589, 1,590 / 1,621, 1,562 / 1,604 | 251 / 252, 252 / 249, 248 / 265 |
+
+- Branch run 3 is slower on typing and channel switching, which the change
+  does not touch; its other runs match the parent. The 256-event batch is
+  1–2 % slower on the branch in each run, which is the UI-thread search added
+  to `new_message`'s path. Scrolling is 1–3 % slower, not faster, although the
+  log no longer searches while drawing: the test's lines contain no
+  highlights, so the draw path only loses a cheap scan, while `Message` is
+  larger. The differences are at the edge of the run-to-run noise.
+- Limits: one container, Xvfb, not a visible window. The test bypasses the IRC
+  worker (so the removal of the nickname check there is not seen) and its
+  lines carry no mentions or formatting codes, so the cost of lines that do
+  have highlights (the `Highlights` allocation) is not measured. Real servers
+  were not used.
+
 ## Resource limit candidates (proposal)
 
 These are not agreed. Each needs a decision before it is implemented. The

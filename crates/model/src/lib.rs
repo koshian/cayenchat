@@ -4,6 +4,8 @@ pub mod attachment;
 pub mod display;
 pub mod names;
 
+use std::ops::Range;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NetworkId(pub u32);
 
@@ -165,6 +167,27 @@ impl ServicesAccount {
     }
 }
 
+/// Byte ranges of a message's text drawn in the highlight color, sorted.
+///
+/// Boxed for a thin pointer: an empty set is 8 bytes in every retained
+/// message and allocates nothing, and most messages have none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Highlights(Option<Box<Box<[Range<usize>]>>>);
+
+impl Highlights {
+    pub fn new(ranges: Vec<Range<usize>>) -> Self {
+        Self((!ranges.is_empty()).then(|| Box::new(ranges.into_boxed_slice())))
+    }
+
+    pub fn as_slice(&self) -> &[Range<usize>] {
+        self.0.as_deref().map_or(&[], |ranges| ranges)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
 /// How a message reached the client. Only live messages may notify or be
 /// highlighted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -209,6 +232,10 @@ pub struct Message {
     pub account: Option<ServicesAccount>,
     pub sender: String,
     pub text: String,
+    /// Byte ranges of `text` that mention us or contain a keyword, drawn in
+    /// the highlight color. Decided once when the message arrives; empty
+    /// for history, activity and our own messages.
+    pub highlights: Highlights,
     pub activity: bool,
     /// Received as a NOTICE (the text also carries a `[NOTICE]` marker); drawn
     /// in the notice color.
@@ -298,9 +325,10 @@ mod tests {
     #[test]
     fn retained_message_size_stays_bounded() {
         // 64 bytes before timestamps and native IDs were retained, 96 with
-        // them, 104 with the services account (one thin pointer); the texts
-        // live on the heap only when present.
+        // them, 104 with the services account and 112 with the highlights
+        // (one thin pointer each); the texts and ranges live on the heap
+        // only when present.
         println!("size_of::<Message>() = {}", std::mem::size_of::<Message>());
-        assert!(std::mem::size_of::<Message>() <= 104);
+        assert!(std::mem::size_of::<Message>() <= 112);
     }
 }
