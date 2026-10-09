@@ -72,7 +72,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
 | WHOIS collection | 32 nicknames × 512 items | per connection | |
-| Rosters | none | per channel | Kept four times: `irc`'s channel lists, `irc-core`'s `RosterTracker`, its `PresenceIndex` (see "Presence index"), and `app`'s sorted `members`. |
+| Rosters | none | per channel | Kept in full three times: `irc`'s channel lists, `irc-core`'s `PresenceIndex` (see "Presence index"), and `app`'s sorted `members`; `RosterTracker` keeps only the members with a role (`ranked`). |
 | Per-selection UI state | none | per visited server/channel | `main_lists` (one `LogList` with measured heights) and one `TextInput` entity per conversation; cleared only when a connection is applied from settings (automatic reconnects keep them). |
 | Attachment | 32 MiB | one upload at a time | Upload only. |
 | Preview loads in flight | 2 | application | Fetch plus decode; jobs started before previews were switched off still count until they return. |

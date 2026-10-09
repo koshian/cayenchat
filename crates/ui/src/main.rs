@@ -124,15 +124,20 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
 }
 
 /// Positions in `batch` of member lists that a later member list of the same
-/// channel in the batch replaces.
+/// channel in the batch replaces. A change of case mapping can make the same
+/// name another conversation, so no member list is dropped across one.
 fn superseded_rosters(batch: &[Event]) -> std::collections::HashSet<usize> {
     let mut later = std::collections::HashSet::new();
     let mut superseded = std::collections::HashSet::new();
     for (index, event) in batch.iter().enumerate().rev() {
-        if let Event::Names { channel, .. } = event
-            && !later.insert(channel.as_str())
-        {
-            superseded.insert(index);
+        match event {
+            Event::Names { channel, .. } => {
+                if !later.insert(channel.as_str()) {
+                    superseded.insert(index);
+                }
+            }
+            Event::CaseMapping(_) | Event::TransportConnected => later.clear(),
+            _ => {}
         }
     }
     superseded
@@ -6199,6 +6204,38 @@ mod combined_log_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod roster_batch_tests {
+    use super::superseded_rosters;
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::names::CaseMapping;
+
+    fn names(channel: &str) -> Event {
+        Event::Names {
+            channel: channel.into(),
+            users: vec!["alice".into()],
+        }
+    }
+
+    #[test]
+    fn only_the_last_roster_of_a_channel_is_applied() {
+        let batch = [names("#a"), names("#b"), names("#a")];
+        assert_eq!(superseded_rosters(&batch), [0].into());
+    }
+
+    #[test]
+    fn rosters_are_kept_across_a_case_mapping_change() {
+        let batch = [
+            names("#foo{1}"),
+            Event::CaseMapping(CaseMapping::Rfc1459),
+            names("#foo{1}"),
+            Event::TransportConnected,
+            names("#foo{1}"),
+        ];
+        assert!(superseded_rosters(&batch).is_empty());
     }
 }
 
