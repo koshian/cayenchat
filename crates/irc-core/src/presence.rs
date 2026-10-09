@@ -167,7 +167,9 @@ impl PresenceIndex {
             let key = nickname_key(nickname);
             let id = match self.by_nick.get(&key) {
                 Some(id) => {
-                    if let Some(presence) = self.users.get_mut(id) {
+                    if let Some(presence) = self.users.get_mut(id)
+                        && presence.nick != nickname
+                    {
                         presence.nick = nickname.to_owned();
                     }
                     *id
@@ -196,7 +198,6 @@ impl PresenceIndex {
         }
         let key = entry.key.clone();
         let departed: Vec<UserId> = entry.users.difference(&present).copied().collect();
-        entry.users = present.clone();
         for id in &present {
             if let Some(presence) = self.users.get_mut(id)
                 && !presence.channels.contains(&key)
@@ -204,6 +205,7 @@ impl PresenceIndex {
                 presence.channels.push(key.clone());
             }
         }
+        entry.users = present;
         for id in departed {
             self.leave(id, &channel_key);
         }

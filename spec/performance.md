@@ -72,7 +72,7 @@ Do not build a second mechanism for any of these; extend them instead.
 | Worker→UI events | 512 | per connection | Back-pressure, not a drop. |
 | UI→worker commands | 128 | per connection | `try_send`; a full queue rejects the command. |
 | WHOIS collection | 32 nicknames × 512 items | per connection | |
-| Rosters | none | per channel | Kept four times: `irc`'s channel lists, `irc-core`'s `RosterTracker`, its `PresenceIndex` (see "Presence index"), and `app`'s sorted `members`. |
+| Rosters | none | per channel | Kept in full three times: `irc`'s channel lists, `irc-core`'s `PresenceIndex` (see "Presence index"), and `app`'s sorted `members`; `RosterTracker` keeps only the members with a role (`ranked`). |
 | Per-selection UI state | none | per visited server/channel | `main_lists` (one `LogList` with measured heights) and one `TextInput` entity per conversation; cleared only when a connection is applied from settings (automatic reconnects keep them). |
 | Attachment | 32 MiB | one upload at a time | Upload only. |
 | Preview loads in flight | 2 | application | Fetch plus decode; jobs started before previews were switched off still count until they return. |
@@ -158,13 +158,21 @@ long ASCII, Japanese, mixed text with a URL and a ~250-byte Japanese line.
 | S4b | Overload | as fast as the client reads, 30 s |
 | S5 | After logs and diagnostics were saturated | idle |
 | S6 | After a second 30 s overload | idle (plateau check) |
+| S7 | Member list changes (only with `--churn-rate`, use a large `--members`) | JOIN and PART lines of extra users at that rate for 30 s, round-robin across channels |
+
+Every JOIN or PART republishes the whole roster of its channel (the worker
+sends `Event::Names`), so S7 with `--members 2000` measures the cost of a
+member list change in a large channel. The default baseline does not run it.
 
 Input and channel switching are timed by the UI test, not the runner: 10
 channels with 50 members, 2,000 incoming lines per channel (each with its wire
 diagnostic, so logs and the transcript are saturated), then 300 single
 characters typed, 200 channel selections through `ChatWindow::dispatch`
 (the path shortcuts use), 100 batches of 256 events (128 lines), and 300
-more characters.
+more characters. Last, `roster_2000` times 100 `Event::Names` of 2,000 or
+2,001 members for the selected channel (its member list is drawn), and
+`roster_burst_32` times 20 batches of 32 such lists for the same channel (a
+burst of joins).
 
 ## Baseline (2026-09-27)
 
@@ -767,6 +775,56 @@ Headless UI test (medians in µs; master / branch, runs 1–3):
   which the change does not touch: outside load. Runs 1 and 2 match master
   within noise, including the 256-event batch that goes through `new_message`.
 
+## Member list changes in large channels (2026-10-09)
+
+Every JOIN, PART, QUIT, KICK, NICK or MODE republishes the whole roster of
+the channel. On the worker side this costs `list_users` (the library copies
+every user), a string per member, the presence index and the accounts. In
+the window, the roster is sorted and the old one dropped. Measured with the
+new S7 scenario and `roster_2000` and `roster_burst_32` steps (see
+"Scenarios and load"). The conditions are the same as for the received line
+limit above.
+
+Process, before this change (master `45d6f07` plus the measurement):
+
+```sh
+run_baseline.py --runs 1 --load-only --channels 3 --members 2000 --history 200 --churn-rate 100
+```
+
+S7 took 26.2, 26.7 and 35.0 % CPU at 100 roster changes per second, with no
+drain lag (PING round trip 0.5 ms). That is about 2.7 ms per change: about
+1.4 ms in the window (`roster_2000`), the rest in the worker. A realistic
+large channel changes far less often (a few times a minute to a few times a
+second), so the steady cost is small. A burst, such as everyone rejoining
+after a netsplit, is not.
+
+Changes, measured in three alternating runs each:
+
+- **Copies removed.** These changes removed copies without changing behaviour:
+  - the presence index keeps a member's nickname unless it changed, and no
+    longer copies the member set;
+  - `Accounts::names` no longer copies every known user's key;
+  - the worker keeps only members with a role (`RosterTracker::ranked`, used
+    to carry a role over a NICK) instead of a second copy of every roster;
+  - an empty member selection skips the presence check.
+
+  S7 stayed at 26.5, 38.0 and 37.1 % CPU, the same within the run-to-run
+  spread. The changes are kept because they remove work and memory (one
+  roster copy per channel) at no cost in complexity.
+- **Sort without allocated keys: tried and reverted.** Sorting with a
+  comparator that folded case as it went, instead of keys allocated per
+  member, made `roster_2000` slower (1.52–1.82 ms against 1.41–1.43 ms).
+- **Last roster of a batch.** The window applies only the last roster of a
+  channel in an event batch (`superseded_rosters`); earlier ones in the same
+  batch only end the choice of members who left.
+  `roster_burst_32` went from 11.2, 9.5 and 9.1 ms to 2.5, 3.4 and 2.6 ms
+  (master `9fe0f66` against `d660222`, headless UI test). `roster_2000` (one
+  roster per batch) and the other steps stayed within noise.
+
+Not done before 1.0: the worker still builds a whole roster per change.
+Sending membership changes instead of rosters belongs with replacing the
+`irc` client's roster (#266), so it is not built twice.
+
 ## Mentions and keywords once per message (2026-10-09, PR #255)
 
 `ChatWindow::find_mentions` now runs on the UI thread once per live message
@@ -951,7 +1009,8 @@ Observed while measuring; each is a separate task if pursued:
 - Make the combined-subwindow rebuild incremental (the heap merge already
   bounds it by the rows shown; an incremental update would avoid it too).
 - Send roster deltas instead of full NAMES snapshots on JOIN/PART in large
-  channels, and remove duplicate roster copies.
+  channels (#266; the duplicate copies were removed, see "Member list
+  changes in large channels").
 - Drop per-conversation UI state (`main_lists`, draft inputs without text)
   for conversations that were parted and are no longer shown.
 

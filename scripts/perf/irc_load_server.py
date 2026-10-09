@@ -11,7 +11,9 @@ Phases (control socket commands, one per line):
   history N            send N PRIVMSG lines to every joined channel at full speed
   flood RATE SECONDS   send PRIVMSG lines round-robin across channels;
                        RATE 0 means as fast as the client consumes them
-  probe SECONDS        send only a PING every second and record the round
+  churn RATE SECONDS   like flood, but JOIN and PART lines of extra users,
+                       round-robin across channels (member list changes)
+  probe SECONDS       send only a PING every second and record the round
                        trip (how quickly this server's lines are read while
                        another server is busy)
   joined               reply once the client has joined --expect-channels channels
@@ -37,6 +39,7 @@ is fetched from the network.
 
 import argparse
 import asyncio
+import itertools
 import json
 import random
 import sys
@@ -247,13 +250,48 @@ class Server:
             "seconds": seconds,
             "start": self.stats.elapsed(),
         }
+        channels = itertools.cycle(self.channels)
+        sent = await self.paced(record, rate, seconds, lambda: self.message(next(channels)))
+        self.stats.lines_sent += sent
+        return record
+
+    def churn_lines(self):
+        """JOIN and PART lines of extra users, alternating in each channel so
+        every roster stays at --members or one more."""
+        present = {channel: None for channel in self.channels}
+        serial = 0
+        for channel in itertools.cycle(self.channels):
+            user = present[channel]
+            if user is None:
+                serial += 1
+                user = f"churn{serial:05d}"
+                present[channel] = user
+                yield f":{user}!{user}@load.invalid JOIN {channel}"
+            else:
+                present[channel] = None
+                yield f":{user}!{user}@load.invalid PART {channel} :bye"
+
+    async def churn(self, rate, seconds):
+        record = {
+            "phase": "churn",
+            "target_rate": rate,
+            "seconds": seconds,
+            "start": self.stats.elapsed(),
+        }
+        lines = self.churn_lines()
+        sent = await self.paced(record, rate, seconds, lambda: next(lines))
+        self.stats.lines_sent += sent
+        return record
+
+    async def paced(self, record, rate, seconds, next_line):
+        """Sends next_line() at RATE lines/s (0: as fast as the client reads)
+        for SECONDS, with a PING every second, and records the rate, the PING
+        round trips and the drain lag. Returns the number of lines sent."""
         rtts = []
         pending = []
         started = time.monotonic()
         next_ping = started + 1.0
         sent = 0
-        index = 0
-        channels = self.channels
         # Pace in 10 ms slices so a fixed rate is smooth rather than bursty.
         while True:
             now = time.monotonic()
@@ -271,8 +309,7 @@ class Server:
             else:
                 burst = 64
             for _ in range(burst):
-                await self.send(self.message(channels[index % len(channels)]))
-                index += 1
+                await self.send(next_line())
                 sent += 1
         elapsed = time.monotonic() - started
         record["lines"] = sent
@@ -285,8 +322,7 @@ class Server:
         if rtts:
             record["ping_rtt_ms"] = rtt_summary(rtts, len(pending))
         record["end"] = self.stats.elapsed()
-        self.stats.lines_sent += sent
-        return record
+        return sent
 
     async def probe(self, seconds):
         record = {"phase": "probe", "seconds": seconds, "start": self.stats.elapsed()}
@@ -335,6 +371,11 @@ class Server:
                     await self.joined.wait()
                     asyncio.create_task(
                         self.run_phase("flood", self.flood(int(words[1]), float(words[2])))
+                    )
+                elif words[0] == "churn":
+                    await self.joined.wait()
+                    asyncio.create_task(
+                        self.run_phase("churn", self.churn(int(words[1]), float(words[2])))
                     )
                 elif words[0] == "probe":
                     await self.joined.wait()

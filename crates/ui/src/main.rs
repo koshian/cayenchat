@@ -123,6 +123,26 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
     }
 }
 
+/// Positions in `batch` of member lists that a later member list of the same
+/// channel in the batch replaces. A change of case mapping can make the same
+/// name another conversation, so no member list is dropped across one.
+fn superseded_rosters(batch: &[Event]) -> std::collections::HashSet<usize> {
+    let mut later = std::collections::HashSet::new();
+    let mut superseded = std::collections::HashSet::new();
+    for (index, event) in batch.iter().enumerate().rev() {
+        match event {
+            Event::Names { channel, .. } => {
+                if !later.insert(channel.as_str()) {
+                    superseded.insert(index);
+                }
+            }
+            Event::CaseMapping(_) | Event::TransportConnected => later.clear(),
+            _ => {}
+        }
+    }
+    superseded
+}
+
 actions!(
     cayenchat,
     [
@@ -2862,7 +2882,19 @@ impl ChatWindow {
                     | Event::OwnAvatarFailed { .. }
             )
         });
-        for event in batch {
+        let superseded = superseded_rosters(&batch);
+        for (index, event) in batch.into_iter().enumerate() {
+            if superseded.contains(&index)
+                && let Event::Names { channel, users } = &event
+            {
+                // A later roster of the channel in this batch replaces this
+                // one (large channels republish on every JOIN and PART);
+                // only who left in between still matters.
+                if let Some(id) = self.state.channel_id(network, channel) {
+                    self.member_selection.retain_present(id, users);
+                }
+                continue;
+            }
             match &event {
                 Event::Disconnected(_) => disconnected = true,
                 // Disconnect or /quit: the user ended it, so no reconnecting.
@@ -6176,6 +6208,38 @@ mod combined_log_tests {
 }
 
 #[cfg(test)]
+mod roster_batch_tests {
+    use super::superseded_rosters;
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::names::CaseMapping;
+
+    fn names(channel: &str) -> Event {
+        Event::Names {
+            channel: channel.into(),
+            users: vec!["alice".into()],
+        }
+    }
+
+    #[test]
+    fn only_the_last_roster_of_a_channel_is_applied() {
+        let batch = [names("#a"), names("#b"), names("#a")];
+        assert_eq!(superseded_rosters(&batch), [0].into());
+    }
+
+    #[test]
+    fn rosters_are_kept_across_a_case_mapping_change() {
+        let batch = [
+            names("#foo{1}"),
+            Event::CaseMapping(CaseMapping::Rfc1459),
+            names("#foo{1}"),
+            Event::TransportConnected,
+            names("#foo{1}"),
+        ];
+        assert!(superseded_rosters(&batch).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod log_tests {
     use super::{LogPosition, LogSelection, channel_activity_text};
     use cayenchat_irc_core::ChannelActivityKind;
@@ -6724,6 +6788,85 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn rosters_around_a_case_mapping_change_update_both_conversations(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+        use cayenchat_model::names::CaseMapping;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#foo[1],#foo{1}");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let names = |channel: &str, user: &str| Event::Names {
+            channel: channel.into(),
+            users: vec![user.into()],
+        };
+        let rosters = |chat: &ChatWindow| {
+            chat.state
+                .conversations()
+                .iter()
+                .map(|c| (c.name.clone(), c.members.clone()))
+                .collect::<Vec<_>>()
+        };
+        // Servers announce ASCII before the batch under test, so the two
+        // names are different conversations at its start.
+        let setup = || {
+            vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                Event::CaseMapping(CaseMapping::Ascii),
+                Event::Joined {
+                    channel: "#foo[1]".into(),
+                },
+                Event::Joined {
+                    channel: "#foo{1}".into(),
+                },
+            ]
+        };
+        let events = || {
+            vec![
+                names("#foo{1}", "before"),
+                Event::CaseMapping(CaseMapping::Rfc1459),
+                names("#foo{1}", "after"),
+            ]
+        };
+        // As ASCII the two names are different conversations, so the first
+        // roster must not be dropped in favour of the last. Applying the
+        // events one batch at a time is the reference.
+        let (separate, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        separate.update(cx, |chat, cx| {
+            chat.handle_events(NetworkId(1), setup(), false, cx);
+            for event in events() {
+                chat.handle_events(NetworkId(1), vec![event], false, cx);
+            }
+        });
+        let expected = separate.read_with(cx, |chat, _| rosters(chat));
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(NetworkId(1), setup(), false, cx);
+            chat.handle_events(NetworkId(1), events(), false, cx);
+            assert_eq!(rosters(chat), expected);
+        });
+        assert!(
+            expected.iter().any(|(_, m)| m == &["before"]),
+            "{expected:?}"
+        );
+        assert!(
+            expected.iter().any(|(_, m)| m == &["after"]),
+            "{expected:?}"
+        );
+    }
+
+    #[gpui::test]
     fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Event;
         use gpui::{Modifiers, MouseButton, point, px};
@@ -7248,6 +7391,36 @@ mod pane_tests {
             cx.run_until_parked();
         }
         assert!(chosen(&chat, cx).is_empty());
+
+        // The same when both rosters arrive in one batch: only the last is
+        // applied, but the one before still ends her choice.
+        cx.simulate_mouse_move(alice, None, none);
+        cx.simulate_mouse_down(alice, MouseButton::Left, none);
+        cx.simulate_mouse_up(alice, MouseButton::Left, none);
+        cx.run_until_parked();
+        assert_eq!(chosen(&chat, cx), ["alice"]);
+        chat.update(cx, |chat, cx| {
+            let batch = vec![
+                names(&["@op", "bob"]),
+                names(&["@op", "alice", "bob", "carol"]),
+            ];
+            chat.handle_events(NetworkId(1), batch, false, cx)
+        });
+        cx.run_until_parked();
+        assert!(chosen(&chat, cx).is_empty());
+        chat.read_with(cx, |chat, _| {
+            let members = &chat.state.selected_channel().unwrap().members;
+            assert_eq!(members, &["@op", "alice", "bob", "carol"]);
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![names(&["@op", "alice", "bob"])],
+                false,
+                cx,
+            )
+        });
+        cx.run_until_parked();
 
         // The same while a group menu is open: it keeps the nicknames it was
         // opened with, but what it acts on is who is still chosen when an item
