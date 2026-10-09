@@ -2073,6 +2073,9 @@ async fn run_cancellable(
                         // closes after QUIT, which ends the stream; reading (and discarding)
                         // up to that point leaves nothing unread, since dropping a socket
                         // with unread data sends RST and can discard a QUIT not yet sent.
+                        // EOF is taken as send completion: the server is assumed to close
+                        // only after receiving QUIT. A close before that is the server's own
+                        // doing, and a write after it would be reset, so waiting is futile.
                         let _ = tokio::time::timeout(QUIT_FLUSH_LIMIT, async {
                             while let Some(Ok(_)) = stream.next().await {}
                         })
