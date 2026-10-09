@@ -2,8 +2,9 @@
 //! the chat protocol and of how the platform shows it.
 //!
 //! Protocol adapters decide what counts as a mention (IRC: our nickname as a
-//! word; Matrix: the event's intentional mentions) and pass plain text with
-//! formatting already removed.
+//! word; Matrix: the event's intentional mentions) and look for keywords
+//! with [`keyword_ranges`] in the text without formatting, once per message:
+//! the same ranges are drawn in the logs.
 
 use std::{
     collections::VecDeque,
@@ -32,15 +33,15 @@ pub struct NotificationRules {
 
 /// An incoming message as the notification rules see it.
 #[derive(Clone, Copy, Debug)]
-pub struct IncomingMessage<'a> {
-    /// Plain text without formatting codes.
-    pub text: &'a str,
+pub struct IncomingMessage {
     /// Sent to a channel or room rather than directly to us.
     pub channel: bool,
     pub notice: bool,
     /// Our own message echoed back (for example by a bouncer).
     pub from_self: bool,
     pub mentioned: bool,
+    /// The text contains one of the rules' keywords.
+    pub keyword: bool,
     /// History replayed by a bouncer or server, or a line the server or
     /// bouncer sent itself; it was live, if ever, some time ago.
     pub replayed: bool,
@@ -64,7 +65,7 @@ impl NotificationRules {
             (self.private_messages && !message.notice).then_some(Trigger::PrivateMessage)
         } else if self.mentions && message.mentioned {
             Some(Trigger::Mention)
-        } else if self.keyword_alerts && contains_keyword(message.text, &self.keywords) {
+        } else if self.keyword_alerts && message.keyword {
             Some(Trigger::Keyword)
         } else {
             None
@@ -72,15 +73,10 @@ impl NotificationRules {
     }
 }
 
-/// Case-insensitive substring match: keywords are often Japanese, which has
-/// no word boundaries.
-pub fn contains_keyword(text: &str, keywords: &[String]) -> bool {
-    !keyword_ranges(text, keywords).is_empty()
-}
-
 /// Byte ranges in `text` of every keyword occurrence, sorted and merged.
-/// Characters compare by their lowercase forms, so ranges stay on the
-/// original text's character boundaries.
+/// A case-insensitive substring match: keywords are often Japanese, which
+/// has no word boundaries. Characters compare by their lowercase forms, so
+/// ranges stay on the original text's character boundaries.
 pub fn keyword_ranges(text: &str, keywords: &[String]) -> Vec<Range<usize>> {
     let keywords: Vec<Vec<char>> = keywords
         .iter()
@@ -184,13 +180,15 @@ mod tests {
         }
     }
 
-    fn channel(text: &str, mentioned: bool) -> IncomingMessage<'_> {
+    /// A channel message whose keyword matches the adapter found with
+    /// [`keyword_ranges`] and `rules()`' keywords.
+    fn channel(text: &str, mentioned: bool) -> IncomingMessage {
         IncomingMessage {
-            text,
             channel: true,
             notice: false,
             from_self: false,
             mentioned,
+            keyword: !keyword_ranges(text, &rules().keywords).is_empty(),
             replayed: false,
         }
     }
@@ -198,6 +196,7 @@ mod tests {
     #[test]
     fn keywords_match_substrings_case_insensitively() {
         let words = rules().keywords;
+        let contains_keyword = |text, words: &[String]| !keyword_ranges(text, words).is_empty();
         assert!(contains_keyword("ビルドが壊れた", &words));
         assert!(contains_keyword("deployed now", &words));
         assert!(!contains_keyword("nothing here", &words));
@@ -248,11 +247,11 @@ mod tests {
     fn private_messages_self_echoes_and_master_switch() {
         let rules = rules();
         let private = |notice| IncomingMessage {
-            text: "hello",
             channel: false,
             notice,
             from_self: false,
             mentioned: false,
+            keyword: false,
             replayed: false,
         };
         assert_eq!(rules.trigger(private(false)), Some(Trigger::PrivateMessage));
