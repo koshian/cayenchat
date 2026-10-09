@@ -607,6 +607,16 @@ by all servers). The vendored GPUI answers `WM_QUERYENDSESSION` with TRUE and
 runs the app quit handlers synchronously on `WM_ENDSESSION`; see
 `vendor/gpui/PATCHES.md`. If the network is already down the QUIT is not delivered.
 
+On Linux SIGTERM, SIGHUP and SIGINT take the same path (issue #285,
+`crates/ui/src/signals.rs`). A `signal-hook` thread wakes the UI thread through a
+channel (no polling), which calls `App::quit`, so the layout is saved and
+`quit_connections` runs; with no connections it ends at once. Two safeguards keep the
+process from lingering (systemd waits 90 s by default): a watchdog calls
+`process::exit` 3 s after the first signal in case the UI thread is blocked, and a
+second signal exits immediately. The exit code is 128 plus the signal number. A
+desktop logout that drops the X or Wayland connection before signalling still ends
+GPUI with an error and sends no QUIT.
+
 `/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
 reports a connection the user ended as `Event::Closed`, which the UI never
 reconnects. Closing the main window or quitting sends QUIT on every connection and
