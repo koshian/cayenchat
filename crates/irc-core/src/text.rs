@@ -15,6 +15,12 @@ pub fn strip_formatting(text: &str) -> String {
 /// Runs `find` on `text` without formatting codes (as [`strip_formatting`]
 /// removes them) and returns the ranges it found as byte ranges of `text`.
 pub fn plain_ranges(text: &str, find: impl FnOnce(&str) -> Vec<Range<usize>>) -> Vec<Range<usize>> {
+    // Most lines have no formatting: search them as they are.
+    if !text.contains(is_formatting_code) {
+        let mut ranges = find(text);
+        ranges.retain(|range| !range.is_empty());
+        return ranges;
+    }
     let mut plain = String::with_capacity(text.len());
     // The offset in `text` of each byte of `plain`.
     let mut offsets = Vec::with_capacity(text.len());
@@ -27,6 +33,23 @@ pub fn plain_ranges(text: &str, find: impl FnOnce(&str) -> Vec<Range<usize>>) ->
         .filter(|range| !range.is_empty())
         .map(|range| offsets[range.start]..offsets[range.end - 1] + 1)
         .collect()
+}
+
+/// Whether `ch` starts a formatting code (a color code also takes the
+/// digits after it).
+fn is_formatting_code(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{1}'
+            | '\u{2}'
+            | '\u{3}'
+            | '\u{f}'
+            | '\u{11}'
+            | '\u{16}'
+            | '\u{1d}'
+            | '\u{1e}'
+            | '\u{1f}'
+    )
 }
 
 /// Calls `keep` with the offset and character of everything in `text` but
@@ -43,7 +66,6 @@ fn each_plain_char(text: &str, mut keep: impl FnMut(usize, char)) {
     let mut chars = text.char_indices().peekable();
     while let Some((offset, ch)) = chars.next() {
         match ch {
-            '\u{1}' | '\u{2}' | '\u{f}' | '\u{11}' | '\u{16}' | '\u{1d}' | '\u{1e}' | '\u{1f}' => {}
             '\u{3}' => {
                 if digits(&mut chars) > 0 && chars.peek().is_some_and(|(_, ch)| *ch == ',') {
                     let mut ahead = chars.clone();
@@ -54,6 +76,7 @@ fn each_plain_char(text: &str, mut keep: impl FnMut(usize, char)) {
                     }
                 }
             }
+            ch if is_formatting_code(ch) => {}
             ch => keep(offset, ch),
         }
     }
