@@ -6788,6 +6788,85 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn rosters_around_a_case_mapping_change_update_both_conversations(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+        use cayenchat_model::names::CaseMapping;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#foo[1],#foo{1}");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let names = |channel: &str, user: &str| Event::Names {
+            channel: channel.into(),
+            users: vec![user.into()],
+        };
+        let rosters = |chat: &ChatWindow| {
+            chat.state
+                .conversations()
+                .iter()
+                .map(|c| (c.name.clone(), c.members.clone()))
+                .collect::<Vec<_>>()
+        };
+        // Servers announce ASCII before the batch under test, so the two
+        // names are different conversations at its start.
+        let setup = || {
+            vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                Event::CaseMapping(CaseMapping::Ascii),
+                Event::Joined {
+                    channel: "#foo[1]".into(),
+                },
+                Event::Joined {
+                    channel: "#foo{1}".into(),
+                },
+            ]
+        };
+        let events = || {
+            vec![
+                names("#foo{1}", "before"),
+                Event::CaseMapping(CaseMapping::Rfc1459),
+                names("#foo{1}", "after"),
+            ]
+        };
+        // As ASCII the two names are different conversations, so the first
+        // roster must not be dropped in favour of the last. Applying the
+        // events one batch at a time is the reference.
+        let (separate, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        separate.update(cx, |chat, cx| {
+            chat.handle_events(NetworkId(1), setup(), false, cx);
+            for event in events() {
+                chat.handle_events(NetworkId(1), vec![event], false, cx);
+            }
+        });
+        let expected = separate.read_with(cx, |chat, _| rosters(chat));
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(NetworkId(1), setup(), false, cx);
+            chat.handle_events(NetworkId(1), events(), false, cx);
+            assert_eq!(rosters(chat), expected);
+        });
+        assert!(
+            expected.iter().any(|(_, m)| m == &["before"]),
+            "{expected:?}"
+        );
+        assert!(
+            expected.iter().any(|(_, m)| m == &["after"]),
+            "{expected:?}"
+        );
+    }
+
+    #[gpui::test]
     fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Event;
         use gpui::{Modifiers, MouseButton, point, px};
