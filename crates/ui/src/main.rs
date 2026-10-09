@@ -6083,13 +6083,6 @@ fn main() {
             )
             .expect("could not open CayenChat window");
         cx.activate(true);
-        // GPUI's `activate` does nothing on Windows, so a window opened by
-        // hand can land behind others (#259). Once, right after opening, take
-        // the foreground; a login launch stays out of the user's way.
-        #[cfg(target_os = "windows")]
-        if !autostart::launched_by_registration() {
-            let _ = chat_window.update(cx, |_, window, _| window.activate_window());
-        }
         // Settings open when nothing connects at startup or a saved server
         // cannot start, showing the first such server; valid servers still
         // connect.
@@ -6124,6 +6117,7 @@ fn main() {
                 settings_for
             })
             .expect("could not initialize the chat window");
+        let settings_opened = settings_for.is_some();
         if let Some(profile) = settings_for {
             chat_window
                 .update(cx, |chat, window, cx| {
@@ -6131,6 +6125,28 @@ fn main() {
                 })
                 .expect("could not open the initial settings window");
         }
+        // GPUI's `activate` does nothing on Windows, so a window opened by
+        // hand can land behind others (#259). `activate_window` is queued and
+        // runs after this callback, so it goes last and to the topmost window;
+        // a login launch stays out of the user's way.
+        #[cfg(target_os = "windows")]
+        match autostart::startup_front(autostart::launched_by_registration(), settings_opened) {
+            Some(autostart::StartupFront::Settings) => {
+                let settings = chat_window
+                    .update(cx, |chat, _, _| chat.settings_window)
+                    .ok()
+                    .flatten();
+                if let Some(settings) = settings {
+                    let _ = settings.update(cx, |_, window, _| window.activate_window());
+                }
+            }
+            Some(autostart::StartupFront::Chat) => {
+                let _ = chat_window.update(cx, |_, window, _| window.activate_window());
+            }
+            None => {}
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = settings_opened;
     });
 }
 
