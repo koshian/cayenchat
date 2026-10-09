@@ -43,4 +43,8 @@ CayenChat は、同梱の `locales/ja.json` と `locales/en.json` を実行時�
 
 ## ライセンス
 
-GPL バージョン 3 のみ（[LICENSE](LICENSE)）。GPUI 由来の `crates/ui/src/input.rs` は Apache-2.0 のままで、外部依存にはそれぞれのライセンスが適用されます（[告知](THIRD_PARTY_NOTICES.md)）。
+- コアのクレート（`crates/model`、`irc-core`、`storage`、`media`、`upload`、`app`）は [Mozilla Public License 2.0](licenses/MPL-2.0.txt) です。GPUI に依存しておらず、誰でもこれを使って独自のユーザーインターフェースを作り、公開できます。
+- GPUI のデスクトップアプリ（`crates/ui`）と、リポジトリ内のそれ以外のものは、GPL バージョン 3 のみです（[LICENSE](LICENSE)）。GPUI 由来の `crates/ui/src/input.rs` は Apache-2.0 のままです。
+- vendor したクレートと外部の依存には、それぞれのライセンスが適用されます（[告知](THIRD_PARTY_NOTICES.md)）。
+
+ソースコードは <https://github.com/koshian/cayenchat> で入手できます。0.9.x までのリリースは GPL バージョン 3 のみで公開されました。貢献のライセンスについては [CONTRIBUTING](CONTRIBUTING.md) を参照してください。

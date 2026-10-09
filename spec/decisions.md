@@ -1175,6 +1175,37 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D042 — MPL-2.0 core, GPL-3.0 user interface (#275)
+
+**Status:** Accepted
+
+The GPUI-free crates `model`, `irc-core`, `storage`, `media`, `upload` and
+`app` are licensed under MPL-2.0. The `ui` crate (the GPUI front end) stays
+GPL-3.0-only, with `crates/ui/src/input.rs` under Apache-2.0. Everything
+else in the repository that no crate's own license covers (scripts,
+specifications, assets, CI) also stays GPL-3.0-only. Vendored crates keep
+their upstream licenses.
+
+Rationale: other people must be able to build and publish their own user
+interfaces on the core, including through app stores whose terms conflict
+with the GPL. LGPL was rejected for this: LGPL-3.0 requires installation
+information on user products such as phones, and LGPL-2.1 forbids further
+restrictions, as GPLv2 does. MPL-2.0 keeps file-level copyleft, so changes
+to core files are still shared. MPL-2.0 is applied without the
+"Incompatible With Secondary Licenses" notice, so the GPL front end can
+combine with the core.
+
+Consequences:
+
+- Core crates must not depend on `ui` or on GPL-only code, and code from
+  elsewhere is not copied into them. `cargo deny check licenses` enforces the
+  dependency side.
+- Moving code from `ui` into the core relicenses it under MPL-2.0. That is
+  possible because contributions to GPL parts are also granted under
+  MPL-2.0 (`CONTRIBUTING.md`); at the time of this decision, the maintainer
+  holds the rights to all existing code.
+- Releases up to 0.9.x remain GPL-3.0-only as published.
+
 ## D041 — Reordering the channel tree (#237)
 
 Status: implemented.

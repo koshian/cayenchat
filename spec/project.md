@@ -57,6 +57,8 @@ Linux may be considered later, but portable core logic is preferred.
 - GPUI for the desktop UI
 - async networking separated from UI state
 - protocol/application logic must remain independent from GPUI
+- the GPUI-free core is MPL-2.0 so others can build their own front ends on it;
+  the GPUI application is GPL-3.0-only (D042)
 
 The initial connection layer uses `irc` 1.1.0 behind the GPUI-free `irc-core` boundary (see D007). The dependency can be revisited as IRCv3 and authentication requirements develop.
 

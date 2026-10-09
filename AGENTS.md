@@ -21,6 +21,8 @@ E2E outputs under `target/tmp/` in your current worktree.
 
 Builds, test suites and GUI checks often take longer than a shell tool's default command timeout (two minutes). Set the timeout explicitly to cover the expected duration, or use no timeout, instead of letting the command be cut off and retrying it.
 
+The core crates (`model`, `irc-core`, `storage`, `media`, `upload`, `app`) are MPL-2.0 and `ui` is GPL-3.0-only (D042). Never copy code from other projects into a core crate, and never make a core crate depend on `ui` or on GPL-only code. Give every new crate an explicit `license` in its `Cargo.toml`.
+
 ## Reviewing pull requests
 
 When reviewing, cover these project-specific concerns in addition to general correctness:
@@ -29,4 +31,5 @@ When reviewing, cover these project-specific concerns in addition to general cor
 - Secrets: server and SASL passwords and upload API keys stay in `storage::credentials` and never reach the preferences file, logs, the wire transcript, the clipboard or error messages unmasked.
 - Performance: per-message and per-event paths, log rendering and scrolling, and anything done on every frame. Stay event driven, keep logs, queues and caches bounded, and never block the UI thread. Follow `spec/performance.md`, including its baseline comparison for changes to these paths.
 - Design: IRC and network logic must not depend on GPUI, and each crate keeps the responsibilities in `spec/architecture.md`. Respect earlier choices in `spec/decisions.md`, reuse existing helpers instead of duplicating them, and question new abstractions the change does not need.
+- Licensing: code added to a core crate must be the contributor's own or compatible with MPL-2.0, and a core crate must not gain a dependency on `ui` or on GPL-only code (D042).
 - Server behavior: do not ask for handling of server behavior that breaks the IRC protocol and no real server shows (e.g. closing only the sending side before reading QUIT); that is the server's bug. A comment stating the assumption is enough. This never relaxes the untrusted-input concerns above.

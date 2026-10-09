@@ -90,9 +90,13 @@ the RustSec database on every pull request and push, whatever changed, since
 new advisories appear without any change here. `deny.toml` fails on every
 vulnerability and on unmaintained crates that a workspace crate uses
 directly; unmaintained crates further down (mostly through GPUI) are not
-failures. Accepted advisories are listed there with a reason. Locally:
+failures. Accepted advisories are listed there with a reason. The same job
+checks every dependency's license against the allow list in `deny.toml`:
+permissive licenses and MPL-2.0, no GPL-only or LGPL-only crate, so the
+MPL-2.0 core stays usable by front ends under any license (D042). The
+workspace's own crates are private and skipped. Locally:
 `cargo install --locked cargo-deny --root target/tmp/tools` and
-`target/tmp/tools/bin/cargo-deny --locked check advisories`. The packaging
+`target/tmp/tools/bin/cargo-deny --locked check advisories licenses`. The packaging
 workflow installs a pinned cargo-deb version, since it writes the published
 `.deb`.
 

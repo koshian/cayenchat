@@ -20,6 +20,17 @@ crates/
 
 The exact crate boundaries may evolve as implementation experience accumulates.
 
+### License boundary (D042)
+
+The GPUI-free crates (`model`, `irc-core`, `storage`, `media`, `upload`,
+`app`) are MPL-2.0; `ui` is GPL-3.0-only. Each crate states its own
+`license` in `Cargo.toml` and core crates carry a `LICENSE` notice in their
+directory. A core crate must not depend on `ui` or on GPL-only code, and
+code from other projects is not copied into one. Moving code out of `ui`
+into a core crate relicenses it under MPL-2.0 (allowed by
+`CONTRIBUTING.md`). A new GPUI-free crate meant for other front ends is
+MPL-2.0 as well.
+
 ## Responsibilities
 
 ### model
