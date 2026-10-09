@@ -1815,19 +1815,25 @@ impl ChatWindow {
             Some(action) => ("\u{1}ACTION ".len(), action),
             None => (0, text),
         };
-        let mentions = self
-            .own_nickname(network)
-            .map(|own| plain_ranges(body, |plain| mention_ranges(plain, own)))
-            .unwrap_or_default();
-        let keywords = plain_ranges(body, |plain| {
-            notifications::keyword_ranges(plain, &self.notification_rules.keywords)
+        let own = self.own_nickname(network);
+        let keywords = &self.notification_rules.keywords;
+        let (mut mentioned, mut keyword) = (false, false);
+        let ranges = plain_ranges(body, |plain| {
+            let mut ranges = own
+                .map(|own| mention_ranges(plain, own))
+                .unwrap_or_default();
+            mentioned = !ranges.is_empty();
+            let matches = notifications::keyword_ranges(plain, keywords);
+            keyword = !matches.is_empty();
+            ranges.extend(matches);
+            ranges.sort_by_key(|range| range.start);
+            ranges
         });
         let mut found = Found {
-            mentioned: !mentions.is_empty(),
-            keyword: !keywords.is_empty(),
-            ranges: mentions.into_iter().chain(keywords).collect(),
+            mentioned,
+            keyword,
+            ranges,
         };
-        found.ranges.sort_by_key(|range| range.start);
         for range in &mut found.ranges {
             *range = range.start + offset..range.end + offset;
         }
