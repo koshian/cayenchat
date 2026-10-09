@@ -613,7 +613,7 @@ mod tests {
                     .lookup(&format!("https://avatars.example.com/n/{n}"));
                 let url = format!("https://images.example.com/{n}.png");
                 chat.previews.lookup(
-                    &crate::log_urls(&url),
+                    &cayenchat_app::links::find(&url),
                     crate::previews::RowRef {
                         selection: chat.state.selection(),
                         sequence: n,

@@ -167,26 +167,39 @@ impl ServicesAccount {
     }
 }
 
-/// Byte ranges of a message's text drawn in the highlight color, sorted.
+/// Parts of a message's text found when it was added, such as highlights or
+/// links, in text order.
 ///
 /// Boxed for a thin pointer: an empty set is 8 bytes in every retained
 /// message and allocates nothing, and most messages have none.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Highlights(Option<Box<Box<[Range<usize>]>>>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spans<T>(Option<Box<Box<[T]>>>);
 
-impl Highlights {
-    pub fn new(ranges: Vec<Range<usize>>) -> Self {
-        Self((!ranges.is_empty()).then(|| Box::new(ranges.into_boxed_slice())))
+impl<T> Default for Spans<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> Spans<T> {
+    pub fn new(spans: Vec<T>) -> Self {
+        Self((!spans.is_empty()).then(|| Box::new(spans.into_boxed_slice())))
     }
 
-    pub fn as_slice(&self) -> &[Range<usize>] {
-        self.0.as_deref().map_or(&[], |ranges| ranges)
+    pub fn as_slice(&self) -> &[T] {
+        self.0.as_deref().map_or(&[], |spans| spans)
     }
 
     pub fn is_empty(&self) -> bool {
         self.0.is_none()
     }
 }
+
+/// Byte ranges of a message's text drawn in the highlight color.
+pub type Highlights = Spans<Range<usize>>;
+
+/// Web links in a message's text: each byte range with its parsed URL.
+pub type Links = Spans<(Range<usize>, String)>;
 
 /// How a message reached the client. Only live messages may notify or be
 /// highlighted.
@@ -236,6 +249,9 @@ pub struct Message {
     /// the highlight color. Decided once when the message arrives; empty
     /// for history, activity and our own messages.
     pub highlights: Highlights,
+    /// The links in `text` (`app::links::find`), found when the text was
+    /// set rather than on every draw.
+    pub links: Links,
     pub activity: bool,
     /// Received as a NOTICE (the text also carries a `[NOTICE]` marker); drawn
     /// in the notice color.
@@ -325,10 +341,10 @@ mod tests {
     #[test]
     fn retained_message_size_stays_bounded() {
         // 64 bytes before timestamps and native IDs were retained, 96 with
-        // them, 104 with the services account and 112 with the highlights
-        // (one thin pointer each); the texts and ranges live on the heap
-        // only when present.
+        // them, 104 with the services account, 112 with the highlights and
+        // 120 with the links (one thin pointer each); the texts, ranges and
+        // URLs live on the heap only when present.
         println!("size_of::<Message>() = {}", std::mem::size_of::<Message>());
-        assert!(std::mem::size_of::<Message>() <= 112);
+        assert!(std::mem::size_of::<Message>() <= 120);
     }
 }

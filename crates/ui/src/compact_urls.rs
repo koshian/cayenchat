@@ -146,7 +146,7 @@ mod tests {
     use super::*;
 
     fn urls(text: &str) -> Vec<(Range<usize>, String)> {
-        crate::log_urls(text)
+        cayenchat_app::links::find(text)
     }
 
     fn compact(text: &str) -> Compact {
