@@ -1,5 +1,5 @@
-# cargo-deny configuration. CI runs `cargo deny check advisories` (the
-# "Dependency advisories" job); licenses, bans and sources are not checked.
+# cargo-deny configuration. CI runs `cargo deny check advisories licenses`
+# (the "Dependency advisories" job); bans and sources are not checked.
 #
 # Every vulnerability fails the check. Unmaintained crates fail only when a
 # workspace crate depends on them directly: most of the dependency tree comes
@@ -9,3 +9,30 @@
 [advisories]
 unmaintained = "workspace"
 ignore = []
+
+# Licenses of every dependency (D042). The core crates are MPL-2.0 and must
+# stay usable by front ends under other licenses, so no GPL-only or LGPL-only
+# dependency is accepted anywhere; a crate offering such a license as one
+# choice among permissive ones passes. The workspace's own crates are
+# private and not checked: `ui` itself is GPL-3.0-only.
+[licenses]
+confidence-threshold = 0.93
+private = { ignore = true }
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "NCSA",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
