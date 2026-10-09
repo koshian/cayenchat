@@ -65,6 +65,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// finish. IRCnet waits about 30 seconds when the client's port 113 silently
 /// drops packets, so the limit must comfortably exceed that.
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long the `irc` crate waits for the PONG to its periodic PING (every
+/// 180 s). Its default is 20 s, which a full overload run exceeded (issue
+/// #272): the measuring server stalled about 30 s, and the worker stops
+/// reading while the event queue is full, so the PONG may also wait in the
+/// socket buffer; the crate checks the deadline before it looks at buffered
+/// data. This is a margin, not a bound; a dead connection still ends after it.
+const PING_TIMEOUT_SECS: u32 = 120;
 /// Limits on WHOIS replies that have not reached end-of-WHOIS (318), so a
 /// hostile server cannot grow memory by never finishing them.
 const MAX_PENDING_WHOIS: usize = 32;
@@ -1624,6 +1631,7 @@ fn library_config(config: &ConnectionConfig) -> Config {
         realname: Some(config.wire_realname()),
         password: config.server_password.clone(),
         channels: config.channels.clone(),
+        ping_timeout: Some(PING_TIMEOUT_SECS),
         use_tls: Some(config.use_tls),
         encoding: Some(config.encoding.clone()),
         dangerously_accept_invalid_certs: Some(config.use_tls && !config.verify_tls_certificates),
@@ -3595,6 +3603,14 @@ mod tests {
             data: "PASS server-secret".into(),
         };
         assert!(!stream_error_detail(&error).contains("server-secret"));
+    }
+
+    #[test]
+    fn library_config_sets_the_ping_timeout() {
+        let config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+        let timeout = library_config(&config).ping_timeout();
+        assert_eq!(timeout, PING_TIMEOUT_SECS);
+        assert!(timeout > 60);
     }
 
     #[test]
