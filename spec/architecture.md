@@ -589,6 +589,17 @@ reason; blank means "Leaving CayenChat". It is validated with the connection
 connection starts, so an edit applies from the next connection. Lost connections
 send no QUIT.
 
+`/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
+reports a connection the user ended as `Event::Closed`, which the UI never
+reconnects. Closing the main window or quitting sends QUIT on every connection and
+waits up to 2 s in total for the workers to end (`Connection::shutdown`,
+`Connection::wait_closed`; issue #234). The shutdown request bypasses the command
+queue, and the worker then drops events instead of waiting for the UI, so QUIT goes
+out even when either queue is full. After QUIT the worker reads and discards what the
+server sends until the server closes the connection, at most 1.5 s: dropping a socket
+with unread data sends RST, which can discard a QUIT not yet sent (the server then
+reports "EOF From client").
+
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,
 our own JOINs and private messages (see Conversations) create conversations (at

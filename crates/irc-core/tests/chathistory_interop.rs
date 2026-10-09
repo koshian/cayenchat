@@ -204,9 +204,7 @@ impl Client {
     fn quit(self) {
         self.connection.disconnect().unwrap();
         let mut client = self;
-        client.wait("disconnect", |event| {
-            matches!(event, Event::Disconnected(_))
-        });
+        client.wait("disconnect", |event| matches!(event, Event::Closed(_)));
     }
 }
 
