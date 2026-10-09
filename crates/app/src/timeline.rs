@@ -197,6 +197,7 @@ mod tests {
             sender: "alice".into(),
             text: text.into(),
             highlights: Default::default(),
+            links: Default::default(),
             activity: false,
             notice: false,
             provenance,

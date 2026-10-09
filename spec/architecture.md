@@ -1534,7 +1534,8 @@ is the separate `media` layer below.
 
 ```text
 channel message text (main log row being drawn, previews on)
-        |   ui::log_urls (the same recognition as link opening)
+        |   Message::links (app::links::find when the message was added;
+        |   the same recognition as link opening)
         v
 media::policy::image_link -> media::MediaRef::Link   (direct image link only)
         |

@@ -1,6 +1,7 @@
 //! Application state and commands, independent of any rendering framework.
 pub mod attachments;
 pub mod avatars;
+pub mod links;
 pub mod notifications;
 pub mod own_avatar;
 pub mod timeline;
@@ -11,8 +12,8 @@ use std::{
 };
 
 use cayenchat_model::{
-    Conversation, ConversationId, ConversationKind, Highlights, Message, NativeMessageId, Network,
-    NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
+    Conversation, ConversationId, ConversationKind, Highlights, Links, Message, NativeMessageId,
+    Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
 use timeline::DuplicateFilter;
 pub use timeline::MessageMeta;
@@ -310,6 +311,7 @@ impl AppState {
                             sender: sender.into(),
                             text: text.into(),
                             highlights: Default::default(),
+                            links: Links::new(links::find(text)),
                             activity: false,
                             notice: false,
                             provenance: Provenance::Live,
@@ -1273,6 +1275,7 @@ impl AppState {
             } else {
                 text
             };
+            message.links = Links::new(links::find(&message.text));
         }
         message.notice = notice;
         message.delivery_failed = false;
@@ -1999,6 +2002,7 @@ fn notice_marked(text: &str, notice: bool, meta: MessageMeta) -> (String, Messag
 }
 
 fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) -> Message {
+    let text = display::neutralize_bidi_owned(text);
     Message {
         time: display_time(meta.server_time),
         sequence: 0,
@@ -2008,7 +2012,8 @@ fn new_message(sender: String, text: String, activity: bool, meta: MessageMeta) 
         // The sender stays as sent: it keys self checks and avatars. It is
         // neutralized where it is drawn.
         sender,
-        text: display::neutralize_bidi_owned(text),
+        links: Links::new(links::find(&text)),
+        text,
         highlights: Highlights::new(meta.highlights),
         activity,
         notice: false,
@@ -3692,6 +3697,23 @@ mod tests {
         assert!(state.conversations()[0].messages.len() <= MAX_RETAINED);
         assert!(state.request_older_history(id).is_some());
         assert!(state.duplicates[&id].len() < timeline::DUPLICATE_KEYS_PER_CONVERSATION);
+    }
+
+    #[test]
+    fn links_are_found_when_the_text_is_set() {
+        let (mut state, network, id) = paging_channel();
+        state.append_channel_message(network, "#a", "me", "see https://a.example/", false, false);
+        let sequence = state.latest_sequence();
+        let links = |state: &AppState| {
+            let channel = &state.conversations()[0];
+            let message = channel.messages.iter().find(|m| m.sequence == sequence);
+            message.unwrap().links.as_slice().to_vec()
+        };
+        assert_eq!(links(&state), [(4..22, "https://a.example/".to_owned())]);
+        // The server's echo replaces the text, and the links with it.
+        let echoed = Some("see https://b.example/x".into());
+        assert!(state.confirm_message(id, sequence, echoed, true, MessageMeta::live()));
+        assert_eq!(links(&state), [(13..32, "https://b.example/x".to_owned())]);
     }
 
     #[test]

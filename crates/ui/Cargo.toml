@@ -43,7 +43,6 @@ native-theme = { version = "=0.5.7", default-features = false }
 native-theme-derive = "=0.5.7"
 gpui-component = { version = "=0.5.1", default-features = false }
 unicode-segmentation = "1.12"
-url = "2.5.8"
 serde_json.workspace = true
 chrono.workspace = true
 sys-locale = "0.3.2"
