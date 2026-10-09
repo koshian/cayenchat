@@ -65,7 +65,7 @@ use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
-use settings_window::{SettingsTab, SettingsWindow, follow_server_order, settings_field};
+use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -8856,11 +8856,18 @@ mod pane_tests {
         };
         let file = [profile("two"), profile("one")];
         let mut held = vec![profile("one"), profile("two"), profile("new")];
-        assert!(crate::follow_server_order(&mut held, &file));
+        assert!(crate::settings_window::follow_server_order(
+            &mut held, &file
+        ));
         assert_eq!(ids(&held), ["two", "one", "new"]);
         // Nothing to follow once they agree, or when the file lacks servers.
-        assert!(!crate::follow_server_order(&mut held, &file));
-        assert!(!crate::follow_server_order(&mut held, &[profile("one")]));
+        assert!(!crate::settings_window::follow_server_order(
+            &mut held, &file
+        ));
+        assert!(!crate::settings_window::follow_server_order(
+            &mut held,
+            &[profile("one")]
+        ));
         assert_eq!(ids(&held), ["two", "one", "new"]);
     }
 
