@@ -732,6 +732,10 @@ impl WindowsPlatformInner {
             WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
             WM_GPUI_END_SESSION => {
+                // WM_ENDSESSION reaches every top-level window; run the handlers once.
+                if self.quit_handled.get() {
+                    return Some(0);
+                }
                 // Take the callback out so the state is not borrowed while it runs.
                 let callback = self.state.borrow_mut().callbacks.quit.take();
                 if let Some(mut callback) = callback {
