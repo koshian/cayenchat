@@ -158,13 +158,21 @@ long ASCII, Japanese, mixed text with a URL and a ~250-byte Japanese line.
 | S4b | Overload | as fast as the client reads, 30 s |
 | S5 | After logs and diagnostics were saturated | idle |
 | S6 | After a second 30 s overload | idle (plateau check) |
+| S7 | Member list changes (only with `--churn-rate`, use a large `--members`) | JOIN and PART lines of extra users at that rate for 30 s, round-robin across channels |
+
+Every JOIN or PART republishes the whole roster of its channel (the worker
+sends `Event::Names`), so S7 with `--members 2000` measures the cost of a
+member list change in a large channel. The default baseline does not run it.
 
 Input and channel switching are timed by the UI test, not the runner: 10
 channels with 50 members, 2,000 incoming lines per channel (each with its wire
 diagnostic, so logs and the transcript are saturated), then 300 single
 characters typed, 200 channel selections through `ChatWindow::dispatch`
 (the path shortcuts use), 100 batches of 256 events (128 lines), and 300
-more characters.
+more characters. Last, `roster_2000` times 100 `Event::Names` of 2,000 or
+2,001 members for the selected channel (its member list is drawn), and
+`roster_burst_32` times 20 batches of 32 such lists for the same channel (a
+burst of joins).
 
 ## Baseline (2026-09-27)
 

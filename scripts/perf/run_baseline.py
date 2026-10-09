@@ -14,6 +14,8 @@ irc_load_server.py on 127.0.0.1 and samples the process in each scenario:
   S4b flood-max         as fast as the client reads
   S5 idle-after-cap     idle after the logs and diagnostics were saturated
   S6 idle-after-cap-2   idle after a second maximum flood (plateau check)
+  S7 member-churn       only with --churn-rate: JOIN/PART lines of extra users
+                        at that rate (use a large --members)
 
 On macOS every sample also records whether part of the window is on screen
 (window_visibility.swift). GPUI stops drawing a fully hidden window, so only
@@ -33,6 +35,7 @@ network (the production HTTP policy never contacts 127.0.0.1):
   python3 scripts/perf/run_baseline.py --runs 3 --out target/perf/baseline.json
   python3 scripts/perf/run_baseline.py --load-only   # S2-S4b only
   python3 scripts/perf/run_baseline.py --servers 4   # four fixture servers
+  python3 scripts/perf/run_baseline.py --members 2000 --churn-rate 50   # + S7
   python3 scripts/perf/run_baseline.py --summarize target/perf/baseline.json
 """
 
@@ -322,6 +325,13 @@ def one_run(args, binary, index):
                 busy.call("wait")
                 time.sleep(args.settle)
                 measure("S6_idle_after_cap_2", app.pid, args.window, results)
+            if args.churn_rate:
+                # Member list changes: every JOIN or PART re-publishes the
+                # channel's roster.
+                busy.call(f"churn {args.churn_rate} {args.flood_seconds}")
+                call_all(others, f"probe {args.flood_seconds}")
+                measure("S7_member_churn", app.pid, args.flood_seconds, results)
+                call_all(controls, "wait")
             phases["servers"] = [json.loads(control.call("stats")) for control in controls]
             if any(server["connections"] != 1 for server in phases["servers"]):
                 print("  WARNING: the client reconnected; this run is not comparable", flush=True)
@@ -413,6 +423,8 @@ def main():
     parser.add_argument("--history", type=int, default=2000, help="lines per channel")
     parser.add_argument("--flood-rate", type=int, default=200, help="lines/s for S4a")
     parser.add_argument("--flood-seconds", type=float, default=30)
+    parser.add_argument("--churn-rate", type=int, default=0,
+                        help="JOIN/PART lines/s for S7 (0: skip S7); use with a large --members")
     parser.add_argument("--window", type=float, default=30, help="idle sampling seconds")
     parser.add_argument("--settle", type=float, default=10)
     parser.add_argument("--servers", type=int, default=1, help="fixture servers to connect")
@@ -443,7 +455,8 @@ def main():
             key: getattr(args, key)
             for key in [
                 "servers", "channels", "members", "history", "flood_rate", "flood_seconds",
-                "window", "settle", "load_only", "previews", "image_every", "image_links",
+                "churn_rate", "window", "settle", "load_only", "previews", "image_every",
+                "image_links",
             ]
         },
         "runs": [],

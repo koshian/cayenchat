@@ -18,7 +18,9 @@
 //! instead: every member has an avatar (one URL each, served by the same
 //! fetcher and cropped to a 32×32 square), so message and member rows draw
 //! avatar slots. All
-//! variants also time scrolling the main log.
+//! variants also time scrolling the main log and member list changes in a
+//! 2,000-member channel, one at a time (`roster_2000`) and 32 in one event
+//! batch (`roster_burst_32`).
 //!
 //! GPUI's test platform draws a dirty window synchronously at the end of each
 //! update, so each timing covers the app's state update plus element
@@ -46,6 +48,13 @@ const TYPING_SAMPLES: usize = 300;
 const SWITCH_SAMPLES: usize = 200;
 const BURST_SAMPLES: usize = 100;
 const SCROLL_SAMPLES: usize = 200;
+/// Members of the large channel in the member-list step.
+const LARGE_ROSTER: usize = 2_000;
+const ROSTER_SAMPLES: usize = 100;
+/// Member lists of the large channel in one batch, and how many such
+/// batches are timed.
+const ROSTER_BURST: usize = 32;
+const ROSTER_BURST_SAMPLES: usize = 20;
 /// With previews on, one line in this many carries an image link.
 const IMAGE_EVERY: usize = 20;
 const IMAGE_LINKS: usize = 120;
@@ -391,6 +400,52 @@ fn run(cx: &mut TestAppContext, servers: usize, images: bool, avatars: bool, sho
         typing_after.time(|| cx.simulate_input("b"));
     }
     typing_after.report();
+
+    // A member list change in a large channel, published as the worker does
+    // (the whole roster), alternating one member more and one fewer. The
+    // channel is the selected one, so its member list is drawn.
+    let large: Vec<String> = (0..LARGE_ROSTER)
+        .map(|member| format!("user{member:04}"))
+        .collect();
+    let mut roster = Timings::new(servers, "roster_2000");
+    for index in 0..ROSTER_SAMPLES {
+        let mut users = large.clone();
+        if index % 2 == 1 {
+            users.push("joiner".into());
+        }
+        let names = vec![Event::Names {
+            channel: channel(0),
+            users,
+        }];
+        roster.time(|| {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(networks[0], names, false, cx)
+            })
+        });
+    }
+    roster.report();
+
+    // A burst of member list changes (many joins after a netsplit) reaching
+    // the window in one event batch.
+    let mut burst = Timings::new(servers, "roster_burst_32");
+    for _ in 0..ROSTER_BURST_SAMPLES {
+        let names: Vec<Event> = (0..ROSTER_BURST)
+            .map(|joined| {
+                let mut users = large.clone();
+                users.extend((0..joined).map(|n| format!("joiner{n:02}")));
+                Event::Names {
+                    channel: channel(0),
+                    users,
+                }
+            })
+            .collect();
+        burst.time(|| {
+            chat.update(cx, |chat, cx| {
+                chat.handle_events(networks[0], names, false, cx)
+            })
+        });
+    }
+    burst.report();
 
     chat.read_with(cx, |chat, _| {
         let cache = chat.previews.cache();
