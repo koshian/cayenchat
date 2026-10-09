@@ -9,6 +9,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     hash::{BuildHasher, Hash, Hasher, RandomState},
+    ops::Range,
     time::SystemTime,
 };
 
@@ -37,9 +38,21 @@ pub struct MessageMeta {
     /// The sender's services account when it was sent (IRC: `account` tag).
     pub account: Option<ServicesAccount>,
     pub provenance: Provenance,
+    /// Byte ranges of the text as given to draw highlighted
+    /// ([`Message::highlights`]).
+    pub highlights: Vec<Range<usize>>,
 }
 
 impl MessageMeta {
+    /// The same metadata once `len` bytes are put before the text, such as
+    /// a marker or the sender in the server log.
+    pub fn after_prefix(mut self, len: usize) -> Self {
+        for range in &mut self.highlights {
+            *range = range.start + len..range.end + len;
+        }
+        self
+    }
+
     pub fn live() -> Self {
         Self::default()
     }
@@ -183,6 +196,7 @@ mod tests {
             account: None,
             sender: "alice".into(),
             text: text.into(),
+            highlights: Default::default(),
             activity: false,
             notice: false,
             provenance,

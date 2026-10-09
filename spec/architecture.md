@@ -1399,9 +1399,18 @@ history playback cannot flood the desktop; the log and unread marks are
 unaffected. Showing can block (D-Bus, macOS delivery confirmation), so a
 dedicated thread does it; UI tests record notifications instead.
 
-The same matches are shown in the logs, whether or not notifications are on:
-`irc-core::text::mention_ranges` and `app::notifications::keyword_ranges`
-give byte ranges that the main and sub logs draw bold in the theme's highlight
+The same matches are shown in the logs, whether or not notifications are on.
+They are found once, when a live channel or private message from someone else
+arrives (`ChatWindow::find_mentions`): `irc-core::text::mention_ranges` and
+`app::notifications::keyword_ranges` run on the text without formatting codes
+(for a `/me`, on the action only), and `irc-core::text::plain_ranges` maps
+the matches back to byte ranges of the received text. The ranges are kept in
+`model::Message::highlights` (moved past the `[NOTICE]` marker or a server-log
+prefix by `MessageMeta::after_prefix`), and whether there are any decides
+the channel-tree highlight and the mention and keyword notifications. A
+nickname wrapped in color codes therefore counts and is drawn alike, and a
+later nickname or keyword change leaves earlier lines as they were marked.
+The main and sub logs draw the ranges bold in the theme's highlight
 color (light `#D46A8E`, dark `#EFA0BE` by default, matching the pastel pane
 colors). A channel that receives a mention or keyword while it is not selected
 is recorded in `AppState::highlighted`, and the channel tree draws its name in

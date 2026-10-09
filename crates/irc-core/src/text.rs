@@ -1,38 +1,85 @@
 //! IRC message text: formatting codes, CTCP ACTION and nickname mentions.
 
 use cayenchat_model::names;
+use std::ops::Range;
 
 /// Removes mIRC formatting: bold, italics, underline, strikethrough,
 /// monospace, reverse, reset and color codes with their `fg[,bg]` digits.
 /// CTCP delimiters are dropped as well.
 pub fn strip_formatting(text: &str) -> String {
-    fn digits(chars: &mut std::iter::Peekable<std::str::Chars>) -> usize {
+    let mut plain = String::with_capacity(text.len());
+    each_plain_char(text, |_, ch| plain.push(ch));
+    plain
+}
+
+/// Runs `find` on `text` without formatting codes (as [`strip_formatting`]
+/// removes them) and returns the ranges it found as byte ranges of `text`.
+pub fn plain_ranges(text: &str, find: impl FnOnce(&str) -> Vec<Range<usize>>) -> Vec<Range<usize>> {
+    // Most lines have no formatting: search them as they are.
+    if !text.contains(is_formatting_code) {
+        let mut ranges = find(text);
+        ranges.retain(|range| !range.is_empty());
+        return ranges;
+    }
+    let mut plain = String::with_capacity(text.len());
+    // The offset in `text` of each byte of `plain`.
+    let mut offsets = Vec::with_capacity(text.len());
+    each_plain_char(text, |offset, ch| {
+        plain.push(ch);
+        offsets.extend(offset..offset + ch.len_utf8());
+    });
+    find(&plain)
+        .into_iter()
+        .filter(|range| !range.is_empty())
+        .map(|range| offsets[range.start]..offsets[range.end - 1] + 1)
+        .collect()
+}
+
+/// Whether `ch` starts a formatting code (a color code also takes the
+/// digits after it).
+fn is_formatting_code(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{1}'
+            | '\u{2}'
+            | '\u{3}'
+            | '\u{f}'
+            | '\u{11}'
+            | '\u{16}'
+            | '\u{1d}'
+            | '\u{1e}'
+            | '\u{1f}'
+    )
+}
+
+/// Calls `keep` with the offset and character of everything in `text` but
+/// formatting codes.
+fn each_plain_char(text: &str, mut keep: impl FnMut(usize, char)) {
+    fn digits(chars: &mut std::iter::Peekable<std::str::CharIndices>) -> usize {
         let mut count = 0;
-        while count < 2 && chars.peek().is_some_and(char::is_ascii_digit) {
+        while count < 2 && chars.peek().is_some_and(|(_, ch)| ch.is_ascii_digit()) {
             chars.next();
             count += 1;
         }
         count
     }
-    let mut plain = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
+    let mut chars = text.char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
         match ch {
-            '\u{1}' | '\u{2}' | '\u{f}' | '\u{11}' | '\u{16}' | '\u{1d}' | '\u{1e}' | '\u{1f}' => {}
             '\u{3}' => {
-                if digits(&mut chars) > 0 && chars.peek() == Some(&',') {
+                if digits(&mut chars) > 0 && chars.peek().is_some_and(|(_, ch)| *ch == ',') {
                     let mut ahead = chars.clone();
                     ahead.next();
-                    if ahead.peek().is_some_and(char::is_ascii_digit) {
+                    if ahead.peek().is_some_and(|(_, ch)| ch.is_ascii_digit()) {
                         chars.next();
                         digits(&mut chars);
                     }
                 }
             }
-            ch => plain.push(ch),
+            ch if is_formatting_code(ch) => {}
+            ch => keep(offset, ch),
         }
     }
-    plain
 }
 
 /// The action text of a CTCP ACTION (`/me`) message.
@@ -41,15 +88,11 @@ pub fn action_text(text: &str) -> Option<&str> {
         .map(|action| action.strip_suffix('\u{1}').unwrap_or(action))
 }
 
-/// Whether `nickname` appears in `text` as a whole word. Neighbouring nickname
-/// characters (letters, digits and `-_[]\`^{}|`) make it part of another word,
-/// so `bob` does not match `bobby`, while `@bob` and `bob:` match.
-pub fn mentions_nickname(text: &str, nickname: &str) -> bool {
-    !mention_ranges(text, nickname).is_empty()
-}
-
 /// Byte ranges of the whole-word occurrences of `nickname` in `text`.
-pub fn mention_ranges(text: &str, nickname: &str) -> Vec<std::ops::Range<usize>> {
+/// Neighbouring nickname characters (letters, digits and `-_[]\`^{}|`) make
+/// it part of another word, so `bob` does not match `bobby`, while `@bob` and
+/// `bob:` match.
+pub fn mention_ranges(text: &str, nickname: &str) -> Vec<Range<usize>> {
     if nickname.is_empty() {
         return Vec::new();
     }
@@ -87,13 +130,14 @@ mod tests {
 
     #[test]
     fn nickname_mentions_need_word_boundaries() {
-        assert!(mentions_nickname("bob: hi", "Bob"));
-        assert!(mentions_nickname("hi, @bob!", "bob"));
-        assert!(mentions_nickname("おはよう bob さん", "bob"));
-        assert!(mentions_nickname("{away}", "[away]"));
-        assert!(!mentions_nickname("bobby: hi", "bob"));
-        assert!(!mentions_nickname("bob_: hi", "bob"));
-        assert!(!mentions_nickname("anything", ""));
+        let mentions = |text, nickname| !mention_ranges(text, nickname).is_empty();
+        assert!(mentions("bob: hi", "Bob"));
+        assert!(mentions("hi, @bob!", "bob"));
+        assert!(mentions("おはよう bob さん", "bob"));
+        assert!(mentions("{away}", "[away]"));
+        assert!(!mentions("bobby: hi", "bob"));
+        assert!(!mentions("bob_: hi", "bob"));
+        assert!(!mentions("anything", ""));
         assert!(same_nickname("Nick[a]", "nick{A}"));
         assert_eq!(mention_ranges("Bob, bobby and @bob", "bob"), [0..3, 16..19]);
     }
@@ -107,5 +151,21 @@ mod tests {
         assert_eq!(strip_formatting("\u{3}12,x"), ",x");
         assert_eq!(action_text("\u{1}ACTION waves\u{1}"), Some("waves"));
         assert_eq!(action_text("waves"), None);
+    }
+
+    #[test]
+    fn plain_ranges_map_back_past_formatting() {
+        // A colored nickname is a mention, and the range covers it in the
+        // original text.
+        let text = "\u{3}04,01bob\u{3}: héllo \u{2}bob\u{2}";
+        let ranges = plain_ranges(text, |plain| mention_ranges(plain, "bob"));
+        assert_eq!(ranges, [6..9, 20..23]);
+        assert!(ranges.iter().all(|range| &text[range.clone()] == "bob"));
+        // Empty ranges are dropped; a multibyte character maps whole.
+        let found = plain_ranges("a\u{2}éb", |_| vec![1..3, 2..2]);
+        assert_eq!(
+            found.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(),
+            [(2, 4)]
+        );
     }
 }
