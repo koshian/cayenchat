@@ -124,15 +124,17 @@ impl ServerSession {
         self.irc.is_some() || self.active_config.is_some()
     }
 
-    /// Stops the worker (it flushes QUIT) and cancels pending retries.
-    pub fn close(&mut self) {
+    /// Stops the worker (it flushes QUIT) and cancels pending retries. The
+    /// connection is returned so a caller that is about to exit can wait for
+    /// the flush.
+    pub fn close(&mut self) -> Option<Connection> {
         self.manual_disconnect = true;
         self.retry_pending = false;
         self.retry_token += 1;
         self.generation += 1;
         self.own_avatar.connection_ended();
-        if let Some(connection) = self.irc.take() {
-            let _ = connection.disconnect();
-        }
+        let connection = self.irc.take()?;
+        let _ = connection.disconnect();
+        Some(connection)
     }
 }

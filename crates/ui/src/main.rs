@@ -944,16 +944,38 @@ impl ChatWindow {
             let _ = view.update(cx, |this, _| {
                 this.note_window_bounds(window);
                 this.save_layout_now();
+                this.quit_connections();
             });
             true
         });
         cx.on_app_quit(|this, _| {
             this.save_layout_now();
+            this.quit_connections();
             async {}
         })
         .detach();
         this.note_window_bounds(window);
         this
+    }
+
+    /// Sends QUIT on every connection and waits briefly for it to be
+    /// written, since the process ends right after the window closes. The
+    /// wait is bounded and only happens on the way out.
+    fn quit_connections(&mut self) {
+        let closing: Vec<_> = self
+            .sessions
+            .values_mut()
+            .filter_map(ServerSession::close)
+            .collect();
+        // The UI no longer drains events and the queues may be full, so ask
+        // the workers directly.
+        for connection in &closing {
+            connection.shutdown();
+        }
+        let deadline = std::time::Instant::now() + cayenchat_irc_core::QUIT_WAIT;
+        for connection in closing {
+            connection.wait_closed(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
     }
 
     /// Remembers where the window is, for the next layout write.
@@ -2832,6 +2854,7 @@ impl ChatWindow {
                 event,
                 Event::Registered { .. }
                     | Event::Disconnected(_)
+                    | Event::Closed(_)
                     | Event::Refused(_)
                     | Event::AvatarsReset
                     | Event::MetadataReady
@@ -2842,6 +2865,13 @@ impl ChatWindow {
         for event in batch {
             match &event {
                 Event::Disconnected(_) => disconnected = true,
+                // Disconnect or /quit: the user ended it, so no reconnecting.
+                Event::Closed(_) => {
+                    disconnected = true;
+                    if let Some(session) = self.sessions.get_mut(&network) {
+                        session.manual_disconnect = true;
+                    }
+                }
                 Event::Refused(_) => {
                     disconnected = true;
                     refused = true;
@@ -3334,7 +3364,7 @@ impl ChatWindow {
                         .format("event_nick_rejected", &[("nickname", &nickname)]),
                 );
             }
-            Event::Disconnected(reason) | Event::Refused(reason) => {
+            Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self
                     .sessions
@@ -7900,6 +7930,44 @@ mod pane_tests {
             let session = &chat.sessions[&network];
             assert!(session.manual_disconnect && !session.retry_pending);
             assert!(!chat.can_disconnect(network));
+        });
+    }
+
+    #[gpui::test]
+    fn a_connection_the_user_ended_is_not_reconnected(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::{ConnectionConfig, Event};
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.language = cayenchat_storage::Language::English;
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            let network = NetworkId(1);
+            let connected = |chat: &mut ChatWindow| {
+                let session = chat.sessions.get_mut(&network).unwrap();
+                session.active_config = Some(ConnectionConfig::tls(
+                    "irc.example".into(),
+                    "alice".into(),
+                    vec!["#a".into()],
+                ));
+                session.manual_disconnect = false;
+                session.retry_pending = false;
+            };
+            connected(chat);
+            chat.handle_events(network, vec![Event::Disconnected("gone".into())], false, cx);
+            assert!(chat.sessions[&network].retry_pending, "a lost link retries");
+            // `/quit` reaches the worker as a command; it reports the end as Closed.
+            connected(chat);
+            chat.handle_events(network, vec![Event::Closed("bye".into())], false, cx);
+            let session = &chat.sessions[&network];
+            assert!(session.manual_disconnect && !session.retry_pending);
         });
     }
 

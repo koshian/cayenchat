@@ -368,9 +368,7 @@ fn avatar_metadata_against_a_real_server() {
     // kept, and Bob's avatar arrives again.
     let published = client.sent("METADATA * SET");
     client.connection.disconnect().unwrap();
-    client.wait("disconnect", |event| {
-        matches!(event, Event::Disconnected(_))
-    });
+    client.wait("disconnect", |event| matches!(event, Event::Closed(_)));
     let mut again = Client::connect(&host, port, &me, &channel);
     again.wait("MetadataReady", |event| *event == Event::MetadataReady);
     let kept = again.wait("own state", |event| {
