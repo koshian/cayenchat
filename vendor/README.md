@@ -13,4 +13,7 @@ copy. Check the conditions below when updating dependencies.
 | `irc-proto` | 1.1.0 | `LineCodec` rejects lines over 16 KiB (`MAX_LINE_BYTES`); upstream buffers a line without limit. Its `encoding` feature uses `encoding_rs` instead of the unmaintained `encoding` crate (RUSTSEC-2021-0153), and the workspace enables it directly rather than through `irc`'s `encoding` feature | An `irc-proto` release limits the line length in its codec and decodes legacy charsets with a maintained crate; `irc`'s `encoding` feature must then no longer pull in `encoding` |
 
 Run the copies' own tests with `cargo test -p zed-xim` and
-`cargo test -p irc-proto` (CI does both on Linux).
+`cargo test -p irc-proto` (CI does both on Linux). `irc` is its own workspace
+root with its own `Cargo.lock`: run `cargo test --manifest-path
+vendor/irc/Cargo.toml --no-default-features --features tls-rust,channel-lists`
+(CI does this on every platform).

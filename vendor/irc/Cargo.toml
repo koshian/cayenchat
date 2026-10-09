@@ -175,3 +175,20 @@ repository = "aatxe/irc"
 
 [badges.travis-ci]
 repository = "aatxe/irc"
+
+[dev-dependencies.anyhow]
+version = "1.0.70"
+
+[dev-dependencies.futures]
+version = "0.3.30"
+default-features = false
+features = ["alloc", "executor"]
+
+[dev-dependencies.tokio]
+version = "1.27.0"
+features = ["rt", "rt-multi-thread", "macros", "net", "time"]
+
+# Standalone root so the copy's own tests (which need the dev-dependencies above)
+# run with `cargo test --manifest-path vendor/irc/Cargo.toml` without adding
+# upstream's optional dependencies to the application's Cargo.lock.
+[workspace]

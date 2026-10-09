@@ -137,6 +137,11 @@ jobs:
       - name: Test vendored irc-proto
         run: cargo test -p irc-proto --locked
 
+      # The vendored irc client is its own workspace root (its tests need
+      # dev-dependencies the application's lock file must not carry).
+      - name: Test vendored irc
+        run: cargo test --manifest-path vendor/irc/Cargo.toml --locked --no-default-features --features tls-rust,channel-lists
+
       # Probes the real Windows Credential Manager through the keyring crate.
       - name: Test system credential store
         if: runner.os == 'Windows'
