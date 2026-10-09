@@ -12610,6 +12610,81 @@ mod pane_tests {
     }
 
     #[gpui::test]
+    fn action_verbs_and_senders_are_not_keywords_and_old_lines_stay(cx: &mut TestAppContext) {
+        use cayenchat_irc_core::Event;
+
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.notifications.keywords = vec!["action".into(), "bob".into(), "deploy".into()];
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let message = |text: &str| Event::ChannelMessage {
+            channel: "#a".into(),
+            sender: "bob".into(),
+            text: text.into(),
+            notice: false,
+            server_time: None,
+            msgid: None,
+            account: None,
+            replayed: false,
+        };
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::Registered {
+                        nickname: "alice".into(),
+                    },
+                    Event::Joined {
+                        channel: "#a".into(),
+                    },
+                    // Neither the verb nor the sender is searched.
+                    message("\u{1}ACTION waves\u{1}"),
+                    message("\u{1}ACTION deploys\u{1}"),
+                ],
+                false,
+                cx,
+            );
+            let shown = |chat: &ChatWindow, index: usize| -> Vec<String> {
+                let message = &chat.state.conversations()[0].messages[index];
+                message
+                    .highlights
+                    .as_slice()
+                    .iter()
+                    .map(|range| message.text[range.clone()].to_owned())
+                    .collect()
+            };
+            let waves = chat.state.conversations()[0].messages.len() - 2;
+            assert!(shown(chat, waves).is_empty());
+            assert_eq!(shown(chat, waves + 1), ["deploy"]);
+
+            // New keywords and a new nickname apply to later lines only.
+            chat.notification_rules.keywords = vec!["hello".into()];
+            chat.handle_events(
+                NetworkId(1),
+                vec![
+                    Event::NickChanged {
+                        nickname: "carol".into(),
+                    },
+                    message("hello carol, deploy"),
+                ],
+                false,
+                cx,
+            );
+            assert_eq!(shown(chat, waves + 1), ["deploy"]);
+            let last = chat.state.conversations()[0].messages.len() - 1;
+            assert_eq!(shown(chat, last), ["hello", "carol"]);
+        });
+    }
+
+    #[gpui::test]
     fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
         use cayenchat_irc_core::Event;
 
