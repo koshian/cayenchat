@@ -9,18 +9,24 @@ use std::ops::Range;
 pub fn find(text: &str) -> Vec<(Range<usize>, String)> {
     let mut found = Vec::new();
     let mut cursor = 0;
+    let mut https = Lookahead::default();
+    let mut http = Lookahead::default();
+    let mut close = Lookahead::default();
     while cursor < text.len() {
-        let next = ["https://", "http://"]
-            .into_iter()
-            .filter_map(|scheme| text[cursor..].find(scheme).map(|offset| cursor + offset))
-            .min();
+        let next = [
+            https.find(text, "https://", cursor),
+            http.find(text, "http://", cursor),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let Some(start) = next else { break };
         // An IPv6 literal host such as `https://[::1]/` keeps its brackets.
-        let host_start = start + text[start..].find("://").map_or(0, |i| i + 3);
+        let host_start = start + "://".len() + text[start..].find("://").unwrap_or(0);
         let scan_from = match text[host_start..].strip_prefix('[') {
-            Some(rest) => rest
-                .find(']')
-                .map_or(host_start, |close| host_start + 1 + close + 1),
+            Some(_) => close
+                .find(text, "]", host_start + 1)
+                .map_or(host_start, |at| at + 1),
             None => host_start,
         };
         let mut end = text[scan_from..]
@@ -55,6 +61,25 @@ pub fn find(text: &str) -> Vec<(Range<usize>, String)> {
         cursor = end.max(start + 1);
     }
     found
+}
+
+/// The next occurrence of one pattern at or after a position that only moves
+/// forward. The last result is reused, and a search that found nothing is
+/// never repeated, so many candidates cost one pass over the text.
+#[derive(Default)]
+struct Lookahead(Option<Option<usize>>);
+
+impl Lookahead {
+    fn find(&mut self, text: &str, pattern: &str, from: usize) -> Option<usize> {
+        match self.0 {
+            Some(None) => return None,
+            Some(Some(at)) if at >= from => return Some(at),
+            _ => {}
+        }
+        let at = text.get(from..)?.find(pattern).map(|offset| from + offset);
+        self.0 = Some(at);
+        at
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +123,25 @@ mod tests {
         assert_eq!(urls[0].0, 0.."https://example.org/".len());
         let text = format!("https://example.org/(a{}", ")".repeat(16_000));
         assert_eq!(find(&text)[0].1, "https://example.org/(a)");
+    }
+
+    #[test]
+    fn many_candidates_are_found_in_linear_time() {
+        let limit = std::time::Duration::from_millis(50);
+        for text in [
+            "https://[ ".repeat(1_600),
+            "https://[ http:// ".repeat(900),
+            "http://example.org/ ".repeat(800),
+            "https://x ".repeat(1_600),
+        ] {
+            let started = std::time::Instant::now();
+            let urls = find(&text);
+            assert!(started.elapsed() < limit);
+            assert_eq!(
+                urls.len(),
+                text.matches("http://example.org/").count() + text.matches("https://x").count()
+            );
+        }
     }
 
     #[test]
