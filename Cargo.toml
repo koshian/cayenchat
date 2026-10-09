@@ -16,7 +16,8 @@ version = "0.9.1"
 edition = "2024"
 rust-version = "1.88"
 publish = false
-license = "GPL-3.0-only"
+# Each crate states its license: the GPUI-free core crates are MPL-2.0 and
+# the `ui` crate is GPL-3.0-only (D042).
 
 [workspace.dependencies]
 cayenchat-model = { path = "crates/model" }

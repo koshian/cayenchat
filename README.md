@@ -43,4 +43,8 @@ The specifications under [`spec/`](spec/) are authoritative; start with [archite
 
 ## License
 
-GPL version 3 only ([LICENSE](LICENSE)). `crates/ui/src/input.rs`, adapted from GPUI, remains Apache-2.0; third-party dependencies keep their own licenses ([notices](THIRD_PARTY_NOTICES.md)).
+- The core crates (`crates/model`, `irc-core`, `storage`, `media`, `upload` and `app`) are under the [Mozilla Public License 2.0](licenses/MPL-2.0.txt). They do not depend on GPUI, and anyone may build and publish their own user interface on them.
+- The GPUI desktop application (`crates/ui`) and everything else in this repository are under GPL version 3 only ([LICENSE](LICENSE)). `crates/ui/src/input.rs`, adapted from GPUI, remains Apache-2.0.
+- Vendored and third-party dependencies keep their own licenses ([notices](THIRD_PARTY_NOTICES.md)).
+
+The source code is available at <https://github.com/koshian/cayenchat>. Releases up to 0.9.x were published under GPL version 3 only. See [CONTRIBUTING](CONTRIBUTING.md) for how contributions are licensed.
