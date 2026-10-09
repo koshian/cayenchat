@@ -123,8 +123,8 @@ mod tests {
                 break;
             }
         }
-        // Keep the pipe open so the child does not get SIGPIPE on later output.
-        std::mem::forget(out);
+        // The child prints nothing after "ready", so the pipe can be closed.
+        drop(out);
         child
     }
 
