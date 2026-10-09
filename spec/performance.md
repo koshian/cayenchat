@@ -1009,3 +1009,28 @@ Headless UI test (medians in µs; parent / branch, runs 1–3):
   a single outlier). The 256-event batch goes through `channel_id`.
 - Not measured: a real server, and a network with many hundreds of channels
   (where the index replaces a linear scan).
+
+## PING timeout under overload (2026-10-09, issue #272)
+
+The disconnect seen in S4b was the `irc` crate's PING timeout. The crate sends
+its own PING 180 s after connecting and fails the stream with `PingTimeout`
+when no PONG came within `ping_timeout` (default 20 s). It checks that
+deadline before it looks at buffered data, and the worker reads the socket
+only while the event queue has room, so under a flood the PONG waits in the
+socket buffer (fixture PING round trip 15 s median, 29 s max). In a full
+`run_baseline.py` run the 180 s point falls into S6, the second maximum flood;
+the fixture logged the disconnect at 200.4 s (180 s + 20 s). `--load-only`
+ends S4b before 180 s and saw one connection. The fixture's own PINGs are
+answered by the client and are not involved.
+
+`irc-core::PING_TIMEOUT_SECS` now sets `ping_timeout` to 120 s. The backlog
+is bounded by the socket buffer, so a dead connection is still detected, 120 s
+after the PING. A bouncer replaying a large history at connect is not
+affected by this timeout (the first PING is at 180 s), but any long
+backlog at that moment would have hit it in the same way.
+
+Verification (Linux, Xvfb, release build): before, the one full run made after
+reproducing showed `connections 2` with the disconnect at 200.4 s; after, three
+full runs showed `connections 1` each (S4b CPU 183–184 %, RSS 120 MiB). S4b
+throughput and CPU were not otherwise compared, since the change touches no
+per-line path.
