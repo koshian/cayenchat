@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::OsStr,
     mem::ManuallyDrop,
     path::{Path, PathBuf},
@@ -48,6 +48,8 @@ struct WindowsPlatformInner {
     // The below members will never change throughout the entire lifecycle of the app.
     validation_number: usize,
     main_receiver: flume::Receiver<Runnable>,
+    // Set once the quit callback ran for `WM_ENDSESSION`, so `run` does not repeat it.
+    quit_handled: Cell<bool>,
 }
 
 pub(crate) struct WindowsPlatformState {
@@ -316,7 +318,9 @@ impl Platform for WindowsPlatform {
             }
         }
 
-        if let Some(ref mut callback) = self.inner.state.borrow_mut().callbacks.quit {
+        if !self.inner.quit_handled.get()
+            && let Some(ref mut callback) = self.inner.state.borrow_mut().callbacks.quit
+        {
             callback();
         }
     }
@@ -684,6 +688,7 @@ impl WindowsPlatformInner {
             raw_window_handles: context.raw_window_handles.clone(),
             validation_number: context.validation_number,
             main_receiver: context.main_receiver.take().unwrap(),
+            quit_handled: Cell::new(false),
         }))
     }
 
@@ -699,6 +704,7 @@ impl WindowsPlatformInner {
             | WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD
             | WM_GPUI_DOCK_MENU_ACTION
             | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
+            | WM_GPUI_END_SESSION
             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(msg, wparam, lparam),
             _ => None,
         };
@@ -725,6 +731,16 @@ impl WindowsPlatformInner {
             WM_GPUI_DOCK_MENU_ACTION => self.handle_dock_action_event(lparam.0 as _),
             WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
+            WM_GPUI_END_SESSION => {
+                // Take the callback out so the state is not borrowed while it runs.
+                let callback = self.state.borrow_mut().callbacks.quit.take();
+                if let Some(mut callback) = callback {
+                    self.quit_handled.set(true);
+                    callback();
+                    self.state.borrow_mut().callbacks.quit = Some(callback);
+                }
+                Some(0)
+            }
             _ => unreachable!(),
         }
     }

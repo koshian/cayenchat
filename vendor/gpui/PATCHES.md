@@ -138,3 +138,13 @@ descriptions are measured up to their NUL in Rust instead of with ICU's
 `u_strlen`. That one call made the executable import `icuuc.dll`, which
 Windows only ships since Windows 10 1703 and Wine does not provide, so the
 Windows build did not start under Wine at all. Nothing else uses ICU.
+
+In `src/platform/windows/{events,platform}.rs`, windows handle
+`WM_QUERYENDSESSION` (always TRUE, never delays or vetoes the OS) and
+`WM_ENDSESSION`. When the session really ends (`wParam` TRUE, including
+Restart Manager closes with `ENDSESSION_CLOSEAPP`), the window synchronously
+sends a private message to the platform window, which runs the quit callback
+(`App::shutdown`, hence `on_app_quit` handlers) before returning to Windows;
+`run` skips it afterwards. Upstream ignored both messages, so sign-out,
+shutdown and restart killed the process without running any quit handler.
+CayenChat uses this to send IRC QUIT (issue #284).
