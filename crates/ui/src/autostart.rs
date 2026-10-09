@@ -7,13 +7,20 @@
 //! user turned off in the system's own settings is reported as
 //! `DisabledByUser` and is only changed again by an explicit choice here.
 //!
-//! Registered launches pass `--autostart`, so a later change can tell them
-//! from a launch by hand. The flag does nothing yet.
+//! Registered launches pass `--autostart`, so they can be told from a launch
+//! by hand. On Windows a launch by hand brings its window to the front
+//! (#259); a registered one does not take the foreground at login.
 
 /// The argument given to a launch made by the login registration. macOS's
 /// login item has no arguments.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub const AUTOSTART_ARG: &str = "--autostart";
+
+/// Whether this process was started by the login registration.
+#[cfg(target_os = "windows")]
+pub fn launched_by_registration() -> bool {
+    std::env::args().skip(1).any(|arg| arg == AUTOSTART_ARG)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutostartStatus {

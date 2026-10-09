@@ -6083,6 +6083,13 @@ fn main() {
             )
             .expect("could not open CayenChat window");
         cx.activate(true);
+        // GPUI's `activate` does nothing on Windows, so a window opened by
+        // hand can land behind others (#259). Once, right after opening, take
+        // the foreground; a login launch stays out of the user's way.
+        #[cfg(target_os = "windows")]
+        if !autostart::launched_by_registration() {
+            let _ = chat_window.update(cx, |_, window, _| window.activate_window());
+        }
         // Settings open when nothing connects at startup or a saved server
         // cannot start, showing the first such server; valid servers still
         // connect.
