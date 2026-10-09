@@ -467,18 +467,26 @@ impl ClientStream {
     /// CayenChat patch; not part of the published crate.
     pub async fn close(&mut self) {
         let mut outgoing = self.outgoing.take();
+        let mut received_all = false;
         futures_util::future::poll_fn(|cx| {
             if let Some(pending) = outgoing.as_mut() {
                 if pending.poll_shutdown(cx).is_ready() {
                     outgoing = None;
                 }
             }
-            loop {
+            // The peer closing its side says nothing about ours, so an EOF or error on the
+            // receiving side must not end the wait while queued lines are still being written.
+            while !received_all {
                 match Pin::new(&mut self.stream).poll_next(cx) {
                     Poll::Ready(Some(Ok(_))) => continue,
-                    Poll::Ready(_) => return Poll::Ready(()),
-                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(_) => received_all = true,
+                    Poll::Pending => break,
                 }
+            }
+            if outgoing.is_none() && received_all {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
             }
         })
         .await

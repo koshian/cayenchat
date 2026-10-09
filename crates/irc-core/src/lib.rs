@@ -4531,6 +4531,18 @@ mod tests {
         flood: usize,
         read_delay: Duration,
     ) -> Vec<u8> {
+        quit_line_after_flood_with(configure, end, flood, read_delay, false)
+    }
+
+    /// With `half_close`, the server closes its sending side after the flood while still
+    /// reading, so the client sees EOF with its own writes still pending.
+    fn quit_line_after_flood_with(
+        configure: impl FnOnce(&mut ConnectionConfig),
+        end: impl FnOnce(&mut Connection),
+        flood: usize,
+        read_delay: Duration,
+        half_close: bool,
+    ) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -4556,6 +4568,11 @@ mod tests {
                     .unwrap();
             }
             thread::sleep(read_delay);
+            if half_close {
+                // After the client has queued QUIT behind its backlog.
+                socket.shutdown(std::net::Shutdown::Write).unwrap();
+                thread::sleep(Duration::from_millis(100));
+            }
             loop {
                 line.clear();
                 lines.read_until(b'\n', &mut line).unwrap();
@@ -4659,6 +4676,32 @@ mod tests {
             },
             EVENT_CAPACITY * 4,
             Duration::from_millis(800),
+        );
+        assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
+    }
+
+    #[test]
+    fn shutdown_keeps_writing_quit_after_the_server_closes_its_side() {
+        let text = "x".repeat(400);
+        let line = quit_line_after_flood_with(
+            |_| {},
+            |connection| {
+                let stop = Instant::now() + Duration::from_secs(3);
+                let mut queued = 0;
+                while queued < 20_000 && Instant::now() < stop {
+                    while connection.try_recv().is_some() {}
+                    match connection.send_message("#test", &text, false) {
+                        Ok(()) => queued += 1,
+                        Err(_) => thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+                assert!(queued > 10_000, "only {queued} messages were queued");
+                connection.shutdown();
+                assert!(connection.wait_closed(QUIT_WAIT));
+            },
+            10,
+            Duration::from_millis(800),
+            true,
         );
         assert_eq!(line, b"QUIT :Leaving CayenChat".to_vec());
     }
