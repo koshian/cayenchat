@@ -99,8 +99,8 @@ impl Previews {
         }
     }
 
-    /// The preview for the first previewable link among `urls` (as found by
-    /// `log_urls`), with that link. Requests it if needed.
+    /// The preview for the first previewable link among `urls` (a message's
+    /// `links`), with that link. Requests it if needed.
     pub fn lookup(&self, urls: &[(Range<usize>, String)], row: RowRef) -> Option<(String, Shown)> {
         if !self.enabled() {
             return None;
@@ -535,7 +535,7 @@ mod tests {
                 selection: chat.state.selection(),
                 sequence: 1,
             };
-            let urls = crate::log_urls(A);
+            let urls = cayenchat_app::links::find(A);
             assert!(matches!(
                 chat.previews.lookup(&urls, row),
                 Some((_, super::Shown::Pending))
@@ -603,7 +603,7 @@ mod tests {
                 selection: Selection::Channel(b),
                 sequence: 99,
             };
-            chat.previews.lookup(&crate::log_urls(B), row);
+            chat.previews.lookup(&cayenchat_app::links::find(B), row);
             assert_eq!(chat.previews.cache().queued(), 1);
             chat.forget_conversations(&[b]);
             assert_eq!(chat.previews.cache().queued(), 0);

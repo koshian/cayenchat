@@ -3576,53 +3576,6 @@ fn default_time_font() -> &'static str {
     }
 }
 
-fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
-    let mut found = Vec::new();
-    let mut cursor = 0;
-    while cursor < text.len() {
-        let next = ["https://", "http://"]
-            .into_iter()
-            .filter_map(|scheme| text[cursor..].find(scheme).map(|offset| cursor + offset))
-            .min();
-        let Some(start) = next else { break };
-        // An IPv6 literal host such as `https://[::1]/` keeps its brackets.
-        let host_start = start + text[start..].find("://").map_or(0, |i| i + 3);
-        let scan_from = match text[host_start..].strip_prefix('[') {
-            Some(rest) => rest
-                .find(']')
-                .map_or(host_start, |close| host_start + 1 + close + 1),
-            None => host_start,
-        };
-        let mut end = text[scan_from..]
-            .char_indices()
-            .find(|(_, ch)| ch.is_whitespace() || "<>[]\"'。、".contains(*ch))
-            .map(|(offset, _)| scan_from + offset)
-            .unwrap_or(text.len());
-        while end > start {
-            let Some(last) = text[..end].chars().last() else {
-                break;
-            };
-            let closes_bracket = last == ')' && {
-                let candidate = &text[start..end];
-                candidate.matches(')').count() > candidate.matches('(').count()
-            };
-            if !(closes_bracket || ".,;:!?}」』".contains(last)) {
-                break;
-            }
-            end -= last.len_utf8();
-        }
-        let candidate = &text[start..end];
-        if let Ok(url) = url::Url::parse(candidate)
-            && matches!(url.scheme(), "http" | "https")
-            && url.host_str().is_some()
-        {
-            found.push((start..end, url.into()));
-        }
-        cursor = end.max(start + 1);
-    }
-    found
-}
-
 /// One log row's text with its styling: links underlined in the link color,
 /// shortened links on a tinted background, mentions and keywords bold in the
 /// highlight color, and the selection shaded.
@@ -5284,13 +5237,13 @@ impl ChatWindow {
         let Some(message) = channel.messages.get(index) else {
             return div().into_any_element();
         };
-        let urls = log_urls(&message.text);
+        let urls = message.links.as_slice();
         // Channel activity lines stay text-only.
         let preview = if message.activity {
             None
         } else {
             self.previews.lookup(
-                &urls,
+                urls,
                 previews::RowRef {
                     selection: Selection::Channel(selected_channel),
                     sequence: message.sequence,
@@ -5303,14 +5256,14 @@ impl ChatWindow {
         // Drawn text may differ from the message's; positions map back.
         let compact = Rc::new(compact_urls::Compact::new(
             &message.text,
-            &urls,
+            urls,
             style.compact_urls,
         ));
         let full_urls: Vec<_> = compact
-            .shortened(&urls)
+            .shortened(urls)
             .map(|(range, url)| (range, SharedString::from(url.to_owned())))
             .collect();
-        let urls = compact.shown_urls(&urls);
+        let urls = compact.shown_urls(urls);
         let chips: Vec<_> = full_urls.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection
@@ -5597,10 +5550,10 @@ impl ChatWindow {
         // Long URLs are shortened as in the channel log, but stay plain text.
         let compact = compact_urls::Compact::new(
             &message.text,
-            &if style.compact_urls {
-                log_urls(&message.text)
+            if style.compact_urls {
+                message.links.as_slice()
             } else {
-                Vec::new()
+                &[]
             },
             style.compact_urls,
         );
@@ -6200,6 +6153,7 @@ mod combined_log_tests {
                 sender: "bob".into(),
                 text: String::new(),
                 highlights: Default::default(),
+                links: Default::default(),
                 activity: sequence % 5 == 0,
                 notice: false,
                 provenance: if sequence % 11 == 0 {
@@ -6223,46 +6177,9 @@ mod combined_log_tests {
 
 #[cfg(test)]
 mod log_tests {
-    use super::{LogPosition, LogSelection, channel_activity_text, log_urls};
+    use super::{LogPosition, LogSelection, channel_activity_text};
     use cayenchat_irc_core::ChannelActivityKind;
     use cayenchat_model::ConversationId;
-
-    #[test]
-    fn finds_only_web_urls_without_sentence_punctuation() {
-        let text =
-            "see https://example.org/a?q=1, and http://example.jp/path。 ftp://example.org/x";
-        let urls = log_urls(text);
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0].1, "https://example.org/a?q=1");
-        assert_eq!(urls[1].1, "http://example.jp/path");
-        assert_eq!(&text[urls[0].0.clone()], urls[0].1);
-    }
-
-    #[test]
-    fn markdown_links_and_brackets_do_not_leak_into_urls() {
-        let text = " [https://x.com/a/status/1](https://x.com/a/status/1)";
-        let urls = log_urls(text);
-        assert_eq!(urls.len(), 2);
-        assert!(
-            urls.iter()
-                .all(|(_, url)| url == "https://x.com/a/status/1")
-        );
-        let text = "(see https://example.org/a_(b)) https://example.org/c)";
-        let urls = log_urls(text);
-        assert_eq!(urls[0].1, "https://example.org/a_(b)");
-        assert_eq!(urls[1].1, "https://example.org/c");
-    }
-
-    #[test]
-    fn ipv6_literal_hosts_keep_their_brackets() {
-        let text =
-            "[https://[2001:db8::1]:8080/path](https://[2001:db8::1]:8080/path) http://[::1]/";
-        let urls = log_urls(text);
-        assert_eq!(urls.len(), 3);
-        assert_eq!(urls[0].1, "https://[2001:db8::1]:8080/path");
-        assert_eq!(urls[1].1, "https://[2001:db8::1]:8080/path");
-        assert_eq!(urls[2].1, "http://[::1]/");
-    }
 
     #[test]
     fn channel_activity_uses_english_phrases_with_optional_details() {

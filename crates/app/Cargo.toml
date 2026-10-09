@@ -9,3 +9,4 @@ license.workspace = true
 [dependencies]
 cayenchat-model.workspace = true
 chrono.workspace = true
+url = "2.5.8"

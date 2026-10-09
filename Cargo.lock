@@ -873,6 +873,7 @@ version = "0.9.1"
 dependencies = [
  "cayenchat-model",
  "chrono",
+ "url",
 ]
 
 [[package]]
@@ -945,7 +946,6 @@ dependencies = [
  "sys-locale",
  "tempfile",
  "unicode-segmentation",
- "url",
  "windows 0.61.3",
  "windows-sys 0.61.2",
 ]
