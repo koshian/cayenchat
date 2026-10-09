@@ -3601,6 +3601,9 @@ fn log_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
     found
 }
 
+/// One log row's text with its styling: links underlined in the link color,
+/// shortened links on a tinted background, mentions and keywords bold in the
+/// highlight color, and the selection shaded.
 ///
 /// `prefix` (the sender and colon in the flowing layout) is drawn in the
 /// nickname color before `text`; every other range, and `selected`, is a
