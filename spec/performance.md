@@ -1091,19 +1091,27 @@ Headless UI test (medians in µs; parent / branch, runs 1–3):
 The disconnect seen in S4b was the `irc` crate's PING timeout. The crate sends
 its own PING 180 s after connecting and fails the stream with `PingTimeout`
 when no PONG came within `ping_timeout` (default 20 s). It checks that
-deadline before it looks at buffered data, and the worker reads the socket
-only while the event queue has room, so under a flood the PONG waits in the
-socket buffer (fixture PING round trip 15 s median, 29 s max). In a full
-`run_baseline.py` run the 180 s point falls into S6, the second maximum flood;
-the fixture logged the disconnect at 200.4 s (180 s + 20 s). `--load-only`
-ends S4b before 180 s and saw one connection. The fixture's own PINGs are
-answered by the client and are not involved.
+deadline before it looks at buffered data. In a full `run_baseline.py` run the
+180 s point falls into S6, the second maximum flood; the fixture logged the
+disconnect at 200.4 s (180 s + 20 s). `--load-only` ends S4b before 180 s and
+saw one connection. The fixture's own PINGs are answered by the client and are
+not involved.
 
-`irc-core::PING_TIMEOUT_SECS` now sets `ping_timeout` to 120 s. The backlog
-is bounded by the socket buffer, so a dead connection is still detected, 120 s
-after the PING. A bouncer replaying a large history at connect is not
-affected by this timeout (the first PING is at 180 s), but any long
-backlog at that moment would have hit it in the same way.
+Where the delay comes from is only partly established. A review run with the
+fixture instrumented (1 s heartbeat, time of each received PING) showed the
+fixture's own event loop stalling for about 30 s during maximum load and not
+reading the client's PING until the end of the second flood (207.4 s), so the
+fixture could not produce the PONG before then. That alone explains the
+fixture's 15 s median PING round trip. Whether the client's worker, which
+reads the socket only while the event queue has room, adds a delay of its own
+was not separated out; it is possible under a flood or a bouncer's history
+replay, and unverified.
+
+`irc-core::PING_TIMEOUT_SECS` now sets `ping_timeout` to 120 s, which absorbs
+the stalls measured here (about 30 s). It is a margin, not a bound for every
+overload: a longer UI stall or a slower peer could still exceed it. A dead
+connection is still detected, 120 s after the PING (confirmed with a server
+that never answers).
 
 Verification (Linux, Xvfb, release build): before, the one full run made after
 reproducing showed `connections 2` with the disconnect at 200.4 s; after, three

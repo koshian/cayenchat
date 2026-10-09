@@ -66,11 +66,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// drops packets, so the limit must comfortably exceed that.
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
 /// How long the `irc` crate waits for the PONG to its periodic PING (every
-/// 180 s). Its default is 20 s, but the worker stops reading while the event
-/// queue is full, so under a flood or a bouncer's history replay the PONG
-/// waits in the socket buffer; the crate checks the deadline before it looks
-/// at buffered data (issue #272). The wait is bounded by that buffer, so this
-/// still ends a dead connection.
+/// 180 s). Its default is 20 s, which a full overload run exceeded (issue
+/// #272): the measuring server stalled about 30 s, and the worker stops
+/// reading while the event queue is full, so the PONG may also wait in the
+/// socket buffer; the crate checks the deadline before it looks at buffered
+/// data. This is a margin, not a bound; a dead connection still ends after it.
 const PING_TIMEOUT_SECS: u32 = 120;
 /// Limits on WHOIS replies that have not reached end-of-WHOIS (318), so a
 /// hostile server cannot grow memory by never finishing them.
@@ -3606,10 +3606,11 @@ mod tests {
     }
 
     #[test]
-    fn ping_timeout_outlasts_a_backlog_in_the_socket_buffer() {
+    fn library_config_sets_the_ping_timeout() {
         let config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
-        assert_eq!(library_config(&config).ping_timeout(), PING_TIMEOUT_SECS);
-        assert!(PING_TIMEOUT_SECS > 60);
+        let timeout = library_config(&config).ping_timeout();
+        assert_eq!(timeout, PING_TIMEOUT_SECS);
+        assert!(timeout > 60);
     }
 
     #[test]
