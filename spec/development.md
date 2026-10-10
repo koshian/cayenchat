@@ -424,9 +424,17 @@ packages refresh their caches; no maintainer script is needed. Verify with
 
 Every package carries the licenses and notices the binary must be distributed
 with: `LICENSE`, `THIRD_PARTY_NOTICES.md` and `licenses/`. They go to
-`/usr/share/doc/cayenchat/` in the `.deb`, next to `cayenchat.exe` in the
+`/usr/share/doc/<package>/` in the `.deb` (`cayenchat-ui`, or `cayenchat-test`
+for the Test Build, Debian Policy 12.5), next to `cayenchat.exe` in the
 Windows zips and to `Contents/Resources/` in the macOS bundle. Adding a file
-to `licenses/` needs no packaging change.
+to `licenses/` needs no packaging change. The `.deb`'s `copyright` in that
+directory is `assets/linux/copyright` (`license-file` in `crates/ui/Cargo.toml`),
+which says which files carry which license and points at `LICENSE` and
+`licenses/`. The Test Build's variant in `.github/workflows/package.yml`
+repeats the `assets` list for its own directory; change both together. Verify
+with `dpkg-deb -c` and by extracting `copyright` with `dpkg-deb -x`.
+The `Maintainer` field is not set yet; `dpkg-deb` warns about it until the
+maintainer chooses the contact to publish (#283).
 
 GPUI reports renderer, display-server and font failures through the `log` crate.
 The app installs a small stderr logger (`crates/ui/src/diagnostics.rs`) that
