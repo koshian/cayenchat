@@ -1,0 +1,29 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: CayenChat
+Source: https://github.com/koshian/cayenchat
+
+Files: usr/bin/cayenchat
+Copyright: CayenChat contributors
+License: GPL-3.0-only AND MPL-2.0 AND Apache-2.0
+ The binary combines the GPL-3.0-only front end (crates/ui), the MPL-2.0
+ core crates (model, irc-core, storage, media, upload, app), GPUI and other
+ dependencies under their own licenses.
+ .
+ The license texts are installed in this directory: LICENSE (GPL-3.0-only)
+ and licenses/ (MPL-2.0, Apache-2.0 for GPUI, MPL-2.0 for the irc crate, ISC
+ for Lucide icons). THIRD_PARTY_NOTICES.md lists the third-party software
+ and which file holds its license.
+
+Files: usr/share/cayenchat/locales/*
+ usr/share/applications/cayenchat.desktop
+ usr/share/icons/hicolor/scalable/apps/cayenchat.svg
+Copyright: CayenChat contributors
+License: GPL-3.0-only
+ See LICENSE in this directory. On Debian systems the text is also in
+ /usr/share/common-licenses/GPL-3.
+
+License: MPL-2.0
+ See licenses/MPL-2.0.txt in this directory.
+
+License: Apache-2.0
+ See licenses/GPUI-APACHE-2.0.txt in this directory.

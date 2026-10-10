@@ -110,12 +110,23 @@ jobs:
           fi
           # The variant is defined here, not read from the ref, so that refs
           # branched before it existed can be packaged too. It installs the
-          # same paths as the regular package, so the two conflict.
+          # same paths as the regular package, so the two conflict. Its
+          # licenses go to its own documentation directory, so `assets` repeats
+          # the list in crates/ui/Cargo.toml with that directory renamed.
           cat >> crates/ui/Cargo.toml <<'EOF_VARIANT'
 
           [package.metadata.deb.variants.test]
           name = "cayenchat-test"
           conflicts = "cayenchat-ui"
+          assets = [
+            ["target/release/cayenchat", "usr/bin/", "755"],
+            ["../../locales/*.json", "usr/share/cayenchat/locales/", "644"],
+            ["../../assets/linux/cayenchat.desktop", "usr/share/applications/", "644"],
+            ["../../assets/icons/cayenchat.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+            ["../../LICENSE", "usr/share/doc/cayenchat-test/", "644"],
+            ["../../THIRD_PARTY_NOTICES.md", "usr/share/doc/cayenchat-test/", "644"],
+            ["../../licenses/*", "usr/share/doc/cayenchat-test/licenses/", "644"],
+          ]
           EOF_VARIANT
           cargo deb --no-build --profile "$BUILD_PROFILE" --variant test
           mv target/debian/*.deb "$PACKAGE.deb"
