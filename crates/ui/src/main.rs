@@ -2745,27 +2745,6 @@ impl ChatWindow {
         }
     }
 
-    /// The log has no text input of its own, so typing while it has focus (after
-    /// a click that started a selection) goes to the draft instead of being lost.
-    fn log_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let modifiers = event.keystroke.modifiers;
-        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
-            return;
-        }
-        let Some(text) = event.keystroke.key_char.as_deref() else {
-            return;
-        };
-        if text.is_empty() || text.chars().any(char::is_control) {
-            return;
-        }
-        let Some(input) = self.inputs.get(&self.state.selection()).cloned() else {
-            return;
-        };
-        cx.stop_propagation();
-        window.focus(&input.focus_handle(cx));
-        input.update(cx, |input, cx| input.type_text(text, window, cx));
-    }
-
     /// The standard list keys while the member list has focus: they move
     /// the one chosen member.
     fn members_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -3766,36 +3745,53 @@ impl Render for ChatWindow {
     }
 }
 
-/// The input method of the main log: the log holds no text, so composition
-/// that starts while it has focus moves focus to the draft and continues there.
+/// The input method of the main log: the log holds no text, so it stands in
+/// for the selected draft. Every call, queries and unmarking included, goes to
+/// the draft so ranges and the composition state stay consistent, and anything
+/// that changes text also moves focus there. Plain typing arrives here too
+/// (unhandled key presses fall through to the input handler), so the first key
+/// still reaches the platform input method. The handler is swapped only at the
+/// next frame, so the calls before it keep arriving here.
 impl EntityInputHandler for ChatWindow {
     fn text_for_range(
         &mut self,
-        _: Range<usize>,
-        _: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        range: Range<usize>,
+        actual: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Option<String> {
-        None
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.text_for_range(range, actual, window, cx)
+        })
     }
 
     fn selected_text_range(
         &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: 0..0,
-            reversed: false,
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.selected_text_range(ignore_disabled_input, window, cx)
         })
     }
 
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        None
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| input.marked_text_range(window, cx))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.draft_for_log_input() {
+            input.update(cx, |input, cx| input.unmark_text(window, cx));
+        }
+    }
 
     fn replace_text_in_range(
         &mut self,
@@ -3804,7 +3800,8 @@ impl EntityInputHandler for ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(input) = self.focus_draft_for_ime(window, cx) {
+        if let Some(input) = self.draft_for_log_input() {
+            window.focus(&input.focus_handle(cx));
             input.update(cx, |input, cx| {
                 input.replace_text_in_range(range, text, window, cx)
             });
@@ -3819,7 +3816,8 @@ impl EntityInputHandler for ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(input) = self.focus_draft_for_ime(window, cx) {
+        if let Some(input) = self.draft_for_log_input() {
+            window.focus(&input.focus_handle(cx));
             input.update(cx, |input, cx| {
                 input.replace_and_mark_text_in_range(range, text, selected, window, cx)
             });
@@ -3828,34 +3826,34 @@ impl EntityInputHandler for ChatWindow {
 
     fn bounds_for_range(
         &mut self,
-        _: Range<usize>,
+        range: Range<usize>,
         bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.bounds_for_range(range, bounds, window, cx)
+        })
     }
 
     fn character_index_for_point(
         &mut self,
-        _: gpui::Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        point: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Option<usize> {
-        None
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.character_index_for_point(point, window, cx)
+        })
     }
 }
 
 impl ChatWindow {
-    /// Moves focus to the selected draft for input forwarded from the log.
-    fn focus_draft_for_ime(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Entity<TextInput>> {
-        let input = self.inputs.get(&self.state.selection())?.clone();
-        window.focus(&input.focus_handle(cx));
-        Some(input)
+    /// The draft that input arriving at the log is meant for.
+    fn draft_for_log_input(&self) -> Option<Entity<TextInput>> {
+        self.inputs.get(&self.state.selection()).cloned()
     }
 }
 
@@ -4248,7 +4246,6 @@ impl ChatWindow {
             .id(("log", log_id))
             .key_context("MainLog")
             .track_focus(&self.log_focus)
-            .on_key_down(cx.listener(Self::log_key_down))
             .on_action(cx.listener(Self::copy_log_selection))
             .on_action(cx.listener(Self::copy_log_selection_menu))
             .on_mouse_up(
@@ -7424,6 +7421,45 @@ mod pane_tests {
         });
         assert_eq!(text, "日本");
         assert!(focused);
+    }
+
+    #[gpui::test]
+    fn the_log_input_handler_mirrors_a_non_empty_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            input.update(cx, |input, cx| input.set_text("abc", cx));
+            window.focus(&chat.log_focus);
+            // The cursor and composition are the draft's, not an empty log's.
+            let selection = chat.selected_text_range(false, window, cx).unwrap();
+            assert_eq!(selection.range, 3..3);
+            assert_eq!(chat.marked_text_range(window, cx), None);
+            chat.replace_and_mark_text_in_range(None, "にほ", None, window, cx);
+            assert_eq!(chat.marked_text_range(window, cx), Some(3..5));
+            let mut actual = None;
+            assert_eq!(
+                chat.text_for_range(0..5, &mut actual, window, cx)
+                    .as_deref(),
+                Some("abcにほ")
+            );
+            chat.unmark_text(window, cx);
+            assert_eq!(chat.marked_text_range(window, cx), None);
+            // An explicit UTF-16 range replaces inside the draft.
+            chat.replace_text_in_range(Some(0..1), "X", window, cx);
+            let text = input.read(cx).text().to_owned();
+            assert_eq!(text, "Xbcにほ");
+        });
     }
 
     #[gpui::test]

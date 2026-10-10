@@ -1277,10 +1277,14 @@ and the global server/channel keys without arrows, which are separate issues.
 Typing while the main log has focus (after a click that started a selection)
 moves focus to the draft and types the character there (#289), so input is never
 accepted by a pane that cannot hold it. Keys with Ctrl/Alt/Super keep their
-meaning (Ctrl+C copies the selection). IME composition, which reaches the
-window as input-method calls rather than characters, is forwarded too: the log
-registers an input handler (`EntityInputHandler` on `ChatWindow`) that moves
-focus to the draft and passes the composition to it.
+meaning (Ctrl+C copies the selection). The log has no key handler for text:
+plain characters and IME composition both reach the window as input-method
+calls, so the log registers an input handler (`EntityInputHandler` on
+`ChatWindow`) that stands in for the selected draft. It forwards every call
+(queries, replace, mark, unmark, candidate position) to the draft, so ranges and
+the composition state are the draft's, and moves focus there when text changes.
+Handling characters in a key-down listener is avoided because the platform
+(macOS) would then skip the input method for the first key.
 
 ## D039 — UI icons come from Lucide, vendored one SVG at a time
 
