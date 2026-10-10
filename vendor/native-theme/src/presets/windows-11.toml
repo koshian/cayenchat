@@ -1,0 +1,674 @@
+# Windows 11 Fluent Design theme
+# Source: WinUI3 XAML theme resources, Fluent Design System
+name = "Windows 11"
+icon_set = "segoe-fluent"
+icon_theme = "segoe-fluent"
+
+# === Light variant ===
+
+[light.defaults]
+accent_color = "#0078d4"
+background_color = "#f3f3f3"
+text_color = "#1a1a1a"
+surface_color = "#ffffff"
+muted_color = "#717171"
+shadow_color = "#00000018"
+
+danger_color = "#c42b1c"
+danger_text_color = "#ffffff"
+warning_color = "#9d5d00"
+warning_text_color = "#1a1a1a"
+success_color = "#0f7b0f"
+success_text_color = "#ffffff"
+info_color = "#0078d4"
+info_text_color = "#ffffff"
+
+selection_background = "#0078d4"
+selection_text_color = "#ffffff"
+link_color = "#005a9e"
+focus_ring_color = "#0078d4"
+disabled_text_color = "#c5c5c5"
+accent_text_color = "#ffffff"
+
+disabled_opacity = 0.3
+line_height = 1.43
+focus_ring_width_px = 2.0
+focus_ring_offset_px = 0.0
+
+
+[light.defaults.border]
+color = "#e5e5e5"
+corner_radius_px = 4.0
+corner_radius_lg_px = 8.0
+line_width_px = 1.0
+opacity = 0.14
+shadow_enabled = true
+[light.defaults.font]
+family = "Segoe UI"
+size_pt =10.5
+weight = 400
+
+[light.defaults.mono_font]
+family = "Cascadia Mono"
+size_pt =10.5
+weight = 400
+
+[light.defaults.icon_sizes]
+toolbar_px = 20.0
+small_px = 16.0
+large_px = 32.0
+dialog_px = 22.0
+panel_px = 20.0
+
+[light.text_scale.caption]
+size_pt =9.0
+
+[light.text_scale.section_heading]
+size_pt =15.0
+weight = 600
+
+[light.text_scale.dialog_title]
+size_pt =21.0
+weight = 600
+
+[light.text_scale.display]
+size_pt =51.0
+weight = 600
+
+[light.button]
+background_color = "#fdfdfd"
+min_width_px = 64.0
+min_height_px = 32.0
+icon_text_gap_px = 8.0
+# Interactive state colors (platform-facts.md section 2.3 Windows)
+# Fluent SubtleFillColorSecondary overlay on bg
+hover_background = "#0000000a"
+hover_text_color = "#1a1a1a"
+active_text_color = "#1a1a1a"
+disabled_text_color = "#c5c5c5"
+# soft_option: Fluent SubtleFillColorTertiary -- pressed state
+active_background = "#00000008"
+# soft_option: Fluent ControlFillColorDisabled
+disabled_background = "#f9f9f900"
+
+
+[light.button.border]
+padding_horizontal_px = 11.0
+padding_vertical_px = 6.0
+
+[light.button.font]
+color = "#1a1a1a"
+[light.input]
+background_color = "#ffffff"
+min_height_px = 32.0
+# Interactive state colors (platform-facts.md section 2.4 Windows)
+disabled_text_color = "#c5c5c5"
+# soft_option: Fluent TextBox hover border
+hover_border_color = "#1a1a1a1a"
+# soft_option: Fluent accent-color bottom border
+focus_border_color = "#0078d4"
+# soft_option: Fluent TextBox disabled bg
+disabled_background = "#f9f9f900"
+
+
+[light.input.border]
+padding_horizontal_px = 10.0
+padding_vertical_px = 5.0
+
+[light.input.font]
+color = "#1a1a1a"
+[light.checkbox]
+indicator_width_px = 20.0
+label_gap_px = 8.0
+# Interactive state colors (platform-facts.md section 2.5 Windows)
+disabled_text_color = "#c5c5c5"
+# soft_option: Fluent checkbox hover fill
+hover_background = "#0000000a"
+# soft_option: Fluent checkbox disabled fill
+disabled_background = "#f9f9f900"
+# soft_option: Fluent ControlAltFillColorSecondary -- unchecked bg
+unchecked_background = "#0000000a"
+# soft_option: Fluent ControlStrongStrokeColorDefault -- unchecked border
+unchecked_border_color = "#0000005c"
+
+[light.tooltip]
+background_color = "#2c2c2c"
+max_width_px = 320.0
+
+
+[light.tooltip.border]
+padding_horizontal_px = 9.0
+padding_vertical_px = 7.0
+
+[light.tooltip.font]
+color = "#ffffff"
+[light.scrollbar]
+groove_width_px = 17.0
+min_thumb_length_px = 17.0
+thumb_width_px = 6.0
+overlay_mode = false
+# Interactive state colors (platform-facts.md section 2.8 Windows)
+# measured Windows scrollbar thumb hover
+thumb_hover_color = "#a0a0a0"
+# soft_option: Fluent scrollbar pressed
+thumb_active_color = "#787878"
+
+[light.slider]
+track_height_px = 4.0
+thumb_diameter_px = 18.0
+tick_mark_length_px = 4.0
+# soft_option interactive state colors (Windows Fluent section 2.9)
+# Fluent slider thumb hover
+thumb_hover_color = "#e0e0e0"
+# Fluent AccentFillColorDisabled
+disabled_fill_color = "#0078d450"
+# Fluent SliderTrackFillDisabled
+disabled_track_color = "#71717150"
+# Fluent slider thumb disabled
+disabled_thumb_color = "#ffffff80"
+
+[light.progress_bar]
+track_height_px = 3.0
+min_width_px = 100.0
+
+[light.tab]
+min_width_px = 64.0
+min_height_px = 32.0
+# Interactive state colors (platform-facts.md section 2.11 Windows)
+active_background = "#f3f3f3"
+active_text_color = "#1a1a1a"
+hover_text_color = "#1a1a1a"
+# soft_option: Fluent tab hover (SubtleFillColorSecondary)
+hover_background = "#0000000a"
+
+
+[light.tab.border]
+padding_horizontal_px = 8.0
+padding_vertical_px = 3.0
+[light.menu]
+row_height_px = 36.0
+icon_text_gap_px = 12.0
+# Interactive state colors (platform-facts.md section 2.6 Windows)
+# Fluent SubtleFillColorSecondary
+hover_background = "#0000000a"
+# defaults.text_color (no change)
+hover_text_color = "#1a1a1a"
+disabled_text_color = "#c5c5c5"
+
+
+[light.menu.border]
+padding_horizontal_px = 11.0
+padding_vertical_px = 8.0
+[light.list]
+alternate_row_background = "#f9f9f9"
+row_height_px = 40.0
+# Interactive state colors (platform-facts.md section 2.15 Windows)
+# Fluent SubtleFillColorSecondary
+hover_background = "#0000000a"
+hover_text_color = "#1a1a1a"
+disabled_text_color = "#c5c5c5"
+
+
+[light.list.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 4.0
+[light.toolbar]
+bar_height_px = 48.0
+item_gap_px = 0.0
+
+[light.sidebar]
+background_color = "#ebebeb"
+# Interactive state colors (platform-facts.md section 2.12 Windows)
+# Fluent SubtleFillColorSecondary
+hover_background = "#0000000a"
+
+
+[light.sidebar.font]
+color = "#1a1a1a"
+[light.popover]
+background_color = "#ffffff"
+
+
+[light.popover.font]
+color = "#1a1a1a"
+[light.separator]
+line_color = "#e5e5e5"
+
+[light.splitter]
+divider_width_px = 1.0
+# Interactive state colors (platform-facts.md section 2.17 Windows)
+# splitter.divider_color = defaults.border.color
+hover_color = "#e5e5e5"
+
+[light.switch]
+unchecked_background = "#c5c5c5"
+thumb_background = "#ffffff"
+track_width_px = 40.0
+track_height_px = 20.0
+thumb_diameter_px = 12.0
+track_radius_px = 10.0
+# soft_option interactive state colors (Windows Fluent ToggleSwitch)
+# Fluent ToggleSwitch hover on -- slightly brighter accent
+hover_checked_background = "#1a86d6"
+# Fluent ToggleSwitch hover off -- slightly darker trough
+hover_unchecked_background = "#b0b0b0"
+# Fluent ToggleSwitch disabled on -- accent at reduced opacity
+disabled_checked_background = "#0078d450"
+# Fluent ToggleSwitch disabled off -- trough at reduced opacity
+disabled_unchecked_background = "#c5c5c550"
+# Fluent ToggleSwitch disabled knob
+disabled_thumb_color = "#ffffff80"
+
+[light.dialog]
+# Windows uses primary-leftmost per MS Common Buttons guideline (Win7) and
+# modern WinUI 3 ContentDialog. See docs/platform-facts.md:1481, 1807-1808.
+button_order = "primary_left"
+min_width_px = 320.0
+max_width_px = 548.0
+min_height_px = 184.0
+max_height_px = 756.0
+button_gap_px = 8.0
+icon_size_px =32.0
+
+[light.dialog.title_font]
+size_pt =15.0
+weight = 600
+
+[light.link]
+underline_enabled = true
+background_color = "#00000000"
+hover_background = "#0078d418"
+# Interactive state colors (platform-facts.md section 2.28 Windows)
+hover_text_color = "#005a9e"
+active_text_color = "#005a9e"
+disabled_text_color = "#c5c5c5"
+
+[light.spinner]
+diameter_px = 32.0
+min_diameter_px = 16.0
+stroke_width_px = 4.0
+
+[light.combo_box]
+min_height_px = 32.0
+min_width_px = 64.0
+arrow_icon_size_px =12.0
+arrow_area_width_px = 38.0
+# Interactive state colors (platform-facts.md section 2.24 Windows)
+disabled_text_color = "#c5c5c5"
+# soft_option: Fluent ComboBox hover
+hover_background = "#0000000a"
+# soft_option: Fluent ComboBox disabled
+disabled_background = "#f9f9f900"
+
+
+[light.combo_box.border]
+padding_horizontal_px = 12.0
+[light.segmented_control]
+segment_height_px = 28.0
+separator_width_px = 1.0
+# Interactive state colors (Windows: no native segmented control)
+# Use defaults.accent_color
+active_background = "#0078d4"
+# Use defaults.accent_text_color
+active_text_color = "#ffffff"
+# soft_option: Use button hover pattern
+hover_background = "#0000000a"
+
+
+[light.segmented_control.border]
+padding_horizontal_px = 12.0
+[light.card]
+
+[light.expander]
+header_height_px = 48.0
+arrow_icon_size_px =12.0
+# soft_option interactive state colors (Windows Fluent Expander)
+# Fluent Expander hover
+hover_background = "#0000000a"
+# Fluent Expander chevron color = TextFillColorPrimary
+arrow_color = "#1a1a1ae0"
+
+[light.window]
+# Interactive state colors (platform-facts.md section 2.2 Windows)
+# COLOR_INACTIVECAPTION -- default Windows 11 light
+inactive_title_bar_background = "#f1f1f1"
+# COLOR_INACTIVECAPTIONTEXT -- default Windows 11 light
+inactive_title_bar_text_color = "#1a1a1a99"
+
+# === Dark variant ===
+
+[dark.defaults]
+accent_color = "#0078d4"
+background_color = "#202020"
+text_color = "#ffffff"
+surface_color = "#2d2d2d"
+muted_color = "#9a9a9a"
+shadow_color = "#00000040"
+
+danger_color = "#ff99a4"
+danger_text_color = "#1a1a1a"
+warning_color = "#fce100"
+warning_text_color = "#1a1a1a"
+success_color = "#6ccb5f"
+success_text_color = "#1a1a1a"
+info_color = "#60cdff"
+info_text_color = "#1a1a1a"
+
+selection_background = "#0078d4"
+selection_text_color = "#ffffff"
+link_color = "#60cdff"
+focus_ring_color = "#0078d4"
+disabled_text_color = "#454545"
+accent_text_color = "#000000"
+
+disabled_opacity = 0.3
+line_height = 1.43
+focus_ring_width_px = 2.0
+focus_ring_offset_px = 0.0
+
+
+[dark.defaults.border]
+color = "#454545"
+corner_radius_px = 4.0
+corner_radius_lg_px = 8.0
+line_width_px = 1.0
+opacity = 0.14
+shadow_enabled = true
+[dark.defaults.font]
+family = "Segoe UI"
+size_pt =10.5
+weight = 400
+
+[dark.defaults.mono_font]
+family = "Cascadia Mono"
+size_pt =10.5
+weight = 400
+
+[dark.defaults.icon_sizes]
+toolbar_px = 20.0
+small_px = 16.0
+large_px = 32.0
+dialog_px = 22.0
+panel_px = 20.0
+
+[dark.text_scale.caption]
+size_pt =9.0
+
+[dark.text_scale.section_heading]
+size_pt =15.0
+weight = 600
+
+[dark.text_scale.dialog_title]
+size_pt =21.0
+weight = 600
+
+[dark.text_scale.display]
+size_pt =51.0
+weight = 600
+
+[dark.button]
+background_color = "#333333"
+min_width_px = 64.0
+min_height_px = 32.0
+icon_text_gap_px = 8.0
+# Interactive state colors (platform-facts.md section 2.3 Windows)
+# Fluent SubtleFillColorSecondary overlay on bg
+hover_background = "#ffffff0f"
+hover_text_color = "#ffffff"
+active_text_color = "#ffffff"
+disabled_text_color = "#454545"
+# soft_option: Fluent SubtleFillColorTertiary -- pressed state
+active_background = "#ffffff08"
+# soft_option: Fluent ControlFillColorDisabled
+disabled_background = "#33333300"
+
+
+[dark.button.border]
+padding_horizontal_px = 11.0
+padding_vertical_px = 6.0
+
+[dark.button.font]
+color = "#ffffff"
+[dark.input]
+background_color = "#2d2d2d"
+min_height_px = 32.0
+# Interactive state colors (platform-facts.md section 2.4 Windows)
+disabled_text_color = "#454545"
+# soft_option: Fluent TextBox hover border
+hover_border_color = "#ffffff1a"
+# soft_option: Fluent accent-color bottom border
+focus_border_color = "#0078d4"
+# soft_option: Fluent TextBox disabled bg
+disabled_background = "#33333300"
+
+
+[dark.input.border]
+padding_horizontal_px = 10.0
+padding_vertical_px = 5.0
+
+[dark.input.font]
+color = "#ffffff"
+[dark.checkbox]
+indicator_width_px = 20.0
+label_gap_px = 8.0
+# Interactive state colors (platform-facts.md section 2.5 Windows)
+disabled_text_color = "#454545"
+# soft_option: Fluent checkbox hover fill
+hover_background = "#ffffff0f"
+# soft_option: Fluent checkbox disabled fill
+disabled_background = "#33333300"
+# soft_option: Fluent ControlAltFillColorSecondary -- unchecked bg
+unchecked_background = "#ffffff0f"
+# soft_option: Fluent ControlStrongStrokeColorDefault -- unchecked border
+unchecked_border_color = "#ffffff9c"
+
+[dark.tooltip]
+background_color = "#3a3a3a"
+max_width_px = 320.0
+
+
+[dark.tooltip.border]
+padding_horizontal_px = 9.0
+padding_vertical_px = 7.0
+
+[dark.tooltip.font]
+color = "#ffffff"
+[dark.scrollbar]
+groove_width_px = 17.0
+min_thumb_length_px = 17.0
+thumb_width_px = 6.0
+overlay_mode = false
+# Interactive state colors (platform-facts.md section 2.8 Windows)
+# measured Windows scrollbar thumb hover
+thumb_hover_color = "#a0a0a0"
+# soft_option: Fluent scrollbar pressed
+thumb_active_color = "#787878"
+
+[dark.slider]
+track_height_px = 4.0
+thumb_diameter_px = 18.0
+tick_mark_length_px = 4.0
+# soft_option interactive state colors (Windows Fluent section 2.9)
+# Fluent slider thumb hover
+thumb_hover_color = "#404040"
+# Fluent AccentFillColorDisabled
+disabled_fill_color = "#0078d450"
+# Fluent SliderTrackFillDisabled
+disabled_track_color = "#9a9a9a50"
+# Fluent slider thumb disabled
+disabled_thumb_color = "#2d2d2d80"
+
+[dark.progress_bar]
+track_height_px = 3.0
+min_width_px = 100.0
+
+[dark.tab]
+min_width_px = 64.0
+min_height_px = 32.0
+# Interactive state colors (platform-facts.md section 2.11 Windows)
+active_background = "#202020"
+active_text_color = "#ffffff"
+hover_text_color = "#ffffff"
+# soft_option: Fluent tab hover (SubtleFillColorSecondary)
+hover_background = "#ffffff0f"
+
+
+[dark.tab.border]
+padding_horizontal_px = 8.0
+padding_vertical_px = 3.0
+[dark.menu]
+row_height_px = 36.0
+icon_text_gap_px = 12.0
+# Interactive state colors (platform-facts.md section 2.6 Windows)
+# Fluent SubtleFillColorSecondary
+hover_background = "#ffffff0f"
+# defaults.text_color (no change)
+hover_text_color = "#ffffff"
+disabled_text_color = "#454545"
+
+
+[dark.menu.border]
+padding_horizontal_px = 11.0
+padding_vertical_px = 8.0
+[dark.list]
+alternate_row_background = "#262626"
+row_height_px = 40.0
+# Interactive state colors (platform-facts.md section 2.15 Windows)
+# Fluent SubtleFillColorSecondary
+hover_background = "#ffffff0f"
+hover_text_color = "#ffffff"
+disabled_text_color = "#454545"
+
+
+[dark.list.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 4.0
+[dark.toolbar]
+bar_height_px = 48.0
+item_gap_px = 0.0
+
+[dark.sidebar]
+background_color = "#272727"
+# Interactive state colors (platform-facts.md section 2.12 Windows)
+# Fluent SubtleFillColorSecondary
+hover_background = "#ffffff0f"
+
+
+[dark.sidebar.font]
+color = "#ffffff"
+[dark.popover]
+background_color = "#2d2d2d"
+
+
+[dark.popover.font]
+color = "#ffffff"
+[dark.separator]
+line_color = "#3b3b3b"
+
+[dark.splitter]
+divider_width_px = 1.0
+# Interactive state colors (platform-facts.md section 2.17 Windows)
+# splitter.divider_color = defaults.border.color
+hover_color = "#454545"
+
+[dark.switch]
+unchecked_background = "#454545"
+thumb_background = "#ffffff"
+track_width_px = 40.0
+track_height_px = 20.0
+thumb_diameter_px = 12.0
+track_radius_px = 10.0
+# soft_option interactive state colors (Windows Fluent ToggleSwitch)
+# Fluent ToggleSwitch hover on -- slightly brighter accent
+hover_checked_background = "#1a86d6"
+# Fluent ToggleSwitch hover off -- slightly brighter trough
+hover_unchecked_background = "#525252"
+# Fluent ToggleSwitch disabled on -- accent at reduced opacity
+disabled_checked_background = "#0078d450"
+# Fluent ToggleSwitch disabled off -- trough at reduced opacity
+disabled_unchecked_background = "#45454550"
+# Fluent ToggleSwitch disabled knob
+disabled_thumb_color = "#ffffff80"
+
+[dark.dialog]
+# Windows uses primary-leftmost per MS Common Buttons guideline (Win7) and
+# modern WinUI 3 ContentDialog. See docs/platform-facts.md:1481, 1807-1808.
+button_order = "primary_left"
+min_width_px = 320.0
+max_width_px = 548.0
+min_height_px = 184.0
+max_height_px = 756.0
+button_gap_px = 8.0
+icon_size_px =32.0
+
+[dark.dialog.title_font]
+size_pt =15.0
+weight = 600
+
+[dark.link]
+underline_enabled = true
+background_color = "#00000000"
+hover_background = "#0078d418"
+# Interactive state colors (platform-facts.md section 2.28 Windows)
+hover_text_color = "#60cdff"
+active_text_color = "#60cdff"
+disabled_text_color = "#454545"
+
+[dark.spinner]
+diameter_px = 32.0
+min_diameter_px = 16.0
+stroke_width_px = 4.0
+
+[dark.combo_box]
+min_height_px = 32.0
+min_width_px = 64.0
+arrow_icon_size_px =12.0
+arrow_area_width_px = 38.0
+# Interactive state colors (platform-facts.md section 2.24 Windows)
+disabled_text_color = "#454545"
+# soft_option: Fluent ComboBox hover
+hover_background = "#ffffff0f"
+# soft_option: Fluent ComboBox disabled
+disabled_background = "#33333300"
+
+
+[dark.combo_box.border]
+padding_horizontal_px = 12.0
+[dark.segmented_control]
+segment_height_px = 28.0
+separator_width_px = 1.0
+# Interactive state colors (Windows: no native segmented control)
+# Use defaults.accent_color
+active_background = "#0078d4"
+# Use defaults.accent_text_color
+active_text_color = "#000000"
+# soft_option: Use button hover pattern
+hover_background = "#ffffff0f"
+
+
+[dark.segmented_control.border]
+padding_horizontal_px = 12.0
+[dark.card]
+
+[dark.expander]
+header_height_px = 48.0
+arrow_icon_size_px =12.0
+# soft_option interactive state colors (Windows Fluent Expander)
+# Fluent Expander hover
+hover_background = "#ffffff0f"
+# Fluent Expander chevron color = TextFillColorPrimary
+arrow_color = "#ffffffe0"
+
+[dark.window]
+# Interactive state colors (platform-facts.md section 2.2 Windows)
+# COLOR_INACTIVECAPTION -- default Windows 11 dark
+inactive_title_bar_background = "#2b2b2b"
+# COLOR_INACTIVECAPTIONTEXT -- default Windows 11 dark
+inactive_title_bar_text_color = "#ffffff99"
+
+
+[layout]
+widget_gap_px = 6.0
+container_margin_px = 6.0
+window_margin_px = 10.0
+section_gap_px = 18.0
