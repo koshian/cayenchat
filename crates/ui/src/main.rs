@@ -2744,8 +2744,6 @@ impl ChatWindow {
         }
     }
 
-    /// The standard list keys while the member list has focus: they move
-    /// the one chosen member.
     /// The log has no text input of its own, so typing while it has focus (after
     /// a click that started a selection) goes to the draft instead of being lost.
     fn log_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -2767,6 +2765,8 @@ impl ChatWindow {
         input.update(cx, |input, cx| input.type_text(text, window, cx));
     }
 
+    /// The standard list keys while the member list has focus: they move
+    /// the one chosen member.
     fn members_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.modifiers.modified() {
             return;
