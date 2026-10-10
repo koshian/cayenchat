@@ -176,6 +176,11 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Types `text` at the cursor as if it had been entered in this input.
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_text_in_range(None, text, window, cx);
+    }
+
     pub fn set_text(&mut self, value: &str, cx: &mut Context<Self>) {
         self.content = value.to_owned().into();
         self.selected_range = value.len()..value.len();

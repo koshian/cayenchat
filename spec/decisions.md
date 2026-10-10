@@ -1274,6 +1274,12 @@ member list the keys move the one chosen member. Not done: expand/collapse
 (the tree has no collapsed state), Shift-extended member ranges, type-to-find,
 and the global server/channel keys without arrows, which are separate issues.
 
+Typing while the main log has focus (after a click that started a selection)
+moves focus to the draft and types the character there (#289), so input is never
+accepted by a pane that cannot hold it. Keys with Ctrl/Alt/Super keep their
+meaning (Ctrl+C copies the selection). IME composition that starts without a
+key-down is not forwarded.
+
 ## D039 — UI icons come from Lucide, vendored one SVG at a time
 
 **Status:** Accepted

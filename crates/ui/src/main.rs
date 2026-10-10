@@ -2746,6 +2746,27 @@ impl ChatWindow {
 
     /// The standard list keys while the member list has focus: they move
     /// the one chosen member.
+    /// The log has no text input of its own, so typing while it has focus (after
+    /// a click that started a selection) goes to the draft instead of being lost.
+    fn log_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+            return;
+        }
+        let Some(text) = event.keystroke.key_char.as_deref() else {
+            return;
+        };
+        if text.is_empty() || text.chars().any(char::is_control) {
+            return;
+        }
+        let Some(input) = self.inputs.get(&self.state.selection()).cloned() else {
+            return;
+        };
+        cx.stop_propagation();
+        window.focus(&input.focus_handle(cx));
+        input.update(cx, |input, cx| input.type_text(text, window, cx));
+    }
+
     fn members_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.modifiers.modified() {
             return;
@@ -4133,6 +4154,7 @@ impl ChatWindow {
             .id(("log", log_id))
             .key_context("MainLog")
             .track_focus(&self.log_focus)
+            .on_key_down(cx.listener(Self::log_key_down))
             .on_action(cx.listener(Self::copy_log_selection))
             .on_action(cx.listener(Self::copy_log_selection_menu))
             .on_mouse_up(
@@ -7234,6 +7256,33 @@ mod pane_tests {
         assert_eq!(chosen(cx), ["bob"]);
         cx.simulate_keystrokes("up");
         assert_eq!(chosen(cx), ["alice"]);
+    }
+
+    #[gpui::test]
+    fn typing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.log_focus));
+        cx.simulate_keystrokes("h i");
+        let (text, focused) = chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            (
+                input.read(cx).text().to_owned(),
+                input.focus_handle(cx).is_focused(window),
+            )
+        });
+        assert_eq!(text, "hi");
+        assert!(focused);
     }
 
     #[gpui::test]
