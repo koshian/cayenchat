@@ -1276,6 +1276,11 @@ member list the keys move the one chosen member. Not done: expand/collapse
 (the tree has no collapsed state), Shift-extended member ranges, type-to-find,
 and the global server/channel keys without arrows, which are separate issues.
 
+The chosen members are dropped when the member list loses focus (a click
+elsewhere in the window, or the window becoming inactive), because a choice can
+be acted on all at once and must not linger unseen (#294). The log's text
+selection and the channel tree's active row are unchanged.
+
 Typing while the main log, the member list or the channel tree has focus (after
 a click that started a selection)
 moves focus to the draft and types the character there (#289), so input is never

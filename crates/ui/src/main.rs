@@ -957,6 +957,14 @@ impl ChatWindow {
             this.window_active = window.is_window_active();
         })
         .detach();
+        // A choice of members (it can be acted on all at once) ends when
+        // focus moves anywhere else; GPUI also reports it when the window
+        // becomes inactive.
+        let members_focus = this.members_focus.clone();
+        cx.on_focus_out(&members_focus, window, |this, _, _, cx| {
+            this.clear_member_selection(cx);
+        })
+        .detach();
         // Moving or resizing the window, and closing it, keep the layout.
         // The window's bounds are noted as they change so that the layout can
         // also be written where no window is at hand: when the application
@@ -2706,6 +2714,11 @@ impl ChatWindow {
         let main_height = f32::from(pointer_y - bounds.top()) - DRAFT_ROW_HEIGHT;
         self.log_split = (main_height / flexible).clamp(LOG_SPLIT_LIMITS.0, LOG_SPLIT_LIMITS.1);
         self.schedule_layout_save(cx);
+        cx.notify();
+    }
+
+    fn clear_member_selection(&mut self, cx: &mut Context<Self>) {
+        self.member_selection.clear();
         cx.notify();
     }
 
@@ -7578,6 +7591,15 @@ mod pane_tests {
         assert_eq!(chosen(cx), ["bob"]);
         cx.simulate_keystrokes("up");
         assert_eq!(chosen(cx), ["alice"]);
+        // Focus moving to another pane ends the choice (#294).
+        // Focus events are only sent to an active window, and from a frame
+        // drawn with the list focused.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.log_focus));
+        cx.update(|window, cx| window.draw(cx).clear());
+        assert!(chosen(cx).is_empty());
     }
 
     #[gpui::test]
