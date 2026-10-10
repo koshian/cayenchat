@@ -1262,17 +1262,34 @@ channel shortcuts (D009), so the user can change it.
 Status: implemented (#132).
 
 The channel tree and the member list take focus when clicked (`tree_focus`,
-`members_focus`) and then understand Up/Down and K/J (previous/next), Home/End,
+`members_focus`) and then understand Up/Down (previous/next), Home/End,
 PageUp/PageDown (`ui::list_keys`); the tree also has Left/Right (to the server
 of a channel / to a server's first channel) and Enter (open the selected row
 and return to the draft). The keys are handled by the focused list only, never
 as shortcuts, so the draft keeps every character and its Emacs-style editing.
-Modified keys are ignored. N/P are not aliases. In the tree, moving selects as
+Modified keys are ignored. Letters (K/J, N/P) are not aliases: K/J were
+dropped in #289 because a key handler that consumes a letter keeps the first
+romaji of an IME composition from reaching the input method (macOS). In the tree, moving selects as
 it goes and focus stays on the tree, and a click on a row now leaves focus on
 the tree instead of the draft (Enter or a click in the draft returns). In the
 member list the keys move the one chosen member. Not done: expand/collapse
 (the tree has no collapsed state), Shift-extended member ranges, type-to-find,
 and the global server/channel keys without arrows, which are separate issues.
+
+Typing while the main log, the member list or the channel tree has focus (after
+a click that started a selection)
+moves focus to the draft and types the character there (#289), so input is never
+accepted by a pane that cannot hold it. Keys with Ctrl/Alt/Super keep their
+meaning (Ctrl+C copies the selection). The log has no key handler for text:
+plain characters and IME composition both reach the window as input-method
+calls, so each of these panes registers an input handler (`EntityInputHandler` on
+`ChatWindow`) that stands in for the selected draft. It forwards every call
+(queries, replace, mark, unmark, candidate position) to the draft, so ranges and
+the composition state are the draft's, and moves focus there when text changes.
+The candidate window position is computed from the draft's own painted bounds,
+not the forwarding pane's.
+Handling characters in a key-down listener is avoided because the platform
+(macOS) would then skip the input method for the first key.
 
 ## D039 — UI icons come from Lucide, vendored one SVG at a time
 

@@ -68,6 +68,7 @@ use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
+use std::ops::Range;
 use std::{
     borrow::Cow,
     cell::Cell,
@@ -3770,6 +3771,138 @@ impl Render for ChatWindow {
     }
 }
 
+/// The input method of the main log: the log holds no text, so it stands in
+/// for the selected draft. Every call, queries and unmarking included, goes to
+/// the draft so ranges and the composition state stay consistent, and anything
+/// that changes text also moves focus there. Plain typing arrives here too
+/// (unhandled key presses fall through to the input handler), so the first key
+/// still reaches the platform input method. The handler is swapped only at the
+/// next frame, so the calls before it keep arriving here.
+impl EntityInputHandler for ChatWindow {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        actual: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.text_for_range(range, actual, window, cx)
+        })
+    }
+
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.selected_text_range(ignore_disabled_input, window, cx)
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| input.marked_text_range(window, cx))
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.draft_for_log_input() {
+            input.update(cx, |input, cx| input.unmark_text(window, cx));
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.draft_for_log_input() {
+            window.focus(&input.focus_handle(cx));
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(range, text, window, cx)
+            });
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.draft_for_log_input() {
+            window.focus(&input.focus_handle(cx));
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(range, text, selected, window, cx)
+            });
+        }
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.bounds_for_range(range, bounds, window, cx)
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let input = self.draft_for_log_input()?;
+        input.update(cx, |input, cx| {
+            input.character_index_for_point(point, window, cx)
+        })
+    }
+}
+
+impl ChatWindow {
+    /// An invisible element that registers this window as the input method
+    /// while `focus` holds focus, so typing and IME composition in a pane that
+    /// holds no text reach the draft.
+    fn input_to_draft(&self, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
+        let focus = focus.clone();
+        let window_entity = cx.entity();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                window.handle_input(
+                    &focus,
+                    ElementInputHandler::new(bounds, window_entity.clone()),
+                    cx,
+                );
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// The draft that input arriving at the log is meant for.
+    fn draft_for_log_input(&self) -> Option<Entity<TextInput>> {
+        self.inputs.get(&self.state.selection()).cloned()
+    }
+}
+
 impl ChatWindow {
     fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
@@ -4176,6 +4309,7 @@ impl ChatWindow {
             .when(!appearance.main_log_font.is_empty(), |d| {
                 d.font_family(appearance.main_log_font.clone())
             })
+            .child(self.input_to_draft(&self.log_focus, cx))
             .child(panes.main_log.clone().cached(pane_style()));
 
         let sub_log = div()
@@ -4210,6 +4344,7 @@ impl ChatWindow {
             .when(!appearance.member_font.is_empty(), |d| {
                 d.font_family(appearance.member_font.clone())
             })
+            .child(self.input_to_draft(&self.members_focus, cx))
             .child(panes.members.clone().cached(pane_style()));
 
         let mut main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
@@ -4413,6 +4548,7 @@ impl ChatWindow {
                     .flex_1()
                     .min_h_0()
                     .w_full()
+                    .child(self.input_to_draft(&self.tree_focus, cx))
                     .child(panes.channels.clone().cached(pane_style().w_full())),
             );
 
@@ -6967,6 +7103,7 @@ mod pane_tests {
     use super::{ChatWindow, LogPosition, LogSelection, Selection};
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
+    use gpui::EntityInputHandler as _;
     use gpui::{Focusable, TestAppContext};
 
     #[gpui::test]
@@ -7395,13 +7532,13 @@ mod pane_tests {
         assert_eq!(selected(cx).as_deref(), Some("#a"));
 
         chat.update_in(cx, |chat, window, _| window.focus(&chat.tree_focus));
-        cx.simulate_keystrokes("j");
+        cx.simulate_keystrokes("down");
         assert_eq!(selected(cx).as_deref(), Some("#b"));
         assert!(
             chat.update_in(cx, |chat, window, _| chat.tree_focus.is_focused(window)),
             "moving keeps focus on the tree"
         );
-        cx.simulate_keystrokes("k");
+        cx.simulate_keystrokes("up");
         assert_eq!(selected(cx).as_deref(), Some("#a"));
         cx.simulate_keystrokes("end");
         assert_eq!(selected(cx).as_deref(), Some("#b"));
@@ -7427,7 +7564,7 @@ mod pane_tests {
         );
 
         chat.update_in(cx, |chat, window, _| window.focus(&chat.members_focus));
-        cx.simulate_keystrokes("j j");
+        cx.simulate_keystrokes("down down");
         let chosen = |cx: &mut gpui::VisualTestContext| {
             chat.read_with(cx, |chat, _| {
                 let channel = chat.state.selected_channel().unwrap();
@@ -7441,6 +7578,152 @@ mod pane_tests {
         assert_eq!(chosen(cx), ["bob"]);
         cx.simulate_keystrokes("up");
         assert_eq!(chosen(cx), ["alice"]);
+    }
+
+    #[gpui::test]
+    fn typing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update_in(cx, |chat, window, _| window.focus(&chat.log_focus));
+        cx.simulate_keystrokes("h i");
+        let (text, focused) = chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            (
+                input.read(cx).text().to_owned(),
+                input.focus_handle(cx).is_focused(window),
+            )
+        });
+        assert_eq!(text, "hi");
+        assert!(focused);
+    }
+
+    #[gpui::test]
+    fn composing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update_in(cx, |chat, window, cx| {
+            window.focus(&chat.log_focus);
+            chat.replace_and_mark_text_in_range(None, "にほ", None, window, cx);
+            chat.replace_text_in_range(None, "日本", window, cx);
+        });
+        let (text, focused) = chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            (
+                input.read(cx).text().to_owned(),
+                input.focus_handle(cx).is_focused(window),
+            )
+        });
+        assert_eq!(text, "日本");
+        assert!(focused);
+    }
+
+    #[gpui::test]
+    fn the_log_input_handler_mirrors_a_non_empty_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            input.update(cx, |input, cx| input.set_text("abc", cx));
+            window.focus(&chat.log_focus);
+            // The cursor and composition are the draft's, not an empty log's.
+            let selection = chat.selected_text_range(false, window, cx).unwrap();
+            assert_eq!(selection.range, 3..3);
+            assert_eq!(chat.marked_text_range(window, cx), None);
+            chat.replace_and_mark_text_in_range(None, "にほ", None, window, cx);
+            assert_eq!(chat.marked_text_range(window, cx), Some(3..5));
+            let mut actual = None;
+            assert_eq!(
+                chat.text_for_range(0..5, &mut actual, window, cx)
+                    .as_deref(),
+                Some("abcにほ")
+            );
+            chat.unmark_text(window, cx);
+            assert_eq!(chat.marked_text_range(window, cx), None);
+            // An explicit UTF-16 range replaces inside the draft.
+            chat.replace_text_in_range(Some(0..1), "X", window, cx);
+            let text = input.read(cx).text().to_owned();
+            assert_eq!(text, "Xbcにほ");
+        });
+    }
+
+    #[gpui::test]
+    fn the_list_panes_forward_typing_and_candidate_position(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        for pane in ["members", "tree"] {
+            chat.update_in(cx, |chat, window, cx| {
+                let input = chat.inputs[&chat.state.selection()].clone();
+                input.update(cx, |input, cx| input.set_text("", cx));
+                match pane {
+                    "members" => window.focus(&chat.members_focus),
+                    _ => window.focus(&chat.tree_focus),
+                }
+            });
+            cx.simulate_keystrokes("h i");
+            let (text, focused) = chat.update_in(cx, |chat, window, cx| {
+                let input = chat.inputs[&chat.state.selection()].clone();
+                (
+                    input.read(cx).text().to_owned(),
+                    input.focus_handle(cx).is_focused(window),
+                )
+            });
+            assert_eq!(text, "hi", "typing in the {pane} pane");
+            assert!(focused, "focus moves to the draft from the {pane} pane");
+        }
+        // The candidate window follows the draft, not the pane that forwards.
+        chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            let own = input.read(cx).last_bounds().expect("the draft was painted");
+            let stray =
+                gpui::Bounds::new(gpui::point(px(900.), px(5.)), gpui::size(px(10.), px(10.)));
+            let forwarded = chat.bounds_for_range(0..0, stray, window, cx).unwrap();
+            let direct = input
+                .update(cx, |input, cx| {
+                    input.bounds_for_range(0..0, own, window, cx)
+                })
+                .unwrap();
+            assert_eq!(forwarded, direct);
+        });
     }
 
     #[gpui::test]

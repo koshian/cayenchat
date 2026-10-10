@@ -1,7 +1,7 @@
 //! Standard keyboard movement for a focused list (channel tree, member list).
 //!
 //! These keys act only on the list that has focus, so they never reach the
-//! draft, where `J`/`K` are text.
+//! draft. Letter keys are not used, so the input method sees every character.
 
 /// A movement a focused list understands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,8 +22,8 @@ impl ListKey {
     /// The movement for an unmodified key as GPUI names it.
     pub fn from_key(key: &str) -> Option<Self> {
         Some(match key {
-            "up" | "k" => Self::Previous,
-            "down" | "j" => Self::Next,
+            "up" => Self::Previous,
+            "down" => Self::Next,
             "home" => Self::First,
             "end" => Self::Last,
             "pageup" => Self::PageUp,
@@ -62,8 +62,9 @@ mod tests {
 
     #[test]
     fn keys_map_to_movements() {
-        assert_eq!(ListKey::from_key("j"), Some(ListKey::Next));
-        assert_eq!(ListKey::from_key("k"), Some(ListKey::Previous));
+        // Letters are left to the input method, so J/K are not aliases.
+        assert_eq!(ListKey::from_key("j"), None);
+        assert_eq!(ListKey::from_key("k"), None);
         assert_eq!(ListKey::from_key("down"), Some(ListKey::Next));
         assert_eq!(ListKey::from_key("n"), None);
         assert_eq!(ListKey::from_key("p"), None);

@@ -136,6 +136,12 @@ impl TextInput {
         &self.content
     }
 
+    /// Where the input was last painted.
+    #[cfg(test)]
+    pub fn last_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_bounds
+    }
+
     /// Lets an image-only paste reach the enclosing view's attachment
     /// handler instead of being ignored.
     pub fn accept_pasted_images(&mut self) {
@@ -752,6 +758,10 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
+        // Another pane may stand in for this input (the log forwards its
+        // input method here), so `bounds` can be that pane's; the painted
+        // bounds are always this input's.
+        let bounds = self.last_bounds.unwrap_or(bounds);
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
