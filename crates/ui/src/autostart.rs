@@ -7,13 +7,57 @@
 //! user turned off in the system's own settings is reported as
 //! `DisabledByUser` and is only changed again by an explicit choice here.
 //!
-//! Registered launches pass `--autostart`, so a later change can tell them
-//! from a launch by hand. The flag does nothing yet.
+//! Registered launches pass `--autostart`, so they can be told from a launch
+//! by hand. On Windows a launch by hand brings its window to the front
+//! (#259); a registered one does not take the foreground at login.
 
 /// The argument given to a launch made by the login registration. macOS's
 /// login item has no arguments.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub const AUTOSTART_ARG: &str = "--autostart";
+
+/// Whether this process was started by the login registration.
+#[cfg(target_os = "windows")]
+pub fn launched_by_registration() -> bool {
+    std::env::args().skip(1).any(|arg| arg == AUTOSTART_ARG)
+}
+
+/// The window a launch by hand brings to the front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub enum StartupFront {
+    Chat,
+    Settings,
+}
+
+/// Which window to take the foreground with after startup: the initial
+/// settings window when one was opened, else the chat window; none for a
+/// login launch.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn startup_front(by_registration: bool, settings_opened: bool) -> Option<StartupFront> {
+    match (by_registration, settings_opened) {
+        (true, _) => None,
+        (false, true) => Some(StartupFront::Settings),
+        (false, false) => Some(StartupFront::Chat),
+    }
+}
+
+#[cfg(test)]
+mod startup_front_tests {
+    use super::*;
+
+    #[test]
+    fn manual_launch_fronts_settings_over_chat() {
+        assert_eq!(startup_front(false, false), Some(StartupFront::Chat));
+        assert_eq!(startup_front(false, true), Some(StartupFront::Settings));
+    }
+
+    #[test]
+    fn login_launch_fronts_nothing() {
+        assert_eq!(startup_front(true, false), None);
+        assert_eq!(startup_front(true, true), None);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutostartStatus {
