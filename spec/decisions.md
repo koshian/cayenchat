@@ -1277,8 +1277,10 @@ and the global server/channel keys without arrows, which are separate issues.
 Typing while the main log has focus (after a click that started a selection)
 moves focus to the draft and types the character there (#289), so input is never
 accepted by a pane that cannot hold it. Keys with Ctrl/Alt/Super keep their
-meaning (Ctrl+C copies the selection). IME composition that starts without a
-key-down is not forwarded.
+meaning (Ctrl+C copies the selection). IME composition, which reaches the
+window as input-method calls rather than characters, is forwarded too: the log
+registers an input handler (`EntityInputHandler` on `ChatWindow`) that moves
+focus to the draft and passes the composition to it.
 
 ## D039 — UI icons come from Lucide, vendored one SVG at a time
 

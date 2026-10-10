@@ -68,6 +68,7 @@ use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
+use std::ops::Range;
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -3765,6 +3766,99 @@ impl Render for ChatWindow {
     }
 }
 
+/// The input method of the main log: the log holds no text, so composition
+/// that starts while it has focus moves focus to the draft and continues there.
+impl EntityInputHandler for ChatWindow {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.focus_draft_for_ime(window, cx) {
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(range, text, window, cx)
+            });
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.focus_draft_for_ime(window, cx) {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(range, text, selected, window, cx)
+            });
+        }
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
+impl ChatWindow {
+    /// Moves focus to the selected draft for input forwarded from the log.
+    fn focus_draft_for_ime(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TextInput>> {
+        let input = self.inputs.get(&self.state.selection())?.clone();
+        window.focus(&input.focus_handle(cx));
+        Some(input)
+    }
+}
+
 impl ChatWindow {
     fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
@@ -4174,6 +4268,22 @@ impl ChatWindow {
             .bg(main_bg)
             .when(!appearance.main_log_font.is_empty(), |d| {
                 d.font_family(appearance.main_log_font.clone())
+            })
+            .child({
+                let log_focus = self.log_focus.clone();
+                let window_entity = cx.entity();
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        window.handle_input(
+                            &log_focus,
+                            ElementInputHandler::new(bounds, window_entity.clone()),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .size_full()
             })
             .child(panes.main_log.clone().cached(pane_style()));
 
@@ -6782,6 +6892,7 @@ mod pane_tests {
     use super::{ChatWindow, LogPosition, LogSelection, Selection};
     use cayenchat_model::NetworkId;
     use cayenchat_storage::Settings;
+    use gpui::EntityInputHandler as _;
     use gpui::{Focusable, TestAppContext};
 
     #[gpui::test]
@@ -7282,6 +7393,36 @@ mod pane_tests {
             )
         });
         assert_eq!(text, "hi");
+        assert!(focused);
+    }
+
+    #[gpui::test]
+    fn composing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        chat.update_in(cx, |chat, window, cx| {
+            window.focus(&chat.log_focus);
+            chat.replace_and_mark_text_in_range(None, "にほ", None, window, cx);
+            chat.replace_text_in_range(None, "日本", window, cx);
+        });
+        let (text, focused) = chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            (
+                input.read(cx).text().to_owned(),
+                input.focus_handle(cx).is_focused(window),
+            )
+        });
+        assert_eq!(text, "日本");
         assert!(focused);
     }
 
