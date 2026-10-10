@@ -1057,8 +1057,14 @@ not a conversation (`Selection::Server`). The UI renders conversations by
 `ConversationId` and never branches on IRC target syntax to draw them; the
 kind only changes what the tree's context menu offers (Join/Part or
 Close), who the draft sends to (`send_message` for a channel,
-`send_private_message` for a peer) and that private conversations have no
-member list. Identity: `ConversationKind::Private { peer_key }`, where the
+`send_private_message` for a peer) and what the right-hand list shows: a
+channel's members, but for a private conversation a participant list of two
+rows, our nickname then the peer's (issue #288). The participants are derived
+at draw time from our current nickname and the conversation name, so both follow
+NICK, and the peer stays listed after a QUIT while the conversation exists; the
+conversation has no roster in the data model. The menu of the peer's row offers
+only WHOIS and private message (no invite or op, no group menu), and our own row
+has no menu. Identity: `ConversationKind::Private { peer_key }`, where the
 key is the adapter's folded peer name (IRC: RFC 1459 case-mapped nickname,
 the same key avatars use) and is only compared within one network, so the
 same nickname on two servers is two conversations. `channel_id` never

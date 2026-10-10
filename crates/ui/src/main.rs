@@ -631,6 +631,9 @@ struct MemberMenu {
     network: NetworkId,
     nickname: String,
     channel: String,
+    /// The menu is about the peer of a private conversation: no channel
+    /// actions (invite, op).
+    private: bool,
     /// The chosen members when the menu was opened on one of two or more
     /// chosen members: it then acts on all of them (and `nickname` is the one
     /// clicked). Empty for a menu about one member.
@@ -1114,6 +1117,27 @@ impl ChatWindow {
         }
         let profile = self.saved.profile(&session.profile_id)?;
         shared_peer_avatar(profile).map(|url| url.as_str().into())
+    }
+
+    /// What the right-hand list shows for the selected conversation: a
+    /// channel's members, or for a private conversation its two participants
+    /// (us, then the peer). The peer stays listed after they quit, as long as
+    /// the conversation exists.
+    fn participants(&self) -> Vec<String> {
+        let Some(conversation) = self.state.selected_channel() else {
+            return Vec::new();
+        };
+        if !conversation.is_private() {
+            return conversation.members.clone();
+        }
+        let mut participants = Vec::with_capacity(2);
+        if let Some(own) = self.own_nickname(conversation.network)
+            && !cayenchat_irc_core::text::same_nickname(own, &conversation.name)
+        {
+            participants.push(own.to_owned());
+        }
+        participants.push(conversation.name.clone());
+        participants
     }
 
     /// Mentions of our nickname and keywords in an incoming message, looked
@@ -2689,7 +2713,8 @@ impl ChatWindow {
         let Some(channel) = self.state.selected_channel() else {
             return;
         };
-        let (conversation, members) = (channel.id, channel.members.clone());
+        let conversation = channel.id;
+        let members = self.participants();
         self.member_selection
             .click(conversation, &members, index, click);
     }
@@ -2757,7 +2782,8 @@ impl ChatWindow {
             return;
         };
         cx.stop_propagation();
-        let (conversation, members) = (channel.id, channel.members.clone());
+        let conversation = channel.id;
+        let members = self.participants();
         let current = self.member_selection.anchor_index(conversation, &members);
         // The measured row height and the pixel range now in view.
         let (row_height, view_top, view_bottom) = {
@@ -4082,10 +4108,7 @@ impl ChatWindow {
                 ))
                 .into_any_element(),
             PaneKind::Members => {
-                let member_count = self
-                    .state
-                    .selected_channel()
-                    .map_or(0, |channel| channel.members.len());
+                let member_count = self.participants().len();
                 div()
                     .relative()
                     .size_full()
@@ -4636,16 +4659,15 @@ impl ChatWindow {
                 }
                 return popup;
             }
-            for (index, (choice, key)) in [
+            let choices = [
                 (MemberMenuChoice::Whois, "member_whois"),
                 (MemberMenuChoice::PrivateMessage, "member_private_message"),
                 (MemberMenuChoice::Invite, "member_invite"),
                 (MemberMenuChoice::GiveOp, "member_give_op"),
                 (MemberMenuChoice::Deop, "member_deop"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            ];
+            let shown = if menu.private { 2 } else { choices.len() };
+            for (index, (choice, key)) in choices.into_iter().take(shown).enumerate() {
                 if index == 3 {
                     popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
                 }
@@ -5647,14 +5669,16 @@ impl ChatWindow {
         let Some(channel) = self.state.selected_channel() else {
             return Vec::new();
         };
-        let end = range.end.min(channel.members.len());
+        let participants = self.participants();
+        let end = range.end.min(participants.len());
         let start = range.start.min(end);
         let network = channel.network;
         let conversation = channel.id;
+        let private = channel.is_private();
         let avatars_shown = self.avatars.enabled();
         (start..end)
             .map(|index| {
-                let member = channel.members[index].clone();
+                let member = participants[index].clone();
                 let selected = self.member_selection.contains(conversation, &member);
                 let channel = channel.name.clone();
                 let nickname = member
@@ -5728,17 +5752,28 @@ impl ChatWindow {
                             if !selected {
                                 this.click_member(index, member_selection::Click::Only);
                             }
+                            // Nothing to offer on ourselves in a private
+                            // conversation.
+                            if private && this.is_own_nickname(network, &nickname) {
+                                cx.stop_propagation();
+                                cx.notify();
+                                return;
+                            }
                             // On one of several chosen members the menu acts
-                            // on all of them.
-                            let group = this
-                                .state
-                                .selected_channel()
-                                .map(|channel| {
-                                    this.member_selection
-                                        .nicknames(channel.id, &channel.members)
-                                })
-                                .filter(|chosen| chosen.len() >= 2)
-                                .unwrap_or_default();
+                            // on all of them; participants of a private
+                            // conversation have no channel modes to give.
+                            let group = if private {
+                                Vec::new()
+                            } else {
+                                let participants = this.participants();
+                                this.state
+                                    .selected_channel()
+                                    .map(|channel| {
+                                        this.member_selection.nicknames(channel.id, &participants)
+                                    })
+                                    .filter(|chosen| chosen.len() >= 2)
+                                    .unwrap_or_default()
+                            };
                             let viewport = window.viewport_size();
                             this.server_menu = None;
                             this.channel_menu = None;
@@ -5757,6 +5792,7 @@ impl ChatWindow {
                                 network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
+                                private,
                                 group,
                             });
                             cx.stop_propagation();
