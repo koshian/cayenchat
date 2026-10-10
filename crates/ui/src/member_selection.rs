@@ -94,6 +94,11 @@ impl MemberSelection {
             .position(|member| nickname_key(nickname(member)) == *anchor)
     }
 
+    /// Forgets the choice, e.g. when the member list loses focus.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
     /// Whether the roster entry `entry` of `conversation` is chosen.
     pub fn contains(&self, conversation: ConversationId, entry: &str) -> bool {
         self.conversation == Some(conversation)
