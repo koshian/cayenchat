@@ -7,13 +7,22 @@
 #[cfg(all(target_os = "windows", feature = "windows"))]
 use ::windows::UI::ViewManagement::{UIColorType, UISettings};
 #[cfg(all(target_os = "windows", feature = "windows"))]
-use ::windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
+use ::windows::Win32::UI::HiDpi::{GetSystemMetricsForDpi, SystemParametersInfoForDpi};
 #[cfg(all(target_os = "windows", feature = "windows"))]
 use ::windows::Win32::UI::WindowsAndMessaging::{
     NONCLIENTMETRICSW, SM_CXBORDER, SM_CXFOCUSBORDER, SM_CXICON, SM_CXSMICON, SM_CXVSCROLL,
     SM_CYMENU, SM_CYVTHUMB, SPI_GETNONCLIENTMETRICS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    SystemParametersInfoW,
+    SystemParametersInfoW, USER_DEFAULT_SCREEN_DPI,
 };
+
+/// CayenChat backport of native-theme 0.6.1: the DPI every Windows metric and
+/// font is read at, 96 (`USER_DEFAULT_SCREEN_DPI`, 100 % scaling), also
+/// reported as the reader's `font_dpi`. The model's sizes are logical pixels
+/// at 96 per inch, so they must not include the display scale; reading at
+/// the system DPI scaled them twice once the UI framework applied its own
+/// scale factor.
+#[cfg(all(target_os = "windows", feature = "windows"))]
+pub(crate) const LOGICAL_DPI: u32 = USER_DEFAULT_SCREEN_DPI;
 
 use crate::model::FontSpec;
 
@@ -136,12 +145,15 @@ fn read_all_system_fonts(dpi: u32) -> AllFonts {
     let mut ncm = NONCLIENTMETRICSW::default();
     ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
 
+    // At `dpi` (LOGICAL_DPI); `SystemParametersInfoW` in a DPI-aware process
+    // gives the fonts at the system DPI instead.
     let success = unsafe {
-        SystemParametersInfoW(
-            SPI_GETNONCLIENTMETRICS,
+        SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS.0,
             ncm.cbSize,
             Some(&mut ncm as *mut _ as *mut _),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            0,
+            dpi,
         )
     };
 
@@ -163,15 +175,6 @@ fn read_all_system_fonts(dpi: u32) -> AllFonts {
 }
 
 // REMOVED(spacing): // WinUI3 Fluent Design spacing scale removed -- ThemeSpacing_DELETED deleted in Plan 01.
-
-/// Read DPI-aware system DPI value.
-///
-/// Returns the system DPI (96 = standard 100% scaling).
-#[cfg(all(target_os = "windows", feature = "windows"))]
-#[allow(unsafe_code)]
-pub(crate) fn read_dpi() -> u32 {
-    unsafe { GetDpiForSystem() }
-}
 
 /// Read DPI-aware frame width.
 #[cfg(all(target_os = "windows", feature = "windows"))]
@@ -634,7 +637,7 @@ fn read_windows() -> crate::Result<crate::ReaderResult> {
         })?;
 
     let accent_shades = read_accent_shades(&settings);
-    let dpi = read_dpi();
+    let dpi = LOGICAL_DPI;
     let fonts = read_all_system_fonts(dpi);
     let sys_colors = read_sys_colors();
     let dwm_title_bar = read_dwm_colorization();

@@ -424,7 +424,7 @@ mod xrandr_dpi_tests {
 /// - **Linux (KDE)**: `forceFontDPI` from kdeglobals/kcmfontsrc → `Xft.dpi` → xrandr → 96.0
 /// - **Linux (other)**: `Xft.dpi` → xrandr → 96.0
 /// - **macOS**: 72.0 (Apple coordinate system: 1pt = 1px)
-/// - **Windows**: `GetDpiForSystem()` → 96.0
+/// - **Windows**: 96.0 (`LOGICAL_DPI`; CayenChat backport of 0.6.1)
 /// - **Other**: 96.0
 #[allow(unreachable_code)]
 fn detect_system_font_dpi() -> f32 {
@@ -435,7 +435,7 @@ fn detect_system_font_dpi() -> f32 {
 
     #[cfg(all(target_os = "windows", feature = "windows"))]
     {
-        return crate::windows::read_dpi() as f32;
+        return crate::windows::LOGICAL_DPI as f32;
     }
 
     // KDE: check forceFontDPI first (same chain as the KDE reader)
