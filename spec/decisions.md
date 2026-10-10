@@ -526,6 +526,13 @@ The UI now requires Rust 1.94; other workspace crates keep their existing floor.
 Disable icon bundles/system-icon loading. Enable only `svg-rasterize`, because
 0.5.7's icon module references that module even when default features are off.
 
+2026-10-10 (#290): native-theme 0.5.7 is a patched copy in
+`vendor/native-theme`. 0.5.7 read Windows fonts and metrics at the system DPI,
+so its "logical" sizes included the display scale and GPUI scaled them again
+(the settings window's text was 1.5 times too large at 150 %). The copy reads
+them at 96 DPI, as 0.6.1 does; 0.6.1 itself needs the `gpui-pre` connector.
+Switch back when the GPUI question in #265 allows native-theme 0.6.1 or later.
+
 `ui::settings_theme` calls `SystemTheme::from_system()` and converts both
 variants with `native_theme_gpui::to_theme()`. The connector supplies settings
 palette colors; raw `ResolvedTheme` supplies the per-widget geometry, fonts,

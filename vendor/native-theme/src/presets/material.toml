@@ -1,0 +1,567 @@
+# Material Design 3 baseline theme
+# Source: m3.material.io baseline color scheme
+name = "Material"
+icon_set = "material"
+icon_theme = "material"
+
+# === Light variant ===
+
+[light.defaults]
+accent_color = "#6750a4"
+background_color = "#fffbfe"
+text_color = "#1c1b1f"
+surface_color = "#fffbfe"
+muted_color = "#49454f"
+shadow_color = "#00000018"
+
+danger_color = "#b3261e"
+danger_text_color = "#ffffff"
+warning_color = "#7d5700"
+warning_text_color = "#ffffff"
+success_color = "#386a20"
+success_text_color = "#ffffff"
+info_color = "#6750a4"
+info_text_color = "#ffffff"
+
+selection_background = "#6750a4"
+selection_text_color = "#ffffff"
+link_color = "#6750a4"
+focus_ring_color = "#6750a4"
+disabled_text_color = "#c4c7c5"
+accent_text_color = "#ffffff"
+
+disabled_opacity = 0.38
+line_height = 1.2
+focus_ring_width_px = 2.0
+focus_ring_offset_px = 1.0
+
+
+[light.defaults.border]
+color = "#79747e"
+corner_radius_px = 12.0
+corner_radius_lg_px = 16.0
+line_width_px = 1.0
+opacity = 0.12
+shadow_enabled = true
+[light.defaults.font]
+family = "Roboto"
+size_px =14.0
+weight = 400
+
+[light.defaults.mono_font]
+family = "Roboto Mono"
+size_px =14.0
+weight = 400
+
+[light.defaults.icon_sizes]
+toolbar_px = 24.0
+small_px = 16.0
+large_px = 32.0
+dialog_px = 22.0
+panel_px = 20.0
+
+[light.text_scale.caption]
+size_px =11.0
+weight = 400
+line_height_px = 16.0
+
+[light.text_scale.section_heading]
+size_px =16.0
+weight = 500
+line_height_px = 24.0
+
+[light.text_scale.dialog_title]
+size_px =24.0
+weight = 400
+line_height_px = 32.0
+
+[light.text_scale.display]
+size_px =36.0
+weight = 400
+line_height_px = 44.0
+
+[light.button]
+background_color = "#e8def8"
+min_width_px = 64.0
+min_height_px = 40.0
+icon_text_gap_px = 8.0
+hover_background = "#ddd3f0"
+hover_text_color = "#1d192b"
+active_background = "#d4c9e8"
+active_text_color = "#1d192b"
+disabled_background = "#1c1b1f1f"
+disabled_text_color = "#c4c7c5"
+
+
+[light.button.border]
+padding_horizontal_px = 24.0
+padding_vertical_px = 10.0
+
+[light.button.font]
+color = "#1d192b"
+[light.input]
+background_color = "#fffbfe"
+min_height_px = 56.0
+hover_border_color = "#1c1b1f"
+focus_border_color = "#6750a4"
+disabled_background = "#1c1b1f0a"
+disabled_text_color = "#c4c7c5"
+
+
+[light.input.border]
+padding_horizontal_px = 16.0
+padding_vertical_px = 16.0
+
+[light.input.font]
+color = "#1c1b1f"
+[light.checkbox]
+indicator_width_px = 18.0
+label_gap_px = 8.0
+hover_background = "#6750a414"
+disabled_background = "#1c1b1f1f"
+disabled_text_color = "#c4c7c5"
+unchecked_background = "#fffbfe"
+unchecked_border_color = "#79747e"
+
+[light.tooltip]
+background_color = "#313033"
+max_width_px = 300.0
+
+
+[light.tooltip.border]
+padding_horizontal_px = 8.0
+padding_vertical_px = 8.0
+
+[light.tooltip.font]
+color = "#f4eff4"
+[light.scrollbar]
+groove_width_px = 12.0
+thumb_width_px = 4.0
+overlay_mode = false
+min_thumb_length_px = 30.0
+thumb_hover_color = "#79747e"
+thumb_active_color = "#625b71"
+
+[light.slider]
+track_height_px = 4.0
+thumb_diameter_px = 20.0
+tick_mark_length_px = 4.0
+thumb_hover_color = "#6750a4"
+disabled_fill_color = "#1c1b1f61"
+disabled_track_color = "#1c1b1f1f"
+disabled_thumb_color = "#1c1b1f61"
+
+[light.progress_bar]
+track_height_px = 4.0
+min_width_px = 100.0
+
+[light.tab]
+min_width_px = 64.0
+min_height_px = 48.0
+hover_background = "#6750a414"
+hover_text_color = "#1c1b1f"
+active_background = "#6750a41f"
+active_text_color = "#6750a4"
+
+
+[light.tab.border]
+padding_horizontal_px = 16.0
+padding_vertical_px = 4.0
+[light.menu]
+row_height_px = 48.0
+icon_text_gap_px = 8.0
+hover_background = "#6750a414"
+hover_text_color = "#1c1b1f"
+disabled_text_color = "#c4c7c5"
+
+
+[light.menu.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 4.0
+[light.list]
+alternate_row_background = "#f7f2fa"
+row_height_px = 48.0
+hover_background = "#1c1b1f14"
+hover_text_color = "#1c1b1f"
+disabled_text_color = "#c4c7c5"
+
+
+[light.list.border]
+padding_horizontal_px = 16.0
+padding_vertical_px = 4.0
+[light.toolbar]
+bar_height_px = 64.0
+item_gap_px = 8.0
+
+[light.sidebar]
+background_color = "#f3edf7"
+hover_background = "#e8e0f0"
+
+
+[light.sidebar.font]
+color = "#1c1b1f"
+[light.popover]
+background_color = "#fffbfe"
+
+
+[light.popover.font]
+color = "#1c1b1f"
+[light.separator]
+line_color = "#cac4d0"
+
+[light.splitter]
+divider_width_px = 4.0
+hover_color = "#6750a4"
+
+[light.switch]
+unchecked_background = "#79747e"
+hover_checked_background = "#5b4495"
+hover_unchecked_background = "#6d6878"
+disabled_checked_background = "#1c1b1f1f"
+disabled_unchecked_background = "#1c1b1f1f"
+disabled_thumb_color = "#1c1b1f61"
+thumb_background = "#fffbfe"
+track_width_px = 52.0
+track_height_px = 32.0
+thumb_diameter_px = 24.0
+track_radius_px = 16.0
+
+[light.dialog]
+button_order = "primary_right"
+min_width_px = 280.0
+max_width_px = 560.0
+min_height_px = 140.0
+max_height_px = 600.0
+button_gap_px = 8.0
+icon_size_px =32.0
+
+[light.link]
+underline_enabled = false
+background_color = "#00000000"
+hover_background = "#6750a418"
+hover_text_color = "#6750a4"
+active_text_color = "#4f3d8a"
+disabled_text_color = "#c4c7c5"
+
+[light.spinner]
+diameter_px = 24.0
+min_diameter_px = 16.0
+stroke_width_px = 3.0
+
+[light.combo_box]
+min_height_px = 40.0
+min_width_px = 120.0
+arrow_icon_size_px =12.0
+arrow_area_width_px = 28.0
+hover_background = "#1c1b1f14"
+disabled_background = "#1c1b1f0a"
+disabled_text_color = "#c4c7c5"
+
+
+[light.combo_box.border]
+padding_horizontal_px = 16.0
+[light.segmented_control]
+segment_height_px = 40.0
+separator_width_px = 1.0
+hover_background = "#6750a414"
+active_background = "#6750a4"
+active_text_color = "#ffffff"
+
+
+[light.segmented_control.border]
+padding_horizontal_px = 16.0
+[light.card]
+
+[light.expander]
+header_height_px = 48.0
+arrow_icon_size_px =12.0
+hover_background = "#1c1b1f14"
+arrow_color = "#49454f"
+
+[light.window]
+inactive_title_bar_background = "#fffbfe"
+inactive_title_bar_text_color = "#1c1b1f"
+
+# === Dark variant ===
+
+[dark.defaults]
+accent_color = "#d0bcff"
+background_color = "#1c1b1f"
+text_color = "#e6e1e5"
+surface_color = "#1c1b1e"
+muted_color = "#cac4d0"
+shadow_color = "#00000040"
+
+danger_color = "#f2b8b5"
+danger_text_color = "#601410"
+warning_color = "#e6c18e"
+warning_text_color = "#3e2e00"
+success_color = "#b1d18a"
+success_text_color = "#1b3700"
+info_color = "#d0bcff"
+info_text_color = "#381e72"
+
+selection_background = "#d0bcff"
+selection_text_color = "#381e72"
+link_color = "#d0bcff"
+focus_ring_color = "#d0bcff"
+disabled_text_color = "#49454f"
+accent_text_color = "#381e72"
+
+disabled_opacity = 0.38
+line_height = 1.2
+focus_ring_width_px = 2.0
+focus_ring_offset_px = 1.0
+
+
+[dark.defaults.border]
+color = "#938f99"
+corner_radius_px = 12.0
+corner_radius_lg_px = 16.0
+line_width_px = 1.0
+opacity = 0.12
+shadow_enabled = true
+[dark.defaults.font]
+family = "Roboto"
+size_px =14.0
+weight = 400
+
+[dark.defaults.mono_font]
+family = "Roboto Mono"
+size_px =14.0
+weight = 400
+
+[dark.defaults.icon_sizes]
+toolbar_px = 24.0
+small_px = 16.0
+large_px = 32.0
+dialog_px = 22.0
+panel_px = 20.0
+
+[dark.text_scale.caption]
+size_px =11.0
+weight = 400
+line_height_px = 16.0
+
+[dark.text_scale.section_heading]
+size_px =16.0
+weight = 500
+line_height_px = 24.0
+
+[dark.text_scale.dialog_title]
+size_px =24.0
+weight = 400
+line_height_px = 32.0
+
+[dark.text_scale.display]
+size_px =36.0
+weight = 400
+line_height_px = 44.0
+
+[dark.button]
+background_color = "#4a4458"
+min_width_px = 64.0
+min_height_px = 40.0
+icon_text_gap_px = 8.0
+hover_background = "#554f64"
+hover_text_color = "#e8def8"
+active_background = "#5e586e"
+active_text_color = "#e8def8"
+disabled_background = "#e6e1e51f"
+disabled_text_color = "#49454f"
+
+
+[dark.button.border]
+padding_horizontal_px = 24.0
+padding_vertical_px = 10.0
+
+[dark.button.font]
+color = "#e8def8"
+[dark.input]
+background_color = "#1c1b1e"
+min_height_px = 56.0
+hover_border_color = "#e6e1e5"
+focus_border_color = "#d0bcff"
+disabled_background = "#e6e1e50a"
+disabled_text_color = "#49454f"
+
+
+[dark.input.border]
+padding_horizontal_px = 16.0
+padding_vertical_px = 16.0
+
+[dark.input.font]
+color = "#e6e1e5"
+[dark.checkbox]
+indicator_width_px = 18.0
+label_gap_px = 8.0
+hover_background = "#d0bcff14"
+disabled_background = "#e6e1e51f"
+disabled_text_color = "#49454f"
+unchecked_background = "#1c1b1e"
+unchecked_border_color = "#938f99"
+
+[dark.tooltip]
+background_color = "#e6e1e5"
+max_width_px = 300.0
+
+
+[dark.tooltip.border]
+padding_horizontal_px = 8.0
+padding_vertical_px = 8.0
+
+[dark.tooltip.font]
+color = "#313033"
+[dark.scrollbar]
+groove_width_px = 12.0
+thumb_width_px = 4.0
+overlay_mode = false
+min_thumb_length_px = 30.0
+thumb_hover_color = "#938f99"
+thumb_active_color = "#aea9b4"
+
+[dark.slider]
+track_height_px = 4.0
+thumb_diameter_px = 20.0
+tick_mark_length_px = 4.0
+thumb_hover_color = "#d0bcff"
+disabled_fill_color = "#e6e1e561"
+disabled_track_color = "#e6e1e51f"
+disabled_thumb_color = "#e6e1e561"
+
+[dark.progress_bar]
+track_height_px = 4.0
+min_width_px = 100.0
+
+[dark.tab]
+min_width_px = 64.0
+min_height_px = 48.0
+hover_background = "#d0bcff14"
+hover_text_color = "#e6e1e5"
+active_background = "#d0bcff1f"
+active_text_color = "#d0bcff"
+
+
+[dark.tab.border]
+padding_horizontal_px = 16.0
+padding_vertical_px = 4.0
+[dark.menu]
+row_height_px = 48.0
+icon_text_gap_px = 8.0
+hover_background = "#d0bcff14"
+hover_text_color = "#e6e1e5"
+disabled_text_color = "#49454f"
+
+
+[dark.menu.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 4.0
+[dark.list]
+alternate_row_background = "#211f26"
+row_height_px = 48.0
+hover_background = "#e6e1e514"
+hover_text_color = "#e6e1e5"
+disabled_text_color = "#49454f"
+
+
+[dark.list.border]
+padding_horizontal_px = 16.0
+padding_vertical_px = 4.0
+[dark.toolbar]
+bar_height_px = 64.0
+item_gap_px = 8.0
+
+[dark.sidebar]
+background_color = "#25232a"
+hover_background = "#302e36"
+
+
+[dark.sidebar.font]
+color = "#e6e1e5"
+[dark.popover]
+background_color = "#2b2930"
+
+
+[dark.popover.font]
+color = "#e6e1e5"
+[dark.separator]
+line_color = "#49454f"
+
+[dark.splitter]
+divider_width_px = 4.0
+hover_color = "#d0bcff"
+
+[dark.switch]
+unchecked_background = "#938f99"
+hover_checked_background = "#c4aaff"
+hover_unchecked_background = "#9e99a5"
+disabled_checked_background = "#e6e1e51f"
+disabled_unchecked_background = "#e6e1e51f"
+disabled_thumb_color = "#e6e1e561"
+thumb_background = "#e6e1e5"
+track_width_px = 52.0
+track_height_px = 32.0
+thumb_diameter_px = 24.0
+track_radius_px = 16.0
+
+[dark.dialog]
+button_order = "primary_right"
+min_width_px = 280.0
+max_width_px = 560.0
+min_height_px = 140.0
+max_height_px = 600.0
+button_gap_px = 8.0
+icon_size_px =32.0
+
+[dark.link]
+underline_enabled = false
+background_color = "#00000000"
+hover_background = "#d0bcff18"
+hover_text_color = "#d0bcff"
+active_text_color = "#e8deff"
+disabled_text_color = "#49454f"
+
+[dark.spinner]
+diameter_px = 24.0
+min_diameter_px = 16.0
+stroke_width_px = 3.0
+
+[dark.combo_box]
+min_height_px = 40.0
+min_width_px = 120.0
+arrow_icon_size_px =12.0
+arrow_area_width_px = 28.0
+hover_background = "#e6e1e514"
+disabled_background = "#e6e1e50a"
+disabled_text_color = "#49454f"
+
+
+[dark.combo_box.border]
+padding_horizontal_px = 16.0
+[dark.segmented_control]
+segment_height_px = 40.0
+separator_width_px = 1.0
+hover_background = "#d0bcff14"
+active_background = "#d0bcff"
+active_text_color = "#381e72"
+
+
+[dark.segmented_control.border]
+padding_horizontal_px = 16.0
+[dark.card]
+
+[dark.expander]
+header_height_px = 48.0
+arrow_icon_size_px =12.0
+hover_background = "#e6e1e514"
+arrow_color = "#cac4d0"
+
+[dark.window]
+inactive_title_bar_background = "#1c1b1e"
+inactive_title_bar_text_color = "#e6e1e5"
+
+[layout]
+widget_gap_px = 6.0
+container_margin_px = 6.0
+window_margin_px = 10.0
+section_gap_px = 18.0

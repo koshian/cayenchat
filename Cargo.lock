@@ -4111,8 +4111,6 @@ dependencies = [
 [[package]]
 name = "native-theme"
 version = "0.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86171fff5b652aaf3fc0a7b3ba7e6133f6695cbbac4d99206e1ceb7ad740321b"
 dependencies = [
  "arc-swap",
  "ashpd 0.13.13",

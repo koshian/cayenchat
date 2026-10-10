@@ -1,0 +1,586 @@
+# GNOME Adwaita theme - sourced from libadwaita CSS variables
+# Alpha/opacity colors pre-computed to solid hex values
+name = "Adwaita"
+icon_set = "freedesktop"
+icon_theme = "Adwaita"
+
+# === Light variant ===
+
+[light.defaults]
+accent_color = "#3584e4"
+background_color = "#fafafb"
+text_color = "#2e3436"
+surface_color = "#ffffff"
+muted_color = "#929292"
+shadow_color = "#00000018"
+
+danger_color = "#e01b24"
+danger_text_color = "#ffffff"
+warning_color = "#e5a50a"
+warning_text_color = "#2e3436"
+success_color = "#2ec27e"
+success_text_color = "#ffffff"
+info_color = "#3584e4"
+info_text_color = "#ffffff"
+
+selection_background = "#3584e4"
+selection_text_color = "#ffffff"
+link_color = "#1b6acb"
+focus_ring_color = "#3584e4"
+disabled_text_color = "#cccccc"
+accent_text_color = "#ffffff"
+
+disabled_opacity = 0.5
+line_height = 1.21
+focus_ring_width_px = 2.0
+focus_ring_offset_px = -2.0
+
+
+[light.defaults.border]
+color = "#d5d5d5"
+corner_radius_px = 9.0
+corner_radius_lg_px = 15.0
+line_width_px = 1.0
+opacity = 0.15
+shadow_enabled = true
+[light.defaults.font]
+family = "Adwaita Sans"
+size_pt =11.0
+weight = 400
+
+[light.defaults.mono_font]
+family = "Adwaita Mono"
+size_pt =11.0
+weight = 400
+
+[light.defaults.icon_sizes]
+toolbar_px = 16.0
+small_px = 16.0
+large_px = 32.0
+dialog_px = 22.0
+panel_px = 20.0
+
+[light.text_scale.caption]
+size_pt =9.0
+
+[light.text_scale.section_heading]
+weight = 700
+
+[light.text_scale.dialog_title]
+size_pt =15.0
+weight = 800
+
+[light.text_scale.display]
+size_pt =20.0
+weight = 800
+
+[light.window]
+inactive_title_bar_background = "#ffffff"
+inactive_title_bar_text_color = "#2e3436"
+
+[light.window.title_bar_font]
+color = "#2e3436"
+weight = 700
+
+[light.button]
+background_color = "#e8e8e8"
+min_width_px = 64.0
+min_height_px = 34.0
+icon_text_gap_px = 8.0
+hover_background = "#d5d5d5"
+hover_text_color = "#2e3436"
+active_background = "#c8c8c8"
+active_text_color = "#2e3436"
+disabled_background = "#e8e8e880"
+disabled_text_color = "#cccccc"
+
+
+[light.button.border]
+padding_horizontal_px = 10.0
+padding_vertical_px = 5.0
+
+[light.button.font]
+color = "#2e3436"
+[light.input]
+background_color = "#ffffff"
+placeholder_color = "#929595"
+min_height_px = 34.0
+caret_color = "#3584e4"
+hover_border_color = "#3584e4"
+focus_border_color = "#3584e4"
+disabled_background = "#fafafb"
+disabled_text_color = "#cccccc"
+
+
+[light.input.border]
+padding_horizontal_px = 9.0
+padding_vertical_px = 0.0
+
+[light.input.font]
+color = "#2e3436"
+[light.checkbox]
+indicator_width_px = 20.0
+label_gap_px = 8.0
+hover_background = "#d5d5d5"
+disabled_background = "#e8e8e880"
+disabled_text_color = "#cccccc"
+unchecked_background = "#ffffff"
+unchecked_border_color = "#d5d5d5"
+
+[light.tooltip]
+background_color = "#2e3436"
+max_width_px = 360.0
+
+
+[light.tooltip.border]
+padding_horizontal_px = 10.0
+padding_vertical_px = 6.0
+
+[light.tooltip.font]
+color = "#ffffff"
+[light.scrollbar]
+groove_width_px = 12.0
+thumb_width_px = 8.0
+overlay_mode = false
+min_thumb_length_px = 40.0
+thumb_hover_color = "#6e6e6e"
+thumb_active_color = "#4e4e4e"
+
+[light.slider]
+track_height_px = 10.0
+thumb_diameter_px = 20.0
+tick_mark_length_px = 4.0
+thumb_hover_color = "#ebebeb"
+disabled_fill_color = "#cccccc"
+disabled_track_color = "#e0e0e0"
+disabled_thumb_color = "#e0e0e0"
+
+[light.progress_bar]
+track_height_px = 8.0
+min_width_px = 80.0
+
+[light.tab]
+min_width_px = 64.0
+min_height_px = 30.0
+active_background = "#fafafb"
+active_text_color = "#2e3436"
+hover_background = "#e8e8e8"
+hover_text_color = "#2e3436"
+
+
+[light.tab.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 3.0
+[light.menu]
+row_height_px = 32.0
+icon_text_gap_px = 8.0
+hover_background = "#e8e8e8"
+hover_text_color = "#2e3436"
+disabled_text_color = "#cccccc"
+
+
+[light.menu.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 0.0
+[light.list]
+alternate_row_background = "#f5f5f5"
+row_height_px = 34.0
+hover_background = "#ebebed"
+hover_text_color = "#2e3436"
+disabled_text_color = "#cccccc"
+
+
+[light.list.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 8.0
+[light.toolbar]
+bar_height_px = 47.0
+item_gap_px = 6.0
+
+[light.sidebar]
+background_color = "#ebebed"
+hover_background = "#e0e0e2"
+
+
+[light.sidebar.font]
+color = "#2e3436"
+[light.popover]
+background_color = "#ffffff"
+
+
+[light.popover.font]
+color = "#2e3436"
+[light.separator]
+line_color = "#d5d5d5"
+
+[light.splitter]
+divider_width_px = 1.0
+hover_color = "#d5d5d5"
+
+[light.switch]
+unchecked_background = "#d5d5d5"
+thumb_background = "#ffffff"
+track_width_px = 46.0
+track_height_px = 26.0
+thumb_diameter_px = 20.0
+track_radius_px = 14.0
+hover_checked_background = "#2e78cc"
+hover_unchecked_background = "#c8c8c8"
+disabled_checked_background = "#3584e480"
+disabled_unchecked_background = "#d5d5d580"
+disabled_thumb_color = "#ffffff80"
+
+[light.dialog]
+button_order = "primary_right"
+min_width_px = 300.0
+max_width_px = 372.0
+min_height_px = 140.0
+max_height_px = 600.0
+button_gap_px = 12.0
+icon_size_px =32.0
+
+
+[light.dialog.border]
+corner_radius_px = 18.0
+[light.link]
+underline_enabled = true
+background_color = "#00000000"
+hover_background = "#3584e418"
+hover_text_color = "#1b6acb"
+active_text_color = "#1b6acb"
+disabled_text_color = "#cccccc"
+
+[light.spinner]
+diameter_px = 16.0
+min_diameter_px = 16.0
+stroke_width_px = 2.0
+
+[light.combo_box]
+min_height_px = 34.0
+min_width_px = 120.0
+arrow_icon_size_px =16.0
+arrow_area_width_px = 28.0
+hover_background = "#d5d5d5"
+disabled_background = "#e8e8e880"
+disabled_text_color = "#cccccc"
+
+
+[light.combo_box.border]
+padding_horizontal_px = 10.0
+[light.segmented_control]
+segment_height_px = 28.0
+separator_width_px = 1.0
+active_background = "#3584e4"
+active_text_color = "#ffffff"
+hover_background = "#d5d5d5"
+
+
+[light.segmented_control.border]
+padding_horizontal_px = 12.0
+[light.card]
+
+
+[light.card.border]
+corner_radius_px = 12.0
+[light.expander]
+header_height_px = 50.0
+arrow_icon_size_px =16.0
+hover_background = "#ebebed"
+arrow_color = "#2e3436"
+
+# === Dark variant ===
+
+
+[light.expander.border]
+corner_radius_px = 6.0
+[dark.defaults]
+accent_color = "#3584e4"
+background_color = "#222226"
+text_color = "#ffffff"
+surface_color = "#303034"
+muted_color = "#929292"
+shadow_color = "#00000040"
+
+danger_color = "#c01c28"
+danger_text_color = "#ffffff"
+warning_color = "#cd9309"
+warning_text_color = "#ffffff"
+success_color = "#26a269"
+success_text_color = "#ffffff"
+info_color = "#3584e4"
+info_text_color = "#ffffff"
+
+selection_background = "#3584e4"
+selection_text_color = "#ffffff"
+link_color = "#5b9bf8"
+focus_ring_color = "#3584e4"
+disabled_text_color = "#4a4a4e"
+accent_text_color = "#ffffff"
+
+disabled_opacity = 0.5
+line_height = 1.21
+focus_ring_width_px = 2.0
+focus_ring_offset_px = -2.0
+
+
+[dark.defaults.border]
+color = "#4a4a4e"
+corner_radius_px = 9.0
+corner_radius_lg_px = 15.0
+line_width_px = 1.0
+opacity = 0.15
+shadow_enabled = true
+[dark.defaults.font]
+family = "Adwaita Sans"
+size_pt =11.0
+weight = 400
+
+[dark.defaults.mono_font]
+family = "Adwaita Mono"
+size_pt =11.0
+weight = 400
+
+[dark.defaults.icon_sizes]
+toolbar_px = 16.0
+small_px = 16.0
+large_px = 32.0
+dialog_px = 22.0
+panel_px = 20.0
+
+[dark.text_scale.caption]
+size_pt =9.0
+
+[dark.text_scale.section_heading]
+weight = 700
+
+[dark.text_scale.dialog_title]
+size_pt =15.0
+weight = 800
+
+[dark.text_scale.display]
+size_pt =20.0
+weight = 800
+
+[dark.window]
+inactive_title_bar_background = "#303034"
+inactive_title_bar_text_color = "#ffffff"
+
+[dark.window.title_bar_font]
+color = "#ffffff"
+weight = 700
+
+[dark.button]
+background_color = "#3a3a3e"
+min_width_px = 64.0
+min_height_px = 34.0
+icon_text_gap_px = 8.0
+hover_background = "#464649"
+hover_text_color = "#ffffff"
+active_background = "#2e2e32"
+active_text_color = "#ffffff"
+disabled_background = "#3a3a3e80"
+disabled_text_color = "#4a4a4e"
+
+
+[dark.button.border]
+padding_horizontal_px = 10.0
+padding_vertical_px = 5.0
+
+[dark.button.font]
+color = "#ffffff"
+[dark.input]
+background_color = "#303034"
+placeholder_color = "#8b8b8b"
+min_height_px = 34.0
+caret_color = "#78aeed"
+hover_border_color = "#3584e4"
+focus_border_color = "#3584e4"
+disabled_background = "#222226"
+disabled_text_color = "#4a4a4e"
+
+
+[dark.input.border]
+padding_horizontal_px = 9.0
+padding_vertical_px = 0.0
+
+[dark.input.font]
+color = "#ffffff"
+[dark.checkbox]
+indicator_width_px = 20.0
+label_gap_px = 8.0
+hover_background = "#464649"
+disabled_background = "#3a3a3e80"
+disabled_text_color = "#4a4a4e"
+unchecked_background = "#303034"
+unchecked_border_color = "#4a4a4e"
+
+[dark.tooltip]
+background_color = "#3a3a3e"
+max_width_px = 360.0
+
+
+[dark.tooltip.border]
+padding_horizontal_px = 10.0
+padding_vertical_px = 6.0
+
+[dark.tooltip.font]
+color = "#ffffff"
+[dark.scrollbar]
+groove_width_px = 12.0
+thumb_width_px = 8.0
+overlay_mode = false
+min_thumb_length_px = 40.0
+thumb_hover_color = "#a0a0a0"
+thumb_active_color = "#c0c0c0"
+
+[dark.slider]
+track_height_px = 10.0
+thumb_diameter_px = 20.0
+tick_mark_length_px = 4.0
+thumb_hover_color = "#3a3a3e"
+disabled_fill_color = "#4a4a4e"
+disabled_track_color = "#303034"
+disabled_thumb_color = "#303034"
+
+[dark.progress_bar]
+track_height_px = 8.0
+min_width_px = 80.0
+
+[dark.tab]
+min_width_px = 64.0
+min_height_px = 30.0
+active_background = "#222226"
+active_text_color = "#ffffff"
+hover_background = "#3a3a3e"
+hover_text_color = "#ffffff"
+
+
+[dark.tab.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 3.0
+[dark.menu]
+row_height_px = 32.0
+icon_text_gap_px = 8.0
+hover_background = "#3a3a3e"
+hover_text_color = "#ffffff"
+disabled_text_color = "#4a4a4e"
+
+
+[dark.menu.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 0.0
+[dark.list]
+alternate_row_background = "#2a2a2e"
+row_height_px = 34.0
+hover_background = "#303034"
+hover_text_color = "#ffffff"
+disabled_text_color = "#4a4a4e"
+
+
+[dark.list.border]
+padding_horizontal_px = 12.0
+padding_vertical_px = 8.0
+[dark.toolbar]
+bar_height_px = 47.0
+item_gap_px = 6.0
+
+[dark.sidebar]
+background_color = "#2e2e32"
+hover_background = "#36363a"
+
+
+[dark.sidebar.font]
+color = "#ffffff"
+[dark.popover]
+background_color = "#36363a"
+
+
+[dark.popover.font]
+color = "#ffffff"
+[dark.separator]
+line_color = "#4a4a4e"
+
+[dark.splitter]
+divider_width_px = 1.0
+hover_color = "#4a4a4e"
+
+[dark.switch]
+unchecked_background = "#4a4a4e"
+thumb_background = "#ffffff"
+track_width_px = 46.0
+track_height_px = 26.0
+thumb_diameter_px = 20.0
+track_radius_px = 14.0
+hover_checked_background = "#2e78cc"
+hover_unchecked_background = "#56565a"
+disabled_checked_background = "#3584e480"
+disabled_unchecked_background = "#4a4a4e80"
+disabled_thumb_color = "#ffffff80"
+
+[dark.dialog]
+button_order = "primary_right"
+min_width_px = 300.0
+max_width_px = 372.0
+min_height_px = 140.0
+max_height_px = 600.0
+button_gap_px = 12.0
+icon_size_px =32.0
+
+
+[dark.dialog.border]
+corner_radius_px = 18.0
+[dark.link]
+underline_enabled = true
+background_color = "#00000000"
+hover_background = "#3584e418"
+hover_text_color = "#5b9bf8"
+active_text_color = "#5b9bf8"
+disabled_text_color = "#4a4a4e"
+
+[dark.spinner]
+diameter_px = 16.0
+min_diameter_px = 16.0
+stroke_width_px = 2.0
+
+[dark.combo_box]
+min_height_px = 34.0
+min_width_px = 120.0
+arrow_icon_size_px =16.0
+arrow_area_width_px = 28.0
+hover_background = "#464649"
+disabled_background = "#3a3a3e80"
+disabled_text_color = "#4a4a4e"
+
+
+[dark.combo_box.border]
+padding_horizontal_px = 10.0
+[dark.segmented_control]
+segment_height_px = 28.0
+separator_width_px = 1.0
+active_background = "#3584e4"
+active_text_color = "#ffffff"
+hover_background = "#464649"
+
+
+[dark.segmented_control.border]
+padding_horizontal_px = 12.0
+[dark.card]
+
+
+[dark.card.border]
+corner_radius_px = 12.0
+[dark.expander]
+header_height_px = 50.0
+arrow_icon_size_px =16.0
+hover_background = "#303034"
+arrow_color = "#ffffff"
+
+
+[dark.expander.border]
+corner_radius_px = 6.0
+
+[layout]
+widget_gap_px = 6.0
+container_margin_px = 12.0
+window_margin_px = 12.0
+section_gap_px = 18.0

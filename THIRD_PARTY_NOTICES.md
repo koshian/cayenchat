@@ -19,9 +19,11 @@ availability materials when preparing a distributable binary.
 
 Settings appearance uses [native-theme and native-theme-gpui 0.5.7](https://github.com/tiborgats/native-theme)
 (MIT OR Apache-2.0 OR 0BSD) and [gpui-component 0.5.1](https://github.com/longbridge/gpui-component)
-(Apache-2.0). They are Cargo dependencies; no upstream implementation is copied.
-Include their license notices and those of their transitive dependencies when
-preparing a distributable binary.
+(Apache-2.0). They are Cargo dependencies. native-theme 0.5.7 is used as a
+patched copy in `vendor/native-theme` (Windows DPI fix backported from 0.6.1;
+see its `PATCHES.md`), used under the 0BSD option of its license; the upstream
+license texts are kept in that directory. Include their license notices and
+those of their transitive dependencies when preparing a distributable binary.
 
 UI icons in `assets/icons/ui/` are individual SVG files copied from
 [Lucide](https://github.com/lucide-icons/lucide), licensed under the ISC License;
