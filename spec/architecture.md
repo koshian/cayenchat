@@ -600,6 +600,26 @@ reason; blank means "Leaving CayenChat". It is validated with the connection
 connection starts, so an edit applies from the next connection. Lost connections
 send no QUIT.
 
+Quitting from the close button, the menu, `/quit` or an OS session end (Windows
+sign-out, shutdown, restart or an installer's Restart Manager close; issue #284)
+all reach `quit_connections`, which waits at most `QUIT_WAIT` (2 seconds, shared
+by all servers). The vendored GPUI answers `WM_QUERYENDSESSION` with TRUE and
+runs the app quit handlers synchronously on `WM_ENDSESSION`; see
+`vendor/gpui/PATCHES.md`. If the network is already down the QUIT is not delivered.
+
+On Linux SIGTERM, SIGHUP and SIGINT take the same path (issue #285,
+`crates/ui/src/signals.rs`). A `signal-hook` thread wakes the UI thread through a
+channel (no polling), which calls `App::quit`, so the layout is saved and
+`quit_connections` runs; with no connections it ends at once. Two safeguards keep the
+process from lingering (systemd waits 90 s by default): a watchdog calls
+`process::exit` 3 s after the first signal in case the UI thread is blocked, and a
+second signal exits immediately. Those forced exits use 128 plus the signal number;
+a normal quit exits with 0. If the signal thread cannot be started, no handler is
+installed and the default action stays; if the watchdog cannot be started, the
+process exits at once. A
+desktop logout that drops the X or Wayland connection before signalling still ends
+GPUI with an error and sends no QUIT.
+
 `/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
 reports a connection the user ended as `Event::Closed`, which the UI never
 reconnects. Closing the main window or quitting sends QUIT on every connection and

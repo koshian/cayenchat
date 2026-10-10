@@ -73,6 +73,9 @@ gpui = { workspace = true, features = ["wayland", "x11"] }
 # Same version and backend as GPUI's own portal client, so no new crates.
 ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
 futures-util.workspace = true
+futures-channel = "0.3"
+# Ends the app cleanly on SIGTERM, SIGHUP and SIGINT (#285).
+signal-hook = "0.4.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

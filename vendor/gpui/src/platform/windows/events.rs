@@ -26,6 +26,7 @@ pub(crate) const WM_GPUI_DOCK_MENU_ACTION: u32 = WM_USER + 4;
 pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
 pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
 pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
+pub(crate) const WM_GPUI_END_SESSION: u32 = WM_USER + 8;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 const AUTO_HIDE_TASKBAR_THICKNESS_PX: i32 = 1;
@@ -53,6 +54,9 @@ impl WindowsWindowInner {
             WM_NCHITTEST => self.handle_hit_test_msg(handle, msg, wparam, lparam),
             WM_PAINT => self.handle_paint_msg(handle),
             WM_CLOSE => self.handle_close_msg(),
+            // Never veto: refusing or waiting here would block the OS shutdown.
+            WM_QUERYENDSESSION => Some(1),
+            WM_ENDSESSION => self.handle_end_session_msg(wparam),
             WM_DESTROY => self.handle_destroy_msg(handle),
             WM_MOUSEMOVE => self.handle_mouse_move_msg(handle, lparam, wparam),
             WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(),
@@ -258,6 +262,25 @@ impl WindowsWindowInner {
         let should_close = callback();
         self.state.borrow_mut().callbacks.should_close = Some(callback);
         if should_close { None } else { Some(0) }
+    }
+
+    /// Sign-out, shutdown, restart and Restart Manager closes (`lParam` has
+    /// `ENDSESSION_CLOSEAPP`) end the process without `WM_CLOSE` or the
+    /// message loop returning, so run the quit handlers before returning to
+    /// Windows. `wParam` is FALSE when the session end was cancelled.
+    fn handle_end_session_msg(&self, wparam: WPARAM) -> Option<isize> {
+        if wparam.0 == 0 {
+            return None;
+        }
+        unsafe {
+            SendMessageW(
+                self.platform_window_handle,
+                WM_GPUI_END_SESSION,
+                Some(WPARAM(self.validation_number)),
+                None,
+            );
+        }
+        Some(0)
     }
 
     fn handle_destroy_msg(&self, handle: HWND) -> Option<isize> {

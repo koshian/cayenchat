@@ -35,6 +35,8 @@ mod settings_theme;
 mod settings_window;
 mod shortcut_settings;
 mod shortcuts;
+#[cfg(target_os = "linux")]
+mod signals;
 mod splitter;
 mod theme;
 mod whois;
@@ -6031,7 +6033,13 @@ fn main() {
     let (saved, notice) = load_settings_at_startup();
     #[cfg(target_os = "linux")]
     select_linux_display(saved.linux_display);
+    #[cfg(target_os = "linux")]
+    let signal_quit = signals::install();
     Application::new().run(move |cx: &mut App| {
+        #[cfg(target_os = "linux")]
+        if let Some(receiver) = signal_quit {
+            signals::quit_on_signal(receiver, cx);
+        }
         secrets::install(saved.credential_backend, cx);
         theme::apply(saved.theme, &saved.appearance, cx);
         desktop::watch(cx);
