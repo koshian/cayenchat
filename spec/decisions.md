@@ -1274,12 +1274,13 @@ member list the keys move the one chosen member. Not done: expand/collapse
 (the tree has no collapsed state), Shift-extended member ranges, type-to-find,
 and the global server/channel keys without arrows, which are separate issues.
 
-Typing while the main log has focus (after a click that started a selection)
+Typing while the main log, the member list or the channel tree has focus (after
+a click that started a selection)
 moves focus to the draft and types the character there (#289), so input is never
 accepted by a pane that cannot hold it. Keys with Ctrl/Alt/Super keep their
 meaning (Ctrl+C copies the selection). The log has no key handler for text:
 plain characters and IME composition both reach the window as input-method
-calls, so the log registers an input handler (`EntityInputHandler` on
+calls, so each of these panes registers an input handler (`EntityInputHandler` on
 `ChatWindow`) that stands in for the selected draft. It forwards every call
 (queries, replace, mark, unmark, candidate position) to the draft, so ranges and
 the composition state are the draft's, and moves focus there when text changes.

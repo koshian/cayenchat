@@ -3851,6 +3851,26 @@ impl EntityInputHandler for ChatWindow {
 }
 
 impl ChatWindow {
+    /// An invisible element that registers this window as the input method
+    /// while `focus` holds focus, so typing and IME composition in a pane that
+    /// holds no text reach the draft.
+    fn input_to_draft(&self, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
+        let focus = focus.clone();
+        let window_entity = cx.entity();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                window.handle_input(
+                    &focus,
+                    ElementInputHandler::new(bounds, window_entity.clone()),
+                    cx,
+                );
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
     /// The draft that input arriving at the log is meant for.
     fn draft_for_log_input(&self) -> Option<Entity<TextInput>> {
         self.inputs.get(&self.state.selection()).cloned()
@@ -4266,22 +4286,7 @@ impl ChatWindow {
             .when(!appearance.main_log_font.is_empty(), |d| {
                 d.font_family(appearance.main_log_font.clone())
             })
-            .child({
-                let log_focus = self.log_focus.clone();
-                let window_entity = cx.entity();
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, window, cx| {
-                        window.handle_input(
-                            &log_focus,
-                            ElementInputHandler::new(bounds, window_entity.clone()),
-                            cx,
-                        );
-                    },
-                )
-                .absolute()
-                .size_full()
-            })
+            .child(self.input_to_draft(&self.log_focus, cx))
             .child(panes.main_log.clone().cached(pane_style()));
 
         let sub_log = div()
@@ -4316,6 +4321,7 @@ impl ChatWindow {
             .when(!appearance.member_font.is_empty(), |d| {
                 d.font_family(appearance.member_font.clone())
             })
+            .child(self.input_to_draft(&self.members_focus, cx))
             .child(panes.members.clone().cached(pane_style()));
 
         let mut main_pane = div().flex().flex_col().flex_1().min_h_0().child(main_log);
@@ -4519,6 +4525,7 @@ impl ChatWindow {
                     .flex_1()
                     .min_h_0()
                     .w_full()
+                    .child(self.input_to_draft(&self.tree_focus, cx))
                     .child(panes.channels.clone().cached(pane_style().w_full())),
             );
 
