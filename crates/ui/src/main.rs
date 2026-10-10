@@ -1105,6 +1105,18 @@ impl ChatWindow {
             .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
     }
 
+    /// A right click on `nickname` in a private conversation: nothing is
+    /// offered on ourselves, and a menu left open for the peer is closed so it
+    /// does not act on a row that is no longer the chosen one. Returns whether
+    /// the click was ours.
+    fn right_click_on_self(&mut self, private: bool, network: NetworkId, nickname: &str) -> bool {
+        let own = private && self.is_own_nickname(network, nickname);
+        if own {
+            self.dismiss_menus();
+        }
+        own
+    }
+
     /// Our own avatar on `network`, shown for our nickname instead of asking
     /// anyone for it: the one the server confirmed, else the one shared with
     /// peers. Read at draw time, so every row follows a change at once.
@@ -5742,7 +5754,7 @@ impl ChatWindow {
                             }
                             // Nothing to offer on ourselves in a private
                             // conversation.
-                            if private && this.is_own_nickname(network, &nickname) {
+                            if this.right_click_on_self(private, network, &nickname) {
                                 cx.stop_propagation();
                                 cx.notify();
                                 return;
@@ -6772,6 +6784,56 @@ fn settings_with_channels(channels: &str) -> Settings {
         .add_server(cayenchat_storage::PRESETS[0].host)
         .channels = channels.into();
     settings
+}
+
+#[cfg(test)]
+mod participant_menu_tests {
+    use super::{ChatWindow, MemberMenu};
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use gpui::{TestAppContext, point, px};
+
+    #[gpui::test]
+    fn right_click_on_self_closes_the_peer_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let network = NetworkId(1);
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                network,
+                vec![Event::Registered {
+                    nickname: "alice".into(),
+                }],
+                false,
+                cx,
+            );
+            chat.member_menu = Some(MemberMenu {
+                position: point(px(0.), px(0.)),
+                network,
+                nickname: "bob".into(),
+                channel: "bob".into(),
+                private: true,
+                group: Vec::new(),
+            });
+            // The peer keeps their menu; a channel is never ours to refuse.
+            assert!(!chat.right_click_on_self(true, network, "bob"));
+            assert!(!chat.right_click_on_self(false, network, "alice"));
+            assert!(chat.member_menu.is_some());
+            // Our own row closes it.
+            assert!(chat.right_click_on_self(true, network, "Alice"));
+            assert!(chat.member_menu.is_none());
+        });
+    }
 }
 
 #[cfg(test)]
