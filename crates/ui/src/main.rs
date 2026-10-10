@@ -69,6 +69,7 @@ use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::{
+    borrow::Cow,
     cell::Cell,
     collections::HashMap,
     rc::Rc,
@@ -631,6 +632,9 @@ struct MemberMenu {
     network: NetworkId,
     nickname: String,
     channel: String,
+    /// The menu is about the peer of a private conversation: no channel
+    /// actions (invite, op).
+    private: bool,
     /// The chosen members when the menu was opened on one of two or more
     /// chosen members: it then acts on all of them (and `nickname` is the one
     /// clicked). Empty for a menu about one member.
@@ -1101,6 +1105,18 @@ impl ChatWindow {
             .is_some_and(|own| cayenchat_irc_core::text::same_nickname(own, nickname))
     }
 
+    /// A right click on `nickname` in a private conversation: nothing is
+    /// offered on ourselves, and a menu left open for the peer is closed so it
+    /// does not act on a row that is no longer the chosen one. Returns whether
+    /// the click was ours.
+    fn right_click_on_self(&mut self, private: bool, network: NetworkId, nickname: &str) -> bool {
+        let own = private && self.is_own_nickname(network, nickname);
+        if own {
+            self.dismiss_menus();
+        }
+        own
+    }
+
     /// Our own avatar on `network`, shown for our nickname instead of asking
     /// anyone for it: the one the server confirmed, else the one shared with
     /// peers. Read at draw time, so every row follows a change at once.
@@ -1114,6 +1130,14 @@ impl ChatWindow {
         }
         let profile = self.saved.profile(&session.profile_id)?;
         shared_peer_avatar(profile).map(|url| url.as_str().into())
+    }
+
+    /// What the right-hand list shows for the selected conversation: a
+    /// channel's members, or for a private conversation its two participants
+    /// (us, then the peer). The peer stays listed after they quit, as long as
+    /// the conversation exists.
+    fn participants(&self) -> Cow<'_, [String]> {
+        selected_participants(&self.state, &self.sessions)
     }
 
     /// Mentions of our nickname and keywords in an incoming message, looked
@@ -2689,7 +2713,8 @@ impl ChatWindow {
         let Some(channel) = self.state.selected_channel() else {
             return;
         };
-        let (conversation, members) = (channel.id, channel.members.clone());
+        let conversation = channel.id;
+        let members = selected_participants(&self.state, &self.sessions);
         self.member_selection
             .click(conversation, &members, index, click);
     }
@@ -2757,7 +2782,8 @@ impl ChatWindow {
             return;
         };
         cx.stop_propagation();
-        let (conversation, members) = (channel.id, channel.members.clone());
+        let conversation = channel.id;
+        let members = selected_participants(&self.state, &self.sessions);
         let current = self.member_selection.anchor_index(conversation, &members);
         // The measured row height and the pixel range now in view.
         let (row_height, view_top, view_bottom) = {
@@ -4082,10 +4108,7 @@ impl ChatWindow {
                 ))
                 .into_any_element(),
             PaneKind::Members => {
-                let member_count = self
-                    .state
-                    .selected_channel()
-                    .map_or(0, |channel| channel.members.len());
+                let member_count = self.participants().len();
                 div()
                     .relative()
                     .size_full()
@@ -4636,16 +4659,15 @@ impl ChatWindow {
                 }
                 return popup;
             }
-            for (index, (choice, key)) in [
+            let choices = [
                 (MemberMenuChoice::Whois, "member_whois"),
                 (MemberMenuChoice::PrivateMessage, "member_private_message"),
                 (MemberMenuChoice::Invite, "member_invite"),
                 (MemberMenuChoice::GiveOp, "member_give_op"),
                 (MemberMenuChoice::Deop, "member_deop"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            ];
+            let shown = member_menu_choice_count(menu.private, choices.len());
+            for (index, (choice, key)) in choices.into_iter().take(shown).enumerate() {
                 if index == 3 {
                     popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
                 }
@@ -5647,14 +5669,16 @@ impl ChatWindow {
         let Some(channel) = self.state.selected_channel() else {
             return Vec::new();
         };
-        let end = range.end.min(channel.members.len());
+        let participants = self.participants();
+        let end = range.end.min(participants.len());
         let start = range.start.min(end);
         let network = channel.network;
         let conversation = channel.id;
+        let private = channel.is_private();
         let avatars_shown = self.avatars.enabled();
         (start..end)
             .map(|index| {
-                let member = channel.members[index].clone();
+                let member = participants[index].clone();
                 let selected = self.member_selection.contains(conversation, &member);
                 let channel = channel.name.clone();
                 let nickname = member
@@ -5728,17 +5752,28 @@ impl ChatWindow {
                             if !selected {
                                 this.click_member(index, member_selection::Click::Only);
                             }
+                            // Nothing to offer on ourselves in a private
+                            // conversation.
+                            if this.right_click_on_self(private, network, &nickname) {
+                                cx.stop_propagation();
+                                cx.notify();
+                                return;
+                            }
                             // On one of several chosen members the menu acts
-                            // on all of them.
-                            let group = this
-                                .state
-                                .selected_channel()
-                                .map(|channel| {
-                                    this.member_selection
-                                        .nicknames(channel.id, &channel.members)
-                                })
-                                .filter(|chosen| chosen.len() >= 2)
-                                .unwrap_or_default();
+                            // on all of them; participants of a private
+                            // conversation have no channel modes to give.
+                            let group = if private {
+                                Vec::new()
+                            } else {
+                                let participants = this.participants();
+                                this.state
+                                    .selected_channel()
+                                    .map(|channel| {
+                                        this.member_selection.nicknames(channel.id, &participants)
+                                    })
+                                    .filter(|chosen| chosen.len() >= 2)
+                                    .unwrap_or_default()
+                            };
                             let viewport = window.viewport_size();
                             this.server_menu = None;
                             this.channel_menu = None;
@@ -5757,6 +5792,7 @@ impl ChatWindow {
                                 network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
+                                private,
                                 group,
                             });
                             cx.stop_propagation();
@@ -6619,6 +6655,127 @@ mod startup_tests {
     }
 }
 
+/// [`conversation_participants`] of the selected conversation. Takes the
+/// fields rather than the window so the rows can be held while the member
+/// selection is changed.
+fn selected_participants<'a>(
+    state: &'a AppState,
+    sessions: &HashMap<NetworkId, ServerSession>,
+) -> Cow<'a, [String]> {
+    let Some(conversation) = state.selected_channel() else {
+        return Cow::Borrowed(&[]);
+    };
+    let own = sessions
+        .get(&conversation.network)
+        .and_then(|session| session.own_nickname.as_deref());
+    conversation_participants(conversation, own)
+}
+
+/// The rows of the right-hand list for `conversation`: a channel's members
+/// (borrowed, as this runs on every draw), or for a private conversation us
+/// followed by the peer, once when both are the same nickname.
+fn conversation_participants<'a>(
+    conversation: &'a cayenchat_model::Conversation,
+    own_nickname: Option<&str>,
+) -> Cow<'a, [String]> {
+    if !conversation.is_private() {
+        return Cow::Borrowed(&conversation.members);
+    }
+    let mut participants = Vec::with_capacity(2);
+    if let Some(own) = own_nickname
+        && !cayenchat_irc_core::text::same_nickname(own, &conversation.name)
+    {
+        participants.push(own.to_owned());
+    }
+    participants.push(conversation.name.clone());
+    Cow::Owned(participants)
+}
+
+/// How many of the member menu's choices apply: a private conversation's
+/// peer gets only WHOIS and a private message, no channel operations.
+fn member_menu_choice_count(private: bool, total: usize) -> usize {
+    if private { 2.min(total) } else { total }
+}
+
+#[cfg(test)]
+mod participants_tests {
+    use super::{conversation_participants, member_menu_choice_count};
+    use cayenchat_model::{Conversation, ConversationId, ConversationKind, NetworkId};
+
+    fn conversation(kind: ConversationKind, name: &str) -> Conversation {
+        Conversation {
+            id: ConversationId(1),
+            network: NetworkId(1),
+            kind,
+            name: name.to_owned(),
+            topic: String::new(),
+            messages: Vec::new(),
+            members: Vec::new(),
+        }
+    }
+
+    fn private(peer: &str) -> Conversation {
+        let peer_key = peer.to_ascii_lowercase();
+        conversation(ConversationKind::Private { peer_key }, peer)
+    }
+
+    #[test]
+    fn channel_lists_its_members() {
+        let mut channel = conversation(ConversationKind::Channel, "#c");
+        channel.members = vec!["@op".to_owned(), "bob".to_owned()];
+        let rows = conversation_participants(&channel, Some("me"));
+        assert!(matches!(rows, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(rows.as_ref(), ["@op", "bob"]);
+    }
+
+    #[test]
+    fn private_lists_us_then_the_peer() {
+        let conversation = private("Alice");
+        assert_eq!(
+            conversation_participants(&conversation, Some("me")).as_ref(),
+            ["me", "Alice"]
+        );
+    }
+
+    #[test]
+    fn private_follows_nick_changes() {
+        let mut conversation = private("Alice");
+        assert_eq!(
+            conversation_participants(&conversation, Some("me2")).as_ref(),
+            ["me2", "Alice"]
+        );
+        conversation.name = "Alice_".to_owned();
+        assert_eq!(
+            conversation_participants(&conversation, Some("me2")).as_ref(),
+            ["me2", "Alice_"]
+        );
+    }
+
+    #[test]
+    fn private_without_own_nickname_lists_the_peer() {
+        let conversation = private("Alice");
+        assert_eq!(
+            conversation_participants(&conversation, None).as_ref(),
+            ["Alice"]
+        );
+    }
+
+    #[test]
+    fn private_with_same_nickname_ignoring_case_is_one_row() {
+        let conversation = private("Me");
+        assert_eq!(
+            conversation_participants(&conversation, Some("mE")).as_ref(),
+            ["Me"]
+        );
+    }
+
+    #[test]
+    fn private_menu_has_only_whois_and_private_message() {
+        assert_eq!(member_menu_choice_count(true, 5), 2);
+        assert_eq!(member_menu_choice_count(false, 5), 5);
+    }
+}
+
 /// Default settings whose selected server auto-joins `channels`.
 #[cfg(test)]
 fn settings_with_channels(channels: &str) -> Settings {
@@ -6627,6 +6784,56 @@ fn settings_with_channels(channels: &str) -> Settings {
         .add_server(cayenchat_storage::PRESETS[0].host)
         .channels = channels.into();
     settings
+}
+
+#[cfg(test)]
+mod participant_menu_tests {
+    use super::{ChatWindow, MemberMenu};
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use gpui::{TestAppContext, point, px};
+
+    #[gpui::test]
+    fn right_click_on_self_closes_the_peer_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        let network = NetworkId(1);
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                network,
+                vec![Event::Registered {
+                    nickname: "alice".into(),
+                }],
+                false,
+                cx,
+            );
+            chat.member_menu = Some(MemberMenu {
+                position: point(px(0.), px(0.)),
+                network,
+                nickname: "bob".into(),
+                channel: "bob".into(),
+                private: true,
+                group: Vec::new(),
+            });
+            // The peer keeps their menu; a channel is never ours to refuse.
+            assert!(!chat.right_click_on_self(true, network, "bob"));
+            assert!(!chat.right_click_on_self(false, network, "alice"));
+            assert!(chat.member_menu.is_some());
+            // Our own row closes it.
+            assert!(chat.right_click_on_self(true, network, "Alice"));
+            assert!(chat.member_menu.is_none());
+        });
+    }
 }
 
 #[cfg(test)]
