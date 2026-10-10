@@ -7532,13 +7532,13 @@ mod pane_tests {
         assert_eq!(selected(cx).as_deref(), Some("#a"));
 
         chat.update_in(cx, |chat, window, _| window.focus(&chat.tree_focus));
-        cx.simulate_keystrokes("j");
+        cx.simulate_keystrokes("down");
         assert_eq!(selected(cx).as_deref(), Some("#b"));
         assert!(
             chat.update_in(cx, |chat, window, _| chat.tree_focus.is_focused(window)),
             "moving keeps focus on the tree"
         );
-        cx.simulate_keystrokes("k");
+        cx.simulate_keystrokes("up");
         assert_eq!(selected(cx).as_deref(), Some("#a"));
         cx.simulate_keystrokes("end");
         assert_eq!(selected(cx).as_deref(), Some("#b"));
@@ -7564,7 +7564,7 @@ mod pane_tests {
         );
 
         chat.update_in(cx, |chat, window, _| window.focus(&chat.members_focus));
-        cx.simulate_keystrokes("j j");
+        cx.simulate_keystrokes("down down");
         let chosen = |cx: &mut gpui::VisualTestContext| {
             chat.read_with(cx, |chat, _| {
                 let channel = chat.state.selected_channel().unwrap();
@@ -7673,6 +7673,56 @@ mod pane_tests {
             chat.replace_text_in_range(Some(0..1), "X", window, cx);
             let text = input.read(cx).text().to_owned();
             assert_eq!(text, "Xbcにほ");
+        });
+    }
+
+    #[gpui::test]
+    fn the_list_panes_forward_typing_and_candidate_position(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) = cx.add_window_view(|window, cx| {
+            ChatWindow::with_settings(settings.clone(), None, window, cx)
+        });
+        for pane in ["members", "tree"] {
+            chat.update_in(cx, |chat, window, cx| {
+                let input = chat.inputs[&chat.state.selection()].clone();
+                input.update(cx, |input, cx| input.set_text("", cx));
+                match pane {
+                    "members" => window.focus(&chat.members_focus),
+                    _ => window.focus(&chat.tree_focus),
+                }
+            });
+            cx.simulate_keystrokes("h i");
+            let (text, focused) = chat.update_in(cx, |chat, window, cx| {
+                let input = chat.inputs[&chat.state.selection()].clone();
+                (
+                    input.read(cx).text().to_owned(),
+                    input.focus_handle(cx).is_focused(window),
+                )
+            });
+            assert_eq!(text, "hi", "typing in the {pane} pane");
+            assert!(focused, "focus moves to the draft from the {pane} pane");
+        }
+        // The candidate window follows the draft, not the pane that forwards.
+        chat.update_in(cx, |chat, window, cx| {
+            let input = chat.inputs[&chat.state.selection()].clone();
+            let own = input.read(cx).last_bounds().expect("the draft was painted");
+            let stray =
+                gpui::Bounds::new(gpui::point(px(900.), px(5.)), gpui::size(px(10.), px(10.)));
+            let forwarded = chat.bounds_for_range(0..0, stray, window, cx).unwrap();
+            let direct = input
+                .update(cx, |input, cx| {
+                    input.bounds_for_range(0..0, own, window, cx)
+                })
+                .unwrap();
+            assert_eq!(forwarded, direct);
         });
     }
 
