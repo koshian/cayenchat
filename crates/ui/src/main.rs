@@ -69,6 +69,7 @@ use notifier::{DesktopNotification, Notifier};
 use session::ServerSession;
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::{
+    borrow::Cow,
     cell::Cell,
     collections::HashMap,
     rc::Rc,
@@ -1123,21 +1124,8 @@ impl ChatWindow {
     /// channel's members, or for a private conversation its two participants
     /// (us, then the peer). The peer stays listed after they quit, as long as
     /// the conversation exists.
-    fn participants(&self) -> Vec<String> {
-        let Some(conversation) = self.state.selected_channel() else {
-            return Vec::new();
-        };
-        if !conversation.is_private() {
-            return conversation.members.clone();
-        }
-        let mut participants = Vec::with_capacity(2);
-        if let Some(own) = self.own_nickname(conversation.network)
-            && !cayenchat_irc_core::text::same_nickname(own, &conversation.name)
-        {
-            participants.push(own.to_owned());
-        }
-        participants.push(conversation.name.clone());
-        participants
+    fn participants(&self) -> Cow<'_, [String]> {
+        selected_participants(&self.state, &self.sessions)
     }
 
     /// Mentions of our nickname and keywords in an incoming message, looked
@@ -2714,7 +2702,7 @@ impl ChatWindow {
             return;
         };
         let conversation = channel.id;
-        let members = self.participants();
+        let members = selected_participants(&self.state, &self.sessions);
         self.member_selection
             .click(conversation, &members, index, click);
     }
@@ -2783,7 +2771,7 @@ impl ChatWindow {
         };
         cx.stop_propagation();
         let conversation = channel.id;
-        let members = self.participants();
+        let members = selected_participants(&self.state, &self.sessions);
         let current = self.member_selection.anchor_index(conversation, &members);
         // The measured row height and the pixel range now in view.
         let (row_height, view_top, view_bottom) = {
@@ -4666,7 +4654,7 @@ impl ChatWindow {
                 (MemberMenuChoice::GiveOp, "member_give_op"),
                 (MemberMenuChoice::Deop, "member_deop"),
             ];
-            let shown = if menu.private { 2 } else { choices.len() };
+            let shown = member_menu_choice_count(menu.private, choices.len());
             for (index, (choice, key)) in choices.into_iter().take(shown).enumerate() {
                 if index == 3 {
                     popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
@@ -6652,6 +6640,127 @@ mod startup_tests {
         assert!(forget_removed_profiles(&previous, &next, &unavailable).is_err());
         // Nothing to forget once nothing changed.
         assert!(forget_removed_profiles(&previous, &previous, &unavailable).is_ok());
+    }
+}
+
+/// [`conversation_participants`] of the selected conversation. Takes the
+/// fields rather than the window so the rows can be held while the member
+/// selection is changed.
+fn selected_participants<'a>(
+    state: &'a AppState,
+    sessions: &HashMap<NetworkId, ServerSession>,
+) -> Cow<'a, [String]> {
+    let Some(conversation) = state.selected_channel() else {
+        return Cow::Borrowed(&[]);
+    };
+    let own = sessions
+        .get(&conversation.network)
+        .and_then(|session| session.own_nickname.as_deref());
+    conversation_participants(conversation, own)
+}
+
+/// The rows of the right-hand list for `conversation`: a channel's members
+/// (borrowed, as this runs on every draw), or for a private conversation us
+/// followed by the peer, once when both are the same nickname.
+fn conversation_participants<'a>(
+    conversation: &'a cayenchat_model::Conversation,
+    own_nickname: Option<&str>,
+) -> Cow<'a, [String]> {
+    if !conversation.is_private() {
+        return Cow::Borrowed(&conversation.members);
+    }
+    let mut participants = Vec::with_capacity(2);
+    if let Some(own) = own_nickname
+        && !cayenchat_irc_core::text::same_nickname(own, &conversation.name)
+    {
+        participants.push(own.to_owned());
+    }
+    participants.push(conversation.name.clone());
+    Cow::Owned(participants)
+}
+
+/// How many of the member menu's choices apply: a private conversation's
+/// peer gets only WHOIS and a private message, no channel operations.
+fn member_menu_choice_count(private: bool, total: usize) -> usize {
+    if private { 2.min(total) } else { total }
+}
+
+#[cfg(test)]
+mod participants_tests {
+    use super::{conversation_participants, member_menu_choice_count};
+    use cayenchat_model::{Conversation, ConversationId, ConversationKind, NetworkId};
+
+    fn conversation(kind: ConversationKind, name: &str) -> Conversation {
+        Conversation {
+            id: ConversationId(1),
+            network: NetworkId(1),
+            kind,
+            name: name.to_owned(),
+            topic: String::new(),
+            messages: Vec::new(),
+            members: Vec::new(),
+        }
+    }
+
+    fn private(peer: &str) -> Conversation {
+        let peer_key = peer.to_ascii_lowercase();
+        conversation(ConversationKind::Private { peer_key }, peer)
+    }
+
+    #[test]
+    fn channel_lists_its_members() {
+        let mut channel = conversation(ConversationKind::Channel, "#c");
+        channel.members = vec!["@op".to_owned(), "bob".to_owned()];
+        let rows = conversation_participants(&channel, Some("me"));
+        assert!(matches!(rows, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(rows.as_ref(), ["@op", "bob"]);
+    }
+
+    #[test]
+    fn private_lists_us_then_the_peer() {
+        let conversation = private("Alice");
+        assert_eq!(
+            conversation_participants(&conversation, Some("me")).as_ref(),
+            ["me", "Alice"]
+        );
+    }
+
+    #[test]
+    fn private_follows_nick_changes() {
+        let mut conversation = private("Alice");
+        assert_eq!(
+            conversation_participants(&conversation, Some("me2")).as_ref(),
+            ["me2", "Alice"]
+        );
+        conversation.name = "Alice_".to_owned();
+        assert_eq!(
+            conversation_participants(&conversation, Some("me2")).as_ref(),
+            ["me2", "Alice_"]
+        );
+    }
+
+    #[test]
+    fn private_without_own_nickname_lists_the_peer() {
+        let conversation = private("Alice");
+        assert_eq!(
+            conversation_participants(&conversation, None).as_ref(),
+            ["Alice"]
+        );
+    }
+
+    #[test]
+    fn private_with_same_nickname_ignoring_case_is_one_row() {
+        let conversation = private("Me");
+        assert_eq!(
+            conversation_participants(&conversation, Some("mE")).as_ref(),
+            ["Me"]
+        );
+    }
+
+    #[test]
+    fn private_menu_has_only_whois_and_private_message() {
+        assert_eq!(member_menu_choice_count(true, 5), 2);
+        assert_eq!(member_menu_choice_count(false, 5), 5);
     }
 }
 
