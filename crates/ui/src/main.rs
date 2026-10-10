@@ -953,17 +953,13 @@ impl ChatWindow {
             theme::apply(this.theme_mode, &this.appearance, cx);
         })
         .detach();
-        cx.observe_window_activation(window, |this, window, cx| {
+        cx.observe_window_activation(window, |this, window, _| {
             this.window_active = window.is_window_active();
-            // Switching to another window does not blur the focused pane,
-            // so the member choice is dropped here too (#294).
-            if !this.window_active && this.members_focus.contains_focused(window, cx) {
-                this.clear_member_selection(cx);
-            }
         })
         .detach();
         // A choice of members (it can be acted on all at once) ends when
-        // focus moves anywhere else, within the window or out of it.
+        // focus moves anywhere else; GPUI also reports it when the window
+        // becomes inactive.
         let members_focus = this.members_focus.clone();
         cx.on_focus_out(&members_focus, window, |this, _, _, cx| {
             this.clear_member_selection(cx);
@@ -7596,7 +7592,13 @@ mod pane_tests {
         cx.simulate_keystrokes("up");
         assert_eq!(chosen(cx), ["alice"]);
         // Focus moving to another pane ends the choice (#294).
+        // Focus events are only sent to an active window, and from a frame
+        // drawn with the list focused.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
         chat.update_in(cx, |chat, window, _| window.focus(&chat.log_focus));
+        cx.update(|window, cx| window.draw(cx).clear());
         assert!(chosen(cx).is_empty());
     }
 
