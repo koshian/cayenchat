@@ -10,6 +10,7 @@ mod metadata;
 mod modes;
 mod peer_avatar;
 mod presence;
+mod relay;
 mod replay;
 mod tags;
 pub mod text;
@@ -382,6 +383,29 @@ fn validate_wire(wire: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// [`validate_wire`] for a `PRIVMSG` or `NOTICE`: the line must also fit in
+/// 512 bytes once the server has put our `prefix_bytes` (`:nick!user@host `)
+/// in front of it, or the recipients get the end of it cut off.
+fn validate_relayed_wire(wire: &str, label: &str, prefix_bytes: usize) -> Result<(), String> {
+    validate_wire(wire, label)?;
+    let bytes = encode_strict(wire, label)?;
+    // A text of one word goes out without the `:` that marks the last
+    // parameter, but the server writes it when relaying.
+    let relayed_colon = wire
+        .trim_end_matches(['\r', '\n'])
+        .splitn(3, ' ')
+        .nth(2)
+        .is_some_and(|text| !text.starts_with(':'));
+    let needed = bytes.len() + usize::from(relayed_colon);
+    if needed + prefix_bytes > 512 {
+        return Err(format!(
+            "Message is too long: {} bytes of the 512-byte line remain for the command and text once the server adds your nick!user@host, but it needs {needed}.",
+            512usize.saturating_sub(prefix_bytes),
+        ));
+    }
+    Ok(())
+}
+
 /// The tag section of a message a client sends may take 4094 bytes (IRCv3
 /// message-tags) without the leading `@` and the space after it, so 4096 as
 /// `tags::tag_bytes` counts them. It is separate from the 512 bytes of the
@@ -524,6 +548,10 @@ pub enum Event {
     Topic {
         channel: String,
         topic: String,
+        /// Who changed it, for a `TOPIC` command; `None` for the topic a
+        /// server states on joining.
+        changed_by: Option<String>,
+        server_time: Option<SystemTime>,
     },
     /// A PRIVMSG or NOTICE a user sent to our nickname. Server notices stay
     /// [`Event::ServerLine`]; CTCP other than ACTION is handled by `ctcp`.
@@ -588,8 +616,14 @@ pub enum Event {
     OutgoingAccepted {
         local_id: Option<u64>,
         channel: String,
+        /// What the conversation shows (`* waves` for an ACTION, a redaction
+        /// for credentials sent to services).
         text: String,
         notice: bool,
+        /// The action's own text when this is a CTCP ACTION (`/me`), for
+        /// the conversation log; `text` is not to be parsed for it. `None`
+        /// for a message and for credentials sent to services.
+        action: Option<String>,
     },
     /// The server rejected the registration nickname (432/433). The link
     /// stays open until the UI supplies another one with
@@ -683,6 +717,8 @@ pub enum Event {
     OutgoingConfirmed {
         local_id: u64,
         text: Option<String>,
+        /// The final text of a CTCP ACTION, which `text` never replaces.
+        action: Option<String>,
         msgid: Option<String>,
         server_time: Option<SystemTime>,
     },
@@ -1069,7 +1105,18 @@ enum Outgoing {
     QuitWith(String),
 }
 
+#[cfg(test)]
 fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> {
+    validate_outgoing_relayed(outgoing, encoding, 0)
+}
+
+/// [`validate_outgoing`] where a message to others must also fit behind the
+/// `prefix_bytes` the server adds (see [`validate_relayed_wire`]).
+fn validate_outgoing_relayed(
+    outgoing: &Outgoing,
+    encoding: &str,
+    prefix_bytes: usize,
+) -> Result<(), String> {
     let message = match outgoing {
         Outgoing::Message {
             target,
@@ -1105,7 +1152,11 @@ fn validate_outgoing(outgoing: &Outgoing, encoding: &str) -> Result<(), String> 
         Outgoing::Quit => return Ok(()),
         Outgoing::QuitWith(reason) => IrcMessage::from(IrcCommand::QUIT(Some(reason.clone()))),
     };
-    validate_wire(&message.to_string(), encoding)
+    if matches!(outgoing, Outgoing::Message { .. }) {
+        validate_relayed_wire(&message.to_string(), encoding, prefix_bytes)
+    } else {
+        validate_wire(&message.to_string(), encoding)
+    }
 }
 
 /// The selected conversation's target for /me and /msg without a target: a
@@ -1362,6 +1413,8 @@ pub struct Connection {
     part_message: Option<String>,
     /// The server's announced `MODES` limit; 0 until one is seen.
     modes_per_line: Arc<AtomicUsize>,
+    /// Bytes a server adds in front of our relayed lines (see [`relay`]).
+    relay_prefix: Arc<AtomicUsize>,
     /// Disconnects once the worker thread has ended.
     closed: Option<Mutex<std_mpsc::Receiver<()>>>,
     /// Whether IRC lines are recorded after registration.
@@ -1393,6 +1446,10 @@ impl Connection {
         };
         let modes_per_line = Arc::new(AtomicUsize::new(0));
         let worker_modes = modes_per_line.clone();
+        let relay_prefix = Arc::new(AtomicUsize::new(
+            relay::OwnMask::default().prefix_bytes(&config.nickname, &encoding),
+        ));
+        let worker_relay_prefix = relay_prefix.clone();
         let (alive, closed) = std_mpsc::channel::<()>();
         let transcript = Arc::new(AtomicBool::new(false));
         let worker_transcript = transcript.clone();
@@ -1413,6 +1470,7 @@ impl Connection {
                             worker_events,
                             worker_cancel,
                             worker_modes,
+                            worker_relay_prefix,
                             worker_transcript,
                         )),
                         Err(error) => {
@@ -1435,6 +1493,7 @@ impl Connection {
             encoding,
             part_message,
             modes_per_line,
+            relay_prefix,
             closed: Some(Mutex::new(closed)),
             transcript,
         })
@@ -1478,6 +1537,11 @@ impl Connection {
         self.events.as_ref().is_some_and(Events::is_closed)
     }
 
+    fn validate(&self, outgoing: &Outgoing) -> Result<(), String> {
+        let prefix = relay::published(&self.relay_prefix);
+        validate_outgoing_relayed(outgoing, &self.encoding, prefix)
+    }
+
     pub fn send_message(&self, channel: &str, text: &str, notice: bool) -> Result<(), String> {
         if !valid_channel(channel) {
             return Err("Select a channel before sending.".into());
@@ -1489,7 +1553,7 @@ impl Connection {
             display_text: text.to_owned(),
             notice,
         };
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue IRC message: {error}"))
@@ -1511,7 +1575,7 @@ impl Connection {
             display_text: text.to_owned(),
             notice,
         };
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue private message: {error}"))
@@ -1519,7 +1583,7 @@ impl Connection {
 
     pub fn send_member_command(&self, nickname: &str, action: MemberCommand) -> Result<(), String> {
         let outgoing = member_outgoing(nickname, action)?;
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue member command: {error}"))
@@ -1551,7 +1615,7 @@ impl Connection {
                 // Sent as given: parsing "+vv" into modes and back would
                 // write it as "+v+v".
                 let outgoing = checked_command(IrcCommand::Raw("MODE".into(), args))?;
-                validate_outgoing(&outgoing, &self.encoding)?;
+                self.validate(&outgoing)?;
                 Ok(outgoing)
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1571,7 +1635,7 @@ impl Connection {
     pub fn send_command(&self, line: &str, selected_channel: Option<&str>) -> Result<(), String> {
         let outgoing = parse_slash_command(line, selected_channel)?;
         let outgoing = with_default_part_reason(outgoing, self.part_message.as_deref());
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue IRC command: {error}"))
@@ -1582,7 +1646,7 @@ impl Connection {
             return Err("Invalid nickname.".into());
         }
         let outgoing = checked_command(IrcCommand::NICK(nickname.to_owned()))?;
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue nickname change: {error}"))
@@ -1602,7 +1666,7 @@ impl Connection {
             request,
             url: url.map(str::to_owned),
         };
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue avatar request: {error}"))
@@ -1618,7 +1682,7 @@ impl Connection {
             peer_avatar::shareable(url, self.encoding.eq_ignore_ascii_case("UTF-8"))?;
         }
         let outgoing = Outgoing::ShareAvatar(url.map(str::to_owned));
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue avatar sharing: {error}"))
@@ -1632,7 +1696,7 @@ impl Connection {
     pub fn set_real_name(&self, realname: &str) -> Result<(), String> {
         check_realname(realname)?;
         let outgoing = Outgoing::SetName(realname.to_owned());
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue realname change: {error}"))
@@ -1660,7 +1724,7 @@ impl Connection {
             reference,
             limit,
         };
-        validate_outgoing(&outgoing, &self.encoding)?;
+        self.validate(&outgoing)?;
         self.commands
             .try_send(outgoing)
             .map_err(|error| format!("Could not queue history request: {error}"))
@@ -1713,6 +1777,7 @@ async fn run(
         EventSender::new(events),
         Arc::new(Notify::new()),
         Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicBool::new(true)),
     )
     .await
@@ -1724,6 +1789,7 @@ async fn run_cancellable(
     events: EventSender,
     cancel: Arc<Notify>,
     modes_per_line: Arc<AtomicUsize>,
+    relay_prefix: Arc<AtomicUsize>,
     transcript: Arc<AtomicBool>,
 ) {
     let started = Instant::now();
@@ -1970,6 +2036,8 @@ async fn run_cancellable(
         targets_since,
         track_accounts: config.ircv3.accounts,
         modes_per_line,
+        relay_prefix,
+        own_mask: relay::OwnMask::default(),
         pending_setname: 0,
         peers,
         ctcp,
@@ -2077,6 +2145,8 @@ struct Worker {
     targets_since: Option<SystemTime>,
     track_accounts: bool,
     modes_per_line: Arc<AtomicUsize>,
+    relay_prefix: Arc<AtomicUsize>,
+    own_mask: relay::OwnMask,
     pending_setname: usize,
     peers: Option<peer_avatar::PeerAvatars>,
     ctcp: ctcp::CtcpReplies,
@@ -2244,6 +2314,21 @@ impl Worker {
         }
     }
 
+    /// Tells the connection handle how much the server adds in front of the
+    /// lines we send, for its length check.
+    fn observe_own_mask(&mut self, message: &IrcMessage) {
+        if self.own_mask.observe(message, &self.current_nick) {
+            self.publish_relay_prefix();
+        }
+    }
+
+    fn publish_relay_prefix(&self) {
+        let bytes = self
+            .own_mask
+            .prefix_bytes(&self.current_nick, &self.wire_encoding);
+        relay::publish(&self.relay_prefix, bytes);
+    }
+
     async fn send_message(
         &mut self,
         target: String,
@@ -2254,7 +2339,10 @@ impl Worker {
         // With echo-message the local line is confirmed by
         // the server's echo; a label (labeled-response)
         // names it exactly.
-        let shown = echo_text(&target, display_text);
+        let shown = echo_text(&target, display_text.clone());
+        let action = (shown == display_text)
+            .then(|| text::action_text(&text).map(str::to_owned))
+            .flatten();
         self.next_local_id += 1;
         let local_id = self.next_local_id;
         let label = if self.registered && self.negotiation.enabled(cap::ECHO_MESSAGE) {
@@ -2277,6 +2365,8 @@ impl Worker {
         };
         let message = echo::with_label(message, label.flatten());
         let line = self.transcript.line(&message);
+        // Only the 512 bytes of our own line: the length once the server
+        // relays it is checked by the connection handle before queuing.
         let result = validate_tagged_wire(&message, &self.wire_encoding)
             .and_then(|_| self.client.send(message).map_err(|error| error.to_string()));
         let event = match result {
@@ -2287,6 +2377,7 @@ impl Worker {
                     channel: target,
                     text: shown,
                     notice,
+                    action,
                 }
             }
             Err(error) => {
@@ -2310,6 +2401,7 @@ impl Worker {
                 self.transcript.record(WireDirection::Sent, line).await;
                 if let Some(nickname) = retry_nick {
                     self.current_nick = nickname;
+                    self.publish_relay_prefix();
                     self.awaiting_nick = false;
                     self.refusal = None;
                     self.registration_deadline = tokio::time::Instant::now() + REGISTRATION_TIMEOUT;
@@ -2484,9 +2576,12 @@ impl Worker {
         let history_started = self.negotiate(&message).await?;
         self.track_registration(&message, history_started).await?;
         let replayed = self.replay.replayed(&message);
-        if self.consume_own_replies(&message).await?
-            || self.consume_avatar_and_ctcp(&message, replayed).await?
-        {
+        let history = self.consume_own_replies(&message).await?;
+        // A line replayed from history shows our mask of the past.
+        if !history && !self.replay.in_history_batch(&message) {
+            self.observe_own_mask(&message);
+        }
+        if history || self.consume_avatar_and_ctcp(&message, replayed).await? {
             return ControlFlow::Continue(());
         }
         self.deliver(message, replayed).await
@@ -2822,7 +2917,8 @@ impl Worker {
         {
             match &event {
                 Event::Registered { nickname } | Event::NickChanged { nickname } => {
-                    self.current_nick = nickname.clone()
+                    self.current_nick = nickname.clone();
+                    self.publish_relay_prefix();
                 }
                 // Someone speaking live may be asked about
                 // their avatar; nobody else is.
@@ -3213,7 +3309,7 @@ impl WhoisCollector {
 }
 
 /// The channel topic a server line states or changes, if it is one.
-fn topic_event(message: &IrcMessage) -> Option<Event> {
+fn topic_event(message: &IrcMessage, server_time: Option<SystemTime>) -> Option<Event> {
     let (channel, topic) = match &message.command {
         IrcCommand::Response(Response::RPL_TOPIC, args) => {
             (args.get(1)?, args.get(2).cloned().unwrap_or_default())
@@ -3222,9 +3318,15 @@ fn topic_event(message: &IrcMessage) -> Option<Event> {
         IrcCommand::TOPIC(channel, topic) => (channel, topic.clone().unwrap_or_default()),
         _ => return None,
     };
+    let changed_by = match &message.command {
+        IrcCommand::TOPIC(..) => message.source_nickname().map(str::to_owned),
+        _ => None,
+    };
     valid_channel(channel).then(|| Event::Topic {
         channel: channel.clone(),
         topic,
+        changed_by,
+        server_time,
     })
 }
 
@@ -3249,9 +3351,10 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
             format!("{prefix}{}", user.get_nickname())
         })
         .collect();
-    // The library keeps a channel's list after a KICK and appends the next
-    // NAMES reply to it, so a rejoin lists everyone twice. Keep the last
-    // entry per nickname: it comes from the newest reply.
+    // The library appends every NAMES reply to the channel's list, so a
+    // repeated reply (e.g. /names) lists everyone twice. Keep the last entry
+    // per nickname: it comes from the newest reply. (Our own KICK no longer
+    // leaves a stale list behind: the vendored `irc` drops it, #342.)
     let mut seen = HashSet::new();
     users.reverse();
     users.retain(|user| seen.insert(display_nickname(user).to_lowercase()));
@@ -3542,7 +3645,9 @@ fn translate_message(
             vec![names_snapshot(client, roster, channel)]
         }
         _ => {
-            let mut events = topic_event(&message).into_iter().collect::<Vec<_>>();
+            let mut events = topic_event(&message, server_time)
+                .into_iter()
+                .collect::<Vec<_>>();
             events.push(Event::ServerLine(tags::untagged_line(&message)));
             events
         }

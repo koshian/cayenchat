@@ -909,10 +909,13 @@ version = "1.0.0"
 name = "cayenchat-storage"
 version = "1.0.0"
 dependencies = [
+ "chrono",
  "dirs 5.0.1",
  "keyring",
+ "libc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "uuid",
 ]
@@ -3402,8 +3405,6 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "irc"
 version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1be91867682072063576cac1279b7838f1cdfa87a346de8f8b1dc93cfb337b8"
 dependencies = [
  "chrono",
  "futures-util",

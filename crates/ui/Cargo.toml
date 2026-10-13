@@ -63,6 +63,9 @@ log = "0.4"
 # OS notifications: org.freedesktop.Notifications over zbus on Linux/BSD,
 # NSUserNotification on macOS, WinRT toasts on Windows.
 notify-rust = "4.18"
+# Wakes the chat window from the conversation log thread.
+futures-channel = "0.3"
+futures-util.workspace = true
 
 [features]
 # See cayenchat-storage's `test-build`; also marks the window title.
@@ -81,8 +84,6 @@ tempfile = "3"
 gpui = { workspace = true, features = ["wayland", "x11"] }
 # Same version and backend as GPUI's own portal client, so no new crates.
 ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
-futures-util.workspace = true
-futures-channel = "0.3"
 # Ends the app cleanly on SIGTERM, SIGHUP and SIGINT (#285).
 signal-hook = "0.4.5"
 

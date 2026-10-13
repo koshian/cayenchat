@@ -153,7 +153,7 @@ The desktop UI requires Rust 1.94 (`crates/ui/Cargo.toml`) for the pinned
 (`rust-version` in the workspace manifest): GPUI 0.2.2
 uses `let` chains, stabilized in 1.88, without declaring its own minimum, and
 several locked dependencies (zbus 1.87, image/icu/encoding_rs 1.88) declare it
-too. Debian's stock rustc 1.85 therefore cannot build; use backports or rustup.
+too. `crates/storage` declares 1.89 for `File::try_lock` (conversation logs). Debian's stock rustc 1.85 therefore cannot build; use backports or rustup.
 Tested compilers are 1.95.0 (macOS) and 1.98.1 (Linux container). Rustfmt and Clippy
 must be available for the corresponding checks. Rustup itself is optional when a
 working toolchain is already provided by another installation.

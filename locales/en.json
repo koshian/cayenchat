@@ -439,5 +439,17 @@
   "debug_log_inactive": "File logging is off.",
   "debug_log_hint": "Changes take effect immediately and are saved for the next launch. Existing files are appended to. Disable logging after troubleshooting; the file keeps growing while enabled. Review logs before sharing them.",
   "debug_log_error": "Could not configure debug logging: {error}",
-  "debug_log_picker_failed": "Could not open the log file chooser."
+  "debug_log_picker_failed": "Could not open the log file chooser.",
+  "conversation_log": "Conversation logs",
+  "conversation_log_channels": "Save channel conversations to files",
+  "conversation_log_private": "Save private conversations to files",
+  "conversation_log_hint": "Off by default. Each day of each conversation is appended to a UTF-8 text file in the folder below; only messages, actions, notices and joins, parts, quits, nick changes, kicks and topic changes seen from now on are saved, never passwords, the server log or replayed history. Private conversations are saved separately, so turning that on writes what people say to you in private to your disk. Turning a log off stops the writing; existing files stay and are yours to manage.",
+  "conversation_log_directory": "Folder:",
+  "conversation_log_no_directory": "No folder available",
+  "conversation_log_open": "Open folder",
+  "conversation_log_choose": "Change…",
+  "conversation_log_choose_prompt": "Choose the folder for conversation logs",
+  "conversation_log_failed": "Conversation logs could not be written: {error}",
+  "conversation_log_locked": "Another CayenChat is saving conversation logs to this folder, so this one does not.",
+  "conversation_log_dropped": "{count} log lines were dropped because the disk could not keep up."
 }

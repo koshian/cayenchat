@@ -802,6 +802,9 @@ pub(crate) struct SettingsWindow {
     /// Whether the connection button was last drawn as Disconnect, so the window is
     /// redrawn only when a connection comes up or goes down.
     pub(crate) connected_shown: bool,
+    /// The conversation log status as last drawn, so a failure that comes
+    /// by itself redraws the window.
+    pub(crate) log_status_shown: Option<cayenchat_storage::chatlog::Status>,
     /// The system's login-startup registration as last read; never stored in
     /// the settings file (#153).
     /// `None` until the first read finishes.
@@ -939,11 +942,14 @@ impl SettingsWindow {
         // cannot be read yet, so subscribe once that update has returned.
         cx.defer_in(window, |this, _, cx| {
             if let Ok(chat) = this.owner.entity(cx) {
-                this._subscriptions.push(cx.observe(&chat, |this, _, cx| {
-                    if this.selected_connected(cx) != this.connected_shown {
-                        cx.notify();
-                    }
-                }));
+                this._subscriptions
+                    .push(cx.observe(&chat, |this, chat, cx| {
+                        if this.selected_connected(cx) != this.connected_shown
+                            || chat.read(cx).conversation_logs.status() != this.log_status_shown
+                        {
+                            cx.notify();
+                        }
+                    }));
             }
         });
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
@@ -998,6 +1004,7 @@ impl SettingsWindow {
             avatar_opening: false,
             _field_subscriptions: field_subscriptions,
             connected_shown: false,
+            log_status_shown: None,
             autostart: None,
             autostart_busy: false,
             autostart_generation: 0,
@@ -1281,6 +1288,7 @@ impl SettingsWindow {
         let rules = notification_rules(&saved.notifications);
         let _ = self.owner.update(cx, |owner, window, cx| {
             owner.image_provider = provider;
+            owner.apply_conversation_log(&saved.conversation_log);
             cx.set_global(crate::input::ShortenPastedAmazon(shorten_amazon_urls));
             owner.notification_rules = rules;
             if shortcuts_changed {

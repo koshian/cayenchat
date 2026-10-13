@@ -439,5 +439,17 @@
   "debug_log_inactive": "ファイルへの出力は停止中です。",
   "debug_log_hint": "変更はすぐに反映され、次回起動時も引き継がれます。既存ファイルには追記します。有効な間はファイルが増え続けるため、調査後はオフにしてください。共有する前にログの内容を確認してください。",
   "debug_log_error": "デバッグログを設定できませんでした: {error}",
-  "debug_log_picker_failed": "ログファイルの選択画面を開けませんでした。"
+  "debug_log_picker_failed": "ログファイルの選択画面を開けませんでした。",
+  "conversation_log": "会話ログ",
+  "conversation_log_channels": "チャンネルの会話をファイルに保存する",
+  "conversation_log_private": "個人宛ての会話をファイルに保存する",
+  "conversation_log_hint": "初期値はオフです。会話ごと・日ごとに、下のフォルダーへ UTF-8 のテキストとして書き足します。保存するのは、これから届く発言・アクション・NOTICE と、入室・退室・終了・nick 変更・キック・トピック変更だけで、パスワード、サーバーのログ、後から取得した過去ログは保存しません。個人宛ての会話は別の設定です。オンにすると、あなた宛ての会話がこのコンピューターのファイルに残ります。オフにすると書き込みを止めます。保存済みのファイルは消さないので、ご自身で管理してください。",
+  "conversation_log_directory": "保存先:",
+  "conversation_log_no_directory": "使えるフォルダーがありません",
+  "conversation_log_open": "フォルダーを開く",
+  "conversation_log_choose": "変更…",
+  "conversation_log_choose_prompt": "会話ログを保存するフォルダーを選択",
+  "conversation_log_failed": "会話ログを書き込めませんでした: {error}",
+  "conversation_log_locked": "別の CayenChat がこのフォルダーに会話ログを保存しているため、こちらでは保存しません。",
+  "conversation_log_dropped": "ディスクが追いつかず、ログ {count} 行を保存できませんでした。"
 }

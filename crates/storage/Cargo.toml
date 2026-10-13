@@ -2,7 +2,7 @@
 name = "cayenchat-storage"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.89"
 publish.workspace = true
 license = "MPL-2.0"
 
@@ -10,9 +10,15 @@ license = "MPL-2.0"
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+chrono.workspace = true
 # OS credential stores: Keychain, Credential Manager, freedesktop Secret Service.
 keyring = "4.2"
 uuid = { version = "1", features = ["v4"] }
+# Tells apart the long names that are cut to fit a file name.
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 # Test builds keep settings and the local credential file in a fresh

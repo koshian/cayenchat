@@ -33,6 +33,10 @@ See [development requirements](spec/development.md) for platform prerequisites a
 
 Add a server in the settings window that opens at startup (`Cmd+,` / `Ctrl+,`), then choose **Connect**. See [keyboard shortcuts and IRC commands](SHORTCUTS.md).
 
+## Conversation logs
+
+Saving conversations to files is off by default. In the Application settings, turn on channel conversations and, separately, private conversations (they are written to your disk too), and choose the folder (by default `CayenChat/logs` in your data directory). CayenChat appends one UTF-8 text file per conversation and day, `<folder>/<server>/channels/<channel>/<date>.log` and `<folder>/<server>/private/<nick>/<date>.log`, each line being `time`, `kind` (`msg`, `action`, `notice`, `join`, `part`, `quit`, `nick`, `kick`, `topic`), `nick` and `text` separated by tabs. Passwords, the server log and history fetched from the server are never saved. Turning a log off stops writing and keeps the files. The format is specified in [D044](spec/decisions.md).
+
 ## Customizing UI text
 
 CayenChat loads the packaged `locales/ja.json` and `locales/en.json` at runtime. Edit these files to customize or override UI text locally. If the external files are missing, CayenChat falls back to the catalogs embedded in the executable.

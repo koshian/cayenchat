@@ -1955,6 +1955,7 @@ fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(cx: &mut
         channel: "#a".into(),
         text: text.into(),
         notice: false,
+        action: None,
     };
     chat.update(cx, |chat, cx| {
         chat.handle_events(
@@ -1994,6 +1995,7 @@ fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(cx: &mut
                 Event::OutgoingConfirmed {
                     local_id: 1,
                     text: Some("hello world".into()),
+                    action: None,
                     msgid: Some("m1".into()),
                     server_time: None,
                 },
@@ -2301,6 +2303,7 @@ fn private_messages_get_their_own_conversations(cx: &mut TestAppContext) {
                     channel: "BOB".into(),
                     text: "hi bob".into(),
                     notice: false,
+                    action: None,
                 },
                 Event::OwnPrivateMessage {
                     target: "bob".into(),
@@ -3118,12 +3121,14 @@ fn safe_channel_events_keep_messages_and_members_in_the_channel(cx: &mut TestApp
                     channel: channel.into(),
                     text: "reply".into(),
                     notice: false,
+                    action: None,
                 },
                 Event::OutgoingAccepted {
                     local_id: None,
                     channel: channel.into(),
                     text: "notice".into(),
                     notice: true,
+                    action: None,
                 },
             ],
             Worker::Running,

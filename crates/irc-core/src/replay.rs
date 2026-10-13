@@ -86,7 +86,7 @@ impl ReplayTracker {
         !from_user || self.in_history_batch(message)
     }
 
-    fn in_history_batch(&self, message: &IrcMessage) -> bool {
+    pub(crate) fn in_history_batch(&self, message: &IrcMessage) -> bool {
         tag_value(message, "batch")
             .is_some_and(|reference| self.history_batches.iter().any(|open| open == reference))
     }

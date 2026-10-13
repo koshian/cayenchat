@@ -49,6 +49,9 @@ zed-xim = { path = "vendor/zed-xim" }
 # The published codec buffers a line without any length limit and decodes
 # legacy charsets with the unmaintained `encoding` crate.
 irc-proto = { path = "vendor/irc-proto" }
+# The published client keeps a channel's user list after we are kicked, so a
+# rejoin appends to stale entries (#342); drop it like our own PART does.
+irc = { path = "vendor/irc" }
 # The published 0.5.7 reads Windows fonts and metrics at the system DPI, so
 # the settings window scaled them twice (#290); 0.6.1 fixed it but needs a
 # newer GPUI.

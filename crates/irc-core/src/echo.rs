@@ -39,7 +39,10 @@ use std::{collections::VecDeque, time::Duration};
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Response, message::Tag};
 use tokio::time::Instant;
 
-use crate::{Event, tags, text::same_nickname};
+use crate::{
+    Event, tags,
+    text::{action_text, same_nickname},
+};
 
 /// Messages waiting for their echo; a sender beyond it is not tracked.
 pub(crate) const MAX_PENDING: usize = 32;
@@ -175,19 +178,22 @@ impl Echoes {
     }
 
     fn confirmed(pending: Pending, message: Option<&IrcMessage>) -> Event {
-        let (text, msgid, server_time) = match message.map(|m| (&m.command, m)) {
+        let (text, action, msgid, server_time) = match message.map(|m| (&m.command, m)) {
             Some((IrcCommand::PRIVMSG(_, text) | IrcCommand::NOTICE(_, text), message)) => (
                 // The final text replaces the local one only when it changed
                 // and the local line is the text itself.
                 (*text != pending.text && !pending.keep_text).then(|| text.clone()),
+                // An ACTION is shown as `* …`, so its own text goes apart.
+                action_text(text).map(str::to_owned),
                 tags::msgid(message).map(str::to_owned),
                 tags::server_time(message, true),
             ),
-            _ => (None, None, None),
+            _ => (None, None, None, None),
         };
         Event::OutgoingConfirmed {
             local_id: pending.local_id,
             text,
+            action,
             msgid,
             server_time,
         }
@@ -373,6 +379,21 @@ mod tests {
         }
         assert_eq!(label_for(1), "c1");
         assert_eq!(label_for(36), "c10");
+    }
+
+    #[test]
+    fn an_echoed_action_carries_its_final_text_apart() {
+        let mut echoes = Echoes::default();
+        let label = echoes
+            .track(3, "#a", false, "\u{1}ACTION waves\u{1}", true, true)
+            .unwrap()
+            .unwrap();
+        let echo = format!("@label={label} :me!u@h PRIVMSG #a :\u{1}ACTION dances\u{1}");
+        let events = echoes.observe(&line(&echo), "me", true).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::OutgoingConfirmed { text: None, action: Some(action), .. }] if action == "dances"
+        ));
     }
 
     #[test]

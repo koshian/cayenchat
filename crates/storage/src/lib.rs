@@ -10,6 +10,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod chatlog;
 pub mod credentials;
 pub mod layout;
 pub mod order;
@@ -854,6 +855,34 @@ impl Default for Notifications {
     }
 }
 
+/// Opt-in conversation logs written to files (see [`chatlog`]). Both are off
+/// by default and independent of each other. Added after version 15 without
+/// a version change; files without it read as the defaults.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationLog {
+    /// Channel conversations.
+    pub channels: bool,
+    /// Private conversations (direct messages).
+    pub private: bool,
+    /// Where logs go; `None` is [`chatlog::default_directory`].
+    pub directory: Option<PathBuf>,
+}
+
+impl ConversationLog {
+    pub fn enabled(&self) -> bool {
+        self.channels || self.private
+    }
+
+    /// The directory in use: the chosen one, else the default.
+    pub fn resolved_directory(&self) -> Option<PathBuf> {
+        self.directory
+            .clone()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .or_else(chatlog::default_directory)
+    }
+}
+
 /// Opt-in diagnostics. Additive defaults keep older settings compatible.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -898,6 +927,7 @@ pub struct Settings {
     pub keybindings: BTreeMap<String, String>,
     pub notifications: Notifications,
     pub experimental: Experimental,
+    pub conversation_log: ConversationLog,
     /// Application-wide identity of versions 1–12, read only to migrate it
     /// into the previously selected server profile; never written back.
     #[serde(flatten, skip_serializing)]
@@ -936,6 +966,7 @@ impl Default for Settings {
             keybindings: BTreeMap::new(),
             notifications: Notifications::default(),
             experimental: Experimental::default(),
+            conversation_log: ConversationLog::default(),
             legacy: LegacyIdentity::default(),
         }
     }

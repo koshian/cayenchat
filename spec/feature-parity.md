@@ -95,7 +95,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — initial/switch focus, common OS editing shortcuts, undo/redo and
   platform-specific app bindings; user-customized macOS text bindings unsupported
   by GPUI 0.2.2, Windows/Linux runtime unverified
-- PARTIAL — CR/LF normalized to spaces; 512-byte encoded IRC-line limit
+- PARTIAL — CR/LF normalized to spaces; 512-byte encoded IRC-line limit, counted for messages as the line the recipient gets (with the sender's `:nick!user@host ` prefix); no automatic splitting of long messages
 
 ## Attachments
 
@@ -109,7 +109,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 ## Logging and history
 
-- TODO — local logs
+- PARTIAL — opt-in local conversation logs (D044, both off by default): channel conversations and private conversations are separate Application settings; UTF-8, tab-separated, one file per conversation and day under a chosen folder (`<folder>/<network>/channels/<channel>/<date>.log`, `private/<nick>/`); messages, actions, notices, joins, parts, quits, nick changes, kicks and topic changes seen live, our own messages once sent (confirmed when the server echoes). Replayed history, the server log, failed sends, other CTCP and credentials are never written; no reading back, viewer, search or import of other clients' logs
 - TODO — searchable history
 - DONE — bounded in-memory channel and server scrollback
 - PARTIAL — IRCv3/server history integration where available (`draft/chathistory`, experimental, per-server opt-in, default off): recent channel history on join (up to 50 lines) and older pages when the main log is scrolled to its top (`BEFORE`, up to 50 lines a page, msgid or timestamp reference within `MSGREFTYPES`, until the server reports the beginning or the 2,000-line log bound is reached); deduplicated, quiet, and the viewport stays on the same line; after a reconnect, joined channels recover the most recent missed lines (up to 50, `LATEST` after the last msgid or server time, placed where the log was cut, with a quiet note when more may be missing); checked against Ergo v2.19.1; no private-message history or recovery, and no persistence

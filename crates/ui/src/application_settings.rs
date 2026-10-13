@@ -291,6 +291,7 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("decode_char_refs_hint")),
             )
+            .child(self.render_conversation_log_settings(cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })

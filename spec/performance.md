@@ -1202,6 +1202,29 @@ full runs showed `connections 1` each (S4b CPU 183–184 %, RSS 120 MiB). S4b
 throughput and CPU were not otherwise compared, since the change touches no
 per-line path.
 
+## Conversation logs (2026-10-13, issue #313, D044)
+
+Per-message paths gained a test of two flags (`ConversationLogs::wants`) per
+logged event, and, only with a log on, one `Record` built on the UI thread and
+queued with `try_send` to a writer thread (bounded to 4,096 records, flushed
+every second). Logs are off by default; the measurement below is for that
+default. Same Linux container (x86_64, rustc 1.99.0), release build, headless
+`perf_baseline::perf_baseline`, four runs each, medians in µs. Command:
+`cargo test --release --locked -p cayenchat-ui perf_baseline::perf_baseline
+-- --ignored --exact --nocapture`.
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- | --- |
+| Base `3db8f85` | 238 / 247 / 248 / 246 | 1,580 / 1,570 / 1,570 / 1,566 | 1,134 / 1,171 / 1,187 / 1,244 | 1,554 / 1,646 / 1,650 / 1,608 | 255 / 258 / 256 / 258 |
+| This branch | 245 / 250 / 247 / 244 | 1,587 / 1,571 / 1,563 / 1,605 | 1,253 / 1,181 / 1,196 / 1,189 | 1,661 / 1,643 / 1,676 / 1,679 | 262 / 260 / 297 / 272 |
+
+The event batch median is about 3 % higher on this branch (1,665 against
+1,630 µs for 256 events); the ranges overlap and the other rows show no
+difference, so the cost with logs off is at most a few percent of a batch and
+may be noise. The logger itself is not exercised by this test; the writer's
+queue, flush and failure paths are covered by unit tests in
+`storage::chatlog` and `main_tests::conversation_log_tests`.
+
 ## Kick and refused-join lines (2026-10-13)
 
 A retained `model::Message` gained a `bool` (`alert`), and a kick or refused
