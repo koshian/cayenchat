@@ -262,6 +262,7 @@ fn ircv3_options(preferences: Ircv3Preferences) -> Ircv3Options {
         // references only, nothing is downloaded unless avatars are shown.
         metadata: true,
         peer_avatars: preferences.peer_avatars,
+        own_nick_avatar: preferences.own_nick_avatar,
         chathistory: preferences.chathistory,
         confirmed_sending: preferences.confirmed_sending,
         accounts: preferences.accounts,

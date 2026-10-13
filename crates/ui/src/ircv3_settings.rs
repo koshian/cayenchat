@@ -52,7 +52,7 @@ pub(crate) struct Ircv3Feature {
 }
 
 /// Features shown on the IRCv3 tab, in display order.
-pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
+pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 8] = [
     Ircv3Feature {
         id: "ircv3-server-time",
         label_key: "ircv3_server_time",
@@ -107,6 +107,14 @@ pub(crate) const IRCV3_FEATURES: [Ircv3Feature; 7] = [
         hint_key: "ircv3_peer_avatars_hint",
         get: |preferences| preferences.peer_avatars,
         toggle: |preferences| preferences.peer_avatars = !preferences.peer_avatars,
+        warning: |_| None,
+    },
+    Ircv3Feature {
+        id: "ircv3-own-nick-avatar",
+        label_key: "ircv3_own_nick_avatar",
+        hint_key: "ircv3_own_nick_avatar_hint",
+        get: |preferences| preferences.own_nick_avatar,
+        toggle: |preferences| preferences.own_nick_avatar = !preferences.own_nick_avatar,
         warning: |_| None,
     },
 ];

@@ -3346,6 +3346,7 @@ mod server_settings_tests {
             server_time: true,
             batch: true,
             peer_avatars: true,
+            own_nick_avatar: false,
             chathistory: true,
             confirmed_sending: false,
             accounts: false,

@@ -68,6 +68,10 @@ pub struct Ircv3Options {
     /// Exchange avatars with other clients through KVIrc's CTCP AVATAR
     /// (experimental). Needs no capability; see `peer_avatar`.
     pub peer_avatars: bool,
+    /// With `peer_avatars`: other clients (a bouncer such as Tiarra) share
+    /// our nickname, so ask our own nickname once for the avatar another
+    /// client shares, and answer such queries from them.
+    pub own_nick_avatar: bool,
     /// Request recent channel history with `draft/chathistory`
     /// (experimental), when the server offers it. Replies are recognized by
     /// their batch, so the capability is requested only after `batch` is
@@ -555,6 +559,7 @@ mod tests {
             batch: false,
             metadata: false,
             peer_avatars: false,
+            own_nick_avatar: false,
             chathistory: false,
             confirmed_sending: false,
             accounts: false,

@@ -800,6 +800,10 @@ pub struct Ircv3Preferences {
     /// (experimental), for servers without avatar metadata. Added without a
     /// version change: files without it read as off.
     pub peer_avatars: bool,
+    /// With `peer_avatars`: other clients share our nickname (a bouncer such
+    /// as Tiarra), so ask it once for our avatar and answer their queries.
+    /// Added without a version change: files without it read as off.
+    pub own_nick_avatar: bool,
     /// Request recent channel history with `draft/chathistory`
     /// (experimental). Added without a version change: files without it
     /// read as off.
@@ -2307,11 +2311,11 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["servers"][0]["ircv3"],
-            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
+            serde_json::json!({"message_tags": false, "server_time": true, "batch": false, "peer_avatars": false, "own_nick_avatar": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(
             saved["servers"][1]["ircv3"],
-            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
+            serde_json::json!({"message_tags": true, "server_time": false, "batch": false, "peer_avatars": false, "own_nick_avatar": false, "chathistory": false, "confirmed_sending": false, "accounts": false})
         );
         assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
 

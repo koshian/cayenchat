@@ -1778,6 +1778,7 @@ async fn run_cancellable(
             wire_encoding.eq_ignore_ascii_case("UTF-8"),
             config.shared_avatar.clone(),
         )
+        .with_own_nick(config.ircv3.own_nick_avatar)
     });
     let ctcp = ctcp::CtcpReplies::new(config.ircv3.peer_avatars);
     let mut negotiation = cap::CapNegotiation::new(

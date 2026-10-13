@@ -201,6 +201,19 @@ enum Stage {
     Queried,
 }
 
+/// Our own query to our nickname, for a nickname shared with other clients
+/// (a bouncer such as Tiarra). Once per connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnQuery {
+    /// Not enabled, not needed, or finished.
+    Idle,
+    /// To be sent at the next tick.
+    Pending,
+    /// Sent; the first usable answer from our nickname is accepted until
+    /// this time. Requests from our nickname are taken to be our own echo.
+    Waiting(Instant),
+}
+
 /// Per-connection state of CTCP AVATAR exchange; it exists only when the
 /// server's option is on.
 #[derive(Debug)]
@@ -218,6 +231,10 @@ pub(crate) struct PeerAvatars {
     skipped: usize,
     replies: VecDeque<Instant>,
     replied: HashMap<String, Instant>,
+    /// Other clients may share our nickname: ask them once, and answer
+    /// their queries.
+    own_nick: bool,
+    own_query: OwnQuery,
 }
 
 impl PeerAvatars {
@@ -233,13 +250,32 @@ impl PeerAvatars {
             skipped: 0,
             replies: VecDeque::new(),
             replied: HashMap::new(),
+            own_nick: false,
+            own_query: OwnQuery::Idle,
         }
+    }
+
+    /// Other clients share our nickname (a bouncer): when no URL is shared
+    /// here, ask our own nickname once for the avatar another client shares,
+    /// and answer such queries when one is. Off changes nothing.
+    pub(crate) fn with_own_nick(mut self, enabled: bool) -> Self {
+        self.own_nick = enabled;
+        self.own_query = if enabled && self.share.is_none() {
+            OwnQuery::Pending
+        } else {
+            OwnQuery::Idle
+        };
+        self
     }
 
     /// Changes the URL answered to queries; `None` stops answering. The
     /// realname mark sent at registration is not changed.
     pub(crate) fn set_share(&mut self, url: Option<String>) {
         self.share = url.filter(|url| shareable(url, self.utf8).is_ok());
+        if self.share.is_some() {
+            // Ours is decided; there is nothing to ask for.
+            self.own_query = OwnQuery::Idle;
+        }
     }
 
     /// Handles CTCP AVATAR traffic and replies to our lookups. `Some` means
@@ -263,7 +299,7 @@ impl PeerAvatars {
                 let mut handled = Handled::default();
                 if let Some(sender) = sender
                     && !replayed
-                    && !same_nickname(sender, current_nick)
+                    && (!same_nickname(sender, current_nick) || self.answers_own_nick())
                     && same_nickname(target, current_nick)
                     && let Some(url) = self.share.clone()
                     && self.may_reply(sender, now)
@@ -278,6 +314,22 @@ impl PeerAvatars {
             IrcCommand::NOTICE(target, text) => {
                 let params = avatar_ctcp(text)?;
                 let mut handled = Handled::default();
+                if let Some(sender) = sender
+                    && !replayed
+                    && same_nickname(sender, current_nick)
+                {
+                    // From another client under our nickname: only the
+                    // answer to our own query, to our nickname.
+                    if let OwnQuery::Waiting(deadline) = self.own_query
+                        && now < deadline
+                        && same_nickname(target, current_nick)
+                        && let Some(url) = reply_url(params, self.utf8)
+                    {
+                        self.own_query = OwnQuery::Idle;
+                        handled.events.extend(self.set_peer(sender, Some(url)));
+                    }
+                    return Some(handled);
+                }
                 let Some(sender) = sender.filter(|sender| {
                     !replayed && valid_sender(sender) && !same_nickname(sender, current_nick)
                 }) else {
@@ -306,6 +358,12 @@ impl PeerAvatars {
             }
             _ => self.numeric_reply(message, current_nick, presence, now),
         }
+    }
+
+    /// Whether a request from our own nickname is another client's: not
+    /// while our query is out, when it may be our own echo.
+    fn answers_own_nick(&self) -> bool {
+        self.own_nick && !matches!(self.own_query, OwnQuery::Waiting(_))
     }
 
     fn numeric_reply(
@@ -461,7 +519,12 @@ impl PeerAvatars {
         let send = (!self.queue.is_empty() && self.in_flight.len() < MAX_PROBES_IN_FLIGHT)
             .then(|| self.next_probe.unwrap_or_else(Instant::now));
         let expiry = self.in_flight.iter().map(|probe| probe.deadline).min();
-        send.into_iter().chain(expiry).min()
+        let own = match self.own_query {
+            OwnQuery::Idle => None,
+            OwnQuery::Pending => Some(Instant::now()),
+            OwnQuery::Waiting(deadline) => Some(deadline),
+        };
+        send.into_iter().chain(expiry).chain(own).min()
     }
 
     /// Gives up unanswered probes and sends the next one when due.
@@ -472,6 +535,17 @@ impl PeerAvatars {
         presence: &PresenceIndex,
     ) -> Handled {
         let mut handled = Handled::default();
+        match self.own_query {
+            OwnQuery::Pending => {
+                handled.send.push(IrcCommand::PRIVMSG(
+                    current_nick.to_owned(),
+                    format!("\u{1}{CTCP_TAG}\u{1}"),
+                ));
+                self.own_query = OwnQuery::Waiting(now + PROBE_TIMEOUT);
+            }
+            OwnQuery::Waiting(deadline) if deadline <= now => self.own_query = OwnQuery::Idle,
+            _ => {}
+        }
         self.in_flight.retain(|probe| probe.deadline > now);
         if self.next_probe.is_some_and(|due| due > now)
             || self.in_flight.len() >= MAX_PROBES_IN_FLIGHT
@@ -517,7 +591,13 @@ impl PeerAvatars {
         };
         let ours = |nick: &str| same_nickname(nick, current_nick);
         let gone: Vec<String> = match &message.command {
-            IrcCommand::NICK(new) => return self.rename(actor, new),
+            IrcCommand::NICK(new) => {
+                if ours(actor) && matches!(self.own_query, OwnQuery::Waiting(_)) {
+                    // The answer would be for the old name; not asked again.
+                    self.own_query = OwnQuery::Idle;
+                }
+                return self.rename(actor, new);
+            }
             IrcCommand::QUIT(_) if !ours(actor) => vec![actor.to_owned()],
             IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) => {
                 let leaving = match &message.command {
@@ -1256,5 +1336,154 @@ mod tests {
         let mut events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &rosters, ME);
         events.extend(peers.merge_metadata(vec![meta("kv2", None)]));
         assert_eq!(avatars(&events), ["kv2=-"]);
+    }
+
+    const OWN_QUERY: &str = "PRIVMSG alice \u{1}AVATAR\u{1}";
+    const OWN_URL: &str = "https://mac.example/me.png";
+
+    fn own_answer(url: &str) -> String {
+        format!(":alice!u@h NOTICE alice :\u{1}AVATAR {url}\u{1}")
+    }
+
+    /// Own-nickname exchange on, nothing shared, and the query sent.
+    fn own_waiting(now: Instant) -> PeerAvatars {
+        let mut peers = PeerAvatars::new(true, None).with_own_nick(true);
+        let handled = peers.tick(now, ME, &rosters());
+        assert_eq!(wire(&handled.send), [OWN_QUERY]);
+        peers
+    }
+
+    #[test]
+    fn own_query_is_sent_once_and_only_when_enabled_and_nothing_is_shared() {
+        let now = Instant::now();
+        for mut peers in [
+            PeerAvatars::new(true, None),
+            PeerAvatars::new(true, Some(OWN_URL.into())).with_own_nick(true),
+        ] {
+            assert!(peers.tick(now, ME, &rosters()).send.is_empty());
+        }
+        let mut peers = own_waiting(now);
+        assert!(peers.next_deadline().is_some());
+        // Not again, whether waiting or after the timeout.
+        assert!(peers.tick(now, ME, &rosters()).send.is_empty());
+        let later = now + PROBE_TIMEOUT;
+        assert!(peers.tick(later, ME, &rosters()).send.is_empty());
+        assert!(peers.tick(later, ME, &rosters()).send.is_empty());
+        assert_eq!(peers.next_deadline(), None);
+        // Too late for an answer.
+        let handled = peers
+            .observe(&line(&own_answer(OWN_URL)), ME, &rosters(), false, later)
+            .unwrap();
+        assert!(handled.events.is_empty());
+    }
+
+    #[test]
+    fn own_answer_is_shown_once_and_never_shared() {
+        let now = Instant::now();
+        let mut peers = own_waiting(now);
+        // Our own echo is a request, not answered while waiting.
+        let echo = format!(":alice!u@h {OWN_QUERY}");
+        let handled = peers
+            .observe(&line(&echo), ME, &rosters(), false, now)
+            .unwrap();
+        assert!(handled.send.is_empty() && handled.events.is_empty());
+        // Unusable answers and notices to others are ignored.
+        for text in [
+            ":alice!u@h NOTICE alice :\u{1}AVATAR\u{1}".to_owned(),
+            own_answer("file.png"),
+            own_answer("javascript:alert(1)"),
+            format!(":alice!u@h NOTICE #a :\u{1}AVATAR {OWN_URL}\u{1}"),
+            format!(":irc.example NOTICE alice :\u{1}AVATAR {OWN_URL}\u{1}"),
+        ] {
+            let handled = peers
+                .observe(&line(&text), ME, &rosters(), false, now)
+                .map(|handled| handled.events);
+            assert!(handled.is_none_or(|events| events.is_empty()), "{text}");
+        }
+        // Replayed history is not an answer.
+        let handled = peers
+            .observe(&line(&own_answer(OWN_URL)), ME, &rosters(), true, now)
+            .map(|handled| handled.events);
+        assert!(handled.is_none_or(|events| events.is_empty()));
+        let handled = peers
+            .observe(&line(&own_answer(OWN_URL)), ME, &rosters(), false, now)
+            .unwrap();
+        assert_eq!(avatars(&handled.events), [format!("alice={OWN_URL}")]);
+        // A second answer, or one when nobody asked, changes nothing.
+        let handled = peers
+            .observe(
+                &line(&own_answer("https://win.example/x.png")),
+                ME,
+                &rosters(),
+                false,
+                now,
+            )
+            .unwrap();
+        assert!(handled.events.is_empty());
+        // What was fetched is not what we answer with.
+        let handled = observe(&mut peers, ":bob!u@h PRIVMSG alice :\u{1}AVATAR\u{1}", now).unwrap();
+        assert!(handled.send.is_empty());
+    }
+
+    #[test]
+    fn own_nick_changes_end_the_wait_and_move_the_avatar() {
+        let now = Instant::now();
+        let mut peers = own_waiting(now);
+        let events = peers.lifecycle(&line(":alice!u@h NICK alice2"), &rosters(), ME);
+        assert!(events.is_empty());
+        let handled = peers
+            .observe(
+                &line(&own_answer(OWN_URL)),
+                "alice2",
+                &rosters(),
+                false,
+                now,
+            )
+            .unwrap();
+        assert!(handled.events.is_empty(), "the answer was for the old name");
+        assert_eq!(peers.next_deadline(), None);
+    }
+
+    #[test]
+    fn another_client_asking_under_our_nickname_is_answered_when_sharing() {
+        let now = Instant::now();
+        let ask = format!(":alice!u@h {OWN_QUERY}");
+        let mut peers = PeerAvatars::new(true, Some(OWN_URL.into())).with_own_nick(true);
+        let handled = peers
+            .observe(&line(&ask), ME, &rosters(), false, now)
+            .unwrap();
+        assert_eq!(
+            wire(&handled.send),
+            [format!("NOTICE alice :\u{1}AVATAR {OWN_URL}\u{1}")]
+        );
+        // Rate limited like any other asker, and our own echo of the answer
+        // is consumed without effect.
+        let handled = peers
+            .observe(&line(&ask), ME, &rosters(), false, now)
+            .unwrap();
+        assert!(handled.send.is_empty());
+        let handled = peers
+            .observe(&line(&own_answer(OWN_URL)), ME, &rosters(), false, now)
+            .unwrap();
+        assert!(handled.send.is_empty() && handled.events.is_empty());
+        // With the option off nothing about our nickname changes.
+        let mut off = PeerAvatars::new(true, Some(OWN_URL.into()));
+        let handled = off
+            .observe(&line(&ask), ME, &rosters(), false, now)
+            .unwrap();
+        assert!(handled.send.is_empty());
+        // Sharing starting while waiting cancels the query's answer.
+        let mut waiting = own_waiting(now);
+        waiting.set_share(Some(OWN_URL.into()));
+        let handled = waiting
+            .observe(
+                &line(&own_answer("https://x.example/a.png")),
+                ME,
+                &rosters(),
+                false,
+                now,
+            )
+            .unwrap();
+        assert!(handled.events.is_empty());
     }
 }
