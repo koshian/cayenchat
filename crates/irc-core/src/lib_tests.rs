@@ -4403,7 +4403,9 @@ fn the_echo_of_our_own_query_is_not_answered_even_after_sharing_starts() {
             assert_eq!(next, "PONG sync");
             thread::sleep(Duration::from_millis(50));
         }
-        // Now our query comes back, however late.
+        // Another device's request arrives before our query comes back
+        // (however late): neither can be told apart, so neither is answered.
+        send(":alice!u@h PRIVMSG alice :\u{1}AVATAR\u{1}\r\n");
         send(":alice!u@h PRIVMSG alice :\u{1}AVATAR\u{1}\r\n");
         send("PING :sync2\r\n");
         // Nothing may come before the PONG: no answer to ourselves.

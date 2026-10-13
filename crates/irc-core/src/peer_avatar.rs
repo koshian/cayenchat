@@ -235,13 +235,12 @@ pub(crate) struct PeerAvatars {
     /// their queries.
     own_nick: bool,
     own_query: OwnQuery,
-    /// Our own query was sent and its echo has not been seen: the next
-    /// request from our nickname may be that echo, and a request carries
-    /// nothing that tells it from another client's. It is not tied to
-    /// `own_query` (an answer, a shared URL or a timeout do not lift it) and
-    /// not to time either, since the echo may be arbitrarily late; only one
-    /// request is held back.
-    own_echo_due: bool,
+    /// Our own query was sent on this connection: any request from our
+    /// nickname may be its echo, and a request carries nothing that tells it
+    /// from another client's, neither by time nor by order. So none is
+    /// answered for the rest of the connection; an answer, a shared URL or a
+    /// timeout do not lift it.
+    own_asked: bool,
     /// The server may already know our avatar (metadata is still being
     /// asked), so our own query waits.
     own_hold: bool,
@@ -262,7 +261,7 @@ impl PeerAvatars {
             replied: HashMap::new(),
             own_nick: false,
             own_query: OwnQuery::Idle,
-            own_echo_due: false,
+            own_asked: false,
             own_hold: false,
         }
     }
@@ -378,10 +377,10 @@ impl PeerAvatars {
         }
     }
 
-    /// Whether a request from our own nickname is another client's. The
-    /// first one after our own query may be its echo, so it is not.
-    fn answers_own_nick(&mut self) -> bool {
-        self.own_nick && !std::mem::take(&mut self.own_echo_due)
+    /// Whether a request from our own nickname is surely another client's:
+    /// only if we never sent our own query on this connection.
+    fn answers_own_nick(&self) -> bool {
+        self.own_nick && !self.own_asked
     }
 
     fn numeric_reply(
@@ -556,7 +555,7 @@ impl PeerAvatars {
         let mut handled = Handled::default();
         match self.own_query {
             OwnQuery::Pending if !self.own_hold => {
-                self.own_echo_due = true;
+                self.own_asked = true;
                 handled.send.push(IrcCommand::PRIVMSG(
                     current_nick.to_owned(),
                     format!("\u{1}{CTCP_TAG}\u{1}"),
@@ -1525,11 +1524,12 @@ mod tests {
                 .observe(&line(&echo), ME, &rosters(), false, now + delay)
                 .unwrap();
             assert!(handled.send.is_empty(), "the echo of our own query");
-            // Only one request is held back; later ones are another client's.
+            // Which request is the echo cannot be told, so none is answered
+            // on this connection, whatever the order.
             let handled = peers
                 .observe(&line(&echo), ME, &rosters(), false, now + delay)
                 .unwrap();
-            assert_eq!(handled.send.len(), 1);
+            assert!(handled.send.is_empty());
         }
     }
 
