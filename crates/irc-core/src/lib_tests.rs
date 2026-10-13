@@ -4458,8 +4458,13 @@ fn own_nick_config(port: u16, metadata: bool) -> ConnectionConfig {
 
 #[test]
 fn the_echo_of_our_own_query_is_not_answered_even_after_sharing_starts() {
-    let (port, server) = setname_server("server-time", |send, lines| {
+    let (queried_tx, queried_rx) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let (port, server) = setname_server("server-time", move |send, lines| {
         assert_eq!(read_client_line(lines), "PRIVMSG alice \u{1}AVATAR\u{1}");
+        // Sharing may only start after our query went out, otherwise the
+        // query is never sent.
+        queried_tx.send(()).unwrap();
         // Wait until sharing has started: bob's request is answered then.
         for round in 0.. {
             assert!(round < 100, "sharing never started");
@@ -4480,16 +4485,22 @@ fn the_echo_of_our_own_query_is_not_answered_even_after_sharing_starts() {
         send("PING :sync2\r\n");
         // Nothing may come before the PONG: no answer to ourselves.
         assert_eq!(read_client_line(lines), "PONG sync2");
+        done_tx.send(()).unwrap();
         assert!(read_client_line(lines).starts_with("QUIT"));
     });
     let mut connection = Connection::connect(own_nick_config(port, false)).unwrap();
     wait_for(&mut connection, |event| {
         matches!(event, Event::Registered { .. })
     });
+    queried_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("our query was never sent");
     connection
         .share_avatar(Some("https://example.com/local.png"))
         .unwrap();
-    thread::sleep(Duration::from_millis(1500));
+    done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("server script did not finish");
     connection.disconnect().unwrap();
     server.join().unwrap();
 }
