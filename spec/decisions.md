@@ -1663,3 +1663,34 @@ the native settings-style ones, because blue and the OS theme's caret color are
 hard to tell from the dark input backgrounds (issue #219). In the light theme
 the caret is blue, or the OS theme's caret color for native settings-style
 inputs.
+
+### D025 addendum — own nickname shared with other clients (bouncers)
+
+2026-10-13 ([#321](https://github.com/koshian/cayenchat/issues/321)).
+Tiarra and similar bouncers let several clients use one nickname and forward
+a client's `PRIVMSG`/`NOTICE` to the other clients. An opt-in per server
+setting, **Fetch my avatar via bouncer** (`Ircv3Preferences::own_nick_avatar`,
+off by default, added without a version change; it works only with peer
+avatars on), relaxes D025's exclusion of our own nickname in these places
+only. With it off nothing changes. Not verified against a real Tiarra yet.
+
+- **Asking**: once per connection, at the first tick after registration,
+  and only when no URL is shared on this device, `PRIVMSG <our nick>
+  :\x01AVATAR\x01` is sent. It is not repeated, not periodic, and not sent
+  again after a nick change. No other user is affected.
+- **Accepting**: a CTCP AVATAR NOTICE to our nickname from our nickname
+  (a user prefix, not replayed) is used only while that query is waiting
+  (30 s) and only the first usable URL; later, duplicate, empty, file-name
+  or non-HTTP(S) answers and notices to channels change nothing. A nick
+  change ends the wait. The URL goes through the same `reply_url` checks as
+  any peer URL and the media layer's avatar policy.
+- **Showing**: reported as the usual `UserAvatar` event for our nickname,
+  so it is shown only where `own_avatar_for` finds nothing: the
+  server-confirmed URL and the URL shared here come first. It is never
+  stored in the settings and never answered to anyone (`share` is
+  untouched).
+- **Answering**: a `PRIVMSG <our nick> :\x01AVATAR\x01` from our nickname is
+  answered like any query (same rate limits) when a URL is shared here,
+  since it can only come from another client. While our own query waits it
+  is taken to be our own echo and is not answered, and a device that asks
+  never has a shared URL, so two devices cannot answer each other.
