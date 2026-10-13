@@ -33,6 +33,9 @@ pub struct ServerSession {
     /// Lowercase nicknames this client asked WHOIS for; replies requested by
     /// other clients sharing a bouncer only reach the server log.
     pub pending_whois: HashSet<String>,
+    /// Case-folded channels this client asked to join and has no answer for
+    /// yet, bounded, so a refusal of a new channel can be shown.
+    pub pending_joins: HashSet<String>,
     /// Parsed IRC transcript and connection stages, bounded.
     pub diagnostics: VecDeque<String>,
     pub connection_started: Option<Instant>,
@@ -83,6 +86,7 @@ impl ServerSession {
             retry_token: 0,
             own_nickname: None,
             pending_whois: HashSet::new(),
+            pending_joins: HashSet::new(),
             diagnostics: VecDeque::new(),
             connection_started: None,
             disconnected_at: None,

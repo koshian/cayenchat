@@ -1201,3 +1201,21 @@ reproducing showed `connections 2` with the disconnect at 200.4 s; after, three
 full runs showed `connections 1` each (S4b CPU 183–184 %, RSS 120 MiB). S4b
 throughput and CPU were not otherwise compared, since the change touches no
 per-line path.
+
+## Kick and refused-join lines (2026-10-13)
+
+A retained `model::Message` gained a `bool` (`alert`), and a kick or refused
+join adds one bounded channel-log line. No timer, thread or render path was
+added. Same Linux container (x86_64, rustc 1.99.0), release build, headless
+`perf_baseline::perf_baseline` (10 channels × 2,000 lines), three runs each
+after a warm-up run, medians in µs. Command: `cargo test --release --locked
+-p cayenchat-ui perf_baseline::perf_baseline -- --ignored --exact --nocapture`.
+
+| Build | Typing | Channel switch | Scroll 20 rows | 256-event batch | Typing after |
+| --- | --- | --- | --- | --- | --- |
+| Master `971d99c` | 256 / 248 / 280 | 1,570 / 1,590 / 1,840 | 1,201 / 1,256 / 1,376 | 1,667 / 1,724 / 1,937 | 262 / 321 / 265 |
+| This branch `114d972` | 245 / 248 / 246 | 1,568 / 1,576 / 1,559 | 1,155 / 1,177 / 1,158 | 1,702 / 1,592 / 1,611 | 279 / 265 / 255 |
+
+No difference beyond run-to-run noise. A refused join opens a conversation
+only for a channel this client just asked to join (at most 32 remembered per
+network, within the conversation limit), never for a bare server notice.

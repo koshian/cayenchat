@@ -1011,6 +1011,76 @@ fn rejoining_after_a_kick_lists_each_member_once() {
 }
 
 #[test]
+fn kicks_and_refused_joins_reach_the_channel_log() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+        while !lines.next().unwrap().unwrap().starts_with("USER ") {}
+        socket
+            .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
+            .unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), "JOIN #test");
+        socket.write_all(b":alice!u@h JOIN #test\r\n:server 353 alice = #test :@alice bob carol\r\n:server 366 alice #test :End of NAMES\r\n:op!u@h KICK #test bob :spam\r\n:op!u@h KICK #test alice :bye\r\n:server 474 alice #test :Cannot join channel (+b)\r\n").unwrap();
+    });
+    let mut config =
+        ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec!["#test".into()]);
+    config.port = port;
+    config.use_tls = false;
+    let mut connection = Connection::connect(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut kinds = Vec::new();
+    while Instant::now() < deadline && kinds.len() < 3 {
+        match connection.try_recv() {
+            Some(Event::ChannelActivity {
+                actor,
+                kind,
+                channel,
+                ..
+            }) if kind.is_alert() => kinds.push((channel, actor, kind)),
+            Some(_) => {}
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    assert_eq!(
+        kinds,
+        [
+            (
+                "#test".to_owned(),
+                "op".to_owned(),
+                ChannelActivityKind::Kicked {
+                    target: "bob".into(),
+                    reason: Some("spam".into()),
+                    own: false,
+                },
+            ),
+            (
+                "#test".to_owned(),
+                "op".to_owned(),
+                ChannelActivityKind::Kicked {
+                    target: "alice".into(),
+                    reason: Some("bye".into()),
+                    own: true,
+                },
+            ),
+            (
+                "#test".to_owned(),
+                "server".to_owned(),
+                ChannelActivityKind::JoinFailed {
+                    banned: true,
+                    reason: "Cannot join channel (+b)".into(),
+                },
+            ),
+        ]
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn local_server_registration_join_receive_and_send() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

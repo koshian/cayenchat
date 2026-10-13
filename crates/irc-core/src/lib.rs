@@ -719,6 +719,26 @@ pub enum ChannelActivityKind {
     ModeChanged {
         modes: String,
     },
+    /// `target` was removed from the channel by the actor. `own` is set
+    /// when that is us.
+    Kicked {
+        target: String,
+        reason: Option<String>,
+        own: bool,
+    },
+    /// The server refused our JOIN (the actor is `server`). `banned` is set
+    /// for `ERR_BANNEDFROMCHAN`; `reason` is the server's text.
+    JoinFailed {
+        banned: bool,
+        reason: String,
+    },
+}
+
+impl ChannelActivityKind {
+    /// Whether the user should not miss this line.
+    pub fn is_alert(&self) -> bool {
+        matches!(self, Self::Kicked { .. } | Self::JoinFailed { .. })
+    }
 }
 
 /// Why a `SETNAME` did not change the realname.
@@ -3371,6 +3391,34 @@ fn translate_message(
             },
             server_time,
         }),
+        IrcCommand::KICK(channel, target, reason) => Some(Event::ChannelActivity {
+            channel: channel.clone(),
+            actor: actor.clone().unwrap_or_else(|| "server".into()),
+            kind: ChannelActivityKind::Kicked {
+                target: target.clone(),
+                reason: reason.clone(),
+                own: target == current_nick,
+            },
+            server_time,
+        }),
+        IrcCommand::Response(
+            response @ (Response::ERR_CHANNELISFULL
+            | Response::ERR_INVITEONLYCHAN
+            | Response::ERR_BANNEDFROMCHAN
+            | Response::ERR_BADCHANNELKEY),
+            args,
+        ) => match args.as_slice() {
+            [_, channel, reason, ..] if valid_channel(channel) => Some(Event::ChannelActivity {
+                channel: channel.clone(),
+                actor: "server".into(),
+                kind: ChannelActivityKind::JoinFailed {
+                    banned: *response == Response::ERR_BANNEDFROMCHAN,
+                    reason: reason.clone(),
+                },
+                server_time,
+            }),
+            _ => None,
+        },
         IrcCommand::ChannelMODE(channel, modes) => Some(Event::ChannelActivity {
             channel: channel.clone(),
             actor: actor.clone().unwrap_or_else(|| "server".into()),

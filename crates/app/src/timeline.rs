@@ -214,6 +214,7 @@ mod tests {
             highlights: Default::default(),
             links: Default::default(),
             activity: false,
+            alert: false,
             notice: false,
             provenance,
             delivery_failed: false,

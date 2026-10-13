@@ -2138,3 +2138,23 @@ fn recovery_is_given_up_without_history_or_a_usable_reference() {
     assert!(state.history_resume(network).is_empty());
     assert!(state.resume_points.is_empty());
 }
+
+#[test]
+fn a_refused_join_of_a_new_channel_opens_it_with_the_alert() {
+    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+    state.append_channel_alert_at(NetworkId(1), "#new", "dropped".into(), MessageMeta::live());
+    assert_eq!(state.channel_id(NetworkId(1), "#new"), None);
+
+    state.append_requested_join_alert_at(
+        NetworkId(1),
+        "#new",
+        "Cannot join: banned".into(),
+        MessageMeta::live(),
+    );
+    let id = state.channel_id(NetworkId(1), "#new").unwrap();
+    assert!(!state.is_active_channel(id));
+    let messages = &state.conversation(id).unwrap().messages;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].alert);
+    assert_eq!(messages[0].text, "Cannot join: banned");
+}

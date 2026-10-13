@@ -254,6 +254,9 @@ pub struct Message {
     /// set rather than on every draw.
     pub links: Links,
     pub activity: bool,
+    /// An activity line the user should not miss, such as being kicked or
+    /// refused entry to a channel; drawn in the warning color.
+    pub alert: bool,
     /// Received as a NOTICE (the text also carries a `[NOTICE]` marker); drawn
     /// in the notice color.
     pub notice: bool,

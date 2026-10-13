@@ -43,6 +43,38 @@ fn channel_activity_uses_english_phrases_with_optional_details() {
         ),
         "tepeu has changed mode: +o kaeru"
     );
+    assert_eq!(
+        channel_activity_text(
+            "op",
+            ChannelActivityKind::Kicked {
+                target: "kaeru".into(),
+                reason: Some("spam".into()),
+                own: false,
+            },
+        ),
+        "kaeru was kicked by op (spam)"
+    );
+    assert_eq!(
+        channel_activity_text(
+            "op",
+            ChannelActivityKind::Kicked {
+                target: "me".into(),
+                reason: None,
+                own: true,
+            },
+        ),
+        "You were kicked from the channel by op"
+    );
+    assert_eq!(
+        channel_activity_text(
+            "server",
+            ChannelActivityKind::JoinFailed {
+                banned: true,
+                reason: "Cannot join channel (+b)".into(),
+            },
+        ),
+        "Cannot join: you are banned from this channel (Cannot join channel (+b))"
+    );
 }
 
 #[test]

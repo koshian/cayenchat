@@ -41,6 +41,8 @@ enum Line {
     Text,
     /// A nick change, a quit, a note.
     Activity,
+    /// An activity the user should not miss: a kick, a refused join.
+    Alert,
 }
 
 /// Upper bound on conversations per network, so a hostile server or bouncer
@@ -338,6 +340,7 @@ impl AppState {
                             highlights: Default::default(),
                             links: Links::new(links::find(text)),
                             activity: false,
+                            alert: false,
                             notice: false,
                             provenance: Provenance::Live,
                             delivery_failed: false,
@@ -1255,6 +1258,35 @@ impl AppState {
         }
     }
 
+    /// Like [`AppState::append_channel_activity_at`], but the line is
+    /// emphasized (a kick, a refused join).
+    pub fn append_channel_alert_at(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+        text: String,
+        meta: MessageMeta,
+    ) {
+        if let Some(id) = self.channel_id(network, name) {
+            self.append_to_conversation(id, new_message(String::new(), text, Line::Alert, meta));
+        }
+    }
+
+    /// Like [`AppState::append_channel_alert_at`], but opens the channel's
+    /// conversation first when it is missing, for a refusal of a join this
+    /// client asked for (within the conversation limit).
+    pub fn append_requested_join_alert_at(
+        &mut self,
+        network: NetworkId,
+        name: &str,
+        text: String,
+        meta: MessageMeta,
+    ) {
+        if self.ensure_channel(network, name).is_some() {
+            self.append_channel_alert_at(network, name, text, meta);
+        }
+    }
+
     /// The sequence of the newest message added anywhere, so a caller that
     /// just appended one can find it again ([`AppState::confirm_message`]).
     pub fn latest_sequence(&self) -> u64 {
@@ -2037,7 +2069,8 @@ fn new_message(sender: String, text: String, line: Line, meta: MessageMeta) -> M
         links: Links::new(links::find(&text)),
         text,
         highlights: Highlights::new(meta.highlights),
-        activity: line == Line::Activity,
+        activity: line != Line::Text,
+        alert: line == Line::Alert,
         notice: false,
         provenance: meta.provenance,
         delivery_failed: false,
