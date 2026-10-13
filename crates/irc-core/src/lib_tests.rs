@@ -4390,9 +4390,20 @@ fn own_nick_config(port: u16, metadata: bool) -> ConnectionConfig {
 fn the_echo_of_our_own_query_is_not_answered_even_after_sharing_starts() {
     let (port, server) = setname_server("server-time", |send, lines| {
         assert_eq!(read_client_line(lines), "PRIVMSG alice \u{1}AVATAR\u{1}");
-        send("PING :sync1\r\n");
-        assert_eq!(read_client_line(lines), "PONG sync1");
-        // Sharing starts while our query is out; then the query comes back.
+        // Wait until sharing has started: bob's request is answered then.
+        for round in 0.. {
+            assert!(round < 100, "sharing never started");
+            send(":bob!u@h PRIVMSG alice :\u{1}AVATAR\u{1}\r\n");
+            send("PING :sync\r\n");
+            let next = read_client_line(lines);
+            if next == "NOTICE bob :\u{1}AVATAR https://example.com/local.png\u{1}" {
+                assert_eq!(read_client_line(lines), "PONG sync");
+                break;
+            }
+            assert_eq!(next, "PONG sync");
+            thread::sleep(Duration::from_millis(50));
+        }
+        // Now our query comes back, however late.
         send(":alice!u@h PRIVMSG alice :\u{1}AVATAR\u{1}\r\n");
         send("PING :sync2\r\n");
         // Nothing may come before the PONG: no answer to ourselves.
@@ -4406,7 +4417,7 @@ fn the_echo_of_our_own_query_is_not_answered_even_after_sharing_starts() {
     connection
         .share_avatar(Some("https://example.com/local.png"))
         .unwrap();
-    thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(1500));
     connection.disconnect().unwrap();
     server.join().unwrap();
 }

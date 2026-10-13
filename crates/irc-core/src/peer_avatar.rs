@@ -235,10 +235,13 @@ pub(crate) struct PeerAvatars {
     /// their queries.
     own_nick: bool,
     own_query: OwnQuery,
-    /// Until this time a request from our nickname may be our own query
-    /// echoed back; unlike `own_query` it outlives an answer, a shared URL
-    /// and a timeout, because the echo is not tied to them.
-    own_echo_until: Option<Instant>,
+    /// Our own query was sent and its echo has not been seen: the next
+    /// request from our nickname may be that echo, and a request carries
+    /// nothing that tells it from another client's. It is not tied to
+    /// `own_query` (an answer, a shared URL or a timeout do not lift it) and
+    /// not to time either, since the echo may be arbitrarily late; only one
+    /// request is held back.
+    own_echo_due: bool,
     /// The server may already know our avatar (metadata is still being
     /// asked), so our own query waits.
     own_hold: bool,
@@ -259,7 +262,7 @@ impl PeerAvatars {
             replied: HashMap::new(),
             own_nick: false,
             own_query: OwnQuery::Idle,
-            own_echo_until: None,
+            own_echo_due: false,
             own_hold: false,
         }
     }
@@ -314,8 +317,8 @@ impl PeerAvatars {
                 let mut handled = Handled::default();
                 if let Some(sender) = sender
                     && !replayed
-                    && (!same_nickname(sender, current_nick) || self.answers_own_nick(now))
                     && same_nickname(target, current_nick)
+                    && (!same_nickname(sender, current_nick) || self.answers_own_nick())
                     && let Some(url) = self.share.clone()
                     && self.may_reply(sender, now)
                 {
@@ -375,10 +378,10 @@ impl PeerAvatars {
         }
     }
 
-    /// Whether a request from our own nickname is another client's: not
-    /// while our query is out, when it may be our own echo.
-    fn answers_own_nick(&self, now: Instant) -> bool {
-        self.own_nick && self.own_echo_until.is_none_or(|until| until <= now)
+    /// Whether a request from our own nickname is another client's. The
+    /// first one after our own query may be its echo, so it is not.
+    fn answers_own_nick(&mut self) -> bool {
+        self.own_nick && !std::mem::take(&mut self.own_echo_due)
     }
 
     fn numeric_reply(
@@ -553,7 +556,7 @@ impl PeerAvatars {
         let mut handled = Handled::default();
         match self.own_query {
             OwnQuery::Pending if !self.own_hold => {
-                self.own_echo_until = Some(now + PROBE_TIMEOUT);
+                self.own_echo_due = true;
                 handled.send.push(IrcCommand::PRIVMSG(
                     current_nick.to_owned(),
                     format!("\u{1}{CTCP_TAG}\u{1}"),
@@ -1512,21 +1515,22 @@ mod tests {
     }
 
     #[test]
-    fn our_query_echo_is_not_answered_after_sharing_starts_until_it_could_not_return() {
+    fn our_query_echo_is_not_answered_however_late_it_returns() {
         let now = Instant::now();
         let echo = format!(":alice!u@h {OWN_QUERY}");
-        let mut peers = own_waiting(now);
-        peers.set_share(Some(OWN_URL.into()));
-        let soon = now + PROBE_TIMEOUT / 2;
-        let handled = peers
-            .observe(&line(&echo), ME, &rosters(), false, soon)
-            .unwrap();
-        assert!(handled.send.is_empty(), "the echo of our own query");
-        // Later requests come from another client.
-        let handled = peers
-            .observe(&line(&echo), ME, &rosters(), false, now + PROBE_TIMEOUT)
-            .unwrap();
-        assert_eq!(handled.send.len(), 1);
+        for delay in [PROBE_TIMEOUT / 2, PROBE_TIMEOUT * 2] {
+            let mut peers = own_waiting(now);
+            peers.set_share(Some(OWN_URL.into()));
+            let handled = peers
+                .observe(&line(&echo), ME, &rosters(), false, now + delay)
+                .unwrap();
+            assert!(handled.send.is_empty(), "the echo of our own query");
+            // Only one request is held back; later ones are another client's.
+            let handled = peers
+                .observe(&line(&echo), ME, &rosters(), false, now + delay)
+                .unwrap();
+            assert_eq!(handled.send.len(), 1);
+        }
     }
 
     #[test]

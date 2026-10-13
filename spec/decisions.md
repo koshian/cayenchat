@@ -1694,8 +1694,13 @@ only. With it off nothing changes. Not verified against a real Tiarra yet.
   untouched).
 - **Answering**: a `PRIVMSG <our nick> :\x01AVATAR\x01` from our nickname is
   answered like any query (same rate limits) when a URL is shared here,
-  since it can only come from another client. For 30 s after our own query
-  is sent, a request from our nickname is taken to be our own echo and is
-  not answered. This echo guard is separate from the wait for the answer:
-  an answer, a timeout or sharing starting does not lift it. A device that
-  asks never has a shared URL, so two devices cannot answer each other.
+  since it can only come from another client. The first such request after
+  our own query was sent is taken to be that query echoed back and is not
+  answered: a request carries nothing that tells our echo from another
+  client's, and the echo may be arbitrarily late, so the guard is neither
+  time-limited nor tied to the wait for the answer (an answer, a timeout or
+  sharing starting does not lift it). It holds back one request only; if no
+  echo ever comes (the bouncer does not send a client its own message), one
+  genuine request is lost, and the asking device simply gets no answer. A
+  device that asks never has a shared URL when it asks, so two devices
+  cannot answer each other.
