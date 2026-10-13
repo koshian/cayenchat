@@ -4371,3 +4371,88 @@ fn metadata_without_batch_brings_batch_along_or_stays_off() {
     }
     server.join().unwrap();
 }
+
+fn own_nick_config(port: u16, metadata: bool) -> ConnectionConfig {
+    let mut config = plain_config(
+        port,
+        Ircv3Options {
+            batch: metadata,
+            metadata,
+            ..setname_options()
+        },
+    );
+    config.ircv3.peer_avatars = true;
+    config.ircv3.own_nick_avatar = true;
+    config
+}
+
+#[test]
+fn the_echo_of_our_own_query_is_not_answered_even_after_sharing_starts() {
+    let (port, server) = setname_server("server-time", |send, lines| {
+        assert_eq!(read_client_line(lines), "PRIVMSG alice \u{1}AVATAR\u{1}");
+        send("PING :sync1\r\n");
+        assert_eq!(read_client_line(lines), "PONG sync1");
+        // Sharing starts while our query is out; then the query comes back.
+        send(":alice!u@h PRIVMSG alice :\u{1}AVATAR\u{1}\r\n");
+        send("PING :sync2\r\n");
+        // Nothing may come before the PONG: no answer to ourselves.
+        assert_eq!(read_client_line(lines), "PONG sync2");
+        assert!(read_client_line(lines).starts_with("QUIT"));
+    });
+    let mut connection = Connection::connect(own_nick_config(port, false)).unwrap();
+    wait_for(&mut connection, |event| {
+        matches!(event, Event::Registered { .. })
+    });
+    connection
+        .share_avatar(Some("https://example.com/local.png"))
+        .unwrap();
+    thread::sleep(Duration::from_millis(300));
+    connection.disconnect().unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn no_query_to_our_nickname_while_metadata_knows_our_avatar() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut send = |text: &str| socket.write_all(text.as_bytes()).unwrap();
+        assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+        send(":srv CAP * LS :batch draft/metadata-2=before-connect,max-subs=10\r\n");
+        let _: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
+        send(":srv CAP * ACK :batch\r\n");
+        assert_eq!(read_client_line(&mut lines), "CAP REQ draft/metadata-2");
+        send(":srv CAP * ACK :draft/metadata-2\r\n");
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        send(":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n");
+        assert_eq!(read_client_line(&mut lines), "METADATA * SUB avatar");
+        assert_eq!(read_client_line(&mut lines), "METADATA * GET avatar");
+        // Still asking the server: nothing goes to our nickname.
+        send("PING :sync1\r\n");
+        loop {
+            let line = read_client_line(&mut lines);
+            assert!(!line.starts_with("PRIVMSG"), "{line}");
+            if line == "PONG sync1" {
+                break;
+            }
+        }
+        send(
+            ":srv BATCH +g metadata alice\r\n@batch=g :srv 761 alice alice avatar * :https://example.com/srv.png\r\n:srv BATCH -g\r\n",
+        );
+        send("PING :sync2\r\n");
+        assert_eq!(read_client_line(&mut lines), "PONG sync2");
+        assert!(read_client_line(&mut lines).starts_with("QUIT"));
+    });
+    let mut connection = Connection::connect(own_nick_config(port, true)).unwrap();
+    wait_for(&mut connection, |event| {
+        matches!(event, Event::OwnAvatar { .. })
+    });
+    thread::sleep(Duration::from_millis(300));
+    connection.disconnect().unwrap();
+    server.join().unwrap();
+}

@@ -235,6 +235,13 @@ pub(crate) struct PeerAvatars {
     /// their queries.
     own_nick: bool,
     own_query: OwnQuery,
+    /// Until this time a request from our nickname may be our own query
+    /// echoed back; unlike `own_query` it outlives an answer, a shared URL
+    /// and a timeout, because the echo is not tied to them.
+    own_echo_until: Option<Instant>,
+    /// The server may already know our avatar (metadata is still being
+    /// asked), so our own query waits.
+    own_hold: bool,
 }
 
 impl PeerAvatars {
@@ -252,7 +259,15 @@ impl PeerAvatars {
             replied: HashMap::new(),
             own_nick: false,
             own_query: OwnQuery::Idle,
+            own_echo_until: None,
+            own_hold: false,
         }
+    }
+
+    /// While `hold` is set, our own query is not sent: IRCv3 metadata has
+    /// not yet said whether the server knows our avatar.
+    pub(crate) fn set_own_hold(&mut self, hold: bool) {
+        self.own_hold = hold;
     }
 
     /// Other clients share our nickname (a bouncer): when no URL is shared
@@ -299,7 +314,7 @@ impl PeerAvatars {
                 let mut handled = Handled::default();
                 if let Some(sender) = sender
                     && !replayed
-                    && (!same_nickname(sender, current_nick) || self.answers_own_nick())
+                    && (!same_nickname(sender, current_nick) || self.answers_own_nick(now))
                     && same_nickname(target, current_nick)
                     && let Some(url) = self.share.clone()
                     && self.may_reply(sender, now)
@@ -362,8 +377,8 @@ impl PeerAvatars {
 
     /// Whether a request from our own nickname is another client's: not
     /// while our query is out, when it may be our own echo.
-    fn answers_own_nick(&self) -> bool {
-        self.own_nick && !matches!(self.own_query, OwnQuery::Waiting(_))
+    fn answers_own_nick(&self, now: Instant) -> bool {
+        self.own_nick && self.own_echo_until.is_none_or(|until| until <= now)
     }
 
     fn numeric_reply(
@@ -521,6 +536,7 @@ impl PeerAvatars {
         let expiry = self.in_flight.iter().map(|probe| probe.deadline).min();
         let own = match self.own_query {
             OwnQuery::Idle => None,
+            OwnQuery::Pending if self.own_hold => None,
             OwnQuery::Pending => Some(Instant::now()),
             OwnQuery::Waiting(deadline) => Some(deadline),
         };
@@ -536,7 +552,8 @@ impl PeerAvatars {
     ) -> Handled {
         let mut handled = Handled::default();
         match self.own_query {
-            OwnQuery::Pending => {
+            OwnQuery::Pending if !self.own_hold => {
+                self.own_echo_until = Some(now + PROBE_TIMEOUT);
                 handled.send.push(IrcCommand::PRIVMSG(
                     current_nick.to_owned(),
                     format!("\u{1}{CTCP_TAG}\u{1}"),
@@ -730,6 +747,13 @@ impl PeerAvatars {
                     } else {
                         merged.extend(self.set(&nickname, |sources| sources.metadata = url));
                     }
+                }
+                Event::OwnAvatar { url: Some(_), .. } => {
+                    // The server knows ours: nothing to ask other clients.
+                    if self.own_query == OwnQuery::Pending {
+                        self.own_query = OwnQuery::Idle;
+                    }
+                    merged.push(event);
                 }
                 Event::AvatarMoved { from, to } => {
                     if !self.avatars.contains_key(&nickname_key(&to)) {
@@ -1485,5 +1509,46 @@ mod tests {
             )
             .unwrap();
         assert!(handled.events.is_empty());
+    }
+
+    #[test]
+    fn our_query_echo_is_not_answered_after_sharing_starts_until_it_could_not_return() {
+        let now = Instant::now();
+        let echo = format!(":alice!u@h {OWN_QUERY}");
+        let mut peers = own_waiting(now);
+        peers.set_share(Some(OWN_URL.into()));
+        let soon = now + PROBE_TIMEOUT / 2;
+        let handled = peers
+            .observe(&line(&echo), ME, &rosters(), false, soon)
+            .unwrap();
+        assert!(handled.send.is_empty(), "the echo of our own query");
+        // Later requests come from another client.
+        let handled = peers
+            .observe(&line(&echo), ME, &rosters(), false, now + PROBE_TIMEOUT)
+            .unwrap();
+        assert_eq!(handled.send.len(), 1);
+    }
+
+    #[test]
+    fn own_query_waits_for_metadata_and_is_dropped_when_it_knows_our_avatar() {
+        let now = Instant::now();
+        let known = Event::OwnAvatar {
+            url: Some("https://srv.example/me.png".into()),
+            request: None,
+        };
+        let mut peers = PeerAvatars::new(true, None).with_own_nick(true);
+        peers.set_own_hold(true);
+        assert_eq!(peers.next_deadline(), None);
+        assert!(peers.tick(now, ME, &rosters()).send.is_empty());
+        peers.merge_metadata(vec![known]);
+        peers.set_own_hold(false);
+        assert_eq!(peers.next_deadline(), None);
+        assert!(peers.tick(now, ME, &rosters()).send.is_empty());
+        // Metadata having nothing releases the hold: asked once.
+        let mut peers = PeerAvatars::new(true, None).with_own_nick(true);
+        peers.set_own_hold(true);
+        assert!(peers.tick(now, ME, &rosters()).send.is_empty());
+        peers.set_own_hold(false);
+        assert_eq!(wire(&peers.tick(now, ME, &rosters()).send), [OWN_QUERY]);
     }
 }

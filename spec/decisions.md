@@ -1677,7 +1677,10 @@ only. With it off nothing changes. Not verified against a real Tiarra yet.
 - **Asking**: once per connection, at the first tick after registration,
   and only when no URL is shared on this device, `PRIVMSG <our nick>
   :\x01AVATAR\x01` is sent. It is not repeated, not periodic, and not sent
-  again after a nick change. No other user is affected.
+  again after a nick change. No other user is affected. With IRCv3
+  metadata negotiated it waits for the server's answer about our own
+  avatar (the initial `METADATA * GET`): a URL there means it is not sent
+  at all; no URL, a failure or the metadata timeout releases it.
 - **Accepting**: a CTCP AVATAR NOTICE to our nickname from our nickname
   (a user prefix, not replayed) is used only while that query is waiting
   (30 s) and only the first usable URL; later, duplicate, empty, file-name
@@ -1691,6 +1694,8 @@ only. With it off nothing changes. Not verified against a real Tiarra yet.
   untouched).
 - **Answering**: a `PRIVMSG <our nick> :\x01AVATAR\x01` from our nickname is
   answered like any query (same rate limits) when a URL is shared here,
-  since it can only come from another client. While our own query waits it
-  is taken to be our own echo and is not answered, and a device that asks
-  never has a shared URL, so two devices cannot answer each other.
+  since it can only come from another client. For 30 s after our own query
+  is sent, a request from our nickname is taken to be our own echo and is
+  not answered. This echo guard is separate from the wait for the answer:
+  an answer, a timeout or sharing starting does not lift it. A device that
+  asks never has a shared URL, so two devices cannot answer each other.

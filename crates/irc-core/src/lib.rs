@@ -1978,6 +1978,7 @@ async fn run_cancellable(
     };
 
     loop {
+        worker.sync_own_query_hold();
         tokio::select! {
             command = next_command(&mut commands, &worker.events.quit) => {
                 if worker.on_command(command, &mut stream).await.is_break() {
@@ -2153,6 +2154,15 @@ impl Worker {
 
     fn waiting_for_registration(&self) -> bool {
         !self.registered && !self.awaiting_nick
+    }
+
+    /// With metadata, our own query to the nickname waits for the server's
+    /// answer about our avatar, and is sent only if there is none.
+    fn sync_own_query_hold(&mut self) {
+        let hold = self.metadata_enabled && self.metadata.own_pending();
+        if let Some(peers) = self.peers.as_mut() {
+            peers.set_own_hold(hold);
+        }
     }
 
     fn metadata_deadline(&self) -> Option<tokio::time::Instant> {

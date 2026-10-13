@@ -273,6 +273,11 @@ impl MetadataState {
         Ok(metadata_command(&args))
     }
 
+    /// Whether the server's answer about our own avatar is still to come.
+    pub(crate) fn own_pending(&self) -> bool {
+        !self.subscribed || self.own.is_some()
+    }
+
     /// The next time [`MetadataState::tick`] has something to do.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let in_flight = self.in_flight();
