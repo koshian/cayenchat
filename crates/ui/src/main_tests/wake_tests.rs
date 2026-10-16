@@ -117,7 +117,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
     });
 
     let networks = [NetworkId(1), NetworkId(2), NetworkId(3)];
-    chat.update(cx, |chat, cx| {
+    chat.update(cx, |chat, _| {
         for (network, port) in networks.into_iter().zip(&ports) {
             let session = chat.sessions.get_mut(&network).unwrap();
             session.irc = Some(Connection::connect(config(*port)).unwrap());
