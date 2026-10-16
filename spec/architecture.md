@@ -725,6 +725,37 @@ process exits at once. A
 desktop logout that drops the X or Wayland connection before signalling still ends
 GPUI with an error and sends no QUIT.
 
+#### Waking from sleep (issue #437)
+
+A connection can be dead after the machine slept without the client OS ever
+saying so (the server or a router dropped the TCP session), and the library's
+own PING only runs every 180 s. `crates/ui/src/wake.rs` only notices the
+wake-up and wakes the UI thread through a channel; it knows nothing about
+connections. The OS is asked first: `NSWorkspaceDidWakeNotification` on
+macOS, `PowerRegisterSuspendResumeNotification` (callback form, no window)
+with `PBT_APMRESUMEAUTOMATIC` and `PBT_APMRESUMESUSPEND` on Windows, and
+systemd-logind's `PrepareForSleep(false)` over the system bus (zbus) on
+Linux, where no logind means no OS notice. A thread also compares the wall
+clock with the time it slept, and a jump of 10 s or more over the interval
+counts as a wake-up: every 60 s next to an OS notice, every 5 s without one.
+Duplicate notices are harmless.
+
+The UI waits 3 s (`WAKE_GRACE`, the network may still be coming back; notices
+during the wait join the same check) and calls `Connection::check_alive()` on
+every registered connection that the user did not end. The worker sends
+`PING :cayenchat-wake-<n>` to the server (never a CTCP PING) and allows 15 s
+for **any** line from it. A server that answers is left alone, with no log
+line in the chat. A silent one ends with `Event::Disconnected("No response
+from the server after waking from sleep.")`, which takes the usual path:
+`record_disconnect`, the activity line in every channel, and the retry
+schedule. A check cannot start before registration or while another runs (the
+deadline is not extended), and the timer exists only during a check. While a
+check runs, messages and commands are held in the worker (at most the command
+queue's size; more are refused with a server line) and written, in order,
+once the server answers; if it does not, or the link fails, they are dropped
+and one server line says how many were not sent. QUIT is not held. Events of
+an earlier connection are ignored by the UI's generation check as before.
+
 `/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
 reports a connection the user ended as `Event::Closed`, which the UI never
 reconnects. Closing the main window or quitting sends QUIT on every connection and

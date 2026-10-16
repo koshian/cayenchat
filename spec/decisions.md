@@ -1270,6 +1270,24 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D053 — Verify connections after waking from sleep (#437)
+
+**Status:** Accepted
+
+- The OS's wake-up notice is the main signal (macOS, Windows, Linux with
+  logind); a wall-clock jump check is the fallback for missed notices and for
+  systems without logind. Both only say "woke up"; `ui/src/wake.rs` has no
+  knowledge of connections.
+- A woken connection is not presumed dead. `Connection::check_alive` sends an
+  IRC `PING` and gives the server 15 s to send any line; only silence ends the
+  connection, through `Event::Disconnected` and the existing reconnect
+  schedule. No new reconnect or backoff state exists.
+- Writes made during the check are held in the worker rather than written into
+  a possibly dead link, and dropped with a server line if the link is lost.
+- Details in `architecture.md` (Waking from sleep). Real wake-ups on macOS,
+  Windows and Linux are confirmed by a person before merging (platform code),
+  then on the rolling beta.
+
 ## D052 — Channel keys (`+k`) asked for on 475 and kept in the credential store (#414)
 
 **Status:** Implemented

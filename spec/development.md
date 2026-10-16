@@ -1497,3 +1497,34 @@ through its normal quit path (`vendor/gpui/PATCHES.md`).
 `scripts/e2e/xserver_loss.py --app target/debug/cayenchat` starts a session,
 kills only its Xvfb and asserts that the app exits and `app.log` stops
 growing.
+
+### Sleep and wake checks (2026-10-17, issue #437)
+
+Automated: `cargo test -p cayenchat-irc-core alive` runs the connection check
+against a local server (an answer keeps the connection and releases the
+commands held meanwhile, silence disconnects after the deadline and reports
+the held commands, overlapping requests send one `PING`, any line answers).
+The wall-clock fallback is unit-tested in `ui/src/wake.rs` with a fake clock.
+The OS notifications cannot be tested here.
+
+By a person, on each of macOS, Windows and Linux (GNOME or another desktop
+with systemd-logind), with a Test Build connected to a real network and a
+channel joined:
+
+1. Suspend for a few seconds (or close the lid) and resume with the network
+   back: nothing is disconnected or reconnected; typing works at once.
+2. Suspend for several minutes (long enough for the server or router to drop
+   idle sessions, ideally past the server's ping timeout) and resume: within
+   about 20 s the server log shows the disconnect "No response from the server
+   after waking from sleep." and then a reconnect with channels rejoined.
+3. Resume with Wi-Fi off, turn it on after a minute: the app reconnects with
+   the usual 3 to 30 s backoff, with no loop of reconnects while the network
+   is back.
+4. With two servers (one that survives, one that drops sessions), only the
+   dropped one reconnects.
+5. A server disconnected by the user stays disconnected after resume.
+
+Report the OS and version, the desktop, the suspend length, the network, and
+the connection diagnostics and server log lines around the wake-up (success
+and failure alike). On Linux also say whether logind is in use; without it
+the clock fallback notices the wake-up within about 5 s.

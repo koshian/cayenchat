@@ -5532,3 +5532,180 @@ fn unusable_channel_keys_are_refused() {
     assert!(!valid_channel_key("x y"));
     assert!(valid_channel_key("p@ss-w0rd"));
 }
+
+/// Events until `found` accepts one, panicking on a disconnect it did not ask for.
+fn wait_for_event<T>(
+    connection: &mut Connection,
+    what: &str,
+    mut found: impl FnMut(&Event) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "no {what}");
+        match connection.try_recv() {
+            Some(event) => {
+                if let Some(value) = found(&event) {
+                    return value;
+                }
+                if let Event::Disconnected(reason) = event {
+                    panic!("unexpected disconnect while waiting for {what}: {reason}");
+                }
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+fn alive_check_connection(port: u16) -> Connection {
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+    config.port = port;
+    config.use_tls = false;
+    Connection::connect(config).unwrap()
+}
+
+/// A server that answers the check keeps the connection, and what was typed
+/// meanwhile is written after the answer, not before.
+#[test]
+fn an_answered_alive_check_keeps_the_connection_and_releases_held_commands() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (pinged, ping_seen) = std_mpsc::channel();
+    let (typed, wait_typed) = std_mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        let mut socket = reader.get_ref().try_clone().unwrap();
+        let ping = read_line_starting(&mut reader, b"PING ");
+        assert!(ping.starts_with(b"PING cayenchat-wake-1"), "{ping:?}");
+        pinged.send(()).unwrap();
+        wait_typed.recv().unwrap();
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut line = Vec::new();
+        let held = reader.read_until(b'\n', &mut line);
+        assert!(held.is_err(), "written before the answer: {line:?}");
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket
+            .write_all(b":server PONG server :cayenchat-wake-1\r\n")
+            .unwrap();
+        let sent = read_line_starting(&mut reader, b"PRIVMSG ");
+        assert_eq!(sent, b"PRIVMSG #c held\r\n");
+    });
+    let mut connection = alive_check_connection(port);
+    wait_for_event(&mut connection, "registration", |event| {
+        matches!(event, Event::Registered { .. }).then_some(())
+    });
+    connection.check_alive().unwrap();
+    ping_seen.recv_timeout(Duration::from_secs(5)).unwrap();
+    connection.send_message("#c", "held", false).unwrap();
+    typed.send(()).unwrap();
+    wait_for_event(&mut connection, "held message", |event| {
+        matches!(event, Event::OutgoingAccepted { text, .. } if text == "held").then_some(())
+    });
+    server.join().unwrap();
+}
+
+/// A second request during a check neither sends another PING nor extends the
+/// deadline; any line from the server answers, and a later check starts anew.
+#[test]
+fn alive_checks_do_not_overlap_and_any_line_answers() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (pinged, ping_seen) = std_mpsc::channel();
+    let (again, wait_again) = std_mpsc::channel::<()>();
+    let (finished, wait_finished) = std_mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        let mut socket = reader.get_ref().try_clone().unwrap();
+        read_line_starting(&mut reader, b"PING cayenchat-wake-1");
+        pinged.send(()).unwrap();
+        // The duplicate request produces no second PING.
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut line = Vec::new();
+        assert!(reader.read_until(b'\n', &mut line).is_err(), "{line:?}");
+        socket.write_all(b":bob!u@h PRIVMSG alice :hi\r\n").unwrap();
+        wait_again.recv().unwrap();
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        read_line_starting(&mut reader, b"PING cayenchat-wake-2");
+        pinged.send(()).unwrap();
+        socket.write_all(b":server PONG server :x\r\n").unwrap();
+        wait_finished.recv().unwrap();
+    });
+    let mut connection = alive_check_connection(port);
+    wait_for_event(&mut connection, "registration", |event| {
+        matches!(event, Event::Registered { .. }).then_some(())
+    });
+    connection
+        .queue_alive_check(Duration::from_secs(2))
+        .unwrap();
+    connection
+        .queue_alive_check(Duration::from_secs(2))
+        .unwrap();
+    ping_seen.recv_timeout(Duration::from_secs(5)).unwrap();
+    wait_for_event(&mut connection, "private message", |event| {
+        matches!(event, Event::PrivateMessage { .. }).then_some(())
+    });
+    // The 2 s deadline has passed by the time the connection is still there.
+    thread::sleep(Duration::from_millis(2200));
+    assert!(!connection.is_closed());
+    connection
+        .queue_alive_check(Duration::from_secs(2))
+        .unwrap();
+    again.send(()).unwrap();
+    ping_seen.recv_timeout(Duration::from_secs(5)).unwrap();
+    thread::sleep(Duration::from_millis(300));
+    while let Some(event) = connection.try_recv() {
+        assert!(!matches!(event, Event::Disconnected(_)), "{event:?}");
+    }
+    finished.send(()).unwrap();
+    server.join().unwrap();
+}
+
+/// A silent server ends the connection with a reason after the deadline, and
+/// what was held is reported instead of being written into the dead link.
+#[test]
+fn an_unanswered_alive_check_disconnects_and_drops_held_commands() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        read_line_starting(&mut reader, b"PING cayenchat-wake-1");
+        // Nothing more is written to the client; read until it closes.
+        let mut rest = Vec::new();
+        while reader.read_until(b'\n', &mut rest).unwrap() > 0 {}
+        assert!(
+            !String::from_utf8_lossy(&rest).contains("PRIVMSG"),
+            "{rest:?}"
+        );
+    });
+    let mut connection = alive_check_connection(port);
+    wait_for_event(&mut connection, "registration", |event| {
+        matches!(event, Event::Registered { .. }).then_some(())
+    });
+    connection
+        .queue_alive_check(Duration::from_millis(300))
+        .unwrap();
+    connection.send_message("#c", "lost", false).unwrap();
+    let mut not_sent = false;
+    let reason = loop {
+        match connection.try_recv() {
+            Some(Event::ServerLine(line)) => not_sent |= line.contains("not sent"),
+            Some(Event::Disconnected(reason)) => break reason,
+            Some(_) => {}
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    assert_eq!(reason, ALIVE_CHECK_FAILED);
+    assert!(not_sent);
+    server.join().unwrap();
+}

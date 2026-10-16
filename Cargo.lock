@@ -926,6 +926,7 @@ name = "cayenchat-ui"
 version = "1.0.0"
 dependencies = [
  "ashpd 0.11.1",
+ "block2",
  "cayenchat-app",
  "cayenchat-irc-core",
  "cayenchat-media",
@@ -945,6 +946,7 @@ dependencies = [
  "native-theme-derive",
  "native-theme-gpui",
  "notify-rust",
+ "objc2-app-kit",
  "objc2-foundation",
  "objc2-service-management",
  "raw-window-handle",
@@ -955,6 +957,7 @@ dependencies = [
  "unicode-segmentation",
  "windows 0.61.3",
  "windows-sys 0.61.2",
+ "zbus",
 ]
 
 [[package]]

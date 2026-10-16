@@ -28,7 +28,7 @@ pub use modes::MemberMode;
 pub use peer_avatar::shareable as shareable_avatar;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt,
     ops::ControlFlow,
     sync::{
@@ -83,6 +83,14 @@ const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
 /// socket buffer; the crate checks the deadline before it looks at buffered
 /// data. This is a margin, not a bound; a dead connection still ends after it.
 const PING_TIMEOUT_SECS: u32 = 120;
+/// How long [`Connection::check_alive`] waits for any line from the server.
+/// Longer than a round trip over a network that has just come back, and
+/// short enough that a lost connection is replaced soon after waking.
+const ALIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+/// Commands held back during an alive check; further ones are refused so a
+/// check cannot grow the backlog.
+const MAX_HELD_COMMANDS: usize = COMMAND_CAPACITY;
+const ALIVE_CHECK_FAILED: &str = "No response from the server after waking from sleep.";
 /// Limits on WHOIS replies that have not reached end-of-WHOIS (318), so a
 /// hostile server cannot grow memory by never finishing them.
 const MAX_PENDING_WHOIS: usize = 32;
@@ -1350,6 +1358,9 @@ enum Outgoing {
         reference: MessageReference,
         limit: usize,
     },
+    /// Verify the link now (see [`Connection::check_alive`]); the duration is
+    /// how long the server may stay silent.
+    CheckAlive(Duration),
     Quit,
     /// `Quit` with the reason the user typed instead of the configured one.
     QuitWith(String),
@@ -1412,7 +1423,7 @@ fn validate_outgoing_relayed<'w>(
                 peer_avatar::carries_mark(encoding.label),
             )],
         )),
-        Outgoing::Quit => return Ok(()),
+        Outgoing::Quit | Outgoing::CheckAlive(_) => return Ok(()),
         Outgoing::QuitWith(reason) => IrcMessage::from(IrcCommand::QUIT(Some(reason.clone()))),
     };
     if let Outgoing::Message { encoder, .. } = outgoing {
@@ -2109,6 +2120,24 @@ impl Connection {
             .map_err(|error| format!("Could not queue history request: {error}"))
     }
 
+    /// Verifies that the server still answers, for after the machine has
+    /// slept: the worker sends a `PING` to the server and, when no line at
+    /// all arrives within [`ALIVE_CHECK_TIMEOUT`], ends with
+    /// `Event::Disconnected`. A connection that answers is left alone. Only a
+    /// registered connection is checked, and a check already running is not
+    /// restarted or extended. Messages and commands sent meanwhile are held
+    /// and written once the server has answered; if it has not, they are
+    /// reported as not sent.
+    pub fn check_alive(&self) -> Result<(), String> {
+        self.queue_alive_check(ALIVE_CHECK_TIMEOUT)
+    }
+
+    fn queue_alive_check(&self, timeout: Duration) -> Result<(), String> {
+        self.commands
+            .try_send(Outgoing::CheckAlive(timeout))
+            .map_err(|error| format!("Could not queue connection check: {error}"))
+    }
+
     /// Like [`Connection::disconnect`] for an application that is exiting:
     /// QUIT goes out even when the command or event queue is full, and the
     /// remaining events are dropped. Follow with [`Connection::wait_closed`].
@@ -2454,6 +2483,9 @@ async fn run_cancellable(
         targets_asked: false,
         // Last reported Event::HistoryAvailable.
         history_available: false,
+        alive_check: None,
+        alive_checks: 0,
+        held: VecDeque::new(),
     };
 
     loop {
@@ -2521,6 +2553,14 @@ async fn run_cancellable(
                     break;
                 }
             }
+            // The server did not answer an alive check; no timer runs
+            // otherwise.
+            _ = tokio::time::sleep_until(until(worker.alive_check)),
+                if worker.alive_check.is_some() =>
+            {
+                worker.on_alive_deadline().await;
+                break;
+            }
             _ = registration_progress.tick(), if worker.waiting_for_registration() => {
                 worker.note("Still waiting for IRC registration (001 welcome).").await;
             }
@@ -2530,6 +2570,13 @@ async fn run_cancellable(
                 worker.on_registration_timeout().await;
                 break;
             }
+        }
+        // The server answered: write what was held back meanwhile.
+        if worker.alive_check.is_none()
+            && !worker.held.is_empty()
+            && worker.flush_held(&mut stream).await.is_break()
+        {
+            break;
         }
     }
 }
@@ -2583,6 +2630,12 @@ struct Worker {
     accounts: accounts::Accounts,
     targets_asked: bool,
     history_available: bool,
+    /// When the running alive check gives up; any line from the server ends it.
+    alive_check: Option<tokio::time::Instant>,
+    /// Alive checks started, for their `PING` tokens.
+    alive_checks: u64,
+    /// Commands received during the alive check, in order.
+    held: VecDeque<Outgoing>,
 }
 
 /// The instant a `sleep_until` waits for; it is unused while the branch
@@ -2692,6 +2745,23 @@ impl Worker {
         let Some(command) = command else {
             return ControlFlow::Break(());
         };
+        if let Outgoing::CheckAlive(timeout) = command {
+            return self.start_alive_check(timeout).await;
+        }
+        // Whether the link is alive is not known yet: a write could vanish
+        // into a dead connection, so it waits for the answer. QUIT does not.
+        if self.alive_check.is_some() && !matches!(command, Outgoing::Quit | Outgoing::QuitWith(_))
+        {
+            if self.held.len() >= MAX_HELD_COMMANDS {
+                return self
+                    .emit(Event::ServerLine(
+                        "Command not sent: the connection is being checked.".into(),
+                    ))
+                    .await;
+            }
+            self.held.push_back(command);
+            return ControlFlow::Continue(());
+        }
         match command {
             Outgoing::Message {
                 target,
@@ -2728,6 +2798,7 @@ impl Worker {
                 reference,
                 limit,
             } => self.older_history(channel, request, reference, limit).await,
+            Outgoing::CheckAlive(_) => ControlFlow::Continue(()),
             outgoing @ (Outgoing::Quit | Outgoing::QuitWith(_)) => {
                 let reason = match outgoing {
                     Outgoing::QuitWith(reason) => reason,
@@ -2891,6 +2962,60 @@ impl Worker {
         self.emit_all(handled.events).await
     }
 
+    /// Asks the server for a `PONG` (any line from it counts as the answer).
+    /// Ignored before registration and while a check is already running.
+    async fn start_alive_check(&mut self, timeout: Duration) -> Flow {
+        if !self.registered || self.alive_check.is_some() {
+            return ControlFlow::Continue(());
+        }
+        self.alive_checks += 1;
+        let token = format!("cayenchat-wake-{}", self.alive_checks);
+        self.send_commands(vec![IrcCommand::PING(token, None)])
+            .await?;
+        self.alive_check = Some(tokio::time::Instant::now() + timeout);
+        self.note("Checking that the server still answers.").await;
+        ControlFlow::Continue(())
+    }
+
+    /// Ends a running alive check because the server sent a line.
+    async fn alive_check_answered(&mut self) {
+        if self.alive_check.take().is_some() {
+            self.note("The server answered the connection check.").await;
+        }
+    }
+
+    async fn on_alive_deadline(&mut self) {
+        self.alive_check = None;
+        self.report_held().await;
+        self.note("The server did not answer the connection check.")
+            .await;
+        let _ = self
+            .events
+            .send(Event::Disconnected(ALIVE_CHECK_FAILED.into()))
+            .await;
+    }
+
+    /// Tells the application that held commands were dropped with the link.
+    async fn report_held(&mut self) {
+        let count = std::mem::take(&mut self.held).len();
+        if count > 0 {
+            let _ = self
+                .events
+                .send(Event::ServerLine(format!(
+                    "{count} command(s) not sent: the connection was lost."
+                )))
+                .await;
+        }
+    }
+
+    /// Handles the commands held during a check that the server answered.
+    async fn flush_held(&mut self, stream: &mut ClientStream) -> Flow {
+        while let Some(command) = self.held.pop_front() {
+            self.on_command(Some(command), stream).await?;
+        }
+        ControlFlow::Continue(())
+    }
+
     async fn set_own_avatar(&mut self, request: u64, url: Option<String>) -> Flow {
         let queued = self.metadata.request_own(
             request,
@@ -2991,7 +3116,10 @@ impl Worker {
         incoming: Option<Result<IrcMessage, irc::error::Error>>,
     ) -> Flow {
         match incoming {
-            Some(Ok(message)) => self.on_irc_message(message).await,
+            Some(Ok(message)) => {
+                self.alive_check_answered().await;
+                self.on_irc_message(message).await
+            }
             // irc consumes 432/433 and reports NoUsableNick because no
             // alternate nicknames are configured; the link stays usable.
             Some(Err(irc::error::Error::NoUsableNick)) if !self.registered => {
@@ -3015,6 +3143,7 @@ impl Worker {
                 .await
             }
             Some(Err(error)) => {
+                self.report_held().await;
                 let detail = stream_error_detail(&error);
                 self.note(format!("IRC stream failed: {detail}")).await;
                 let event = self
@@ -3025,6 +3154,7 @@ impl Worker {
                 ControlFlow::Break(())
             }
             None => {
+                self.report_held().await;
                 self.note("Server closed the IRC stream.").await;
                 let event = self.refusal.take().map_or_else(
                     || Event::Disconnected("Server closed the connection.".into()),
