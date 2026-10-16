@@ -5709,3 +5709,68 @@ fn an_unanswered_alive_check_disconnects_and_drops_held_commands() {
     assert!(not_sent);
     server.join().unwrap();
 }
+
+/// A request the application accepted still gets its outcome event when the
+/// hold is full, and the check keeps the connection once the server answers.
+#[test]
+fn a_full_hold_still_completes_avatar_and_history_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (refused, wait_refused) = std_mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        let mut socket = reader.get_ref().try_clone().unwrap();
+        read_line_starting(&mut reader, b"PING cayenchat-wake-1");
+        wait_refused.recv().unwrap();
+        socket
+            .write_all(b":server PONG server :cayenchat-wake-1\r\n")
+            .unwrap();
+        for _ in 0..MAX_HELD_COMMANDS {
+            read_line_starting(&mut reader, b"PRIVMSG ");
+        }
+    });
+    let mut connection = alive_check_connection(port);
+    wait_for_event(&mut connection, "registration", |event| {
+        matches!(event, Event::Registered { .. }).then_some(())
+    });
+    connection.check_alive().unwrap();
+    for _ in 0..MAX_HELD_COMMANDS {
+        // The worker drains the queue; a momentarily full one is retried.
+        while connection.send_message("#c", "held", false).is_err() {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let reference = MessageReference {
+        msgid: Some("m1".into()),
+        time: None,
+    };
+    let (mut avatar, mut history) = (false, false);
+    // The worker may still be taking in the messages; keep asking until
+    // both requests were queued after the hold filled.
+    while connection.set_own_avatar(42, None).is_err() {
+        thread::sleep(Duration::from_millis(5));
+    }
+    while connection
+        .request_older_history("#c", 43, reference.clone(), 10)
+        .is_err()
+    {
+        thread::sleep(Duration::from_millis(5));
+    }
+    while !(avatar && history) {
+        match wait_for_event(&mut connection, "request outcome", |event| match event {
+            Event::OwnAvatarFailed { request: 42, .. } => Some(1),
+            Event::OlderChannelHistory {
+                request: 43,
+                status: OlderHistoryStatus::Failed,
+                ..
+            } => Some(2),
+            _ => None,
+        }) {
+            1 => avatar = true,
+            _ => history = true,
+        }
+    }
+    refused.send(()).unwrap();
+    server.join().unwrap();
+    assert!(!connection.is_closed());
+}

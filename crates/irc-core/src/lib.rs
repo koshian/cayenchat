@@ -2753,11 +2753,7 @@ impl Worker {
         if self.alive_check.is_some() && !matches!(command, Outgoing::Quit | Outgoing::QuitWith(_))
         {
             if self.held.len() >= MAX_HELD_COMMANDS {
-                return self
-                    .emit(Event::ServerLine(
-                        "Command not sent: the connection is being checked.".into(),
-                    ))
-                    .await;
+                return self.refuse_held(command).await;
             }
             self.held.push_back(command);
             return ControlFlow::Continue(());
@@ -2993,6 +2989,32 @@ impl Worker {
             .events
             .send(Event::Disconnected(ALIVE_CHECK_FAILED.into()))
             .await;
+    }
+
+    /// Refuses a command that cannot be held. A request the application
+    /// already accepted still gets the outcome event it waits for.
+    async fn refuse_held(&mut self, command: Outgoing) -> Flow {
+        match command {
+            Outgoing::OwnAvatar { request, .. } => {
+                self.emit(Event::OwnAvatarFailed {
+                    request,
+                    failure: AvatarRequestFailure::Busy,
+                })
+                .await
+            }
+            Outgoing::OlderHistory {
+                channel, request, ..
+            } => {
+                self.finish_history(history::Finished::failed_older(channel, request))
+                    .await
+            }
+            _ => {
+                self.emit(Event::ServerLine(
+                    "Command not sent: the connection is being checked.".into(),
+                ))
+                .await
+            }
+        }
     }
 
     /// Tells the application that held commands were dropped with the link.

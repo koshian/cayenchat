@@ -8639,6 +8639,10 @@ mod menu_tests;
 mod toolbar_tests;
 
 #[cfg(test)]
+#[path = "main_tests/wake_tests.rs"]
+mod wake_tests;
+
+#[cfg(test)]
 #[path = "main_tests/charset_command_tests.rs"]
 mod charset_command_tests;
 
