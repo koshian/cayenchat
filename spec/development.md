@@ -1176,27 +1176,50 @@ The README screenshot is taken under Xvfb (Linux): the window frame and
 fonts differ from macOS and Windows, so it is not used for the stores.
 
 ```sh
-cargo build --release --locked -p cayenchat-ui --features demo
-python3 scripts/screenshots/demo.py serve --port 36690 --images target/tmp/readme-shot/images &
-python3 scripts/screenshots/demo.py settings --port 36690 > target/tmp/readme-shot/settings.json
-CAYENCHAT_GUI_SESSION=target/tmp/readme-shot/gui python3 scripts/e2e/gui_session.py start \
-  --app target/release/cayenchat --settings target/tmp/readme-shot/settings.json \
-  --screen 1280x800 --window-size 1280x800 \
-  --env CAYENCHAT_PREVIEW_FIXTURE_DIR="$PWD/target/tmp/readme-shot/images"
-CAYENCHAT_GUI_SESSION=target/tmp/readme-shot/gui python3 scripts/e2e/gui_session.py move 1279 799 --still 2
+python3 scripts/screenshots/demo.py readme --out assets/screenshots/cayenchat-en.png
+python3 scripts/screenshots/demo.py readme --language japanese --out assets/screenshots/cayenchat-ja.png
+python3 scripts/screenshots/demo.py check
 ```
 
-Without `CAYENCHAT_PREVIEW_FIXTURE_DIR` the image previews and avatars do not
-load. The picture should show the avatars, the photo preview and the unread
-`#random` and `erin` entries. `python3 -m unittest discover -s
-scripts/screenshots -p 'test_*.py'` checks the generated settings.
+`readme` builds the `demo` build from the checked-out sources, starts the demo
+server and `scripts/e2e/gui_session.py`, takes the picture with the pointer
+off the menu bar, then runs the app a second time with `show_toolbar` off and
+refuses the picture unless the top of the window differs, so a picture
+without the toolbar is never kept. Add `--theme dark`, `--size` or `--display`
+as needed. When the screen stays black, set `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`
+in the environment of `demo.py`. The demo
+settings always say `show_toolbar: true`, so the picture does not depend on
+the default or on an older saved file; hiding a part of the window on purpose
+is a separate option of `settings()`.
 
-The last command moves the pointer off the menu bar before the picture is
-taken. Copy the printed PNG to `assets/screenshots/` (`cayenchat-en.png`, and
-`cayenchat-ja.png` from a second run with `--language japanese` for both
-commands), then `stop` the session and the server. Add `--env
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` when the screen stays
-black.
+`demo.py run` and `readme` always build the `demo` build of the checked-out
+sources first (`cargo build --release --locked -p cayenchat-ui --features
+demo`; cargo decides from file contents what is out of date, so `locales/`
+and `assets/` count too) and take the executable from cargo's own JSON
+artifact message, so `CARGO_TARGET_DIR` or `build.target` do not matter. The
+picture is taken from a staged copy in `target/tmp/demo-app/` with the current
+`locales/` beside it, because the app prefers catalogs next to the executable
+(or in a bundle or `/usr/share`) over the compiled-in ones. An `--app` is
+accepted only when it is byte for byte
+(SHA-256) that build, e.g. a copy of it, and the staged copy runs instead of
+it; nothing is guessed from file times or
+strings, so an old build, another feature set such as `test-build` or a
+rebuilt-by-copying binary is refused. A signed or repackaged Windows/macOS
+bundle differs from the build and is refused too: take the store pictures
+from `demo.py run` without `--app`, which starts the build itself.
+`run` writes `provenance.json` next to its settings, and `readme` records
+the commit, whether the sources were uncommitted, features, the binary's and
+the picture's SHA-256, capture time, OS, language, theme and size for each picture in
+`assets/screenshots/provenance.json`. `check` fails when the English or Japanese picture has no entry, a
+file is not the recorded one (hash), or a recorded picture
+is more than 25 commits to `crates/ui` and `crates/app` behind `HEAD` (or was
+taken from uncommitted sources); run it before a release and after changes to
+what the window shows. `python3 -m unittest discover -s scripts/screenshots -p
+'test_*.py'` checks the settings and the `--app` check (also run in CI).
+
+Without `CAYENCHAT_PREVIEW_FIXTURE_DIR` the image previews and avatars do not
+load (`readme` sets it). The picture should show the toolbar, the avatars,
+the photo preview and the unread `#random` and `erin` entries.
 
 ### IRC metadata interoperability (Ergo)
 

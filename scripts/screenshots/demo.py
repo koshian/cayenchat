@@ -2,7 +2,9 @@
 """A scripted demo conversation for store and README screenshots
 (spec/development.md, "Store screenshots").
 
-    demo.py run --app PATH [--language english|japanese] [--theme light|dark]
+    demo.py run [--app PATH] [--language english|japanese] [--theme light|dark]
+    demo.py readme --out assets/screenshots/cayenchat-en.png [--language ...]
+    demo.py check
     demo.py serve --port PORT --images DIR [--language ...]
     demo.py settings --port PORT [--language ...] [--theme ...]
 
@@ -10,8 +12,12 @@
 throwaway settings and images under --dir, starts the demo IRC server on
 127.0.0.1, launches a `demo` build of CayenChat (cargo feature `demo`) and
 waits until the conversation has been played. Take the screenshots, then press
-Enter to quit. `serve` and `settings` are the two halves, for the Xvfb flow
-with scripts/e2e/gui_session.py.
+Enter to quit. The demo build is always made first; an --app that is not
+byte for byte that build is refused. `readme` does the
+Linux/Xvfb flow in one go (build, picture, a toolbar-less run to prove the
+toolbar is on screen, entry in assets/screenshots/provenance.json) and `check`
+fails when those pictures lag behind the app. `serve` and `settings` are the
+two halves of the Xvfb flow with scripts/e2e/gui_session.py.
 
 The server speaks just enough IRC for the demo: registration, CAP with
 server-time and draft/metadata-2 (avatars), JOIN with topics and member lists,
@@ -31,6 +37,8 @@ import hashlib
 import json
 import math
 import os
+import platform
+import shutil
 import struct
 import subprocess
 import sys
@@ -233,7 +241,7 @@ def write_images(directory, script):
 
 
 # ------------------------------------------------------------------ settings
-def settings(script, port, language, theme):
+def settings(script, port, language, theme, toolbar=True):
     return {
         "version": SETTINGS_VERSION,
         "language": language,
@@ -241,6 +249,9 @@ def settings(script, port, language, theme):
         "linux_display": "x11",
         "credential_backend": "local_file",
         "selected_server": "demo",
+        # The toolbar is on by default; saying so keeps the picture the same
+        # if the default or an older saved file ever differs.
+        "show_toolbar": toolbar,
         "appearance": {"image_previews": True, "compact_urls": True},
         "servers": [{
             "id": "demo",
@@ -416,6 +427,99 @@ async def serve(script, port, played, ready=None):
         await server.serve_forever()
 
 
+# ------------------------------------------------------- build and provenance
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+REQUIRED_PICTURES = ("cayenchat-en.png", "cayenchat-ja.png")
+PROVENANCE = os.path.join(ROOT, "assets", "screenshots", "provenance.json")
+# Ends the README check: more commits than this to the app since a picture.
+README_MAX_BEHIND = 25
+
+
+def git(*args):
+    return subprocess.run(["git", "-C", ROOT, *args], capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for block in iter(lambda: file.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def executable_of(messages):
+    """The executable cargo reports for the `cayenchat` binary in its JSON
+    messages (wherever target-dir or build.target put it)."""
+    found = None
+    for line in messages.splitlines():
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if (message.get("reason") == "compiler-artifact" and message.get("executable")
+                and message.get("target", {}).get("name") == "cayenchat"
+                and "bin" in message["target"].get("kind", [])):
+            found = message["executable"]
+    return found
+
+
+def build_demo():
+    """Builds the `demo` build of the checked-out sources (cargo decides what
+    is out of date, from the file contents it tracks) and returns the
+    executable cargo itself reports for that build."""
+    result = subprocess.run(
+        ["cargo", "build", "--release", "--locked", "-p", "cayenchat-ui", "--features", "demo",
+         "--message-format=json-render-diagnostics"],
+        cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    built = executable_of(result.stdout)
+    if not built or not os.path.isfile(built):
+        sys.exit("cargo did not report the cayenchat executable of the demo build")
+    return built
+
+
+def stage(built):
+    """A private copy of the build with the current `locales/` beside it. The
+    app prefers catalogs next to the executable, in a bundle or installed
+    under /usr/share over the ones compiled in, so the picture is taken from
+    a copy whose neighbours are the current sources."""
+    directory = os.path.join(ROOT, "target", "tmp", "demo-app")
+    shutil.rmtree(directory, ignore_errors=True)
+    os.makedirs(directory)
+    staged = os.path.join(directory, os.path.basename(built))
+    shutil.copy2(built, staged)
+    shutil.copytree(os.path.join(ROOT, "locales"), os.path.join(directory, "locales"))
+    return staged
+
+
+def resolve_app(args):
+    """The binary to run: a staged copy of the demo build made now. An --app
+    is accepted only when it is byte for byte that build, so it has the current
+    sources and the `demo` feature; nothing is guessed from times or strings.
+    The file that runs is always the staged copy, not --app."""
+    built = build_demo()
+    if args.app and (not os.path.isfile(args.app) or sha256(args.app) != sha256(built)):
+        sys.exit(f"refusing {args.app}: it is not identical to the demo build of the current "
+                 f"sources ({built}); copy that file, or leave out --app")
+    return stage(built)
+
+
+def provenance(app, args, size):
+    """What was verified: `app` is the demo build of HEAD (resolve_app)."""
+    return {
+        "commit": git("rev-parse", "HEAD"),
+        "dirty": bool(git("status", "--porcelain", "--", ".", ":!assets/screenshots")),
+        "features": ["demo"],
+        "binary_sha256": sha256(app),
+        "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "os": f"{platform.system()} {platform.release()}",
+        "language": args.language,
+        "theme": args.theme,
+        "size": size,
+        "show_toolbar": True,
+    }
+
+
 # ------------------------------------------------------------------ commands
 def script_for(args):
     return SCRIPTS[args.language]
@@ -445,9 +549,9 @@ def private_directory(path):
 
 def command_run(args):
     script = script_for(args)
+    app_path = resolve_app(args)
     directory = os.path.abspath(args.dir or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "tmp",
-        f"screenshots-{args.language}-{args.theme}"))
+        ROOT, "target", "tmp", f"screenshots-{args.language}-{args.theme}"))
     config = os.path.join(directory, "settings")
     images = os.path.join(directory, "images")
     private_directory(directory)
@@ -459,6 +563,9 @@ def command_run(args):
                   ensure_ascii=False)
     with open(os.path.join(config, "window.json"), "w", encoding="utf-8") as file:
         json.dump(layout(width, height), file, indent=2)
+    with open(os.path.join(directory, "provenance.json"), "w", encoding="utf-8") as file:
+        json.dump(provenance(app_path, args, args.size), file, indent=2)
+    print(f"provenance: {directory}/provenance.json", flush=True)
 
     played, ready = threading.Event(), threading.Event()
     thread = threading.Thread(target=lambda: asyncio.run(serve(script, args.port, played, ready)),
@@ -469,7 +576,7 @@ def command_run(args):
 
     env = dict(os.environ, CAYENCHAT_TEST_DIR=config, CAYENCHAT_PREVIEW_FIXTURE_DIR=images)
     log = open(os.path.join(directory, "app.log"), "w")
-    app = subprocess.Popen([args.app], env=env, stdin=subprocess.DEVNULL, stdout=log,
+    app = subprocess.Popen([app_path], env=env, stdin=subprocess.DEVNULL, stdout=log,
                            stderr=subprocess.STDOUT)
     print(f"CayenChat started (pid {app.pid}); settings in {config}", flush=True)
     while not played.wait(1):
@@ -490,6 +597,108 @@ def command_run(args):
         app.kill()
 
 
+def capture(args, script, directory, toolbar, name):
+    """One Xvfb run with gui_session.py: the settled window, as raw rows and
+    as the PNG gui_session.py saved."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts", "e2e"))
+    import gui_session
+
+    images = os.path.join(directory, "images")
+    write_images(images, script)
+    settings_path = os.path.join(directory, f"settings-{name}.json")
+    with open(settings_path, "w", encoding="utf-8") as file:
+        json.dump(settings(script, args.port, args.language, args.theme, toolbar), file, indent=2,
+                  ensure_ascii=False)
+    session = os.path.join(directory, f"gui-{name}")
+    env = dict(os.environ, CAYENCHAT_GUI_SESSION=session)
+    tool = os.path.join(ROOT, "scripts", "e2e", "gui_session.py")
+    width, height = args.size.split("x")
+
+    def run(*command):
+        return subprocess.run([sys.executable, tool, *command], env=env, check=True,
+                              capture_output=True, text=True).stdout
+
+    args.played.clear()
+    run("start", "--app", args.app_path, "--settings", settings_path, "--display", args.display,
+        "--screen", args.size, "--window-size", args.size,
+        "--env", f"CAYENCHAT_PREVIEW_FIXTURE_DIR={images}")
+    try:
+        if not args.played.wait(60):
+            sys.exit("the demo conversation was not played")
+        # Off the menu bar, so no menu is highlighted.
+        out = run("move", str(int(width) - 1), str(int(height) - 1), "--still", "2")
+        png = out.strip().splitlines()[-1].split(" (")[0]
+        rows = gui_session.display_for(gui_session.load(session)).grab()[2]
+        return png, rows
+    finally:
+        run("stop")
+
+
+def command_readme(args):
+    script = script_for(args)
+    args.app_path = resolve_app(args)
+    directory = os.path.join(ROOT, "target", "tmp", f"readme-shot-{args.language}-{args.theme}")
+    private_directory(directory)
+    args.played, ready = threading.Event(), threading.Event()
+    threading.Thread(target=lambda: asyncio.run(serve(script, args.port, args.played, ready)),
+                     daemon=True).start()
+    if not ready.wait(10):
+        sys.exit(f"the demo server could not listen on 127.0.0.1:{args.port}")
+    png, shown = capture(args, script, directory, True, "toolbar")
+    # The same picture with the toolbar hidden: the top of the window must
+    # differ, or the toolbar did not reach the screen.
+    _, hidden = capture(args, script, directory, False, "no-toolbar")
+    top = slice(0, 160)
+    if shown[top] == hidden[top]:
+        sys.exit("the toolbar is not on the screen: the top of the window is the same "
+                 "with and without it; not using this picture")
+    print("ok: the toolbar is rendered (the window differs from the toolbar-less one)")
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    shutil.copyfile(png, args.out)
+    try:
+        with open(PROVENANCE, encoding="utf-8") as file:
+            recorded = json.load(file)
+    except FileNotFoundError:
+        recorded = {}
+    entry = provenance(args.app_path, args, args.size)
+    entry["image_sha256"] = sha256(args.out)
+    recorded[os.path.basename(args.out)] = entry
+    os.makedirs(os.path.dirname(PROVENANCE), exist_ok=True)
+    with open(PROVENANCE, "w", encoding="utf-8") as file:
+        json.dump(recorded, file, indent=2, sort_keys=True)
+        file.write("\n")
+    print(f"wrote {args.out} and its entry in {os.path.relpath(PROVENANCE, ROOT)}")
+
+
+def command_check(args):
+    """Fails when a recorded picture is older than --max-behind commits to
+    the app's own crates."""
+    with open(PROVENANCE, encoding="utf-8") as file:
+        recorded = json.load(file)
+    late = False
+    for name in REQUIRED_PICTURES:
+        if name not in recorded:
+            print(f"{name}: no entry")
+            late = True
+    for name, entry in sorted(recorded.items()):
+        try:
+            behind = int(git("rev-list", "--count", f"{entry['commit']}..HEAD", "--",
+                             "crates/ui", "crates/app"))
+        except subprocess.CalledProcessError:
+            behind = None
+        note = "unknown commit" if behind is None else f"{behind} commits behind"
+        if entry.get("dirty"):
+            note += ", taken from uncommitted sources"
+        path = os.path.join(os.path.dirname(PROVENANCE), name)
+        if not os.path.isfile(path) or sha256(path) != entry.get("image_sha256"):
+            note += ", the file is not the recorded picture"
+            late = True
+        print(f"{name}: {entry['commit'][:10]} {entry['captured']}, {note}")
+        late |= behind is None or behind > args.max_behind or bool(entry.get("dirty"))
+    if late:
+        sys.exit(f"take the pictures again (demo.py readme); limit is {args.max_behind} commits")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -500,15 +709,34 @@ def main():
         if port:
             command.add_argument("--port", type=int, default=36690)
 
+    def app_options(command):
+        command.add_argument("--app", help="must be identical to the demo build made now "
+                             "(default: that build, target/release/cayenchat)")
+
     command = commands.add_parser("run", help="start the server and a demo build, then wait")
     common(command)
-    command.add_argument("--app", required=True,
-                         help="a CayenChat binary built with --features demo")
+    app_options(command)
     command.add_argument("--theme", default="light", choices=["light", "dark"])
     command.add_argument("--size", default="1280x800",
                          help="window size in logical pixels (restored from window.json)")
     command.add_argument("--dir", help="working directory (default target/tmp/screenshots-...)")
     command.set_defaults(func=command_run)
+
+    command = commands.add_parser(
+        "readme", help="build, take the README picture under Xvfb, check the toolbar is on it")
+    common(command)
+    app_options(command)
+    command.add_argument("--theme", default="light", choices=["light", "dark"])
+    command.add_argument("--size", default="1280x800", help="screen and window size")
+    command.add_argument("--display", default=":98", help="Xvfb display")
+    command.add_argument("--out", required=True, help="PNG to write, e.g. assets/screenshots/cayenchat-en.png")
+    command.set_defaults(func=command_readme)
+
+    command = commands.add_parser(
+        "check", help="fail when the pictures in assets/screenshots lag behind the app")
+    command.add_argument("--max-behind", type=int, default=README_MAX_BEHIND,
+                         help="commits to crates/ui and crates/app allowed since a picture")
+    command.set_defaults(func=command_check)
 
     command = commands.add_parser("serve", help="only run the demo server")
     common(command)
