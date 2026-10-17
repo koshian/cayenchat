@@ -288,6 +288,7 @@ mod platform {
 mod platform {
     use super::*;
     use block2::RcBlock;
+    use core_foundation::base::TCFType;
     use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
     use core_foundation_sys::runloop::CFRunLoopSourceRef;
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
