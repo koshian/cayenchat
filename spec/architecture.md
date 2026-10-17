@@ -707,7 +707,10 @@ without a version change). Disconnect and quitting the app send it as the `QUIT`
 reason; blank means "Leaving CayenChat". It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
 connection starts, so an edit applies from the next connection. Lost connections
-send no QUIT.
+send no QUIT. A second optional message, `sleep_quit_message` (issue #445, same
+treatment, blank in older files), is the QUIT reason sent before sleep; blank
+means the QUIT message above, which in turn defaults as above. It is validated
+like the QUIT message.
 
 Each server profile also has an optional PART message (`part_message`, issue #319;
 added without a version change), independent of the QUIT message. Blank means no
@@ -766,6 +769,33 @@ queue's size; more are refused with a server line) and written, in order,
 once the server answers; if it does not, or the link fails, they are dropped
 and one server line says how many were not sent. QUIT is not held. Events of
 an earlier connection are ignored by the UI's generation check as before.
+
+##### QUIT before sleep (issue #445)
+
+`wake.rs` also announces the sleep: on macOS an `IORegisterForSystemPower`
+registration whose run loop source sits on a thread of its own (the main thread
+is never blocked and no run loop is nested; `kIOMessageSystemWillSleep` waits
+for the UI, `kIOMessageCanSystemSleep` is allowed at once, and
+`IOAllowPowerChange` is called exactly once per message; a failed registration
+is logged and left to the clock check), `PBT_APMSUSPEND` in the same Windows callback, and logind's
+`PrepareForSleep(true)` on Linux, where a `delay` inhibitor lock
+(`Inhibit("sleep", "CayenChat", …)`) is held while running, released once the
+UI is done and taken again on wake. The notice carries a `SleepNotice` guard
+that the UI drops when finished; the OS-side handler waits for that for at most
+1.5 s.
+
+`ChatWindow::prepare_for_sleep` marks each session that is not a manual
+disconnect `asleep` and, for all at once, calls `Connection::sleep(reason)`
+(registered: worker writes `QUIT :<sleep message>` and waits at most 1 s
+(`SLEEP_FLUSH_LIMIT`) for the server to close, then reports `Event::Closed`) or
+the same signal for one still registering (closed at once, no QUIT). The UI waits at
+most 1 s in total (`SLEEP_WAIT`) for the workers; the rest is left to them. An
+`asleep` session's `Closed` does not set `manual_disconnect`, and
+`schedule_retry` does nothing for it. On the wake-up `check_connections_after_wake`
+reconnects the `asleep` sessions with `start_reconnect` (retry attempt reset, so a
+failure backs off 3→6→12→24→30 s, with auto-join and history resume as for any
+reconnect) and checks the other live ones as before. Disconnect, Connect,
+Reconnect and quitting clear `asleep`.
 
 `/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
 reports a connection the user ended as `Event::Closed`, which the UI never

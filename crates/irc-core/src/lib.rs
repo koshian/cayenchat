@@ -71,6 +71,9 @@ pub const QUIT_WAIT: Duration = Duration::from_secs(2);
 /// after it. Kept below [`QUIT_WAIT`] so the worker ends on its own before
 /// the wait does.
 const QUIT_FLUSH_LIMIT: Duration = Duration::from_millis(1500);
+/// The same for a QUIT before sleep, where the system allows little time.
+pub const SLEEP_FLUSH_LIMIT: Duration = Duration::from_secs(1);
+const SLEEP_DISCONNECT: &str = "Disconnected before sleep.";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Servers may hold registration until their ident (RFC 1413) and DNS lookups
 /// finish. IRCnet waits about 30 seconds when the client's port 113 silently
@@ -146,6 +149,9 @@ pub struct ConnectionConfig {
     /// The `QUIT` reason sent on a normal disconnect; empty means the
     /// built-in default.
     pub quit_message: String,
+    /// The `QUIT` reason sent just before the machine sleeps; empty means
+    /// `quit_message`.
+    pub sleep_quit_message: String,
     /// The `PART` reason for a `PART` without an explicit one; empty means
     /// no reason. Independent of `quit_message`.
     pub part_message: String,
@@ -191,6 +197,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("username", &self.username)
             .field("realname", &self.realname)
             .field("quit_message", &self.quit_message)
+            .field("sleep_quit_message", &self.sleep_quit_message)
             .field("part_message", &self.part_message)
             .field("channels", &self.channels)
             .field("channel_keys", &self.channel_keys.len())
@@ -222,6 +229,7 @@ impl ConnectionConfig {
             username: nickname.clone(),
             realname: String::new(),
             quit_message: String::new(),
+            sleep_quit_message: String::new(),
             part_message: String::new(),
             nickname,
             channels,
@@ -263,6 +271,38 @@ impl ConnectionConfig {
         } else {
             configured.to_owned()
         }
+    }
+
+    /// The `QUIT` reason before sleep: the configured sleep message, else
+    /// the normal one ([`ConnectionConfig::wire_quit_message`]).
+    pub fn wire_sleep_quit_message(&self) -> String {
+        let configured = self.sleep_quit_message.trim();
+        if configured.is_empty() {
+            self.wire_quit_message()
+        } else {
+            configured.to_owned()
+        }
+    }
+
+    /// The `QUIT` reason to send before sleep, checked against this
+    /// connection's encoding and the wire limit like [`ConnectionConfig::validate`].
+    /// Settings saved after connecting skip `validate`, so a value that fails
+    /// falls back to the normal message, then to the default: the QUIT must
+    /// still go out.
+    pub fn checked_sleep_quit_message(&self) -> String {
+        [self.wire_sleep_quit_message(), self.wire_quit_message()]
+            .into_iter()
+            .find(|reason| self.quit_reason_fits(reason))
+            .unwrap_or_else(|| QUIT_MESSAGE.to_owned())
+    }
+
+    /// Whether `reason` (blank counts) is a valid `QUIT` reason for this
+    /// connection: no line breaks or NUL, representable in its encoding and
+    /// within the wire limit.
+    pub fn quit_reason_fits(&self, reason: &str) -> bool {
+        let reason = reason.trim();
+        !reason.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+            && validate_wire(&format!("QUIT :{reason}\r\n"), &self.encoding).is_ok()
     }
 
     /// The default `PART` reason: the trimmed configured message, if any.
@@ -307,6 +347,17 @@ impl ConnectionConfig {
         }
         validate_wire(
             &format!("QUIT :{}\r\n", self.wire_quit_message()),
+            &self.encoding,
+        )?;
+        if self
+            .sleep_quit_message
+            .chars()
+            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+        {
+            return Err("Sleep quit message must not contain line breaks.".into());
+        }
+        validate_wire(
+            &format!("QUIT :{}\r\n", self.wire_sleep_quit_message()),
             &self.encoding,
         )?;
         if self
@@ -935,19 +986,38 @@ pub enum MemberCommand {
     Deop { channel: String },
 }
 
-/// Set by [`Connection::shutdown`]. It reaches the worker without going
-/// through the command or event queues, which a flooded or undrained
-/// connection can leave full.
+/// Set by [`Connection::shutdown`] and [`Connection::sleep`]. It reaches the
+/// worker without going through the command or event queues, which a flooded
+/// or undrained connection can leave full.
 #[derive(Default)]
 struct QuitSignal {
     requested: AtomicBool,
+    /// The QUIT message of a request made for sleep; none for a plain quit.
+    sleep_reason: Mutex<Option<String>>,
     wake: Notify,
 }
 
 impl QuitSignal {
     fn request(&self) {
+        if let Ok(mut reason) = self.sleep_reason.lock() {
+            *reason = None;
+        }
         self.requested.store(true, Ordering::SeqCst);
         self.wake.notify_one();
+    }
+
+    fn request_sleep(&self, reason: String) {
+        if let Ok(mut slot) = self.sleep_reason.lock()
+            && !self.is_requested()
+        {
+            *slot = Some(reason);
+        }
+        self.requested.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    fn take_sleep_reason(&self) -> Option<String> {
+        self.sleep_reason.lock().ok()?.take()
     }
 
     fn is_requested(&self) -> bool {
@@ -992,14 +1062,18 @@ impl EventSender {
     }
 }
 
-/// The next command, with a shutdown request counting as a plain quit.
+/// The next command, with a shutdown request counting as a plain quit and a
+/// sleep request as a sleep quit.
 async fn next_command(
     commands: &mut mpsc::Receiver<Outgoing>,
     quit: &QuitSignal,
 ) -> Option<Outgoing> {
     tokio::select! {
         biased;
-        _ = quit.requested() => Some(Outgoing::Quit),
+        _ = quit.requested() => Some(match quit.take_sleep_reason() {
+            Some(reason) => Outgoing::SleepQuit(reason),
+            None => Outgoing::Quit,
+        }),
         command = commands.recv() => command,
     }
 }
@@ -1364,6 +1438,9 @@ enum Outgoing {
     Quit,
     /// `Quit` with the reason the user typed instead of the configured one.
     QuitWith(String),
+    /// `Quit` for a machine about to sleep: the given reason, and a shorter
+    /// wait for the server to close ([`SLEEP_FLUSH_LIMIT`]).
+    SleepQuit(String),
 }
 
 #[cfg(test)]
@@ -1424,7 +1501,9 @@ fn validate_outgoing_relayed<'w>(
             )],
         )),
         Outgoing::Quit | Outgoing::CheckAlive(_) => return Ok(()),
-        Outgoing::QuitWith(reason) => IrcMessage::from(IrcCommand::QUIT(Some(reason.clone()))),
+        Outgoing::QuitWith(reason) | Outgoing::SleepQuit(reason) => {
+            IrcMessage::from(IrcCommand::QUIT(Some(reason.clone())))
+        }
     };
     if let Outgoing::Message { encoder, .. } = outgoing {
         let fixed = Fixed(*encoder);
@@ -2146,6 +2225,18 @@ impl Connection {
         self.quit.request();
     }
 
+    /// Like [`Connection::disconnect`] for a machine about to sleep: QUIT
+    /// carries `reason` and the worker waits at most [`SLEEP_FLUSH_LIMIT`]
+    /// for the server to close. It ends with `Event::Closed`, which the
+    /// caller must tell apart from a disconnect by the user. Follow with
+    /// [`Connection::wait_closed`]. A worker still connecting ends at once.
+    /// Like [`Connection::shutdown`] it bypasses the command and event
+    /// queues, so a full one cannot hold the QUIT or the time limit back.
+    pub fn sleep(&self, reason: &str) {
+        self.cancel.notify_one();
+        self.quit.request_sleep(reason.to_owned());
+    }
+
     pub fn disconnect(&self) -> Result<(), String> {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
@@ -2750,7 +2841,11 @@ impl Worker {
         }
         // Whether the link is alive is not known yet: a write could vanish
         // into a dead connection, so it waits for the answer. QUIT does not.
-        if self.alive_check.is_some() && !matches!(command, Outgoing::Quit | Outgoing::QuitWith(_))
+        if self.alive_check.is_some()
+            && !matches!(
+                command,
+                Outgoing::Quit | Outgoing::QuitWith(_) | Outgoing::SleepQuit(_)
+            )
         {
             if self.held.len() >= MAX_HELD_COMMANDS {
                 return self.refuse_held(command).await;
@@ -2795,12 +2890,25 @@ impl Worker {
                 limit,
             } => self.older_history(channel, request, reference, limit).await,
             Outgoing::CheckAlive(_) => ControlFlow::Continue(()),
+            Outgoing::SleepQuit(_) if !self.registered => {
+                // Still registering: close as is, without QUIT or waiting.
+                let _ = self
+                    .events
+                    .send(Event::Closed(SLEEP_DISCONNECT.into()))
+                    .await;
+                ControlFlow::Break(())
+            }
+            Outgoing::SleepQuit(reason) => {
+                self.quit(reason, SLEEP_FLUSH_LIMIT, SLEEP_DISCONNECT, stream)
+                    .await
+            }
             outgoing @ (Outgoing::Quit | Outgoing::QuitWith(_)) => {
                 let reason = match outgoing {
                     Outgoing::QuitWith(reason) => reason,
                     _ => self.quit_message.clone(),
                 };
-                self.quit(reason, stream).await
+                self.quit(reason, QUIT_FLUSH_LIMIT, USER_DISCONNECT, stream)
+                    .await
             }
         }
     }
@@ -3109,7 +3217,13 @@ impl Worker {
         }
     }
 
-    async fn quit(&mut self, reason: String, stream: &mut ClientStream) -> Flow {
+    async fn quit(
+        &mut self,
+        reason: String,
+        flush_limit: Duration,
+        closed: &str,
+        stream: &mut ClientStream,
+    ) -> Flow {
         let quit = IrcMessage::from(IrcCommand::QUIT(Some(reason)));
         let line = self.transcript.line(&quit);
         if self.client.send(quit).is_ok() {
@@ -3122,14 +3236,11 @@ impl Worker {
         // EOF is taken as send completion: the server is assumed to close
         // only after receiving QUIT. A close before that is the server's own
         // doing, and a write after it would be reset, so waiting is futile.
-        let _ = tokio::time::timeout(QUIT_FLUSH_LIMIT, async {
+        let _ = tokio::time::timeout(flush_limit, async {
             while let Some(Ok(_)) = stream.next().await {}
         })
         .await;
-        let _ = self
-            .events
-            .send(Event::Closed(USER_DISCONNECT.into()))
-            .await;
+        let _ = self.events.send(Event::Closed(closed.into())).await;
         ControlFlow::Break(())
     }
 

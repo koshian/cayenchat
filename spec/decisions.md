@@ -1270,6 +1270,50 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D054 — QUIT before sleep, reconnect on wake (#445)
+
+**Status:** Accepted
+
+- A connection that merely goes quiet in sleep leaves a stale session on the
+  server until its ping timeout (nickname still taken, channel status lost
+  on reconnect, "ping timeout" shown to others). So when the OS announces the
+  sleep, every registered connection sends `QUIT` with the sleep message and
+  is closed; ones still connecting are closed without QUIT.
+- The ended sessions are marked `asleep`: not a manual disconnect, and no
+  retry is scheduled. The wake-up reconnects exactly those (after the existing
+  3 s `WAKE_GRACE`) and from then on the usual retry schedule applies. Servers
+  the user disconnected are never touched.
+- The sleep request travels in `QuitSignal` like `shutdown()`, with the
+  message, not through the command or event queues: a full queue cannot hold
+  back the QUIT or the 1 s limit. A session waiting to retry after an error
+  is marked `asleep` too and its timer invalidated, so it cannot connect just
+  before the machine sleeps; the wake-up reconnects it.
+- A connection still registering is closed by the worker without QUIT (the same
+  signal), so a full queue cannot keep its socket open either.
+- macOS gets the notice from IOKit (`IORegisterForSystemPower`) on a dedicated
+  thread with its own `CFRunLoop`, which waits for the UI (at most 1.5 s) and
+  then calls `IOAllowPowerChange` once; the main thread is never blocked and no
+  run loop is nested. `NSWorkspaceWillSleepNotification` is not used, as
+  holding its handler does not delay the sleep. Wake stays
+  `NSWorkspaceDidWakeNotification`.
+- D053's check after waking stays as the fallback for sleeps the OS does not
+  announce (forced sleep, Linux without logind).
+- Accepted limitation: if the sleep is announced but the machine never reports
+  a wake-up (a cancelled sleep without a wake notice on the platform), the
+  servers stay disconnected until the user reconnects them; the clock check
+  catches only real suspensions. Bouncers keep the upstream connection on
+  `QUIT`, so they are unaffected.
+- `quit_message` and `sleep_quit_message` are copied into the live
+  connection's config when the settings are saved, not only at connect time,
+  so a sleep message edited after connecting is the one sent. Saving does
+  not validate them against the live connection, so each is checked (line
+  breaks, encoding, wire length) before it is copied; an invalid one leaves
+  the previous value in place, which keeps the reconnect's `validate()`
+  passing. The sleep QUIT checks again just before sending and falls back to
+  the normal message, then the default. A normal QUIT and the default PART
+  still use the values from connect time (separate matter).
+- Details in `architecture.md` (Waking from sleep).
+
 ## D053 — Verify connections after waking from sleep (#437)
 
 **Status:** Accepted
