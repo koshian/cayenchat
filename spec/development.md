@@ -1543,6 +1543,11 @@ a server whose log shows QUITs: suspend, check the server saw
 resume and see the reconnect after about 3 s with the nickname and channel
 status back; a manually disconnected server stays disconnected; on Linux also
 that `systemd-inhibit --list` shows the CayenChat delay lock while running.
+On macOS specifically: connect to a server, watch it from a second client
+(another machine or a second nick), put the Mac to sleep from the Apple menu
+and check the second client sees `Quit: <sleep message>` for the first, then
+wake the Mac and check it reconnects after about 3 s; also idle-sleep once and
+check the sleep is not refused or delayed by 30 s.
 
 By a person, on each of macOS, Windows and Linux (GNOME or another desktop
 with systemd-logind), with a Test Build connected to a real network and a

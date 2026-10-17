@@ -1290,6 +1290,12 @@ future work. Details in `architecture.md` (Channel history).
   before the machine sleeps; the wake-up reconnects it.
 - A connection still registering is closed by the worker without QUIT (the same
   signal), so a full queue cannot keep its socket open either.
+- macOS gets the notice from IOKit (`IORegisterForSystemPower`) on a dedicated
+  thread with its own `CFRunLoop`, which waits for the UI (at most 1.5 s) and
+  then calls `IOAllowPowerChange` once; the main thread is never blocked and no
+  run loop is nested. `NSWorkspaceWillSleepNotification` is not used, as
+  holding its handler does not delay the sleep. Wake stays
+  `NSWorkspaceDidWakeNotification`.
 - D053's check after waking stays as the fallback for sleeps the OS does not
   announce (forced sleep, Linux without logind).
 - Accepted limitation: if the sleep is announced but the machine never reports

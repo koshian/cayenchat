@@ -772,20 +772,23 @@ an earlier connection are ignored by the UI's generation check as before.
 
 ##### QUIT before sleep (issue #445)
 
-`wake.rs` also announces the sleep: `NSWorkspaceWillSleepNotification` on
-macOS, `PBT_APMSUSPEND` in the same Windows callback, and logind's
+`wake.rs` also announces the sleep: on macOS an `IORegisterForSystemPower`
+registration whose run loop source sits on a thread of its own (the main thread
+is never blocked and no run loop is nested; `kIOMessageSystemWillSleep` waits
+for the UI, `kIOMessageCanSystemSleep` is allowed at once, and
+`IOAllowPowerChange` is called exactly once per message; a failed registration
+is logged and left to the clock check), `PBT_APMSUSPEND` in the same Windows callback, and logind's
 `PrepareForSleep(true)` on Linux, where a `delay` inhibitor lock
 (`Inhibit("sleep", "CayenChat", …)`) is held while running, released once the
 UI is done and taken again on wake. The notice carries a `SleepNotice` guard
 that the UI drops when finished; the OS-side handler waits for that for at most
-1.5 s (on macOS's main thread it keeps the run loop turning meanwhile, since
-the UI thread is the main thread).
+1.5 s.
 
 `ChatWindow::prepare_for_sleep` marks each session that is not a manual
 disconnect `asleep` and, for all at once, calls `Connection::sleep(reason)`
 (registered: worker writes `QUIT :<sleep message>` and waits at most 1 s
 (`SLEEP_FLUSH_LIMIT`) for the server to close, then reports `Event::Closed`) or
-`Connection::disconnect()` (still connecting: closed at once). The UI waits at
+the same signal for one still registering (closed at once, no QUIT). The UI waits at
 most 1 s in total (`SLEEP_WAIT`) for the workers; the rest is left to them. An
 `asleep` session's `Closed` does not set `manual_disconnect`, and
 `schedule_retry` does nothing for it. On the wake-up `check_connections_after_wake`

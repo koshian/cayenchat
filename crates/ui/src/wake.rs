@@ -8,8 +8,9 @@
 //! notice of the sleep came. This module only notices the two events and
 //! sends them through channels; it knows nothing about connections.
 //!
-//! The OS is asked first: `NSWorkspaceWillSleepNotification` and
-//! `NSWorkspaceDidWakeNotification` on macOS, the suspend/resume callback
+//! The OS is asked first: IOKit power messages (`kIOMessageSystemWillSleep`,
+//! on a thread of their own) and `NSWorkspaceDidWakeNotification` on macOS,
+//! the suspend/resume callback
 //! from `PowerRegisterSuspendResumeNotification` on Windows (no window
 //! involved) and logind's `PrepareForSleep` on Linux, where a delay
 //! inhibitor lock gives the UI time before the sleep starts. The OS is held
@@ -287,30 +288,115 @@ mod platform {
 mod platform {
     use super::*;
     use block2::RcBlock;
-    use objc2_app_kit::{
-        NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
-    };
-    use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSNotification, NSRunLoop, NSThread};
+    use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
+    use core_foundation_sys::runloop::CFRunLoopSourceRef;
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
+    use objc2_foundation::NSNotification;
+    use std::ffi::c_void;
     use std::ptr::NonNull;
-    use std::sync::mpsc::TryRecvError;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// Waits for the UI to finish. The notice is posted on the main thread,
-    /// which is also the UI thread: blocking it would keep the UI from ever
-    /// getting to the notice, so the run loop is kept turning meanwhile.
-    fn wait_for_ui(finished: std::sync::mpsc::Receiver<()>) {
-        if !NSThread::isMainThread_class() {
-            let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
+    type IoConnect = u32;
+    type IoObject = u32;
+    type IoReturn = i32;
+    type NotificationPort = *mut c_void;
+    type InterestCallback = extern "C" fn(*mut c_void, IoObject, u32, *mut c_void);
+
+    /// `kIOMessageCanSystemSleep`: the system asks whether it may idle-sleep.
+    const CAN_SYSTEM_SLEEP: u32 = 0xe000_0270;
+    /// `kIOMessageSystemWillSleep`: the sleep starts once every client allows it.
+    const SYSTEM_WILL_SLEEP: u32 = 0xe000_0280;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IORegisterForSystemPower(
+            refcon: *mut c_void,
+            notify_port: *mut NotificationPort,
+            callback: InterestCallback,
+            notifier: *mut IoObject,
+        ) -> IoConnect;
+        fn IONotificationPortGetRunLoopSource(notify: NotificationPort) -> CFRunLoopSourceRef;
+        fn IOAllowPowerChange(root_port: IoConnect, notification_id: isize) -> IoReturn;
+    }
+
+    /// What the power callback needs; leaked, as the registration lasts as
+    /// long as the process.
+    struct Context {
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+        /// The root power domain port, set before the run loop starts.
+        root_port: AtomicU32,
+    }
+
+    extern "C" fn on_power_message(
+        refcon: *mut c_void,
+        _service: IoObject,
+        message_type: u32,
+        argument: *mut c_void,
+    ) {
+        if message_type != CAN_SYSTEM_SLEEP && message_type != SYSTEM_WILL_SLEEP {
             return;
         }
-        let deadline = std::time::Instant::now() + SLEEP_ACK_LIMIT;
-        let run_loop = NSRunLoop::currentRunLoop();
-        while matches!(finished.try_recv(), Err(TryRecvError::Empty))
-            && std::time::Instant::now() < deadline
+        // SAFETY: `refcon` is the leaked `Context` given at registration, which
+        // is never freed.
+        let context = unsafe { &*refcon.cast::<Context>() };
+        if message_type == SYSTEM_WILL_SLEEP
+            && let Some(finished) = announce_sleep(&context.sleep)
         {
-            let until = NSDate::dateWithTimeIntervalSinceNow(0.02);
-            // SAFETY: the default mode is a valid run loop mode.
-            let _ = run_loop.runMode_beforeDate(unsafe { NSDefaultRunLoopMode }, &until);
+            // This is the dedicated power thread, not the UI thread, so it may
+            // block until the UI is done or the limit passes.
+            let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
         }
+        // Exactly once per message, also when the UI is gone: without it the
+        // sleep is held back for 30 s. An idle-sleep query is never refused.
+        // SAFETY: the port came from `IORegisterForSystemPower` and the
+        // argument is the notification id the system passed for this message.
+        unsafe {
+            IOAllowPowerChange(context.root_port.load(Ordering::Acquire), argument as isize);
+        }
+    }
+
+    /// Registers for power messages and runs the thread's run loop; reports
+    /// whether the registration worked.
+    fn power_thread(
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+        ready: std::sync::mpsc::Sender<bool>,
+    ) {
+        let context = Box::leak(Box::new(Context {
+            sleep,
+            root_port: AtomicU32::new(0),
+        }));
+        let mut port: NotificationPort = std::ptr::null_mut();
+        let mut notifier: IoObject = 0;
+        // SAFETY: the out pointers are valid for the call and `context` is
+        // leaked, so it outlives every callback.
+        let root_port = unsafe {
+            IORegisterForSystemPower(
+                (context as *mut Context).cast(),
+                &mut port,
+                on_power_message,
+                &mut notifier,
+            )
+        };
+        if root_port == 0 || port.is_null() {
+            log::info!("not watching for sleep: IORegisterForSystemPower failed");
+            let _ = ready.send(false);
+            return;
+        }
+        context.root_port.store(root_port, Ordering::Release);
+        // SAFETY: `port` is a live notification port; its source is retained
+        // by the port, which is never destroyed.
+        let source = unsafe { IONotificationPortGetRunLoopSource(port) };
+        let run_loop = CFRunLoop::get_current();
+        // SAFETY: the mode is a valid constant and the source is live.
+        unsafe {
+            core_foundation_sys::runloop::CFRunLoopAddSource(
+                run_loop.as_concrete_TypeRef(),
+                source,
+                kCFRunLoopCommonModes,
+            );
+        }
+        let _ = ready.send(true);
+        CFRunLoop::run_current();
     }
 
     pub fn watch(
@@ -321,33 +407,31 @@ mod platform {
         let woke = RcBlock::new(move |_: NonNull<NSNotification>| {
             let _ = sender.unbounded_send(());
         });
-        let will_sleep = RcBlock::new(move |_: NonNull<NSNotification>| {
-            if let Some(finished) = announce_sleep(&sleep) {
-                wait_for_ui(finished);
-            }
-        });
-        // SAFETY: the names are valid notification names, no object or queue
-        // is given (the blocks run on the posting thread) and the blocks are
+        // SAFETY: the name is a valid notification name, no object or queue
+        // is given (the block runs on the posting thread) and the block is
         // `Send` and `'static`.
-        let (wake_observer, sleep_observer) = unsafe {
-            (
-                center.addObserverForName_object_queue_usingBlock(
-                    Some(NSWorkspaceDidWakeNotification),
-                    None,
-                    None,
-                    &woke,
-                ),
-                center.addObserverForName_object_queue_usingBlock(
-                    Some(NSWorkspaceWillSleepNotification),
-                    None,
-                    None,
-                    &will_sleep,
-                ),
+        let wake_observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceDidWakeNotification),
+                None,
+                None,
+                &woke,
             )
         };
         // Observing lasts as long as the process.
         std::mem::forget(wake_observer);
-        std::mem::forget(sleep_observer);
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("wake-iokit".into())
+            .spawn(move || power_thread(sleep, ready_tx));
+        if let Err(error) = spawned {
+            log::warn!("could not watch for sleep: {error}");
+            return true;
+        }
+        // A failed registration leaves the clock check to find the wake-up;
+        // the wake notice above still works.
+        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
         true
     }
 }
