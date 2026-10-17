@@ -17,8 +17,8 @@ use cayenchat_storage::{CredentialStore, Secret, SecretKey, ServerProfile};
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, button_order, input::TextInput, secrets, session::ServerSession, settings_theme,
-    theme,
+    ChatWindow, button_order, dialog, input::TextInput, secrets, session::ServerSession,
+    settings_theme, theme,
 };
 
 /// JOINs tracked per server, so a long auto-join list does not grow it
@@ -540,22 +540,7 @@ impl ChatWindow {
         }
         let theme = theme::current(cx);
         let border = theme.border;
-        let viewport = window.viewport_size();
-        let width = px(360.);
-        let mut dialog = div()
-            .id("key-prompts")
-            .absolute()
-            .left(((viewport.width - width) / 2.).max(px(0.)) - origin.x)
-            .top(px(60.).min(viewport.height / 4.) - origin.y)
-            .w(width)
-            .p_2()
-            .bg(theme.surface)
-            .border_1()
-            .border_color(border)
-            .shadow_md()
-            .flex()
-            .flex_col()
-            .gap_2();
+        let mut dialog = dialog::prompt_list("key-prompts", origin, window, &theme);
         for (index, prompt) in self.key_prompts.iter().enumerate() {
             let network = prompt.network;
             let channel = prompt.channel.clone();

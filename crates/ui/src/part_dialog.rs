@@ -15,7 +15,7 @@ use cayenchat_model::{ConversationId, NetworkId, display::neutralize_bidi};
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, FocusNextField, FocusPreviousField, button_order, input::TextInput, theme,
+    ChatWindow, FocusNextField, FocusPreviousField, button_order, dialog, input::TextInput, theme,
 };
 
 const BOX_WIDTH: Pixels = px(340.);
@@ -226,62 +226,25 @@ impl ChatWindow {
             "part_dialog_server",
             &[("server", &neutralize_bidi(&prompt.server))],
         );
-        let box_width = BOX_WIDTH.min((window.viewport_size().width - px(32.)).max(px(0.)));
-        let confirm = div()
-            .id("part-dialog-confirm")
-            .debug_selector(|| "part-dialog-confirm".into())
-            .track_focus(&prompt.confirm)
-            .px_2()
-            .py_1()
-            .bg(theme.selected)
-            .cursor_pointer()
-            .border_1()
-            .border_color(theme.selected)
-            .focus(|s| s.border_color(theme.text))
-            .child(self.i18n.text("part_dialog_confirm"))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.confirm_part_prompt(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .on_click(cx.listener(|this, _, window, cx| this.confirm_part_prompt(window, cx)));
-        let cancel = div()
-            .id("part-dialog-cancel")
-            .debug_selector(|| "part-dialog-cancel".into())
-            .track_focus(&prompt.cancel)
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(theme.border)
-            .cursor_pointer()
-            .focus(|s| s.border_color(theme.text))
-            .child(self.i18n.text("cancel"))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.close_part_prompt(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .on_click(cx.listener(|this, _, window, cx| this.close_part_prompt(window, cx)));
+        let box_width = dialog::box_width(BOX_WIDTH, window);
+        let confirm = dialog::confirm_button(
+            "part-dialog-confirm",
+            self.i18n.text("part_dialog_confirm"),
+            &prompt.confirm,
+            &theme,
+            |this, window, cx| this.confirm_part_prompt(window, cx),
+            cx,
+        );
+        let cancel = dialog::cancel_button(
+            "part-dialog-cancel",
+            self.i18n.text("cancel"),
+            &prompt.cancel,
+            &theme,
+            |this, window, cx| this.close_part_prompt(window, cx),
+            cx,
+        );
         Some(
-            div()
-                .id("part-dialog")
-                .debug_selector(|| "part-dialog".into())
-                // Nothing behind the question can be clicked or typed into.
-                .occlude()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(16.))
-                .bg(Rgba {
-                    a: 0.6,
-                    ..theme.surface
-                })
+            dialog::overlay("part-dialog", &theme)
                 // Only the keys handled here are consumed; typing reaches the field.
                 .key_context("PartDialog")
                 .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
@@ -297,17 +260,9 @@ impl ChatWindow {
                     }
                 }))
                 .child(
-                    div()
+                    dialog::dialog_box(&theme)
                         .debug_selector(|| "part-dialog-box".into())
                         .w(box_width)
-                        .p_3()
-                        .bg(theme.surface)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_md()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
                         .child(div().font_weight(FontWeight::BOLD).child(title))
                         .child(div().child(server))
                         .child(div().child(self.i18n.text("part_dialog_reason")))
