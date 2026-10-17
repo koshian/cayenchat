@@ -10,11 +10,9 @@
 
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, button_order, theme};
+use crate::{ChatWindow, button_order, dialog, theme};
 
 const QUIT_BOX_MAX_WIDTH: Pixels = px(360.);
-/// Space kept free on both sides of the box in a narrow window.
-const QUIT_BOX_MARGIN: Pixels = px(32.);
 /// Padding and border on both sides of the text inside the box.
 const QUIT_BOX_CHROME: Pixels = px(26.);
 
@@ -97,67 +95,26 @@ impl ChatWindow {
                 .width
         };
         // The box also stays inside a window narrower than its usual cap.
-        let box_width =
-            QUIT_BOX_MAX_WIDTH.min((window.viewport_size().width - QUIT_BOX_MARGIN).max(px(0.)));
+        let box_width = dialog::box_width(QUIT_BOX_MAX_WIDTH, window);
         let wraps = detail_width > box_width - QUIT_BOX_CHROME;
-        let confirm = div()
-            .id("quit-dialog-confirm")
-            .debug_selector(|| "quit-dialog-confirm".into())
-            .track_focus(&self.quit_dialog.confirm)
-            .px_2()
-            .py_1()
-            .bg(theme.selected)
-            .cursor_pointer()
-            .border_1()
-            .border_color(theme.selected)
-            .focus(|s| s.border_color(theme.text))
-            .child(self.i18n.text("quit_confirm"))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.answer_quit_dialog(true, window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .on_click(cx.listener(|this, _, window, cx| this.answer_quit_dialog(true, window, cx)));
-        let cancel = div()
-            .id("quit-dialog-cancel")
-            .debug_selector(|| "quit-dialog-cancel".into())
-            .track_focus(&self.quit_dialog.cancel)
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(theme.border)
-            .cursor_pointer()
-            .focus(|s| s.border_color(theme.text))
-            .child(self.i18n.text("cancel"))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    this.answer_quit_dialog(false, window, cx);
-                    cx.stop_propagation();
-                }
-            }))
-            .on_click(
-                cx.listener(|this, _, window, cx| this.answer_quit_dialog(false, window, cx)),
-            );
+        let confirm = dialog::confirm_button(
+            "quit-dialog-confirm",
+            self.i18n.text("quit_confirm"),
+            &self.quit_dialog.confirm,
+            &theme,
+            |this, window, cx| this.answer_quit_dialog(true, window, cx),
+            cx,
+        );
+        let cancel = dialog::cancel_button(
+            "quit-dialog-cancel",
+            self.i18n.text("cancel"),
+            &self.quit_dialog.cancel,
+            &theme,
+            |this, window, cx| this.answer_quit_dialog(false, window, cx),
+            cx,
+        );
         Some(
-            div()
-                .id("quit-dialog")
-                .debug_selector(|| "quit-dialog".into())
-                // Nothing behind the question can be clicked or typed into.
-                .occlude()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .flex()
-                .justify_center()
-                // Without this the row stretches the box to the window height.
-                .items_start()
-                .pt(px(16.))
-                .bg(Rgba {
-                    a: 0.6,
-                    ..theme.surface
-                })
+            dialog::overlay("quit-dialog", &theme)
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     match event.keystroke.key.as_str() {
                         "escape" => this.answer_quit_dialog(false, window, cx),
@@ -177,19 +134,11 @@ impl ChatWindow {
                     cx.stop_propagation();
                 }))
                 .child(
-                    div()
+                    dialog::dialog_box(&theme)
                         .debug_selector(|| "quit-dialog-box".into())
                         // Fit the text; a fixed width left empty space beside it.
                         .max_w(box_width)
                         .h_auto()
-                        .p_3()
-                        .bg(theme.surface)
-                        .border_1()
-                        .border_color(theme.border)
-                        .shadow_md()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
                         .child(
                             div()
                                 .font_weight(FontWeight::BOLD)
