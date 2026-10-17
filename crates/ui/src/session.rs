@@ -25,6 +25,10 @@ pub struct ServerSession {
     /// Configuration of the last connection attempt, reused by reconnects.
     pub active_config: Option<ConnectionConfig>,
     pub manual_disconnect: bool,
+    /// The connection was ended just before the machine slept: no retry
+    /// is scheduled, and the wake-up reconnects it unless the user took
+    /// over meanwhile.
+    pub asleep: bool,
     pub retry_pending: bool,
     pub retry_attempt: usize,
     /// Invalidates scheduled retries.
@@ -84,6 +88,7 @@ impl ServerSession {
             irc: None,
             active_config: None,
             manual_disconnect: false,
+            asleep: false,
             retry_pending: false,
             retry_attempt: 0,
             retry_token: 0,
@@ -146,6 +151,7 @@ impl ServerSession {
     /// the flush.
     pub fn close(&mut self) -> Option<Connection> {
         self.manual_disconnect = true;
+        self.asleep = false;
         self.retry_pending = false;
         self.retry_token += 1;
         self.generation += 1;

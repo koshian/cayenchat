@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tells the UI that the machine has woken from sleep (issue #437).
+//! Tells the UI that the machine is about to sleep (issue #445) and that it
+//! has woken from sleep (issue #437).
 //!
 //! A connection can die while the machine sleeps without the client OS ever
-//! reporting it, so after waking the UI asks each connection to prove it is
-//! alive. This module only notices the wake-up and sends `()` through a
-//! channel; it knows nothing about connections.
+//! reporting it, so before sleeping the UI quits its connections and after
+//! waking it reconnects them, or asks each to prove it is alive when no
+//! notice of the sleep came. This module only notices the two events and
+//! sends them through channels; it knows nothing about connections.
 //!
-//! The OS is asked first: `NSWorkspaceDidWakeNotification` on macOS, a
-//! suspend/resume callback from `PowerRegisterSuspendResumeNotification` on
-//! Windows (no window involved) and logind's `PrepareForSleep(false)` on
-//! Linux. As a fallback for when no such notice comes (no logind, a missed
+//! The OS is asked first: IOKit power messages (`kIOMessageSystemWillSleep`,
+//! on a thread of their own) and `NSWorkspaceDidWakeNotification` on macOS,
+//! the suspend/resume callback
+//! from `PowerRegisterSuspendResumeNotification` on Windows (no window
+//! involved) and logind's `PrepareForSleep` on Linux, where a delay
+//! inhibitor lock gives the UI time before the sleep starts. The OS is held
+//! back while the UI works: the notice carries a [`SleepNotice`] that the
+//! UI drops when it is done, and the OS-side handler waits for that, at
+//! most [`SLEEP_ACK_LIMIT`]. As a fallback for when no such notice comes (no logind, a missed
 //! notification) a thread sleeps and compares the wall clock with the time
 //! it slept: a large jump means the machine was suspended meanwhile. It runs
 //! every [`NATIVE_POLL`] when the OS notice is available and every
@@ -28,11 +35,46 @@ const FALLBACK_POLL: Duration = Duration::from_secs(5);
 /// adjustment does not reach it.
 const SLACK: Duration = Duration::from_secs(10);
 
-/// Starts watching. The receiver gets one `()` per wake-up notice, possibly
-/// several for one wake-up.
-pub fn install() -> mpsc::UnboundedReceiver<()> {
-    let (sender, receiver) = mpsc::unbounded();
-    let native = platform::watch(sender.clone());
+/// How long the OS-side handler waits for the UI to finish its work before
+/// sleep. The UI itself waits for the servers for about a second.
+const SLEEP_ACK_LIMIT: Duration = Duration::from_millis(1500);
+
+/// What [`install`] watches for.
+pub struct Notices {
+    /// One `()` per wake-up notice, possibly several for one wake-up.
+    pub wake: mpsc::UnboundedReceiver<()>,
+    /// One notice before each sleep that the OS announces. A sleep that is
+    /// not announced (forced, no logind) gives none.
+    pub sleep: mpsc::UnboundedReceiver<SleepNotice>,
+}
+
+/// The machine is about to sleep. The OS goes on when this is dropped (or
+/// after [`SLEEP_ACK_LIMIT`]).
+pub struct SleepNotice {
+    _done: std::sync::mpsc::Sender<()>,
+}
+
+/// Sends a [`SleepNotice`]; the receiver reports `Disconnected` once the UI
+/// has dropped it. `None` when the UI no longer listens.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "windows", target_os = "macos")),
+    allow(dead_code)
+)]
+fn announce_sleep(
+    sender: &mpsc::UnboundedSender<SleepNotice>,
+) -> Option<std::sync::mpsc::Receiver<()>> {
+    let (done, finished) = std::sync::mpsc::channel();
+    sender
+        .unbounded_send(SleepNotice { _done: done })
+        .ok()
+        .map(|()| finished)
+}
+
+/// Starts watching.
+pub fn install() -> Notices {
+    let (sender, wake) = mpsc::unbounded();
+    let (sleep_sender, sleep) = mpsc::unbounded();
+    let native = platform::watch(sender.clone(), sleep_sender);
     let interval = if native { NATIVE_POLL } else { FALLBACK_POLL };
     let spawned = std::thread::Builder::new()
         .name("wake-clock".into())
@@ -48,7 +90,7 @@ pub fn install() -> mpsc::UnboundedReceiver<()> {
     if let Err(error) = spawned {
         log::warn!("could not watch the clock for wake-ups: {error}");
     }
-    receiver
+    Notices { wake, sleep }
 }
 
 /// Notices a suspension as a jump of the wall clock past the poll interval.
@@ -86,12 +128,15 @@ mod platform {
 
     /// Subscribes to logind's `PrepareForSleep` on the system bus; `false`
     /// when there is no logind to ask.
-    pub fn watch(sender: mpsc::UnboundedSender<()>) -> bool {
+    pub fn watch(
+        sender: mpsc::UnboundedSender<()>,
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+    ) -> bool {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("wake-logind".into())
             .spawn(move || {
-                if let Err(error) = listen(&sender, &ready_tx) {
+                if let Err(error) = listen(&sender, &sleep, &ready_tx) {
                     log::info!("not watching logind for wake-ups: {error}");
                     let _ = ready_tx.send(false);
                 }
@@ -103,8 +148,30 @@ mod platform {
                 .unwrap_or(false)
     }
 
+    /// A lock that delays the sleep until it is dropped (or logind's
+    /// `InhibitDelayMaxSec`, 5 s by default, passes). `None` when logind
+    /// refuses; the notice still comes, only without a head start.
+    fn delay_sleep(manager: &zbus::blocking::Proxy<'_>) -> Option<zbus::zvariant::OwnedFd> {
+        match manager.call(
+            "Inhibit",
+            &(
+                "sleep",
+                "CayenChat",
+                "Quitting the IRC servers before sleep",
+                "delay",
+            ),
+        ) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                log::info!("could not delay sleep for the QUIT: {error}");
+                None
+            }
+        }
+    }
+
     fn listen(
         sender: &mpsc::UnboundedSender<()>,
+        sleep: &mpsc::UnboundedSender<SleepNotice>,
         ready: &std::sync::mpsc::Sender<bool>,
     ) -> zbus::Result<()> {
         let connection = zbus::blocking::Connection::system()?;
@@ -120,15 +187,30 @@ mod platform {
             "org.freedesktop.login1.Manager",
         )?;
         let signals = manager.receive_signal("PrepareForSleep")?;
+        let mut lock = delay_sleep(&manager);
         let _ = ready.send(true);
         for signal in signals {
             // `true` announces the sleep, `false` the wake-up.
-            if signal.body().deserialize::<bool>() == Ok(false)
-                && sender.unbounded_send(()).is_err()
-            {
-                break;
+            match signal.body().deserialize::<bool>() {
+                Ok(true) => {
+                    if let Some(finished) = announce_sleep(sleep) {
+                        let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
+                    }
+                    // Let the sleep go on.
+                    lock = None;
+                }
+                Ok(false) => {
+                    if lock.is_none() {
+                        lock = delay_sleep(&manager);
+                    }
+                    if sender.unbounded_send(()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => {}
             }
         }
+        drop(lock);
         Ok(())
     }
 }
@@ -141,8 +223,13 @@ mod platform {
         DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, PowerRegisterSuspendResumeNotification,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DEVICE_NOTIFY_CALLBACK, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND,
+        DEVICE_NOTIFY_CALLBACK, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
     };
+
+    struct Senders {
+        wake: mpsc::UnboundedSender<()>,
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+    }
 
     /// Called by the system on one of its threads.
     unsafe extern "system" fn on_power_event(
@@ -150,16 +237,27 @@ mod platform {
         kind: u32,
         _setting: *const c_void,
     ) -> u32 {
-        if kind == PBT_APMRESUMEAUTOMATIC || kind == PBT_APMRESUMESUSPEND {
-            // SAFETY: `context` is the sender leaked in `watch`, never freed.
-            let sender = unsafe { &*context.cast::<mpsc::UnboundedSender<()>>() };
-            let _ = sender.unbounded_send(());
+        // SAFETY: `context` is the `Senders` leaked in `watch`, never freed.
+        let senders = unsafe { &*context.cast::<Senders>() };
+        if kind == PBT_APMSUSPEND {
+            // The system suspends once this returns.
+            if let Some(finished) = announce_sleep(&senders.sleep) {
+                let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
+            }
+        } else if kind == PBT_APMRESUMEAUTOMATIC || kind == PBT_APMRESUMESUSPEND {
+            let _ = senders.wake.unbounded_send(());
         }
         0
     }
 
-    pub fn watch(sender: mpsc::UnboundedSender<()>) -> bool {
-        let context = Box::into_raw(Box::new(sender));
+    pub fn watch(
+        sender: mpsc::UnboundedSender<()>,
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+    ) -> bool {
+        let context = Box::into_raw(Box::new(Senders {
+            wake: sender,
+            sleep,
+        }));
         let mut parameters = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
             Callback: Some(on_power_event),
             Context: context.cast(),
@@ -190,28 +288,151 @@ mod platform {
 mod platform {
     use super::*;
     use block2::RcBlock;
+    use core_foundation::base::TCFType;
+    use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
+    use core_foundation_sys::runloop::CFRunLoopSourceRef;
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
     use objc2_foundation::NSNotification;
+    use std::ffi::c_void;
     use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    pub fn watch(sender: mpsc::UnboundedSender<()>) -> bool {
+    type IoConnect = u32;
+    type IoObject = u32;
+    type IoReturn = i32;
+    type NotificationPort = *mut c_void;
+    type InterestCallback = extern "C" fn(*mut c_void, IoObject, u32, *mut c_void);
+
+    /// `kIOMessageCanSystemSleep`: the system asks whether it may idle-sleep.
+    const CAN_SYSTEM_SLEEP: u32 = 0xe000_0270;
+    /// `kIOMessageSystemWillSleep`: the sleep starts once every client allows it.
+    const SYSTEM_WILL_SLEEP: u32 = 0xe000_0280;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IORegisterForSystemPower(
+            refcon: *mut c_void,
+            notify_port: *mut NotificationPort,
+            callback: InterestCallback,
+            notifier: *mut IoObject,
+        ) -> IoConnect;
+        fn IONotificationPortGetRunLoopSource(notify: NotificationPort) -> CFRunLoopSourceRef;
+        fn IOAllowPowerChange(root_port: IoConnect, notification_id: isize) -> IoReturn;
+    }
+
+    /// What the power callback needs; leaked, as the registration lasts as
+    /// long as the process.
+    struct Context {
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+        /// The root power domain port, set before the run loop starts.
+        root_port: AtomicU32,
+    }
+
+    extern "C" fn on_power_message(
+        refcon: *mut c_void,
+        _service: IoObject,
+        message_type: u32,
+        argument: *mut c_void,
+    ) {
+        if message_type != CAN_SYSTEM_SLEEP && message_type != SYSTEM_WILL_SLEEP {
+            return;
+        }
+        // SAFETY: `refcon` is the leaked `Context` given at registration, which
+        // is never freed.
+        let context = unsafe { &*refcon.cast::<Context>() };
+        if message_type == SYSTEM_WILL_SLEEP
+            && let Some(finished) = announce_sleep(&context.sleep)
+        {
+            // This is the dedicated power thread, not the UI thread, so it may
+            // block until the UI is done or the limit passes.
+            let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
+        }
+        // Exactly once per message, also when the UI is gone: without it the
+        // sleep is held back for 30 s. An idle-sleep query is never refused.
+        // SAFETY: the port came from `IORegisterForSystemPower` and the
+        // argument is the notification id the system passed for this message.
+        unsafe {
+            IOAllowPowerChange(context.root_port.load(Ordering::Acquire), argument as isize);
+        }
+    }
+
+    /// Registers for power messages and runs the thread's run loop; reports
+    /// whether the registration worked.
+    fn power_thread(
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+        ready: std::sync::mpsc::Sender<bool>,
+    ) {
+        let context = Box::leak(Box::new(Context {
+            sleep,
+            root_port: AtomicU32::new(0),
+        }));
+        let mut port: NotificationPort = std::ptr::null_mut();
+        let mut notifier: IoObject = 0;
+        // SAFETY: the out pointers are valid for the call and `context` is
+        // leaked, so it outlives every callback.
+        let root_port = unsafe {
+            IORegisterForSystemPower(
+                (context as *mut Context).cast(),
+                &mut port,
+                on_power_message,
+                &mut notifier,
+            )
+        };
+        if root_port == 0 || port.is_null() {
+            log::info!("not watching for sleep: IORegisterForSystemPower failed");
+            let _ = ready.send(false);
+            return;
+        }
+        context.root_port.store(root_port, Ordering::Release);
+        // SAFETY: `port` is a live notification port; its source is retained
+        // by the port, which is never destroyed.
+        let source = unsafe { IONotificationPortGetRunLoopSource(port) };
+        let run_loop = CFRunLoop::get_current();
+        // SAFETY: the mode is a valid constant and the source is live.
+        unsafe {
+            core_foundation_sys::runloop::CFRunLoopAddSource(
+                run_loop.as_concrete_TypeRef(),
+                source,
+                kCFRunLoopCommonModes,
+            );
+        }
+        let _ = ready.send(true);
+        CFRunLoop::run_current();
+    }
+
+    pub fn watch(
+        sender: mpsc::UnboundedSender<()>,
+        sleep: mpsc::UnboundedSender<SleepNotice>,
+    ) -> bool {
         let center = NSWorkspace::sharedWorkspace().notificationCenter();
-        let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        let woke = RcBlock::new(move |_: NonNull<NSNotification>| {
             let _ = sender.unbounded_send(());
         });
         // SAFETY: the name is a valid notification name, no object or queue
         // is given (the block runs on the posting thread) and the block is
         // `Send` and `'static`.
-        let observer = unsafe {
+        let wake_observer = unsafe {
             center.addObserverForName_object_queue_usingBlock(
                 Some(NSWorkspaceDidWakeNotification),
                 None,
                 None,
-                &block,
+                &woke,
             )
         };
         // Observing lasts as long as the process.
-        std::mem::forget(observer);
+        std::mem::forget(wake_observer);
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("wake-iokit".into())
+            .spawn(move || power_thread(sleep, ready_tx));
+        if let Err(error) = spawned {
+            log::warn!("could not watch for sleep: {error}");
+            return true;
+        }
+        // A failed registration leaves the clock check to find the wake-up;
+        // the wake notice above still works.
+        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
         true
     }
 }
@@ -220,7 +441,10 @@ mod platform {
 mod platform {
     use super::*;
 
-    pub fn watch(_sender: mpsc::UnboundedSender<()>) -> bool {
+    pub fn watch(
+        _sender: mpsc::UnboundedSender<()>,
+        _sleep: mpsc::UnboundedSender<SleepNotice>,
+    ) -> bool {
         false
     }
 }

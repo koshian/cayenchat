@@ -707,7 +707,10 @@ without a version change). Disconnect and quitting the app send it as the `QUIT`
 reason; blank means "Leaving CayenChat". It is validated with the connection
 (no line breaks or NUL, within the encoding and the 512-byte line) and read when the
 connection starts, so an edit applies from the next connection. Lost connections
-send no QUIT.
+send no QUIT. A second optional message, `sleep_quit_message` (issue #445, same
+treatment, blank in older files), is the QUIT reason sent before sleep; blank
+means the QUIT message above, which in turn defaults as above. It is validated
+like the QUIT message.
 
 Each server profile also has an optional PART message (`part_message`, issue #319;
 added without a version change), independent of the QUIT message. Blank means no
@@ -767,20 +770,60 @@ once the server answers; if it does not, or the link fails, they are dropped
 and one server line says how many were not sent. QUIT is not held. Events of
 an earlier connection are ignored by the UI's generation check as before.
 
+##### QUIT before sleep (issue #445)
+
+`wake.rs` also announces the sleep: on macOS an `IORegisterForSystemPower`
+registration whose run loop source sits on a thread of its own (the main thread
+is never blocked and no run loop is nested; `kIOMessageSystemWillSleep` waits
+for the UI, `kIOMessageCanSystemSleep` is allowed at once, and
+`IOAllowPowerChange` is called exactly once per message; a failed registration
+is logged and left to the clock check), `PBT_APMSUSPEND` in the same Windows callback, and logind's
+`PrepareForSleep(true)` on Linux, where a `delay` inhibitor lock
+(`Inhibit("sleep", "CayenChat", …)`) is held while running, released once the
+UI is done and taken again on wake. The notice carries a `SleepNotice` guard
+that the UI drops when finished; the OS-side handler waits for that for at most
+1.5 s.
+
+`ChatWindow::prepare_for_sleep` marks each session that is not a manual
+disconnect `asleep` and, for all at once, calls `Connection::sleep(reason)`
+(registered: worker writes `QUIT :<sleep message>` and waits at most 1 s
+(`SLEEP_FLUSH_LIMIT`) for the server to close, then reports `Event::Closed`) or
+the same signal for one still registering (closed at once, no QUIT). The UI waits at
+most 1 s in total (`SLEEP_WAIT`) for the workers; the rest is left to them. An
+`asleep` session's `Closed` does not set `manual_disconnect`, and
+`schedule_retry` does nothing for it. On the wake-up `check_connections_after_wake`
+reconnects the `asleep` sessions with `start_reconnect` (retry attempt reset, so a
+failure backs off 3→6→12→24→30 s, with auto-join and history resume as for any
+reconnect) and checks the other live ones as before. Disconnect, Connect,
+Reconnect and quitting clear `asleep`.
+
+`/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
+reports a connection the user ended as `Event::Closed`, which the UI never
+reconnects. Closing the main window or quitting sends QUIT on every connection and
+waits up to 2 s in total for the workers to end (`Connection::shutdown`,
+`Connection::wait_closed`; issue #234). The shutdown request bypasses the command
+queue, and the worker then drops events instead of waiting for the UI, so QUIT goes
+out even when either queue is full. After QUIT the worker reads and discards what the
+server sends until the server closes the connection, at most 1.5 s: dropping a socket
+with unread data sends RST, which can discard a QUIT not yet sent (the server then
+reports "EOF From client").
+
 #### Regaining operator status after a dropped connection (issue #444)
 
 When the server has not noticed that a link died, the new connection can end
 up under a temporary nickname, and once the old link times out we are alone in
 our channels without the operator status we had. On networks where an empty
 channel disappears and its next creator becomes operator (IRCnet), parting and
-joining again gets it back (`crates/irc-core/src/regain.rs`, D054).
+joining again gets it back (`crates/irc-core/src/regain.rs`, D055).
 
 - Scope: only channels where the previous, **unexpectedly ended** connection
   had us as operator. The worker reports the set of channels where we are
   operator, plus those still waited on, as `Event::OpChannels` whenever it
   changes; the UI keeps it in the server's `active_config.regain_ops_in`, so
   the automatic reconnect carries it. `Closed` (user disconnect, `/quit`) and
-  `Refused` clear it, and a connection started from the settings starts
+  `Refused` clear it; only a manual end is excluded, so a connection that
+  ended for sleep (#445, whose QUIT may not reach the server and leave a
+  ghost) or a failure is carried, and a connection started from the settings starts
   empty. Channels that were opless and alone on their own, `/deop`, and
   channels never operated in are left alone. The carried loss expires 15
   minutes after the connection started (`CARRY_WINDOW`).
@@ -814,17 +857,6 @@ joining again gets it back (`crates/irc-core/src/regain.rs`, D054).
   connection, automatic reconnects included (`apply_servers` updates
   `active_config.regain_ops`); a worker already running keeps the value it was
   started with, so a wait in progress is not cancelled by the change.
-
-`/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
-reports a connection the user ended as `Event::Closed`, which the UI never
-reconnects. Closing the main window or quitting sends QUIT on every connection and
-waits up to 2 s in total for the workers to end (`Connection::shutdown`,
-`Connection::wait_closed`; issue #234). The shutdown request bypasses the command
-queue, and the worker then drops events instead of waiting for the UI, so QUIT goes
-out even when either queue is full. After QUIT the worker reads and discards what the
-server sends until the server closes the connection, at most 1.5 s: dropping a socket
-with unread data sends RST, which can discard a QUIT not yet sent (the server then
-reports "EOF From client").
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,

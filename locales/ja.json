@@ -373,6 +373,8 @@
   "realname_placeholder": "CayenChat",
   "quit_message": "終了メッセージ (QUIT)",
   "quit_message_placeholder": "Leaving CayenChat",
+  "sleep_quit_message": "スリープ前の終了メッセージ",
+  "sleep_quit_message_placeholder": "終了メッセージと同じ",
   "part_message": "退出メッセージ (PART)",
   "part_message_placeholder": "理由なし",
   "display_name": "表示名",
