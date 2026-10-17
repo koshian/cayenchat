@@ -87,8 +87,11 @@ use instead of existing file paths. Drop targets see an empty `ExternalPaths`
 while such a drag hovers. On drop, the promised files are written into a new
 `0700` directory under `$TMPDIR/gpui-file-promises/`; the readers run on the
 main queue, and once all files arrive the drop is replayed as Entered (with
-the paths), Submit and Exited, after which the directory is removed. Drop
-handlers must therefore read the files synchronously. Upstream registered only
+the paths), Submit and Exited. `ExternalPaths` carries a handle
+(`ExternalPaths::keep_alive`, a `PromisedFiles`) that removes the directory
+when the last clone is dropped, so a handler that reads the files later, off
+the UI thread, holds the handle until it is done; other platforms return
+`None`. Upstream registered only
 `NSFilenamesPboardType`, so these drags were refused.
 
 In `src/platform/{mac/metal_atlas.rs,windows/directx_atlas.rs,blade/blade_atlas.rs}`,

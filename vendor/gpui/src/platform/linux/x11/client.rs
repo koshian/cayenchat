@@ -880,7 +880,7 @@ impl X11Client {
                         .collect();
                     let input = PlatformInput::FileDrop(FileDropEvent::Entered {
                         position: state.xdnd_state.position,
-                        paths: crate::ExternalPaths(paths),
+                        paths: crate::ExternalPaths(paths, None),
                     });
                     drop(state);
                     window.handle_input(input);

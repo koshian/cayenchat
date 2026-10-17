@@ -3,7 +3,7 @@ use crate::{
     AnyWindowHandle, Bounds, Capslock, DisplayLink, ExternalPaths, FileDropEvent,
     ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
+    PlatformInput, PlatformWindow, Point, PromisedFiles, PromptButton, PromptLevel, RequestFrameOptions,
     SharedString, Size, SystemWindowTab, Timer, WindowAppearance, WindowBackgroundAppearance,
     WindowBounds, WindowControlArea, WindowKind, WindowParams, dispatch_get_main_queue,
     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
@@ -2400,7 +2400,7 @@ extern "C" fn dragging_entered(this: &Object, _: Sel, dragging_info: id) -> NSDr
     // A promise has no path yet; drop targets see an empty list until it is
     // fulfilled in `perform_drag_operation`.
     let paths = external_paths_from_event(dragging_info)
-        .or_else(|| file_promise_receivers(dragging_info).map(|_| ExternalPaths(SmallVec::new())));
+        .or_else(|| file_promise_receivers(dragging_info).map(|_| ExternalPaths(SmallVec::new(), None)));
     if let Some(event) =
         paths.map(|paths| PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }))
         && send_new_event(&window_state, event)
@@ -2463,7 +2463,7 @@ fn external_paths_from_event(dragging_info: *mut Object) -> Option<ExternalPaths
         };
         paths.push(PathBuf::from(path))
     }
-    Some(ExternalPaths(paths))
+    Some(ExternalPaths(paths, None))
 }
 
 /// Pasteboard types that `NSFilePromiseReceiver` can read.
@@ -2496,8 +2496,9 @@ struct PendingPromises {
 /// Asks the drag source to write its promised files into a fresh private
 /// temporary directory. Readers run on the main queue after this returns;
 /// once every file has arrived the drop is replayed as an ordinary file drop
-/// (Entered with the paths, Submit, Exited) and the directory is removed, so
-/// drop handlers must read the files synchronously.
+/// (Entered with the paths, Submit, Exited). The directory is removed when
+/// the last `ExternalPaths::keep_alive` handle is dropped, so a handler that
+/// reads the files later must hold one until it is done.
 fn receive_file_promises(
     window_state: &Arc<Mutex<MacWindowState>>,
     receivers: id,
@@ -2600,12 +2601,15 @@ fn deliver_file_promises(pending: &Rc<std::cell::RefCell<PendingPromises>>) {
             mem::take(&mut pending.paths),
         )
     };
+    // The directory goes away with the last handle, so a handler that reads
+    // the files later (off the UI thread) can keep it by holding one.
+    let promised = Arc::new(PromisedFiles(directory));
     if let Some(window_state) = window_state {
         for event in [
             FileDropEvent::Exited,
             FileDropEvent::Entered {
                 position,
-                paths: ExternalPaths(paths),
+                paths: ExternalPaths(paths, Some(promised)),
             },
             FileDropEvent::Submit { position },
             FileDropEvent::Exited,
@@ -2613,7 +2617,6 @@ fn deliver_file_promises(pending: &Rc<std::cell::RefCell<PendingPromises>>) {
             send_new_event(&window_state, PlatformInput::FileDrop(event));
         }
     }
-    let _ = std::fs::remove_dir_all(directory);
 }
 
 extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {

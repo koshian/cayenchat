@@ -494,9 +494,37 @@ impl Deref for MouseExitEvent {
 
 /// A collection of paths from the platform, such as from a file drop.
 #[derive(Debug, Clone, Default)]
-pub struct ExternalPaths(pub(crate) SmallVec<[PathBuf; 2]>);
+pub struct ExternalPaths(
+    pub(crate) SmallVec<[PathBuf; 2]>,
+    pub(crate) Option<std::sync::Arc<PromisedFiles>>,
+);
+
+/// A temporary directory holding files received from a macOS file promise.
+/// It is removed when the last handle goes away.
+#[derive(Debug)]
+pub struct PromisedFiles(pub(crate) PathBuf);
+
+impl PromisedFiles {
+    /// Takes ownership of `directory`, which is removed with the last handle.
+    pub fn new(directory: PathBuf) -> Self {
+        Self(directory)
+    }
+}
+
+impl Drop for PromisedFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 impl ExternalPaths {
+    /// A handle that keeps promised files on disk while it is held, for
+    /// reading them after the drop handler has returned. None when the
+    /// paths are ordinary files.
+    pub fn keep_alive(&self) -> Option<std::sync::Arc<PromisedFiles>> {
+        self.1.clone()
+    }
+
     /// Convert this collection of paths into a slice.
     pub fn paths(&self) -> &[PathBuf] {
         &self.0

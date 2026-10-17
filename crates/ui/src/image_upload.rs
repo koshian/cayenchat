@@ -9,6 +9,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use cayenchat_app::Selection;
 use cayenchat_app::attachments::{Completion, Offer, UploadFailure, UploadJob, UploaderReadiness};
 use cayenchat_model::attachment::{
     Attachment, AttachmentError, AttachmentSource, ImageFormat, MAX_ATTACHMENT_BYTES, format_size,
@@ -120,13 +121,20 @@ pub(crate) fn file_attachment(
 pub(crate) type FileRead = Result<Result<Attachment, AttachmentError>, FileReadError>;
 
 /// Reads the file off the UI thread. Dropping the returned task discards
-/// the result, so a later drop supersedes an earlier one.
+/// the result, so a later drop supersedes an earlier one. `keep` holds
+/// files the platform deletes once it is dropped (macOS file promises)
+/// until they are read.
 pub(crate) fn read_in_background(
     paths: Vec<PathBuf>,
+    keep: Option<Arc<PromisedFiles>>,
     source: AttachmentSource,
     cx: &App,
 ) -> Task<FileRead> {
-    cx.background_spawn(async move { file_attachment(&paths, source) })
+    cx.background_spawn(async move {
+        let read = file_attachment(&paths, source);
+        drop(keep);
+        read
+    })
 }
 
 /// The attachment if it is an image the uploader accepts, or why not.
@@ -203,23 +211,28 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         if let Some(attachment) = clipboard_attachment(cx) {
-            self.accept_attachment(attachment, window, cx);
+            let target = self.state.selection();
+            self.accept_attachment(attachment, target, window, cx);
         }
     }
 
-    /// Files dropped on the draft row.
+    /// Files dropped on the draft row. The draft they were dropped on is
+    /// fixed now, so switching conversations while the file is read does not
+    /// move the link into another draft.
     pub(crate) fn drop_paths(
         &mut self,
         paths: &[PathBuf],
+        keep: Option<Arc<PromisedFiles>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let read = read_in_background(paths.to_vec(), AttachmentSource::Drop, cx);
+        let target = self.state.selection();
+        let read = read_in_background(paths.to_vec(), keep, AttachmentSource::Drop, cx);
         // Replacing the task drops an earlier read that is still running.
         self.file_read = Some(cx.spawn_in(window, async move |this, cx| {
             let read = read.await;
             let _ = this.update_in(cx, |this, window, cx| match read {
-                Ok(attachment) => this.accept_attachment(attachment, window, cx),
+                Ok(attachment) => this.accept_attachment(attachment, target, window, cx),
                 Err(error) => {
                     this.feedback = Some(error.text(&this.i18n));
                     cx.notify();
@@ -231,6 +244,7 @@ impl ChatWindow {
     fn accept_attachment(
         &mut self,
         attachment: Result<Attachment, AttachmentError>,
+        target: Selection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -247,7 +261,6 @@ impl ChatWindow {
                 return;
             }
         };
-        let target = self.state.selection();
         match self.attachments.offer(attachment, target, readiness) {
             Offer::Confirm {
                 provider,
@@ -318,7 +331,9 @@ impl ChatWindow {
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = chosen.await {
-                let _ = this.update_in(cx, |this, window, cx| this.drop_paths(&paths, window, cx));
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.drop_paths(&paths, None, window, cx)
+                });
             }
         })
         .detach();
@@ -734,6 +749,57 @@ mod tests {
     }
 
     #[gpui::test]
+    fn dropped_image_goes_to_the_draft_it_was_dropped_on(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("slow.png");
+        std::fs::write(&image, PNG).unwrap();
+        let fake = Arc::new(FakeUploader::succeeding(URL));
+        let (chat, input, _, cx) = open_chat(cx, Some(fake), None);
+        chat.update_in(cx, |chat, window, cx| {
+            chat.drop_paths(std::slice::from_ref(&image), None, window, cx);
+            // The read has not finished; the user moves to the server.
+            chat.state
+                .dispatch(cayenchat_app::Command::SelectServerAt(0));
+        });
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Upload");
+        cx.run_until_parked();
+        assert_eq!(draft(&input, cx), URL.to_owned());
+        let server_inputs = chat.read_with(cx, |chat, _| {
+            chat.inputs
+                .iter()
+                .filter(|(key, _)| matches!(key, Selection::Server(_)))
+                .map(|(_, input)| input.clone())
+                .collect::<Vec<_>>()
+        });
+        for server_input in server_inputs {
+            assert_eq!(draft(&server_input, cx), "", "the server draft stays empty");
+        }
+    }
+
+    #[gpui::test]
+    fn promised_files_stay_until_the_read_ends(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let promised = directory.path().join("promised");
+        std::fs::create_dir(&promised).unwrap();
+        let image = promised.join("shot.png");
+        std::fs::write(&image, PNG).unwrap();
+        let keep = Arc::new(gpui::PromisedFiles::new(promised.clone()));
+        let fake = Arc::new(FakeUploader::succeeding(URL));
+        let (chat, _, _, cx) = open_chat(cx, Some(fake), None);
+        chat.update_in(cx, |chat, window, cx| {
+            chat.drop_paths(std::slice::from_ref(&image), Some(keep), window, cx)
+        });
+        // The drop handler returned and the platform holds no handle: the
+        // file is still there for the background read.
+        assert!(image.exists());
+        cx.run_until_parked();
+        assert!(!promised.exists(), "removed once the read is done");
+        let (_, detail) = cx.pending_prompt().unwrap();
+        assert!(detail.contains("shot.png"), "{detail}");
+    }
+
+    #[gpui::test]
     fn dropped_image_uses_the_same_flow(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let image = directory.path().join("dropped.png");
@@ -743,12 +809,12 @@ mod tests {
         let fake = Arc::new(FakeUploader::succeeding(URL));
         let (chat, input, _, cx) = open_chat(cx, Some(fake.clone()), None);
         chat.update_in(cx, |chat, window, cx| {
-            chat.drop_paths(std::slice::from_ref(&text), window, cx)
+            chat.drop_paths(std::slice::from_ref(&text), None, window, cx)
         });
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt(), "non-images are refused");
         chat.update_in(cx, |chat, window, cx| {
-            chat.drop_paths(std::slice::from_ref(&image), window, cx)
+            chat.drop_paths(std::slice::from_ref(&image), None, window, cx)
         });
         cx.run_until_parked();
         let (_, detail) = cx.pending_prompt().unwrap();

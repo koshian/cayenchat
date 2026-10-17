@@ -6352,7 +6352,7 @@ impl ChatWindow {
             // Dropped image files join the same attachment flow as pasted ones.
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                this.drop_paths(paths.paths(), window, cx)
+                this.drop_paths(paths.paths(), paths.keep_alive(), window, cx)
             }))
             .child(
                 div()
