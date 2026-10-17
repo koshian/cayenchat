@@ -237,7 +237,7 @@ fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
             .text
             .len();
         chat.log_selection = Some(crate::LogSelection {
-            channel: id,
+            source: cayenchat_app::Selection::Channel(id),
             anchor: crate::LogPosition { row: 0, byte: 0 },
             cursor: crate::LogPosition { row: 0, byte: end },
         });
@@ -301,7 +301,7 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
     let copied = |from: usize, to: usize, cx: &mut gpui::VisualTestContext| {
         chat.update(cx, |chat, cx| {
             chat.log_selection = Some(crate::LogSelection {
-                channel: id,
+                source: cayenchat_app::Selection::Channel(id),
                 anchor: crate::LogPosition { row: 0, byte: from },
                 cursor: crate::LogPosition { row: 0, byte: to },
             });

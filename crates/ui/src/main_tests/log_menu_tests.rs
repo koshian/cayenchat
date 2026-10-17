@@ -106,14 +106,14 @@ fn opening_the_menu_keeps_the_selection_and_copy_uses_it(cx: &mut TestAppContext
             cayenchat_app::Unread::Leave,
         );
         let selection = LogSelection {
-            channel,
+            source: cayenchat_app::Selection::Channel(channel),
             anchor: LogPosition { row: 0, byte: 6 },
             cursor: LogPosition { row: 0, byte: 11 },
         };
         chat.log_selection = Some(selection);
         cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
         chat.open_log_menu(point(px(5.), px(5.)), Some("bob"), window, cx);
-        assert!(chat.has_log_selection(channel));
+        assert!(chat.has_log_selection(cayenchat_app::Selection::Channel(channel)));
         assert!(chat.log_selection.is_some());
         chat.log_menu_choice(LogMenuChoice::Copy, window, cx);
         assert!(chat.log_selection.is_some());
@@ -259,5 +259,47 @@ fn clicking_the_edit_prompt_does_not_reach_the_message_input(cx: &mut TestAppCon
             assert!(!draft.focus_handle(cx).is_focused(window));
             assert!(draft.read(cx).text().is_empty());
         });
+    });
+}
+
+#[gpui::test]
+fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let channel = chat.state.selected_channel().unwrap().id;
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectServer(NetworkId(1)));
+        let base = chat.state.server_messages(NetworkId(1)).len();
+        chat.state
+            .append_server_message(NetworkId(1), "first line".into());
+        chat.state
+            .append_server_message(NetworkId(1), "second line".into());
+        let source = cayenchat_app::Selection::Server(NetworkId(1));
+        chat.log_selection = Some(LogSelection {
+            source,
+            anchor: LogPosition { row: base, byte: 6 },
+            cursor: LogPosition {
+                row: base + 1,
+                byte: 6,
+            },
+        });
+        assert!(chat.has_log_selection(source));
+        cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
+        chat.open_log_menu(point(px(5.), px(5.)), None, window, cx);
+        assert!(chat.log_menu.is_some());
+        chat.log_menu_choice(LogMenuChoice::Copy, window, cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some("line\nsecond")
+        );
+        // Another log never copies it.
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(channel));
+        cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
+        chat.copy_selected_log(cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some("old")
+        );
     });
 }
