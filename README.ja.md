@@ -10,8 +10,6 @@ Rust と GPUI で作った、macOS・Windows・Linux 向けのコンパクトな
 - 自分の画像ホスティングアカウント（ImgBB）経由で画像を共有
 - 日本語・英語 UI
 
-チャット履歴は保存しません。
-
 ![Linux 版の CayenChat：アバターと画像プレビューのあるチャンネルのログ、メンバー一覧、チャンネル一覧](assets/screenshots/cayenchat-ja.png)
 
 ## ビルドと起動

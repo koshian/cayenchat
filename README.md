@@ -10,8 +10,6 @@ A compact native IRC desktop client written in Rust and GPUI, for macOS, Windows
 - Image sharing through your own image hosting account (ImgBB)
 - Japanese and English UI
 
-Chat history is not saved.
-
 ![CayenChat on Linux: a channel log with avatars and an image preview, the member list and the channel tree](assets/screenshots/cayenchat-en.png)
 
 ## Build and run
