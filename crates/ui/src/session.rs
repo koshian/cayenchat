@@ -40,6 +40,9 @@ pub struct ServerSession {
     /// Case-folded channels this client asked to join and has no answer for
     /// yet, bounded, so a refusal of a new channel can be shown.
     pub pending_joins: HashSet<String>,
+    /// Case-folded channels this client sent PART for and has no answer to
+    /// yet, with when; bounded and expiring (see `part_dialog`).
+    pub pending_parts: HashMap<String, Instant>,
     /// Channels whose JOIN the server has not answered, for the
     /// channel key dialog and for saving a key; bounded.
     pub key_joins: Vec<crate::channel_keys::KeyJoin>,
@@ -95,6 +98,7 @@ impl ServerSession {
             own_nickname: None,
             pending_whois: HashSet::new(),
             pending_joins: HashSet::new(),
+            pending_parts: HashMap::new(),
             key_joins: Vec::new(),
             diagnostics: VecDeque::new(),
             connection_started: None,

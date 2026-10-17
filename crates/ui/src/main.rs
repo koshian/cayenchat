@@ -30,6 +30,7 @@ mod log_search;
 mod member_selection;
 mod menu_bar;
 mod notifier;
+mod part_dialog;
 #[cfg(test)]
 mod perf_baseline;
 #[cfg(any(target_os = "windows", test))]
@@ -623,6 +624,8 @@ struct ChatWindow {
     confirm_quit: bool,
     quit_prompt_open: bool,
     quit_dialog: quit_dialog::QuitDialog,
+    /// The question a double click on a joined channel row opens (#451).
+    part_prompt: Option<part_dialog::PartPrompt>,
     layout_file: Option<std::path::PathBuf>,
     /// The channel order chosen by dragging or the menu, and the file it is
     /// written to (`None` writes nothing, as for `layout_file`).
@@ -1119,6 +1122,7 @@ impl ChatWindow {
             confirm_quit: saved.confirm_quit,
             quit_prompt_open: false,
             quit_dialog: quit_dialog::QuitDialog::new(cx),
+            part_prompt: None,
             layout_file: None,
             channel_orders: Default::default(),
             order_file: None,
@@ -1936,6 +1940,13 @@ impl ChatWindow {
             {
                 self.member_prompt = None;
             }
+            if self
+                .part_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.network() == id)
+            {
+                self.part_prompt = None;
+            }
         }
         let removed = self.state.sync_networks(&networks);
         self.restore_channel_orders();
@@ -2009,6 +2020,16 @@ impl ChatWindow {
             .is_some_and(|prompt| prompt.network == network)
         {
             self.member_prompt = None;
+        }
+        if self
+            .part_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.network() == network)
+        {
+            self.part_prompt = None;
+        }
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.pending_parts.clear();
         }
         self.nick_prompts.retain(|prompt| prompt.network != network);
         let removed = self.state.reset_network(network, config.channels.clone());
@@ -2687,6 +2708,7 @@ impl ChatWindow {
         self.inputs
             .values()
             .chain(self.member_prompt.iter().map(|prompt| &prompt.input))
+            .chain(self.part_prompt.iter().map(|prompt| &prompt.input))
             .chain(self.nick_prompts.iter().map(|prompt| &prompt.input))
             .chain(self.key_prompts.iter().map(|prompt| prompt.input()))
             .any(|input| input.read(cx).is_composing())
@@ -4530,6 +4552,10 @@ impl ChatWindow {
                 );
             }
             Event::Parted { channel } => {
+                let folded = self.state.casemapping(network).fold(&channel);
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.pending_parts.remove(&folded);
+                }
                 self.state.parted_channel(network, &channel);
                 self.state.append_server_message(
                     network,
@@ -5266,7 +5292,9 @@ impl ChatWindow {
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(network) = self.focused_nick_prompt(window, cx) {
+        if self.part_prompt_field_focused(window, cx) {
+            self.confirm_part_prompt(window, cx);
+        } else if let Some(network) = self.focused_nick_prompt(window, cx) {
             self.submit_nick_prompt(network, window, cx);
         } else if let Some((network, channel)) = self.focused_key_prompt(window, cx) {
             self.submit_key_prompt(network, &channel, window, cx);
@@ -5282,7 +5310,9 @@ impl ChatWindow {
     }
 
     fn notice(&mut self, _: &Notice, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(network) = self.focused_nick_prompt(window, cx) {
+        if self.part_prompt_field_focused(window, cx) {
+            self.confirm_part_prompt(window, cx);
+        } else if let Some(network) = self.focused_nick_prompt(window, cx) {
             self.submit_nick_prompt(network, window, cx);
         } else if let Some((network, channel)) = self.focused_key_prompt(window, cx) {
             self.submit_key_prompt(network, &channel, window, cx);
@@ -6080,8 +6110,13 @@ impl ChatWindow {
                             cx.notify();
                         }),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         this.dispatch_keeping_focus(Command::SelectChannel(id), window, cx);
+                        // Only the second click of a double click acts, on
+                        // the row clicked, whichever channel was selected.
+                        if event.click_count() == 2 {
+                            this.activate_channel_row(id, window, cx);
+                        }
                     }))
                     .into_any_element()
             }
@@ -6950,6 +6985,7 @@ impl ChatWindow {
         let nick_prompts = self.render_nick_prompts(origin, window, cx);
         let key_prompts = self.render_key_prompts(origin, window, cx);
         let quit_dialog = self.render_quit_dialog(window, cx);
+        let part_prompt = self.render_part_prompt(window, cx);
         div()
             .id("chat-window")
             .key_context("ChatWindow")
@@ -7038,6 +7074,7 @@ impl ChatWindow {
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
+            .when_some(part_prompt, |d, dialog| d.child(dialog))
             .when_some(quit_dialog, |d, dialog| d.child(dialog))
             .into_any_element()
     }
@@ -8466,6 +8503,17 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
         KeyBinding::new("down", HistoryNext, Some("ChatWindow > TextInput")),
         KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
         KeyBinding::new("shift-tab", FocusPreviousField, Some("SettingsWindow")),
+        // The leave question inside the chat window: its field and buttons
+        // cycle instead of completing nicknames (later wins over the chat
+        // field's Tab above).
+        KeyBinding::new("tab", FocusNextField, Some("PartDialog")),
+        KeyBinding::new("shift-tab", FocusPreviousField, Some("PartDialog")),
+        KeyBinding::new("tab", FocusNextField, Some("PartDialog > TextInput")),
+        KeyBinding::new(
+            "shift-tab",
+            FocusPreviousField,
+            Some("PartDialog > TextInput"),
+        ),
         KeyBinding::new("secondary-,", OpenSettings, None),
         // Replaced by F3 under the Emacs key theme on Linux (see
         // `rebind_shortcuts`).
@@ -8926,3 +8974,7 @@ mod search_tests;
 #[cfg(test)]
 #[path = "main_tests/channel_key_tests.rs"]
 mod channel_key_tests;
+
+#[cfg(test)]
+#[path = "main_tests/part_dialog_tests.rs"]
+mod part_dialog_tests;
