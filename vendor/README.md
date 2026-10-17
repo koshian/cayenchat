@@ -13,6 +13,11 @@ copy. Check the conditions below when updating dependencies.
 | `irc-proto` | 1.1.0 | `LineCodec` rejects lines over 16 KiB (`MAX_LINE_BYTES`); upstream buffers a line without limit. Its `encoding` feature uses `encoding_rs` instead of the unmaintained `encoding` crate (RUSTSEC-2021-0153), and the workspace enables it directly rather than through `irc`'s `encoding` feature. `charsets` lets the codec convert the text of a `PRIVMSG`/`NOTICE` to a given target with another encoding than the rest of the line (per-channel `/charset`, #396) | An `irc-proto` release limits the line length in its codec and decodes legacy charsets with a maintained crate; `irc`'s `encoding` feature must then no longer pull in `encoding` |
 | `irc` | 1.1.0 | A received KICK of our own nickname drops the channel's `channel-lists` entry, like a PART we send does (`src/client/mod.rs`). "Our own nickname" is the one the server confirmed (RPL_WELCOME, then our own NICK), not `current_nickname()`, which ignores later nick changes. Upstream only removed the kicked user, so a rejoin appended to stale entries: modes went to the old entry, members who left meanwhile stayed, and `list_channels()` still reported the channel (#342). The `body-charsets` feature adds `Config::body_charsets`, handed to the line codec for per-channel text encodings (#396) | `Client` is no longer used (#266); upstream 1.1.0 is the latest release and has no fix |
 
+`irc` and `native-theme` set `[lints.rust] warnings = "allow"` in their
+`Cargo.toml`: their upstream code has unused items and old idioms that Cargo
+would hide in a crates.io dependency, and fixing them here would only widen
+the difference from upstream. Keep local fixes warning-free all the same.
+
 Run the copies' own tests with `cargo test -p zed-xim` and
 `cargo test -p irc-proto` (CI does both on Linux). The `native-theme` change
 is Windows-only code; it is compiled by the Windows CI builds, and its own test

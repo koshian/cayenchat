@@ -64,11 +64,11 @@
 - **案**: OS の資格情報ストア（macOS Keychain / Windows Credential Manager / Linux Secret Service）に保存する。`keyring` クレートが候補。既存の平文値を移行してファイルから消す手順が必要。
 - **確認したいこと**: Linux で Secret Service が無い環境のフォールバックをどうするか。ad hoc 署名の macOS ビルドで Keychain のアクセス許可ダイアログが毎回出ないか。
 
-**対応方針**:
+**対応方針**: 秘密情報（サーバー・SASL のパスワード、アップロードのトークン）は、すべて `storage::credentials::CredentialStore` を通す（D014）。既定は OS の資格情報ストア（macOS Keychain / Windows 資格情報マネージャー / Secret Service）。設定ファイルには保存しない。
 
-**確認事項・メモ**:
+**確認事項・メモ**: Secret Service のない Linux のために、利用者のみ読める（0600）平文のファイルを選べる。黙って選ばれることはない。
 
-**判断**:
+**判断**: 採用（完了）
 
 ---
 

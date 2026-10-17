@@ -261,3 +261,9 @@ features = [
 ]
 optional = true
 default-features = false
+
+# Local addition: a copy of a published crate is not ours to lint. Cargo caps
+# the lints of crates.io dependencies; this does the same for the copy, so the
+# build shows only the workspace's own warnings (vendor/README.md).
+[lints.rust]
+warnings = "allow"
