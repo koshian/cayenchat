@@ -50,6 +50,7 @@ mod signals;
 mod splitter;
 mod theme;
 mod toolbar;
+mod wake;
 mod whois;
 mod window_layout;
 
@@ -127,6 +128,10 @@ const RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(24),
     Duration::from_secs(30),
 ];
+/// How long after waking from sleep the connections are checked, so that a
+/// network that is coming back (Wi-Fi rejoining) is not mistaken for a dead
+/// server, and repeated wake-up notices are handled once.
+const WAKE_GRACE: Duration = Duration::from_secs(3);
 /// Most lines the combined other-channel log keeps on screen.
 const SUB_LOG_LIMIT: usize = 1_000;
 /// Worker events applied per update before yielding to input and redraws.
@@ -2367,6 +2372,25 @@ impl ChatWindow {
                 .err()
         };
         self.set_feedback(feedback);
+        cx.notify();
+    }
+
+    /// After waking from sleep: has every registered connection that the
+    /// user did not end prove it is alive. The worker disconnects those that
+    /// stay silent, which reconnects them like any other lost connection;
+    /// the others are not touched.
+    fn check_connections_after_wake(&mut self, cx: &mut Context<Self>) {
+        let networks: Vec<_> = self.sessions.keys().copied().collect();
+        for network in networks {
+            if self.sessions[&network].manual_disconnect {
+                continue;
+            }
+            if let Ok(connection) = self.registered_connection(network)
+                && let Err(error) = connection.check_alive()
+            {
+                self.push_diagnostic(network, error);
+            }
+        }
         cx.notify();
     }
 
@@ -8453,6 +8477,21 @@ fn main() {
                 )
                 .expect("could not open CayenChat window");
             cx.activate(true);
+            let mut wake_ups = wake::install();
+            cx.spawn(async move |cx| {
+                while wake_ups.next().await.is_some() {
+                    Timer::after(WAKE_GRACE).await;
+                    // Notices that arrived meanwhile belong to this check.
+                    while wake_ups.try_recv().is_ok() {}
+                    let checked = chat_window.update(cx, |chat, _, cx| {
+                        chat.check_connections_after_wake(cx);
+                    });
+                    if checked.is_err() {
+                        return;
+                    }
+                }
+            })
+            .detach();
             // Off is the default state, so only an enabled preference touches the
             // native window; the settings window below follows it.
             #[cfg(target_os = "windows")]
@@ -8648,6 +8687,10 @@ mod menu_tests;
 #[cfg(test)]
 #[path = "main_tests/toolbar_tests.rs"]
 mod toolbar_tests;
+
+#[cfg(test)]
+#[path = "main_tests/wake_tests.rs"]
+mod wake_tests;
 
 #[cfg(test)]
 #[path = "main_tests/charset_command_tests.rs"]
