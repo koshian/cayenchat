@@ -292,11 +292,17 @@ impl ConnectionConfig {
     pub fn checked_sleep_quit_message(&self) -> String {
         [self.wire_sleep_quit_message(), self.wire_quit_message()]
             .into_iter()
-            .find(|reason| {
-                !reason.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
-                    && validate_wire(&format!("QUIT :{reason}\r\n"), &self.encoding).is_ok()
-            })
+            .find(|reason| self.quit_reason_fits(reason))
             .unwrap_or_else(|| QUIT_MESSAGE.to_owned())
+    }
+
+    /// Whether `reason` (blank counts) is a valid `QUIT` reason for this
+    /// connection: no line breaks or NUL, representable in its encoding and
+    /// within the wire limit.
+    pub fn quit_reason_fits(&self, reason: &str) -> bool {
+        let reason = reason.trim();
+        !reason.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+            && validate_wire(&format!("QUIT :{reason}\r\n"), &self.encoding).is_ok()
     }
 
     /// The default `PART` reason: the trimmed configured message, if any.

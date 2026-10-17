@@ -1857,8 +1857,15 @@ impl ChatWindow {
                     config.channels = profile.channels();
                     // The sleep QUIT reads these when the machine sleeps, so
                     // saved changes count for the current connection too.
-                    config.quit_message = profile.quit_message.clone();
-                    config.sleep_quit_message = profile.sleep_quit_message.clone();
+                    // Settings saving does not validate them, and a bad one
+                    // would also fail the reconnect's validation, so the
+                    // previous value stays instead.
+                    if config.quit_reason_fits(&profile.quit_message) {
+                        config.quit_message = profile.quit_message.clone();
+                    }
+                    if config.quit_reason_fits(&profile.sleep_quit_message) {
+                        config.sleep_quit_message = profile.sleep_quit_message.clone();
+                    }
                     key_refreshes.push((id, profile.clone()));
                     config.channel_encodings = channel_encodings(profile);
                     // A new realname is sent at once with SETNAME when the

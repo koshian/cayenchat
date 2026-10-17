@@ -1306,10 +1306,12 @@ future work. Details in `architecture.md` (Channel history).
 - `quit_message` and `sleep_quit_message` are copied into the live
   connection's config when the settings are saved, not only at connect time,
   so a sleep message edited after connecting is the one sent. Saving does
-  not validate them against the live connection, so the sleep QUIT checks
-  the message (line breaks, encoding, wire length) just before sending and
-  falls back to the normal message, then the default. A normal QUIT and the
-  default PART still use the values from connect time (separate matter).
+  not validate them against the live connection, so each is checked (line
+  breaks, encoding, wire length) before it is copied; an invalid one leaves
+  the previous value in place, which keeps the reconnect's `validate()`
+  passing. The sleep QUIT checks again just before sending and falls back to
+  the normal message, then the default. A normal QUIT and the default PART
+  still use the values from connect time (separate matter).
 - Details in `architecture.md` (Waking from sleep).
 
 ## D053 — Verify connections after waking from sleep (#437)

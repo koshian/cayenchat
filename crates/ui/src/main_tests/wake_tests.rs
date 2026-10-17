@@ -457,14 +457,18 @@ fn saved_leaving_messages_reach_the_open_connection(cx: &mut TestAppContext) {
         chat.apply_servers(next.clone(), cx);
         let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
         assert_eq!(config.checked_sleep_quit_message(), "Zzz");
-        // Values that settings saving lets through fall back instead of
-        // reaching the wire.
+        // Values that settings saving lets through are not taken over: the
+        // previous one stays, so the QUIT is valid and so is the reconnect.
         for bad in ["a\nb", "a\0b", &"x".repeat(600)] {
             next.servers[0].sleep_quit_message = bad.into();
+            next.servers[0].quit_message = bad.into();
             chat.apply_servers(next.clone(), cx);
             let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
-            assert_eq!(config.checked_sleep_quit_message(), "Bye all");
+            assert_eq!(config.checked_sleep_quit_message(), "Zzz");
+            assert_eq!(config.quit_message, "Bye all");
+            assert!(config.validate().is_ok());
         }
+        next.servers[0].quit_message = "Bye all".into();
         next.servers[0].sleep_quit_message = "  ".into();
         chat.apply_servers(next, cx);
         let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
