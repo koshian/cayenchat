@@ -5874,3 +5874,48 @@ fn sleep_sends_quit_while_the_event_queue_is_full() {
     assert_eq!(line, b"QUIT Sleeping".to_vec());
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+#[test]
+fn sleep_closes_an_unregistered_connection_while_the_event_queue_is_full() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut line = String::new();
+        while !line.starts_with("USER ") {
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+        }
+        // Never sends 001; floods notices instead.
+        for _ in 0..EVENT_CAPACITY * 4 {
+            if socket.write_all(b":server NOTICE * :wait\r\n").is_err() {
+                return;
+            }
+        }
+        // The client closes without QUIT.
+        socket
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        let mut rest = String::new();
+        let mut quit = false;
+        while let Ok(n) = lines.read_line(&mut rest) {
+            if n == 0 {
+                break;
+            }
+            quit |= rest.starts_with("QUIT ");
+            rest.clear();
+        }
+        assert!(!quit, "QUIT sent before registration");
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false;
+    let connection = Connection::connect(config).unwrap();
+    thread::sleep(Duration::from_millis(500));
+    let started = Instant::now();
+    connection.sleep("Sleeping");
+    assert!(connection.wait_closed(Duration::from_millis(1500)));
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    server.join().unwrap();
+}

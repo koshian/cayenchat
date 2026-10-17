@@ -2869,6 +2869,14 @@ impl Worker {
                 limit,
             } => self.older_history(channel, request, reference, limit).await,
             Outgoing::CheckAlive(_) => ControlFlow::Continue(()),
+            Outgoing::SleepQuit(_) if !self.registered => {
+                // Still registering: close as is, without QUIT or waiting.
+                let _ = self
+                    .events
+                    .send(Event::Closed(SLEEP_DISCONNECT.into()))
+                    .await;
+                ControlFlow::Break(())
+            }
             Outgoing::SleepQuit(reason) => {
                 self.quit(reason, SLEEP_FLUSH_LIMIT, SLEEP_DISCONNECT, stream)
                     .await

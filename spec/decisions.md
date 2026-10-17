@@ -1288,6 +1288,8 @@ future work. Details in `architecture.md` (Channel history).
   back the QUIT or the 1 s limit. A session waiting to retry after an error
   is marked `asleep` too and its timer invalidated, so it cannot connect just
   before the machine sleeps; the wake-up reconnects it.
+- A connection still registering is closed by the worker without QUIT (the same
+  signal), so a full queue cannot keep its socket open either.
 - D053's check after waking stays as the fallback for sleeps the OS does not
   announce (forced sleep, Linux without logind).
 - Accepted limitation: if the sleep is announced but the machine never reports

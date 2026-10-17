@@ -2393,7 +2393,6 @@ impl ChatWindow {
         let networks: Vec<_> = self.sessions.keys().copied().collect();
         let mut closing = Vec::new();
         for network in networks {
-            let registered = self.state.is_registered(network);
             let Some(session) = self.sessions.get_mut(&network) else {
                 continue;
             };
@@ -2412,14 +2411,11 @@ impl ChatWindow {
                 continue;
             };
             session.asleep = true;
+            // The worker closes a connection that is not registered yet
+            // without QUIT, whatever the queues hold.
             match &session.active_config {
-                Some(config) if registered => connection.sleep(&config.wire_sleep_quit_message()),
-                _ => {
-                    if connection.disconnect().is_err() {
-                        // The command queue is full: take the way that bypasses it.
-                        connection.shutdown();
-                    }
-                }
+                Some(config) => connection.sleep(&config.wire_sleep_quit_message()),
+                None => connection.shutdown(),
             }
             closing.push(network);
         }
