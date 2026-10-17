@@ -4315,6 +4315,22 @@ fn operator_channels_carry_into_an_automatic_reconnect_only(cx: &mut TestAppCont
         assert!(!config.regain_ops);
         // The old set does not wait to be revived by switching it on again.
         assert!(config.regain_ops_in.is_empty());
+        // An update from the still running worker arrives after the save.
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::OpChannels(vec!["#a".into()])],
+            Worker::Running,
+            cx,
+        );
+        let session = chat.sessions.get(&NetworkId(1)).unwrap();
+        assert!(
+            session
+                .active_config
+                .as_ref()
+                .unwrap()
+                .regain_ops_in
+                .is_empty()
+        );
         chat.apply_servers(on, cx);
         let config = chat.reconnect_config(NetworkId(1)).unwrap();
         assert!(config.regain_ops && config.regain_ops_in.is_empty());

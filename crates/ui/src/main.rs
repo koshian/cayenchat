@@ -4292,7 +4292,11 @@ impl ChatWindow {
                         .get_mut(&network)
                         .and_then(|session| session.active_config.as_mut())
                     {
-                        config.regain_ops_in = channels.clone();
+                        // Switched off since the worker started: an update
+                        // still in flight must not revive the dropped set.
+                        if config.regain_ops {
+                            config.regain_ops_in = channels.clone();
+                        }
                     }
                 }
                 Event::NicknameRejected { nickname } => {
