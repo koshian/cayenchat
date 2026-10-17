@@ -270,6 +270,10 @@ fn default_verify_tls_certificates() -> bool {
     true
 }
 
+fn default_regain_ops() -> bool {
+    true
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextEncoding {
@@ -749,6 +753,13 @@ pub struct ServerProfile {
     /// `appearance.user_avatars` gets its value copied here on load.
     #[serde(default)]
     pub user_avatars: bool,
+    /// After an unexpected disconnect, rejoin a channel where we were an
+    /// operator before, found us alone and without operator status, to get
+    /// operator status back (#444). Parting an empty channel resets it; the
+    /// topic and the common flags are restored. On by default; added
+    /// without a version change, so files without it read as on.
+    #[serde(default = "default_regain_ops")]
+    pub regain_ops: bool,
     /// Opt-in IRCv3 features for this server (version 15), off by default.
     #[serde(default)]
     pub ircv3: Ircv3Preferences,
@@ -809,6 +820,7 @@ impl ServerProfile {
             sasl_username: String::new(),
             connect_on_startup: false,
             user_avatars: false,
+            regain_ops: true,
             ircv3: Ircv3Preferences::default(),
             avatar_url: String::new(),
             peer_avatar_url: String::new(),
@@ -2885,6 +2897,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             [true, false]
         );
+    }
+
+    #[test]
+    fn regain_ops_defaults_on_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("a.example");
+        settings.add_server("b.example");
+        assert!(settings.servers.iter().all(|s| s.regain_ops));
+        settings.servers[0].regain_ops = false;
+        save_to(&path, &settings).unwrap();
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded
+                .servers
+                .iter()
+                .map(|s| s.regain_ops)
+                .collect::<Vec<_>>(),
+            [false, true]
+        );
+        // A file from before the setting reads as on.
+        for server in saved["servers"].as_array_mut().unwrap() {
+            server.as_object_mut().unwrap().remove("regain_ops");
+        }
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.servers.iter().all(|s| s.regain_ops));
     }
 
     #[test]

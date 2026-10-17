@@ -34,6 +34,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — channel topic (on join and when changed) kept in application state and shown in the window title after the channel (with its member count once the roster is known, issue #146) and network; editing only through `/topic`
 - TODO — channel modes relevant to normal use
 - DONE — auto-join configured channels
+- DONE — after an unexpected disconnect, a channel where we were operator and where we are now alone without operator status is left and joined once more to get operator status back, restoring its topic and plain modes (`imnpst`); per server, on by default, with a checkbox in the server settings (D054)
 - DONE — IRCnet `!` safe-channel targets in auto-join, messages, rosters, channel commands and WHOIS links; preserve the full name returned by the server
 
 ## Private messages

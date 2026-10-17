@@ -4270,3 +4270,78 @@ fn server_settings_open_the_clicked_server_not_the_selected_one(cx: &mut TestApp
         assert_eq!(&profile, expected);
     }
 }
+
+#[gpui::test]
+fn operator_channels_carry_into_an_automatic_reconnect_only(cx: &mut TestAppContext) {
+    use cayenchat_irc_core::{ConnectionConfig, Event};
+
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a");
+    settings.language = cayenchat_storage::Language::English;
+    let on = settings.clone();
+    let mut off = settings.clone();
+    off.servers[0].regain_ops = false;
+    let (chat, cx) =
+        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    chat.update(cx, |chat, cx| {
+        let mut config = ConnectionConfig::tls("irc.example".into(), "alice".into(), Vec::new());
+        config.regain_ops = true;
+        chat.sessions.get_mut(&NetworkId(1)).unwrap().active_config = Some(config);
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "alice".into(),
+                },
+                Event::OpChannels(vec!["#a".into()]),
+                Event::Disconnected("connection reset".into()),
+            ],
+            Worker::Running,
+            cx,
+        );
+        let config = chat.reconnect_config(NetworkId(1)).unwrap();
+        assert!(config.regain_ops);
+        assert_eq!(config.regain_ops_in, ["#a"]);
+        // Switched off in the settings while connected: the reconnect obeys.
+        chat.apply_servers(off, cx);
+        let config = chat.reconnect_config(NetworkId(1)).unwrap();
+        assert!(!config.regain_ops);
+        // The old set does not wait to be revived by switching it on again.
+        assert!(config.regain_ops_in.is_empty());
+        // An update from the still running worker arrives after the save.
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::OpChannels(vec!["#a".into()])],
+            Worker::Running,
+            cx,
+        );
+        let session = chat.sessions.get(&NetworkId(1)).unwrap();
+        assert!(
+            session
+                .active_config
+                .as_ref()
+                .unwrap()
+                .regain_ops_in
+                .is_empty()
+        );
+        chat.apply_servers(on, cx);
+        let config = chat.reconnect_config(NetworkId(1)).unwrap();
+        assert!(config.regain_ops && config.regain_ops_in.is_empty());
+        // Ended on purpose: nothing is carried any more.
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::Closed("bye".into())],
+            Worker::Running,
+            cx,
+        );
+        let config = chat.reconnect_config(NetworkId(1)).unwrap();
+        assert!(config.regain_ops_in.is_empty());
+    });
+}

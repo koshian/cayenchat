@@ -1270,6 +1270,23 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D055 — Rejoin to regain operator status after a dropped connection (#444)
+
+**Status:** Accepted
+
+- On by default, per server, switchable in the server settings. Only for a
+  channel where the previous connection, which ended unexpectedly, had us as
+  operator; a general "alone and opless" trigger was left out because it would
+  also fire on a deliberate `/deop`.
+- Parting an empty channel destroys it. The topic and the plain flags
+  `imnpst` are put back by us once operator status returns (decided in the
+  issue); keys, limits and the ban, exception, invite and reop lists are not
+  restored, since restoring them from stale knowledge is riskier than the loss,
+  and the setting's text says so.
+- One attempt per loss, never retried; failure is shown and left to the user.
+  `!` and `+` channels are excluded.
+- Details in `architecture.md` (Regaining operator status).
+
 ## D054 — QUIT before sleep, reconnect on wake (#445)
 
 **Status:** Accepted

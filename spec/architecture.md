@@ -808,6 +808,56 @@ server sends until the server closes the connection, at most 1.5 s: dropping a s
 with unread data sends RST, which can discard a QUIT not yet sent (the server then
 reports "EOF From client").
 
+#### Regaining operator status after a dropped connection (issue #444)
+
+When the server has not noticed that a link died, the new connection can end
+up under a temporary nickname, and once the old link times out we are alone in
+our channels without the operator status we had. On networks where an empty
+channel disappears and its next creator becomes operator (IRCnet), parting and
+joining again gets it back (`crates/irc-core/src/regain.rs`, D055).
+
+- Scope: only channels where the previous, **unexpectedly ended** connection
+  had us as operator. The worker reports the set of channels where we are
+  operator, plus those still waited on, as `Event::OpChannels` whenever it
+  changes; the UI keeps it in the server's `active_config.regain_ops_in`, so
+  the automatic reconnect carries it. `Closed` (user disconnect, `/quit`) and
+  `Refused` clear it; only a manual end is excluded, so a connection that
+  ended for sleep (#445, whose QUIT may not reach the server and leave a
+  ghost) or a failure is carried, and a connection started from the settings starts
+  empty. Channels that were opless and alone on their own, `/deop`, and
+  channels never operated in are left alone. The carried loss expires 15
+  minutes after the connection started (`CARRY_WINDOW`).
+- Conditions, checked again when acting: registered, no alive check or
+  nickname prompt running, our JOIN synced (end of NAMES seen), the roster
+  holds only us and shows no `~&@%` for us, and the channel modes are known.
+  Any change of the roster restarts a 5 s wait (`STABLE`). Only `#` and `&`
+  channels qualify; `+` (no operators) and `!` (safe channels) never do. Names
+  are used as the server gave them, so IRCnet server-mask channels keep
+  working.
+- Action: `PART` then `JOIN` once per loss. Whatever the result (operator
+  again, no operator, JOIN refused, nothing within 30 s) is final and shown in
+  the server log as `Event::OpRegain`; there is no retry. Our own PART and JOIN
+  show as usual ("Left", "Joined").
+- Because the channel is created anew, modes, topic and lists are reset. A
+  topic longer than 400 bytes cannot be put back, so such a channel is not
+  rejoined at all (`OpRegainStatus::TopicTooLong`, shown once). After the new
+  JOIN shows us as operator, the worker sets the topic and the flags among
+  `imnpst` that the channel had, and nothing else: keys, limits,
+  ban/exception/invite lists and the reop list are lost and mentioned in the
+  setting's description. The result is judged 5 s later (`RESTORE_WAIT`) from
+  what the server showed: the tracked channel flags must contain the sent
+  ones and our own topic must have come back. Both there is
+  `OpRegainStatus::Regained`; otherwise `RestoreFailed` names what is
+  missing. Nothing is sent again. IRCnet's own reop (`+R`, up to about 90
+  minutes) is not interfered with; an attempt that finds the operator status
+  back by itself (or someone else present) does nothing.
+- Setting: `ServerProfile::regain_ops`, per server, on by default (files
+  without it read as on), a checkbox with an explanation on the server's
+  settings page. Saving the settings with it off applies to the next
+  connection, automatic reconnects included (`apply_servers` updates
+  `active_config.regain_ops`); a worker already running keeps the value it was
+  started with, so a wait in progress is not cancelled by the change.
+
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
 connection status, selection, unread IDs, and active IDs. Only configured channels,
 our own JOINs and private messages (see Conversations) create conversations (at

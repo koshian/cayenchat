@@ -124,6 +124,14 @@ impl ServerSession {
         };
     }
 
+    /// The connection ended on purpose or was refused: nothing it knew about
+    /// operator status is carried into a later connection (#444).
+    pub fn forget_operator_channels(&mut self) {
+        if let Some(config) = self.active_config.as_mut() {
+            config.regain_ops_in.clear();
+        }
+    }
+
     pub fn push_diagnostic(&mut self, line: String) {
         // Every IRC line is recorded, so drop the oldest without shifting.
         self.diagnostics.push_back(line);
