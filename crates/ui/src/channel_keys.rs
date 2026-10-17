@@ -559,13 +559,7 @@ impl ChatWindow {
         for (index, prompt) in self.key_prompts.iter().enumerate() {
             let network = prompt.network;
             let channel = prompt.channel.clone();
-            let server = self
-                .state
-                .networks()
-                .iter()
-                .find(|server| server.id == network)
-                .map(|server| server.name.clone())
-                .unwrap_or_default();
+            let server = self.prompt_server_label(network);
             let title = self.i18n.format(
                 "key_prompt_title",
                 &[(
