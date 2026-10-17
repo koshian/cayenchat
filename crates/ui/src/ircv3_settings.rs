@@ -26,7 +26,7 @@ use crate::{
     ChatWindow, SettingsTab, SettingsWindow,
     account_settings::panel,
     image_upload::{
-        acceptable_attachment, clipboard_attachment, configured_uploader, file_attachment,
+        acceptable_attachment, clipboard_attachment, configured_uploader, read_in_background,
         upload_failure_text, upload_in_background,
     },
     input,
@@ -596,13 +596,29 @@ impl SettingsWindow {
         if !self.avatar_images_accepted() {
             return;
         }
-        match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {
-            Ok(attachment) => self.offer_avatar_image(attachment, window, cx),
-            Err(error) => {
-                self.avatar_feedback = Some(error);
-                cx.notify();
-            }
-        }
+        self.read_avatar_image(paths.to_vec(), AttachmentSource::Drop, window, cx);
+    }
+
+    /// Reads the file off the UI thread, then offers it. A newer read
+    /// replaces one still running.
+    fn read_avatar_image(
+        &mut self,
+        paths: Vec<PathBuf>,
+        source: AttachmentSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let read = read_in_background(paths, source, cx);
+        self.avatar_file_read = Some(cx.spawn_in(window, async move |this, cx| {
+            let read = read.await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(attachment) => this.offer_avatar_image(attachment, window, cx),
+                Err(error) => {
+                    this.avatar_feedback = Some(error.text(&this.i18n));
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn choose_avatar_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -618,13 +634,7 @@ impl SettingsWindow {
                 return;
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                match file_attachment(&paths, AttachmentSource::Chooser, &this.i18n) {
-                    Ok(attachment) => this.offer_avatar_image(attachment, window, cx),
-                    Err(error) => {
-                        this.avatar_feedback = Some(error);
-                        cx.notify();
-                    }
-                }
+                this.read_avatar_image(paths, AttachmentSource::Chooser, window, cx)
             });
         })
         .detach();

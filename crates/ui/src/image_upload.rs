@@ -76,18 +76,36 @@ pub(crate) fn clipboard_attachment(cx: &App) -> Option<Result<Attachment, Attach
     ))
 }
 
-/// Reads the one file in `paths` as an image attachment.
+/// Why the file(s) offered could not be read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FileReadError {
+    /// A file promise (Photos, Mail) was not fulfilled.
+    NoFile,
+    TooMany,
+    Io(String),
+}
+
+impl FileReadError {
+    pub(crate) fn text(&self, i18n: &Localizer) -> String {
+        match self {
+            Self::NoFile => i18n.format("upload_read_failed", &[("error", "no file was received")]),
+            Self::TooMany => i18n.text("upload_one_file"),
+            Self::Io(error) => i18n.format("upload_read_failed", &[("error", error)]),
+        }
+    }
+}
+
+/// Reads the one file in `paths` as an image attachment. This blocks on
+/// the file system, so run it off the UI thread.
 pub(crate) fn file_attachment(
     paths: &[PathBuf],
     source: AttachmentSource,
-    i18n: &Localizer,
-) -> Result<Result<Attachment, AttachmentError>, String> {
+) -> Result<Result<Attachment, AttachmentError>, FileReadError> {
     let [path] = paths else {
-        // No path means a file promise (Photos, Mail) was not fulfilled.
         return Err(if paths.is_empty() {
-            i18n.format("upload_read_failed", &[("error", "no file was received")])
+            FileReadError::NoFile
         } else {
-            i18n.text("upload_one_file")
+            FileReadError::TooMany
         });
     };
     let name = path
@@ -95,7 +113,20 @@ pub(crate) fn file_attachment(
         .map(|name| name.to_string_lossy().into_owned());
     read_limited(path)
         .map(|bytes| Attachment::image(name.as_deref(), bytes, source))
-        .map_err(|error| i18n.format("upload_read_failed", &[("error", &error)]))
+        .map_err(FileReadError::Io)
+}
+
+/// What a background file read produces.
+pub(crate) type FileRead = Result<Result<Attachment, AttachmentError>, FileReadError>;
+
+/// Reads the file off the UI thread. Dropping the returned task discards
+/// the result, so a later drop supersedes an earlier one.
+pub(crate) fn read_in_background(
+    paths: Vec<PathBuf>,
+    source: AttachmentSource,
+    cx: &App,
+) -> Task<FileRead> {
+    cx.background_spawn(async move { file_attachment(&paths, source) })
 }
 
 /// The attachment if it is an image the uploader accepts, or why not.
@@ -183,13 +214,18 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {
-            Ok(attachment) => self.accept_attachment(attachment, window, cx),
-            Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
-            }
-        }
+        let read = read_in_background(paths.to_vec(), AttachmentSource::Drop, cx);
+        // Replacing the task drops an earlier read that is still running.
+        self.file_read = Some(cx.spawn_in(window, async move |this, cx| {
+            let read = read.await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(attachment) => this.accept_attachment(attachment, window, cx),
+                Err(error) => {
+                    this.feedback = Some(error.text(&this.i18n));
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn accept_attachment(
@@ -431,7 +467,16 @@ impl ChatWindow {
 /// FIFO or device) cannot exhaust memory.
 fn read_limited(path: &std::path::Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
+    // Opening a FIFO blocks until a writer appears, so refuse anything but
+    // a regular file before opening it.
+    if !std::fs::metadata(path)
+        .map_err(|error| error.kind().to_string())?
+        .is_file()
+    {
+        return Err(std::io::ErrorKind::InvalidInput.to_string());
+    }
     let file = std::fs::File::open(path).map_err(|error| error.kind().to_string())?;
+    // The path may have been replaced since the check above.
     if !file
         .metadata()
         .map_err(|error| error.kind().to_string())?
@@ -650,6 +695,42 @@ mod tests {
         assert_eq!(fake.calls(), 0);
         let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone()).unwrap();
         assert!(feedback.contains("64 B"), "{feedback}");
+    }
+
+    #[test]
+    fn directories_are_refused_and_images_are_read() {
+        use super::{FileReadError, file_attachment};
+        use cayenchat_model::attachment::AttachmentSource;
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("a.png");
+        std::fs::write(&image, PNG).unwrap();
+        let read = file_attachment(&[image], AttachmentSource::Drop).unwrap();
+        assert!(read.is_ok());
+        let error = file_attachment(&[directory.path().to_owned()], AttachmentSource::Drop);
+        assert!(matches!(error, Err(FileReadError::Io(_))));
+    }
+
+    /// Opening a FIFO without a writer would block forever.
+    #[cfg(unix)]
+    #[test]
+    fn fifos_are_refused_without_being_opened() {
+        use super::{FileReadError, file_attachment};
+        use cayenchat_model::attachment::AttachmentSource;
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = directory.path().join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(file_attachment(&[fifo], AttachmentSource::Drop));
+        });
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the FIFO must not be opened");
+        assert!(matches!(result, Err(FileReadError::Io(_))));
     }
 
     #[gpui::test]
