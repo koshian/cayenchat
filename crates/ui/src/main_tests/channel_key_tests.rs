@@ -363,3 +363,20 @@ fn names_are_matched_under_the_casemapping_announced_later(cx: &mut TestAppConte
         assert!(chat.sessions[&NET].key_joins.is_empty());
     });
 }
+
+#[gpui::test]
+fn prompt_headings_use_the_display_name_without_bidi_controls(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, _| {
+        let name = chat.state.networks()[0].name.clone();
+        assert_eq!(chat.prompt_server_label(NET), name, "no display name");
+        let profile = chat.sessions[&NET].profile_id.clone();
+        chat.saved
+            .servers
+            .iter_mut()
+            .find(|server| server.id == profile)
+            .unwrap()
+            .display_name = "Home\u{202e}Net".into();
+        assert_eq!(chat.prompt_server_label(NET), "Home\u{200b}Net");
+    });
+}

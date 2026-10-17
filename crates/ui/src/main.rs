@@ -979,6 +979,16 @@ impl ChatWindow {
             .to_string()
     }
 
+    /// The server heading of a prompt: `network_label`, made safe to show.
+    pub(crate) fn prompt_server_label(&self, network: NetworkId) -> String {
+        self.state
+            .networks()
+            .iter()
+            .find(|server| server.id == network)
+            .map(|server| display::neutralize_bidi_owned(self.network_label(server)))
+            .unwrap_or_default()
+    }
+
     fn window_title(&self) -> String {
         let app = if cfg!(feature = "test-build") {
             "CayenChat [test build]"
@@ -7111,13 +7121,7 @@ impl ChatWindow {
         let mut dialog = dialog::prompt_list("nick-prompts", origin, window, &theme);
         for (index, prompt) in self.nick_prompts.iter().enumerate() {
             let network = prompt.network;
-            let server = self
-                .state
-                .networks()
-                .iter()
-                .find(|server| server.id == network)
-                .map(|server| server.name.clone())
-                .unwrap_or_default();
+            let server = self.prompt_server_label(network);
             let title = self
                 .i18n
                 .format_nickname("nick_prompt_title", &prompt.rejected);
