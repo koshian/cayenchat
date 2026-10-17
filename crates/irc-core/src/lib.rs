@@ -284,6 +284,21 @@ impl ConnectionConfig {
         }
     }
 
+    /// The `QUIT` reason to send before sleep, checked against this
+    /// connection's encoding and the wire limit like [`ConnectionConfig::validate`].
+    /// Settings saved after connecting skip `validate`, so a value that fails
+    /// falls back to the normal message, then to the default: the QUIT must
+    /// still go out.
+    pub fn checked_sleep_quit_message(&self) -> String {
+        [self.wire_sleep_quit_message(), self.wire_quit_message()]
+            .into_iter()
+            .find(|reason| {
+                !reason.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+                    && validate_wire(&format!("QUIT :{reason}\r\n"), &self.encoding).is_ok()
+            })
+            .unwrap_or_else(|| QUIT_MESSAGE.to_owned())
+    }
+
     /// The default `PART` reason: the trimmed configured message, if any.
     fn wire_part_message(&self) -> Option<String> {
         let configured = self.part_message.trim();

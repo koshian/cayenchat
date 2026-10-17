@@ -454,11 +454,20 @@ fn saved_leaving_messages_reach_the_open_connection(cx: &mut TestAppContext) {
         let mut next = chat.saved.clone();
         next.servers[0].quit_message = "Bye all".into();
         next.servers[0].sleep_quit_message = "Zzz".into();
-        next.servers[0].part_message = "Gone".into();
+        chat.apply_servers(next.clone(), cx);
+        let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
+        assert_eq!(config.checked_sleep_quit_message(), "Zzz");
+        // Values that settings saving lets through fall back instead of
+        // reaching the wire.
+        for bad in ["a\nb", "a\0b", &"x".repeat(600)] {
+            next.servers[0].sleep_quit_message = bad.into();
+            chat.apply_servers(next.clone(), cx);
+            let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
+            assert_eq!(config.checked_sleep_quit_message(), "Bye all");
+        }
+        next.servers[0].sleep_quit_message = "  ".into();
         chat.apply_servers(next, cx);
         let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
-        assert_eq!(config.wire_sleep_quit_message(), "Zzz");
-        assert_eq!(config.wire_quit_message(), "Bye all");
-        assert_eq!(config.part_message, "Gone");
+        assert_eq!(config.checked_sleep_quit_message(), "Bye all");
     });
 }
