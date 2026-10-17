@@ -150,6 +150,18 @@ pub fn splitter<V: 'static>(
                 if drag.id != id {
                     return;
                 }
+                // Temporary workaround: GPUI ends a drag only on MouseUp, and
+                // on Windows that can be lost (no `WM_CAPTURECHANGED` handling
+                // after `SetCapture`, see `platform/windows/events.rs` in the
+                // vendored GPUI). GPUI should end the drag when capture is
+                // lost; once it does, this check can be removed. Pointer moves
+                // report the held button on every OS, so a drag that outlived
+                // its button ends at the next move.
+                if event.event.pressed_button != Some(MouseButton::Left) {
+                    PRESS.with(Cell::take);
+                    cx.stop_active_drag(window);
+                    return;
+                }
                 let Some(start) = drag.start.get() else {
                     return;
                 };
@@ -262,6 +274,30 @@ mod tests {
         cx.simulate_mouse_move(at(250.), None, gpui::Modifiers::none());
         cx.run_until_parked();
         assert_eq!(panes.read_with(cx, |panes, _| panes.resizes), resizes);
+    }
+
+    #[gpui::test]
+    fn a_move_without_the_button_ends_the_drag(cx: &mut gpui::TestAppContext) {
+        let (panes, cx) = cx.add_window_view(|_, _| Panes {
+            width: 200.,
+            resizes: 0,
+        });
+        cx.run_until_parked();
+        let at = |x: f32| gpui::point(px(x), px(50.));
+        cx.simulate_mouse_move(at(202.), None, gpui::Modifiers::none());
+        cx.simulate_mouse_down(at(202.), gpui::MouseButton::Left, gpui::Modifiers::none());
+        for x in [210., 230.] {
+            cx.simulate_mouse_move(at(x), gpui::MouseButton::Left, gpui::Modifiers::none());
+            cx.run_until_parked();
+        }
+        assert!(cx.update(|_, cx| cx.has_active_drag()));
+        let width = panes.read_with(cx, |panes, _| panes.width);
+        assert!(width > 200.);
+        // The MouseUp is lost; the next move reports no button.
+        cx.simulate_mouse_move(at(260.), None, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(!cx.update(|_, cx| cx.has_active_drag()));
+        assert_eq!(panes.read_with(cx, |panes, _| panes.width), width);
     }
 
     #[test]
