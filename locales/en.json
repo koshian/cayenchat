@@ -360,6 +360,8 @@
   "realname_placeholder": "CayenChat",
   "quit_message": "Quit message",
   "quit_message_placeholder": "Leaving CayenChat",
+  "sleep_quit_message": "Quit message before sleep",
+  "sleep_quit_message_placeholder": "Same as the quit message",
   "part_message": "Part message",
   "part_message_placeholder": "No reason",
   "display_name": "Display name",

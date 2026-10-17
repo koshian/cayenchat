@@ -1270,6 +1270,28 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D054 — QUIT before sleep, reconnect on wake (#445)
+
+**Status:** Accepted
+
+- A connection that merely goes quiet in sleep leaves a stale session on the
+  server until its ping timeout (nickname still taken, channel status lost
+  on reconnect, "ping timeout" shown to others). So when the OS announces the
+  sleep, every registered connection sends `QUIT` with the sleep message and
+  is closed; ones still connecting are closed without QUIT.
+- The ended sessions are marked `asleep`: not a manual disconnect, and no
+  retry is scheduled. The wake-up reconnects exactly those (after the existing
+  3 s `WAKE_GRACE`) and from then on the usual retry schedule applies. Servers
+  the user disconnected are never touched.
+- D053's check after waking stays as the fallback for sleeps the OS does not
+  announce (forced sleep, Linux without logind).
+- Accepted limitation: if the sleep is announced but the machine never reports
+  a wake-up (a cancelled sleep without a wake notice on the platform), the
+  servers stay disconnected until the user reconnects them; the clock check
+  catches only real suspensions. Bouncers keep the upstream connection on
+  `QUIT`, so they are unaffected.
+- Details in `architecture.md` (Waking from sleep).
+
 ## D053 — Verify connections after waking from sleep (#437)
 
 **Status:** Accepted

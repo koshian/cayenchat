@@ -132,6 +132,9 @@ const RETRY_DELAYS: [Duration; 5] = [
 /// network that is coming back (Wi-Fi rejoining) is not mistaken for a dead
 /// server, and repeated wake-up notices are handled once.
 const WAKE_GRACE: Duration = Duration::from_secs(3);
+/// The longest the UI waits, in total, for the servers to take the QUIT sent
+/// before sleep; the system waits for us only briefly.
+const SLEEP_WAIT: Duration = cayenchat_irc_core::SLEEP_FLUSH_LIMIT;
 /// Most lines the combined other-channel log keeps on screen.
 const SUB_LOG_LIMIT: usize = 1_000;
 /// Worker events applied per update before yielding to input and redraws.
@@ -274,6 +277,7 @@ fn connection_config(
     config.username = profile.username.clone();
     config.realname = profile.realname.clone();
     config.quit_message = profile.quit_message.clone();
+    config.sleep_quit_message = profile.sleep_quit_message.clone();
     config.part_message = profile.part_message.clone();
     config.port = profile.port;
     config.use_tls = profile.use_tls;
@@ -2037,6 +2041,7 @@ impl ChatWindow {
         };
         let cancelled_retry = session.retry_pending;
         session.manual_disconnect = true;
+        session.asleep = false;
         session.retry_pending = false;
         session.retry_token += 1;
         if let Some(connection) = &session.irc {
@@ -2197,6 +2202,7 @@ impl ChatWindow {
             return;
         };
         session.retry_pending = false;
+        session.asleep = false;
         if let Some(connection) = session.irc.take() {
             let _ = connection.disconnect();
         }
@@ -2252,7 +2258,8 @@ impl ChatWindow {
         let Some(session) = self.sessions.get_mut(&network) else {
             return;
         };
-        if session.manual_disconnect || session.active_config.is_none() {
+        // A connection ended for sleep is reconnected by the wake-up.
+        if session.manual_disconnect || session.asleep || session.active_config.is_none() {
             return;
         }
         let delay = RETRY_DELAYS[session.retry_attempt.min(RETRY_DELAYS.len() - 1)];
@@ -2272,6 +2279,7 @@ impl ChatWindow {
                 let due = this.sessions.get(&network).is_some_and(|session| {
                     session.retry_token == token
                         && !session.manual_disconnect
+                        && !session.asleep
                         && session.irc.is_none()
                 });
                 if due {
@@ -2375,14 +2383,64 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// After waking from sleep: has every registered connection that the
-    /// user did not end prove it is alive. The worker disconnects those that
-    /// stay silent, which reconnects them like any other lost connection;
-    /// the others are not touched.
+    /// Just before the machine sleeps: sends QUIT with the sleep message on
+    /// every registered connection and closes those still connecting, all at
+    /// once, and waits at most [`SLEEP_WAIT`] in total for the workers to end.
+    /// The sessions are marked `asleep`, so they are neither counted as ended
+    /// by the user nor retried; [`ChatWindow::check_connections_after_wake`]
+    /// reconnects them. Ones the user ended are left alone.
+    fn prepare_for_sleep(&mut self, cx: &mut Context<Self>) {
+        let networks: Vec<_> = self.sessions.keys().copied().collect();
+        let mut closing = Vec::new();
+        for network in networks {
+            let registered = self.state.is_registered(network);
+            let Some(session) = self.sessions.get_mut(&network) else {
+                continue;
+            };
+            if session.manual_disconnect || session.asleep {
+                continue;
+            }
+            let Some(connection) = &session.irc else {
+                continue;
+            };
+            session.asleep = true;
+            let result = match &session.active_config {
+                Some(config) if registered => connection.sleep(&config.wire_sleep_quit_message()),
+                _ => connection.disconnect(),
+            };
+            if result.is_err() {
+                // The command queue is full: take the way that bypasses it.
+                connection.shutdown();
+            }
+            closing.push(network);
+        }
+        let deadline = Instant::now() + SLEEP_WAIT;
+        for network in &closing {
+            if let Some(connection) = self.sessions.get(network).and_then(|s| s.irc.as_ref()) {
+                connection.wait_closed(deadline.saturating_duration_since(Instant::now()));
+            }
+        }
+        cx.notify();
+    }
+
+    /// After waking from sleep: reconnects the connections that were ended
+    /// for it, then has every registered connection that the user did not
+    /// end prove it is alive. The worker disconnects those that stay silent,
+    /// which reconnects them like any other lost connection; the others are
+    /// not touched.
     fn check_connections_after_wake(&mut self, cx: &mut Context<Self>) {
         let networks: Vec<_> = self.sessions.keys().copied().collect();
         for network in networks {
-            if self.sessions[&network].manual_disconnect {
+            let session = self.sessions.get_mut(&network).expect("listed above");
+            if session.manual_disconnect {
+                session.asleep = false;
+                continue;
+            }
+            if session.asleep {
+                // Retries restart from the shortest wait if this fails.
+                session.retry_attempt = 0;
+                session.retry_token += 1;
+                self.start_reconnect(network, cx);
                 continue;
             }
             if let Ok(connection) = self.registered_connection(network)
@@ -4226,7 +4284,10 @@ impl ChatWindow {
                 // Disconnect or /quit: the user ended it, so no reconnecting.
                 Event::Closed(_) => {
                     disconnected = true;
-                    if let Some(session) = self.sessions.get_mut(&network) {
+                    // Ended for sleep is not the user's doing.
+                    if let Some(session) = self.sessions.get_mut(&network)
+                        && !session.asleep
+                    {
                         session.manual_disconnect = true;
                     }
                 }
@@ -8477,7 +8538,23 @@ fn main() {
                 )
                 .expect("could not open CayenChat window");
             cx.activate(true);
-            let mut wake_ups = wake::install();
+            let wake::Notices {
+                wake: mut wake_ups,
+                sleep: mut sleeps,
+            } = wake::install();
+            cx.spawn(async move |cx| {
+                while let Some(notice) = sleeps.next().await {
+                    let prepared = chat_window.update(cx, |chat, _, cx| {
+                        chat.prepare_for_sleep(cx);
+                    });
+                    // The system goes on to sleep once this is dropped.
+                    drop(notice);
+                    if prepared.is_err() {
+                        return;
+                    }
+                }
+            })
+            .detach();
             cx.spawn(async move |cx| {
                 while wake_ups.next().await.is_some() {
                     Timer::after(WAKE_GRACE).await;

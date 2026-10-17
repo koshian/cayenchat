@@ -1530,6 +1530,20 @@ the held commands, overlapping requests send one `PING`, any line answers).
 The wall-clock fallback is unit-tested in `ui/src/wake.rs` with a fake clock.
 The OS notifications cannot be tested here.
 
+QUIT before sleep (issue #445): `cargo test -p cayenchat-irc-core sleep` (the
+QUIT carries the sleep message and a server that never closes cannot hold the
+worker past 1 s), `cargo test -p cayenchat-ui wake` (a simulated sleep notice
+then wake against local servers: both live servers are quit at once within the
+limit, no retry is scheduled while asleep, only those are reconnected, a
+manually disconnected server is untouched; the unannounced-sleep path is the
+existing wake test) and `cargo test -p cayenchat-storage sleep_quit` (round
+trip, blank in older files). By a person on each OS, with the Test Build and
+a server whose log shows QUITs: suspend, check the server saw
+`Quit: <sleep message>` before the machine went quiet (not a ping timeout);
+resume and see the reconnect after about 3 s with the nickname and channel
+status back; a manually disconnected server stays disconnected; on Linux also
+that `systemd-inhibit --list` shows the CayenChat delay lock while running.
+
 By a person, on each of macOS, Windows and Linux (GNOME or another desktop
 with systemd-logind), with a Test Build connected to a real network and a
 channel joined:

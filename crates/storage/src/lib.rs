@@ -717,6 +717,11 @@ pub struct ServerProfile {
     /// default. Added without a version change; files without it read as empty.
     #[serde(default)]
     pub quit_message: String,
+    /// `QUIT` reason sent just before the machine sleeps; empty means
+    /// `quit_message`. Added without a version change; files without it read
+    /// as empty.
+    #[serde(default)]
+    pub sleep_quit_message: String,
     /// `PART` reason for a `PART` that names none; empty means no reason.
     /// Independent of `quit_message`. Added without a version change; files
     /// without it read as empty.
@@ -796,6 +801,7 @@ impl ServerProfile {
             username: String::new(),
             realname: String::new(),
             quit_message: String::new(),
+            sleep_quit_message: String::new(),
             part_message: String::new(),
             display_name: String::new(),
             channels: String::new(),
@@ -1919,6 +1925,41 @@ mod tests {
             .map(|server| server.quit_message.as_str())
             .collect();
         assert_eq!(messages, ["Back soon", ""]);
+    }
+
+    #[test]
+    fn sleep_quit_message_is_per_profile_and_absent_in_older_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let original = serde_json::json!({
+            "version": 15,
+            "selected_server": "custom-1",
+            "servers": [{
+                "id": "custom-1", "custom": true, "host": "irc.example.net",
+                "port": 6697, "use_tls": true, "encoding": "utf8",
+                "nickname": "alice", "username": "ident", "quit_message": "Bye"
+            }],
+            "credential_backend": "system"
+        });
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.selected_profile().unwrap().sleep_quit_message, "");
+
+        settings.selected_profile_mut().unwrap().sleep_quit_message = "Zzz".into();
+        settings.add_server("irc.example.org");
+        save_to(&path, &settings).unwrap();
+        let reloaded = load_from(&path).unwrap().unwrap();
+        let messages: Vec<_> = reloaded
+            .servers
+            .iter()
+            .map(|server| {
+                (
+                    server.quit_message.as_str(),
+                    server.sleep_quit_message.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(messages, [("Bye", "Zzz"), ("", "")]);
     }
 
     #[test]

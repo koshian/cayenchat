@@ -2270,6 +2270,88 @@ fn disconnect_sends_the_configured_quit_message() {
 }
 
 #[test]
+fn sleep_sends_the_sleep_message_and_closes_within_the_limit() {
+    let started = Instant::now();
+    let line = quit_line_after(
+        |config| {
+            config.quit_message = "Bye".into();
+            config.sleep_quit_message = " Sleeping ".into();
+        },
+        |connection| connection.sleep("Sleeping").unwrap(),
+    );
+    assert_eq!(line, b"QUIT Sleeping".to_vec());
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_silent_server_does_not_hold_a_sleep_quit_past_the_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut line = String::new();
+        while !line.starts_with("USER ") {
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+        }
+        socket
+            .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
+            .unwrap();
+        // Reads QUIT but never closes.
+        while !line.starts_with("QUIT ") {
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+        }
+        wait.recv_timeout(Duration::from_secs(10)).ok();
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false;
+    let mut connection = Connection::connect(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "not registered");
+        if let Some(Event::Registered { .. }) = connection.try_recv() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let started = Instant::now();
+    connection.sleep("Zzz").unwrap();
+    assert!(connection.wait_closed(Duration::from_secs(3)));
+    assert!(started.elapsed() < Duration::from_millis(1800));
+    let mut closed = None;
+    while let Some(event) = connection.try_recv() {
+        if let Event::Closed(reason) = event {
+            closed = Some(reason);
+        }
+    }
+    assert_eq!(closed.as_deref(), Some("Disconnected before sleep."));
+    done.send(()).unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn the_sleep_quit_message_falls_back_and_is_validated() {
+    let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
+    assert_eq!(config.wire_sleep_quit_message(), "Leaving CayenChat");
+    config.quit_message = "Bye".into();
+    config.sleep_quit_message = "  ".into();
+    assert_eq!(config.wire_sleep_quit_message(), "Bye");
+    config.sleep_quit_message = " Zzz ".into();
+    assert_eq!(config.wire_sleep_quit_message(), "Zzz");
+    config.validate().unwrap();
+    config.sleep_quit_message = "two\nlines".into();
+    assert!(config.validate().is_err());
+    config.sleep_quit_message = "a\0b".into();
+    assert!(config.validate().is_err());
+    config.sleep_quit_message = "x".repeat(600);
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn the_quit_message_follows_the_connection_encoding() {
     let line = quit_line_sent_with(|config| {
         config.encoding = "ISO-2022-JP".into();
