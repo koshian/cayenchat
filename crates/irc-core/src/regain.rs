@@ -279,6 +279,15 @@ impl OpRegain {
         self.touch();
     }
 
+    /// The user sent a PART for `name`: forget the channel at once, without
+    /// waiting for the server's echo, which a slow server may send after a
+    /// pending attempt would have fired.
+    pub(crate) fn leaving(&mut self, name: &str) {
+        if self.channels.remove(&self.mapping.fold(name)).is_some() {
+            self.touch();
+        }
+    }
+
     pub(crate) fn topic(&mut self, name: &str, topic: &str) {
         if let Some(channel) = self.channels.get_mut(&self.mapping.fold(name)) {
             channel.topic = topic.to_owned();

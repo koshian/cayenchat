@@ -2955,11 +2955,19 @@ impl Worker {
             IrcCommand::NICK(nickname) if !self.registered => Some(nickname.clone()),
             _ => None,
         };
+        let leaving = match &message.command {
+            IrcCommand::PART(channels, _) => channels.clone(),
+            _ => String::new(),
+        };
         let result = validate_wire(&message.to_string(), self.wire())
             .and_then(|_| self.client.send(message).map_err(|error| error.to_string()));
         match result {
             Ok(()) => {
                 self.transcript.record(WireDirection::Sent, line).await;
+                // A manual leave ends any pending operator regain now (#444).
+                for channel in leaving.split(',').filter(|channel| !channel.is_empty()) {
+                    self.regain.leaving(channel);
+                }
                 if let Some(nickname) = retry_nick {
                     self.current_nick = nickname;
                     self.publish_relay_prefix();

@@ -1852,6 +1852,11 @@ impl ChatWindow {
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
+                    if !config.regain_ops {
+                        // A worker that has it off reports nothing, so the
+                        // stale set would outlive the off connection.
+                        config.regain_ops_in.clear();
+                    }
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
@@ -2249,6 +2254,9 @@ impl ChatWindow {
         let session = self.sessions.get(&network)?;
         let mut config = session.active_config.clone()?;
         config.history_targets_since = session.disconnected_at;
+        if !config.regain_ops {
+            config.regain_ops_in.clear();
+        }
         config.resume_history = self
             .state
             .history_resume(network)

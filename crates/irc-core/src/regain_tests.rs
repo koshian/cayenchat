@@ -119,6 +119,12 @@ fn not_ready_or_unknown_modes_wait_and_a_manual_part_cancels() {
     arrive(&mut parted, &["Me_"], start);
     parted.parted("#a");
     assert_eq!(parted.next_deadline(), None);
+    // Sending the PART is enough: no echo is waited for.
+    let mut leaving = carried("#a", start);
+    arrive(&mut leaving, &["Me_"], start);
+    leaving.leaving("#A");
+    assert_eq!(leaving.next_deadline(), None);
+    assert!(leaving.poll(start + STABLE * 3, true, flags).is_empty());
 }
 
 #[test]
