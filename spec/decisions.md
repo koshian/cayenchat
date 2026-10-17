@@ -1283,6 +1283,11 @@ future work. Details in `architecture.md` (Channel history).
   retry is scheduled. The wake-up reconnects exactly those (after the existing
   3 s `WAKE_GRACE`) and from then on the usual retry schedule applies. Servers
   the user disconnected are never touched.
+- The sleep request travels in `QuitSignal` like `shutdown()`, with the
+  message, not through the command or event queues: a full queue cannot hold
+  back the QUIT or the 1 s limit. A session waiting to retry after an error
+  is marked `asleep` too and its timer invalidated, so it cannot connect just
+  before the machine sleeps; the wake-up reconnects it.
 - D053's check after waking stays as the fallback for sleeps the OS does not
   announce (forced sleep, Linux without logind).
 - Accepted limitation: if the sleep is announced but the machine never reports

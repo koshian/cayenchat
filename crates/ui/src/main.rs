@@ -2401,16 +2401,25 @@ impl ChatWindow {
                 continue;
             }
             let Some(connection) = &session.irc else {
+                if session.retry_pending {
+                    // Waiting to retry: hold the timer back too, or it could
+                    // connect right before the machine sleeps. The wake-up
+                    // reconnects it like the ones closed below.
+                    session.asleep = true;
+                    session.retry_pending = false;
+                    session.retry_token += 1;
+                }
                 continue;
             };
             session.asleep = true;
-            let result = match &session.active_config {
+            match &session.active_config {
                 Some(config) if registered => connection.sleep(&config.wire_sleep_quit_message()),
-                _ => connection.disconnect(),
-            };
-            if result.is_err() {
-                // The command queue is full: take the way that bypasses it.
-                connection.shutdown();
+                _ => {
+                    if connection.disconnect().is_err() {
+                        // The command queue is full: take the way that bypasses it.
+                        connection.shutdown();
+                    }
+                }
             }
             closing.push(network);
         }

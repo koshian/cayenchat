@@ -2277,7 +2277,7 @@ fn sleep_sends_the_sleep_message_and_closes_within_the_limit() {
             config.quit_message = "Bye".into();
             config.sleep_quit_message = " Sleeping ".into();
         },
-        |connection| connection.sleep("Sleeping").unwrap(),
+        |connection| connection.sleep("Sleeping"),
     );
     assert_eq!(line, b"QUIT Sleeping".to_vec());
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -2319,7 +2319,7 @@ fn a_silent_server_does_not_hold_a_sleep_quit_past_the_limit() {
         thread::sleep(Duration::from_millis(10));
     }
     let started = Instant::now();
-    connection.sleep("Zzz").unwrap();
+    connection.sleep("Zzz");
     assert!(connection.wait_closed(Duration::from_secs(3)));
     assert!(started.elapsed() < Duration::from_millis(1800));
     let mut closed = None;
@@ -5855,4 +5855,22 @@ fn a_full_hold_still_completes_avatar_and_history_requests() {
     refused.send(()).unwrap();
     server.join().unwrap();
     assert!(!connection.is_closed());
+}
+
+#[test]
+fn sleep_sends_quit_while_the_event_queue_is_full() {
+    // More lines than EVENT_CAPACITY, and the test never drains them.
+    let started = Instant::now();
+    let line = quit_line_after_flood(
+        |_| {},
+        |connection| {
+            thread::sleep(Duration::from_millis(500));
+            connection.sleep("Sleeping");
+            assert!(connection.wait_closed(Duration::from_millis(1500)));
+        },
+        EVENT_CAPACITY * 4,
+        Duration::ZERO,
+    );
+    assert_eq!(line, b"QUIT Sleeping".to_vec());
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

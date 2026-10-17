@@ -396,3 +396,41 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
     server_silent.join().unwrap();
     server_manual.join().unwrap();
 }
+
+#[gpui::test]
+fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    let network = NetworkId(1);
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&network).unwrap();
+        session.active_config = Some(config(1));
+        session.retry_pending = true;
+        let token = session.retry_token;
+        chat.prepare_for_sleep(cx);
+        let session = &chat.sessions[&network];
+        // The retry timer's condition no longer holds.
+        assert!(session.asleep);
+        assert!(!session.retry_pending);
+        assert_ne!(session.retry_token, token);
+        assert!(session.irc.is_none());
+        // The wake reconnects it, as it does the connections quit for sleep.
+        let generation = session.generation;
+        chat.check_connections_after_wake(cx);
+        assert_eq!(chat.sessions[&network].generation, generation + 1);
+        assert!(!chat.sessions[&network].asleep);
+        if let Some(connection) = chat.sessions.get_mut(&network).and_then(|s| s.irc.take()) {
+            let _ = connection.disconnect();
+        }
+    });
+}

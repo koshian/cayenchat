@@ -965,19 +965,38 @@ pub enum MemberCommand {
     Deop { channel: String },
 }
 
-/// Set by [`Connection::shutdown`]. It reaches the worker without going
-/// through the command or event queues, which a flooded or undrained
-/// connection can leave full.
+/// Set by [`Connection::shutdown`] and [`Connection::sleep`]. It reaches the
+/// worker without going through the command or event queues, which a flooded
+/// or undrained connection can leave full.
 #[derive(Default)]
 struct QuitSignal {
     requested: AtomicBool,
+    /// The QUIT message of a request made for sleep; none for a plain quit.
+    sleep_reason: Mutex<Option<String>>,
     wake: Notify,
 }
 
 impl QuitSignal {
     fn request(&self) {
+        if let Ok(mut reason) = self.sleep_reason.lock() {
+            *reason = None;
+        }
         self.requested.store(true, Ordering::SeqCst);
         self.wake.notify_one();
+    }
+
+    fn request_sleep(&self, reason: String) {
+        if let Ok(mut slot) = self.sleep_reason.lock()
+            && !self.is_requested()
+        {
+            *slot = Some(reason);
+        }
+        self.requested.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    fn take_sleep_reason(&self) -> Option<String> {
+        self.sleep_reason.lock().ok()?.take()
     }
 
     fn is_requested(&self) -> bool {
@@ -1022,14 +1041,18 @@ impl EventSender {
     }
 }
 
-/// The next command, with a shutdown request counting as a plain quit.
+/// The next command, with a shutdown request counting as a plain quit and a
+/// sleep request as a sleep quit.
 async fn next_command(
     commands: &mut mpsc::Receiver<Outgoing>,
     quit: &QuitSignal,
 ) -> Option<Outgoing> {
     tokio::select! {
         biased;
-        _ = quit.requested() => Some(Outgoing::Quit),
+        _ = quit.requested() => Some(match quit.take_sleep_reason() {
+            Some(reason) => Outgoing::SleepQuit(reason),
+            None => Outgoing::Quit,
+        }),
         command = commands.recv() => command,
     }
 }
@@ -2186,11 +2209,11 @@ impl Connection {
     /// for the server to close. It ends with `Event::Closed`, which the
     /// caller must tell apart from a disconnect by the user. Follow with
     /// [`Connection::wait_closed`]. A worker still connecting ends at once.
-    pub fn sleep(&self, reason: &str) -> Result<(), String> {
+    /// Like [`Connection::shutdown`] it bypasses the command and event
+    /// queues, so a full one cannot hold the QUIT or the time limit back.
+    pub fn sleep(&self, reason: &str) {
         self.cancel.notify_one();
-        self.commands
-            .try_send(Outgoing::SleepQuit(reason.to_owned()))
-            .map_err(|error| format!("Could not queue disconnect: {error}"))
+        self.quit.request_sleep(reason.to_owned());
     }
 
     pub fn disconnect(&self) -> Result<(), String> {
