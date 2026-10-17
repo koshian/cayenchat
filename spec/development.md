@@ -229,6 +229,13 @@ and `rsvg-convert` (librsvg) installed, then rebuild the app.
 The macOS beta workflow signs the completed bundle ad hoc and verifies its
 resource seal before archiving. This is sufficient to validate bundle integrity
 but does not provide Developer ID signing or notarization for Gatekeeper.
+In the workflow's bundle, `CFBundleShortVersionString` is the Cargo version up
+to the first `-` or `+` (`1.0.0` for `1.0.0-rc.1`) and `CFBundleVersion` is
+`git rev-list --count HEAD` (the job checks out full history). Release tags are
+on master and the final release has a version-bump commit, so
+`rc.1 < rc.2 < 1.0.0` and one tag always gives one value. The step runs
+`plutil -lint` and fails unless both keys are dot-separated numbers. Tags,
+Cargo, artifact names and pre-release detection keep the full SemVer string.
 GitHub workflows default to a read-only token and check out without persisted
 credentials; only the beta `publish` job gets `contents: write` to move the tag and
 upload the release. Actions are pinned to commit SHAs (with the version in a
