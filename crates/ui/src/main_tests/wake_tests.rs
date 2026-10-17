@@ -434,3 +434,31 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
         }
     });
 }
+
+#[gpui::test]
+fn saved_leaving_messages_reach_the_open_connection(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update(cx, |chat, cx| {
+        chat.sessions.get_mut(&NetworkId(1)).unwrap().active_config = Some(config(1));
+        let mut next = chat.saved.clone();
+        next.servers[0].quit_message = "Bye all".into();
+        next.servers[0].sleep_quit_message = "Zzz".into();
+        next.servers[0].part_message = "Gone".into();
+        chat.apply_servers(next, cx);
+        let config = chat.sessions[&NetworkId(1)].active_config.as_ref().unwrap();
+        assert_eq!(config.wire_sleep_quit_message(), "Zzz");
+        assert_eq!(config.wire_quit_message(), "Bye all");
+        assert_eq!(config.part_message, "Gone");
+    });
+}

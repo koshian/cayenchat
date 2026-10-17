@@ -1855,6 +1855,11 @@ impl ChatWindow {
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
+                    // Leaving messages are read when the connection ends, so
+                    // saved changes count for the current connection too.
+                    config.quit_message = profile.quit_message.clone();
+                    config.sleep_quit_message = profile.sleep_quit_message.clone();
+                    config.part_message = profile.part_message.clone();
                     key_refreshes.push((id, profile.clone()));
                     config.channel_encodings = channel_encodings(profile);
                     // A new realname is sent at once with SETNAME when the

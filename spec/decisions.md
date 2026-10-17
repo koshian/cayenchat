@@ -1303,6 +1303,10 @@ future work. Details in `architecture.md` (Channel history).
   servers stay disconnected until the user reconnects them; the clock check
   catches only real suspensions. Bouncers keep the upstream connection on
   `QUIT`, so they are unaffected.
+- The leaving messages (`quit_message`, `sleep_quit_message`,
+  `part_message`) are copied into the live connection's config when the
+  settings are saved, not only at connect time, so a message edited after
+  connecting is the one sent.
 - Details in `architecture.md` (Waking from sleep).
 
 ## D053 — Verify connections after waking from sleep (#437)
