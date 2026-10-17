@@ -170,6 +170,12 @@ impl ChannelModes {
         None
     }
 
+    /// The flags of a channel we are in, `None` until the `324`.
+    pub(crate) fn flags(&self, channel: &str, mapping: CaseMapping) -> Option<String> {
+        let (_, flags) = self.channels.get(&mapping.fold(channel))?;
+        flags.as_ref().map(|flags| flags.iter().collect())
+    }
+
     /// A part or kick ends tracking.
     pub(crate) fn left(&mut self, channel: &str, mapping: CaseMapping) {
         let key = mapping.fold(channel);

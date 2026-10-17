@@ -65,7 +65,7 @@ use cayenchat_app::{
 use cayenchat_irc_core::{
     ChannelActivityKind, ChannelEncoding, Connection, ConnectionConfig, Event, HistoryMessage,
     HistoryResume, Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus,
-    RealNameFailure, SaslCredentials, WhoisInfo, WireDirection, valid_channel,
+    OpRegainStatus, RealNameFailure, SaslCredentials, WhoisInfo, WireDirection, valid_channel,
 };
 use cayenchat_model::{
     ConversationId, Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names,
@@ -279,6 +279,7 @@ fn connection_config(
     config.use_tls = profile.use_tls;
     config.verify_tls_certificates = profile.verify_tls_certificates;
     config.allow_plaintext_pass = profile.allow_plaintext_pass;
+    config.regain_ops = profile.regain_ops;
     config.encoding = profile.encoding.label().into();
     config.channel_encodings = channel_encodings(profile);
     config.ircv3 = ircv3_options(profile.ircv3);
@@ -4262,11 +4263,26 @@ impl ChatWindow {
                     disconnected = true;
                     if let Some(session) = self.sessions.get_mut(&network) {
                         session.manual_disconnect = true;
+                        session.forget_operator_channels();
                     }
                 }
                 Event::Refused(_) => {
                     disconnected = true;
                     refused = true;
+                    if let Some(session) = self.sessions.get_mut(&network) {
+                        session.forget_operator_channels();
+                    }
+                }
+                // Kept in the configuration the next, automatic connection
+                // starts from, to get operator status back (#444).
+                Event::OpChannels(channels) => {
+                    if let Some(config) = self
+                        .sessions
+                        .get_mut(&network)
+                        .and_then(|session| session.active_config.as_mut())
+                    {
+                        config.regain_ops_in = channels.clone();
+                    }
                 }
                 Event::NicknameRejected { nickname } => {
                     self.show_nick_prompt(network, nickname.clone(), cx)
@@ -4396,6 +4412,24 @@ impl ChatWindow {
             }
             Event::ChannelModes { channel, flags } => {
                 self.state.set_channel_modes(network, &channel, &flags);
+            }
+            Event::OpChannels(_) => {}
+            Event::OpRegain { channel, status } => {
+                let key = match status {
+                    OpRegainStatus::Rejoining => "event_op_regain_rejoining",
+                    OpRegainStatus::Regained { modes, topic } => match (modes, topic) {
+                        (true, true) => "event_op_regained_modes_topic",
+                        (true, false) => "event_op_regained_modes",
+                        (false, true) => "event_op_regained_topic",
+                        (false, false) => "event_op_regained",
+                    },
+                    OpRegainStatus::NotRegained => "event_op_not_regained",
+                    OpRegainStatus::RejoinFailed => "event_op_rejoin_failed",
+                };
+                self.state.append_server_message(
+                    network,
+                    self.i18n.format(key, &[("channel", &channel)]),
+                );
             }
             Event::Parted { channel } => {
                 self.state.parted_channel(network, &channel);

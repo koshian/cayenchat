@@ -5774,3 +5774,108 @@ fn a_full_hold_still_completes_avatar_and_history_requests() {
     server.join().unwrap();
     assert!(!connection.is_closed());
 }
+
+/// After an unexpected disconnect, a channel we were operator in that has
+/// only us left and no operator is parted and joined again, and its topic
+/// and plain flags (never the key) are put back, once.
+#[test]
+fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+        while !lines.next().unwrap().unwrap().starts_with("USER ") {}
+        socket
+            .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
+            .unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
+        // The old link of ours is still in the channel.
+        socket
+            .write_all(
+                b":me!u@h JOIN #a\r\n:server 332 me #a :the topic\r\n\
+                  :server 353 me = #a :me old\r\n:server 366 me #a :End\r\n",
+            )
+            .unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), "MODE #a");
+        socket
+            .write_all(b":server 324 me #a +ntskl secret 50\r\n")
+            .unwrap();
+        // It times out; nothing happens while someone else is there.
+        thread::sleep(Duration::from_millis(400));
+        socket
+            .write_all(b":old!u@h QUIT :Ping timeout\r\n")
+            .unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), "PART #a");
+        assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
+        socket
+            .write_all(
+                b":me!u@h PART #a\r\n:me!u@h JOIN #a\r\n\
+                  :server 331 me #a :No topic is set\r\n\
+                  :server 353 me = #a :@me\r\n:server 366 me #a :End\r\n",
+            )
+            .unwrap();
+        let mut sent = Vec::new();
+        for _ in 0..3 {
+            sent.push(lines.next().unwrap().unwrap());
+        }
+        sent.sort();
+        assert_eq!(sent, ["MODE #a", "MODE #a +nts", "TOPIC #a :the topic"]);
+        // Alone and opless once more: not tried a second time.
+        socket
+            .write_all(b":x!u@h JOIN #a\r\n:x!u@h PART #a\r\n")
+            .unwrap();
+        socket.write_all(b":me!u@h MODE #a -o me\r\n").unwrap();
+        thread::sleep(Duration::from_millis(600));
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec!["#a".into()]);
+    config.port = port;
+    config.use_tls = false;
+    config.regain_ops = true;
+    config.regain_ops_in = vec!["#a".into()];
+    let mut connection = Connection::connect(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut statuses = Vec::new();
+    let mut sets = Vec::new();
+    while Instant::now() < deadline
+        && !statuses
+            .iter()
+            .any(|status| matches!(status, OpRegainStatus::Regained { .. }))
+    {
+        match connection.try_recv() {
+            Some(Event::OpRegain { channel, status }) => {
+                assert_eq!(channel, "#a");
+                statuses.push(status);
+            }
+            Some(Event::OpChannels(channels)) => sets.push(channels),
+            Some(Event::Disconnected(reason)) => panic!("disconnected: {reason}"),
+            _ => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    assert_eq!(
+        statuses,
+        [
+            OpRegainStatus::Rejoining,
+            OpRegainStatus::Regained {
+                modes: true,
+                topic: true
+            }
+        ]
+    );
+    // Reported as operator, then not any more once the server took it away
+    // (the pending loss is not carried again); no second attempt.
+    thread::sleep(Duration::from_millis(900));
+    while let Some(event) = connection.try_recv() {
+        match event {
+            Event::OpChannels(channels) => sets.push(channels),
+            Event::OpRegain { .. } => panic!("second attempt: {event:?}"),
+            _ => {}
+        }
+    }
+    assert!(sets.contains(&vec!["#a".to_owned()]), "{sets:?}");
+    assert_eq!(sets.last(), Some(&Vec::new()));
+    server.join().unwrap();
+}
