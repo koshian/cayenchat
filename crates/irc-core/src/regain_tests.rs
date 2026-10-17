@@ -42,20 +42,24 @@ fn alone_without_op_rejoins_once_after_the_wait() {
     let done = regain.roster("#a", &users(&["@Me_"]), "Me_", true, start + STABLE);
     assert_eq!(
         done,
-        [
-            Step::Restore {
-                channel: "#a".into(),
-                flags: "nts".into(),
-                topic: Some("hello".into()),
-            },
-            Step::Status(
-                "#a".into(),
-                OpRegainStatus::Regained {
-                    modes: true,
-                    topic: true
-                }
-            )
-        ]
+        [Step::Restore {
+            channel: "#a".into(),
+            flags: "nts".into(),
+            topic: Some("hello".into()),
+        }]
+    );
+    // The server shows both: reported once it is confirmed.
+    regain.topic("#a", "hello");
+    let judged = start + STABLE + RESTORE_WAIT;
+    assert_eq!(
+        regain.poll(judged, true, |_| Some("nts".into())),
+        [Step::Status(
+            "#a".into(),
+            OpRegainStatus::Regained {
+                modes: true,
+                topic: true
+            }
+        )]
     );
     // Once only: alone and opless again later changes nothing.
     regain.roster("#a", &users(&["Me_"]), "Me_", false, start + STABLE);
@@ -177,12 +181,82 @@ fn operator_channels_are_reported_when_they_change() {
     assert_eq!(regain.changed_ops(), Some(Vec::new()));
 }
 
+/// Operator again after a rejoin, with the restoring commands sent.
+fn restoring(topic: &str, start: Instant) -> OpRegain {
+    let mut regain = carried("#a", start);
+    regain.joined("#a");
+    regain.topic("#a", topic);
+    regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
+    regain.poll(start + STABLE, true, |_| Some("ntkl".into()));
+    regain.parted("#a");
+    regain.joined("#a");
+    let steps = regain.roster("#a", &users(&["@Me_"]), "Me_", true, start + STABLE);
+    assert!(matches!(steps[..], [Step::Restore { .. }]));
+    regain
+}
+
 #[test]
-fn long_topics_and_unusual_flags_are_left_out() {
+fn a_restore_the_server_did_not_show_is_reported_as_failed() {
+    let start = Instant::now();
+    let judged = start + STABLE + RESTORE_WAIT;
+    // Nothing came back (both commands refused).
+    let mut regain = restoring("hello", start);
+    assert_eq!(regain.next_deadline(), Some(judged));
+    assert!(regain.poll(judged - STABLE, true, |_| None).is_empty());
+    assert_eq!(
+        regain.poll(judged, true, |_| Some(String::new())),
+        [Step::Status(
+            "#a".into(),
+            OpRegainStatus::RestoreFailed {
+                modes: true,
+                topic: true
+            }
+        )]
+    );
+    assert_eq!(regain.next_deadline(), None);
+    // Only the topic arrived.
+    let mut regain = restoring("hello", start);
+    regain.topic("#a", "other");
+    assert_eq!(
+        regain.poll(judged, true, |_| Some("nt".into())),
+        [Step::Status(
+            "#a".into(),
+            OpRegainStatus::RestoreFailed {
+                modes: false,
+                topic: true
+            }
+        )]
+    );
+}
+
+#[test]
+fn a_topic_that_cannot_be_put_back_keeps_the_channel_as_it_is() {
     let start = Instant::now();
     let mut regain = carried("#a", start);
     regain.joined("#a");
-    regain.topic("#a", &"x".repeat(MAX_TOPIC + 1));
+    regain.topic("#a", &"あ".repeat(MAX_TOPIC / 3 + 1));
+    regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
+    assert_eq!(
+        regain.poll(start + STABLE, true, flags),
+        [Step::Status("#a".into(), OpRegainStatus::TopicTooLong)]
+    );
+    assert_eq!(regain.next_deadline(), None);
+    // The limit itself still works.
+    let mut regain = carried("#a", start);
+    regain.joined("#a");
+    regain.topic("#a", &"x".repeat(MAX_TOPIC));
+    regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
+    assert!(matches!(
+        regain.poll(start + STABLE, true, flags)[0],
+        Step::Rejoin(_)
+    ));
+}
+
+#[test]
+fn unusual_flags_are_left_out() {
+    let start = Instant::now();
+    let mut regain = carried("#a", start);
+    regain.joined("#a");
     regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
     regain.poll(start + STABLE, true, |_| Some("kl".into()));
     regain.parted("#a");

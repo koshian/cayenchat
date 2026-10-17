@@ -4285,6 +4285,8 @@ fn operator_channels_carry_into_an_automatic_reconnect_only(cx: &mut TestAppCont
     });
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
+    let mut off = settings.clone();
+    off.servers[0].regain_ops = false;
     let (chat, cx) =
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
     chat.update(cx, |chat, cx| {
@@ -4306,6 +4308,10 @@ fn operator_channels_carry_into_an_automatic_reconnect_only(cx: &mut TestAppCont
         let config = chat.reconnect_config(NetworkId(1)).unwrap();
         assert!(config.regain_ops);
         assert_eq!(config.regain_ops_in, ["#a"]);
+        // Switched off in the settings while connected: the reconnect obeys.
+        chat.apply_servers(off, cx);
+        let config = chat.reconnect_config(NetworkId(1)).unwrap();
+        assert!(!config.regain_ops);
         // Ended on purpose: nothing is carried any more.
         chat.handle_events(
             NetworkId(1),

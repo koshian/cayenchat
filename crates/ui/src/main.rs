@@ -1849,6 +1849,9 @@ impl ChatWindow {
             if let Some(session) = self.sessions.get_mut(&id) {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
+                    // Read by the next connection, automatic reconnects
+                    // included, so switching it off stops them at once.
+                    config.regain_ops = profile.regain_ops;
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
@@ -4423,6 +4426,12 @@ impl ChatWindow {
                         (false, true) => "event_op_regained_topic",
                         (false, false) => "event_op_regained",
                     },
+                    OpRegainStatus::RestoreFailed { modes, topic } => match (modes, topic) {
+                        (true, true) => "event_op_restore_failed_modes_topic",
+                        (true, false) => "event_op_restore_failed_modes",
+                        _ => "event_op_restore_failed_topic",
+                    },
+                    OpRegainStatus::TopicTooLong => "event_op_topic_too_long",
                     OpRegainStatus::NotRegained => "event_op_not_regained",
                     OpRegainStatus::RejoinFailed => "event_op_rejoin_failed",
                 };

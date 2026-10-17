@@ -34,6 +34,13 @@ const STABLE: Duration = if cfg!(test) {
 };
 /// How long the PART and JOIN of an attempt may take before it is given up.
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the server has to show the restored modes and topic before they
+/// are reported as not restored.
+const RESTORE_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(5)
+};
 /// How long after the connection started a channel can still be carried
 /// over; the old link is gone from the server well before that.
 const CARRY_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -58,8 +65,15 @@ fn privileged(entry: &str) -> bool {
 pub enum OpRegainStatus {
     /// We parted the (empty, opless) channel and are joining it again.
     Rejoining,
-    /// Operator status is back. `modes` and `topic` say what was put back.
+    /// Operator status is back, and the server confirmed what was put back:
+    /// `modes` and `topic` say which of the two.
     Regained { modes: bool, topic: bool },
+    /// Operator status is back, but the server did not confirm the modes
+    /// and/or the topic that were to be put back (`true`: not confirmed).
+    RestoreFailed { modes: bool, topic: bool },
+    /// The channel was left alone: its topic is too long to be put back, and
+    /// parting would lose it.
+    TopicTooLong,
     /// The channel was joined again but without operator status.
     NotRegained,
     /// The channel was not joined again (server refusal or no answer); we
@@ -92,6 +106,14 @@ enum Stage {
         until: Instant,
         parted: bool,
         joined: bool,
+    },
+    /// Operator status is back and the restoring commands were sent; the
+    /// server's answer is judged at the instant.
+    Restoring {
+        at: Instant,
+        flags: String,
+        topic: Option<String>,
+        topic_seen: bool,
     },
     /// Done, one way or the other; nothing more is ever done for this loss.
     Finished,
@@ -189,6 +211,7 @@ impl OpRegain {
             .filter_map(|channel| match channel.stage {
                 Stage::Settling(at) => Some(at),
                 Stage::Attempt { until, .. } => Some(until),
+                Stage::Restoring { at, .. } => Some(at),
                 _ => None,
             })
             .chain(carried)
@@ -259,6 +282,15 @@ impl OpRegain {
     pub(crate) fn topic(&mut self, name: &str, topic: &str) {
         if let Some(channel) = self.channels.get_mut(&self.mapping.fold(name)) {
             channel.topic = topic.to_owned();
+            if let Stage::Restoring {
+                topic: Some(expected),
+                topic_seen,
+                ..
+            } = &mut channel.stage
+                && expected == topic
+            {
+                *topic_seen = true;
+            }
         }
     }
 
@@ -314,18 +346,16 @@ impl OpRegain {
         if !channel.synced {
             return Vec::new();
         }
-        let display = |entry: &str| {
-            entry
-                .trim_start_matches(['~', '&', '@', '%', '+'])
-                .to_owned()
-        };
+        fn display(entry: &str) -> &str {
+            entry.trim_start_matches(['~', '&', '@', '%', '+'])
+        }
         let entries: Vec<&String> = users
             .iter()
             .filter(|user| !display(user).is_empty())
             .collect();
         let own = entries
             .iter()
-            .find(|entry| same_nickname(&display(entry), nick));
+            .find(|entry| same_nickname(display(entry), nick));
         channel.op = own.is_some_and(|entry| privileged(entry));
         channel.alone = entries.len() == 1 && own.is_some();
         if channel.op {
@@ -343,22 +373,28 @@ impl OpRegain {
                     flags: String::new(),
                     topic: None,
                 });
-                let status = OpRegainStatus::Regained {
-                    modes: !flags.is_empty(),
-                    topic: topic.is_some(),
-                };
-                let mut steps = Vec::new();
-                if !flags.is_empty() || topic.is_some() {
-                    steps.push(Step::Restore {
-                        channel: name.clone(),
-                        flags,
-                        topic,
-                    });
+                if flags.is_empty() && topic.is_none() {
+                    return vec![Step::Status(
+                        name,
+                        OpRegainStatus::Regained {
+                            modes: false,
+                            topic: false,
+                        },
+                    )];
                 }
-                steps.push(Step::Status(name, status));
-                steps
+                channel.stage = Stage::Restoring {
+                    at: now + RESTORE_WAIT,
+                    flags: flags.clone(),
+                    topic: topic.clone(),
+                    topic_seen: false,
+                };
+                vec![Step::Restore {
+                    channel: name,
+                    flags,
+                    topic,
+                }]
             }
-            Stage::Attempt { .. } | Stage::Finished => Vec::new(),
+            Stage::Attempt { .. } | Stage::Restoring { .. } | Stage::Finished => Vec::new(),
             _ => {
                 channel.stage = if channel.carried && channel.alone && !channel.op {
                     match channel.stage {
@@ -412,12 +448,22 @@ impl OpRegain {
                         channel.stage = Stage::Watching;
                         continue;
                     }
+                    // A topic that cannot be put back would be lost by the
+                    // new channel: leave the channel as it is.
+                    if channel.topic.len() > MAX_TOPIC {
+                        channel.carried = false;
+                        channel.stage = Stage::Finished;
+                        steps.push(Step::Status(
+                            channel.name.clone(),
+                            OpRegainStatus::TopicTooLong,
+                        ));
+                        continue;
+                    }
                     let flags: String = flags
                         .chars()
                         .filter(|letter| RESTORED_FLAGS.contains(*letter))
                         .collect();
-                    let topic = (!channel.topic.is_empty() && channel.topic.len() <= MAX_TOPIC)
-                        .then(|| channel.topic.clone());
+                    let topic = (!channel.topic.is_empty()).then(|| channel.topic.clone());
                     channel.restore = Some(Restore { flags, topic });
                     channel.carried = false;
                     channel.stage = Stage::Attempt {
@@ -441,6 +487,34 @@ impl OpRegain {
                             OpRegainStatus::NotRegained
                         } else {
                             OpRegainStatus::RejoinFailed
+                        },
+                    ));
+                }
+                Stage::Restoring { at, .. } if at <= now => {
+                    let Stage::Restoring {
+                        flags,
+                        topic,
+                        topic_seen,
+                        ..
+                    } = std::mem::replace(&mut channel.stage, Stage::Finished)
+                    else {
+                        continue;
+                    };
+                    let known = flags_of(&channel.name).unwrap_or_default();
+                    let modes_failed = flags.chars().any(|letter| !known.contains(letter));
+                    let topic_failed = topic.is_some() && !topic_seen;
+                    steps.push(Step::Status(
+                        channel.name.clone(),
+                        if modes_failed || topic_failed {
+                            OpRegainStatus::RestoreFailed {
+                                modes: modes_failed,
+                                topic: topic_failed,
+                            }
+                        } else {
+                            OpRegainStatus::Regained {
+                                modes: !flags.is_empty(),
+                                topic: topic.is_some(),
+                            }
                         },
                     ));
                 }

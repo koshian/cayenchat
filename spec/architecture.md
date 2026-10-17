@@ -795,16 +795,25 @@ joining again gets it back (`crates/irc-core/src/regain.rs`, D054).
   again, no operator, JOIN refused, nothing within 30 s) is final and shown in
   the server log as `Event::OpRegain`; there is no retry. Our own PART and JOIN
   show as usual ("Left", "Joined").
-- Because the channel is created anew, modes, topic and lists are reset. After
-  the new JOIN shows us as operator, the worker sets the topic (when at most
-  400 bytes) and the flags among `imnpst` that the channel had, and nothing
-  else: keys, limits, ban/exception/invite lists and the reop list are lost
-  and mentioned in the setting's description. IRCnet's own reop (`+R`, up to
-  about 90 minutes) is not interfered with; an attempt that finds the
-  operator status back by itself (or someone else present) does nothing.
+- Because the channel is created anew, modes, topic and lists are reset. A
+  topic longer than 400 bytes cannot be put back, so such a channel is not
+  rejoined at all (`OpRegainStatus::TopicTooLong`, shown once). After the new
+  JOIN shows us as operator, the worker sets the topic and the flags among
+  `imnpst` that the channel had, and nothing else: keys, limits,
+  ban/exception/invite lists and the reop list are lost and mentioned in the
+  setting's description. The result is judged 5 s later (`RESTORE_WAIT`) from
+  what the server showed: the tracked channel flags must contain the sent
+  ones and our own topic must have come back. Both there is
+  `OpRegainStatus::Regained`; otherwise `RestoreFailed` names what is
+  missing. Nothing is sent again. IRCnet's own reop (`+R`, up to about 90
+  minutes) is not interfered with; an attempt that finds the operator status
+  back by itself (or someone else present) does nothing.
 - Setting: `ServerProfile::regain_ops`, per server, on by default (files
   without it read as on), a checkbox with an explanation on the server's
-  settings page.
+  settings page. Saving the settings with it off applies to the next
+  connection, automatic reconnects included (`apply_servers` updates
+  `active_config.regain_ops`); a worker already running keeps the value it was
+  started with, so a wait in progress is not cancelled by the change.
 
 `/quit [reason]` takes the same path as Disconnect (a typed reason wins). The worker
 reports a connection the user ended as `Event::Closed`, which the UI never

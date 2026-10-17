@@ -5824,6 +5824,12 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
         }
         sent.sort();
         assert_eq!(sent, ["MODE #a", "MODE #a +nts", "TOPIC #a :the topic"]);
+        socket
+            .write_all(
+                b":me!u@h MODE #a +nts\r\n:me!u@h TOPIC #a :the topic\r\n\
+                  :server 324 me #a +nts\r\n",
+            )
+            .unwrap();
         // Alone and opless once more: not tried a second time.
         socket
             .write_all(b":x!u@h JOIN #a\r\n:x!u@h PART #a\r\n")
