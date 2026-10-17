@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use cayenchat_model::{ConversationId, NetworkId, display::neutralize_bidi};
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, button_order, input::TextInput, theme};
+use crate::{
+    ChatWindow, FocusNextField, FocusPreviousField, button_order, input::TextInput, theme,
+};
 
 const BOX_WIDTH: Pixels = px(340.);
 /// Longest wait for the server's answer to a PART before the row can be
@@ -164,14 +166,9 @@ impl ChatWindow {
             self.close_part_prompt(window, cx);
             return;
         }
-        let line = if reason.is_empty() {
-            format!("/part {channel}")
-        } else {
-            format!("/part {channel} {reason}")
-        };
-        let result = self
-            .registered_connection(network)
-            .and_then(|connection| connection.send_command(&line, None));
+        let result = self.registered_connection(network).and_then(|connection| {
+            connection.part_channel(&channel, (!reason.is_empty()).then_some(reason.as_str()))
+        });
         match result {
             Ok(()) => {
                 let folded = self.state.casemapping(network).fold(&channel);
@@ -192,6 +189,21 @@ impl ChatWindow {
                 cx.notify();
             }
         }
+    }
+
+    /// Tab / Shift+Tab: only the field and the two buttons are reachable.
+    fn step_part_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.part_prompt.as_ref() else {
+            return;
+        };
+        let order = [
+            prompt.input.focus_handle(cx),
+            prompt.cancel.clone(),
+            prompt.confirm.clone(),
+        ];
+        let step = if forward { 1 } else { order.len() - 1 };
+        let at = order.iter().position(|handle| handle.is_focused(window));
+        window.focus(&order[at.map_or(0, |at| (at + step) % order.len())]);
     }
 
     pub(crate) fn render_part_prompt(
@@ -270,30 +282,19 @@ impl ChatWindow {
                     a: 0.6,
                     ..theme.surface
                 })
+                // Only the keys handled here are consumed; typing reaches the field.
+                .key_context("PartDialog")
+                .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
+                    this.step_part_focus(true, window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                    this.step_part_focus(false, window, cx);
+                }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    match event.keystroke.key.as_str() {
-                        "escape" => this.close_part_prompt(window, cx),
-                        // Only the field and the two buttons are reachable.
-                        "tab" => {
-                            if let Some(prompt) = this.part_prompt.as_ref() {
-                                let order = [
-                                    prompt.input.focus_handle(cx),
-                                    prompt.cancel.clone(),
-                                    prompt.confirm.clone(),
-                                ];
-                                let at = order.iter().position(|handle| handle.is_focused(window));
-                                let step = if event.keystroke.modifiers.shift {
-                                    order.len() - 1
-                                } else {
-                                    1
-                                };
-                                let next = at.map_or(0, |at| (at + step) % order.len());
-                                window.focus(&order[next]);
-                            }
-                        }
-                        _ => {}
+                    if event.keystroke.key == "escape" {
+                        this.close_part_prompt(window, cx);
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
                 }))
                 .child(
                     div()

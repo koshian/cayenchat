@@ -2075,6 +2075,25 @@ impl Connection {
             .map_err(|error| format!("Could not queue IRC command: {error}"))
     }
 
+    /// Sends `PART channel [reason]` with the reason taken literally (not as
+    /// `/part` syntax, which would drop a leading `:`). A missing or empty
+    /// reason uses the connection's default. Checked like `/part`.
+    pub fn part_channel(&self, channel: &str, reason: Option<&str>) -> Result<(), String> {
+        if !valid_channel(channel) {
+            return Err("Invalid channel name.".into());
+        }
+        let reason = reason.filter(|reason| !reason.is_empty());
+        let outgoing = checked_command(IrcCommand::PART(
+            channel.to_owned(),
+            reason.map(str::to_owned),
+        ))?;
+        let outgoing = with_default_part_reason(outgoing, self.part_message.as_deref());
+        self.validate(&outgoing)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue IRC command: {error}"))
+    }
+
     /// Sends `JOIN channel [key]`. The key is a secret: it is validated here,
     /// and the transcript shows `[redacted]` for it.
     pub fn join_channel(&self, channel: &str, key: Option<&str>) -> Result<(), String> {

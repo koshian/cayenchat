@@ -8448,6 +8448,17 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
         KeyBinding::new("down", HistoryNext, Some("ChatWindow > TextInput")),
         KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
         KeyBinding::new("shift-tab", FocusPreviousField, Some("SettingsWindow")),
+        // The leave question inside the chat window: its field and buttons
+        // cycle instead of completing nicknames (later wins over the chat
+        // field's Tab above).
+        KeyBinding::new("tab", FocusNextField, Some("PartDialog")),
+        KeyBinding::new("shift-tab", FocusPreviousField, Some("PartDialog")),
+        KeyBinding::new("tab", FocusNextField, Some("PartDialog > TextInput")),
+        KeyBinding::new(
+            "shift-tab",
+            FocusPreviousField,
+            Some("PartDialog > TextInput"),
+        ),
         KeyBinding::new("secondary-,", OpenSettings, None),
         // Replaced by F3 under the Emacs key theme on Linux (see
         // `rebind_shortcuts`).
