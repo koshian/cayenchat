@@ -12,6 +12,7 @@ mod metadata;
 mod modes;
 mod peer_avatar;
 mod presence;
+mod regain;
 mod relay;
 mod replay;
 mod tags;
@@ -26,6 +27,7 @@ pub use history::{
 pub use metadata::{AvatarRequestFailure, MAX_PUBLISHED_AVATAR_BYTES, publishable_avatar};
 pub use modes::MemberMode;
 pub use peer_avatar::shareable as shareable_avatar;
+pub use regain::OpRegainStatus;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -186,6 +188,13 @@ pub struct ConnectionConfig {
     /// Channels whose text uses another encoding than `encoding`; the
     /// channel name and everything else on a line keep `encoding`.
     pub channel_encodings: Vec<ChannelEncoding>,
+    /// Rejoin a channel in `regain_ops_in` that leaves us alone without
+    /// operator status, to become its operator again (#444). Off unless the
+    /// caller enables it.
+    pub regain_ops: bool,
+    /// Channels we were operator in when the previous connection ended
+    /// unexpectedly: the last [`Event::OpChannels`] before it.
+    pub regain_ops_in: Vec<String>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -215,6 +224,8 @@ impl fmt::Debug for ConnectionConfig {
             .field("resume_history", &self.resume_history.len())
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
+            .field("regain_ops", &self.regain_ops)
+            .field("regain_ops_in", &self.regain_ops_in)
             .finish()
     }
 }
@@ -245,6 +256,8 @@ impl ConnectionConfig {
             resume_history: Vec::new(),
             history_targets_since: None,
             channel_encodings: Vec::new(),
+            regain_ops: false,
+            regain_ops_in: Vec::new(),
         }
     }
 
@@ -870,6 +883,16 @@ pub enum Event {
     OutgoingFailed {
         local_id: u64,
         reason: String,
+    },
+    /// The channels where we hold operator status, plus those still waited
+    /// on for [`ConnectionConfig::regain_ops_in`]; sent when that set
+    /// changes, only with `regain_ops`. What to carry into the next
+    /// connection if this one ends unexpectedly.
+    OpChannels(Vec<String>),
+    /// Progress of getting operator status back in `channel` (#444).
+    OpRegain {
+        channel: String,
+        status: OpRegainStatus,
     },
     Disconnected(String),
     /// The user ended the connection (Disconnect, `/quit`, quitting the
@@ -2590,6 +2613,11 @@ async fn run_cancellable(
         reported_unsent: 0,
         accounts: accounts::Accounts::default(),
         channel_modes: chanmodes::ChannelModes::default(),
+        regain: regain::OpRegain::new(
+            config.regain_ops,
+            &config.regain_ops_in,
+            tokio::time::Instant::now(),
+        ),
         targets_asked: false,
         // Last reported Event::HistoryAvailable.
         history_available: false,
@@ -2642,6 +2670,15 @@ async fn run_cancellable(
                 if worker.mode_query_deadline().is_some() =>
             {
                 if worker.on_mode_query_deadline().await.is_break() {
+                    break;
+                }
+            }
+            // A settled channel to rejoin or an attempt that timed out; no
+            // timer runs while none is waiting.
+            _ = tokio::time::sleep_until(until(worker.regain.next_deadline())),
+                if worker.regain.next_deadline().is_some() =>
+            {
+                if worker.poll_regain().await.is_break() {
                     break;
                 }
             }
@@ -2699,6 +2736,7 @@ type Flow = ControlFlow<()>;
 /// method here per branch.
 struct Worker {
     channel_modes: chanmodes::ChannelModes,
+    regain: regain::OpRegain,
     client: Client,
     events: EventSender,
     started: Instant,
@@ -3044,11 +3082,19 @@ impl Worker {
             IrcCommand::NICK(nickname) if !self.registered => Some(nickname.clone()),
             _ => None,
         };
+        let leaving = match &message.command {
+            IrcCommand::PART(channels, _) => channels.clone(),
+            _ => String::new(),
+        };
         let result = validate_wire(&message.to_string(), self.wire())
             .and_then(|_| self.client.send(message).map_err(|error| error.to_string()));
         match result {
             Ok(()) => {
                 self.transcript.record(WireDirection::Sent, line).await;
+                // A manual leave ends any pending operator regain now (#444).
+                for channel in leaving.split(',').filter(|channel| !channel.is_empty()) {
+                    self.regain.leaving(channel);
+                }
                 if let Some(nickname) = retry_nick {
                     self.current_nick = nickname;
                     self.publish_relay_prefix();
@@ -3456,6 +3502,7 @@ impl Worker {
             self.accounts.set_casemapping(announced);
             self.ctcp.set_casemapping(announced);
             self.channel_modes.set_casemapping(announced);
+            self.regain.set_casemapping(announced);
             self.emit(Event::CaseMapping(announced)).await?;
         }
         ControlFlow::Continue(history_started)
@@ -3681,6 +3728,11 @@ impl Worker {
             Vec::new()
         };
         let server_time = tags::server_time(&message, self.negotiation.enabled(cap::SERVER_TIME));
+        let names_end = matches!(
+            &message.command,
+            IrcCommand::Response(Response::RPL_ENDOFNAMES, _)
+        );
+        let mut regain_steps = Vec::new();
         let translated = translate_message(
             &self.client,
             &mut self.roster,
@@ -3720,6 +3772,24 @@ impl Worker {
                 }
                 _ => {}
             }
+            match &event {
+                Event::Joined { channel } => self.regain.joined(channel),
+                Event::Parted { channel } => self.regain.parted(channel),
+                Event::Topic { channel, topic, .. } => self.regain.topic(channel, topic),
+                Event::Names { channel, users } => regain_steps.extend(self.regain.roster(
+                    channel,
+                    users,
+                    &self.current_nick,
+                    names_end,
+                    tokio::time::Instant::now(),
+                )),
+                Event::ChannelActivity {
+                    channel,
+                    kind: ChannelActivityKind::JoinFailed { .. },
+                    ..
+                } => regain_steps.extend(self.regain.join_failed(channel)),
+                _ => {}
+            }
             if self.track_accounts {
                 match &event {
                     Event::Names { channel, users } => {
@@ -3740,10 +3810,78 @@ impl Worker {
             self.send_commands(vec![command]).await?;
         }
         self.emit_all(lifecycle).await?;
+        self.apply_regain(regain_steps).await?;
+        if self
+            .regain
+            .next_deadline()
+            .is_some_and(|at| at <= tokio::time::Instant::now())
+        {
+            self.poll_regain().await?;
+        }
         // After the JOIN's own events, so the channel exists
         // in the application before its history is asked for.
         if self.history_enabled {
             self.send_next_history().await?;
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Acts on what the settled channels, or a timed-out attempt, call for.
+    async fn poll_regain(&mut self) -> Flow {
+        let ready = self.registered
+            && !self.awaiting_nick
+            && self.alive_check.is_none()
+            && self.held.is_empty();
+        let mapping = self.casemapping;
+        let modes = &self.channel_modes;
+        let steps = self
+            .regain
+            .poll(tokio::time::Instant::now(), ready, |channel| {
+                modes.flags(channel, mapping)
+            });
+        self.apply_regain(steps).await
+    }
+
+    /// Carries out `steps`, then reports a changed set of operator channels.
+    async fn apply_regain(&mut self, steps: Vec<regain::Step>) -> Flow {
+        for step in steps {
+            match step {
+                regain::Step::Rejoin(channel) => {
+                    self.note(format!(
+                        "Rejoining {channel} to regain operator status: only we are in it and \
+                         we have no operator status."
+                    ))
+                    .await;
+                    self.send_commands(vec![
+                        IrcCommand::PART(channel.clone(), None),
+                        IrcCommand::JOIN(channel, None, None),
+                    ])
+                    .await?;
+                }
+                regain::Step::Restore {
+                    channel,
+                    flags,
+                    topic,
+                } => {
+                    let mut commands = Vec::new();
+                    if !flags.is_empty() {
+                        commands.push(IrcCommand::Raw(
+                            "MODE".into(),
+                            vec![channel.clone(), format!("+{flags}")],
+                        ));
+                    }
+                    if let Some(topic) = topic {
+                        commands.push(IrcCommand::TOPIC(channel, Some(topic)));
+                    }
+                    self.send_commands(commands).await?;
+                }
+                regain::Step::Status(channel, status) => {
+                    self.emit(Event::OpRegain { channel, status }).await?;
+                }
+            }
+        }
+        if let Some(ops) = self.regain.changed_ops() {
+            self.emit(Event::OpChannels(ops)).await?;
         }
         ControlFlow::Continue(())
     }

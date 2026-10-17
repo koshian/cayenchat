@@ -2530,6 +2530,29 @@ impl SettingsWindow {
             )
             .child(
                 div()
+                    .id("regain-ops")
+                    .ml(px(158.))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(profile.regain_ops, true, cx))
+                    .child(self.i18n.text("regain_ops"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(profile) = this.settings.values.selected_profile_mut() {
+                            profile.regain_ops = !profile.regain_ops;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(px(158.))
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("regain_ops_hint")),
+            )
+            .child(
+                div()
                     .pt_2()
                     .font_weight(FontWeight::BOLD)
                     .child(self.i18n.text("server_auth_heading")),
