@@ -302,11 +302,13 @@ jobs:
     runs-on: macos-latest
 
     steps:
+      # Full history: CFBundleVersion is the commit count.
       - name: Check out requested ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Name the package
         shell: bash
@@ -341,6 +343,11 @@ jobs:
           set -euxo pipefail
 
           VERSION="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          # Apple's version keys take dot-separated numbers only, so the SemVer
+          # pre-release suffix is dropped from the marketing version and the
+          # commit count (rc.1 < rc.2 < final on master) is the build version.
+          SHORT_VERSION="${VERSION%%[-+]*}"
+          BUILD_VERSION="$(git rev-list --count HEAD)"
           if [ "$TEST" = true ]; then
             NAME="CayenChat Test"
             IDENTIFIER="com.cayenchat.test"
@@ -376,12 +383,21 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
-            <string>${VERSION}</string>
+            <string>${SHORT_VERSION}</string>
             <key>CFBundleVersion</key>
-            <string>${VERSION}</string>
+            <string>${BUILD_VERSION}</string>
           </dict>
           </plist>
           EOF_PLIST
+
+          plutil -lint "$APP/Contents/Info.plist"
+          for KEY in CFBundleShortVersionString CFBundleVersion; do
+            VALUE="$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$APP/Contents/Info.plist")"
+            if ! [[ "$VALUE" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+              echo "::error::$KEY is not a numeric bundle version: $VALUE"
+              exit 1
+            fi
+          done
 
           # Seal the completed app bundle.
           codesign --force --sign - "$APP"
