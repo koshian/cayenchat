@@ -677,6 +677,18 @@ edited. A double click on a server row acts on that row's server (the
 single click still only selects): it connects a server not used in this
 run, reconnects a dropped one, disconnects a registered one without
 confirmation, and does nothing while it is connecting or waiting to retry.
+A double click on a channel row (#451) acts on that row's channel, not the
+selected one, and only on a registered server: a channel not joined is joined
+at once (with its saved key), a joined one opens the "Leave #channel?" question
+(`part_dialog`), and a private conversation, an unregistered server, a JOIN
+still unanswered, a PART still unanswered (up to 10 s) or the question already
+open does nothing. The question names the server and channel, starts with
+focus on Cancel, and has a reason field that starts empty and shows the
+connection's part message (or "No reason") as its placeholder. Cancel, Escape
+or closing sends nothing. Leaving sends `/part #channel [reason]` through the
+usual command path (so the same checks apply and an error keeps the question
+open); an empty field uses the part message, a typed reason is used for that
+PART only and is not saved.
 A new server, blank or from a preset, starts with an empty
 nickname, `USER` username, auto-join channels and SASL account, SASL,
 password saving and startup connection off, IRCv3 options off, and the
