@@ -83,7 +83,7 @@ fn channel_activity_uses_english_phrases_with_optional_details() {
 #[test]
 fn log_selection_spans_partial_messages() {
     let selection = LogSelection {
-        channel: ConversationId(1),
+        source: cayenchat_app::Selection::Channel(ConversationId(1)),
         anchor: LogPosition { row: 2, byte: 3 },
         cursor: LogPosition { row: 0, byte: 2 },
     };
