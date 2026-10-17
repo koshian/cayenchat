@@ -639,8 +639,8 @@ this delay.
    follows; quit and reuse the nick from another client: none. **共有を停止**
    and turning the option off stop answering at once.
 
-The upper channel-message body can be drag-selected and copied with Cmd/Ctrl+C;
-its HTTP(S) links open on a double-click. The lower combined log uses double-clicks
+The upper channel-message body and the server log lines can be drag-selected and copied with Cmd/Ctrl+C or the right-click menu.
+The channel body's HTTP(S) links open on a double-click. The lower combined log uses double-clicks
 for channel switching. Long-draft horizontal scrolling,
 native/custom text bindings, general tab traversal, and exhaustive IME/accessibility
 behavior remain future work. Chat history does not survive application exit.

@@ -781,7 +781,9 @@ struct ChannelMenu {
 struct LogMenu {
     position: Point<Pixels>,
     network: NetworkId,
-    conversation: ConversationId,
+    /// The log clicked: a conversation, or a server's own log (then
+    /// `channel` is empty and the channel entries are left out).
+    source: Selection,
     channel: String,
     private: bool,
     sender: Option<String>,
@@ -887,7 +889,8 @@ struct LogPosition {
 
 #[derive(Clone, Copy)]
 struct LogSelection {
-    channel: ConversationId,
+    /// The log the rows belong to: a conversation or a server's own log.
+    source: Selection,
     anchor: LogPosition,
     cursor: LogPosition,
 }
@@ -1804,7 +1807,10 @@ impl ChatWindow {
         });
         if self
             .log_selection
-            .is_some_and(|selection| removed.contains(&selection.channel))
+            .is_some_and(|selection| match selection.source {
+                Selection::Channel(id) => removed.contains(&id),
+                _ => false,
+            })
         {
             self.log_selection = None;
         }
@@ -1885,6 +1891,12 @@ impl ChatWindow {
             }
             self.inputs.remove(&Selection::Server(id));
             self.main_lists.remove(&Selection::Server(id));
+            if self
+                .log_selection
+                .is_some_and(|selection| selection.source == Selection::Server(id))
+            {
+                self.log_selection = None;
+            }
             self.whois_windows.retain(|(network, _), _| *network != id);
             self.nick_prompts.retain(|prompt| prompt.network != id);
             self.key_prompts.retain(|prompt| prompt.network != id);
@@ -2504,15 +2516,15 @@ impl ChatWindow {
         server || member || channel || log
     }
 
-    /// Whether `conversation` has a non-empty text selection in its log.
-    fn has_log_selection(&self, conversation: ConversationId) -> bool {
+    /// Whether `source` has a non-empty text selection in its log.
+    fn has_log_selection(&self, source: Selection) -> bool {
         self.log_selection.is_some_and(|selection| {
             let (start, end) = selection.bounds();
-            selection.channel == conversation && start != end
+            selection.source == source && start != end
         })
     }
 
-    /// Opens the log menu at `position` for the selected conversation.
+    /// Opens the log menu at `position` for the selected log.
     /// `sender` is the speaker of the clicked row, if it has one: it must be
     /// a plain nickname and not ourselves. The log selection is untouched.
     fn open_log_menu(
@@ -2522,15 +2534,20 @@ impl ChatWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(conversation) = self.state.selected_channel() else {
-            return;
+        let (source, network, channel, private) = match self.state.selected_channel() {
+            Some(conversation) => (
+                Selection::Channel(conversation.id),
+                conversation.network,
+                conversation.name.clone(),
+                conversation.is_private(),
+            ),
+            None => match self.state.selection() {
+                Selection::Server(network) => {
+                    (Selection::Server(network), network, String::new(), false)
+                }
+                _ => return,
+            },
         };
-        let (id, network, channel, private) = (
-            conversation.id,
-            conversation.network,
-            conversation.name.clone(),
-            conversation.is_private(),
-        );
         let sender = sender
             .filter(|sender| cayenchat_irc_core::valid_nickname(sender))
             .filter(|sender| !self.is_own_nickname(network, sender))
@@ -2546,7 +2563,7 @@ impl ChatWindow {
                 position.y.min((viewport.height - px(190.)).max(px(0.))),
             ),
             network,
-            conversation: id,
+            source,
             channel,
             private,
             sender,
@@ -2586,7 +2603,7 @@ impl ChatWindow {
             return;
         };
         // A menu left over from another conversation does nothing.
-        if self.state.selection() != Selection::Channel(menu.conversation) {
+        if self.state.selection() != menu.source {
             cx.notify();
             return;
         }
@@ -3843,7 +3860,7 @@ impl ChatWindow {
 
     fn start_log_selection(
         &mut self,
-        channel: ConversationId,
+        source: Selection,
         row: usize,
         byte: usize,
         window: &mut Window,
@@ -3851,7 +3868,7 @@ impl ChatWindow {
     ) {
         let position = LogPosition { row, byte };
         self.log_selection = Some(LogSelection {
-            channel,
+            source,
             anchor: position,
             cursor: position,
         });
@@ -3862,14 +3879,14 @@ impl ChatWindow {
 
     fn extend_log_selection(
         &mut self,
-        channel: ConversationId,
+        source: Selection,
         row: usize,
         byte: usize,
         cx: &mut Context<Self>,
     ) {
         if self.log_dragging
             && let Some(selection) = self.log_selection.as_mut()
-            && selection.channel == channel
+            && selection.source == source
         {
             selection.cursor = LogPosition { row, byte };
             cx.notify();
@@ -3881,17 +3898,34 @@ impl ChatWindow {
     }
 
     fn copy_selected_log(&mut self, cx: &mut Context<Self>) {
-        let (Some(selection), Some(channel)) = (self.log_selection, self.state.selected_channel())
-        else {
+        let Some(selection) = self.log_selection else {
             return;
         };
-        if selection.channel != channel.id {
+        if selection.source != self.state.selection() {
             return;
         }
         let (start, end) = selection.bounds();
         if start == end {
             return;
         }
+        let Some(channel) = self.state.selected_channel() else {
+            // A server's log shows its lines as they are.
+            let Selection::Server(network) = selection.source else {
+                return;
+            };
+            let messages = self.state.server_messages(network);
+            let pieces: Vec<_> = (start.row..=end.row)
+                .filter_map(|row| {
+                    let message = messages.get(row)?;
+                    let range = selection.range(row, message.text.len()).unwrap_or(0..0);
+                    Some(message.text.get(range).unwrap_or_default().to_owned())
+                })
+                .collect();
+            if !pieces.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
+            }
+            return;
+        };
         let decode = self.appearance.decode_char_refs;
         let pieces: Vec<_> = (start.row..=end.row)
             .filter_map(|row| {
@@ -4655,7 +4689,7 @@ impl ChatWindow {
                         // A text selection names rows by index; keep it on
                         // the same lines.
                         if let Some(selection) = self.log_selection.as_mut()
-                            && selection.channel == id
+                            && selection.source == Selection::Channel(id)
                         {
                             selection.anchor.row += added;
                             selection.cursor.row += added;
@@ -6492,7 +6526,7 @@ impl ChatWindow {
                 (
                     LogMenuChoice::Copy,
                     self.i18n.text("log_menu_copy"),
-                    self.has_log_selection(menu.conversation),
+                    self.has_log_selection(menu.source),
                 ),
                 (
                     LogMenuChoice::Paste,
@@ -6500,7 +6534,7 @@ impl ChatWindow {
                     menu.can_paste,
                 ),
             ]];
-            if !menu.private {
+            if !menu.private && matches!(menu.source, Selection::Channel(_)) {
                 groups.push(vec![
                     (
                         LogMenuChoice::Mode,
@@ -7272,29 +7306,57 @@ impl ChatWindow {
                         return div().into_any_element();
                     };
                     let (found, current) = self.search_ranges(&message.text, message.sequence);
-                    let mut probe = None;
-                    let text = if found.is_empty() {
-                        message.text.clone().into_any_element()
-                    } else {
-                        let styled = styled_log_text(
-                            "",
-                            &message.text,
-                            &[],
-                            &[],
-                            &[],
-                            &[],
-                            &found,
-                            current,
-                            None,
-                            &style.theme,
-                        );
-                        probe = self.search_probe_canvas(
-                            message.sequence,
-                            styled.layout().clone(),
-                            found.first().map(|range| range.start),
-                        );
-                        styled.into_any_element()
-                    };
+                    let source = Selection::Server(network);
+                    let selected = self
+                        .log_selection
+                        .filter(|selection| selection.source == source)
+                        .and_then(|selection| selection.range(index, message.text.len()));
+                    let text_len = message.text.len();
+                    let styled = styled_log_text(
+                        "",
+                        &message.text,
+                        &[],
+                        &[],
+                        &[],
+                        &[],
+                        &found,
+                        current,
+                        selected,
+                        &style.theme,
+                    );
+                    let layout = styled.layout().clone();
+                    let probe = (!found.is_empty())
+                        .then(|| {
+                            self.search_probe_canvas(
+                                message.sequence,
+                                layout.clone(),
+                                found.first().map(|range| range.start),
+                            )
+                        })
+                        .flatten();
+                    let down_layout = layout.clone();
+                    let text = div()
+                        .flex_1()
+                        .min_w_0()
+                        .cursor(CursorStyle::IBeam)
+                        .child(styled)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                let byte = down_layout
+                                    .index_for_position(event.position)
+                                    .unwrap_or_else(|index| index)
+                                    .min(text_len);
+                                this.start_log_selection(source, index, byte, window, cx);
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                            let byte = layout
+                                .index_for_position(event.position)
+                                .unwrap_or_else(|index| index)
+                                .min(text_len);
+                            this.extend_log_selection(source, index, byte, cx);
+                        }));
                     div()
                         .w_full()
                         .flex()
@@ -7303,8 +7365,15 @@ impl ChatWindow {
                         .when(style.alternate_rows && index % 2 == 1, |d| {
                             d.bg(style.main_alt)
                         })
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                this.open_log_menu(event.position, None, window, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
                         .child(style.time(message.time))
-                        .child(div().flex_1().min_w_0().child(text))
+                        .child(text)
                         .children(probe)
                         .into_any_element()
                 }
@@ -7363,7 +7432,7 @@ impl ChatWindow {
         let decoded: Vec<_> = originals.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection
-            .filter(|selection| selection.channel == selected_channel)
+            .filter(|selection| selection.source == Selection::Channel(selected_channel))
             .and_then(|selection| selection.range(index, message.text.len()))
             .map(|range| compact.shown_range(range));
         let highlights: Vec<_> = message
@@ -7549,7 +7618,13 @@ impl ChatWindow {
                             .saturating_sub(prefix_len)
                             .min(text_len);
                         let byte = down_compact.original(byte);
-                        this.start_log_selection(selected_channel, index, byte, window, cx);
+                        this.start_log_selection(
+                            Selection::Channel(selected_channel),
+                            index,
+                            byte,
+                            window,
+                            cx,
+                        );
                     }),
                 )
                 .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -7557,7 +7632,7 @@ impl ChatWindow {
                     let raw = position.unwrap_or_else(|index| index);
                     let byte = raw.saturating_sub(prefix_len).min(text_len);
                     this.extend_log_selection(
-                        selected_channel,
+                        Selection::Channel(selected_channel),
                         index,
                         move_compact.original(byte),
                         cx,
