@@ -4599,6 +4599,59 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
 }
 
 #[test]
+fn ircnet_who_reply_with_server_id_leads_to_an_avatar_query() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(
+                b":srv.example 042 alice 392LAGUR7 :your unique ID\r\n\
+:srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice kv\r\n\
+:srv.example 366 alice #test :End\r\n\
+:kv!u@h PRIVMSG #test :hello\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "WHO kv");
+        socket
+            .write_all(
+                b":srv.example 352 alice * ~kv host srv.example kv H :0 392L \\x034\\x03Kv\r\n\
+:srv.example 315 alice kv :End of /WHO list.\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "PRIVMSG kv \u{1}AVATAR\u{1}");
+        socket
+            .write_all(b":kv!u@h NOTICE alice :\x01AVATAR https://example.com/kv.png M\x01\r\n")
+            .unwrap();
+        assert!(read_client_line(&mut lines).starts_with("QUIT"));
+    });
+    let config = plain_config(
+        port,
+        Ircv3Options {
+            peer_avatars: true,
+            ..Ircv3Options::default()
+        },
+    );
+    let events = run_fixture(config, |events| !avatar_events(events).is_empty());
+    server.join().unwrap();
+    assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+}
+
+#[test]
 fn ctcp_requests_are_answered_privately_and_shown_readably() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

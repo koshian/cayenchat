@@ -30,7 +30,13 @@
 //! negotiated, so marks are read from WHOIS (311) and WHO (352) replies,
 //! and a user who speaks (a live message) in a channel we share, and whose
 //! realname we have not seen, is looked up with one `WHO <nick>`. There is
-//! no channel-wide WHO and no query to users without the mark. Lookups and
+//! no channel-wide WHO and no query to users without the mark. IRCnet's
+//! ircd (2.11 and later) puts the server's ID between the hop count and the
+//! realname in 352 (`:<hops> <sid> <realname>`, the ID being a digit and
+//! three of `[0-9A-Z]`; `s_user.c` `who_one`) and sends 042 (RPL_YOURID)
+//! at registration: on a connection that received 042 that word is skipped
+//! when it has this shape and something follows, otherwise the realname
+//! follows the hop count as in RFC 2812. Lookups and
 //! queries are deduplicated per user until the user leaves (or the
 //! connection ends), queued up to a bound, sent one at a time at most every
 //! two seconds with a few outstanding, and given up after a timeout.
@@ -159,6 +165,23 @@ pub(crate) fn advertises_avatar(realname: &str) -> bool {
     }
 }
 
+/// The realname after an IRCnet server ID (a digit and three of `[0-9A-Z]`,
+/// then a space), or `real` unchanged when it does not start with one.
+fn skip_server_id(real: &str) -> &str {
+    match real.split_once(' ') {
+        Some((id, rest))
+            if id.len() == 4
+                && id.as_bytes()[0].is_ascii_digit()
+                && id.as_bytes()[1..]
+                    .iter()
+                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase()) =>
+        {
+            rest
+        }
+        _ => real,
+    }
+}
+
 /// The parameters of a CTCP AVATAR message (after the tag), or `None` for
 /// any other text. The closing 0x01 is optional, as in other clients.
 fn avatar_ctcp(text: &str) -> Option<&str> {
@@ -250,6 +273,9 @@ enum Stage {
 #[derive(Debug)]
 pub(crate) struct PeerAvatars {
     utf8: bool,
+    /// Whether this connection received 042 (RPL_YOURID): its servers put a
+    /// server ID between the hop count and the realname in 352 (IRCnet).
+    server_ids: bool,
     /// The URL answered to queries, if we share one.
     share: Option<String>,
     avatars: HashMap<String, Sources>,
@@ -279,6 +305,7 @@ impl PeerAvatars {
     pub(crate) fn new(utf8: bool, share: Option<String>) -> Self {
         Self {
             utf8,
+            server_ids: false,
             share: share.filter(|url| shareable(url, utf8).is_ok()),
             avatars: HashMap::new(),
             stages: HashMap::new(),
@@ -447,8 +474,14 @@ impl PeerAvatars {
                 .position(|probe| probe.kind == kind && probe.key == key)
         };
         match code {
+            // RPL_YOURID: the line is left to the server log as before.
+            42 => {
+                self.server_ids = true;
+                None
+            }
             // RPL_WHOREPLY: <me> <channel> <user> <host> <server> <nick>
-            // <flags> :<hops> <realname>
+            // <flags> :<hops> <realname>; with a server ID (see
+            // `server_ids`) :<hops> <sid> <realname>
             352 if args.len() >= 8 => {
                 let nick = &args[5];
                 let found = ours(ProbeKind::Who, nick);
@@ -456,6 +489,11 @@ impl PeerAvatars {
                 if !stale {
                     let trailing = args.last().map(String::as_str).unwrap_or_default();
                     let real = trailing.split_once(' ').map_or("", |(_, real)| real);
+                    let real = if self.server_ids {
+                        skip_server_id(real)
+                    } else {
+                        real
+                    };
                     self.realname_seen(nick, real, current_nick, presence);
                 }
                 found.map(|_| Handled::default())
@@ -1417,6 +1455,45 @@ mod tests {
                 .lifecycle(&line(":carol!u@h PART #room"), &rosters, ME)
                 .is_empty(),
             "carol still shares #Other"
+        );
+    }
+
+    /// Looks up `kv` with a 352 carrying `trailing`, after an optional 042,
+    /// and returns what the next tick sends.
+    fn who_reply_sends(yourid: bool, trailing: &str) -> Vec<String> {
+        let now = Instant::now();
+        let rosters = rosters();
+        let mut peers = PeerAvatars::new(true, None);
+        if yourid {
+            let id = ":srv 042 alice 392LAGUR7 :your unique ID";
+            assert!(observe(&mut peers, id, now).is_none(), "042 stays a line");
+        }
+        peers.speaker("kv", ME, &rosters);
+        assert_eq!(wire(&peers.tick(now, ME, &rosters).send), ["WHO kv"]);
+        let reply = format!(":srv 352 alice * ~kv host srv kv H :{trailing}");
+        assert!(observe(&mut peers, &reply, now).is_some());
+        assert!(observe(&mut peers, ":srv 315 alice kv :End of WHO", now).is_some());
+        wire(&peers.tick(now + PROBE_INTERVAL, ME, &rosters).send)
+    }
+
+    #[test]
+    fn ircnet_server_id_is_skipped_after_042() {
+        let query = ["PRIVMSG kv \u{1}AVATAR\u{1}"];
+        assert_eq!(who_reply_sends(true, "0 392L \\x034\\x03Dalk_cayen"), query);
+        assert_eq!(who_reply_sends(true, "0 392L \u{3}4\u{f}KVIrc user"), query);
+        assert!(who_reply_sends(true, "0 392L Plain name").is_empty());
+        // Not a server ID (shape), or nothing after it: read as before.
+        assert!(who_reply_sends(true, "0 392l \\x034\\x03Name").is_empty());
+        assert!(who_reply_sends(true, "0 392 \\x034\\x03Name").is_empty());
+        assert_eq!(who_reply_sends(true, "0 \\x034\\x03Name"), query);
+    }
+
+    #[test]
+    fn server_id_is_not_assumed_without_042() {
+        assert!(who_reply_sends(false, "0 1ABC \\x034\\x03Name").is_empty());
+        assert_eq!(
+            who_reply_sends(false, "0 \\x034\\x03Name"),
+            ["PRIVMSG kv \u{1}AVATAR\u{1}"]
         );
     }
 
