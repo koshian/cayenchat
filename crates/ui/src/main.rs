@@ -4573,7 +4573,12 @@ impl ChatWindow {
                 replayed,
             } => {
                 let (kind, text) = received_kind(&text, notice);
-                let found = self.find_mentions(network, &sender, text, replayed);
+                // NOTICE is displayed, but never runs normal chat attention rules.
+                let found = if kind.is_notice() {
+                    Found::default()
+                } else {
+                    self.find_mentions(network, &sender, text, replayed)
+                };
                 let meta = MessageMeta {
                     highlights: found.ranges.clone(),
                     ..irc_message_meta(
@@ -4657,7 +4662,12 @@ impl ChatWindow {
                 replayed,
             } => {
                 let (kind, text) = received_kind(&text, notice);
-                let found = self.find_mentions(network, &sender, text, replayed);
+                // NOTICE is displayed, but never runs normal chat attention rules.
+                let found = if kind.is_notice() {
+                    Found::default()
+                } else {
+                    self.find_mentions(network, &sender, text, replayed)
+                };
                 let meta = MessageMeta {
                     highlights: found.ranges.clone(),
                     ..irc_message_meta(
@@ -4687,7 +4697,7 @@ impl ChatWindow {
                             text,
                             kind,
                             meta,
-                            Unread::Mark,
+                            if notice { Unread::Leave } else { Unread::Mark },
                         ) {
                             return;
                         }
@@ -5325,7 +5335,6 @@ fn notification_rules(settings: &Notifications) -> NotificationRules {
         keyword_alerts: settings.keyword_alerts,
         keywords: settings.keywords.clone(),
         private_messages: settings.private_messages,
-        channel_notices: settings.channel_notices,
         sound: settings.sound,
     }
 }
