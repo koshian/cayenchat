@@ -1044,7 +1044,11 @@ KVIrc. irc-proto writes our query as `PRIVMSG <nick> \x01AVATAR\x01`
 Known limits: KVIrc finds a CayenChat user only when a WHO reply shows it
 our realname; KVIrc accepts our answer's URL
 but applies its own image limits; users who never speak and are not
-WHOISed are not discovered; `{size}` is not shared.
+WHOISed are not discovered; `{size}` is not shared. IRCnet's 352 carries a
+server ID before the realname; a connection that received 042 (RPL_YOURID)
+skips a word of the ID's shape there, others read the realname right after
+the hop count (RFC 2812), so a realname starting with such a word is not
+misread on RFC servers.
 
 ## D026 — Protocol-neutral message identity
 
