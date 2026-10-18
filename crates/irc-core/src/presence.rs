@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use cayenchat_model::names::CaseMapping;
+use irc::proto::{Command as IrcCommand, Message as IrcMessage};
 
 use crate::text::nickname_key;
 
@@ -124,6 +125,39 @@ impl PresenceIndex {
             .collect();
         only.sort_unstable();
         only
+    }
+
+    /// The nicknames we no longer share a channel with after `message`, a
+    /// QUIT, PART or KICK from `actor` (other commands name no one). `ours`
+    /// tells our own nickname. When we leave, that is everyone only we
+    /// shared through the channel; when someone else leaves, that person
+    /// unless they are still in another channel. Call it before the index
+    /// applies the message.
+    pub(crate) fn departed(
+        &self,
+        message: &IrcMessage,
+        actor: &str,
+        ours: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
+        match &message.command {
+            IrcCommand::QUIT(_) if !ours(actor) => vec![actor.to_owned()],
+            IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) => {
+                let leaving = match &message.command {
+                    IrcCommand::KICK(_, nickname, _) => nickname.as_str(),
+                    _ => actor,
+                };
+                if ours(leaving) {
+                    let mut only = self.only_in(channel);
+                    only.retain(|nick| !ours(nick));
+                    only
+                } else if self.shares(leaving, Some(channel)) {
+                    Vec::new()
+                } else {
+                    vec![leaving.to_owned()]
+                }
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Whether `nickname` is in a channel other than `except`.
