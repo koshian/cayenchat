@@ -1270,9 +1270,33 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
-## D055 — Rejoin to regain operator status after a dropped connection (#444)
+## D056 — Regain operator status whenever alone without it (#478)
 
 **Status:** Accepted
+
+- Widens the scope of D055: its "only a channel the previous connection had
+  us as operator in" is replaced by "any joined channel where the roster holds
+  only us, without operator status". Reports showed D055 did not fire: the
+  record lived only in memory (lost on restart), had a 15 minute window, and a
+  long sleep lets the server drop the ghost before we reconnect.
+- Nothing is carried between connections any more (`carried`, `CARRY_WINDOW`,
+  `Event::OpChannels`, `ConnectionConfig::regain_ops_in` removed).
+- The loop guard moves from "once per loss" to once per channel and
+  connection, so networks where rejoining gives no operator status
+  (services-managed channels, IRCnet's channel delay) are rejoined once per
+  connection, not repeatedly. The channel is eligible again after we were seen
+  as operator or after the user parted and joined it by hand.
+- Accepted: a deliberate `/deop` that leaves us alone is undone after 5 s, and
+  on such networks each connection costs one rejoin per matching channel; the
+  per-server `regain_ops` switch (on by default) is the way out. The channel
+  modes must be known (324) before acting, with no deadline. No reason is
+  shown for a channel that was not tried.
+- Everything else of D055 stays: the restored topic and `imnpst` flags, the
+  `MAX_TOPIC` limit, the messages, `MAX_TRACKED`.
+
+## D055 — Rejoin to regain operator status after a dropped connection (#444)
+
+**Status:** Accepted (scope widened by D056)
 
 - On by default, per server, switchable in the server settings. Only for a
   channel where the previous connection, which ended unexpectedly, had us as
@@ -1872,7 +1896,12 @@ PageUp/PageDown (`ui::list_keys`); the tree also has Left/Right (to the server
 of a channel / to a server's first channel) and Enter (open the selected row
 and return to the draft). The keys are handled by the focused list only, never
 as shortcuts, so the draft keeps every character and its Emacs-style editing.
-Modified keys are ignored. Letters (K/J, N/P) are not aliases: K/J were
+Modified keys are ignored. Whenever the selection changes by any route (the
+channel shortcuts, tree keys, a click), the next render of the tree scrolls the
+new row into view with the minimum movement (`tree_revealed`, #477); a row
+that is not laid out yet is approached in steps over a few frames, since the list
+only knows the height of laid-out rows; a row
+already visible and manual scrolling are left alone. Letters (K/J, N/P) are not aliases: K/J were
 dropped in #289 because a key handler that consumes a letter keeps the first
 romaji of an IME composition from reaching the input method (macOS). In the tree, moving selects as
 it goes and focus stays on the tree, and a click on a row now leaves focus on

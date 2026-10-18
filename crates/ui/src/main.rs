@@ -581,6 +581,10 @@ struct ChatWindow {
     panes: Option<ChatPanes>,
     tree_list: LogList,
     tree_rows: Vec<TreeRow>,
+    // The selection the tree last scrolled to; a different one is revealed.
+    tree_revealed: Option<Selection>,
+    // The reveal waits for the rows up to the selection to be laid out.
+    tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
@@ -1108,6 +1112,8 @@ impl ChatWindow {
             panes: None,
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
+            tree_revealed: None,
+            tree_reveal_pending: false,
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
@@ -1873,11 +1879,6 @@ impl ChatWindow {
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
-                    if !config.regain_ops {
-                        // A worker that has it off reports nothing, so the
-                        // stale set would outlive the off connection.
-                        config.regain_ops_in.clear();
-                    }
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
@@ -2305,9 +2306,6 @@ impl ChatWindow {
         let session = self.sessions.get(&network)?;
         let mut config = session.active_config.clone()?;
         config.history_targets_since = session.disconnected_at;
-        if !config.regain_ops {
-            config.regain_ops_in.clear();
-        }
         config.resume_history = self
             .state
             .history_resume(network)
@@ -4191,7 +4189,6 @@ impl ChatWindow {
             self.dispatch(command, window, cx);
         } else {
             self.dispatch_keeping_focus(command, window, cx);
-            self.tree_list.state.scroll_to_reveal_item(row.0);
         }
     }
 
@@ -4386,30 +4383,11 @@ impl ChatWindow {
                         && !session.asleep
                     {
                         session.manual_disconnect = true;
-                        session.forget_operator_channels();
                     }
                 }
                 Event::Refused(_) => {
                     disconnected = true;
                     refused = true;
-                    if let Some(session) = self.sessions.get_mut(&network) {
-                        session.forget_operator_channels();
-                    }
-                }
-                // Kept in the configuration the next, automatic connection
-                // starts from, to get operator status back (#444).
-                Event::OpChannels(channels) => {
-                    if let Some(config) = self
-                        .sessions
-                        .get_mut(&network)
-                        .and_then(|session| session.active_config.as_mut())
-                    {
-                        // Switched off since the worker started: an update
-                        // still in flight must not revive the dropped set.
-                        if config.regain_ops {
-                            config.regain_ops_in = channels.clone();
-                        }
-                    }
                 }
                 Event::NicknameRejected { nickname } => {
                     self.show_nick_prompt(network, nickname.clone(), cx)
@@ -4540,7 +4518,6 @@ impl ChatWindow {
             Event::ChannelModes { channel, flags } => {
                 self.state.set_channel_modes(network, &channel, &flags);
             }
-            Event::OpChannels(_) => {}
             Event::OpRegain { channel, status } => {
                 let key = match status {
                     OpRegainStatus::Rejoining => "event_op_regain_rejoining",
@@ -5896,7 +5873,7 @@ impl ChatWindow {
 }
 
 impl ChatWindow {
-    fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_channel_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         // The tree is virtualized like the logs: it redraws on every state
         // change, but builds only the rows near the viewport. Keys identify
@@ -5931,6 +5908,29 @@ impl ChatWindow {
             }
         }
         self.tree_list.sync_unordered(0, &keys);
+        // Whatever changed the selection (shortcut, tree key, click), bring
+        // its row into view once, by the row order just built; scrolling the
+        // tree by hand later is left alone.
+        let selection = self.state.selection();
+        let changed = self.tree_revealed != Some(selection);
+        if changed || self.tree_reveal_pending {
+            self.tree_revealed = Some(selection);
+            let at = self.tree_rows.iter().position(|row| match *row {
+                TreeRow::Server(id) => selection == Selection::Server(id),
+                TreeRow::Channel(id) => selection == Selection::Channel(id),
+            });
+            self.tree_reveal_pending = false;
+            if let Some(at) = at {
+                // Rows far from the viewport are not laid out yet; the list
+                // then needs further passes, each after a layout.
+                if self.tree_list.reveal(at) {
+                    self.tree_reveal_pending = true;
+                    // Notifying while drawing does not schedule another
+                    // frame; the next one is requested explicitly.
+                    cx.on_next_frame(window, |_, _, cx| cx.notify());
+                }
+            }
+        }
         let appearance = &self.appearance;
         div()
             .size_full()
@@ -6193,7 +6193,12 @@ impl ChatWindow {
     }
 
     /// Content of a cached pane; see [`ChatPane`].
-    fn render_pane(&mut self, kind: PaneKind, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &mut self,
+        kind: PaneKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         #[cfg(test)]
         {
             self.pane_renders += 1;
@@ -6264,7 +6269,7 @@ impl ChatWindow {
                     ))
                     .into_any_element()
             }
-            PaneKind::Channels => self.render_channel_tree(cx),
+            PaneKind::Channels => self.render_channel_tree(window, cx),
         }
     }
 
@@ -7281,7 +7286,7 @@ impl Render for ChatPane {
                 {
                     cx.on_next_frame(window, |_, _, cx| cx.notify());
                 }
-                chat.render_pane(kind, cx)
+                chat.render_pane(kind, window, cx)
             })
             .unwrap_or_else(|_| div().into_any_element())
     }
@@ -9049,3 +9054,7 @@ mod channel_key_tests;
 #[cfg(test)]
 #[path = "main_tests/part_dialog_tests.rs"]
 mod part_dialog_tests;
+
+#[cfg(test)]
+#[path = "main_tests/tree_reveal_tests.rs"]
+mod tree_reveal_tests;

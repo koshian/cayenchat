@@ -47,7 +47,7 @@ CayenChat loads the packaged `locales/ja.json` and `locales/en.json` at runtime.
 
 ## Documentation
 
-The specifications under [`spec/`](spec/) are authoritative; start with [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md). To run the tests and view their coverage, see [How to test](HOW_TO_TEST.md).
+The specifications under [`spec/`](spec/) are authoritative; start with [architecture](spec/architecture.md) and [feature parity](spec/feature-parity.md). To run the tests and view their coverage, see [How to test](HOW_TO_TEST.md). To retake Linux, macOS or Windows screenshots, see the [screenshot capture guide](scripts/screenshots/README.md).
 
 ## License
 

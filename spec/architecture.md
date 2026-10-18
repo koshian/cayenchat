@@ -823,36 +823,39 @@ server sends until the server closes the connection, at most 1.5 s: dropping a s
 with unread data sends RST, which can discard a QUIT not yet sent (the server then
 reports "EOF From client").
 
-#### Regaining operator status after a dropped connection (issue #444)
+#### Regaining operator status when alone without it (issues #444, #478)
 
 When the server has not noticed that a link died, the new connection can end
 up under a temporary nickname, and once the old link times out we are alone in
 our channels without the operator status we had. On networks where an empty
 channel disappears and its next creator becomes operator (IRCnet), parting and
-joining again gets it back (`crates/irc-core/src/regain.rs`, D055).
+joining again gets it back (`crates/irc-core/src/regain.rs`, D055, D056).
 
-- Scope: only channels where the previous, **unexpectedly ended** connection
-  had us as operator. The worker reports the set of channels where we are
-  operator, plus those still waited on, as `Event::OpChannels` whenever it
-  changes; the UI keeps it in the server's `active_config.regain_ops_in`, so
-  the automatic reconnect carries it. `Closed` (user disconnect, `/quit`) and
-  `Refused` clear it; only a manual end is excluded, so a connection that
-  ended for sleep (#445, whose QUIT may not reach the server and leave a
-  ghost) or a failure is carried, and a connection started from the settings starts
-  empty. Channels that were opless and alone on their own, `/deop`, and
-  channels never operated in are left alone. The carried loss expires 15
-  minutes after the connection started (`CARRY_WINDOW`).
+- Scope: any joined channel, whatever happened to the connection before. #444
+  limited it to channels the previous, unexpectedly ended connection had us
+  operator in; that record lived only in memory and a long sleep removes the
+  ghost before the reconnect, so it rarely applied (D056). Nothing is carried
+  between connections any more (`Event::OpChannels`, `regain_ops_in` and the
+  15 minute window are gone). A `/deop` that leaves us alone is covered too.
 - Conditions, checked again when acting: registered, no alive check or
   nickname prompt running, our JOIN synced (end of NAMES seen), the roster
-  holds only us and shows no `~&@%` for us, and the channel modes are known.
-  Any change of the roster restarts a 5 s wait (`STABLE`). Only `#` and `&`
-  channels qualify; `+` (no operators) and `!` (safe channels) never do. Names
-  are used as the server gave them, so IRCnet server-mask channels keep
-  working.
-- Action: `PART` then `JOIN` once per loss. Whatever the result (operator
-  again, no operator, JOIN refused, nothing within 30 s) is final and shown in
-  the server log as `Event::OpRegain`; there is no retry. Our own PART and JOIN
-  show as usual ("Left", "Joined").
+  holds only us and shows no `~&@%` for us, and the channel modes are known
+  (324 received; there is no time limit, the check goes on until they are).
+  Every roster change (`Event::Names`: JOIN, PART, KICK, QUIT, NICK, MODE,
+  end of NAMES) re-evaluates; the state must hold for 5 s (`STABLE`). Only
+  `#` and `&` channels qualify; `+` (no operators) and `!` (safe channels)
+  never do. Names are used as the server gave them, so IRCnet server-mask
+  channels keep working.
+- Action: `PART` then `JOIN`, **once per channel and connection**, so that a
+  network where rejoining gives no operator status (services-managed
+  channels, IRCnet's channel delay) is not rejoined over and over. Whatever
+  the result (operator again, no operator, JOIN refused, nothing within 30 s)
+  is final and shown in the server log as `Event::OpRegain`; there is no
+  retry, and no reason is shown for a channel that was not tried. The channel
+  gets one more attempt once the roster shows us as operator, or once the user
+  parts it and joins again (a PART or KICK forgets the channel). A new
+  connection starts afresh. Our own PART and JOIN show as usual ("Left",
+  "Joined").
 - Because the channel is created anew, modes, topic and lists are reset. A
   topic longer than 400 bytes cannot be put back, so such a channel is not
   rejoined at all (`OpRegainStatus::TopicTooLong`, shown once). After the new
