@@ -1873,11 +1873,6 @@ impl ChatWindow {
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
-                    if !config.regain_ops {
-                        // A worker that has it off reports nothing, so the
-                        // stale set would outlive the off connection.
-                        config.regain_ops_in.clear();
-                    }
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
@@ -2305,9 +2300,6 @@ impl ChatWindow {
         let session = self.sessions.get(&network)?;
         let mut config = session.active_config.clone()?;
         config.history_targets_since = session.disconnected_at;
-        if !config.regain_ops {
-            config.regain_ops_in.clear();
-        }
         config.resume_history = self
             .state
             .history_resume(network)
@@ -4386,30 +4378,11 @@ impl ChatWindow {
                         && !session.asleep
                     {
                         session.manual_disconnect = true;
-                        session.forget_operator_channels();
                     }
                 }
                 Event::Refused(_) => {
                     disconnected = true;
                     refused = true;
-                    if let Some(session) = self.sessions.get_mut(&network) {
-                        session.forget_operator_channels();
-                    }
-                }
-                // Kept in the configuration the next, automatic connection
-                // starts from, to get operator status back (#444).
-                Event::OpChannels(channels) => {
-                    if let Some(config) = self
-                        .sessions
-                        .get_mut(&network)
-                        .and_then(|session| session.active_config.as_mut())
-                    {
-                        // Switched off since the worker started: an update
-                        // still in flight must not revive the dropped set.
-                        if config.regain_ops {
-                            config.regain_ops_in = channels.clone();
-                        }
-                    }
                 }
                 Event::NicknameRejected { nickname } => {
                     self.show_nick_prompt(network, nickname.clone(), cx)
@@ -4540,7 +4513,6 @@ impl ChatWindow {
             Event::ChannelModes { channel, flags } => {
                 self.state.set_channel_modes(network, &channel, &flags);
             }
-            Event::OpChannels(_) => {}
             Event::OpRegain { channel, status } => {
                 let key = match status {
                     OpRegainStatus::Rejoining => "event_op_regain_rejoining",

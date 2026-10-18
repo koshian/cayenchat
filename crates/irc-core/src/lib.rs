@@ -188,13 +188,9 @@ pub struct ConnectionConfig {
     /// Channels whose text uses another encoding than `encoding`; the
     /// channel name and everything else on a line keep `encoding`.
     pub channel_encodings: Vec<ChannelEncoding>,
-    /// Rejoin a channel in `regain_ops_in` that leaves us alone without
-    /// operator status, to become its operator again (#444). Off unless the
-    /// caller enables it.
+    /// Rejoin a channel that leaves us alone without operator status, to
+    /// become its operator (#444, #478). Off unless the caller enables it.
     pub regain_ops: bool,
-    /// Channels we were operator in when the previous connection ended
-    /// unexpectedly: the last [`Event::OpChannels`] before it.
-    pub regain_ops_in: Vec<String>,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -225,7 +221,6 @@ impl fmt::Debug for ConnectionConfig {
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
             .field("regain_ops", &self.regain_ops)
-            .field("regain_ops_in", &self.regain_ops_in)
             .finish()
     }
 }
@@ -257,7 +252,6 @@ impl ConnectionConfig {
             history_targets_since: None,
             channel_encodings: Vec::new(),
             regain_ops: false,
-            regain_ops_in: Vec::new(),
         }
     }
 
@@ -884,11 +878,6 @@ pub enum Event {
         local_id: u64,
         reason: String,
     },
-    /// The channels where we hold operator status, plus those still waited
-    /// on for [`ConnectionConfig::regain_ops_in`]; sent when that set
-    /// changes, only with `regain_ops`. What to carry into the next
-    /// connection if this one ends unexpectedly.
-    OpChannels(Vec<String>),
     /// Progress of getting operator status back in `channel` (#444).
     OpRegain {
         channel: String,
@@ -2583,11 +2572,7 @@ async fn run_cancellable(
         reported_unsent: 0,
         accounts: accounts::Accounts::default(),
         channel_modes: chanmodes::ChannelModes::default(),
-        regain: regain::OpRegain::new(
-            config.regain_ops,
-            &config.regain_ops_in,
-            tokio::time::Instant::now(),
-        ),
+        regain: regain::OpRegain::new(config.regain_ops),
         targets_asked: false,
         // Last reported Event::HistoryAvailable.
         history_available: false,
@@ -3812,7 +3797,7 @@ impl Worker {
         self.apply_regain(steps).await
     }
 
-    /// Carries out `steps`, then reports a changed set of operator channels.
+    /// Carries out `steps`.
     async fn apply_regain(&mut self, steps: Vec<regain::Step>) -> Flow {
         for step in steps {
             match step {
@@ -3849,9 +3834,6 @@ impl Worker {
                     self.emit(Event::OpRegain { channel, status }).await?;
                 }
             }
-        }
-        if let Some(ops) = self.regain.changed_ops() {
-            self.emit(Event::OpChannels(ops)).await?;
         }
         ControlFlow::Continue(())
     }

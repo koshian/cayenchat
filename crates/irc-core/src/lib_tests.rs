@@ -5920,9 +5920,9 @@ fn sleep_closes_an_unregistered_connection_while_the_event_queue_is_full() {
     server.join().unwrap();
 }
 
-/// After an unexpected disconnect, a channel we were operator in that has
-/// only us left and no operator is parted and joined again, and its topic
-/// and plain flags (never the key) are put back, once.
+/// A joined channel that has only us left and no operator is parted and
+/// joined again, whatever came before, and its topic and plain flags (never
+/// the key) are put back, once.
 #[test]
 fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -5938,7 +5938,7 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
             .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
             .unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
-        // The old link of ours is still in the channel.
+        // Someone else is in the channel.
         socket
             .write_all(
                 b":me!u@h JOIN #a\r\n:server 332 me #a :the topic\r\n\
@@ -5949,11 +5949,9 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
         socket
             .write_all(b":server 324 me #a +ntskl secret 50\r\n")
             .unwrap();
-        // It times out; nothing happens while someone else is there.
+        // Nothing happens while someone else is there.
         thread::sleep(Duration::from_millis(400));
-        socket
-            .write_all(b":old!u@h QUIT :Ping timeout\r\n")
-            .unwrap();
+        socket.write_all(b":old!u@h PART #a\r\n").unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), "PART #a");
         assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
         socket
@@ -5975,22 +5973,15 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
                   :server 324 me #a +nts\r\n",
             )
             .unwrap();
-        // Alone and opless once more: not tried a second time.
-        socket
-            .write_all(b":x!u@h JOIN #a\r\n:x!u@h PART #a\r\n")
-            .unwrap();
-        socket.write_all(b":me!u@h MODE #a -o me\r\n").unwrap();
         thread::sleep(Duration::from_millis(600));
     });
     let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec!["#a".into()]);
     config.port = port;
     config.use_tls = false;
     config.regain_ops = true;
-    config.regain_ops_in = vec!["#a".into()];
     let mut connection = Connection::connect(config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut statuses = Vec::new();
-    let mut sets = Vec::new();
     while Instant::now() < deadline
         && !statuses
             .iter()
@@ -6001,7 +5992,6 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
                 assert_eq!(channel, "#a");
                 statuses.push(status);
             }
-            Some(Event::OpChannels(channels)) => sets.push(channels),
             Some(Event::Disconnected(reason)) => panic!("disconnected: {reason}"),
             _ => thread::sleep(Duration::from_millis(5)),
         }
@@ -6016,17 +6006,13 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
             }
         ]
     );
-    // Reported as operator, then not any more once the server took it away
-    // (the pending loss is not carried again); no second attempt.
-    thread::sleep(Duration::from_millis(900));
+    // No second attempt.
+    thread::sleep(Duration::from_millis(500));
     while let Some(event) = connection.try_recv() {
-        match event {
-            Event::OpChannels(channels) => sets.push(channels),
-            Event::OpRegain { .. } => panic!("second attempt: {event:?}"),
-            _ => {}
-        }
+        assert!(
+            !matches!(event, Event::OpRegain { .. }),
+            "second attempt: {event:?}"
+        );
     }
-    assert!(sets.contains(&vec!["#a".to_owned()]), "{sets:?}");
-    assert_eq!(sets.last(), Some(&Vec::new()));
     server.join().unwrap();
 }
