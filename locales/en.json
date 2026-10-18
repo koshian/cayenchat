@@ -462,7 +462,6 @@
   "notifications_enabled": "Show desktop notifications",
   "notify_mentions": "When someone mentions my nickname in a channel (e.g. nick: or @nick)",
   "notify_private_messages": "When I receive a private message",
-  "notify_channel_notices": "Also notify for my nickname and keywords in channel NOTICEs",
   "notify_keywords": "When a channel message contains a keyword",
   "notify_sound": "Play a sound and flash the taskbar button with a notification",
   "keywords": "Keywords",

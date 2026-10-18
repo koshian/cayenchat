@@ -462,7 +462,6 @@
   "notifications_enabled": "デスクトップ通知を表示する",
   "notify_mentions": "チャンネルで自分の名前が呼ばれたとき（nick: や @nick など）",
   "notify_private_messages": "プライベートメッセージを受け取ったとき",
-  "notify_channel_notices": "NOTICEでもnick・キーワードを通知する",
   "notify_keywords": "キーワード通知（チャンネルのメッセージにキーワードが含まれたとき）",
   "notify_sound": "通知時に音を鳴らし、タスクバーのボタンを点滅させる",
   "keywords": "キーワード",

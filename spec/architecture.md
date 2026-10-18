@@ -1674,11 +1674,14 @@ an action.
 
 `irc-core` reports a PRIVMSG or NOTICE from a user mask to our nickname as
 `PrivateMessage`; server notices stay server lines, and CTCP other than
-ACTION becomes a readable server line (D029). Private messages notify only as PRIVMSG, because private NOTICEs
-are usually services or bots. Channel NOTICEs are bots too: they notify on
-mentions and keywords only when `Notifications::channel_notices` is on (off by
-default, also for existing settings files); the log highlight and unread
-state do not depend on it. Mentions and keywords are separate choices.
+ACTION becomes a readable server line (D029). Private messages notify only as
+PRIVMSG. Channel and private NOTICEs (often sent by services or bots) are
+displayed and may be logged, but never run
+mention/keyword matching, text highlights, channel-tree highlights, unread
+marks, desktop notifications, sounds, taskbar flashes or attention-jump
+bookmarks. The former opt-in channel NOTICE notification setting has been
+removed; any old `channel_notices` value in settings is ignored. Mentions
+and keywords remain separate choices for normal PRIVMSG and ACTION.
 `irc-core` sets `mentioned` when someone else names our nickname as a whole
 word (RFC 1459 case mapping, formatting ignored), which also covers `nick:`
 and `@nick`; keywords are case-insensitive substrings, so the nickname is
@@ -1694,7 +1697,7 @@ to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
 one; see batch under IRCv3 capabilities). A server-time tag alone never
 marks history, however old (D022).
 Replayed messages still appear in the log (`model::Provenance::Replayed`) and
-mark their channel unread, but are neither highlighted there nor in the
+mark their channel unread (NOTICEs never do), but are neither highlighted there nor in the
 channel tree. Nothing notifies while the chat window is
 focused and the message's conversation (its private conversation, or the
 server view for a private notice kept in the server log) is selected. At most five notifications are shown per ten seconds so bouncer
@@ -1702,7 +1705,8 @@ history playback cannot flood the desktop; the log and unread marks are
 unaffected. Showing can block (D-Bus, macOS delivery confirmation), so a
 dedicated thread does it; UI tests record notifications instead.
 
-The same matches are shown in the logs, whether or not notifications are on.
+For ordinary messages, the same matches are shown in the logs whether or
+not notifications are on. NOTICEs do not generate these matches.
 They are found once, when a live channel or private message from someone else
 arrives (`ChatWindow::find_mentions`): `irc-core::text::mention_ranges` and
 `app::notifications::keyword_ranges` run on the text without formatting codes
