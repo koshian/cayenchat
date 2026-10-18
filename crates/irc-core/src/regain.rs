@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Getting operator status back after an unexpected disconnect (#444).
+//! Getting operator status back when we are alone without it (#444, #478).
 //!
 //! When a link dies without the server noticing, the new connection may have
 //! to register under a temporary nickname, and once the old link times out
@@ -11,12 +11,12 @@
 //! are put back; never a key, a limit or a ban, exception or reop list.
 //!
 //! The state machine here is fed what the worker sees and says what to send.
-//! A channel qualifies only if it is in the set of channels the previous,
-//! unexpectedly ended connection had operator status in (`carried`): a
-//! channel that is merely opless and empty, a `/deop`, or a channel we
-//! never were operator in is left alone. An attempt is made once per
-//! channel, after the channel has stayed unchanged for [`STABLE`], and
-//! whatever happens is final: failure is reported, never retried.
+//! Whatever the history of the connection, a joined channel qualifies when
+//! its roster holds only us, without operator status, and has stayed so for
+//! [`STABLE`]. An attempt is made once per channel and connection, and
+//! whatever happens is final: failure is reported, never retried. A channel
+//! gets another attempt after we were seen as operator in it, or after the
+//! user left and joined it again.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -41,9 +41,6 @@ const RESTORE_WAIT: Duration = if cfg!(test) {
 } else {
     Duration::from_secs(5)
 };
-/// How long after the connection started a channel can still be carried
-/// over; the old link is gone from the server well before that.
-const CARRY_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Most channels tracked; beyond it a channel is neither watched nor
 /// reported.
 const MAX_TRACKED: usize = 512;
@@ -115,8 +112,6 @@ enum Stage {
         topic: Option<String>,
         topic_seen: bool,
     },
-    /// Done, one way or the other; nothing more is ever done for this loss.
-    Finished,
 }
 
 struct Restore {
@@ -126,9 +121,9 @@ struct Restore {
 
 struct Channel {
     name: String,
-    /// We were operator here when the previous connection ended, and have
-    /// not been given reason to forget it since.
-    carried: bool,
+    /// An attempt was made (or declined) here; no other until we are seen
+    /// as operator or the channel is forgotten.
+    tried: bool,
     in_channel: bool,
     /// The end of NAMES came after our JOIN: the roster below is complete.
     synced: bool,
@@ -140,10 +135,10 @@ struct Channel {
 }
 
 impl Channel {
-    fn new(name: &str, carried: bool) -> Self {
+    fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
-            carried,
+            tried: false,
             in_channel: false,
             synced: false,
             op: false,
@@ -158,53 +153,25 @@ impl Channel {
 pub(crate) struct OpRegain {
     enabled: bool,
     mapping: CaseMapping,
-    started: Instant,
     channels: HashMap<String, Channel>,
-    /// The last set handed out by [`OpRegain::changed_ops`].
-    reported: Vec<String>,
     /// Kept up to date by [`OpRegain::touch`], so that the per-message
-    /// questions "is anything due" and "did the set change" cost nothing
-    /// while no channel changed.
+    /// question "is anything due" costs nothing while no channel changed.
     deadline: Option<Instant>,
-    dirty: bool,
 }
 
 impl OpRegain {
-    /// `carried`: the channels the previous connection had operator status
-    /// in when it ended unexpectedly. Disabled, nothing is tracked.
-    pub(crate) fn new(enabled: bool, carried: &[String], started: Instant) -> Self {
-        let mapping = CaseMapping::default();
-        let mut channels = HashMap::new();
-        if enabled {
-            for name in carried.iter().take(MAX_TRACKED) {
-                if eligible(name) {
-                    channels.insert(mapping.fold(name), Channel::new(name, true));
-                }
-            }
-        }
-        let mut regain = Self {
+    /// Disabled, nothing is tracked.
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self {
             enabled,
-            mapping,
-            started,
-            channels,
-            reported: Vec::new(),
+            mapping: CaseMapping::default(),
+            channels: HashMap::new(),
             deadline: None,
-            dirty: false,
-        };
-        // The carried set is what the application already holds.
-        regain.reported = regain.ops();
-        regain.touch();
-        regain.dirty = false;
-        regain
+        }
     }
 
     /// Call after any change of a channel.
     fn touch(&mut self) {
-        let carried = self
-            .channels
-            .values()
-            .any(|channel| channel.carried)
-            .then_some(self.started + CARRY_WINDOW);
         self.deadline = self
             .channels
             .values()
@@ -212,11 +179,9 @@ impl OpRegain {
                 Stage::Settling(at) => Some(at),
                 Stage::Attempt { until, .. } => Some(until),
                 Stage::Restoring { at, .. } => Some(at),
-                _ => None,
+                Stage::Watching => None,
             })
-            .chain(carried)
             .min();
-        self.dirty = true;
     }
 
     pub(crate) fn set_casemapping(&mut self, mapping: CaseMapping) {
@@ -232,7 +197,7 @@ impl OpRegain {
 
     /// Our own JOIN of `name`.
     pub(crate) fn joined(&mut self, name: &str) {
-        if !self.enabled {
+        if !self.enabled || !eligible(name) {
             return;
         }
         let key = self.mapping.fold(name);
@@ -242,7 +207,7 @@ impl OpRegain {
         let channel = self
             .channels
             .entry(key)
-            .or_insert_with(|| Channel::new(name, false));
+            .or_insert_with(|| Channel::new(name));
         channel.name = name.to_owned();
         channel.in_channel = true;
         channel.synced = false;
@@ -308,7 +273,7 @@ impl OpRegain {
         let key = self.mapping.fold(name);
         let steps = match self.channels.get_mut(&key) {
             Some(channel) if matches!(channel.stage, Stage::Attempt { .. }) => {
-                channel.stage = Stage::Finished;
+                channel.stage = Stage::Watching;
                 channel.in_channel = false;
                 vec![Step::Status(
                     channel.name.clone(),
@@ -367,14 +332,16 @@ impl OpRegain {
             .find(|entry| same_nickname(display(entry), nick));
         channel.op = own.is_some_and(|entry| privileged(entry));
         channel.alone = entries.len() == 1 && own.is_some();
+        // Having been operator earns another attempt should we be left
+        // alone without it again.
         if channel.op {
-            channel.carried = false;
+            channel.tried = false;
         }
         match &channel.stage {
             Stage::Attempt { joined: true, .. } if complete => {
                 let name = channel.name.clone();
                 let restore = channel.restore.take();
-                channel.stage = Stage::Finished;
+                channel.stage = Stage::Watching;
                 if !channel.op {
                     return vec![Step::Status(name, OpRegainStatus::NotRegained)];
                 }
@@ -403,9 +370,9 @@ impl OpRegain {
                     topic,
                 }]
             }
-            Stage::Attempt { .. } | Stage::Restoring { .. } | Stage::Finished => Vec::new(),
+            Stage::Attempt { .. } | Stage::Restoring { .. } => Vec::new(),
             _ => {
-                channel.stage = if channel.carried && channel.alone && !channel.op {
+                channel.stage = if !channel.tried && channel.alone && !channel.op {
                     match channel.stage {
                         Stage::Settling(at) => Stage::Settling(at),
                         _ => Stage::Settling(now + STABLE),
@@ -429,17 +396,6 @@ impl OpRegain {
         mut flags_of: impl FnMut(&str) -> Option<String>,
     ) -> Vec<Step> {
         let mut steps = Vec::new();
-        if now >= self.started + CARRY_WINDOW {
-            for channel in self.channels.values_mut() {
-                channel.carried = false;
-                if matches!(channel.stage, Stage::Settling(_)) {
-                    channel.stage = Stage::Watching;
-                }
-            }
-            self.channels.retain(|_, channel| {
-                channel.in_channel || !matches!(channel.stage, Stage::Watching)
-            });
-        }
         for channel in self.channels.values_mut() {
             match channel.stage {
                 Stage::Settling(at) if at <= now => {
@@ -448,7 +404,7 @@ impl OpRegain {
                         channel.stage = Stage::Settling(now + STABLE);
                         continue;
                     };
-                    if !(channel.carried
+                    if !(!channel.tried
                         && channel.alone
                         && !channel.op
                         && channel.synced
@@ -460,8 +416,8 @@ impl OpRegain {
                     // A topic that cannot be put back would be lost by the
                     // new channel: leave the channel as it is.
                     if channel.topic.len() > MAX_TOPIC {
-                        channel.carried = false;
-                        channel.stage = Stage::Finished;
+                        channel.tried = true;
+                        channel.stage = Stage::Watching;
                         steps.push(Step::Status(
                             channel.name.clone(),
                             OpRegainStatus::TopicTooLong,
@@ -474,7 +430,7 @@ impl OpRegain {
                         .collect();
                     let topic = (!channel.topic.is_empty()).then(|| channel.topic.clone());
                     channel.restore = Some(Restore { flags, topic });
-                    channel.carried = false;
+                    channel.tried = true;
                     channel.stage = Stage::Attempt {
                         until: now + ATTEMPT_TIMEOUT,
                         parted: false,
@@ -488,7 +444,7 @@ impl OpRegain {
                 }
                 Stage::Attempt { until, .. } if until <= now => {
                     let in_channel = channel.in_channel;
-                    channel.stage = Stage::Finished;
+                    channel.stage = Stage::Watching;
                     channel.restore = None;
                     steps.push(Step::Status(
                         channel.name.clone(),
@@ -505,10 +461,21 @@ impl OpRegain {
                         topic,
                         topic_seen,
                         ..
-                    } = std::mem::replace(&mut channel.stage, Stage::Finished)
+                    } = std::mem::replace(&mut channel.stage, Stage::Watching)
                     else {
                         continue;
                     };
+                    // Roster changes during the check were tracked but not
+                    // acted on: if we lost operator status again meanwhile,
+                    // the wait starts now.
+                    if !channel.tried
+                        && channel.alone
+                        && !channel.op
+                        && channel.synced
+                        && channel.in_channel
+                    {
+                        channel.stage = Stage::Settling(now + STABLE);
+                    }
                     let known = flags_of(&channel.name).unwrap_or_default();
                     let modes_failed = flags.chars().any(|letter| !known.contains(letter));
                     let topic_failed = topic.is_some() && !topic_seen;
@@ -537,31 +504,6 @@ impl OpRegain {
     /// When [`OpRegain::poll`] next has something to do.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.deadline
-    }
-
-    /// The channels to carry over should the connection now end
-    /// unexpectedly: those we are operator in, and those still waited on.
-    fn ops(&self) -> Vec<String> {
-        let mut ops: Vec<String> = self
-            .channels
-            .values()
-            .filter(|channel| channel.op || channel.carried)
-            .map(|channel| channel.name.clone())
-            .collect();
-        ops.sort();
-        ops
-    }
-
-    /// The set from [`OpRegain::ops`] if it differs from the last one given.
-    pub(crate) fn changed_ops(&mut self) -> Option<Vec<String>> {
-        if !self.enabled || !std::mem::take(&mut self.dirty) {
-            return None;
-        }
-        let ops = self.ops();
-        (ops != self.reported).then(|| {
-            self.reported = ops.clone();
-            ops
-        })
     }
 }
 

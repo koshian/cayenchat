@@ -5,10 +5,6 @@ fn users(list: &[&str]) -> Vec<String> {
     list.iter().map(|user| (*user).to_owned()).collect()
 }
 
-fn carried(channel: &str, now: Instant) -> OpRegain {
-    OpRegain::new(true, &[channel.to_owned()], now)
-}
-
 fn flags(_: &str) -> Option<String> {
     Some("ntskl".into())
 }
@@ -24,7 +20,7 @@ fn arrive(regain: &mut OpRegain, roster: &[&str], now: Instant) -> Vec<Step> {
 #[test]
 fn alone_without_op_rejoins_once_after_the_wait() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     assert!(arrive(&mut regain, &["Me_"], start).is_empty());
     assert_eq!(regain.next_deadline(), Some(start + STABLE));
     assert!(regain.poll(start, true, flags).is_empty());
@@ -61,15 +57,48 @@ fn alone_without_op_rejoins_once_after_the_wait() {
             }
         )]
     );
-    // Once only: alone and opless again later changes nothing.
+    // Operator status was seen, so a later loss of it gets another try.
+    regain.roster("#a", &users(&["Me_"]), "Me_", false, judged);
+    assert_eq!(regain.next_deadline(), Some(judged + STABLE));
+}
+
+#[test]
+fn one_attempt_per_connection_until_operator_or_a_manual_rejoin() {
+    let start = Instant::now();
+    let mut regain = OpRegain::new(true);
+    arrive(&mut regain, &["Me_"], start);
+    regain.poll(start + STABLE, true, flags);
+    regain.parted("#a");
+    regain.joined("#a");
+    // Joined again without operator status.
+    regain.roster("#a", &users(&["Me_"]), "Me_", true, start + STABLE);
+    assert_eq!(regain.next_deadline(), None);
+    regain.roster("#a", &users(&["Me_", "x"]), "Me_", false, start + STABLE);
     regain.roster("#a", &users(&["Me_"]), "Me_", false, start + STABLE);
     assert_eq!(regain.next_deadline(), None);
+    // Someone gives us operator status, then takes it back.
+    regain.roster("#a", &users(&["@Me_", "x"]), "Me_", false, start + STABLE);
+    regain.roster("#a", &users(&["Me_"]), "Me_", false, start + STABLE);
+    assert_eq!(regain.next_deadline(), Some(start + STABLE * 2));
+    assert!(!regain.poll(start + STABLE * 2, true, flags).is_empty());
+
+    // The user leaves and joins again by hand.
+    let mut regain = OpRegain::new(true);
+    arrive(&mut regain, &["Me_"], start);
+    regain.poll(start + STABLE, true, flags);
+    regain.parted("#a");
+    regain.joined("#a");
+    regain.roster("#a", &users(&["Me_"]), "Me_", true, start + STABLE);
+    regain.leaving("#a");
+    regain.joined("#a");
+    regain.roster("#a", &users(&["Me_"]), "Me_", true, start + STABLE);
+    assert_eq!(regain.next_deadline(), Some(start + STABLE * 2));
 }
 
 #[test]
 fn others_present_or_an_op_cancel() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     arrive(&mut regain, &["Me_", "Other"], start);
     assert!(regain.poll(start + STABLE, true, flags).is_empty());
     // The other leaves: alone, the wait starts now.
@@ -84,43 +113,40 @@ fn others_present_or_an_op_cancel() {
 }
 
 #[test]
-fn unsynced_not_carried_or_ineligible_never_act() {
+fn unsynced_or_ineligible_never_act() {
     let start = Instant::now();
-    // Not carried: opless and alone is nothing special.
-    let mut plain = OpRegain::new(true, &[], start);
-    arrive(&mut plain, &["Me_"], start);
-    assert_eq!(plain.next_deadline(), None);
     // The partial roster after our own JOIN does not count.
-    let mut early = carried("#a", start);
+    let mut early = OpRegain::new(true);
     early.joined("#a");
     early.roster("#a", &users(&["Me_"]), "Me_", false, start);
-    assert_eq!(early.next_deadline(), Some(start + CARRY_WINDOW));
+    assert_eq!(early.next_deadline(), None);
     // Disabled.
-    let mut off = OpRegain::new(false, &["#a".into()], start);
+    let mut off = OpRegain::new(false);
     arrive(&mut off, &["Me_"], start);
     assert_eq!(off.next_deadline(), None);
-    assert_eq!(off.changed_ops(), None);
     // `!` and `+` channels are not touched.
-    let mut safe = OpRegain::new(true, &["!ABCDEsafe".into(), "+modeless".into()], start);
-    safe.joined("!ABCDEsafe");
-    safe.roster("!ABCDEsafe", &users(&["Me_"]), "Me_", true, start);
+    let mut safe = OpRegain::new(true);
+    for name in ["!ABCDEsafe", "+modeless"] {
+        safe.joined(name);
+        safe.roster(name, &users(&["Me_"]), "Me_", true, start);
+    }
     assert_eq!(safe.next_deadline(), None);
 }
 
 #[test]
 fn not_ready_or_unknown_modes_wait_and_a_manual_part_cancels() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     arrive(&mut regain, &["Me_"], start);
     assert!(regain.poll(start + STABLE, false, flags).is_empty());
     assert!(regain.poll(start + STABLE * 2, true, |_| None).is_empty());
     assert!(!regain.poll(start + STABLE * 3, true, flags).is_empty());
-    let mut parted = carried("#a", start);
+    let mut parted = OpRegain::new(true);
     arrive(&mut parted, &["Me_"], start);
     parted.parted("#a");
     assert_eq!(parted.next_deadline(), None);
     // Sending the PART is enough: no echo is waited for.
-    let mut leaving = carried("#a", start);
+    let mut leaving = OpRegain::new(true);
     arrive(&mut leaving, &["Me_"], start);
     leaving.leaving("#A");
     assert_eq!(leaving.next_deadline(), None);
@@ -130,7 +156,7 @@ fn not_ready_or_unknown_modes_wait_and_a_manual_part_cancels() {
 #[test]
 fn failures_end_the_attempt_without_a_retry() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     arrive(&mut regain, &["Me_"], start);
     regain.poll(start + STABLE, true, flags);
     regain.parted("#a");
@@ -141,7 +167,7 @@ fn failures_end_the_attempt_without_a_retry() {
     assert_eq!(regain.next_deadline(), None);
 
     // Joined again, but not made operator.
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     arrive(&mut regain, &["Me_"], start);
     regain.poll(start + STABLE, true, flags);
     regain.parted("#a");
@@ -153,7 +179,7 @@ fn failures_end_the_attempt_without_a_retry() {
     assert_eq!(regain.next_deadline(), None);
 
     // No answer at all.
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     arrive(&mut regain, &["Me_"], start);
     regain.poll(start + STABLE, true, flags);
     let late = start + STABLE + ATTEMPT_TIMEOUT;
@@ -164,32 +190,25 @@ fn failures_end_the_attempt_without_a_retry() {
 }
 
 #[test]
-fn the_carried_loss_expires() {
+fn unknown_modes_hold_the_attempt_until_they_are_known() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
-    assert_eq!(regain.next_deadline(), Some(start + CARRY_WINDOW));
-    regain.poll(start + CARRY_WINDOW, true, flags);
-    assert_eq!(regain.next_deadline(), None);
-    assert_eq!(regain.changed_ops(), Some(Vec::new()));
-}
-
-#[test]
-fn operator_channels_are_reported_when_they_change() {
-    let start = Instant::now();
-    let mut regain = OpRegain::new(true, &[], start);
-    assert_eq!(regain.changed_ops(), None);
-    regain.joined("#a");
-    regain.roster("#a", &users(&["@Me", "x"]), "me", true, start);
-    assert_eq!(regain.changed_ops(), Some(vec!["#a".into()]));
-    regain.roster("#a", &users(&["@Me", "x", "y"]), "me", false, start);
-    assert_eq!(regain.changed_ops(), None);
-    regain.roster("#a", &users(&["Me", "x"]), "me", false, start);
-    assert_eq!(regain.changed_ops(), Some(Vec::new()));
+    let mut regain = OpRegain::new(true);
+    arrive(&mut regain, &["Me_"], start);
+    // No time limit: still waiting long after, and acting once known.
+    for round in 1..=4 {
+        assert!(
+            regain
+                .poll(start + STABLE * round, true, |_| None)
+                .is_empty()
+        );
+        assert!(regain.next_deadline().is_some());
+    }
+    assert!(!regain.poll(start + STABLE * 5, true, flags).is_empty());
 }
 
 /// Operator again after a rejoin, with the restoring commands sent.
 fn restoring(topic: &str, start: Instant) -> OpRegain {
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     regain.joined("#a");
     regain.topic("#a", topic);
     regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
@@ -236,9 +255,26 @@ fn a_restore_the_server_did_not_show_is_reported_as_failed() {
 }
 
 #[test]
+fn losing_operator_while_restoring_is_retried_without_another_roster_event() {
+    let start = Instant::now();
+    let judged = start + STABLE + RESTORE_WAIT;
+    let mut regain = restoring("hello", start);
+    // Deopped, alone, during the check.
+    assert!(
+        regain
+            .roster("#a", &users(&["Me_"]), "Me_", false, start + STABLE * 2)
+            .is_empty()
+    );
+    regain.poll(judged, true, |_| Some("ntkl".into()));
+    assert_eq!(regain.next_deadline(), Some(judged + STABLE));
+    let steps = regain.poll(judged + STABLE, true, flags);
+    assert!(steps.contains(&Step::Rejoin("#a".into())));
+}
+
+#[test]
 fn a_topic_that_cannot_be_put_back_keeps_the_channel_as_it_is() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     regain.joined("#a");
     regain.topic("#a", &"あ".repeat(MAX_TOPIC / 3 + 1));
     regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
@@ -248,7 +284,7 @@ fn a_topic_that_cannot_be_put_back_keeps_the_channel_as_it_is() {
     );
     assert_eq!(regain.next_deadline(), None);
     // The limit itself still works.
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     regain.joined("#a");
     regain.topic("#a", &"x".repeat(MAX_TOPIC));
     regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
@@ -261,7 +297,7 @@ fn a_topic_that_cannot_be_put_back_keeps_the_channel_as_it_is() {
 #[test]
 fn unusual_flags_are_left_out() {
     let start = Instant::now();
-    let mut regain = carried("#a", start);
+    let mut regain = OpRegain::new(true);
     regain.joined("#a");
     regain.roster("#a", &users(&["Me_"]), "Me_", true, start);
     regain.poll(start + STABLE, true, |_| Some("kl".into()));

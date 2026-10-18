@@ -1270,9 +1270,33 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
-## D055 — Rejoin to regain operator status after a dropped connection (#444)
+## D056 — Regain operator status whenever alone without it (#478)
 
 **Status:** Accepted
+
+- Widens the scope of D055: its "only a channel the previous connection had
+  us as operator in" is replaced by "any joined channel where the roster holds
+  only us, without operator status". Reports showed D055 did not fire: the
+  record lived only in memory (lost on restart), had a 15 minute window, and a
+  long sleep lets the server drop the ghost before we reconnect.
+- Nothing is carried between connections any more (`carried`, `CARRY_WINDOW`,
+  `Event::OpChannels`, `ConnectionConfig::regain_ops_in` removed).
+- The loop guard moves from "once per loss" to once per channel and
+  connection, so networks where rejoining gives no operator status
+  (services-managed channels, IRCnet's channel delay) are rejoined once per
+  connection, not repeatedly. The channel is eligible again after we were seen
+  as operator or after the user parted and joined it by hand.
+- Accepted: a deliberate `/deop` that leaves us alone is undone after 5 s, and
+  on such networks each connection costs one rejoin per matching channel; the
+  per-server `regain_ops` switch (on by default) is the way out. The channel
+  modes must be known (324) before acting, with no deadline. No reason is
+  shown for a channel that was not tried.
+- Everything else of D055 stays: the restored topic and `imnpst` flags, the
+  `MAX_TOPIC` limit, the messages, `MAX_TRACKED`.
+
+## D055 — Rejoin to regain operator status after a dropped connection (#444)
+
+**Status:** Accepted (scope widened by D056)
 
 - On by default, per server, switchable in the server settings. Only for a
   channel where the previous connection, which ended unexpectedly, had us as
