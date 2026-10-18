@@ -14,11 +14,12 @@ use std::ops::Range;
 /// host is never cut, so a long host can exceed it.
 const LIMIT: usize = 28;
 
-/// Room kept before every URL for the link icon: a pad ([`LEAD`]) and two
-/// figure spaces. The log paints the icon (`icons/ui/link.svg`) over the
+/// Room kept before every URL for the link icon: a pad ([`LEAD`]), two
+/// figure spaces and a narrow no-break space. The log paints the icon
+/// (`icons/ui/link.svg`) over the
 /// figure spaces, which are a little wider than it, so a gap is left before
 /// the URL. Never copied.
-pub(crate) const ICON: &str = "\u{a0}\u{2007}\u{2007}";
+pub(crate) const ICON: &str = "\u{a0}\u{2007}\u{2007}\u{202f}";
 
 /// The pad before the icon (a no-break space); the icon starts after it.
 pub(crate) const LEAD: &str = "\u{a0}";
@@ -237,13 +238,13 @@ mod tests {
         // Not cut, but marked like the long ones.
         assert_eq!(
             compact.text(),
-            "see \u{a0}\u{2007}\u{2007}https://example.com/a\u{a0} now"
+            "see \u{a0}\u{2007}\u{2007}\u{202f}https://example.com/a\u{a0} now"
         );
         assert_eq!(compact.shortened(&urls(text)).count(), 0);
-        assert_eq!(compact.linked().next(), Some(4..35));
+        assert_eq!(compact.linked().next(), Some(4..38));
         assert_eq!(compact.original(4), 4);
-        assert_eq!(compact.original(35), 25);
-        assert_eq!(compact.shown_range(4..25), 4..35);
+        assert_eq!(compact.original(38), 25);
+        assert_eq!(compact.shown_range(4..25), 4..38);
     }
 
     #[test]
@@ -252,7 +253,7 @@ mod tests {
         let compact = compact(text);
         assert_eq!(
             compact.text(),
-            "\u{a0}\u{2007}\u{2007}github.com/koshian/cayencha…\u{a0}"
+            "\u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0}"
         );
     }
 
@@ -261,7 +262,7 @@ mod tests {
         let compact = compact("http://example.com/?utm_source=a&utm_medium=b&utm_campaign=c");
         assert_eq!(
             compact.text(),
-            "\u{a0}\u{2007}\u{2007}example.com/?utm_source=a&u…\u{a0}"
+            "\u{a0}\u{2007}\u{2007}\u{202f}example.com/?utm_source=a&u…\u{a0}"
         );
     }
 
@@ -279,7 +280,7 @@ mod tests {
         let compact = compact(text);
         assert_eq!(
             compact.text(),
-            "\u{a0}\u{2007}\u{2007}例え.jp/日本語のパスがとても長いページ/さらに/続…\u{a0}"
+            "\u{a0}\u{2007}\u{2007}\u{202f}例え.jp/日本語のパスがとても長いページ/さらに/続…\u{a0}"
         );
     }
 
@@ -297,7 +298,7 @@ mod tests {
         let url_end = text.find(" now").unwrap();
         assert_eq!(
             compact.text(),
-            "go \u{a0}\u{2007}\u{2007}github.com/koshian/cayencha…\u{a0} now"
+            "go \u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0} now"
         );
         let shown_end = compact.text().find(" now").unwrap();
         // Before and after the URL positions shift; inside they snap to its ends.
@@ -399,7 +400,7 @@ mod decoded_tests {
         let compact = Compact::new(text, &found, true, true);
         assert_eq!(
             compact.text(),
-            "A \u{a0}\u{2007}\u{2007}github.com/koshian/cayencha…\u{a0} C"
+            "A \u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0} C"
         );
         assert_eq!(compact.shortened(&found).count(), 1);
         assert_eq!(compact.decoded(text).count(), 2);
