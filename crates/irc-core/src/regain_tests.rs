@@ -255,6 +255,23 @@ fn a_restore_the_server_did_not_show_is_reported_as_failed() {
 }
 
 #[test]
+fn losing_operator_while_restoring_is_retried_without_another_roster_event() {
+    let start = Instant::now();
+    let judged = start + STABLE + RESTORE_WAIT;
+    let mut regain = restoring("hello", start);
+    // Deopped, alone, during the check.
+    assert!(
+        regain
+            .roster("#a", &users(&["Me_"]), "Me_", false, start + STABLE * 2)
+            .is_empty()
+    );
+    regain.poll(judged, true, |_| Some("ntkl".into()));
+    assert_eq!(regain.next_deadline(), Some(judged + STABLE));
+    let steps = regain.poll(judged + STABLE, true, flags);
+    assert!(steps.contains(&Step::Rejoin("#a".into())));
+}
+
+#[test]
 fn a_topic_that_cannot_be_put_back_keeps_the_channel_as_it_is() {
     let start = Instant::now();
     let mut regain = OpRegain::new(true);

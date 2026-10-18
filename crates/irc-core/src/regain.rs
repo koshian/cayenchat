@@ -465,6 +465,17 @@ impl OpRegain {
                     else {
                         continue;
                     };
+                    // Roster changes during the check were tracked but not
+                    // acted on: if we lost operator status again meanwhile,
+                    // the wait starts now.
+                    if !channel.tried
+                        && channel.alone
+                        && !channel.op
+                        && channel.synced
+                        && channel.in_channel
+                    {
+                        channel.stage = Stage::Settling(now + STABLE);
+                    }
                     let known = flags_of(&channel.name).unwrap_or_default();
                     let modes_failed = flags.chars().any(|letter| !known.contains(letter));
                     let topic_failed = topic.is_some() && !topic_seen;
