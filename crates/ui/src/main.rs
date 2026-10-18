@@ -290,6 +290,7 @@ fn connection_config(
     config.channel_encodings = channel_encodings(profile);
     config.ircv3 = ircv3_options(profile.ircv3);
     config.shared_avatar = shared_peer_avatar(profile);
+    config.peer_avatar_text_mark = profile.peer_avatar_text_mark;
     if let Some(password) = server_password.filter(|value| !value.is_empty()) {
         config.server_password = Some(password.expose().to_owned());
     }
@@ -1891,6 +1892,7 @@ impl ChatWindow {
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
                     config.shared_avatar = shared.clone();
+                    config.peer_avatar_text_mark = profile.peer_avatar_text_mark;
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
                     // The sleep QUIT reads these when the machine sleeps, so

@@ -175,6 +175,10 @@ pub struct ConnectionConfig {
     /// sent at registration carries KVIrc's avatar mark; the URL itself can
     /// change later with [`Connection::share_avatar`].
     pub shared_avatar: Option<String>,
+    /// Whether an ISO-2022-JP connection that shares an avatar starts the
+    /// realname with CayenChat's textual mark (`\x034\x03`), the only mark
+    /// that encoding can carry. Ignored with other encodings.
+    pub peer_avatar_text_mark: bool,
     /// Channels whose log was cut off when the previous connection ended,
     /// with the newest message received before it. With chathistory
     /// negotiated, the first JOIN of each asks only for what came after
@@ -217,6 +221,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("sasl", &self.sasl)
             .field("ircv3", &self.ircv3)
             .field("shared_avatar", &self.shared_avatar)
+            .field("peer_avatar_text_mark", &self.peer_avatar_text_mark)
             .field("resume_history", &self.resume_history.len())
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
@@ -248,6 +253,7 @@ impl ConnectionConfig {
             sasl: None,
             ircv3: Ircv3Options::default(),
             shared_avatar: None,
+            peer_avatar_text_mark: false,
             resume_history: Vec::new(),
             history_targets_since: None,
             channel_encodings: Vec::new(),
@@ -264,10 +270,36 @@ impl ConnectionConfig {
             && peer_avatar::carries_mark(&self.encoding)
     }
 
+    /// Whether registration marks the realname with CayenChat's textual
+    /// mark: ISO-2022-JP, which cannot carry KVIrc's, with peer exchange
+    /// on, a URL shared and the user's choice.
+    pub fn marks_avatar_with_text(&self) -> bool {
+        self.ircv3.peer_avatars
+            && self.shared_avatar.is_some()
+            && self.peer_avatar_text_mark
+            && !peer_avatar::carries_mark(&self.encoding)
+    }
+
+    /// Whether the realname carries any mark for a shared avatar, so a
+    /// change of what is shared needs a reconnect.
+    pub fn marks_avatar(&self) -> bool {
+        self.advertises_avatar() || self.marks_avatar_with_text()
+    }
+
+    pub(crate) fn realname_mark(&self) -> peer_avatar::RealnameMark {
+        if self.advertises_avatar() {
+            peer_avatar::RealnameMark::Kvirc
+        } else if self.marks_avatar_with_text() {
+            peer_avatar::RealnameMark::Text
+        } else {
+            peer_avatar::RealnameMark::None
+        }
+    }
+
     /// The realname as sent in `USER` and `SETNAME`: the configured value
-    /// (or the default), with KVIrc's avatar mark when an avatar is shared.
+    /// (or the default), with the avatar mark when an avatar is shared.
     pub(crate) fn wire_realname(&self) -> String {
-        peer_avatar::realname(base_realname(&self.realname), self.advertises_avatar())
+        peer_avatar::marked_realname(base_realname(&self.realname), self.realname_mark())
     }
 
     /// The `QUIT` reason: the configured message, or the default when blank.
@@ -1518,10 +1550,9 @@ fn validate_outgoing_relayed<'w>(
         )),
         Outgoing::SetName(realname) => IrcMessage::from(IrcCommand::Raw(
             "SETNAME".into(),
-            vec![peer_avatar::realname(
-                base_realname(realname),
-                peer_avatar::carries_mark(encoding.label),
-            )],
+            // The mark depends on the connection and is checked with the
+            // whole command by the worker; this is the lower bound.
+            vec![base_realname(realname).to_owned()],
         )),
         Outgoing::Quit | Outgoing::CheckAlive(_) => return Ok(()),
         Outgoing::QuitWith(reason) | Outgoing::SleepQuit(reason) => {
@@ -1818,6 +1849,8 @@ pub struct Connection {
     /// `None` after [`Connection::take_events`].
     events: Option<Events>,
     encoding: String,
+    /// The mark the realname of this connection starts with.
+    realname_mark: peer_avatar::RealnameMark,
     /// Channels with an encoding of their own for their text.
     charsets: Arc<ChannelCharsets>,
     /// Reason for a `PART` that names none.
@@ -1845,6 +1878,7 @@ impl Connection {
             ensure_tls_crypto_provider()?;
         }
         let encoding = config.encoding.clone();
+        let realname_mark = config.realname_mark();
         let charsets = Arc::new(ChannelCharsets::new(&config.channel_encodings)?);
         let worker_charsets = charsets.clone();
         let part_message = config.wire_part_message();
@@ -1905,6 +1939,7 @@ impl Connection {
             quit,
             events: Some(Events(events)),
             encoding,
+            realname_mark,
             charsets,
             part_message,
             modes_per_line,
@@ -2183,6 +2218,8 @@ impl Connection {
     /// cannot be sent and nothing was queued.
     pub fn set_real_name(&self, realname: &str) -> Result<(), String> {
         check_realname(realname)?;
+        let marked = peer_avatar::marked_realname(base_realname(realname), self.realname_mark);
+        validate_wire(&format!("SETNAME :{marked}\r\n"), &self.encoding)?;
         let outgoing = Outgoing::SetName(realname.to_owned());
         self.submit(outgoing, "realname change")
     }
@@ -2378,7 +2415,7 @@ async fn run_cancellable(
     let auto_join_channels = config.channels.clone();
     let mut irc_config = library_config(&config);
     irc_config.body_charsets = Some(irc::proto::charsets::BodyCharsetsHandle(charsets.clone()));
-    let advertise_avatar = config.advertises_avatar();
+    let realname_mark = config.realname_mark();
     let registration_realname = config.wire_realname();
     let quit_message = config.wire_quit_message();
     let peers = config.ircv3.peer_avatars.then(|| {
@@ -2419,7 +2456,7 @@ async fn run_cancellable(
         diagnostic(
             &events,
             started,
-            if advertise_avatar {
+            if realname_mark != peer_avatar::RealnameMark::None {
                 "Peer avatars (CTCP AVATAR) on; the realname marks a shared avatar."
             } else {
                 "Peer avatars (CTCP AVATAR) on; nothing is shared."
@@ -2553,7 +2590,7 @@ async fn run_cancellable(
         wire_encoding,
         charsets,
         quit_message,
-        advertise_avatar,
+        realname_mark,
         auto_join_channels,
         targets_since,
         track_accounts: config.ircv3.accounts,
@@ -2712,8 +2749,8 @@ struct Worker {
     /// The channels with an encoding of their own for their text.
     charsets: Arc<ChannelCharsets>,
     quit_message: String,
-    // The avatar mark is fixed for the connection, also for SETNAME.
-    advertise_avatar: bool,
+    // The realname mark is fixed for the connection, also for SETNAME.
+    realname_mark: peer_avatar::RealnameMark,
     auto_join_channels: Vec<String>,
     targets_since: Option<SystemTime>,
     track_accounts: bool,
@@ -3207,9 +3244,9 @@ impl Worker {
         } else {
             let message = IrcMessage::from(IrcCommand::Raw(
                 "SETNAME".into(),
-                vec![peer_avatar::realname(
+                vec![peer_avatar::marked_realname(
                     base_realname(&realname),
-                    self.advertise_avatar,
+                    self.realname_mark,
                 )],
             ));
             let line = self.transcript.line(&message);

@@ -48,7 +48,9 @@
 //! with the shared URL, rate-limited per user and in total. Channel queries
 //! are not answered, and nothing is answered while nothing is shared. The
 //! realname mark is decided at registration by the caller
-//! ([`realname`]); the shared URL can change while connected.
+//! ([`marked_realname`]): KVIrc's, or on ISO-2022-JP, only if the user
+//! chose it, CayenChat's textual one; the shared URL can change while
+//! connected.
 //!
 //! A user who queried us is remembered (bounded, only while they share a
 //! channel with us; gone on QUIT or leaving, followed on NICK). When the
@@ -126,9 +128,33 @@ pub(crate) fn carries_mark(encoding: &str) -> bool {
 /// CayenChat's own mark, recognized when receiving only: the text
 /// `\x03<digit>\x03` (nine printable ASCII characters, not control
 /// characters) at the start of a realname. It survives every encoding and
-/// Tiarra; we never add it, a user who wants it types it into the realname.
+/// Tiarra. We add it only to an ISO-2022-JP connection whose user chose to
+/// (D057); anyone may also type it into the realname.
 const TEXT_MARK_PREFIX: &str = "\\x03";
 const TEXT_MARK_SUFFIX: &str = "\\x03";
+
+/// Which mark the realname sent in `USER` and `SETNAME` starts with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RealnameMark {
+    None,
+    /// KVIrc's ETX, digit and SI.
+    Kvirc,
+    /// The nine printable characters `\x034\x03`.
+    Text,
+}
+
+/// `base` with `mark` in front. The textual mark replaces one the user
+/// already typed, so it is never doubled.
+pub(crate) fn marked_realname(base: &str, mark: RealnameMark) -> String {
+    match mark {
+        RealnameMark::None => base.to_owned(),
+        RealnameMark::Kvirc => realname(base, true),
+        RealnameMark::Text => format!(
+            "{TEXT_MARK_PREFIX}{AVATAR_BIT}{TEXT_MARK_SUFFIX}{}",
+            without_mark(base)
+        ),
+    }
+}
 
 /// The digit of the textual mark at the start of `realname`, and the
 /// length of the mark.

@@ -776,6 +776,12 @@ pub struct ServerProfile {
     /// change; files without it read as empty.
     #[serde(default)]
     pub peer_avatar_url: String,
+    /// With ISO-2022-JP and a shared `peer_avatar_url`, start the realname
+    /// with CayenChat's textual mark `\x034\x03` (D057). Off unless the
+    /// user chooses; added without a version change, so files without it
+    /// read as off.
+    #[serde(default)]
+    pub peer_avatar_text_mark: bool,
     /// Channels whose text uses another encoding than `encoding`, set with
     /// `/charset` only (there is no settings page for it). A side that is
     /// not set follows `encoding`. Added without a version change; files
@@ -824,6 +830,7 @@ impl ServerProfile {
             ircv3: Ircv3Preferences::default(),
             avatar_url: String::new(),
             peer_avatar_url: String::new(),
+            peer_avatar_text_mark: false,
             channel_charsets: Vec::new(),
             legacy_server_password: None,
             legacy_sasl_password: None,
@@ -2860,6 +2867,8 @@ mod tests {
         // Per server, and separate from the draft.
         settings.servers[0].ircv3.peer_avatars = true;
         settings.servers[0].peer_avatar_url = "https://example.com/me.png".into();
+        assert!(!settings.servers[0].peer_avatar_text_mark);
+        settings.servers[0].peer_avatar_text_mark = true;
         settings.servers[0].avatar_url = "https://example.com/draft.png".into();
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
@@ -2872,6 +2881,10 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("peer_avatar_url");
+        old["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("peer_avatar_text_mark");
         old["servers"][0]["ircv3"]
             .as_object_mut()
             .unwrap()
@@ -2880,6 +2893,7 @@ mod tests {
         let loaded = load_from(&path).unwrap().unwrap();
         assert!(!loaded.servers[0].ircv3.peer_avatars);
         assert_eq!(loaded.servers[0].peer_avatar_url, "");
+        assert!(!loaded.servers[0].peer_avatar_text_mark);
         assert_eq!(
             loaded.servers[0].avatar_url,
             "https://example.com/draft.png"

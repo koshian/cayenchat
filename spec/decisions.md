@@ -1015,16 +1015,17 @@ What CayenChat does:
   U+FFFD and sends `&#65533;`), so a mark may arrive broken or a leading
   `4` may show. (1) On connections in ISO-2022-JP CayenChat does not add
   KVIrc's mark (`ConnectionConfig::advertises_avatar` is false, for `USER`
-  and `SETNAME`); the shared URL is still answered to queries, and the
+  and `SETNAME`) unless the user turns on the textual mark of D057; the shared
+  URL is still answered to queries, and the
   "reconnect" hint follows the same rule. (2) When receiving, a realname
   that starts with the 9 printable ASCII characters `\x03<digit>\x03`
   (backslash, `x`, `0`, `3`, a digit, backslash, `x`, `0`, `3`; not
   control characters; exact case) with the fours place set in the digit
   (4–7) also counts as "has an avatar", in addition to KVIrc's mark.
   `without_mark` strips either, so CayenChat's own WHOIS and `SETNAME`
-  displays do not show it. It is receiving only: CayenChat never adds it;
-  a user who wants it types it at the start of the real name (Tiarra:
-  `name: \x034\x03Name`). Other clients show the characters, and KVIrc
+  displays do not show it. Sending it is the opt-in switch of D057;
+  otherwise a user who wants it types it at the start of the real name
+  (Tiarra: `name: \x034\x03Name`). Other clients show the characters, and KVIrc
   does not recognize it; this is a CayenChat-only convention and
   accepted. A realname that happens to start with it costs one query,
   within the existing probe bounds. (3) Discovery by speaking or WHOIS is
@@ -1273,6 +1274,31 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D057 — Optional textual mark in the realname on ISO-2022-JP (#490)
+
+**Status:** Accepted
+
+- Refines the "ISO-2022-JP and the textual mark" paragraph of D025, whose
+  "CayenChat never adds it" now holds only while this switch is off.
+- Per server, `peer_avatar_text_mark` (default off; files without it read as
+  off), shown on the IRCv3 tab only when the server's encoding is
+  ISO-2022-JP and peer avatars are on. With ISO-2022-JP, peer avatars on, a
+  shared URL and the switch on, `USER` and `SETNAME` start the realname with
+  `\x034\x03` (`ConnectionConfig::marks_avatar_with_text`). A mark the user
+  typed is replaced, never doubled. Other encodings keep KVIrc's mark and
+  ignore the switch. Receiving is unchanged.
+- Off by default and chosen by the user, because: the mark is plain text, so
+  everyone on the network using irssi, LimeChat or another client sees the
+  nine characters in WHOIS; only CayenChat reads it (KVIrc does not); it
+  spends 9 characters of the realname limit; IRCnet has no SETNAME, so it
+  applies from the next connection.
+- Through a bouncer the switch has no effect, because the bouncer sends its
+  own configured realname in `USER`: write the mark into the bouncer's
+  realname for that network (Tiarra `name:` in the network block; soju
+  `network update <network> -realname '\x034\x03Name'`).
+- The "reconnect" hint compares the connection's mark (KVIrc's or textual,
+  `ConnectionConfig::marks_avatar`) with what the settings now give.
 
 ## D056 — Regain operator status whenever alone without it (#478)
 

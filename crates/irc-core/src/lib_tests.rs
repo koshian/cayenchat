@@ -358,6 +358,7 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
@@ -383,6 +384,7 @@ fn member_modes_are_split_to_the_announced_limit_and_validated_first() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(2)),
@@ -424,6 +426,7 @@ fn member_modes_are_not_sent_in_part_when_the_queue_is_nearly_full() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(1)),
@@ -455,6 +458,7 @@ fn taken_events_can_be_awaited_until_the_worker_ends() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
@@ -4927,6 +4931,66 @@ fn setname_changes_the_realname_and_the_server_confirms_it() {
     );
     connection.disconnect().unwrap();
     assert_eq!(server.join().unwrap(), "USER alice 0 * \u{3}4\u{f}Alice");
+}
+
+#[test]
+fn the_textual_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold() {
+    let mut config = plain_config(6667, Ircv3Options::default());
+    config.realname = "Alice".into();
+    config.encoding = "ISO-2022-JP".into();
+    config.ircv3.peer_avatars = true;
+    config.shared_avatar = Some("https://example.com/a.png".into());
+    config.peer_avatar_text_mark = true;
+    assert_eq!(config.wire_realname(), "\\x034\\x03Alice");
+    assert!(config.marks_avatar_with_text() && config.marks_avatar());
+    assert!(!config.advertises_avatar());
+    assert!(config.validate().is_ok());
+    // Each condition missing leaves the realname as it was.
+    let mut off = config.clone();
+    off.peer_avatar_text_mark = false;
+    assert_eq!(off.wire_realname(), "Alice");
+    assert!(!off.marks_avatar());
+    let mut off = config.clone();
+    off.ircv3.peer_avatars = false;
+    assert_eq!(off.wire_realname(), "Alice");
+    let mut off = config.clone();
+    off.shared_avatar = None;
+    assert_eq!(off.wire_realname(), "Alice");
+    // Typed by the user already: not doubled.
+    config.realname = "\\x034\\x03Alice".into();
+    assert_eq!(config.wire_realname(), "\\x034\\x03Alice");
+    // Other encodings keep KVIrc's mark and ignore the switch.
+    config.realname = "Alice".into();
+    config.encoding = "UTF-8".into();
+    assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
+    assert!(!config.marks_avatar_with_text());
+    config.peer_avatar_text_mark = false;
+    assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
+}
+
+#[test]
+fn setname_on_iso_2022_jp_follows_the_textual_mark_of_the_connection() {
+    let (port, server) = setname_server("server-time setname", |send, lines| {
+        assert_eq!(read_client_line(lines), "SETNAME \\x034\\x03Bob");
+        send(":alice!u@h SETNAME :\\x034\\x03Bob\r\n");
+        let _ = read_client_line(lines);
+    });
+    let mut config = plain_config(port, setname_options());
+    config.realname = "Alice".into();
+    config.encoding = "ISO-2022-JP".into();
+    config.ircv3.peer_avatars = true;
+    config.shared_avatar = Some("https://example.com/a.png".into());
+    config.peer_avatar_text_mark = true;
+    let mut connection = Connection::connect(config).unwrap();
+    wait_for(&mut connection, |event| {
+        matches!(event, Event::Registered { .. })
+    });
+    connection.set_real_name("Bob").unwrap();
+    wait_for(&mut connection, |event| {
+        matches!(event, Event::RealNameChanged { .. })
+    });
+    connection.disconnect().unwrap();
+    assert_eq!(server.join().unwrap(), "USER alice 0 * \\x034\\x03Alice");
 }
 
 #[test]

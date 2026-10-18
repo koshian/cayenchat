@@ -35,7 +35,7 @@ Add a server in the settings window that opens at startup (`Cmd+,` / `Ctrl+,`), 
 
 ## Tips
 
-- **Avatars through Tiarra, or on ISO-2022-JP servers (peer avatars).** KVIrc's mark for "has an avatar" cannot survive ISO-2022-JP, so CayenChat does not add it there. Write the text `\x034\x03` (nine ASCII characters, not control characters) at the very start of the real name instead, and CayenChat clients that see it ask you for your avatar; they do not show it. With Tiarra, put it in `name:`, for example `name: \x034\x03Your usual name`. Other clients show the text as it is, and KVIrc does not recognize it. See [D025](spec/decisions.md).
+- **Avatars through Tiarra, or on ISO-2022-JP servers (peer avatars).** KVIrc's mark for "has an avatar" cannot survive ISO-2022-JP, so CayenChat does not add it there by default. Instead, turn on "Start the real name with CayenChat's mark" in the IRCv3 tab (shown for ISO-2022-JP servers with peer avatars on; applies from the next connection), or write the text `\x034\x03` (nine ASCII characters, not control characters) at the very start of the real name yourself, and CayenChat clients that see it ask you for your avatar; they do not show it. Through a bouncer the switch has no effect: write the text into the bouncer's real name for that network (Tiarra: `name:` in the network block, for example `name: \x034\x03Your usual name`; soju: `network update <network> -realname '\x034\x03Your usual name'`). Other clients show the text as it is, and KVIrc does not recognize it. See [D025](spec/decisions.md).
 
 ## Conversation logs
 

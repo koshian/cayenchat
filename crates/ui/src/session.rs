@@ -120,7 +120,7 @@ impl ServerSession {
         self.metadata_requested = config.ircv3.metadata;
         self.peer_avatars = PeerAvatarConnection {
             enabled: config.ircv3.peer_avatars,
-            advertised: config.advertises_avatar(),
+            advertised: config.marks_avatar(),
             answering: config
                 .shared_avatar
                 .clone()

@@ -1111,6 +1111,10 @@ only while it is on:
   URL) together with the option makes the `USER` realname
   `\x034\x0fCayenChat` (KVIrc's avatar mark,
   `ConnectionConfig::advertises_avatar`); otherwise it stays `CayenChat`.
+  On ISO-2022-JP, which cannot carry that mark, the per-server
+  `peer_avatar_text_mark` switch (off by default, D057) makes it
+  `\x034\x03CayenChat` instead (`marks_avatar_with_text`); `SETNAME` follows
+  the same mark, fixed per connection.
   `Connection::share_avatar(Some | None)` changes only the URL answered,
   not the realname.
 - A private `\x01AVATAR\x01` PRIVMSG from a user is answered with
