@@ -2039,7 +2039,7 @@ Sender names are not searched.
 single row across the full content width above both columns (under the menu bar and toolbar), so the log is pushed down, not
 covered, and keeps its scroll position (the log list is bottom-anchored). It
 slides in over 120 ms. Ctrl+F (Cmd+F on macOS) or the toolbar's magnifier call
-the same `open_search`; with the bar open they focus the field. On Linux with
+the same `open_search`; with the bar open the shortcuts focus the field, while the magnifier closes the bar (`toggle_search`, #487). On Linux with
 the Emacs key theme Ctrl+F stays "cursor right" in text inputs: a binding
 without a context outranks the input's, so under that theme the bar opens with
 F3 instead (`themed_bindings`). The field is
