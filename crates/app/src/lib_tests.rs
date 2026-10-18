@@ -1341,14 +1341,26 @@ fn notices_are_visible_without_marking_a_channel_unread() {
     let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let network = NetworkId(1);
     let id = state.channel_id(network, "#b").unwrap();
-    state.append_channel_message(network, "#b", "bob", "me: deploy",
-                                 Kind::Notice, Provenance::Live);
+    state.append_channel_message(
+        network,
+        "#b",
+        "bob",
+        "me: deploy",
+        Kind::Notice,
+        Provenance::Live,
+    );
     assert!(!state.is_unread(id));
     let message = state.conversation(id).unwrap().messages.last().unwrap();
     assert!(message.notice && message.text == "[NOTICE] me: deploy");
     assert!(message.highlights.is_empty());
-    state.append_channel_message(network, "#b", "bob", "hello",
-                                 Kind::Message, Provenance::Live);
+    state.append_channel_message(
+        network,
+        "#b",
+        "bob",
+        "hello",
+        Kind::Message,
+        Provenance::Live,
+    );
     assert!(state.is_unread(id));
 }
 
