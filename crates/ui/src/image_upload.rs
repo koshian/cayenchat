@@ -234,8 +234,8 @@ impl ChatWindow {
             let _ = this.update_in(cx, |this, window, cx| match read {
                 Ok(attachment) => this.accept_attachment(attachment, target, window, cx),
                 Err(error) => {
-                    this.feedback = Some(error.text(&this.i18n));
-                    cx.notify();
+                    let detail = error.text(&this.i18n);
+                    this.show_upload_notice("upload_problem_title", &detail, window, cx);
                 }
             });
         }));
@@ -256,8 +256,7 @@ impl ChatWindow {
         let (attachment, readiness, uploader) = match checked {
             Ok(checked) => checked,
             Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
+                self.show_upload_notice("upload_problem_title", &error, window, cx);
                 return;
             }
         };
@@ -298,8 +297,8 @@ impl ChatWindow {
             Offer::Configure => self.prompt_configure_upload(window, cx),
             Offer::Reconnect { provider } => self.prompt_reconnect_upload(&provider, window, cx),
             Offer::Busy => {
-                self.feedback = Some(self.i18n.text("upload_busy"));
-                cx.notify();
+                let detail = self.i18n.text("upload_busy");
+                self.show_upload_notice("upload_problem_title", &detail, window, cx);
             }
         }
     }
@@ -310,8 +309,7 @@ impl ChatWindow {
     pub(crate) fn toolbar_upload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.uploader(cx) {
             Err(error) => {
-                self.feedback = Some(error);
-                cx.notify();
+                self.show_upload_notice("upload_problem_title", &error, window, cx);
                 return;
             }
             Ok((UploaderReadiness::NotConfigured, _)) => {
@@ -450,23 +448,47 @@ impl ChatWindow {
                 );
             }
             Completion::Failed { provider, failure } => {
-                self.feedback = Some(upload_failure_text(&provider, failure, &self.i18n));
+                let detail = upload_failure_text(&provider, failure, &self.i18n);
+                self.show_upload_notice("upload_failed_title", &detail, window, cx);
             }
             Completion::Ignored => {}
         }
         cx.notify();
     }
 
-    pub(crate) fn cancel_upload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn cancel_upload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(provider) = self.attachments.uploading().map(str::to_owned)
             && self.attachments.cancel_upload()
         {
-            self.feedback = Some(
-                self.i18n
-                    .format("upload_cancelled", &[("provider", &provider)]),
-            );
-            cx.notify();
+            let detail = self
+                .i18n
+                .format("upload_cancelled", &[("provider", &provider)]);
+            self.show_upload_notice("upload_cancelled_title", &detail, window, cx);
         }
+    }
+
+    /// Reports an upload problem in a dialog. It stays until the user closes
+    /// it and takes no room from the draft row; closing it changes nothing.
+    fn show_upload_notice(
+        &mut self,
+        title: &str,
+        detail: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.feedback = None;
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &self.i18n.text(title),
+            Some(detail),
+            &[PromptButton::ok(self.i18n.text("upload_failed_close"))],
+            cx,
+        );
+        cx.spawn(async move |_, _| {
+            let _ = answer.await;
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Progress text while an upload runs.
@@ -639,8 +661,15 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(fake.calls(), 1);
         assert_eq!(draft(&input, cx), "draft");
-        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone()).unwrap();
-        assert!(feedback.contains("offline"), "{feedback}");
+        let (title, detail) = cx.pending_prompt().expect("failure dialog");
+        assert!(title.contains("failed"), "{title}");
+        assert!(detail.contains("offline"), "{detail}");
+        cx.simulate_prompt_answer("Close");
+        cx.run_until_parked();
+        assert!(cx.pending_prompt().is_none());
+        assert_eq!(draft(&input, cx), "draft");
+        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        assert!(feedback.is_none(), "{feedback:?}");
     }
 
     #[gpui::test]
@@ -706,10 +735,43 @@ mod tests {
         )));
         cx.dispatch_action(crate::input::Paste);
         cx.run_until_parked();
+        let (_, detail) = cx.pending_prompt().expect("size dialog");
+        assert!(detail.contains("64 B"), "{detail}");
+        assert_eq!(fake.calls(), 0);
+        cx.simulate_prompt_answer("Close");
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        assert!(feedback.is_none(), "{feedback:?}");
+    }
+
+    #[gpui::test]
+    fn cancelling_an_upload_is_reported_in_a_dialog(cx: &mut TestAppContext) {
+        let fake = Arc::new(FakeUploader::succeeding(URL));
+        let (chat, input, _, cx) = open_chat(cx, Some(fake.clone()), None);
+        cx.simulate_input("draft");
+        cx.write_to_clipboard(image_clipboard());
+        cx.dispatch_action(crate::input::Paste);
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Upload");
+        // Background work runs inline in tests, so a real upload would end
+        // at once. Enter the uploading phase by hand instead and cancel in it;
+        // the answered confirmation then finds nothing left to start.
+        let job = chat.update(cx, |chat, _| chat.attachments.confirm());
+        assert!(job.is_some(), "the confirmed upload must be running");
+        assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_some()));
+        chat.update_in(cx, |chat, window, cx| chat.cancel_upload(window, cx));
+        let (title, detail) = cx.pending_prompt().expect("cancellation dialog");
+        assert!(title.contains("cancelled"), "{title}");
+        assert!(detail.contains("Fake Host"), "{detail}");
+        cx.simulate_prompt_answer("Close");
+        cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
         assert_eq!(fake.calls(), 0);
-        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone()).unwrap();
-        assert!(feedback.contains("64 B"), "{feedback}");
+        assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_none()));
+        assert_eq!(draft(&input, cx), "draft");
+        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        assert!(feedback.is_none(), "{feedback:?}");
     }
 
     #[test]
@@ -812,7 +874,10 @@ mod tests {
             chat.drop_paths(std::slice::from_ref(&text), None, window, cx)
         });
         cx.run_until_parked();
-        assert!(!cx.has_pending_prompt(), "non-images are refused");
+        let (_, detail) = cx.pending_prompt().expect("non-images are refused");
+        assert!(detail.contains("Only PNG"), "{detail}");
+        cx.simulate_prompt_answer("Close");
+        cx.run_until_parked();
         chat.update_in(cx, |chat, window, cx| {
             chat.drop_paths(std::slice::from_ref(&image), None, window, cx)
         });

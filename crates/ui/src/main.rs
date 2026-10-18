@@ -5581,7 +5581,9 @@ fn styled_log_text(
 /// index belongs to the end of the previous row while the room itself starts
 /// the next one; the index just past the room is then on another row.
 fn link_icon_origin(layout: &TextLayout, start: usize) -> Option<Point<Pixels>> {
-    let position = layout.position_for_index(start)?;
+    // The icon sits after the leading pad and before the gap.
+    let icon = start + compact_urls::LEAD.len();
+    let position = layout.position_for_index(icon)?;
     match layout.position_for_index(start + compact_urls::ICON.len()) {
         Some(after) if after.y > position.y => Some(point(layout.bounds().origin.x, after.y)),
         _ => Some(position),
@@ -6442,7 +6444,9 @@ impl ChatWindow {
                                 .border_color(border)
                                 .cursor_pointer()
                                 .child(self.i18n.text("upload_cancel"))
-                                .on_click(cx.listener(|this, _, _, cx| this.cancel_upload(cx))),
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_upload(window, cx)
+                                })),
                         ),
                 )
             })
