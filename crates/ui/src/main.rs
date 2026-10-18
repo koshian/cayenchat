@@ -583,6 +583,8 @@ struct ChatWindow {
     tree_rows: Vec<TreeRow>,
     // The selection the tree last scrolled to; a different one is revealed.
     tree_revealed: Option<Selection>,
+    // The reveal waits for the rows up to the selection to be laid out.
+    tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
@@ -1111,6 +1113,7 @@ impl ChatWindow {
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
             tree_revealed: None,
+            tree_reveal_pending: false,
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
@@ -5924,13 +5927,21 @@ impl ChatWindow {
         // its row into view once, by the row order just built; scrolling the
         // tree by hand later is left alone.
         let selection = self.state.selection();
-        if self.tree_revealed != Some(selection) {
+        let changed = self.tree_revealed != Some(selection);
+        if changed || self.tree_reveal_pending {
             self.tree_revealed = Some(selection);
-            if let Some(at) = self.tree_rows.iter().position(|row| match *row {
+            let at = self.tree_rows.iter().position(|row| match *row {
                 TreeRow::Server(id) => selection == Selection::Server(id),
                 TreeRow::Channel(id) => selection == Selection::Channel(id),
-            }) {
-                self.tree_list.state.scroll_to_reveal_item(at);
+            });
+            self.tree_reveal_pending = false;
+            if let Some(at) = at {
+                // Rows far from the viewport are not laid out yet; the list
+                // then needs further passes, each after a layout.
+                if self.tree_list.reveal(at) {
+                    self.tree_reveal_pending = true;
+                    cx.notify();
+                }
             }
         }
         let appearance = &self.appearance;
@@ -9051,3 +9062,7 @@ mod channel_key_tests;
 #[cfg(test)]
 #[path = "main_tests/part_dialog_tests.rs"]
 mod part_dialog_tests;
+
+#[cfg(test)]
+#[path = "main_tests/tree_reveal_tests.rs"]
+mod tree_reveal_tests;
