@@ -425,7 +425,7 @@ impl SettingsWindow {
         let whole = editor.close_up.is_none() && crop == editor.source.initial_crop();
         Some(
             div()
-                .ml(px(158.))
+                .ml(settings_theme::LABEL_INDENT)
                 .flex()
                 .flex_col()
                 .gap_2()

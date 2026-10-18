@@ -76,7 +76,7 @@ impl SettingsWindow {
                     .gap_2()
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(settings_theme::LABEL_WIDTH)
                             .flex_shrink_0()
                             .child(self.i18n.text("language")),
                     )
@@ -84,7 +84,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("language_hint")),
             )
@@ -93,7 +93,7 @@ impl SettingsWindow {
                 d.child(
                     div()
                         .id("always-on-top")
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .flex()
                         .gap_2()
                         .cursor_pointer()
@@ -113,7 +113,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("restore-window-layout")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -132,7 +132,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("confirm-quit")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -151,7 +151,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("shorten-amazon-urls")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -169,7 +169,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("shorten_amazon_urls_hint")),
             )
@@ -178,7 +178,7 @@ impl SettingsWindow {
                 d.child(
                     div()
                         .id("menu-bar-auto-hide")
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .flex()
                         .gap_2()
                         .cursor_pointer()
@@ -208,7 +208,7 @@ impl SettingsWindow {
                 ))
                 .child(
                     div()
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.text_secondary)
                         .child(self.i18n.text("linux_display_hint")),
                 )
@@ -216,7 +216,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("image-previews")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -234,14 +234,14 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("image_previews_hint")),
             )
             .child(
                 div()
                     .id("reiwa-mode")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -260,7 +260,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("compact-urls")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -278,14 +278,14 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("compact_urls_hint")),
             )
             .child(
                 div()
                     .id("decode-char-refs")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -303,7 +303,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("decode_char_refs_hint")),
             )
