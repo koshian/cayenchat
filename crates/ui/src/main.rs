@@ -5591,6 +5591,48 @@ fn styled_log_text(
     StyledText::new(format!("{prefix}{text}")).with_highlights(highlights)
 }
 
+/// Where the room kept at byte `start` is painted. At a wrap boundary the
+/// index belongs to the end of the previous row while the room itself starts
+/// the next one; the index just past the room is then on another row.
+fn link_icon_origin(layout: &TextLayout, start: usize) -> Option<Point<Pixels>> {
+    let position = layout.position_for_index(start)?;
+    match layout.position_for_index(start + compact_urls::ICON.len()) {
+        Some(after) if after.y > position.y => Some(point(layout.bounds().origin.x, after.y)),
+        _ => Some(position),
+    }
+}
+
+/// The zero-size canvas that paints the link icon over the room
+/// ([`compact_urls::ICON`]) kept at the start of each drawn URL. `starts` are
+/// byte offsets into the laid-out text (prefix included); the layout is only
+/// valid once the text is painted, so the canvas goes after it.
+fn link_icons(layout: TextLayout, starts: Vec<usize>, color: Rgba) -> Canvas<()> {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, cx| {
+            let line = layout.line_height();
+            let size = line * 0.65;
+            for start in &starts {
+                if let Some(position) = link_icon_origin(&layout, *start) {
+                    let bounds = Bounds::new(
+                        point(position.x, position.y + (line - size) / 2.),
+                        gpui::size(size, size),
+                    );
+                    let _ = window.paint_svg(
+                        bounds,
+                        "icons/ui/link.svg".into(),
+                        TransformationMatrix::unit(),
+                        color.into(),
+                        cx,
+                    );
+                }
+            }
+        },
+    )
+    .absolute()
+    .size_0()
+}
+
 /// The background of a search match: yellow, orange on the line the search
 /// stands on. Translucent, so the text stays readable in light and dark.
 fn search_match_color(current: bool) -> Rgba {
@@ -7613,7 +7655,7 @@ impl ChatWindow {
             .map(|(range, original)| (range, SharedString::from(original.to_owned())))
             .collect();
         let urls = compact.shown_urls(urls);
-        let chips: Vec<_> = full_urls.iter().map(|(range, _)| range.clone()).collect();
+        let chips: Vec<_> = compact.linked().collect();
         let decoded: Vec<_> = originals.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection
@@ -7662,6 +7704,13 @@ impl ChatWindow {
             layout.clone(),
             first_found_start.map(|start| start + prefix_len),
         );
+        let icons = (!chips.is_empty()).then(|| {
+            link_icons(
+                layout.clone(),
+                chips.iter().map(|chip| chip.start + prefix_len).collect(),
+                style.theme.panes.log_link,
+            )
+        });
         let down_layout = layout.clone();
         let move_layout = layout.clone();
         let click_layout = layout;
@@ -7793,6 +7842,7 @@ impl ChatWindow {
                     CursorStyle::IBeam
                 })
                 .child(styled)
+                .children(icons)
                 .children(probe)
                 .on_mouse_down(
                     MouseButton::Left,
@@ -7979,11 +8029,15 @@ impl ChatWindow {
             .iter()
             .map(|range| compact.shown_range(range.clone()))
             .collect();
+        // Drawn like the channel log's links, but never clickable.
+        let chips: Vec<_> = compact.linked().collect();
+        let urls = compact.shown_urls(message.links.as_slice());
+        let urls = if style.compact_urls { urls } else { Vec::new() };
         let styled = styled_log_text(
             &prefix,
             compact.text(),
-            &[],
-            &[],
+            &urls,
+            &chips,
             &decoded,
             &highlights,
             &[],
@@ -7991,6 +8045,13 @@ impl ChatWindow {
             None,
             &style.theme,
         );
+        let icons = (!chips.is_empty()).then(|| {
+            link_icons(
+                styled.layout().clone(),
+                chips.iter().map(|chip| chip.start + prefix.len()).collect(),
+                style.theme.panes.log_link,
+            )
+        });
         div()
             .id(("sub-message", row))
             .w_full()
@@ -8012,7 +8073,8 @@ impl ChatWindow {
                     .when(message.activity, |d| d.text_color(style.event_color))
                     .when(message.alert, |d| d.text_color(theme.warning))
                     .when(message.notice, |d| d.text_color(style.notice_color))
-                    .child(styled),
+                    .child(styled)
+                    .children(icons),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // A single click is too easy to hit while reading the combined log.
@@ -8846,6 +8908,10 @@ fn main() {
 #[cfg(test)]
 #[path = "main_tests/combined_log_tests.rs"]
 mod combined_log_tests;
+
+#[cfg(test)]
+#[path = "main_tests/link_icon_tests.rs"]
+mod link_icon_tests;
 
 #[cfg(test)]
 #[path = "main_tests/roster_batch_tests.rs"]

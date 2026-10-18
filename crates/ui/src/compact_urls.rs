@@ -14,15 +14,18 @@ use std::ops::Range;
 /// host is never cut, so a long host can exceed it.
 const LIMIT: usize = 28;
 
-/// Marks a shortened URL as a link, drawn before its label.
-const ICON: &str = "↗ ";
+/// Room kept before every URL for the link icon. The log paints the icon
+/// (`icons/ui/link.svg`) over this em space; it is never copied.
+pub(crate) const ICON: &str = "\u{2003}";
 
 /// Text the log shows in place of the original.
 struct Span {
     original: Range<usize>,
     shown: Range<usize>,
-    /// Characters of decoded character references, as opposed to a short URL.
+    /// Characters of decoded character references, as opposed to a URL.
     decoded: bool,
+    /// A URL whose label leaves out part of it.
+    cut: bool,
 }
 
 /// A message's text as drawn, with the URLs found in it.
@@ -31,22 +34,22 @@ pub(crate) struct Compact {
     spans: Vec<Span>,
 }
 
-/// The label for `url`, a URL as written in the text, when it is long enough
-/// to shorten: no scheme, the whole host, then as much of the rest as fits,
-/// ended with an ellipsis.
-fn label(url: &str) -> Option<String> {
+/// The label for `url`, a URL as written in the text, and whether it is cut.
+/// A long URL loses its scheme and shows the whole host, then as much of the
+/// rest as fits, ended with an ellipsis; a short one is kept as written.
+fn label(url: &str) -> (String, bool) {
     let bare = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     if bare.chars().count() <= LIMIT {
-        return None;
+        return (format!("{ICON}{url}"), false);
     }
     let host_end = bare.find(['/', '?', '#']).unwrap_or(bare.len());
     let (host, rest) = bare.split_at(host_end);
     let room = LIMIT.saturating_sub(host.chars().count() + 1);
     let kept: String = rest.chars().take(room).collect();
-    Some(format!("{ICON}{host}{kept}…"))
+    (format!("{ICON}{host}{kept}…"), true)
 }
 
 impl Compact {
@@ -59,24 +62,26 @@ impl Compact {
         shorten: bool,
         decode: bool,
     ) -> Self {
-        let mut replacements: Vec<(Range<usize>, String, bool)> = Vec::new();
+        // (original range, shown text, decoded reference, cut URL)
+        let mut replacements: Vec<(Range<usize>, String, bool, bool)> = Vec::new();
         if shorten {
-            replacements.extend(urls.iter().filter_map(|(range, _)| {
-                Some((range.clone(), label(&text[range.clone()])?, false))
+            replacements.extend(urls.iter().map(|(range, _)| {
+                let (label, cut) = label(&text[range.clone()]);
+                (range.clone(), label, false, cut)
             }));
         }
         if decode {
             replacements.extend(
                 crate::char_refs::find(text, urls)
                     .into_iter()
-                    .map(|(range, shown)| (range, shown, true)),
+                    .map(|(range, shown)| (range, shown, true, false)),
             );
             replacements.sort_by_key(|(range, ..)| range.start);
         }
         let mut shown = String::new();
         let mut spans = Vec::new();
         let mut cursor = 0;
-        for (range, label, decoded) in replacements {
+        for (range, label, decoded, cut) in replacements {
             shown.push_str(&text[cursor..range.start]);
             let start = shown.len();
             shown.push_str(&label);
@@ -84,6 +89,7 @@ impl Compact {
                 original: range.clone(),
                 shown: start..shown.len(),
                 decoded,
+                cut,
             });
             cursor = range.end;
         }
@@ -180,6 +186,14 @@ impl Compact {
             .collect()
     }
 
+    /// Where every URL is drawn with its icon, shortened or not.
+    pub(crate) fn linked(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.spans
+            .iter()
+            .filter(|span| !span.decoded)
+            .map(|span| span.shown.clone())
+    }
+
     /// The full URLs whose short form is drawn, with where.
     pub(crate) fn shortened<'a>(
         &'a self,
@@ -187,7 +201,7 @@ impl Compact {
     ) -> impl Iterator<Item = (Range<usize>, &'a str)> + 'a {
         self.spans
             .iter()
-            .filter(|span| !span.decoded)
+            .filter(|span| !span.decoded && span.cut)
             .filter_map(|span| {
                 urls.iter()
                     .find(|(range, _)| *range == span.original)
@@ -209,24 +223,29 @@ mod tests {
     }
 
     #[test]
-    fn short_urls_stay_as_written() {
+    fn short_urls_are_kept_whole_with_an_icon() {
         let text = "see https://example.com/a now";
         let compact = compact(text);
-        assert_eq!(compact.text(), text);
+        // Not cut, but marked like the long ones.
+        assert_eq!(compact.text(), "see \u{2003}https://example.com/a now");
         assert_eq!(compact.shortened(&urls(text)).count(), 0);
+        assert_eq!(compact.linked().next(), Some(4..28));
+        assert_eq!(compact.original(4), 4);
+        assert_eq!(compact.original(28), 25);
+        assert_eq!(compact.shown_range(4..25), 4..28);
     }
 
     #[test]
     fn a_long_path_is_cut_after_the_host() {
         let text = "https://github.com/koshian/cayenchat/issues/151";
         let compact = compact(text);
-        assert_eq!(compact.text(), "↗ github.com/koshian/cayencha…");
+        assert_eq!(compact.text(), "\u{2003}github.com/koshian/cayencha…");
     }
 
     #[test]
     fn a_long_query_is_cut_too() {
         let compact = compact("http://example.com/?utm_source=a&utm_medium=b&utm_campaign=c");
-        assert_eq!(compact.text(), "↗ example.com/?utm_source=a&u…");
+        assert_eq!(compact.text(), "\u{2003}example.com/?utm_source=a&u…");
     }
 
     #[test]
@@ -234,7 +253,7 @@ mod tests {
         let host = "very-long-subdomain.another-long-label.example.org";
         let text = format!("https://{host}/path/to/page");
         let compact = compact(&text);
-        assert_eq!(compact.text(), format!("↗ {host}…"));
+        assert_eq!(compact.text(), format!("\u{2003}{host}…"));
     }
 
     #[test]
@@ -243,7 +262,7 @@ mod tests {
         let compact = compact(text);
         assert_eq!(
             compact.text(),
-            "↗ 例え.jp/日本語のパスがとても長いページ/さらに/続…"
+            "\u{2003}例え.jp/日本語のパスがとても長いページ/さらに/続…"
         );
     }
 
@@ -259,7 +278,10 @@ mod tests {
         let text = "go https://github.com/koshian/cayenchat/issues/151 now";
         let compact = compact(text);
         let url_end = text.find(" now").unwrap();
-        assert_eq!(compact.text(), "go ↗ github.com/koshian/cayencha… now");
+        assert_eq!(
+            compact.text(),
+            "go \u{2003}github.com/koshian/cayencha… now"
+        );
         let shown_end = compact.text().find(" now").unwrap();
         // Before and after the URL positions shift; inside they snap to its ends.
         assert_eq!(compact.original(2), 2);
@@ -358,7 +380,7 @@ mod decoded_tests {
         let text = "&#65; https://github.com/koshian/cayenchat/issues/151?x=&#66 &#67;";
         let found = cayenchat_app::links::find(text);
         let compact = Compact::new(text, &found, true, true);
-        assert_eq!(compact.text(), "A ↗ github.com/koshian/cayencha… C");
+        assert_eq!(compact.text(), "A \u{2003}github.com/koshian/cayencha… C");
         assert_eq!(compact.shortened(&found).count(), 1);
         assert_eq!(compact.decoded(text).count(), 2);
         let copied = compact.copy_text(text, 0..text.len());
