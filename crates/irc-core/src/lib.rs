@@ -1973,6 +1973,15 @@ impl Connection {
         validate_outgoing_relayed(outgoing, wire, prefix)
     }
 
+    /// Pins, checks and queues `outgoing`; `what` names it in the error.
+    fn submit(&self, outgoing: Outgoing, what: &str) -> Result<(), String> {
+        let outgoing = self.pinned(outgoing);
+        self.validate(&outgoing)?;
+        self.commands
+            .try_send(outgoing)
+            .map_err(|error| format!("Could not queue {what}: {error}"))
+    }
+
     /// Sets the encodings `channel` uses for the text of the messages it
     /// receives (`decode`) and sends (`encode`), as WHATWG labels; a side
     /// that is `None` follows the server's encoding, and both `None` removes
@@ -2006,11 +2015,7 @@ impl Connection {
             notice,
             encoder: None,
         };
-        let outgoing = self.pinned(outgoing);
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue IRC message: {error}"))
+        self.submit(outgoing, "IRC message")
     }
 
     pub fn send_private_message(
@@ -2030,19 +2035,12 @@ impl Connection {
             notice,
             encoder: None,
         };
-        let outgoing = self.pinned(outgoing);
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue private message: {error}"))
+        self.submit(outgoing, "private message")
     }
 
     pub fn send_member_command(&self, nickname: &str, action: MemberCommand) -> Result<(), String> {
         let outgoing = member_outgoing(nickname, action)?;
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue member command: {error}"))
+        self.submit(outgoing, "member command")
     }
 
     /// Gives or takes op or voice for several members of `channel` at once.
@@ -2091,11 +2089,7 @@ impl Connection {
     pub fn send_command(&self, line: &str, selected_channel: Option<&str>) -> Result<(), String> {
         let outgoing = parse_slash_command(line, selected_channel)?;
         let outgoing = with_default_part_reason(outgoing, self.part_message.as_deref());
-        let outgoing = self.pinned(outgoing);
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue IRC command: {error}"))
+        self.submit(outgoing, "IRC command")
     }
 
     /// Sends `PART channel [reason]` with the reason taken literally (not as
@@ -2111,10 +2105,7 @@ impl Connection {
             reason.map(str::to_owned),
         ))?;
         let outgoing = with_default_part_reason(outgoing, self.part_message.as_deref());
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue IRC command: {error}"))
+        self.submit(outgoing, "IRC command")
     }
 
     /// Sends `JOIN channel [key]`. The key is a secret: it is validated here,
@@ -2131,10 +2122,7 @@ impl Connection {
             key.map(str::to_owned),
             None,
         ))?;
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue IRC command: {error}"))
+        self.submit(outgoing, "IRC command")
     }
 
     pub fn change_nickname(&self, nickname: &str) -> Result<(), String> {
@@ -2142,10 +2130,7 @@ impl Connection {
             return Err("Invalid nickname.".into());
         }
         let outgoing = checked_command(IrcCommand::NICK(nickname.to_owned()))?;
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue nickname change: {error}"))
+        self.submit(outgoing, "nickname change")
     }
 
     /// Publishes our avatar URL (`Some`) or removes our avatar (`None`) on
@@ -2162,10 +2147,7 @@ impl Connection {
             request,
             url: url.map(str::to_owned),
         };
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue avatar request: {error}"))
+        self.submit(outgoing, "avatar request")
     }
 
     /// Shares `url` with other clients through CTCP AVATAR from now on, or
@@ -2178,10 +2160,7 @@ impl Connection {
             peer_avatar::shareable(url, self.encoding.eq_ignore_ascii_case("UTF-8"))?;
         }
         let outgoing = Outgoing::ShareAvatar(url.map(str::to_owned));
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue avatar sharing: {error}"))
+        self.submit(outgoing, "avatar sharing")
     }
 
     /// Asks `nickname` for their avatar with CTCP AVATAR, even if they were
@@ -2193,10 +2172,7 @@ impl Connection {
             return Err("Invalid nickname.".into());
         }
         let outgoing = Outgoing::QueryAvatar(nickname.to_owned());
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue avatar request: {error}"))
+        self.submit(outgoing, "avatar request")
     }
 
     /// Changes the realname on this connection with IRCv3 `SETNAME`. The
@@ -2207,10 +2183,7 @@ impl Connection {
     pub fn set_real_name(&self, realname: &str) -> Result<(), String> {
         check_realname(realname)?;
         let outgoing = Outgoing::SetName(realname.to_owned());
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue realname change: {error}"))
+        self.submit(outgoing, "realname change")
     }
 
     /// Asks for up to `limit` lines of `channel`'s history before
@@ -2235,10 +2208,7 @@ impl Connection {
             reference,
             limit,
         };
-        self.validate(&outgoing)?;
-        self.commands
-            .try_send(outgoing)
-            .map_err(|error| format!("Could not queue history request: {error}"))
+        self.submit(outgoing, "history request")
     }
 
     /// Verifies that the server still answers, for after the machine has
