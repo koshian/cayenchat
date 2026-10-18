@@ -581,6 +581,8 @@ struct ChatWindow {
     panes: Option<ChatPanes>,
     tree_list: LogList,
     tree_rows: Vec<TreeRow>,
+    // The selection the tree last scrolled to; a different one is revealed.
+    tree_revealed: Option<Selection>,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
@@ -1108,6 +1110,7 @@ impl ChatWindow {
             panes: None,
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
+            tree_revealed: None,
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
@@ -4191,7 +4194,6 @@ impl ChatWindow {
             self.dispatch(command, window, cx);
         } else {
             self.dispatch_keeping_focus(command, window, cx);
-            self.tree_list.state.scroll_to_reveal_item(row.0);
         }
     }
 
@@ -5918,6 +5920,19 @@ impl ChatWindow {
             }
         }
         self.tree_list.sync_unordered(0, &keys);
+        // Whatever changed the selection (shortcut, tree key, click), bring
+        // its row into view once, by the row order just built; scrolling the
+        // tree by hand later is left alone.
+        let selection = self.state.selection();
+        if self.tree_revealed != Some(selection) {
+            self.tree_revealed = Some(selection);
+            if let Some(at) = self.tree_rows.iter().position(|row| match *row {
+                TreeRow::Server(id) => selection == Selection::Server(id),
+                TreeRow::Channel(id) => selection == Selection::Channel(id),
+            }) {
+                self.tree_list.state.scroll_to_reveal_item(at);
+            }
+        }
         let appearance = &self.appearance;
         div()
             .size_full()
