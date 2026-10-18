@@ -40,8 +40,14 @@ impl LogList {
         const MIN_ROW_HEIGHT: f32 = 16.0;
         let viewport = (self.state.viewport_bounds().size.height / px(MIN_ROW_HEIGHT)).ceil();
         let rows = (viewport as usize).min((at - top).div_ceil(2));
+        let mut target = at - rows;
+        if target == top {
+            // A step to the current top makes no progress when that row fills
+            // the overdraw; start at `at` itself, which is then measured.
+            target = at;
+        }
         self.state.scroll_to(ListOffset {
-            item_ix: at - rows,
+            item_ix: target,
             offset_in_item: px(0.),
         });
         true

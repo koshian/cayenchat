@@ -100,3 +100,28 @@ fn visible_selection_and_manual_scroll_are_left_alone(cx: &mut TestAppContext) {
     settle(cx);
     assert_eq!(top(&chat, cx), scrolled);
 }
+
+/// A row right after a row taller than the viewport still gets revealed, and
+/// the follow-up passes stop.
+#[gpui::test]
+fn reveal_stops_behind_a_row_taller_than_the_viewport(cx: &mut TestAppContext) {
+    let store =
+        CredentialStore::with_backend(Arc::new(MemoryBackend::new(CredentialBackendKind::System)));
+    cx.update(|cx| {
+        crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+        cx.set_global(secrets::Credentials(store));
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ))
+    });
+    let channels = format!("#{},#last", "abcdefghij".repeat(200));
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings_with_channels(&channels), None, window, cx)
+    });
+    settle(cx);
+    select(&chat, Command::SelectChannelAt(1), cx);
+    assert!(selection_visible(&chat, cx), "row after the tall one");
+    assert!(chat.read_with(cx, |chat, _| !chat.tree_reveal_pending));
+}
