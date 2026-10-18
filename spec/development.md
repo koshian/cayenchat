@@ -1132,6 +1132,11 @@ startup without servers, fixed separately.
 
 ### Store screenshots
 
+For short, copy-and-run Linux, macOS and Windows instructions, see the
+[screenshot capture guide](../scripts/screenshots/README.md)
+([日本語](../scripts/screenshots/README.ja.md)). The guide is the entry point
+for retaking screenshots; this section explains the implementation details.
+
 Screenshots for the Mac App Store, the Microsoft Store and the README show a
 scripted conversation instead of real channels, so no one else's nickname,
 words or avatar appear and the same picture can be taken again after the look
@@ -1179,8 +1184,12 @@ current requirements before submitting):
 Take both themes and both languages. Captions or backgrounds are added
 afterwards in an image editor; they are not part of this procedure.
 
-The README screenshot is taken under Xvfb (Linux): the window frame and
-fonts differ from macOS and Windows, so it is not used for the stores.
+The README screenshot is taken under Xvfb with Openbox (Linux): it includes
+Openbox's title bar and borders, with the app centered on a neutral desktop
+background. Install `openbox` and `xsetroot` (`x11-xserver-utils` on
+Debian/Ubuntu) in addition to the existing Xvfb dependencies. The window
+frame and fonts still differ from macOS and Windows, so it is not used for
+the stores.
 
 ```sh
 python3 scripts/screenshots/demo.py readme --out assets/screenshots/cayenchat-en.png
@@ -1189,7 +1198,7 @@ python3 scripts/screenshots/demo.py check
 ```
 
 `readme` builds the `demo` build from the checked-out sources, starts the demo
-server and `scripts/e2e/gui_session.py`, takes the picture with the pointer
+server and `scripts/e2e/gui_session.py` with `--wm openbox`, takes the picture with the pointer
 off the menu bar, then runs the app a second time with `show_toolbar` off and
 refuses the picture unless the top of the window differs, so a picture
 without the toolbar is never kept. Add `--theme dark`, `--size` or `--display`
