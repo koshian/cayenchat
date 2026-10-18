@@ -1697,7 +1697,7 @@ to an IRCv3 `chathistory` or `znc.in/playback` batch (or a batch nested in
 one; see batch under IRCv3 capabilities). A server-time tag alone never
 marks history, however old (D022).
 Replayed messages still appear in the log (`model::Provenance::Replayed`) and
-mark their channel unread, but are neither highlighted there nor in the
+mark their channel unread (NOTICEs never do), but are neither highlighted there nor in the
 channel tree. Nothing notifies while the chat window is
 focused and the message's conversation (its private conversation, or the
 server view for a private notice kept in the server log) is selected. At most five notifications are shown per ten seconds so bouncer

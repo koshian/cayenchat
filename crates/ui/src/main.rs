@@ -4697,11 +4697,7 @@ impl ChatWindow {
                             text,
                             kind,
                             meta,
-                            if notice {
-                                Unread::Leave
-                            } else {
-                                Unread::Mark
-                            },
+                            if notice { Unread::Leave } else { Unread::Mark },
                         ) {
                             return;
                         }
