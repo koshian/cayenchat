@@ -879,6 +879,9 @@ pub(crate) struct SettingsWindow {
     /// Why Publish or Remove could not be started for our own avatar, or
     /// how an avatar image upload went.
     pub(crate) avatar_feedback: Option<String>,
+    /// The avatar image file being read off the UI thread; a newer drop or
+    /// choice replaces it.
+    pub(crate) avatar_file_read: Option<Task<()>>,
     /// Avatar images on their way to the image host; the target is the
     /// server profile whose avatar URL draft receives the link.
     pub(crate) avatar_upload: AttachmentFlow<String>,
@@ -1093,6 +1096,7 @@ impl SettingsWindow {
             autosave: None,
             autosave_error: None,
             avatar_feedback: None,
+            avatar_file_read: None,
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             auto_join: None,

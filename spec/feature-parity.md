@@ -104,7 +104,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 
 ## Attachments
 
-- DONE — paste an image-only clipboard (including screenshots) or drop one image file on the draft row; both share one flow. HEIC/HEIF/AVIF are recognized, and on macOS Photos/Mail/screenshot-thumbnail file-promise drags are accepted
+- DONE — paste an image-only clipboard (including screenshots) or drop one image file on the draft row; both share one flow. HEIC/HEIF/AVIF are recognized, and on macOS Photos/Mail/screenshot-thumbnail file-promise drags are accepted; dropped or chosen files are checked as regular files before opening and read off the UI thread, a newer drop replacing one still being read (#458). The draft (or avatar profile) is fixed when the read starts: the link goes to that draft even if the selection changes meanwhile, and an avatar result is discarded if another profile is selected. macOS promised files are kept until the read ends
 - DONE — confirmation before upload naming the provider and the public-link consequence; guidance to settings when no provider or account is configured, and to reconnect after an authentication failure
 - DONE — ImgBB external upload with progress, cancel (abandons the wait), network/auth/rejection handling; the link is inserted into the originating draft at its cursor (the cursor stays put, no success message is left) and never sent automatically
 - PARTIAL — inline previews of direct image links (PNG, JPEG, GIF and WebP, static first frame) in the main channel log, behind a Startup & Behavior setting that is off by default; bounded, HTTP(S)-only loading of public hosts. The combined log, server log and activity lines stay text-only; no video or page previews

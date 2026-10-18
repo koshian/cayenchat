@@ -587,6 +587,8 @@ struct ChatWindow {
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
+    /// The image file being read off the UI thread; a newer drop replaces it.
+    file_read: Option<Task<()>>,
     /// The draft whose failed send put `feedback` on screen; editing that
     /// draft makes the warning obsolete, unrelated feedback stays.
     send_failure: Option<SendFailure>,
@@ -1111,6 +1113,7 @@ impl ChatWindow {
             inputs,
             startup_notice: feedback.clone(),
             feedback,
+            file_read: None,
             send_failure: None,
             sessions,
             next_network_id,
@@ -6359,7 +6362,7 @@ impl ChatWindow {
             // Dropped image files join the same attachment flow as pasted ones.
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                this.drop_paths(paths.paths(), window, cx)
+                this.drop_paths(paths.paths(), paths.keep_alive(), window, cx)
             }))
             .child(
                 div()

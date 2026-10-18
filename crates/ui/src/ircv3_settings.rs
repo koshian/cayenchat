@@ -26,7 +26,7 @@ use crate::{
     ChatWindow, SettingsTab, SettingsWindow,
     account_settings::panel,
     image_upload::{
-        acceptable_attachment, clipboard_attachment, configured_uploader, file_attachment,
+        acceptable_attachment, clipboard_attachment, configured_uploader, read_in_background,
         upload_failure_text, upload_in_background,
     },
     input,
@@ -374,7 +374,7 @@ impl SettingsWindow {
                 section
                     .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                     .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                        this.drop_avatar_image(paths.paths(), window, cx)
+                        this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
                     }))
             })
             .child(
@@ -588,26 +588,54 @@ impl SettingsWindow {
             return;
         }
         if let Some(attachment) = clipboard_attachment(cx) {
-            self.offer_avatar_image(attachment, window, cx);
+            let profile = self.selected_profile_id();
+            self.offer_avatar_image(attachment, profile, window, cx);
         }
     }
 
     fn drop_avatar_image(
         &mut self,
         paths: &[PathBuf],
+        keep: Option<Arc<PromisedFiles>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self.avatar_images_accepted() {
             return;
         }
-        match file_attachment(paths, AttachmentSource::Drop, &self.i18n) {
-            Ok(attachment) => self.offer_avatar_image(attachment, window, cx),
-            Err(error) => {
-                self.avatar_feedback = Some(error);
-                cx.notify();
-            }
-        }
+        self.read_avatar_image(paths.to_vec(), keep, AttachmentSource::Drop, window, cx);
+    }
+
+    fn selected_profile_id(&self) -> Option<String> {
+        self.settings
+            .values
+            .selected_profile()
+            .map(|p| p.id.clone())
+    }
+
+    /// Reads the file off the UI thread, then offers it. A newer read
+    /// replaces one still running. The profile is fixed now; if another one
+    /// is selected when the read ends, the result is discarded.
+    fn read_avatar_image(
+        &mut self,
+        paths: Vec<PathBuf>,
+        keep: Option<Arc<PromisedFiles>>,
+        source: AttachmentSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let profile = self.selected_profile_id();
+        let read = read_in_background(paths, keep, source, cx);
+        self.avatar_file_read = Some(cx.spawn_in(window, async move |this, cx| {
+            let read = read.await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(attachment) => this.offer_avatar_image(attachment, profile, window, cx),
+                Err(error) => {
+                    this.avatar_feedback = Some(error.text(&this.i18n));
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn choose_avatar_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -623,13 +651,7 @@ impl SettingsWindow {
                 return;
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                match file_attachment(&paths, AttachmentSource::Chooser, &this.i18n) {
-                    Ok(attachment) => this.offer_avatar_image(attachment, window, cx),
-                    Err(error) => {
-                        this.avatar_feedback = Some(error);
-                        cx.notify();
-                    }
-                }
+                this.read_avatar_image(paths, None, AttachmentSource::Chooser, window, cx)
             });
         })
         .detach();
@@ -640,18 +662,17 @@ impl SettingsWindow {
     fn offer_avatar_image(
         &mut self,
         attachment: Result<Attachment, AttachmentError>,
+        expected_profile: Option<String>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.avatar_feedback = None;
-        let Some(profile) = self
-            .settings
-            .values
-            .selected_profile()
-            .map(|p| p.id.clone())
-        else {
+        let Some(profile) = self.selected_profile_id() else {
             return;
         };
+        if expected_profile.as_deref() != Some(&profile) {
+            return;
+        }
         if self.avatar_upload.uploading().is_some() {
             self.avatar_feedback = Some(self.i18n.text("upload_busy"));
             cx.notify();
