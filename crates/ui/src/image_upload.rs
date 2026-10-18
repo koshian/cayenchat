@@ -748,21 +748,28 @@ mod tests {
     #[gpui::test]
     fn cancelling_an_upload_is_reported_in_a_dialog(cx: &mut TestAppContext) {
         let fake = Arc::new(FakeUploader::succeeding(URL));
-        let (chat, _, _, cx) = open_chat(cx, Some(fake.clone()), None);
-        cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
-            ImageFormat::Png,
-            PNG.to_vec(),
-        )));
+        let (chat, input, _, cx) = open_chat(cx, Some(fake.clone()), None);
+        cx.simulate_input("draft");
+        cx.write_to_clipboard(image_clipboard());
         cx.dispatch_action(crate::input::Paste);
         cx.run_until_parked();
         cx.simulate_prompt_answer("Upload");
-        // The upload has started; cancel before it completes.
+        // Background work runs inline in tests, so a real upload would end
+        // at once. Enter the uploading phase by hand instead and cancel in it;
+        // the answered confirmation then finds nothing left to start.
+        let job = chat.update(cx, |chat, _| chat.attachments.confirm());
+        assert!(job.is_some(), "the confirmed upload must be running");
+        assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_some()));
         chat.update_in(cx, |chat, window, cx| chat.cancel_upload(window, cx));
+        let (title, detail) = cx.pending_prompt().expect("cancellation dialog");
+        assert!(title.contains("cancelled"), "{title}");
+        assert!(detail.contains("Fake Host"), "{detail}");
+        cx.simulate_prompt_answer("Close");
         cx.run_until_parked();
-        if let Some((title, _)) = cx.pending_prompt() {
-            assert!(title.contains("cancelled"), "{title}");
-            cx.simulate_prompt_answer("Close");
-        }
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(fake.calls(), 0);
+        assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_none()));
+        assert_eq!(draft(&input, cx), "draft");
         let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
         assert!(feedback.is_none(), "{feedback:?}");
     }
