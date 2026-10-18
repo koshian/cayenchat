@@ -5888,7 +5888,7 @@ impl ChatWindow {
 }
 
 impl ChatWindow {
-    fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_channel_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         // The tree is virtualized like the logs: it redraws on every state
         // change, but builds only the rows near the viewport. Keys identify
@@ -5940,7 +5940,9 @@ impl ChatWindow {
                 // then needs further passes, each after a layout.
                 if self.tree_list.reveal(at) {
                     self.tree_reveal_pending = true;
-                    cx.notify();
+                    // Notifying while drawing does not schedule another
+                    // frame; the next one is requested explicitly.
+                    cx.on_next_frame(window, |_, _, cx| cx.notify());
                 }
             }
         }
@@ -6206,7 +6208,12 @@ impl ChatWindow {
     }
 
     /// Content of a cached pane; see [`ChatPane`].
-    fn render_pane(&mut self, kind: PaneKind, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &mut self,
+        kind: PaneKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         #[cfg(test)]
         {
             self.pane_renders += 1;
@@ -6277,7 +6284,7 @@ impl ChatWindow {
                     ))
                     .into_any_element()
             }
-            PaneKind::Channels => self.render_channel_tree(cx),
+            PaneKind::Channels => self.render_channel_tree(window, cx),
         }
     }
 
@@ -7294,7 +7301,7 @@ impl Render for ChatPane {
                 {
                     cx.on_next_frame(window, |_, _, cx| cx.notify());
                 }
-                chat.render_pane(kind, cx)
+                chat.render_pane(kind, window, cx)
             })
             .unwrap_or_else(|_| div().into_any_element())
     }

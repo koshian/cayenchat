@@ -33,10 +33,9 @@ fn open_chat(cx: &mut TestAppContext) -> (Entity<ChatWindow>, &mut VisualTestCon
 }
 
 fn settle(cx: &mut VisualTestContext) {
-    for _ in 0..3 {
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
-    }
+    // One draw only: further frames must come from the implementation.
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
 }
 
 /// Whether the selected row lies fully inside the tree's viewport.
