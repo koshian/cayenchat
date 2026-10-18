@@ -956,7 +956,6 @@ impl ChatWindow {
 
     fn status_text(&self, status: Option<&ConnectionStatus>) -> String {
         match status {
-            Some(ConnectionStatus::OfflineMock) => self.i18n.text("status_offline"),
             Some(ConnectionStatus::Connecting) => self.i18n.text("status_connecting"),
             Some(ConnectionStatus::TransportConnected) => self.i18n.text("status_registering"),
             Some(ConnectionStatus::Registered) => self.i18n.text("status_connected"),

@@ -108,7 +108,6 @@ pub enum Command {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionStatus {
-    OfflineMock,
     Connecting,
     TransportConnected,
     Registered,
@@ -244,227 +243,6 @@ pub struct NetworkConfig {
 }
 
 impl AppState {
-    pub fn mock() -> Self {
-        let networks = vec![
-            Network {
-                id: NetworkId(1),
-                name: "Libera (mock)".into(),
-            },
-            Network {
-                id: NetworkId(2),
-                name: "Local friends (mock)".into(),
-            },
-        ];
-        let mut next_message_sequence = SEQUENCE_ORIGIN;
-        let conversations: Vec<_> = [
-            (
-                1,
-                1,
-                "#general",
-                "Welcome — an offline conversation",
-                vec![
-                    ("09:41", "alice", "Good morning. Welcome to CayenChat."),
-                    (
-                        "09:42",
-                        "bob",
-                        "Four panes keep channels, both logs and users in view.",
-                    ),
-                    (
-                        "09:43",
-                        "alice",
-                        "Try #rust or use Ctrl+Tab to switch channels.",
-                    ),
-                    (
-                        "09:44",
-                        "yuki",
-                        "こんにちは。これはオフラインのサンプルです。",
-                    ),
-                ],
-                vec!["@alice", "alex", "bob", "yuki", "guest"],
-            ),
-            (
-                2,
-                1,
-                "#rust",
-                "Rust and native desktop tools",
-                vec![
-                    (
-                        "10:02",
-                        "ferris",
-                        "Application state lives outside the renderer.",
-                    ),
-                    (
-                        "10:03",
-                        "alice",
-                        "The protocol layer will send events to the application.",
-                    ),
-                    ("10:04", "bob", "No sockets yet — just a useful mock."),
-                ],
-                vec!["@ferris", "alice", "bob", "crab"],
-            ),
-            (
-                3,
-                2,
-                "#general",
-                "A different network, a different conversation",
-                vec![
-                    (
-                        "11:10",
-                        "mika",
-                        "Same channel name, separate conversation ID.",
-                    ),
-                    ("11:11", "ren", "This is the local friends network."),
-                ],
-                vec!["@mika", "ren", "sora"],
-            ),
-            (
-                4,
-                2,
-                "#random",
-                "Off-topic",
-                vec![
-                    ("12:30", "ren", "Anyone up for coffee?"),
-                    ("12:31", "mika", "After this build finishes."),
-                ],
-                vec!["@ren", "mika", "hana"],
-            ),
-        ]
-        .into_iter()
-        .map(
-            |(id, network, name, topic, messages, members)| Conversation {
-                id: ConversationId(id),
-                network: NetworkId(network),
-                kind: ConversationKind::Channel,
-                name: name.into(),
-                topic: topic.into(),
-                messages: messages
-                    .into_iter()
-                    .map(|(time, sender, text)| {
-                        next_message_sequence += 1;
-                        Message {
-                            time: mock_time(time),
-                            sequence: next_message_sequence,
-                            timestamp: None,
-                            native_id: None,
-                            account: None,
-                            sender: sender.into(),
-                            text: text.into(),
-                            highlights: Default::default(),
-                            links: Links::new(links::find(text)),
-                            activity: false,
-                            alert: false,
-                            notice: false,
-                            action: false,
-                            provenance: Provenance::Live,
-                            delivery_failed: false,
-                        }
-                    })
-                    .collect(),
-                members: sorted_members(members.into_iter().map(str::to_owned).collect()),
-                modes: None,
-            },
-        )
-        .collect();
-        let active_channels = conversations.iter().map(|channel| channel.id).collect();
-        let active_servers = networks.iter().map(|server| server.id).collect();
-        let statuses = networks
-            .iter()
-            .map(|server| (server.id, ConnectionStatus::OfflineMock))
-            .collect();
-        Self {
-            networks,
-            channel_ids: channel_index(&conversations, |_| CaseMapping::default()),
-            casemappings: HashMap::new(),
-            conversations,
-            selected: Selection::Channel(ConversationId(1)),
-            previous_channel: None,
-            // Unread fixtures make the shortcut observable before IRC events exist.
-            unread: HashSet::from([ConversationId(2), ConversationId(4)]),
-            highlighted: HashSet::new(),
-            attention: VecDeque::new(),
-            reveal: None,
-            active_channels,
-            active_servers,
-            statuses,
-            server_messages: HashMap::new(),
-            next_message_sequence,
-            next_conversation_id: 5,
-            avatars: avatars::AvatarDirectory::default(),
-            duplicates: HashMap::new(),
-            pending_history: HashMap::new(),
-            history_paging: HashSet::new(),
-            older_history: HashMap::new(),
-            next_history_request: 0,
-            older_sequence_floor: SEQUENCE_ORIGIN,
-            resume_points: HashMap::new(),
-            channel_orders: HashMap::new(),
-            channel_ranks: HashMap::new(),
-        }
-    }
-
-    pub fn live(host: String, channels: Vec<String>) -> Self {
-        let channel_count = channels.len() as u32;
-        let network = Network {
-            id: NetworkId(1),
-            name: host,
-        };
-        let conversations: Vec<_> = channels
-            .into_iter()
-            .enumerate()
-            .map(|(index, name)| Conversation {
-                id: ConversationId(index as u32 + 1),
-                network: network.id,
-                kind: ConversationKind::Channel,
-                name,
-                topic: String::new(),
-                messages: Vec::new(),
-                members: Vec::new(),
-                modes: None,
-            })
-            .collect();
-        let selected = conversations
-            .first()
-            .map(|channel| Selection::Channel(channel.id))
-            .unwrap_or(Selection::Server(network.id));
-        Self {
-            statuses: HashMap::from([(network.id, ConnectionStatus::Connecting)]),
-            networks: vec![network],
-            channel_ids: channel_index(&conversations, |_| CaseMapping::default()),
-            casemappings: HashMap::new(),
-            conversations,
-            selected,
-            previous_channel: None,
-            unread: HashSet::new(),
-            highlighted: HashSet::new(),
-            attention: VecDeque::new(),
-            reveal: None,
-            active_channels: HashSet::new(),
-            active_servers: HashSet::new(),
-            server_messages: HashMap::new(),
-            next_message_sequence: SEQUENCE_ORIGIN,
-            next_conversation_id: channel_count + 1,
-            avatars: avatars::AvatarDirectory::default(),
-            duplicates: HashMap::new(),
-            pending_history: HashMap::new(),
-            history_paging: HashSet::new(),
-            older_history: HashMap::new(),
-            next_history_request: 0,
-            older_sequence_floor: SEQUENCE_ORIGIN,
-            resume_points: HashMap::new(),
-            channel_orders: HashMap::new(),
-            channel_ranks: HashMap::new(),
-        }
-    }
-
-    pub fn configured(host: String, channels: Vec<String>) -> Self {
-        let mut state = Self::live(host, channels);
-        state.set_status(
-            NetworkId(1),
-            ConnectionStatus::Disconnected("Not connected.".into()),
-        );
-        state
-    }
-
     /// Every configured server in display order, none connected yet. The
     /// first configured channel (or the first server, or nothing when there
     /// are no servers) is selected.
@@ -2107,26 +1885,6 @@ impl AppState {
     }
 }
 
-/// [`AppState::channel_ids`] for conversations built directly.
-/// Where two conversations fold alike, the first one is kept.
-fn channel_index(
-    conversations: &[Conversation],
-    mapping: impl Fn(NetworkId) -> CaseMapping,
-) -> HashMap<(NetworkId, String), ConversationId> {
-    let mut index = HashMap::new();
-    for conversation in conversations
-        .iter()
-        .filter(|conversation| conversation.kind == ConversationKind::Channel)
-    {
-        let key = (
-            conversation.network,
-            mapping(conversation.network).fold(&conversation.name),
-        );
-        index.entry(key).or_insert(conversation.id);
-    }
-    index
-}
-
 fn sorted_members(mut members: Vec<String>) -> Vec<String> {
     // Servers can pad NAMES with extra spaces; an entry without a nickname is
     // not a member and must not become a row.
@@ -2191,15 +1949,6 @@ fn new_message(sender: String, text: String, line: Line, meta: MessageMeta) -> M
         provenance: meta.provenance,
         delivery_failed: false,
     }
-}
-
-/// Parses the `HH:MM` literals of the offline mock data.
-fn mock_time(time: &str) -> TimeOfDay {
-    let (hour, minute) = time.split_once(':').expect("mock time is HH:MM");
-    TimeOfDay::new(
-        hour.parse().expect("mock hour"),
-        minute.parse().expect("mock minute"),
-    )
 }
 
 /// Whether the log dropped old lines.

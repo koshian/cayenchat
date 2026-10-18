@@ -305,7 +305,6 @@
   "about_close": "Close",
   "startup_invalid": "Check the automatic connection settings: {error}",
   "port_invalid": "Port must be a number from 1 to 65535.",
-  "status_offline": "Offline mock",
   "status_connecting": "Connecting…",
   "status_registering": "Connected; registering…",
   "status_connected": "Connected",
