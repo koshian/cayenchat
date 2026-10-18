@@ -282,9 +282,11 @@ macOS (`WindowOptions.display_id`): horizontally centered on the chat window,
 48 px below its top (above it when that would leave the display), then moved
 onto the whole display, not its work area. On Windows, `placement::place_native`
 then moves the new window in physical pixels at the chat window's scale, since
-GPUI converts with the scale of the display the HWND is first created on. On Linux, GPUI cannot place windows,
-so it keeps the usual centered place; shrinking below the minimum size and
-work-area (taskbar, Dock) avoidance are not done. An open settings window is
+GPUI converts with the scale of the display the HWND is first created on, and
+fits its outer rectangle (frame and title bar, which only Windows knows) into
+the work area of the monitor it is moved to (chosen from that rectangle, not from the HWND it was created on), shrinking it when larger (`fit_to_work_area`, #468). On Linux, GPUI cannot place windows,
+so it keeps the usual centered place; work-area avoidance on macOS and Linux
+is not done. An open settings window is
 only raised. The quit question is drawn inside the chat window (`quit_dialog`).
 
 Pane boundaries use `ui::splitter`: a thin handle that turns pointer drags
