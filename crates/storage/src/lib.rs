@@ -2033,6 +2033,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_channel_notice_setting_is_ignored() {
+        let old = serde_json::json!({
+            "enabled": true,
+            "mentions": true,
+            "keyword_alerts": true,
+            "private_messages": true,
+            "channel_notices": true
+        });
+        let notifications: Notifications = serde_json::from_value(old).unwrap();
+        assert_eq!(notifications, Notifications::default());
+        let saved = serde_json::to_value(&notifications).unwrap();
+        assert!(saved.get("channel_notices").is_none());
+    }
+
+    #[test]
     fn supported_profile_versions_preserve_connection_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
