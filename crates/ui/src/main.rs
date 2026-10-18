@@ -833,7 +833,18 @@ struct MemberMenu {
     /// chosen members: it then acts on all of them (and `nickname` is the one
     /// clicked). Empty for a menu about one member.
     group: Vec<String>,
+    /// The CTCP submenu is open.
+    ctcp_open: bool,
 }
+
+/// The CTCP submenu items in order: the menu label key and the request tag.
+const MEMBER_CTCP_ITEMS: [(&str, &str); 5] = [
+    ("member_ctcp_ping", "PING"),
+    ("member_ctcp_time", "TIME"),
+    ("member_ctcp_version", "VERSION"),
+    ("member_ctcp_userinfo", "USERINFO"),
+    ("member_ctcp_clientinfo", "CLIENTINFO"),
+];
 
 #[derive(Clone, Copy)]
 enum MemberPromptKind {
@@ -2387,6 +2398,17 @@ impl ChatWindow {
         // Another server's disconnect is shown in its tree row and log only.
         if self.selected_network_id() == Some(network) {
             self.set_feedback(Some(message));
+        }
+    }
+
+    /// Opens or closes the CTCP submenu of the open member menu; nothing is
+    /// sent.
+    fn set_member_ctcp_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if let Some(menu) = self.member_menu.as_mut()
+            && menu.ctcp_open != open
+        {
+            menu.ctcp_open = open;
+            cx.notify();
         }
     }
 
@@ -6926,6 +6948,11 @@ impl ChatWindow {
                         .px_2()
                         .py_1()
                         .child(self.i18n.text(key))
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.set_member_ctcp_open(false, cx);
+                            }
+                        }))
                         .when(enabled, |d| {
                             d.cursor_pointer()
                                 .hover(|d| d.bg(theme.hover_strong))
@@ -6960,6 +6987,73 @@ impl ChatWindow {
                         .when(!enabled, |d| d.text_color(theme.text_muted)),
                 );
             }
+            // The CTCP submenu opens to the right, or to the left when the
+            // window has no room there. Opening it sends nothing.
+            let submenu_left = menu.position.x + px(210. * 2.) > window.viewport_size().width;
+            let mut ctcp_row = div()
+                .id("member-menu-ctcp")
+                .relative()
+                .flex()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .child(self.i18n.text("member_ctcp"))
+                .child("▶")
+                .when(enabled, |d| {
+                    d.cursor_pointer()
+                        .hover(|d| d.bg(theme.hover_strong))
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.set_member_ctcp_open(true, cx);
+                            }
+                        }))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let open = this.member_menu.as_ref().is_some_and(|m| !m.ctcp_open);
+                            this.set_member_ctcp_open(open, cx);
+                        }))
+                })
+                .when(!enabled, |d| d.text_color(theme.text_muted));
+            if enabled && menu.ctcp_open {
+                let mut submenu = div()
+                    .id("member-menu-ctcp-items")
+                    .occlude()
+                    .absolute()
+                    .top(px(-4.))
+                    .w(px(130.))
+                    .p_1()
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(border)
+                    .shadow_md();
+                submenu = if submenu_left {
+                    submenu.right(px(210. - 8.))
+                } else {
+                    submenu.left(px(210. - 8.))
+                };
+                for (index, (key, tag)) in MEMBER_CTCP_ITEMS.into_iter().enumerate() {
+                    submenu = submenu.child(
+                        div()
+                            .id(("member-menu-ctcp-item", index))
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover_strong))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.member_command(
+                                    MemberCommand::Ctcp {
+                                        tag: tag.to_owned(),
+                                    },
+                                    cx,
+                                )
+                            })),
+                    );
+                }
+                ctcp_row = ctcp_row.child(submenu);
+            }
+            popup = popup
+                .child(div().my_1().border_t_1().border_color(theme.separator))
+                .child(ctcp_row);
             // On our own row in a channel, changing the nickname comes last.
             if !menu.private && self.is_own_nickname(menu.network, &menu.nickname) {
                 popup = popup
@@ -6970,6 +7064,11 @@ impl ChatWindow {
                             .px_2()
                             .py_1()
                             .child(self.i18n.text("server_menu_nick"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                if *hovered {
+                                    this.set_member_ctcp_open(false, cx);
+                                }
+                            }))
                             .when(enabled, |d| {
                                 d.cursor_pointer()
                                     .hover(|d| d.bg(theme.hover_strong))
@@ -8237,13 +8336,14 @@ impl ChatWindow {
                                     event
                                         .position
                                         .y
-                                        .min((viewport.height - px(190.)).max(px(0.))),
+                                        .min((viewport.height - px(220.)).max(px(0.))),
                                 ),
                                 network,
                                 nickname: nickname.clone(),
                                 channel: channel.clone(),
                                 private,
                                 group,
+                                ctcp_open: false,
                             });
                             cx.stop_propagation();
                             cx.notify();
