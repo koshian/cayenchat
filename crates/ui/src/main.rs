@@ -5591,6 +5591,17 @@ fn styled_log_text(
     StyledText::new(format!("{prefix}{text}")).with_highlights(highlights)
 }
 
+/// Where the room kept at byte `start` is painted. At a wrap boundary the
+/// index belongs to the end of the previous row while the room itself starts
+/// the next one; the index just past the room is then on another row.
+fn link_icon_origin(layout: &TextLayout, start: usize) -> Option<Point<Pixels>> {
+    let position = layout.position_for_index(start)?;
+    match layout.position_for_index(start + compact_urls::ICON.len()) {
+        Some(after) if after.y > position.y => Some(point(layout.bounds().origin.x, after.y)),
+        _ => Some(position),
+    }
+}
+
 /// The zero-size canvas that paints the link icon over the room
 /// ([`compact_urls::ICON`]) kept at the start of each drawn URL. `starts` are
 /// byte offsets into the laid-out text (prefix included); the layout is only
@@ -5602,7 +5613,7 @@ fn link_icons(layout: TextLayout, starts: Vec<usize>, color: Rgba) -> Canvas<()>
             let line = layout.line_height();
             let size = line * 0.65;
             for start in &starts {
-                if let Some(position) = layout.position_for_index(*start) {
+                if let Some(position) = link_icon_origin(&layout, *start) {
                     let bounds = Bounds::new(
                         point(position.x, position.y + (line - size) / 2.),
                         gpui::size(size, size),
@@ -8897,6 +8908,10 @@ fn main() {
 #[cfg(test)]
 #[path = "main_tests/combined_log_tests.rs"]
 mod combined_log_tests;
+
+#[cfg(test)]
+#[path = "main_tests/link_icon_tests.rs"]
+mod link_icon_tests;
 
 #[cfg(test)]
 #[path = "main_tests/roster_batch_tests.rs"]
