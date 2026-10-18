@@ -14,9 +14,18 @@ use std::ops::Range;
 /// host is never cut, so a long host can exceed it.
 const LIMIT: usize = 28;
 
-/// Room kept before every URL for the link icon. The log paints the icon
-/// (`icons/ui/link.svg`) over this em space; it is never copied.
-pub(crate) const ICON: &str = "\u{2003}";
+/// Room kept before every URL for the link icon: a pad ([`LEAD`]), two
+/// figure spaces and a narrow no-break space. The log paints the icon
+/// (`icons/ui/link.svg`) over the
+/// figure spaces, which are a little wider than it, so a gap is left before
+/// the URL. Never copied.
+pub(crate) const ICON: &str = "\u{a0}\u{2007}\u{2007}\u{202f}";
+
+/// The pad before the icon (a no-break space); the icon starts after it.
+pub(crate) const LEAD: &str = "\u{a0}";
+
+/// The pad after every URL, so the link background does not end at the text.
+const TRAIL: &str = "\u{a0}";
 
 /// Text the log shows in place of the original.
 struct Span {
@@ -43,13 +52,13 @@ fn label(url: &str) -> (String, bool) {
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     if bare.chars().count() <= LIMIT {
-        return (format!("{ICON}{url}"), false);
+        return (format!("{ICON}{url}{TRAIL}"), false);
     }
     let host_end = bare.find(['/', '?', '#']).unwrap_or(bare.len());
     let (host, rest) = bare.split_at(host_end);
     let room = LIMIT.saturating_sub(host.chars().count() + 1);
     let kept: String = rest.chars().take(room).collect();
-    (format!("{ICON}{host}{kept}…"), true)
+    (format!("{ICON}{host}{kept}…{TRAIL}"), true)
 }
 
 impl Compact {
@@ -227,25 +236,34 @@ mod tests {
         let text = "see https://example.com/a now";
         let compact = compact(text);
         // Not cut, but marked like the long ones.
-        assert_eq!(compact.text(), "see \u{2003}https://example.com/a now");
+        assert_eq!(
+            compact.text(),
+            "see \u{a0}\u{2007}\u{2007}\u{202f}https://example.com/a\u{a0} now"
+        );
         assert_eq!(compact.shortened(&urls(text)).count(), 0);
-        assert_eq!(compact.linked().next(), Some(4..28));
+        assert_eq!(compact.linked().next(), Some(4..38));
         assert_eq!(compact.original(4), 4);
-        assert_eq!(compact.original(28), 25);
-        assert_eq!(compact.shown_range(4..25), 4..28);
+        assert_eq!(compact.original(38), 25);
+        assert_eq!(compact.shown_range(4..25), 4..38);
     }
 
     #[test]
     fn a_long_path_is_cut_after_the_host() {
         let text = "https://github.com/koshian/cayenchat/issues/151";
         let compact = compact(text);
-        assert_eq!(compact.text(), "\u{2003}github.com/koshian/cayencha…");
+        assert_eq!(
+            compact.text(),
+            "\u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0}"
+        );
     }
 
     #[test]
     fn a_long_query_is_cut_too() {
         let compact = compact("http://example.com/?utm_source=a&utm_medium=b&utm_campaign=c");
-        assert_eq!(compact.text(), "\u{2003}example.com/?utm_source=a&u…");
+        assert_eq!(
+            compact.text(),
+            "\u{a0}\u{2007}\u{2007}\u{202f}example.com/?utm_source=a&u…\u{a0}"
+        );
     }
 
     #[test]
@@ -253,7 +271,7 @@ mod tests {
         let host = "very-long-subdomain.another-long-label.example.org";
         let text = format!("https://{host}/path/to/page");
         let compact = compact(&text);
-        assert_eq!(compact.text(), format!("\u{2003}{host}…"));
+        assert_eq!(compact.text(), format!("{ICON}{host}…\u{a0}"));
     }
 
     #[test]
@@ -262,7 +280,7 @@ mod tests {
         let compact = compact(text);
         assert_eq!(
             compact.text(),
-            "\u{2003}例え.jp/日本語のパスがとても長いページ/さらに/続…"
+            "\u{a0}\u{2007}\u{2007}\u{202f}例え.jp/日本語のパスがとても長いページ/さらに/続…\u{a0}"
         );
     }
 
@@ -280,7 +298,7 @@ mod tests {
         let url_end = text.find(" now").unwrap();
         assert_eq!(
             compact.text(),
-            "go \u{2003}github.com/koshian/cayencha… now"
+            "go \u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0} now"
         );
         let shown_end = compact.text().find(" now").unwrap();
         // Before and after the URL positions shift; inside they snap to its ends.
@@ -380,7 +398,10 @@ mod decoded_tests {
         let text = "&#65; https://github.com/koshian/cayenchat/issues/151?x=&#66 &#67;";
         let found = cayenchat_app::links::find(text);
         let compact = Compact::new(text, &found, true, true);
-        assert_eq!(compact.text(), "A \u{2003}github.com/koshian/cayencha… C");
+        assert_eq!(
+            compact.text(),
+            "A \u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0} C"
+        );
         assert_eq!(compact.shortened(&found).count(), 1);
         assert_eq!(compact.decoded(text).count(), 2);
         let copied = compact.copy_text(text, 0..text.len());
