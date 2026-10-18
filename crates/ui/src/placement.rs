@@ -43,7 +43,7 @@ pub fn place_native(window: &gpui::Window, bounds: Bounds<Pixels>, scale: f32) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
-        ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos,
@@ -78,11 +78,18 @@ pub fn place_native(window: &gpui::Window, bounds: Bounds<Pixels>, scale: f32) {
             height + extra_height,
         ];
         // Keep the frame and title bar inside the work area (taskbar excluded) of
-        // the display the window is on; the content-based layout cannot know
-        // their size.
+        // the display the window is going to, not the one it was created on
+        // (which may have another scale); the content-based layout cannot know
+        // the frame's size.
         let mut info: MONITORINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let target = RECT {
+            left: rect[0],
+            top: rect[1],
+            right: rect[0] + rect[2],
+            bottom: rect[1] + rect[3],
+        };
+        let monitor = MonitorFromRect(&target, MONITOR_DEFAULTTONEAREST);
         if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
             let work = info.rcWork;
             rect = fit_to_work_area(rect, [work.left, work.top, work.right, work.bottom]);
@@ -147,6 +154,19 @@ mod tests {
             fit_to_work_area([-50, -50, 2000, 1200], WORK),
             [0, 0, 1440, 900]
         );
+    }
+
+    #[test]
+    fn fit_uses_the_work_area_it_is_given_on_a_mixed_scale_layout() {
+        // A 100% primary display (0..1920) left of a 200% one (1920..5760). A
+        // window laid out at logical x=1000 is physical x=2000 on the second
+        // display: fitting it to that display's work area keeps it there,
+        // while the primary's work area (the display it was created on) would
+        // drag it back.
+        let secondary = [1920, 0, 5760, 2160];
+        let rect = [2000, 100, 1800, 1500];
+        assert_eq!(fit_to_work_area(rect, secondary), rect);
+        assert_eq!(fit_to_work_area(rect, [0, 0, 1920, 1080])[0], 120);
     }
 
     #[test]

@@ -284,7 +284,7 @@ onto the whole display, not its work area. On Windows, `placement::place_native`
 then moves the new window in physical pixels at the chat window's scale, since
 GPUI converts with the scale of the display the HWND is first created on, and
 fits its outer rectangle (frame and title bar, which only Windows knows) into
-the work area of its monitor, shrinking it when larger (`fit_to_work_area`, #468). On Linux, GPUI cannot place windows,
+the work area of the monitor it is moved to (chosen from that rectangle, not from the HWND it was created on), shrinking it when larger (`fit_to_work_area`, #468). On Linux, GPUI cannot place windows,
 so it keeps the usual centered place; work-area avoidance on macOS and Linux
 is not done. An open settings window is
 only raised. The quit question is drawn inside the chat window (`quit_dialog`).
