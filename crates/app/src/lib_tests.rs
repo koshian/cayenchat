@@ -1,9 +1,61 @@
 // SPDX-License-Identifier: MPL-2.0
 use super::*;
 
+/// One network (ID 1) with the given channels, connecting.
+fn live_state(host: String, channels: Vec<String>) -> AppState {
+    let mut state = AppState::with_networks(vec![NetworkConfig {
+        id: NetworkId(1),
+        name: host,
+        channels,
+    }]);
+    state.set_status(NetworkId(1), ConnectionStatus::Connecting);
+    state
+}
+
+/// Two networks with two channels each (conversation IDs 1 to 4), every
+/// channel and server active and #rust and #random unread. The first
+/// channel is selected.
+fn mock() -> AppState {
+    let mut state = AppState::with_networks(vec![
+        NetworkConfig {
+            id: NetworkId(1),
+            name: "Libera".into(),
+            channels: vec!["#general".into(), "#rust".into()],
+        },
+        NetworkConfig {
+            id: NetworkId(2),
+            name: "Local friends".into(),
+            channels: vec!["#general".into(), "#random".into()],
+        },
+    ]);
+    for (network, name, text) in [
+        (1, "#general", "Good morning."),
+        (1, "#rust", "Application state lives outside the renderer."),
+        (
+            2,
+            "#general",
+            "Same channel name, separate conversation ID.",
+        ),
+        (2, "#random", "Anyone up for coffee?"),
+    ] {
+        state.append_channel_message(
+            NetworkId(network),
+            name,
+            "alice",
+            text,
+            Kind::Message,
+            Provenance::Live,
+        );
+    }
+    state.active_channels = state.conversations.iter().map(|c| c.id).collect();
+    state.active_servers = state.networks.iter().map(|n| n.id).collect();
+    state.unread = HashSet::from([ConversationId(2), ConversationId(4)]);
+    state
+}
+
 #[test]
 fn roster_drops_entries_without_a_nickname() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#test".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#test".into()]);
     state.set_members(
         NetworkId(1),
         "#test",
@@ -14,7 +66,7 @@ fn roster_drops_entries_without_a_nickname() {
 
 #[test]
 fn sorts_roster_after_every_update_with_operators_first() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#test".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#test".into()]);
     state.set_members(
         NetworkId(1),
         "#test",
@@ -42,7 +94,7 @@ fn sorts_roster_after_every_update_with_operators_first() {
 
 #[test]
 fn same_named_channels_keep_networks_and_logs_separate() {
-    let mut state = AppState::mock();
+    let mut state = mock();
     let original_network = state.selected_network().unwrap().id;
     let original_message = state.selected_channel().unwrap().messages[0].text.clone();
     state.dispatch(Command::SelectChannel(ConversationId(3)));
@@ -58,7 +110,7 @@ fn same_named_channels_keep_networks_and_logs_separate() {
 
 #[test]
 fn unread_navigation_consumes_unread_and_skips_read_channels() {
-    let mut state = AppState::mock();
+    let mut state = mock();
     state.dispatch(Command::NextUnreadChannel);
     assert_eq!(state.selection(), Selection::Channel(ConversationId(2)));
     assert!(!state.is_unread(ConversationId(2)));
@@ -74,7 +126,7 @@ fn unread_navigation_consumes_unread_and_skips_read_channels() {
 
 #[test]
 fn previous_selection_toggles_and_active_navigation_filters() {
-    let mut state = AppState::mock();
+    let mut state = mock();
     state.active_channels.remove(&ConversationId(2));
     state.dispatch(Command::NextActiveChannel);
     assert_eq!(state.selection(), Selection::Channel(ConversationId(3)));
@@ -91,7 +143,7 @@ fn previous_selection_toggles_and_active_navigation_filters() {
 
 #[test]
 fn channel_and_server_indexing_and_cyclic_navigation() {
-    let mut state = AppState::mock();
+    let mut state = mock();
     state.dispatch(Command::PreviousChannel);
     assert_eq!(state.selection(), Selection::Channel(ConversationId(4)));
     state.dispatch(Command::NextChannel);
@@ -117,7 +169,7 @@ fn channel_and_server_indexing_and_cyclic_navigation() {
 
 #[test]
 fn live_events_update_channel_roster_unread_and_connection_state() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into()]);
     assert_eq!(
         state.status(NetworkId(1)),
         Some(&ConnectionStatus::Connecting)
@@ -159,7 +211,7 @@ fn live_events_update_channel_roster_unread_and_connection_state() {
 
 #[test]
 fn channel_messages_keep_arrival_order_across_channels() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
     state.append_channel_message(
         NetworkId(1),
         "#two",
@@ -194,7 +246,7 @@ fn channel_messages_keep_arrival_order_across_channels() {
 
 #[test]
 fn highlights_mark_unselected_channels_until_selected() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let (a, b) = (state.conversations[0].id, state.conversations[1].id);
     state.dispatch(Command::SelectChannel(a));
     state.mark_highlighted(NetworkId(1), "#a");
@@ -208,7 +260,7 @@ fn highlights_mark_unselected_channels_until_selected() {
 
 #[test]
 fn channel_activity_is_ordered_without_marking_unread() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into(), "#two".into()]);
     state.append_channel_activity(NetworkId(1), "#two", "alice has joined (u@h)".into());
     assert!(!state.is_unread(ConversationId(2)));
     state.append_channel_message(
@@ -231,7 +283,7 @@ fn channel_activity_is_ordered_without_marking_unread() {
 /// sender is kept as sent, as it identifies the user.
 #[test]
 fn retained_text_has_no_bidirectional_controls() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into()]);
     let id = state.channel_id(NetworkId(1), "#one").unwrap();
     state.append_channel_message(
         NetworkId(1),
@@ -258,7 +310,7 @@ fn retained_text_has_no_bidirectional_controls() {
 
 #[test]
 fn server_traffic_for_unjoined_channels_does_not_create_conversations() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into()]);
     state.append_channel_message(
         NetworkId(1),
         "#stray",
@@ -679,7 +731,7 @@ fn server_times_show_as_local_time_without_changing_arrival_order() {
         let local = chrono::DateTime::<chrono::Local>::from(time);
         TimeOfDay::new(local.hour() as u8, local.minute() as u8)
     };
-    let mut state = AppState::live("irc.example.org".into(), vec!["#test".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#test".into()]);
     let network = state.networks()[0].id;
     let later = UNIX_EPOCH + Duration::from_secs(1_319_042_451);
     let earlier = later - Duration::from_secs(3 * 3600);
@@ -753,7 +805,7 @@ fn meta(millis: Option<u64>, msgid: Option<&str>, provenance: Provenance) -> Mes
 
 #[test]
 fn highlights_follow_markers_and_server_log_prefixes() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#a".into()]);
     let network = state.networks()[0].id;
     let alice = 3..8;
     let marked = || MessageMeta {
@@ -790,7 +842,7 @@ fn texts(state: &AppState, index: usize) -> Vec<&str> {
 
 #[test]
 fn retained_messages_keep_full_server_time_identity_and_provenance() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     // 2026-09-27T23:58:31.123Z
     let stamp = 1_790_553_511_123;
@@ -867,7 +919,7 @@ fn retained_messages_keep_full_server_time_identity_and_provenance() {
 
 #[test]
 fn duplicates_by_msgid_are_dropped_without_taking_a_sequence_or_unread_mark() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let network = NetworkId(1);
     state.dispatch(Command::SelectChannel(ConversationId(2)));
     assert!(state.append_channel_message_at(
@@ -953,7 +1005,7 @@ fn duplicates_by_msgid_are_dropped_without_taking_a_sequence_or_unread_mark() {
 
 #[test]
 fn duplicate_state_is_bounded_and_dropped_with_its_conversations() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     for index in 0..timeline::DUPLICATE_KEYS_PER_CONVERSATION * 3 {
         let id = format!("m{index}");
@@ -1007,7 +1059,7 @@ fn line(text: &str, millis: Option<u64>, msgid: Option<&str>) -> timeline::Timel
 
 #[test]
 fn requested_history_goes_where_it_was_requested_without_unread_marks() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let network = NetworkId(1);
     state.dispatch(Command::SelectChannel(ConversationId(2)));
     state.append_channel_activity(network, "#a", "alice has joined".into());
@@ -1082,7 +1134,7 @@ fn requested_history_goes_where_it_was_requested_without_unread_marks() {
 
 #[test]
 fn requested_history_skips_what_playback_already_delivered() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     state.append_channel_message_at(
         network,
@@ -1113,7 +1165,7 @@ fn requested_history_skips_what_playback_already_delivered() {
 
 #[test]
 fn stale_history_replies_are_ignored() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     // Never requested.
     assert_eq!(
@@ -1140,7 +1192,7 @@ fn stale_history_replies_are_ignored() {
 
 #[test]
 fn requested_history_is_bounded_by_the_reserve_and_the_log_limit() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     for index in 0..MAX_RETAINED - 10 {
         state.append_channel_message(
@@ -1262,7 +1314,7 @@ fn private_conversations_are_created_once_per_peer_and_network() {
 
 #[test]
 fn notices_are_flagged_but_a_privmsg_that_looks_like_one_is_not() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     state.append_channel_message(network, "#a", "bob", "psst", Kind::Notice, Provenance::Live);
     state.append_channel_message(
@@ -1286,7 +1338,7 @@ fn notices_are_flagged_but_a_privmsg_that_looks_like_one_is_not() {
 
 #[test]
 fn notices_and_overflow_do_not_create_private_conversations() {
-    let mut state = AppState::live("irc.example".into(), vec![]);
+    let mut state = live_state("irc.example".into(), vec![]);
     let network = NetworkId(1);
     assert!(
         state
@@ -1305,7 +1357,7 @@ fn notices_and_overflow_do_not_create_private_conversations() {
 
 #[test]
 fn renames_follow_the_peer_but_never_merge_conversations() {
-    let mut state = AppState::live("irc.example".into(), vec![]);
+    let mut state = live_state("irc.example".into(), vec![]);
     let network = NetworkId(1);
     let bob = private(&mut state, network, "bob", "hi").unwrap();
     assert_eq!(
@@ -1337,7 +1389,7 @@ fn renames_follow_the_peer_but_never_merge_conversations() {
 
 #[test]
 fn private_conversations_end_with_their_session_and_can_be_closed() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     state.set_status(network, ConnectionStatus::Registered);
     let bob = private(&mut state, network, "bob", "hi").unwrap();
@@ -1364,7 +1416,7 @@ fn private_conversations_end_with_their_session_and_can_be_closed() {
 
 #[test]
 fn private_messages_use_timeline_identity_and_bounds() {
-    let mut state = AppState::live("irc.example".into(), vec![]);
+    let mut state = live_state("irc.example".into(), vec![]);
     let network = NetworkId(1);
     let bob = state
         .private_conversation(network, "bob", "bob", Missing::Create)
@@ -1419,7 +1471,7 @@ fn private_messages_use_timeline_identity_and_bounds() {
 
 #[test]
 fn avatars_follow_message_sequences_and_network_lifetime() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     state.joined_channel(network, "#a");
     state.append_channel_message(
@@ -1482,7 +1534,7 @@ fn avatars_follow_message_sequences_and_network_lifetime() {
 /// #a joined on a network that can page, with our JOIN, recent history
 /// (placed after the JOIN) and one live line.
 fn paging_channel() -> (AppState, NetworkId, ConversationId) {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let network = NetworkId(1);
     let id = ConversationId(1);
     state.set_history_paging(network, true);
@@ -1632,7 +1684,7 @@ fn overlapping_older_pages_add_only_new_lines() {
     assert!(ascending(&state, 0));
     // Without msgid (legacy encodings), server time, sender and text
     // identify a history repeat of a line already shown.
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     state.set_history_paging(network, true);
     state.joined_channel(network, "#a");
@@ -1743,7 +1795,7 @@ fn stale_older_pages_are_ignored() {
 
 #[test]
 fn older_pages_wait_for_recent_history_and_skip_private_or_unidentified_logs() {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     let network = NetworkId(1);
     let id = ConversationId(1);
     state.joined_channel(network, "#a");
@@ -1766,7 +1818,7 @@ fn older_pages_wait_for_recent_history_and_skip_private_or_unidentified_logs() {
     assert!(state.request_older_history(id).is_some());
 
     // Lines without identity give nothing to refer to.
-    let mut plain = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut plain = live_state("irc.example".into(), vec!["#a".into()]);
     plain.set_history_paging(network, true);
     plain.joined_channel(network, "#a");
     plain.append_channel_message(network, "#a", "bob", "x", Kind::Message, Provenance::Live);
@@ -1922,7 +1974,7 @@ fn live(state: &mut AppState, text: &str, millis: u64, msgid: Option<&str>) {
 /// #a and #b joined on a session with history, #a with two identified
 /// lines, then the link drops.
 fn cut_off() -> (AppState, NetworkId, ConversationId) {
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into(), "#b".into()]);
     let network = NetworkId(1);
     state.set_status(network, ConnectionStatus::Registered);
     state.set_history_paging(network, true);
@@ -1979,7 +2031,7 @@ fn a_disconnect_records_where_each_joined_channel_was_cut_off() {
     assert_eq!(resume[0].timestamp.map(Timestamp::as_millis), Some(1_000));
 
     // Legacy encodings: server time only.
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     state.set_history_paging(NetworkId(1), true);
     state.joined_channel(NetworkId(1), "#a");
     live(&mut state, "A", 1_000, None);
@@ -1989,14 +2041,14 @@ fn a_disconnect_records_where_each_joined_channel_was_cut_off() {
     assert_eq!(resume[0].timestamp.map(Timestamp::as_millis), Some(1_000));
 
     // Left on purpose, or a session without history: nothing to resume.
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     state.set_history_paging(NetworkId(1), true);
     state.joined_channel(NetworkId(1), "#a");
     live(&mut state, "A", 1_000, Some("m1"));
     state.parted_channel(NetworkId(1), "#a");
     state.set_status(NetworkId(1), ConnectionStatus::Disconnected("gone".into()));
     assert!(state.history_resume(NetworkId(1)).is_empty());
-    let mut state = AppState::live("irc.example".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
     state.joined_channel(NetworkId(1), "#a");
     live(&mut state, "A", 1_000, Some("m1"));
     state.set_status(NetworkId(1), ConnectionStatus::Disconnected("gone".into()));
@@ -2142,7 +2194,7 @@ fn recovery_is_given_up_without_history_or_a_usable_reference() {
 
 #[test]
 fn a_refused_join_of_a_new_channel_opens_it_with_the_alert() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#one".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into()]);
     state.append_channel_alert_at(NetworkId(1), "#new", "dropped".into(), MessageMeta::live());
     assert_eq!(state.channel_id(NetworkId(1), "#new"), None);
 
@@ -2225,7 +2277,7 @@ fn notified(state: &mut AppState, name: &str, text: &str) -> ConversationId {
 
 #[test]
 fn notified_lines_are_visited_oldest_first_across_conversations_then_stop() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#a".into(), "#b".into()]);
     let a = state.channel_id(NetworkId(1), "#a").unwrap();
     let b = state.channel_id(NetworkId(1), "#b").unwrap();
     let query = state
@@ -2278,7 +2330,7 @@ fn notified_lines_are_visited_oldest_first_across_conversations_then_stop() {
 
 #[test]
 fn a_line_is_noted_once_and_the_list_is_bounded() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#a".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#a".into()]);
     let a = notified(&mut state, "#a", "one");
     state.note_attention(a);
     state.dispatch(Command::NextNotifiedMessage);
@@ -2303,7 +2355,7 @@ fn a_line_is_noted_once_and_the_list_is_bounded() {
 
 #[test]
 fn trimmed_lines_and_closed_conversations_leave_the_list() {
-    let mut state = AppState::live("irc.example.org".into(), vec!["#a".into(), "#b".into()]);
+    let mut state = live_state("irc.example.org".into(), vec!["#a".into(), "#b".into()]);
     notified(&mut state, "#a", "old");
     notified(&mut state, "#b", "kept");
     for n in 0..MAX_RETAINED {
