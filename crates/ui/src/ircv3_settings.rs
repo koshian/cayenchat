@@ -192,7 +192,7 @@ impl SettingsWindow {
                     .gap_2()
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(settings_theme::LABEL_WIDTH)
                             .flex_shrink_0()
                             .child(self.i18n.text("ircv3_server")),
                     )
@@ -310,7 +310,7 @@ impl SettingsWindow {
             settings_theme::button(id, primary, cx).child(self.i18n.text(key))
         };
         let buttons = div()
-            .ml(px(158.))
+            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .flex_wrap()
             .items_center()
@@ -390,7 +390,7 @@ impl SettingsWindow {
             .when(status.unsupported, |section| {
                 section.child(
                     div()
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.text_secondary)
                         .child(self.i18n.text("ircv3_avatar_unsupported")),
                 )
@@ -398,7 +398,7 @@ impl SettingsWindow {
             .when_some(outcome, |section, (text, failed)| {
                 section.child(
                     div()
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .when(failed, |d| d.text_color(theme.warning))
                         .child(text),
                 )
@@ -407,12 +407,17 @@ impl SettingsWindow {
                 section.child(self.render_peer_sharing(profile, &draft, &status, cx))
             })
             .when_some(self.avatar_feedback.clone(), |section, feedback| {
-                section.child(div().ml(px(158.)).text_color(theme.warning).child(feedback))
+                section.child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .text_color(theme.warning)
+                        .child(feedback),
+                )
             })
             .when(self.avatar_opening, |section| {
                 section.child(
                     div()
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.text_secondary)
                         .child(self.i18n.text("ircv3_avatar_edit_loading")),
                 )
@@ -437,7 +442,7 @@ impl SettingsWindow {
         let warning: SharedString = self.i18n.text("ircv3_peer_share_exposure").into();
         let reconnect = peer_reconnect_needed(status, profile);
         div()
-            .ml(px(158.))
+            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .flex_col()
             .gap_2()

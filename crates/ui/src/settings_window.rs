@@ -915,7 +915,7 @@ pub(crate) fn settings_field(label: &str, input: Entity<TextInput>) -> Div {
         .flex()
         .items_center()
         .gap_2()
-        .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
+        .child(settings_theme::label_column().child(label.to_owned()))
         .child(div().flex_1().min_w_0().child(input))
 }
 
@@ -955,7 +955,7 @@ impl SettingsWindow {
             .gap_2()
             .child(
                 div()
-                    .w(px(150.))
+                    .w(settings_theme::LABEL_WIDTH)
                     .flex_shrink_0()
                     .child(self.i18n.text(label_key)),
             )
@@ -2186,7 +2186,7 @@ impl SettingsWindow {
                     .gap_2()
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(settings_theme::LABEL_WIDTH)
                             .flex_shrink_0()
                             .child(self.i18n.text("destination")),
                     )
@@ -2196,7 +2196,7 @@ impl SettingsWindow {
             .when(no_server, |d| {
                 d.child(
                     div()
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.text_secondary)
                         .child(self.i18n.text("no_servers_hint")),
                 )
@@ -2329,7 +2329,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("remove-server")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .px_2()
                     .py_1()
                     .cursor_pointer()
@@ -2355,7 +2355,7 @@ impl SettingsWindow {
                     .gap_2()
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(settings_theme::LABEL_WIDTH)
                             .flex_shrink_0()
                             .child(self.i18n.text("encoding")),
                     )
@@ -2363,7 +2363,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("encoding_hint")),
             )
@@ -2372,7 +2372,7 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(150.)).child("TLS/SSL"))
+                    .child(div().w(settings_theme::LABEL_WIDTH).child("TLS/SSL"))
                     .child(
                         div()
                             .id("tls-toggle")
@@ -2393,7 +2393,7 @@ impl SettingsWindow {
                         .gap_2()
                         .child(
                             div()
-                                .w(px(150.))
+                                .w(settings_theme::LABEL_WIDTH)
                                 .child(self.i18n.text("verify_certificates")),
                         )
                         .child(
@@ -2421,7 +2421,7 @@ impl SettingsWindow {
                 .when(!profile.verify_tls_certificates, |d| {
                     d.child(
                         div()
-                            .ml(px(158.))
+                            .ml(settings_theme::LABEL_INDENT)
                             .text_color(theme.warning)
                             .child(self.i18n.text("certificate_warning")),
                     )
@@ -2437,7 +2437,7 @@ impl SettingsWindow {
             ))
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("username_hint")),
             )
@@ -2464,7 +2464,7 @@ impl SettingsWindow {
                     .gap_2()
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(settings_theme::LABEL_WIDTH)
                             .flex_shrink_0()
                             .child(self.i18n.text("auto_join_channels")),
                     )
@@ -2487,7 +2487,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("connect-on-startup")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -2508,7 +2508,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("user-avatars")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -2524,14 +2524,14 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("user_avatars_hint")),
             )
             .child(
                 div()
                     .id("regain-ops")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -2547,7 +2547,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("regain_ops_hint")),
             )
@@ -2563,7 +2563,7 @@ impl SettingsWindow {
             ))
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("server_password_hint")),
             )
@@ -2571,7 +2571,7 @@ impl SettingsWindow {
                 d.child(
                     div()
                         .id("plaintext-pass")
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .flex()
                         .items_center()
                         .gap_2()
@@ -2589,7 +2589,7 @@ impl SettingsWindow {
                 .when(profile.allow_plaintext_pass, |d| {
                     d.child(
                         div()
-                            .ml(px(158.))
+                            .ml(settings_theme::LABEL_INDENT)
                             .text_color(theme.warning)
                             .child(self.i18n.text("plaintext_pass_warning")),
                     )
@@ -2598,7 +2598,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("remember-passwords")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -2624,7 +2624,7 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(150.)).child("SASL PLAIN"))
+                    .child(div().w(settings_theme::LABEL_WIDTH).child("SASL PLAIN"))
                     .child(
                         div()
                             .id("sasl-toggle")
@@ -2714,7 +2714,7 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
+                    .child(settings_theme::label_column().child(label.to_owned()))
                     .child(self.color_input(light, cx))
                     .child(self.color_input(dark, cx)),
             )
@@ -2823,7 +2823,7 @@ impl SettingsWindow {
             );
         }
         div()
-            .ml(px(158.))
+            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .gap_4()
             .child(open.picker.clone())
@@ -2855,7 +2855,7 @@ impl SettingsWindow {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().w(px(150.)).flex_shrink_0().child(label.to_owned()))
+                .child(settings_theme::label_column().child(label.to_owned()))
                 .child(div().flex_1().min_w_0().child(input.clone()))
                 .child(
                     div()
@@ -2890,7 +2890,7 @@ impl SettingsWindow {
             let query = input.read(cx).text().trim().to_lowercase();
             let mut choices = div()
                 .id(("font-choices", target as u32))
-                .ml(px(158.))
+                .ml(settings_theme::LABEL_INDENT)
                 .max_h(px(170.))
                 .overflow_y_scroll()
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -2967,7 +2967,7 @@ impl SettingsWindow {
                 div()
                     .flex()
                     .gap_2()
-                    .child(div().w(px(150.)).flex_shrink_0())
+                    .child(settings_theme::label_column())
                     .child(div().flex_1().child(self.i18n.text("colors_light")))
                     .child(div().flex_1().child(self.i18n.text("colors_dark"))),
             )
@@ -3050,7 +3050,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("alternate-rows")
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .cursor_pointer()
@@ -3084,7 +3084,7 @@ impl SettingsWindow {
         let theme = settings_theme::palette(cx);
         let hint = |key: &str| {
             div()
-                .ml(px(158.))
+                .ml(settings_theme::LABEL_INDENT)
                 .text_color(theme.text_secondary)
                 .child(self.i18n.text(key))
         };
@@ -3137,7 +3137,7 @@ impl SettingsWindow {
         let theme = settings_theme::palette(cx);
         div()
             .id(id)
-            .ml(px(158.))
+            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .items_center()
             .gap_2()
@@ -3164,7 +3164,7 @@ impl SettingsWindow {
         let enabled = self.settings.values.notifications.enabled;
         let hint = |key: &str| {
             div()
-                .ml(px(158.))
+                .ml(settings_theme::LABEL_INDENT)
                 .text_color(theme.text_secondary)
                 .child(self.i18n.text(key))
         };
@@ -3470,7 +3470,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_autostart(cx)));
         }
         div()
-            .ml(px(158.))
+            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .flex_col()
             .child(toggle)

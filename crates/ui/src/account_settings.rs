@@ -295,7 +295,7 @@ impl SettingsWindow {
         let selected = self.settings.values.image_upload.provider.clone();
         let heading = self.tab_heading("image_upload_tab");
         let footer = self.reset_footer(SettingsTab::ImageUpload, cx);
-        let label = |key: &str| div().w(px(150.)).flex_shrink_0().child(self.i18n.text(key));
+        let label = |key: &str| settings_theme::label_column().child(self.i18n.text(key));
         let button =
             |id: &'static str, text: String| settings_theme::button(id, false, cx).child(text);
         let mut choices = div().flex().gap_1().child(
@@ -391,14 +391,14 @@ impl SettingsWindow {
                 panel = panel
                     .child(
                         div()
-                            .ml(px(158.))
+                            .ml(settings_theme::LABEL_INDENT)
                             .text_color(theme.text_secondary)
                             .child(self.i18n.text(&format!("image_setup_{}", info.id))),
                     )
                     .child(
                         div()
                             .id("upload-setup-page")
-                            .ml(px(158.))
+                            .ml(settings_theme::LABEL_INDENT)
                             .text_color(theme.link)
                             .cursor_pointer()
                             .child(format!(
@@ -412,24 +412,26 @@ impl SettingsWindow {
                         self.upload_token.clone(),
                     ))
                     .child(
-                        crate::button_order::row(div().ml(px(158.)).flex().gap_2())
-                            .child(
-                                settings_theme::button("upload-token-save", true, cx)
-                                    .child(self.i18n.text("image_token_save"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.connect_upload_account(cx)
-                                    })),
-                            )
-                            .child(
-                                button("upload-token-cancel", self.i18n.text("cancel")).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.upload_token_open = false;
-                                        this.upload_token
-                                            .update(cx, |field, cx| field.set_text("", cx));
-                                        cx.notify();
-                                    }),
+                        crate::button_order::row(
+                            div().ml(settings_theme::LABEL_INDENT).flex().gap_2(),
+                        )
+                        .child(
+                            settings_theme::button("upload-token-save", true, cx)
+                                .child(self.i18n.text("image_token_save"))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.connect_upload_account(cx)),
                                 ),
+                        )
+                        .child(
+                            button("upload-token-cancel", self.i18n.text("cancel")).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.upload_token_open = false;
+                                    this.upload_token
+                                        .update(cx, |field, cx| field.set_text("", cx));
+                                    cx.notify();
+                                }),
                             ),
+                        ),
                     );
             }
         }

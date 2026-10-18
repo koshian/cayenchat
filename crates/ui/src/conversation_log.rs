@@ -522,7 +522,7 @@ impl SettingsWindow {
         div()
             .id(id)
             .debug_selector(move || id.into())
-            .ml(px(158.))
+            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .gap_2()
             .cursor_pointer()
@@ -571,7 +571,7 @@ impl SettingsWindow {
             .gap_2()
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .font_weight(FontWeight::BOLD)
                     .child(self.i18n.text("conversation_log")),
             )
@@ -591,13 +591,13 @@ impl SettingsWindow {
             ))
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("conversation_log_hint")),
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .flex_col()
                     .child(self.i18n.text("conversation_log_directory"))
@@ -605,7 +605,7 @@ impl SettingsWindow {
             )
             .child(
                 div()
-                    .ml(px(158.))
+                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
                     .gap_2()
                     .child(
@@ -625,7 +625,7 @@ impl SettingsWindow {
                 d.child(
                     div()
                         .id("conversation-log-status")
-                        .ml(px(158.))
+                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.warning)
                         .child(status),
                 )

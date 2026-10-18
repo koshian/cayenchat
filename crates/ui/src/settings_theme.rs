@@ -7,6 +7,17 @@
 use gpui::{prelude::*, *};
 use native_theme_gpui::{ResolvedTheme, SystemTheme};
 
+/// Width of the label column of a settings row.
+pub const LABEL_WIDTH: Pixels = px(150.);
+/// Left margin that lines a hint or control up under the row's input: the
+/// label column plus the row's `gap_2` (8 px).
+pub const LABEL_INDENT: Pixels = px(150. + 8.);
+
+/// The label column of a settings row.
+pub fn label_column() -> Div {
+    div().w(LABEL_WIDTH).flex_shrink_0()
+}
+
 #[derive(Default)]
 struct NativeSettingsTheme {
     variants: Option<[Variant; 2]>,
