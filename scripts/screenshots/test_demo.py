@@ -38,6 +38,17 @@ class Settings(unittest.TestCase):
                                 for _, text in lines), language)
 
 
+class ScreenshotGeometry(unittest.TestCase):
+    def test_readme_window_leaves_room_for_openbox_on_every_side(self):
+        window, margin = demo.readme_window_geometry("1280x800")
+        self.assertEqual(window, "1180x680")
+        self.assertEqual(margin, 50)
+
+    def test_readme_rejects_an_undersized_display(self):
+        with self.assertRaises(SystemExit):
+            demo.readme_window_geometry("480x320")
+
+
 class Build(unittest.TestCase):
     """resolve_app takes only the file identical to the demo build made now."""
 
