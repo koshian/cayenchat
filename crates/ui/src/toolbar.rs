@@ -12,8 +12,7 @@ use std::borrow::Cow;
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, Connect, Disconnect, FindInLog, OpenSettings, Reconnect,
-    ircv3_settings::TextTooltip,
+    ChatWindow, Connect, Disconnect, OpenSettings, Reconnect, ircv3_settings::TextTooltip,
 };
 use crate::{key_recorder, shortcuts, theme::Theme};
 use cayenchat_app::Command;
@@ -434,7 +433,7 @@ impl Toolbar {
                             }
                             Click::Whois => chat.toolbar_whois(cx),
                             Click::Upload => chat.toolbar_upload(window, cx),
-                            Click::Search => chat.open_search(&FindInLog, window, cx),
+                            Click::Search => chat.toggle_search(window, cx),
                             Click::Settings => chat.open_settings(&OpenSettings, window, cx),
                         });
                     }))
