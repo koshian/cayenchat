@@ -1671,8 +1671,9 @@ an action.
 
 `irc-core` reports a PRIVMSG or NOTICE from a user mask to our nickname as
 `PrivateMessage`; server notices stay server lines, and CTCP other than
-ACTION becomes a readable server line (D029). Private messages notify only as PRIVMSG. Channel and private NOTICEs (often
-sent by services or bots) are displayed and may be logged, but never run
+ACTION becomes a readable server line (D029). Private messages notify only as
+PRIVMSG. Channel and private NOTICEs (often sent by services or bots) are
+displayed and may be logged, but never run
 mention/keyword matching, text highlights, channel-tree highlights, unread
 marks, desktop notifications, sounds, taskbar flashes or attention-jump
 bookmarks. The former opt-in channel NOTICE notification setting has been
