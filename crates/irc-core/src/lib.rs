@@ -993,9 +993,20 @@ impl WhoisInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MemberCommand {
     Whois,
-    Invite { channel: String },
-    GiveOp { channel: String },
-    Deop { channel: String },
+    Invite {
+        channel: String,
+    },
+    GiveOp {
+        channel: String,
+    },
+    Deop {
+        channel: String,
+    },
+    /// A CTCP request with no arguments, as `/ctcp <nick> <tag>` would send;
+    /// `PING` is the timed one of `/ping <nick>`.
+    Ctcp {
+        tag: String,
+    },
 }
 
 /// Set by [`Connection::shutdown`] and [`Connection::sleep`]. It reaches the
@@ -1624,6 +1635,7 @@ fn member_outgoing(nickname: &str, action: MemberCommand) -> Result<Outgoing, St
             }
             checked_raw(&format!("MODE {channel} -o {nickname}"))
         }
+        MemberCommand::Ctcp { tag } => ctcp_request(nickname, &tag, ""),
     }
 }
 
