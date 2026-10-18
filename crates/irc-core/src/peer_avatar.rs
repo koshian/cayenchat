@@ -671,26 +671,10 @@ impl PeerAvatars {
             return Vec::new();
         };
         let ours = |nick: &str| same_nickname(nick, current_nick);
-        let gone: Vec<String> = match &message.command {
-            IrcCommand::NICK(new) => return self.rename(actor, new),
-            IrcCommand::QUIT(_) if !ours(actor) => vec![actor.to_owned()],
-            IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) => {
-                let leaving = match &message.command {
-                    IrcCommand::KICK(_, nickname, _) => nickname.as_str(),
-                    _ => actor,
-                };
-                if ours(leaving) {
-                    let mut only = presence.only_in(channel);
-                    only.retain(|nick| !ours(nick));
-                    only
-                } else if presence.shares(leaving, Some(channel)) {
-                    Vec::new()
-                } else {
-                    vec![leaving.to_owned()]
-                }
-            }
-            _ => Vec::new(),
-        };
+        if let IrcCommand::NICK(new) = &message.command {
+            return self.rename(actor, new);
+        }
+        let gone = presence.departed(message, actor, ours);
         gone.iter().filter_map(|nick| self.forget(nick)).collect()
     }
 

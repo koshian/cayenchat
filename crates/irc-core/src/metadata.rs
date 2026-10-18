@@ -671,24 +671,7 @@ impl MetadataState {
                 // else, who has left that name.
                 vec![new.clone()]
             }
-            IrcCommand::QUIT(_) if !ours(actor) => vec![actor.to_owned()],
-            IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) => {
-                let leaving = match &message.command {
-                    IrcCommand::KICK(_, nickname, _) => nickname.as_str(),
-                    _ => actor,
-                };
-                if ours(leaving) {
-                    // Everyone only we shared through this channel.
-                    let mut only = presence.only_in(channel);
-                    only.retain(|nick| !ours(nick));
-                    only
-                } else if presence.shares(leaving, Some(channel)) {
-                    Vec::new()
-                } else {
-                    vec![leaving.to_owned()]
-                }
-            }
-            _ => Vec::new(),
+            _ => presence.departed(message, actor, ours),
         };
         if !renamed {
             for nick in &gone {
