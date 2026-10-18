@@ -6433,7 +6433,9 @@ impl ChatWindow {
                                 .border_color(border)
                                 .cursor_pointer()
                                 .child(self.i18n.text("upload_cancel"))
-                                .on_click(cx.listener(|this, _, _, cx| this.cancel_upload(cx))),
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_upload(window, cx)
+                                })),
                         ),
                 )
             })

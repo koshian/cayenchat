@@ -451,6 +451,8 @@
   "upload_cancelled": "Upload cancelled. If the transfer had already finished, the image may still exist on {provider}.",
   "upload_busy": "An image upload is already in progress.",
   "upload_failed_title": "Image upload failed",
+  "upload_cancelled_title": "Upload cancelled",
+  "upload_problem_title": "This image cannot be uploaded",
   "upload_failed_close": "Close",
   "upload_failed_network": "Could not reach {provider} ({error}). The draft was not changed.",
   "upload_failed_rejected": "{provider} rejected the image ({error}). The draft was not changed.",
