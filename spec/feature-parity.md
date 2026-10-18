@@ -66,7 +66,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — operator/voice prefixes track NAMES and channel MODE changes; the member menu can request +o/-o
 - PARTIAL — nick changes update the roster through the IRC client's channel list
 - PARTIAL — join/part/quit synchronize the roster through the IRC client's channel list
-- DONE — member context menu offers Whois, private-message composition, channel invite and +o/-o commands; on our own row in a channel it also offers "Change nickname…" (issue #440)
+- DONE — member context menu offers Whois, private-message composition, channel invite, +o/-o commands and a CTCP submenu (Ping, Time, Version, UserInfo, ClientInfo; opened by hover or click, sends nothing until an item is chosen, one request to the clicked row's nick on that list's connection through the `/ctcp` and `/ping` path, answers in the server log; not offered for a multi-member group menu) ; on our own row in a channel it also offers "Change nickname…" (issue #440)
 - DONE — WHOIS replies requested by this client open a raised per-nick WHOIS window with join, private message and update actions and a 48px icon (the user's avatar, ours from the confirmed/shared avatar as in the log, else the nickname-derived default icon; empty only while loading; drawn at 48 × the window's scale factor, rounded up, from the kept original of the image or as a default icon rasterized at that size, never enlarged from the 32 px log size); replies requested by other bouncer clients stay in the server log
 
 ## Navigation

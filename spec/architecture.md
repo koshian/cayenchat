@@ -1135,6 +1135,11 @@ only while it is on:
   (RFC 1459), in metadata and peer avatars alike. A speaker already known
   is not looked up again without scanning the rosters. A select branch
   exists only while a probe is queued or outstanding.
+- IRCnet's ircd (2.11+) writes 352 as `:<hops> <sid> <realname>` (sid: a
+  digit and three of `[0-9A-Z]`). A connection that received 042
+  (RPL_YOURID) skips that word when it has this shape and a realname
+  follows; without 042 the realname follows the hops as in RFC 2812. The
+  flag lives in the connection's worker, so a reconnect learns it again.
 - Merge: the struct keeps each user's metadata and peer reference and
   emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);
   metadata's own events pass through `merge_metadata`, its moves are
