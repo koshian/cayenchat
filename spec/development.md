@@ -1166,20 +1166,22 @@ screenshots then, and press Enter to quit. Store sizes (check each store's
 current requirements before submitting):
 
 - **Mac App Store**: 16:10, 1280×800, 1440×900, 2560×1600 or 2880×1800.
-  Build the bundle with `scripts/bundle-macos.sh --demo` and run
-  `demo.py run --app target/demo/CayenChat.app/Contents/MacOS/cayenchat`, so
-  the menu bar says "CayenChat". Either capture the whole screen at 1440×900
-  (a Retina display gives 2880×1800), or capture only the window without its
-  shadow: `swift scripts/screenshots/window_id.swift PID` prints the window
-  IDs of the app's process (PID is printed by `demo.py`; largest window first,
-  no Screen Recording permission needed), then
-  `screencapture -o -l ID shot.png` (Terminal needs Screen Recording
-  permission for this). `screencapture -o -w shot.png` instead lets you click
-  the window. Put a window capture on a 16:10 background.
-- **Microsoft Store**: at least 1366×768, 16:9 recommended. Run `demo.py run
-  --app target\release\cayenchat.exe --size 1600x900` at 100 % display scale
-  (or `--size 1280x720` at 150 %) and capture the window (Win+Shift+S, window
-  mode), or the whole screen at 1920×1080.
+  Run `python3 scripts/screenshots/demo.py run --size 1440x900`, which builds
+  and starts a staged copy of the current demo binary. Either capture the
+  whole screen at 1440×900 (a Retina display gives 2880×1800), or capture
+  only the window without its shadow:
+  `swift scripts/screenshots/window_id.swift PID` prints the window IDs
+  (PID is printed by `demo.py`; largest window first), then
+  `screencapture -o -l ID shot.png` (Terminal may need Screen Recording
+  permission). `screencapture -o -w shot.png` lets you click the window.
+  Put a window capture on a 16:10 background. The optional
+  `scripts/bundle-macos.sh --demo` builds a .app bundle, but `demo.py run`
+  launches its verified staged executable, not that bundle; do not rely on
+  the bundle's Dock/menu-bar identity for this capture.
+- **Microsoft Store**: at least 1366×768, 16:9 recommended. Run
+  `python scripts/screenshots/demo.py run --size 1600x900` at 100 % display
+  scale (or `--size 1280x720` at 150 %) and capture the window
+  (Win+Shift+S, window mode), or the whole screen at 1920×1080.
 
 Take both themes and both languages. Captions or backgrounds are added
 afterwards in an image editor; they are not part of this procedure.
