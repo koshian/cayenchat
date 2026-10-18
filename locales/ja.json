@@ -251,6 +251,8 @@
   "menu_copy": "コピー",
   "menu_paste": "ペースト",
   "menu_select_all": "すべて選択",
+  "input_menu_delete": "削除",
+  "input_menu_clear": "発言欄をクリア",
   "menu_view": "表示",
   "menu_show_menu_bar": "メニューバーを表示",
   "menu_hide_menu_bar": "メニューバーを隠す",

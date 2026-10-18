@@ -946,6 +946,7 @@ impl LogSelection {
 impl ChatWindow {
     fn apply_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
         self.i18n = Localizer::new(language);
+        cx.set_global(input::MenuLabels::new(&self.i18n));
         let placeholder = self.i18n.text("draft_placeholder");
         for input in self.inputs.values() {
             input.update(cx, |input, cx| input.set_placeholder(&placeholder, cx));
@@ -1055,6 +1056,7 @@ impl ChatWindow {
     ) -> Self {
         cx.set_global(input::ShortenPastedAmazon(saved.shorten_amazon_urls));
         let i18n = Localizer::new(saved.language);
+        cx.set_global(input::MenuLabels::new(&i18n));
         // Every configured server is a network in the tree, connected or not.
         let mut sessions = HashMap::new();
         let mut networks = Vec::new();
@@ -7117,6 +7119,9 @@ impl ChatWindow {
             // window handles About itself; `open_about` covers other windows.
             .on_action(cx.listener(|this, _: &About, _, cx| about::open(&this.i18n, cx)))
             .on_action(cx.listener(Self::paste_image))
+            .on_action(cx.listener(|this, _: &input::UploadImage, window, cx| {
+                this.toolbar_upload(window, cx)
+            }))
             // The search bar spans both columns above them.
             .children(search_bar)
             .child(

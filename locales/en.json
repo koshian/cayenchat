@@ -251,6 +251,8 @@
   "menu_copy": "Copy",
   "menu_paste": "Paste",
   "menu_select_all": "Select All",
+  "input_menu_delete": "Delete",
+  "input_menu_clear": "Clear message box",
   "menu_view": "View",
   "menu_show_menu_bar": "Show Menu Bar",
   "menu_hide_menu_bar": "Hide Menu Bar",
