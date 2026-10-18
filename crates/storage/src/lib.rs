@@ -1030,9 +1030,6 @@ pub struct Notifications {
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
     pub private_messages: bool,
-    /// Let channel NOTICEs trigger mention and keyword notifications.
-    /// Off by default: NOTICEs are mostly bots and services.
-    pub channel_notices: bool,
     /// Beep and flash the taskbar button (Windows) when a notification
     /// fires. Off by default.
     pub sound: bool,
@@ -1046,7 +1043,6 @@ impl Default for Notifications {
             keyword_alerts: true,
             keywords: Vec::new(),
             private_messages: true,
-            channel_notices: false,
             sound: false,
         }
     }
@@ -2037,6 +2033,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_channel_notice_setting_is_ignored() {
+        let old = serde_json::json!({
+            "enabled": true,
+            "mentions": true,
+            "keyword_alerts": true,
+            "private_messages": true,
+            "channel_notices": true
+        });
+        let notifications: Notifications = serde_json::from_value(old).unwrap();
+        assert_eq!(notifications, Notifications::default());
+        let saved = serde_json::to_value(&notifications).unwrap();
+        assert!(saved.get("channel_notices").is_none());
+    }
+
+    #[test]
     fn supported_profile_versions_preserve_connection_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -2070,7 +2081,6 @@ mod tests {
             assert!(profile.sasl_enabled);
             assert_eq!(profile.sasl_username, "account");
             assert_eq!(settings.notifications, Notifications::default());
-            assert!(!settings.notifications.channel_notices);
             assert_eq!(fs::read(&path).unwrap(), bytes);
             save_to(&path, &settings).unwrap();
             assert_eq!(load_from(&path).unwrap(), Some(settings));

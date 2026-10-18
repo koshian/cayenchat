@@ -3206,14 +3206,6 @@ impl SettingsWindow {
                 enabled,
                 cx,
             ))
-            .child(self.notification_toggle(
-                "notify-channel-notices",
-                "notify_channel_notices",
-                |n| n.channel_notices,
-                |n| n.channel_notices = !n.channel_notices,
-                enabled,
-                cx,
-            ))
             .child(settings_field(
                 &self.i18n.text("keywords"),
                 self.settings.keywords.clone(),

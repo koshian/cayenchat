@@ -2640,12 +2640,78 @@ fn colored_mentions_highlight_where_they_are_drawn(cx: &mut TestAppContext) {
                     channel: "#a".into(),
                     sender: "bob".into(),
                     text: "\u{3}04alice\u{3}: \u{2}deploy\u{2}?".into(),
-                    notice: true,
+                    notice: false,
                     server_time: None,
                     msgid: None,
                     account: None,
                     replayed: false,
                 },
+            ],
+            Worker::Running,
+            cx,
+        );
+        let message = chat.state.conversations()[0].messages.last().unwrap();
+        let shown: Vec<_> = message
+            .highlights
+            .as_slice()
+            .iter()
+            .map(|range| &message.text[range.clone()])
+            .collect();
+        assert_eq!(shown, ["alice", "deploy"], "{:?}", message.text);
+    });
+}
+
+#[gpui::test]
+fn notices_are_shown_without_highlight_or_unread(cx: &mut TestAppContext) {
+    use cayenchat_irc_core::Event;
+
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a");
+    settings.notifications.keywords = vec!["deploy".into()];
+    let (chat, cx) =
+        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    chat.update(cx, |chat, cx| {
+        let notice_channel = |text: &str| Event::ChannelMessage {
+            channel: "#a".into(),
+            sender: "bob".into(),
+            text: text.into(),
+            notice: true,
+            server_time: None,
+            msgid: None,
+            account: None,
+            replayed: false,
+        };
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "alice".into(),
+                },
+                Event::Joined {
+                    channel: "#a".into(),
+                },
+                Event::Joined {
+                    channel: "#b".into(),
+                },
+            ],
+            Worker::Running,
+            cx,
+        );
+        // Select the other channel so #a counts as unselected.
+        let b = chat.state.conversations()[1].id;
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(b));
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                notice_channel("\u{3}04alice\u{3}: \u{2}deploy\u{2}?"),
                 // A private NOTICE without a conversation goes to the
                 // server log behind the sender.
                 Event::PrivateMessage {
@@ -2661,18 +2727,66 @@ fn colored_mentions_highlight_where_they_are_drawn(cx: &mut TestAppContext) {
             Worker::Running,
             cx,
         );
+        let a = chat.state.conversations()[0].id;
         let channel = &chat.state.conversations()[0];
         let server = chat.state.server_messages(NetworkId(1));
         for message in [channel.messages.last(), server.last()] {
             let message = message.unwrap();
-            let shown: Vec<_> = message
+            assert!(
+                message.highlights.as_slice().is_empty(),
+                "{:?}",
+                message.text
+            );
+        }
+        assert!(!chat.state.is_unread(a) && !chat.state.is_highlighted(a));
+
+        // An existing private conversation shows the NOTICE without unread.
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::PrivateMessage {
+                sender: "carol".into(),
+                text: "hi".into(),
+                notice: false,
+                server_time: None,
+                msgid: None,
+                account: None,
+                replayed: false,
+            }],
+            Worker::Running,
+            cx,
+        );
+        let carol = chat.state.conversations().last().unwrap().id;
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(carol));
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(b));
+        let before = chat.state.conversations().last().unwrap().messages.len();
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::PrivateMessage {
+                sender: "carol".into(),
+                text: "alice: deploy".into(),
+                notice: true,
+                server_time: None,
+                msgid: None,
+                account: None,
+                replayed: false,
+            }],
+            Worker::Running,
+            cx,
+        );
+        let conversation = chat.state.conversations().last().unwrap();
+        assert_eq!(conversation.messages.len(), before + 1);
+        assert!(
+            conversation
+                .messages
+                .last()
+                .unwrap()
                 .highlights
                 .as_slice()
-                .iter()
-                .map(|range| &message.text[range.clone()])
-                .collect();
-            assert_eq!(shown, ["alice", "deploy"], "{:?}", message.text);
-        }
+                .is_empty()
+        );
+        assert!(!chat.state.is_unread(carol) && !chat.state.is_highlighted(carol));
     });
 }
 

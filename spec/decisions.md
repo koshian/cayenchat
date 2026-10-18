@@ -1896,7 +1896,12 @@ PageUp/PageDown (`ui::list_keys`); the tree also has Left/Right (to the server
 of a channel / to a server's first channel) and Enter (open the selected row
 and return to the draft). The keys are handled by the focused list only, never
 as shortcuts, so the draft keeps every character and its Emacs-style editing.
-Modified keys are ignored. Letters (K/J, N/P) are not aliases: K/J were
+Modified keys are ignored. Whenever the selection changes by any route (the
+channel shortcuts, tree keys, a click), the next render of the tree scrolls the
+new row into view with the minimum movement (`tree_revealed`, #477); a row
+that is not laid out yet is approached in steps over a few frames, since the list
+only knows the height of laid-out rows; a row
+already visible and manual scrolling are left alone. Letters (K/J, N/P) are not aliases: K/J were
 dropped in #289 because a key handler that consumes a letter keeps the first
 romaji of an IME composition from reaching the input method (macOS). In the tree, moving selects as
 it goes and focus stays on the tree, and a click on a row now leaves focus on

@@ -581,6 +581,10 @@ struct ChatWindow {
     panes: Option<ChatPanes>,
     tree_list: LogList,
     tree_rows: Vec<TreeRow>,
+    // The selection the tree last scrolled to; a different one is revealed.
+    tree_revealed: Option<Selection>,
+    // The reveal waits for the rows up to the selection to be laid out.
+    tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     sub_rows: Vec<(ConversationId, usize)>,
@@ -1108,6 +1112,8 @@ impl ChatWindow {
             panes: None,
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
+            tree_revealed: None,
+            tree_reveal_pending: false,
             sub_source: None,
             sub_rows: Vec::new(),
             inputs,
@@ -4183,7 +4189,6 @@ impl ChatWindow {
             self.dispatch(command, window, cx);
         } else {
             self.dispatch_keeping_focus(command, window, cx);
-            self.tree_list.state.scroll_to_reveal_item(row.0);
         }
     }
 
@@ -4568,7 +4573,12 @@ impl ChatWindow {
                 replayed,
             } => {
                 let (kind, text) = received_kind(&text, notice);
-                let found = self.find_mentions(network, &sender, text, replayed);
+                // NOTICE is displayed, but never runs normal chat attention rules.
+                let found = if kind.is_notice() {
+                    Found::default()
+                } else {
+                    self.find_mentions(network, &sender, text, replayed)
+                };
                 let meta = MessageMeta {
                     highlights: found.ranges.clone(),
                     ..irc_message_meta(
@@ -4652,7 +4662,12 @@ impl ChatWindow {
                 replayed,
             } => {
                 let (kind, text) = received_kind(&text, notice);
-                let found = self.find_mentions(network, &sender, text, replayed);
+                // NOTICE is displayed, but never runs normal chat attention rules.
+                let found = if kind.is_notice() {
+                    Found::default()
+                } else {
+                    self.find_mentions(network, &sender, text, replayed)
+                };
                 let meta = MessageMeta {
                     highlights: found.ranges.clone(),
                     ..irc_message_meta(
@@ -4682,7 +4697,7 @@ impl ChatWindow {
                             text,
                             kind,
                             meta,
-                            Unread::Mark,
+                            if notice { Unread::Leave } else { Unread::Mark },
                         ) {
                             return;
                         }
@@ -5320,7 +5335,6 @@ fn notification_rules(settings: &Notifications) -> NotificationRules {
         keyword_alerts: settings.keyword_alerts,
         keywords: settings.keywords.clone(),
         private_messages: settings.private_messages,
-        channel_notices: settings.channel_notices,
         sound: settings.sound,
     }
 }
@@ -5857,7 +5871,7 @@ impl ChatWindow {
 }
 
 impl ChatWindow {
-    fn render_channel_tree(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_channel_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         // The tree is virtualized like the logs: it redraws on every state
         // change, but builds only the rows near the viewport. Keys identify
@@ -5892,6 +5906,29 @@ impl ChatWindow {
             }
         }
         self.tree_list.sync_unordered(0, &keys);
+        // Whatever changed the selection (shortcut, tree key, click), bring
+        // its row into view once, by the row order just built; scrolling the
+        // tree by hand later is left alone.
+        let selection = self.state.selection();
+        let changed = self.tree_revealed != Some(selection);
+        if changed || self.tree_reveal_pending {
+            self.tree_revealed = Some(selection);
+            let at = self.tree_rows.iter().position(|row| match *row {
+                TreeRow::Server(id) => selection == Selection::Server(id),
+                TreeRow::Channel(id) => selection == Selection::Channel(id),
+            });
+            self.tree_reveal_pending = false;
+            if let Some(at) = at {
+                // Rows far from the viewport are not laid out yet; the list
+                // then needs further passes, each after a layout.
+                if self.tree_list.reveal(at) {
+                    self.tree_reveal_pending = true;
+                    // Notifying while drawing does not schedule another
+                    // frame; the next one is requested explicitly.
+                    cx.on_next_frame(window, |_, _, cx| cx.notify());
+                }
+            }
+        }
         let appearance = &self.appearance;
         div()
             .size_full()
@@ -6154,7 +6191,12 @@ impl ChatWindow {
     }
 
     /// Content of a cached pane; see [`ChatPane`].
-    fn render_pane(&mut self, kind: PaneKind, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &mut self,
+        kind: PaneKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         #[cfg(test)]
         {
             self.pane_renders += 1;
@@ -6225,7 +6267,7 @@ impl ChatWindow {
                     ))
                     .into_any_element()
             }
-            PaneKind::Channels => self.render_channel_tree(cx),
+            PaneKind::Channels => self.render_channel_tree(window, cx),
         }
     }
 
@@ -7242,7 +7284,7 @@ impl Render for ChatPane {
                 {
                     cx.on_next_frame(window, |_, _, cx| cx.notify());
                 }
-                chat.render_pane(kind, cx)
+                chat.render_pane(kind, window, cx)
             })
             .unwrap_or_else(|_| div().into_any_element())
     }
@@ -9010,3 +9052,7 @@ mod channel_key_tests;
 #[cfg(test)]
 #[path = "main_tests/part_dialog_tests.rs"]
 mod part_dialog_tests;
+
+#[cfg(test)]
+#[path = "main_tests/tree_reveal_tests.rs"]
+mod tree_reveal_tests;

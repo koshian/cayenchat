@@ -23,6 +23,36 @@ pub struct LogList {
 }
 
 impl LogList {
+    /// Scrolls so that row `at` is fully visible, moving as little as
+    /// possible. The list only knows the height of rows it has laid out, and
+    /// reveals a row after unmeasured ones wrongly. Then this scrolls part of
+    /// the way instead, so the next layout measures the rows up to `at`, and
+    /// returns true: call it again after that layout until it returns false.
+    pub fn reveal(&self, at: usize) -> bool {
+        let top = self.state.logical_scroll_top().item_ix;
+        if at <= top || (top..=at).all(|ix| self.state.bounds_for_item(ix).is_some()) {
+            self.state.scroll_to_reveal_item(at);
+            return false;
+        }
+        // Rows are not shorter than this, so about a viewport of them is
+        // laid out from the new top; half the distance left is the fallback
+        // for taller rows, which makes the steps converge.
+        const MIN_ROW_HEIGHT: f32 = 16.0;
+        let viewport = (self.state.viewport_bounds().size.height / px(MIN_ROW_HEIGHT)).ceil();
+        let rows = (viewport as usize).min((at - top).div_ceil(2));
+        let mut target = at - rows;
+        if target == top {
+            // A step to the current top makes no progress when that row fills
+            // the overdraw; start at `at` itself, which is then measured.
+            target = at;
+        }
+        self.state.scroll_to(ListOffset {
+            item_ix: target,
+            offset_in_item: px(0.),
+        });
+        true
+    }
+
     pub fn new() -> Self {
         Self::with_alignment(ListAlignment::Bottom)
     }
