@@ -450,7 +450,22 @@ impl ChatWindow {
                 );
             }
             Completion::Failed { provider, failure } => {
-                self.feedback = Some(upload_failure_text(&provider, failure, &self.i18n));
+                // A dialog stays until the user closes it, so the reason is
+                // not lost, and it takes no room from the draft row.
+                self.feedback = None;
+                let detail = upload_failure_text(&provider, failure, &self.i18n);
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    &self.i18n.text("upload_failed_title"),
+                    Some(&detail),
+                    &[PromptButton::ok(self.i18n.text("upload_failed_close"))],
+                    cx,
+                );
+                // Closing it only dismisses the dialog.
+                cx.spawn(async move |_, _| {
+                    let _ = answer.await;
+                })
+                .detach();
             }
             Completion::Ignored => {}
         }
@@ -639,8 +654,15 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(fake.calls(), 1);
         assert_eq!(draft(&input, cx), "draft");
-        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone()).unwrap();
-        assert!(feedback.contains("offline"), "{feedback}");
+        let (title, detail) = cx.pending_prompt().expect("failure dialog");
+        assert!(title.contains("failed"), "{title}");
+        assert!(detail.contains("offline"), "{detail}");
+        cx.simulate_prompt_answer("Close");
+        cx.run_until_parked();
+        assert!(cx.pending_prompt().is_none());
+        assert_eq!(draft(&input, cx), "draft");
+        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        assert!(feedback.is_none(), "{feedback:?}");
     }
 
     #[gpui::test]

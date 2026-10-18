@@ -1606,7 +1606,10 @@ candidates on #367.
   offering only the extensions of `ImageFormat::FILE_EXTENSIONS` (the avatar
   picker too), and the file goes the dropped file's way (content check, size,
   confirmation). Where a dialog cannot filter (some Linux portals) that check
-  refuses other files.
+  refuses other files. A failed upload (#481) is shown in a modal dialog with a
+  Close button instead of a note in the draft row, so it cannot linger there;
+  it stays until closed, and closing changes nothing else. An expired
+  credential still offers to reconnect.
 - **Unavailable:** a button that cannot act is dimmed and ignores clicks (for
   example Reconnect before the server was ever connected; join, leave and WHOIS off a channel
   or while not registered; topic and mode off a public channel; topic, mode
