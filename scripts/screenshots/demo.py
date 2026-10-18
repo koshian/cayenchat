@@ -597,6 +597,19 @@ def command_run(args):
         app.kill()
 
 
+# README captures include an Openbox title bar and even desktop margins.
+# The extra 20 pixels vertically allow for the window manager's title bar.
+def readme_window_geometry(size):
+    try:
+        width, height = (int(dimension) for dimension in size.split("x"))
+    except (TypeError, ValueError):
+        sys.exit("README screenshot size must be WIDTHxHEIGHT, e.g. 1280x800")
+    if width < 640 or height < 480:
+        sys.exit("README screenshot size must be at least 640x480 to fit the window frame")
+    margin = 50
+    return f"{width - 2 * margin}x{height - 2 * margin - 20}", margin
+
+
 def capture(args, script, directory, toolbar, name):
     """One Xvfb run with gui_session.py: the settled window, as raw rows and
     as the PNG gui_session.py saved."""
@@ -613,6 +626,7 @@ def capture(args, script, directory, toolbar, name):
     env = dict(os.environ, CAYENCHAT_GUI_SESSION=session)
     tool = os.path.join(ROOT, "scripts", "e2e", "gui_session.py")
     width, height = args.size.split("x")
+    window_size, margin = readme_window_geometry(args.size)
 
     def run(*command):
         return subprocess.run([sys.executable, tool, *command], env=env, check=True,
@@ -620,9 +634,22 @@ def capture(args, script, directory, toolbar, name):
 
     args.played.clear()
     run("start", "--app", args.app_path, "--settings", settings_path, "--display", args.display,
-        "--screen", args.size, "--window-size", args.size,
+        "--screen", args.size, "--window-size", window_size, "--wm", "openbox",
         "--env", f"CAYENCHAT_PREVIEW_FIXTURE_DIR={images}")
     try:
+        state = gui_session.load(session)
+        if not gui_session.alive(state["pids"]["wm"]):
+            sys.exit("Openbox exited before the README screenshot could be taken")
+        display = gui_session.display_for(state)
+        display.run("xsetroot", "-solid",
+                    "#30343b" if args.theme == "dark" else "#e9edf1", check=True)
+        windows = display.run("xdotool", "search", "--onlyvisible", "--name", "CayenChat",
+                              capture_output=True, text=True).stdout.split()
+        if not windows:
+            sys.exit("CayenChat window not found for the README screenshot")
+        # First-frame setup puts the client at 0,0; move it inward so the
+        # WM's title bar and borders are visible in the framebuffer capture.
+        display.xdo("windowmove", windows[0], str(margin), str(margin))
         if not args.played.wait(60):
             sys.exit("the demo conversation was not played")
         # Off the menu bar, so no menu is highlighted.
@@ -635,6 +662,13 @@ def capture(args, script, directory, toolbar, name):
 
 
 def command_readme(args):
+    if sys.platform != "linux":
+        sys.exit("README capture requires Linux (Xvfb and Openbox)")
+    for program in ("openbox", "xsetroot"):
+        if shutil.which(program) is None:
+            sys.exit(f"{program} is required for decorated README screenshots "
+                     "(on Debian/Ubuntu: install openbox and x11-xserver-utils)")
+    readme_window_geometry(args.size)
     script = script_for(args)
     args.app_path = resolve_app(args)
     directory = os.path.join(ROOT, "target", "tmp", f"readme-shot-{args.language}-{args.theme}")
@@ -727,7 +761,7 @@ def main():
     common(command)
     app_options(command)
     command.add_argument("--theme", default="light", choices=["light", "dark"])
-    command.add_argument("--size", default="1280x800", help="screen and window size")
+    command.add_argument("--size", default="1280x800", help="Xvfb screen size (window is smaller to show Openbox decorations)")
     command.add_argument("--display", default=":98", help="Xvfb display")
     command.add_argument("--out", required=True, help="PNG to write, e.g. assets/screenshots/cayenchat-en.png")
     command.set_defaults(func=command_readme)
