@@ -300,21 +300,29 @@ mod tests {
             ..message
         };
         let rules = rules();
-        for message in [notice(channel("me: ping", true)),
-                        notice(channel("Deploy done", false)),
-                        notice(IncomingMessage {
-                            channel: false,
-                            notice: false,
-                            from_self: false,
-                            mentioned: true,
-                            keyword: true,
-                            replayed: false,
-                        })] {
+        for message in [
+            notice(channel("me: ping", true)),
+            notice(channel("Deploy done", false)),
+            notice(IncomingMessage {
+                channel: false,
+                notice: false,
+                from_self: false,
+                mentioned: true,
+                keyword: true,
+                replayed: false,
+            }),
+        ] {
             assert_eq!(rules.attention(message), None);
             assert_eq!(rules.trigger(message), None);
         }
-        assert_eq!(rules.trigger(channel("me: ping", true)), Some(Trigger::Mention));
-        assert_eq!(rules.trigger(channel("Deploy done", false)), Some(Trigger::Keyword));
+        assert_eq!(
+            rules.trigger(channel("me: ping", true)),
+            Some(Trigger::Mention)
+        );
+        assert_eq!(
+            rules.trigger(channel("Deploy done", false)),
+            Some(Trigger::Keyword)
+        );
     }
 
     #[test]
