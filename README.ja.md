@@ -47,7 +47,7 @@ CayenChat は、同梱の `locales/ja.json` と `locales/en.json` を実行時�
 
 ## ドキュメント
 
-[`spec/`](spec/) 以下の仕様書が基準です。まず[アーキテクチャ](spec/architecture.md)と[機能の実装状況](spec/feature-parity.md)を参照してください。テストの実行とカバレッジの確認は[テストの方法](HOW_TO_TEST.ja.md)を参照してください。
+[`spec/`](spec/) 以下の仕様書が基準です。まず[アーキテクチャ](spec/architecture.md)と[機能の実装状況](spec/feature-parity.md)を参照してください。テストの実行とカバレッジの確認は[テストの方法](HOW_TO_TEST.ja.md)を参照してください。Linux・macOS・Windowsでのスクリーンショット再撮影手順は[撮影ガイド](scripts/screenshots/README.ja.md)にまとめています。
 
 ## ライセンス
 
