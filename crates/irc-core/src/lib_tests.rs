@@ -62,6 +62,22 @@ fn member_commands_validate_targets_and_build_expected_irc_lines() {
         }),
         "MODE #test -o Alice"
     );
+    for tag in ["PING", "TIME", "VERSION", "USERINFO", "CLIENTINFO"] {
+        match member_outgoing("Alice", MemberCommand::Ctcp { tag: tag.into() }).unwrap() {
+            Outgoing::Ctcp {
+                nick,
+                tag: sent,
+                args,
+            } => {
+                assert_eq!(
+                    (nick.as_str(), sent.as_str(), args.as_str()),
+                    ("Alice", tag, "")
+                );
+            }
+            other => panic!("expected CTCP request: {other:?}"),
+        }
+    }
+    assert!(member_outgoing("bad nick", MemberCommand::Ctcp { tag: "TIME".into() }).is_err());
     assert!(member_outgoing("bad nick", MemberCommand::Whois).is_err());
     assert!(member_outgoing("Alice,Bob", MemberCommand::Whois).is_err());
 }
