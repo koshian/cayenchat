@@ -1064,7 +1064,10 @@ impl AppState {
         if !self.append_to_conversation(id, message) {
             return false;
         }
-        self.mark_unread(id);
+        // NOTICE is informational, not a new chat message demanding attention.
+        if !kind.is_notice() {
+            self.mark_unread(id);
+        }
         true
     }
 
