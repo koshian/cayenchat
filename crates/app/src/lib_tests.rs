@@ -2460,3 +2460,20 @@ fn resetting_or_removing_a_network_drops_its_notified_lines() {
     state.dispatch(Command::NextNotifiedMessage);
     assert_eq!(state.take_reveal(), None);
 }
+
+#[test]
+fn system_messages_reach_the_server_log_and_stay_bounded() {
+    let mut state = live_state("irc.example.org".into(), vec!["#one".into()]);
+    state.append_system_message(NetworkId(1), "CTCP VERSION request from bob".into());
+    state.append_system_message(NetworkId(9), "unknown network".into());
+    assert_eq!(state.server_messages(NetworkId(1)).len(), 1);
+    assert_eq!(state.system_messages().len(), 1);
+    assert_eq!(
+        state.system_messages()[0].1.sequence,
+        state.server_messages(NetworkId(1))[0].sequence
+    );
+    for _ in 0..MAX_SYSTEM_MESSAGES + 5 {
+        state.append_system_message(NetworkId(1), "CTCP TIME request from bob".into());
+    }
+    assert_eq!(state.system_messages().len(), MAX_SYSTEM_MESSAGES);
+}

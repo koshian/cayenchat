@@ -4609,7 +4609,7 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
     for event in &events {
         match event {
             Event::PrivateMessage { text, .. } => panic!("private row: {text:?}"),
-            Event::ServerLine(line) => assert!(
+            Event::ServerLine(line) | Event::CtcpLine(line) => assert!(
                 !line.contains("AVATAR") && !line.contains(" 352 ") && !line.contains(" 315 "),
                 "{line}"
             ),
@@ -4729,7 +4729,7 @@ fn ctcp_requests_are_answered_privately_and_shown_readably() {
     let shown: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
-            Event::ServerLine(line) if line.contains("CTCP") => Some(line.as_str()),
+            Event::CtcpLine(line) => Some(line.as_str()),
             Event::PrivateMessage { text, .. } => panic!("private row: {text:?}"),
             _ => None,
         })
@@ -4782,7 +4782,7 @@ fn peer_avatars_off_leaves_ctcp_avatar_unanswered() {
     server.join().unwrap();
     assert!(avatar_events(&events).is_empty());
     assert!(events.iter().any(|event| matches!(event,
-            Event::ServerLine(line) if line == "CTCP AVATAR request from kv (not answered)")));
+            Event::CtcpLine(line) if line == "CTCP AVATAR request from kv (not answered)")));
 }
 
 #[test]

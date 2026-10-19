@@ -504,6 +504,44 @@ const HISTORY_GAP_NOTE: &str = "Some messages sent while disconnected are not sh
 /// within which scrolling asks for older history.
 const OLDER_HISTORY_TRIGGER_ROWS: usize = 5;
 
+/// What a row of the combined log shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubRow {
+    /// A conversation line: conversation and message index.
+    Line(ConversationId, usize),
+    /// A system line: index into `AppState::system_messages`.
+    System(usize),
+}
+
+/// Merges `lines` (oldest first, from [`newest_lines`]) with the system
+/// lines (oldest first) by sequence, keeping the newest `limit`.
+fn sub_rows(
+    lines: Vec<(u64, ConversationId, usize)>,
+    system: &std::collections::VecDeque<(NetworkId, cayenchat_model::Message)>,
+    limit: usize,
+) -> Vec<(u64, SubRow)> {
+    let mut rows: Vec<(u64, SubRow)> = Vec::with_capacity(lines.len() + system.len());
+    let mut lines = lines.into_iter().peekable();
+    let mut system = system.iter().enumerate().peekable();
+    loop {
+        let take_line = match (lines.peek(), system.peek()) {
+            (Some(line), Some((_, (_, message)))) => line.0 <= message.sequence,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        if take_line {
+            let (sequence, id, index) = lines.next().expect("peeked");
+            rows.push((sequence, SubRow::Line(id, index)));
+        } else {
+            let (index, (_, message)) = system.next().expect("peeked");
+            rows.push((message.sequence, SubRow::System(index)));
+        }
+    }
+    rows.drain(..rows.len().saturating_sub(limit));
+    rows
+}
+
 /// The newest `limit` conversation lines (not channel activity or requested
 /// history, which is context rather than news) across every conversation
 /// except `excluded`, oldest first, as (sequence, conversation,
@@ -588,7 +626,7 @@ struct ChatWindow {
     tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
-    sub_rows: Vec<(ConversationId, usize)>,
+    sub_rows: Vec<SubRow>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
     feedback: Option<String>,
@@ -4936,6 +4974,7 @@ impl ChatWindow {
                 }
             }
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::CtcpLine(line) => self.state.append_system_message(network, line),
             Event::UserAccount {
                 nickname,
                 account,
@@ -7594,10 +7633,11 @@ impl ChatWindow {
             return;
         }
         self.sub_source = Some(source);
-        let rows = newest_lines(self.state.conversations(), selected, SUB_LOG_LIMIT);
-        let sequences: Vec<u64> = rows.iter().map(|(sequence, _, _)| *sequence).collect();
+        let lines = newest_lines(self.state.conversations(), selected, SUB_LOG_LIMIT);
+        let rows = sub_rows(lines, self.state.system_messages(), SUB_LOG_LIMIT);
+        let sequences: Vec<u64> = rows.iter().map(|(sequence, _)| *sequence).collect();
         self.sub_list.sync(0, &sequences);
-        self.sub_rows = rows.into_iter().map(|(_, id, index)| (id, index)).collect();
+        self.sub_rows = rows.into_iter().map(|(_, row)| row).collect();
     }
 
     fn render_main_row(
@@ -8100,8 +8140,12 @@ impl ChatWindow {
     fn render_sub_row(&mut self, row: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let style = LogStyle::new(&self.appearance, theme::current(cx));
-        let Some(&(id, index)) = self.sub_rows.get(row) else {
-            return div().into_any_element();
+        let (id, index) = match self.sub_rows.get(row) {
+            Some(&SubRow::Line(id, index)) => (id, index),
+            Some(&SubRow::System(index)) => {
+                return self.render_system_sub_row(row, index, &style, cx);
+            }
+            None => return div().into_any_element(),
         };
         let Some(conversation) = self.state.conversation(id) else {
             return div().into_any_element();
@@ -8199,6 +8243,69 @@ impl ChatWindow {
                 // A single click is too easy to hit while reading the combined log.
                 if event.click_count() == 2 {
                     this.dispatch(Command::SelectChannel(id), window, cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// A system line (CTCP) in the combined log: `[network] text` in the
+    /// system message color; a double-click opens the server log.
+    fn render_system_sub_row(
+        &mut self,
+        row: usize,
+        index: usize,
+        style: &LogStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = theme::current(cx);
+        let Some((network_id, message)) = self.state.system_messages().get(index) else {
+            return div().into_any_element();
+        };
+        let network_id = *network_id;
+        let network = self
+            .state
+            .networks()
+            .iter()
+            .find(|network| network.id == network_id)
+            .map(|network| self.network_label(network))
+            .unwrap_or_default();
+        let prefix = format!("[{network}] ");
+        let styled = styled_log_text(
+            &prefix,
+            &message.text,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            None,
+            &style.theme,
+        );
+        div()
+            .id(("sub-message", row))
+            .w_full()
+            .flex()
+            .items_start()
+            .gap_1()
+            .py(px(1.))
+            .when(style.alternate_rows && row % 2 == 1, |d| {
+                d.bg(style.sub_alt)
+            })
+            .cursor_pointer()
+            .hover(|d| d.bg(theme.hover))
+            .child(style.time(message.time))
+            .child(
+                div()
+                    .debug_selector(move || format!("sub-text-{row}"))
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(style.event_color)
+                    .child(styled),
+            )
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if event.click_count() == 2 {
+                    this.dispatch(Command::SelectServer(network_id), window, cx);
                 }
             }))
             .into_any_element()
