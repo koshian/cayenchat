@@ -5,12 +5,10 @@ set -euo pipefail
 
 DIR="$1"
 VERSION="$2"
-# cargo-deb writes a pre-release `1.0.0-rc.1` as the Debian version `1.0.0~rc.1`.
-DEB_VERSION="${VERSION/-/\~}"
-EXPECTED="cayenchat-${VERSION}-macos-arm64.zip
+EXPECTED="cayenchat-${VERSION}-linux-x86_64.deb
+cayenchat-${VERSION}-macos-arm64.zip
 cayenchat-${VERSION}-windows-arm64.zip
-cayenchat-${VERSION}-windows-x86_64.zip
-cayenchat-ui_${DEB_VERSION}-1_amd64.deb"
+cayenchat-${VERSION}-windows-x86_64.zip"
 if [ "$(ls "$DIR")" != "$EXPECTED" ]; then
   echo "::error::Unexpected release artifacts:"
   ls "$DIR"

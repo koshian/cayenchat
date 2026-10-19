@@ -18,17 +18,24 @@ expect() { # expect pass|fail DESCRIPTION COMMAND...
   fi
 }
 
-artifacts() { # artifacts VERSION [DEB_VERSION] -> directory
-  local dir="$WORK/artifacts-$1-${2:-$1}"
+artifacts() { # artifacts VERSION [LINUX_FILE] -> directory
+  local dir="$WORK/artifacts-$1-${2:-default}"
   mkdir -p "$dir"
   touch "$dir/cayenchat-$1-macos-arm64.zip" "$dir/cayenchat-$1-windows-arm64.zip" \
-    "$dir/cayenchat-$1-windows-x86_64.zip" "$dir/cayenchat-ui_${2:-$1}-1_amd64.deb"
+    "$dir/cayenchat-$1-windows-x86_64.zip" "$dir/${2:-cayenchat-$1-linux-x86_64.deb}"
   echo "$dir"
 }
 
 expect pass "normal release" "$ROOT/check-artifacts.sh" "$(artifacts 0.9.0)" 0.9.0
-expect pass "release candidate" "$ROOT/check-artifacts.sh" "$(artifacts 1.0.0-rc.1 '1.0.0~rc.1')" 1.0.0-rc.1
-expect fail "pre-release deb without tilde" "$ROOT/check-artifacts.sh" "$(artifacts 1.0.0-rc.1)" 1.0.0-rc.1
+expect pass "release candidate" "$ROOT/check-artifacts.sh" "$(artifacts 1.0.0-rc.1)" 1.0.0-rc.1
+expect fail "Debian-named deb" "$ROOT/check-artifacts.sh" "$(artifacts 1.0.0-rc.1 'cayenchat-ui_1.0.0~rc.1-1_amd64.deb')" 1.0.0-rc.1
+# GitHub rewrites special characters in asset names, so a name that is not
+# stored as given no longer matches SHA256SUMS or the beta's `dist/`.
+for f in "$(artifacts 1.0.0-rc.1)"/*; do
+  case "$(basename "$f")" in
+    *[!A-Za-z0-9._-]*) echo "FAIL: asset name $(basename "$f") has characters GitHub rewrites"; FAILED=1 ;;
+  esac
+done
 expect fail "wrong version" "$ROOT/check-artifacts.sh" "$(artifacts 0.9.0)" 0.9.1
 mkdir "$WORK/missing" && cp "$(artifacts 0.9.0)"/* "$WORK/missing" && rm "$WORK/missing"/*macos*
 expect fail "missing platform" "$ROOT/check-artifacts.sh" "$WORK/missing" 0.9.0
