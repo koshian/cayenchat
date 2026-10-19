@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use crate::text::nickname_key;
+use cayenchat_model::names::CaseMapping;
 
 /// Masks remembered per network; the least recently used go first.
 pub const MAX_REMEMBERED_MASKS: usize = 512;
@@ -29,13 +29,13 @@ pub const MAX_REMEMBERED_MASKS: usize = 512;
 pub(crate) struct AvatarMask(String);
 
 impl AvatarMask {
-    pub(crate) fn new(nick: &str, user: &str, host: &str) -> Self {
+    pub(crate) fn new(mapping: CaseMapping, nick: &str, user: &str, host: &str) -> Self {
         let user = user
             .trim_start_matches(['~', '^', '=', '+', '-'])
             .to_lowercase();
         Self(format!(
             "{}!{}@{}",
-            nickname_key(nick),
+            mapping.fold(nick),
             user,
             loosen_host(host)
         ))
@@ -143,7 +143,9 @@ mod tests {
     use super::*;
 
     fn mask(nick: &str, user: &str, host: &str) -> String {
-        AvatarMask::new(nick, user, host).as_str().to_owned()
+        AvatarMask::new(CaseMapping::default(), nick, user, host)
+            .as_str()
+            .to_owned()
     }
 
     #[test]
@@ -176,12 +178,16 @@ mod tests {
         assert_ne!(mask("bob", "carol", "a.example.org"), plain);
         // RFC 1459 case mapping of the nickname.
         assert_eq!(mask("a[b", "u", "h"), mask("A{B", "u", "h"));
+        // Under ASCII, `[` and `{` are different letters.
+        let ascii = |nick| AvatarMask::new(CaseMapping::Ascii, nick, "u", "h");
+        assert_ne!(ascii("bo[b"), ascii("bo{b"));
+        assert_eq!(ascii("Bob"), ascii("bob"));
     }
 
     #[test]
     fn the_cache_forgets_the_least_recently_used_and_stays_bounded() {
         let cache = PeerAvatarCache::default();
-        let mask = |n: usize| AvatarMask::new(&format!("n{n}"), "u", "h");
+        let mask = |n: usize| AvatarMask::new(CaseMapping::default(), &format!("n{n}"), "u", "h");
         for n in 0..MAX_REMEMBERED_MASKS {
             cache.set(&mask(n), Some("a"));
         }

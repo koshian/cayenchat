@@ -4950,6 +4950,108 @@ fn a_who_reply_after_a_reconnect_restores_the_picture_without_asking() {
     server.join().unwrap();
     assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
 }
+
+#[test]
+fn remembered_pictures_follow_the_servers_casemapping() {
+    let cache = PeerAvatarCache::default();
+    let config = |port: u16| {
+        let mut config = plain_config(
+            port,
+            Ircv3Options {
+                peer_avatars: true,
+                ..Ircv3Options::default()
+            },
+        );
+        config.peer_avatar_cache = cache.clone();
+        config
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(
+                b":srv.example 005 alice CASEMAPPING=ascii :are supported\r\n\
+:srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice bo[b\r\n\
+:srv.example 366 alice #test :End\r\n\
+:bo[b!~u@host1.example.org PRIVMSG #test :hello\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "WHO bo[b");
+        socket
+            .write_all(
+                b":srv.example 352 alice #test ~u host1.example.org srv.example bo[b H :0 \x034\x0fBob\r\n\
+:srv.example 315 alice bo[b :End of /WHO list.\r\n",
+            )
+            .unwrap();
+        assert_eq!(
+            read_client_line(&mut lines),
+            "PRIVMSG bo[b \u{1}AVATAR\u{1}"
+        );
+        socket
+            .write_all(
+                b":bo[b!~u@host1.example.org NOTICE alice :\x01AVATAR https://example.com/b.png M\x01\r\n",
+            )
+            .unwrap();
+        assert!(read_client_line(&mut lines).starts_with("QUIT"));
+    });
+    let events = run_fixture(config(port), |events| !avatar_events(events).is_empty());
+    server.join().unwrap();
+    assert_eq!(avatar_events(&events), ["bo[b=https://example.com/b.png"]);
+    // Under ASCII `bo{b` is another person, so the same user and host do
+    // not restore the picture: he is looked up.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(
+                b":srv.example 005 alice CASEMAPPING=ascii :are supported\r\n\
+:srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice\r\n\
+:srv.example 366 alice #test :End\r\n\
+:bo{b!~u@host9.example.org JOIN #test\r\n\
+:bo{b!~u@host9.example.org PRIVMSG #test :hello\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "WHO bo{b");
+    });
+    let events = run_fixture(config(port), |events| !channel_messages(events).is_empty());
+    server.join().unwrap();
+    assert!(
+        avatar_events(&events).is_empty(),
+        "{:?}",
+        avatar_events(&events)
+    );
+}
+
 #[test]
 fn ctcp_requests_are_answered_privately_and_shown_readably() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -83,6 +83,7 @@ use std::{
     time::Duration,
 };
 
+use cayenchat_model::names::CaseMapping;
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Prefix};
 use tokio::time::Instant;
 
@@ -348,6 +349,8 @@ pub(crate) struct PeerAvatars {
     share: Option<String>,
     /// Pictures by user mask, kept across connections (D058).
     cache: PeerAvatarCache,
+    /// The server's CASEMAPPING, for the nickname in a cache key.
+    casemapping: CaseMapping,
     avatars: HashMap<String, Sources>,
     stages: HashMap<String, Stage>,
     queue: VecDeque<Probe>,
@@ -382,6 +385,7 @@ impl PeerAvatars {
             utf8,
             share: share.filter(|url| shareable(url, utf8).is_ok()),
             cache,
+            casemapping: CaseMapping::default(),
             avatars: HashMap::new(),
             stages: HashMap::new(),
             queue: VecDeque::new(),
@@ -393,6 +397,10 @@ impl PeerAvatars {
             askers: HashMap::new(),
             next_notify: None,
         }
+    }
+
+    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+        self.casemapping = casemapping;
     }
 
     /// Changes the URL answered to queries; `None` stops answering. The
@@ -528,8 +536,10 @@ impl PeerAvatars {
                 }
                 let url = reply_url(params, self.utf8);
                 if let Some((user, host)) = prefix_identity(message) {
-                    self.cache
-                        .set(&AvatarMask::new(sender, &user, &host), url.as_deref());
+                    self.cache.set(
+                        &AvatarMask::new(self.casemapping, sender, &user, &host),
+                        url.as_deref(),
+                    );
                 }
                 handled.events.extend(self.set_peer(sender, url));
                 Some(handled)
@@ -645,7 +655,8 @@ impl PeerAvatars {
                 self.stages.insert(key, Stage::Seen);
             }
             let (user, host) = identity?;
-            self.cache.set(&AvatarMask::new(nick, user, host), None);
+            self.cache
+                .set(&AvatarMask::new(self.casemapping, nick, user, host), None);
             self.set_peer(nick, None);
             return Some(Event::PeerAvatar {
                 nickname: nick.to_owned(),
@@ -715,7 +726,9 @@ impl PeerAvatars {
         if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
             return None;
         }
-        let url = self.cache.get(&AvatarMask::new(nick, user, host))?;
+        let url = self
+            .cache
+            .get(&AvatarMask::new(self.casemapping, nick, user, host))?;
         if self.stages.len() < MAX_PROBED_USERS {
             self.stages.insert(key, Stage::Queried);
         }
@@ -951,7 +964,10 @@ impl PeerAvatars {
             // keeps its last known picture) and to the new mask.
             if let Some(url) = &sources.peer {
                 if let Some((user, host)) = &identity {
-                    self.cache.set(&AvatarMask::new(to, user, host), Some(url));
+                    self.cache.set(
+                        &AvatarMask::new(self.casemapping, to, user, host),
+                        Some(url),
+                    );
                 }
                 events.push(Event::PeerAvatar {
                     nickname: to.to_owned(),

@@ -3545,6 +3545,9 @@ impl Worker {
             self.history.set_casemapping(announced);
             self.accounts.set_casemapping(announced);
             self.ctcp.set_casemapping(announced);
+            if let Some(peers) = self.peers.as_mut() {
+                peers.set_casemapping(announced);
+            }
             self.channel_modes.set_casemapping(announced);
             self.regain.set_casemapping(announced);
             self.emit(Event::CaseMapping(announced)).await?;
