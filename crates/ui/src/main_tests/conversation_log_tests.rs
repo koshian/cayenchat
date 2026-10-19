@@ -367,3 +367,138 @@ fn a_failure_reaches_the_server_tab_without_another_event(cx: &mut TestAppContex
     }
     panic!("the failure was not announced");
 }
+
+fn timed_message(text: &str, server_time: std::time::SystemTime) -> Event {
+    Event::ChannelMessage {
+        channel: "#rust".into(),
+        sender: "alice".into(),
+        text: text.into(),
+        notice: false,
+        server_time: Some(server_time),
+        msgid: None,
+        account: None,
+        replayed: false,
+    }
+}
+
+/// Every day's file of `#rust` as (file name, lines with their time).
+fn day_files(directory: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let folder = directory.join("irc.ircnet.com/channels/#rust");
+    let mut files: Vec<_> = std::fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let lines = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .filter(|line| !line.starts_with('#'))
+                .map(str::to_owned)
+                .collect();
+            (
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                lines,
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+#[gpui::test]
+fn server_times_far_from_now_do_not_pick_the_day_file(cx: &mut TestAppContext) {
+    use std::time::{Duration, SystemTime};
+    install_globals(cx);
+    let directory = tempfile::tempdir().unwrap();
+    let mut settings = crate::settings_with_channels("#rust");
+    settings.conversation_log.channels = true;
+    settings.conversation_log.directory = Some(directory.path().to_owned());
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    let now = SystemTime::now();
+    let day = Duration::from_secs(24 * 3600);
+    let near = now - Duration::from_secs(3600);
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                Event::Joined {
+                    channel: "#rust".into(),
+                },
+                timed_message("ahead", now + 2 * day),
+                timed_message("behind", now - 2 * day),
+                timed_message("near", near),
+                // Own messages: the echo's time replaces the received one.
+                accepted(1, "#rust", "own-ahead", None),
+                Event::OutgoingConfirmed {
+                    local_id: 1,
+                    text: None,
+                    action: None,
+                    msgid: None,
+                    server_time: Some(now + 2 * day),
+                },
+                accepted(2, "#rust", "own-behind", None),
+                Event::OutgoingConfirmed {
+                    local_id: 2,
+                    text: None,
+                    action: None,
+                    msgid: None,
+                    server_time: Some(now - 2 * day),
+                },
+                accepted(3, "#rust", "own-near", None),
+                Event::OutgoingConfirmed {
+                    local_id: 3,
+                    text: None,
+                    action: None,
+                    msgid: None,
+                    server_time: Some(near),
+                },
+            ],
+            Worker::Running,
+            cx,
+        );
+        chat.conversation_logs
+            .finish(std::time::Duration::from_secs(5));
+    });
+    let files = day_files(directory.path());
+    let near_time = chrono::DateTime::<chrono::Local>::from(near)
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
+        .to_string();
+    let near_day = chrono::DateTime::<chrono::Local>::from(near)
+        .format("%Y-%m-%d.log")
+        .to_string();
+    let today = chrono::DateTime::<chrono::Local>::from(now)
+        .format("%Y-%m-%d.log")
+        .to_string();
+    // No file for the days two days away; only today's and the near time's.
+    let mut expected_names = vec![near_day.clone(), today.clone()];
+    expected_names.sort();
+    expected_names.dedup();
+    let names: Vec<_> = files.iter().map(|(name, _)| name.clone()).collect();
+    assert_eq!(names, expected_names);
+    let bodies = |wanted: &str| -> Vec<(String, String)> {
+        files
+            .iter()
+            .flat_map(|(name, lines)| lines.iter().map(move |line| (name.clone(), line.clone())))
+            .filter(|(_, line)| line.ends_with(wanted))
+            .collect()
+    };
+    for text in ["ahead", "behind", "own-ahead", "own-behind"] {
+        let found = bodies(&format!("\t{text}"));
+        assert_eq!(found.len(), 1, "{text}");
+        assert_eq!(found[0].0, today, "{text}");
+    }
+    for text in ["near", "own-near"] {
+        let found = bodies(&format!("\t{text}"));
+        assert_eq!(found.len(), 1, "{text}");
+        assert_eq!(found[0].0, near_day, "{text}");
+        assert!(
+            found[0].1.starts_with(&near_time[..19]),
+            "{text}: {}",
+            found[0].1
+        );
+    }
+}

@@ -2024,6 +2024,17 @@ with the reason of the disconnect (ping timeout, user disconnect…), or the QUI
 text sent when the application quits; it is written before the channels are
 reset (#389).
 `Event::Topic` carries who changed the topic and the server time for it.
+Three guards keep what a server or peer sends from shaping the files:
+bidirectional controls (U+202A–U+202E, U+2066–U+2069, the range of
+`model::display::is_bidi_control`, kept equal by a test since `storage` does
+not depend on `model`) become U+FFFD in nicknames and text like other control
+characters, and are `%XX`-escaped in conversation names by `path_component`;
+servers whose display name (else host) is the same when lowercased are all
+given the profile ID suffix, as case-insensitive file systems would otherwise
+merge their folders; and a server time more than 24 hours from the moment the
+line is received (for `log_record` and the echo in `release_own_message`) is
+replaced by the received time, so a wrong or hostile clock cannot make any
+number of day files.
 
 ## Log search (#404)
 
@@ -2040,8 +2051,10 @@ slice sooner), and `Hit`s that name a
 log and a `Message::sequence`, never a row index. A scan resumes each log by
 sequence, so lines that arrive, are trimmed or inserted above between slices are
 neither skipped nor read twice, and a log that vanished is skipped. Hits are
-capped at `MAX_HITS` (10,000; the count then shows `+`) and ascend by sequence,
-which is log order. Matching is against `Message::text` as received; the
+capped at `MAX_HITS` (10,000) and ascend by sequence, which is log order. Past
+the cap the scan still reads every log and drops the oldest matches (by
+sequence) at the end of each step, so the newest 10,000 stay; the count then
+shows `+`. Matching is against `Message::text` as received; the
 display conversions (shortened links, decoded numeric character references)
 are not searched, but match ranges are mapped to the drawn text with
 `Compact::shown_range`, so the highlight lands on the right characters.

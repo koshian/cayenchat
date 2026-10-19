@@ -124,7 +124,7 @@ pub fn default_directory() -> Option<PathBuf> {
 }
 
 /// Makes `name` one safe path component on every OS. Characters no OS
-/// accepts (`/ \ : * ? " < > |`, controls), `%` and `~` become `%XX`, as do a
+/// accepts (`/ \ : * ? " < > |`, controls), bidirectional controls, `%` and `~` become `%XX`, as do a
 /// name that is only dots, a trailing dot or space and the first letter of a
 /// Windows device name (`CON`, `NUL`, `COM1`…). An empty name becomes `%00`.
 /// A result longer than 200 bytes is cut and ends in `~` and a hash of the
@@ -151,7 +151,8 @@ pub fn path_component(name: &str) -> String {
         let unsafe_char = matches!(
             ch,
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '%' | '~'
-        ) || ch.is_control();
+        ) || ch.is_control()
+            || is_bidi_control(ch);
         let last = index + 1 == chars.len();
         let escape =
             unsafe_char || dots || (device && index == 0) || (last && (ch == '.' || ch == ' '));
@@ -190,6 +191,13 @@ fn is_device_name(stem: &str) -> bool {
             })
 }
 
+/// Bidirectional embedding, override and isolate controls (U+202A–U+202E,
+/// U+2066–U+2069). The same range as `cayenchat_model::display::is_bidi_control`
+/// (a test keeps them equal); `storage` does not depend on `model`.
+fn is_bidi_control(ch: char) -> bool {
+    matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// The file `record` belongs to: the day is the record's date in `zone`.
 pub fn path_for<Tz: TimeZone>(root: &Path, record: &Record, zone: &Tz) -> PathBuf
 where
@@ -203,13 +211,16 @@ where
 }
 
 /// Replaces what would break the four columns. Tabs become spaces and other
-/// control characters (a newline included) U+FFFD. With `spaces`, the
+/// control characters (a newline included) and bidirectional controls U+FFFD.
+/// With `spaces`, the
 /// whitespace of a nickname is replaced as well.
 fn cell(text: &str, spaces: bool) -> String {
     text.chars()
         .map(|ch| match ch {
             '\t' if !spaces => ' ',
-            ch if ch.is_control() || (spaces && ch.is_whitespace()) => '\u{FFFD}',
+            ch if ch.is_control() || is_bidi_control(ch) || (spaces && ch.is_whitespace()) => {
+                '\u{FFFD}'
+            }
             ch => ch,
         })
         .collect()
@@ -709,6 +720,35 @@ mod tests {
     fn a_line_has_four_columns_in_the_local_time() {
         let line = line_for(&record(Kind::Msg, "alice", "hello"), &tokyo());
         assert_eq!(line, "2026-10-12T17:02:13.120+09:00\tmsg\talice\thello\n");
+    }
+
+    #[test]
+    fn bidi_controls_are_replaced_in_nicknames_and_text() {
+        let line = line_for(
+            &record(Kind::Msg, "al\u{202E}ice", "a\u{2067}b\u{202E}c"),
+            &tokyo(),
+        );
+        let columns: Vec<_> = line.trim_end_matches('\n').split('\t').collect();
+        assert_eq!(columns[2], "al\u{FFFD}ice");
+        assert_eq!(columns[3], "a\u{FFFD}b\u{FFFD}c");
+    }
+
+    #[test]
+    fn bidi_controls_in_a_conversation_name_are_escaped() {
+        assert_eq!(path_component("a\u{202E}b"), "a%E2%80%AEb");
+    }
+
+    #[test]
+    fn bidi_range_matches_the_display_range() {
+        for code in 0..=0x10FFFF {
+            if let Some(ch) = char::from_u32(code) {
+                assert_eq!(
+                    is_bidi_control(ch),
+                    cayenchat_model::display::is_bidi_control(ch),
+                    "U+{code:04X}"
+                );
+            }
+        }
     }
 
     #[test]
