@@ -1049,7 +1049,10 @@ WHOISed are not discovered; `{size}` is not shared. IRCnet's 352 carries a
 server ID before the realname; a connection that received 042 (RPL_YOURID)
 skips a word of the ID's shape there, others read the realname right after
 the hop count (RFC 2812), so a realname starting with such a word is not
-misread on RFC servers.
+misread on RFC servers. The observations behind these choices (IRCnet's
+352, a raw KVIrc mark on IRCnet, how KVIrc and LimeChat read it, bouncers'
+realnames) are recorded in Japanese in
+`spec/avatar-mark-research-2026-10-19.md`.
 
 ## D026 — Protocol-neutral message identity
 
