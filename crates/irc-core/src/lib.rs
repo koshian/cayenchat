@@ -4598,6 +4598,9 @@ fn translate_message(
         }
         IrcCommand::KICK(channel, nickname, _) if is_own(nickname) => {
             roster.forget_channel(channel);
+            // The library compares the kicked nickname with plain ASCII case
+            // folding and misses `nick{1}` for `nick[1]` under rfc1459.
+            client.forget_channel_list(channel);
         }
         IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
             if let Some(channel) = args.iter().find(|arg| valid_channel(arg)) {

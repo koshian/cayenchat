@@ -1545,6 +1545,15 @@ fn modes_after_rejoining_from_a_kick_reach_the_roster() {
 
 /// Connects to a server that sends `script` after the JOIN and returns the last roster.
 fn roster_after_script(script: &'static [u8], settle_events: usize) -> Vec<String> {
+    roster_after_script_as("me", script, settle_events)
+}
+
+/// [`roster_after_script`] for a client registered as `nick`.
+fn roster_after_script_as(
+    nick: &'static str,
+    script: &'static [u8],
+    settle_events: usize,
+) -> Vec<String> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
@@ -1555,12 +1564,15 @@ fn roster_after_script(script: &'static [u8], settle_events: usize) -> Vec<Strin
         let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
-            .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
+            .write_all(
+                format!(":server 001 {nick} :Welcome\r\n:server 376 {nick} :End of MOTD\r\n")
+                    .as_bytes(),
+            )
             .unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
         socket.write_all(script).unwrap();
     });
-    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec!["#a".into()]);
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), nick.into(), vec!["#a".into()]);
     config.port = port;
     config.use_tls = false;
     let mut connection = Connection::connect(config).unwrap();
@@ -1668,6 +1680,16 @@ fn own_kick_with_spelling(casemapping: &str, nick: &str, kicked: &str) {
 #[test]
 fn a_kick_of_us_spelled_in_another_rfc1459_case_is_ours() {
     own_kick_with_spelling("rfc1459", "nick[1]", "nick{1}");
+}
+
+#[test]
+fn rejoining_after_a_kick_spelled_in_another_rfc1459_case_starts_a_fresh_roster() {
+    let last = roster_after_script_as(
+        "nick[1]",
+        b":server 353 nick[1] = #a :@op bob nick[1]\r\n:server 366 nick[1] #a :End of NAMES\r\n:op!o@h KICK #a nick{1} :bye\r\n:nick[1]!u@h JOIN #a\r\n:server 353 nick[1] = #a :charlie nick[1]\r\n:server 366 nick[1] #a :End of NAMES\r\n",
+        3,
+    );
+    assert_eq!(last, ["charlie", "nick[1]"]);
 }
 
 #[test]

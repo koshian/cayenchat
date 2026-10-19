@@ -1040,6 +1040,17 @@ impl Client {
         )
     }
 
+    /// Drops the tracked list of `chan`, like a PART we send does. For a caller that knows
+    /// better than the built-in nickname comparison that it was kicked (see vendor/README.md).
+    #[cfg(feature = "channel-lists")]
+    pub fn forget_channel_list(&self, chan: &str) {
+        let _ = self.state.chanlists.write().remove(chan);
+    }
+
+    /// Does nothing since `channel-lists` feature is disabled.
+    #[cfg(not(feature = "channel-lists"))]
+    pub fn forget_channel_list(&self, _: &str) {}
+
     /// Always returns `None` since `channel-lists` feature is disabled.
     #[cfg(not(feature = "channel-lists"))]
     pub fn list_channels(&self) -> Option<Vec<String>> {
