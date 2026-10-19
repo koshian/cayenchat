@@ -150,7 +150,7 @@
   "member_list_background": "Member list background",
   "channel_log": "Channel log",
   "channel_log_alternate": "Channel log alternate",
-  "channel_event_color": "Channel event text",
+  "channel_event_color": "System message text",
   "notice_color": "NOTICE text",
   "combined_log": "Combined log",
   "combined_log_alternate": "Combined log alternate",

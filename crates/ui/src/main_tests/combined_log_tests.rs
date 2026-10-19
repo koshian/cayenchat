@@ -78,3 +78,44 @@ fn merged_tails_match_collecting_and_sorting() {
         }
     }
 }
+
+#[test]
+fn system_lines_merge_with_conversation_lines_by_sequence() {
+    use super::{SubRow, sub_rows};
+    let system: std::collections::VecDeque<_> = [2u64, 5]
+        .into_iter()
+        .map(|sequence| {
+            let mut message = Message {
+                time: TimeOfDay::new(0, 0),
+                sequence,
+                timestamp: None,
+                native_id: None,
+                account: None,
+                delivery_failed: false,
+                sender: "server".into(),
+                text: String::new(),
+                highlights: Default::default(),
+                links: Default::default(),
+                activity: true,
+                alert: false,
+                notice: false,
+                action: false,
+                provenance: cayenchat_model::Provenance::Live,
+            };
+            message.sequence = sequence;
+            (NetworkId(1), message)
+        })
+        .collect();
+    let lines = vec![(1, ConversationId(1), 0), (3, ConversationId(1), 1)];
+    let rows = sub_rows(lines.clone(), &system, 10);
+    assert_eq!(
+        rows,
+        [
+            (1, SubRow::Line(ConversationId(1), 0)),
+            (2, SubRow::System(0)),
+            (3, SubRow::Line(ConversationId(1), 1)),
+            (5, SubRow::System(1)),
+        ]
+    );
+    assert_eq!(sub_rows(lines, &system, 2), rows[2..]);
+}

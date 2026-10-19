@@ -165,7 +165,7 @@ impl CtcpReplies {
         let mut handled = Handled::default();
         let tag = tag.to_ascii_uppercase();
         let refuse = |handled: &mut Handled, why: &str| {
-            handled.events.push(Event::ServerLine(format!(
+            handled.events.push(Event::CtcpLine(format!(
                 "CTCP {tag} request to {} not sent: {why}",
                 plain(nick)
             )));
@@ -207,7 +207,7 @@ impl CtcpReplies {
             nick.to_owned(),
             format!("\u{1}{body}\u{1}"),
         ));
-        handled.events.push(Event::ServerLine(format!(
+        handled.events.push(Event::CtcpLine(format!(
             "CTCP {tag} request sent to {}",
             plain(nick)
         )));
@@ -235,7 +235,7 @@ impl CtcpReplies {
             .is_some_and(|pending| now.duration_since(pending.sent) >= PING_TIMEOUT)
         {
             let pending = self.pending.pop_front().expect("checked");
-            handled.events.push(Event::ServerLine(format!(
+            handled.events.push(Event::CtcpLine(format!(
                 "CTCP PING to {} on {} timed out (no reply in {} seconds)",
                 plain(&pending.nick),
                 self.network,
@@ -301,7 +301,7 @@ impl CtcpReplies {
             && tag.eq_ignore_ascii_case("PING")
             && let Some(line) = self.round_trip(sender, params, now)
         {
-            handled.events.push(Event::ServerLine(line));
+            handled.events.push(Event::CtcpLine(line));
             return Some(handled);
         }
         let shown_tag = shown_tag(tag);
@@ -319,7 +319,7 @@ impl CtcpReplies {
         match budget.admit(sender, now) {
             Admission::Admitted => {}
             Admission::Refused => {
-                handled.events.push(Event::ServerLine(if request {
+                handled.events.push(Event::CtcpLine(if request {
                     format!("Too many CTCP requests; ignoring them for now (latest {shown_tag} from {shown_sender}).")
                 } else {
                     format!("Too many CTCP replies; hiding them for now (latest {shown_tag} from {shown_sender}).")
@@ -335,7 +335,7 @@ impl CtcpReplies {
             } else {
                 format!(": {params}")
             };
-            handled.events.push(Event::ServerLine(format!(
+            handled.events.push(Event::CtcpLine(format!(
                 "{shown_tag} reply from {shown_sender}{to}{params}"
             )));
             return Some(handled);
@@ -350,11 +350,11 @@ impl CtcpReplies {
                     sender.to_owned(),
                     format!("\u{1}{answer}\u{1}"),
                 ));
-                handled.events.push(Event::ServerLine(line));
+                handled.events.push(Event::CtcpLine(line));
             }
             None => handled
                 .events
-                .push(Event::ServerLine(format!("{line} (not answered)"))),
+                .push(Event::CtcpLine(format!("{line} (not answered)"))),
         }
         Some(handled)
     }
@@ -507,7 +507,7 @@ mod tests {
             .events
             .iter()
             .map(|event| match event {
-                Event::ServerLine(line) => line.clone(),
+                Event::CtcpLine(line) => line.clone(),
                 other => panic!("unexpected event {other:?}"),
             })
             .collect()

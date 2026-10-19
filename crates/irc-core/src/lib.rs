@@ -758,6 +758,9 @@ pub enum Event {
         nickname: String,
     },
     ServerLine(String),
+    /// A line about CTCP (a request, a reply, a refusal): a server line that
+    /// the combined log shows too.
+    CtcpLine(String),
     /// A completed WHOIS reply, emitted at end-of-WHOIS (318).
     Whois(Box<WhoisInfo>),
     /// `local_id`: set when the connection tracks this message for its
@@ -3081,7 +3084,7 @@ impl Worker {
     async fn send_ctcp(&mut self, nick: &str, tag: &str, args: &str) -> Flow {
         if !self.registered {
             return self
-                .emit(Event::ServerLine(format!(
+                .emit(Event::CtcpLine(format!(
                     "CTCP {tag} request to {nick} not sent: not connected yet"
                 )))
                 .await;

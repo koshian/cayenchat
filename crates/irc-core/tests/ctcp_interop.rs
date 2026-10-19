@@ -173,7 +173,7 @@ impl Client {
     fn server_line(&mut self, expected: &str) {
         self.wait(
             expected,
-            |event| matches!(event, Event::ServerLine(line) if line == expected),
+            |event| matches!(event, Event::CtcpLine(line) if line == expected),
         );
     }
 
@@ -181,7 +181,7 @@ impl Client {
         self.events
             .iter()
             .filter_map(|event| match event {
-                Event::ServerLine(line) if line.contains("CTCP") => Some(line.as_str()),
+                Event::CtcpLine(line) => Some(line.as_str()),
                 _ => None,
             })
             .collect()
@@ -318,10 +318,10 @@ fn ctcp_answers_through_a_real_server() {
     bob.send(&format!("NOTICE {me} :\u{1}PING {token}\u{1}"));
     let round_trip = client.wait(
         "ping round trip",
-        |event| matches!(event, Event::ServerLine(line) if line.contains(" ms")),
+        |event| matches!(event, Event::CtcpLine(line) if line.contains(" ms")),
     );
     println!("{round_trip:?}");
-    let Event::ServerLine(line) = round_trip else {
+    let Event::CtcpLine(line) = round_trip else {
         unreachable!()
     };
     assert!(
@@ -332,7 +332,7 @@ fn ctcp_answers_through_a_real_server() {
         client
             .events
             .iter()
-            .filter(|event| matches!(event, Event::ServerLine(line) if line.contains(" ms")))
+            .filter(|event| matches!(event, Event::CtcpLine(line) if line.contains(" ms")))
             .count(),
         1
     );
@@ -379,7 +379,9 @@ fn ctcp_answers_through_a_real_server() {
             Event::ChannelMessage { text, .. } | Event::PrivateMessage { text, .. } => {
                 assert!(!text.contains('\u{1}'), "{text:?}")
             }
-            Event::ServerLine(line) => assert!(!line.contains('\u{1}'), "{line:?}"),
+            Event::ServerLine(line) | Event::CtcpLine(line) => {
+                assert!(!line.contains('\u{1}'), "{line:?}")
+            }
             _ => {}
         }
     }
