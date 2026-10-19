@@ -6161,3 +6161,98 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
     }
     server.join().unwrap();
 }
+
+/// Joins `#test` with metadata, gets a deferred synchronization (774), then
+/// sees `leave`. Returns whether the client still sends `METADATA #test SYNC`.
+fn sync_survives(leave: &'static str) -> bool {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP LS 302");
+        socket
+            .write_all(b":srv CAP * LS :batch draft/metadata-2=max-subs=10 metadata-notify\r\n")
+            .unwrap();
+        for _ in 0..3 {
+            read_client_line(&mut lines);
+        }
+        socket.write_all(b":srv CAP * ACK :batch\r\n").unwrap();
+        assert_eq!(read_client_line(&mut lines), "CAP REQ draft/metadata-2");
+        socket
+            .write_all(b":srv CAP * ACK :draft/metadata-2\r\n")
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        socket
+            .write_all(b":srv 001 alice :Welcome\r\n:srv 376 alice :End\r\n")
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "METADATA * SUB avatar");
+        assert_eq!(read_client_line(&mut lines), "METADATA * GET avatar");
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":srv 770 alice avatar\r\n\
+:alice!u@h JOIN #test\r\n\
+:srv 353 alice = #test :alice bob @carol dave\r\n\
+:srv 366 alice #test :End\r\n\
+:srv 774 alice #test 1\r\n",
+            )
+            .unwrap();
+        socket.write_all(leave.as_bytes()).unwrap();
+        // Read on another thread: a socket read timeout is not reliable on
+        // every platform, so wait on a channel instead.
+        socket.set_read_timeout(None).unwrap();
+        let (line_tx, line_rx) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut line = String::new();
+            while matches!(lines.read_line(&mut line), Ok(n) if n > 0) {
+                let _ = line_tx.send(line.trim_end().to_owned());
+                line.clear();
+            }
+        });
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        let mut synced = false;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match line_rx.recv_timeout(left) {
+                Ok(line) if line == "METADATA #test SYNC" => {
+                    synced = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        socket
+            .write_all(b":dave!u@h PRIVMSG #other :done\r\n")
+            .unwrap();
+        // Hold the connection until the client quits.
+        reader.join().unwrap();
+        synced
+    });
+    let options = Ircv3Options {
+        batch: true,
+        metadata: true,
+        ..Ircv3Options::default()
+    };
+    run_fixture(plain_config(port, options), |events| {
+        channel_messages(events)
+            .iter()
+            .any(|(text, _)| text == "done")
+    });
+    server.join().unwrap()
+}
+
+#[test]
+fn metadata_sync_continues_after_another_member_leaves() {
+    assert!(sync_survives(":carol!u@h PART #test :bye\r\n"));
+    assert!(sync_survives(":op!u@h KICK #test carol :out\r\n"));
+}
+
+#[test]
+fn metadata_sync_stops_when_we_leave_or_are_kicked() {
+    assert!(!sync_survives(":alice!u@h PART #test\r\n"));
+    assert!(!sync_survives(":op!u@h KICK #test ALICE :out\r\n"));
+}

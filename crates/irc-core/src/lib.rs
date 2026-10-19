@@ -3685,8 +3685,20 @@ impl Worker {
             .map(|peers| peers.lifecycle(&message, &self.roster.presence, &self.current_nick))
             .unwrap_or_default();
         let metadata_events = if self.metadata_enabled {
-            if let IrcCommand::PART(channel, _) | IrcCommand::KICK(channel, _, _) = &message.command
-            {
+            // Only our own departure ends the synchronization; others
+            // leaving are handled by `metadata.lifecycle`.
+            let left = match &message.command {
+                IrcCommand::PART(channel, _) => message
+                    .source_nickname()
+                    .is_some_and(|nick| self.casemapping.same(nick, &self.current_nick))
+                    .then_some(channel),
+                IrcCommand::KICK(channel, nickname, _) => self
+                    .casemapping
+                    .same(nickname, &self.current_nick)
+                    .then_some(channel),
+                _ => None,
+            };
+            if let Some(channel) = left {
                 self.metadata.forget_channel(channel);
             }
             let handled = self.metadata.lifecycle(
