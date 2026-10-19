@@ -3592,7 +3592,7 @@ impl Worker {
         // not tracked.
         match &message.command {
             IrcCommand::Raw(verb, args) if verb == "SETNAME" => {
-                if message.source_nickname() == Some(self.current_nick.as_str()) {
+                if self.is_own_source(message) {
                     self.pending_setname = self.pending_setname.saturating_sub(1);
                     let realname = args.last().map(String::as_str).unwrap_or_default();
                     let event = Event::RealNameChanged {
@@ -3737,6 +3737,7 @@ impl Worker {
             &self.client,
             &mut self.roster,
             &mut self.replay,
+            self.casemapping,
             &self.current_nick,
             message,
             server_time,
@@ -3901,10 +3902,22 @@ impl Worker {
         self.send_mode_queries().await
     }
 
+    /// Whether `nickname` is ours under the connection's casemapping.
+    fn is_own_nick(&self, nickname: &str) -> bool {
+        self.casemapping.same(nickname, &self.current_nick)
+    }
+
+    /// Whether `message` was sent by us, under the connection's casemapping.
+    fn is_own_source(&self, message: &IrcMessage) -> bool {
+        message
+            .source_nickname()
+            .is_some_and(|source| self.is_own_nick(source))
+    }
+
     /// The flags of a joined channel after `message`. Leaving or joining
     /// ourselves discards what was known.
     async fn track_channel_modes(&mut self, message: &IrcMessage) -> Vec<Event> {
-        let own = message.source_nickname() == Some(self.current_nick.as_str());
+        let own = self.is_own_source(message);
         match &message.command {
             IrcCommand::JOIN(channel, _, _) if own => {
                 if let Some(note) = self.channel_modes.joined(channel, self.casemapping) {
@@ -3914,7 +3927,7 @@ impl Worker {
             IrcCommand::PART(channel, _) if own => {
                 self.channel_modes.left(channel, self.casemapping);
             }
-            IrcCommand::KICK(channel, nickname, _) if nickname == &self.current_nick => {
+            IrcCommand::KICK(channel, nickname, _) if self.is_own_nick(nickname) => {
                 self.channel_modes.left(channel, self.casemapping);
             }
             _ => {}
@@ -3932,7 +3945,7 @@ impl Worker {
 
     /// Our own joins, parts and kicks decide which channels have history.
     async fn track_own_membership(&mut self, message: &IrcMessage) -> Flow {
-        if self.history_enabled && message.source_nickname() == Some(self.current_nick.as_str()) {
+        if self.history_enabled && self.is_own_source(message) {
             match &message.command {
                 IrcCommand::JOIN(channel, _, _) => {
                     if let Some(note) = self.history.enqueue(channel) {
@@ -3948,7 +3961,7 @@ impl Worker {
             }
         }
         if let IrcCommand::KICK(channel, nickname, _) = &message.command
-            && nickname == &self.current_nick
+            && self.is_own_nick(nickname)
         {
             for finished in self.history.forget(channel) {
                 self.finish_history(finished).await?;
@@ -4408,15 +4421,19 @@ fn private_message(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn translate_message(
     client: &Client,
     roster: &mut RosterTracker,
     replay: &mut replay::ReplayTracker,
+    casemapping: CaseMapping,
     current_nick: &str,
     message: IrcMessage,
     server_time: Option<SystemTime>,
     batch_negotiated: bool,
 ) -> Vec<Event> {
+    let is_own = |nickname: &str| casemapping.same(nickname, current_nick);
+    let own_source = message.source_nickname().is_some_and(is_own);
     // TAGMSG carries only tags. None is shown yet: no chat row, unread
     // mark, notification or preview; the transcript still records it.
     replay.observe(&message);
@@ -4461,7 +4478,7 @@ fn translate_message(
             kind: ChannelActivityKind::Kicked {
                 target: target.clone(),
                 reason: reason.clone(),
-                own: target == current_nick,
+                own: is_own(target),
             },
             server_time,
         }),
@@ -4506,10 +4523,10 @@ fn translate_message(
         IrcCommand::JOIN(channel, _, _) | IrcCommand::ChannelMODE(channel, _) => {
             vec![channel.clone()]
         }
-        IrcCommand::PART(channel, _) if message.source_nickname() != Some(current_nick) => {
+        IrcCommand::PART(channel, _) if !own_source => {
             vec![channel.clone()]
         }
-        IrcCommand::KICK(channel, nickname, _) if nickname != current_nick => {
+        IrcCommand::KICK(channel, nickname, _) if !is_own(nickname) => {
             vec![channel.clone()]
         }
         // Only rosters that contained the user change; republishing every
@@ -4538,10 +4555,10 @@ fn translate_message(
                 .quit(message.source_nickname().unwrap_or(""));
         }
         IrcCommand::ChannelMODE(channel, modes) => roster.clear_mode_targets(channel, modes),
-        IrcCommand::PART(channel, _) if message.source_nickname() == Some(current_nick) => {
+        IrcCommand::PART(channel, _) if own_source => {
             roster.forget_channel(channel);
         }
-        IrcCommand::KICK(channel, nickname, _) if nickname == current_nick => {
+        IrcCommand::KICK(channel, nickname, _) if is_own(nickname) => {
             roster.forget_channel(channel);
         }
         IrcCommand::Response(Response::RPL_ENDOFNAMES, args) => {
@@ -4562,22 +4579,22 @@ fn translate_message(
                 .cloned()
                 .unwrap_or_else(|| current_nick.to_owned()),
         }],
-        IrcCommand::JOIN(channel, _, _) if message.source_nickname() == Some(current_nick) => {
+        IrcCommand::JOIN(channel, _, _) if own_source => {
             vec![Event::Joined {
                 channel: channel.clone(),
             }]
         }
-        IrcCommand::PART(channel, _) if message.source_nickname() == Some(current_nick) => {
+        IrcCommand::PART(channel, _) if own_source => {
             vec![Event::Parted {
                 channel: channel.clone(),
             }]
         }
-        IrcCommand::KICK(channel, nickname, _) if nickname == current_nick => {
+        IrcCommand::KICK(channel, nickname, _) if is_own(nickname) => {
             vec![Event::Parted {
                 channel: channel.clone(),
             }]
         }
-        IrcCommand::NICK(nickname) if message.source_nickname() == Some(current_nick) => {
+        IrcCommand::NICK(nickname) if own_source => {
             vec![Event::NickChanged {
                 nickname: nickname.clone(),
             }]
