@@ -44,8 +44,63 @@ actions!(
         Paste,
         Cut,
         Copy,
+        UploadImage,
     ]
 );
+
+/// The right-click menu's labels, in the interface language. Set by the
+/// windows that own a `Localizer`; English until then.
+#[derive(Clone)]
+pub struct MenuLabels {
+    undo: String,
+    redo: String,
+    cut: String,
+    copy: String,
+    paste: String,
+    delete: String,
+    select_all: String,
+    upload: String,
+    clear: String,
+}
+
+impl MenuLabels {
+    pub fn new(i18n: &crate::localization::Localizer) -> Self {
+        Self {
+            undo: i18n.text("menu_undo"),
+            redo: i18n.text("menu_redo"),
+            cut: i18n.text("menu_cut"),
+            copy: i18n.text("menu_copy"),
+            paste: i18n.text("menu_paste"),
+            delete: i18n.text("input_menu_delete"),
+            select_all: i18n.text("menu_select_all"),
+            upload: i18n.text("toolbar_upload"),
+            clear: i18n.text("input_menu_clear"),
+        }
+    }
+}
+
+impl gpui::Global for MenuLabels {}
+
+/// An open right-click menu: where it was opened and what the clipboard held
+/// at that moment (reading it on every frame would be wasteful).
+struct InputMenu {
+    position: Point<Pixels>,
+    clipboard_text: bool,
+    clipboard_image: bool,
+}
+
+#[derive(Clone, Copy)]
+enum MenuChoice {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+    SelectAll,
+    Upload,
+    Clear,
+}
 
 /// Whether pasting one long Amazon product link into a message draft inserts
 /// its short form (`shorten_amazon_urls`, #315).
@@ -92,6 +147,7 @@ pub struct TextInput {
     double_click_selects_all: bool,
     prefers_direct_input: bool,
     native_settings_style: bool,
+    menu: Option<InputMenu>,
 }
 
 impl TextInput {
@@ -458,6 +514,129 @@ impl TextInput {
         } else {
             self.move_to(self.index_for_mouse_position(event.position), cx)
         }
+    }
+
+    /// Opens the edit menu at the pointer. The field takes the focus, the
+    /// selection stays, so a selected text can be cut or copied from it.
+    fn open_menu(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle);
+        let item = cx.read_from_clipboard();
+        self.menu = Some(InputMenu {
+            position: event.position,
+            clipboard_text: item.as_ref().is_some_and(|item| item.text().is_some()),
+            clipboard_image: item
+                .as_ref()
+                .is_some_and(|item| clipboard_image(item).is_some()),
+        });
+        cx.notify();
+    }
+
+    /// Runs a menu entry as the matching action on the focused field, so it
+    /// does exactly what the shortcut does.
+    fn choose(&mut self, choice: MenuChoice, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        cx.notify();
+        window.focus(&self.focus_handle);
+        let action: Box<dyn gpui::Action> = match choice {
+            MenuChoice::Undo => Box::new(Undo),
+            MenuChoice::Redo => Box::new(Redo),
+            MenuChoice::Cut => Box::new(Cut),
+            MenuChoice::Copy => Box::new(Copy),
+            MenuChoice::Paste => Box::new(Paste),
+            MenuChoice::Delete => Box::new(Delete),
+            MenuChoice::SelectAll => Box::new(SelectAll),
+            MenuChoice::Upload => Box::new(UploadImage),
+            MenuChoice::Clear => Box::new(DeleteLine),
+        };
+        window.dispatch_action(action, cx);
+    }
+
+    /// The menu's entries in groups, each with whether it can be used now.
+    fn menu_entries(
+        &self,
+        menu: &InputMenu,
+        labels: &MenuLabels,
+    ) -> Vec<Vec<(MenuChoice, String, bool)>> {
+        let selected = !self.selected_range.is_empty();
+        // A secret never reaches the clipboard (see `copy`).
+        let may_copy = selected && !self.secret;
+        let can_paste = menu.clipboard_text || (self.attachments && menu.clipboard_image);
+        let mut groups = vec![
+            vec![
+                (MenuChoice::Undo, labels.undo.clone(), !self.undo.is_empty()),
+                (MenuChoice::Redo, labels.redo.clone(), !self.redo.is_empty()),
+            ],
+            vec![
+                (MenuChoice::Cut, labels.cut.clone(), may_copy),
+                (MenuChoice::Copy, labels.copy.clone(), may_copy),
+                (MenuChoice::Paste, labels.paste.clone(), can_paste),
+                (MenuChoice::Delete, labels.delete.clone(), selected),
+            ],
+            vec![(
+                MenuChoice::SelectAll,
+                labels.select_all.clone(),
+                !self.content.is_empty(),
+            )],
+        ];
+        if self.draft {
+            groups.push(vec![
+                (MenuChoice::Upload, labels.upload.clone(), true),
+                (
+                    MenuChoice::Clear,
+                    labels.clear.clone(),
+                    !self.content.is_empty(),
+                ),
+            ]);
+        }
+        groups
+    }
+
+    fn render_menu(&self, menu: &InputMenu, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let labels = cx.try_global::<MenuLabels>().cloned().unwrap_or_else(|| {
+            MenuLabels::new(&crate::localization::Localizer::new(
+                cayenchat_storage::Language::English,
+            ))
+        });
+        let theme = crate::theme::current(cx);
+        let mut popup = div()
+            .id("input-context-menu")
+            .occlude()
+            .w(px(200.))
+            .p_1()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .text_size(px(13.))
+            .line_height(px(20.))
+            .text_color(theme.text)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.menu = None;
+                cx.notify();
+            }));
+        for (group, entries) in self.menu_entries(menu, &labels).into_iter().enumerate() {
+            if group > 0 {
+                popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
+            }
+            for (index, (choice, label, enabled)) in entries.into_iter().enumerate() {
+                popup = popup.child(
+                    div()
+                        .id(("input-menu-item", group * 8 + index))
+                        .px_2()
+                        .py_1()
+                        .child(label)
+                        .when(enabled, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(theme.hover_strong))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose(choice, window, cx)
+                                }))
+                        })
+                        .when(!enabled, |d| d.text_color(theme.text_muted)),
+                );
+            }
+        }
+        crate::snapped_menu(menu.position, popup).into_any_element()
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
@@ -1104,6 +1283,7 @@ impl Render for TextInput {
             self.marked_range = None;
             cx.notify();
         }
+        let menu = self.menu.as_ref().map(|menu| self.render_menu(menu, cx));
         let theme = self.palette(cx);
         let native = self
             .native_settings_style
@@ -1112,68 +1292,82 @@ impl Render for TextInput {
         let focused = native.is_some() && self.focus_handle.is_focused(window);
         let font_size = native.map_or(13., |n| n.input.font.size);
         let line_height = (font_size * 1.4).max(20.);
+        // The menu is outside the field, which clips what it draws.
         div()
-            .flex()
-            .key_context("TextInput")
-            .track_focus(&self.focus_handle(cx))
-            .cursor(CursorStyle::IBeam)
-            .on_action(cx.listener(Self::backspace))
-            .on_action(cx.listener(Self::delete))
-            .on_action(cx.listener(Self::left))
-            .on_action(cx.listener(Self::right))
-            .on_action(cx.listener(Self::select_left))
-            .on_action(cx.listener(Self::select_right))
-            .on_action(cx.listener(Self::select_all))
-            .on_action(cx.listener(Self::home))
-            .on_action(cx.listener(Self::end))
-            .on_action(cx.listener(Self::select_home))
-            .on_action(cx.listener(Self::select_end))
-            .on_action(cx.listener(Self::word_left))
-            .on_action(cx.listener(Self::word_right))
-            .on_action(cx.listener(Self::select_word_left))
-            .on_action(cx.listener(Self::select_word_right))
-            .on_action(cx.listener(Self::delete_word_backward))
-            .on_action(cx.listener(Self::delete_word_forward))
-            .on_action(cx.listener(Self::delete_to_beginning))
-            .on_action(cx.listener(Self::delete_to_end))
-            .on_action(cx.listener(Self::delete_line))
-            .on_action(cx.listener(Self::delete_whitespace))
-            .on_action(cx.listener(Self::collapse_whitespace))
-            .on_action(cx.listener(Self::undo))
-            .on_action(cx.listener(Self::redo))
-            .on_action(cx.listener(Self::show_character_palette))
-            .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::cut))
-            .on_action(cx.listener(Self::copy))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .bg(theme.window)
             .w_full()
-            .overflow_hidden()
-            .line_height(px(line_height))
-            .text_size(px(font_size))
-            .when(self.native_settings_style, |d| d.text_color(theme.text))
-            .when_some(native, |d, n| d.font_family(n.input.font.family.clone()))
             .child(
                 div()
-                    .h(px(native.map_or(28., |n| {
-                        n.input.min_height.max(line_height + 10.)
-                    })))
+                    .flex()
+                    .key_context("TextInput")
+                    .track_focus(&self.focus_handle(cx))
+                    // Escape closes the menu before anything else sees the key.
+                    .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "escape" && this.menu.take().is_some() {
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(Self::open_menu))
+                    .cursor(CursorStyle::IBeam)
+                    .on_action(cx.listener(Self::backspace))
+                    .on_action(cx.listener(Self::delete))
+                    .on_action(cx.listener(Self::left))
+                    .on_action(cx.listener(Self::right))
+                    .on_action(cx.listener(Self::select_left))
+                    .on_action(cx.listener(Self::select_right))
+                    .on_action(cx.listener(Self::select_all))
+                    .on_action(cx.listener(Self::home))
+                    .on_action(cx.listener(Self::end))
+                    .on_action(cx.listener(Self::select_home))
+                    .on_action(cx.listener(Self::select_end))
+                    .on_action(cx.listener(Self::word_left))
+                    .on_action(cx.listener(Self::word_right))
+                    .on_action(cx.listener(Self::select_word_left))
+                    .on_action(cx.listener(Self::select_word_right))
+                    .on_action(cx.listener(Self::delete_word_backward))
+                    .on_action(cx.listener(Self::delete_word_forward))
+                    .on_action(cx.listener(Self::delete_to_beginning))
+                    .on_action(cx.listener(Self::delete_to_end))
+                    .on_action(cx.listener(Self::delete_line))
+                    .on_action(cx.listener(Self::delete_whitespace))
+                    .on_action(cx.listener(Self::collapse_whitespace))
+                    .on_action(cx.listener(Self::undo))
+                    .on_action(cx.listener(Self::redo))
+                    .on_action(cx.listener(Self::show_character_palette))
+                    .on_action(cx.listener(Self::paste))
+                    .on_action(cx.listener(Self::cut))
+                    .on_action(cx.listener(Self::copy))
+                    .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                    .bg(theme.window)
                     .w_full()
-                    .p(px(4.))
-                    .bg(theme.surface)
-                    .when_some(native, |d, n| {
-                        d.rounded(px(n.input.border.corner_radius))
-                            .border(px(n.input.border.line_width.max(1.)))
-                            .border_color(crate::settings_theme::color(if focused {
-                                n.input
-                                    .focus_border_color
-                                    .unwrap_or(n.defaults.focus_ring_color)
-                            } else {
-                                n.input.border.color
-                            }))
-                    })
-                    .child(TextElement { input: cx.entity() }),
+                    .overflow_hidden()
+                    .line_height(px(line_height))
+                    .text_size(px(font_size))
+                    .when(self.native_settings_style, |d| d.text_color(theme.text))
+                    .when_some(native, |d, n| d.font_family(n.input.font.family.clone()))
+                    .child(
+                        div()
+                            .h(px(native.map_or(28., |n| {
+                                n.input.min_height.max(line_height + 10.)
+                            })))
+                            .w_full()
+                            .p(px(4.))
+                            .bg(theme.surface)
+                            .when_some(native, |d, n| {
+                                d.rounded(px(n.input.border.corner_radius))
+                                    .border(px(n.input.border.line_width.max(1.)))
+                                    .border_color(crate::settings_theme::color(if focused {
+                                        n.input
+                                            .focus_border_color
+                                            .unwrap_or(n.defaults.focus_ring_color)
+                                    } else {
+                                        n.input.border.color
+                                    }))
+                            })
+                            .child(TextElement { input: cx.entity() }),
+                    ),
             )
+            .children(menu)
     }
 }
 
@@ -1205,6 +1399,7 @@ impl TextInput {
             double_click_selects_all: false,
             prefers_direct_input: false,
             native_settings_style: false,
+            menu: None,
         }
     }
 
@@ -1714,6 +1909,167 @@ mod tests {
             input.undo(&Undo, window, cx);
             assert_eq!(input.text(), "abc");
         });
+    }
+
+    fn set_theme(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+    }
+
+    /// Which entries of the menu can be used, by position in the list.
+    fn menu_state(
+        input: &Entity<TextInput>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Vec<(String, bool)> {
+        input.read_with(cx, |input, _| {
+            let menu = InputMenu {
+                position: point(px(0.), px(0.)),
+                clipboard_text: true,
+                clipboard_image: false,
+            };
+            let labels = MenuLabels::new(&crate::localization::Localizer::new(
+                cayenchat_storage::Language::English,
+            ));
+            input
+                .menu_entries(&menu, &labels)
+                .into_iter()
+                .flatten()
+                .map(|(_, label, enabled)| (label, enabled))
+                .collect()
+        })
+    }
+
+    fn enabled(state: &[(String, bool)]) -> Vec<&str> {
+        state
+            .iter()
+            .filter(|(_, enabled)| *enabled)
+            .map(|(label, _)| label.as_str())
+            .collect()
+    }
+
+    #[gpui::test]
+    fn menu_entries_are_greyed_out_when_they_cannot_apply(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "", false, cx));
+        assert_eq!(enabled(&menu_state(&input, cx)), ["Paste"]);
+        input.update_in(cx, |input, window, cx| {
+            input.replace_text_in_range(None, "abc", window, cx);
+        });
+        assert_eq!(
+            enabled(&menu_state(&input, cx)),
+            ["Undo", "Paste", "Select All"]
+        );
+        input.update(cx, |input, _| input.selected_range = 0..2);
+        assert_eq!(
+            enabled(&menu_state(&input, cx)),
+            ["Undo", "Cut", "Copy", "Paste", "Delete", "Select All"]
+        );
+        input.update_in(cx, |input, window, cx| input.undo(&Undo, window, cx));
+        assert_eq!(enabled(&menu_state(&input, cx)), ["Redo", "Paste"]);
+        // Only a draft has the entries for the message box.
+        let all = menu_state(&input, cx);
+        assert_eq!(all.len(), 7);
+        let (draft, cx) = cx.add_window_view(|_, cx| TextInput::new_live("", cx));
+        let all = menu_state(&draft, cx);
+        assert_eq!(all.len(), 9);
+        assert_eq!(enabled(&all), ["Paste", "Upload image…"]);
+    }
+
+    #[gpui::test]
+    fn a_secret_field_cannot_cut_or_copy_from_the_menu(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "pw", true, cx));
+        input.update(cx, |input, _| input.selected_range = 0..2);
+        let state = menu_state(&input, cx);
+        assert_eq!(
+            enabled(&state),
+            ["Paste", "Delete", "Select All"],
+            "{state:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn menu_entries_do_what_their_actions_do(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "hello", false, cx));
+        cx.write_to_clipboard(ClipboardItem::new_string("X".into()));
+        let choose = |choice, cx: &mut gpui::VisualTestContext| {
+            input.update_in(cx, |input, window, cx| input.choose(choice, window, cx));
+            cx.run_until_parked();
+        };
+        input.update(cx, |input, _| input.selected_range = 1..3);
+        choose(MenuChoice::Copy, cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("el".into())
+        );
+        choose(MenuChoice::Cut, cx);
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "hlo"));
+        choose(MenuChoice::Paste, cx);
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "hello"));
+        choose(MenuChoice::Undo, cx);
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "hlo"));
+        choose(MenuChoice::Redo, cx);
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "hello"));
+        choose(MenuChoice::SelectAll, cx);
+        input.read_with(cx, |input, _| assert_eq!(input.selection(), 0..5));
+        choose(MenuChoice::Delete, cx);
+        input.read_with(cx, |input, _| assert_eq!(input.text(), ""));
+    }
+
+    #[gpui::test]
+    fn the_menu_cannot_copy_a_secret_to_the_clipboard(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "pw", true, cx));
+        cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+        input.update(cx, |input, _| input.selected_range = 0..2);
+        for choice in [MenuChoice::Copy, MenuChoice::Cut] {
+            input.update_in(cx, |input, window, cx| input.choose(choice, window, cx));
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("before".into())
+        );
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "pw"));
+    }
+
+    #[gpui::test]
+    fn clearing_a_draft_from_the_menu_can_be_undone(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_live("", cx));
+        input.update_in(cx, |input, window, cx| {
+            input.replace_text_in_range(None, "hello", window, cx);
+            input.choose(MenuChoice::Clear, window, cx);
+        });
+        cx.run_until_parked();
+        input.read_with(cx, |input, _| assert_eq!(input.text(), ""));
+        input.update_in(cx, |input, window, cx| {
+            input.choose(MenuChoice::Undo, window, cx)
+        });
+        cx.run_until_parked();
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "hello"));
+    }
+
+    #[gpui::test]
+    fn a_right_click_opens_the_menu_and_escape_closes_it(cx: &mut gpui::TestAppContext) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "hello", false, cx));
+        input.update(cx, |input, _| input.selected_range = 1..3);
+        let at = input.read_with(cx, |input, _| input.last_bounds().unwrap().center());
+        cx.simulate_mouse_down(at, MouseButton::Right, gpui::Modifiers::none());
+        input.read_with(cx, |input, _| {
+            assert!(input.menu.is_some());
+            // The selection is left alone.
+            assert_eq!(input.selection(), 1..3);
+        });
+        cx.simulate_keystrokes("escape");
+        input.read_with(cx, |input, _| assert!(input.menu.is_none()));
     }
 
     #[test]
