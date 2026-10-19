@@ -3685,6 +3685,17 @@ impl Worker {
                 return ControlFlow::Continue(true);
             }
         }
+        // A WHO reply naming a remembered mask restores its picture before
+        // `observe` can queue a lookup for the mark it carries. A reply
+        // comes from the server, so it counts as replayed unless it is in
+        // a history batch.
+        if !self.replay.in_history_batch(message)
+            && let Some(peers) = self.peers.as_mut()
+            && let Some(event) =
+                peers.remembered_who(message, &self.current_nick, &self.roster.presence)
+        {
+            self.emit(event).await?;
+        }
         // CTCP AVATAR and replies to our own lookups are
         // not chat and not server lines.
         if let Some(peers) = self.peers.as_mut()
@@ -3731,11 +3742,6 @@ impl Worker {
                     peers.lifecycle(&message, &self.roster.presence, &self.current_nick);
                 if !replayed {
                     events.extend(peers.joined(&message, &self.current_nick));
-                    events.extend(peers.remembered_who(
-                        &message,
-                        &self.current_nick,
-                        &self.roster.presence,
-                    ));
                 }
                 events
             })

@@ -4862,6 +4862,95 @@ fn ircnet_who_reply_with_server_id_leads_to_an_avatar_query() {
 }
 
 #[test]
+fn a_who_reply_after_a_reconnect_restores_the_picture_without_asking() {
+    let cache = PeerAvatarCache::default();
+    let config = |port: u16| {
+        let mut config = plain_config(
+            port,
+            Ircv3Options {
+                peer_avatars: true,
+                ..Ircv3Options::default()
+            },
+        );
+        config.peer_avatar_cache = cache.clone();
+        config
+    };
+    // The first connection: kv is queried and answers.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice kv\r\n\
+:srv.example 366 alice #test :End\r\n\
+:kv!~kv@host1.example.org PRIVMSG #test :hello\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "WHO kv");
+        socket
+            .write_all(
+                b":srv.example 352 alice #test ~kv host1.example.org srv.example kv H :0 \x034\x0fKv\r\n\
+:srv.example 315 alice kv :End of /WHO list.\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "PRIVMSG kv \u{1}AVATAR\u{1}");
+        socket
+            .write_all(
+                b":kv!~kv@host1.example.org NOTICE alice :\x01AVATAR https://example.com/kv.png M\x01\r\n",
+            )
+            .unwrap();
+        assert!(read_client_line(&mut lines).starts_with("QUIT"));
+    });
+    let events = run_fixture(config(port), |events| !avatar_events(events).is_empty());
+    server.join().unwrap();
+    assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+    // The second connection: kv is already in the channel and only a WHO
+    // reply (someone else's, marked) tells his mask. Nothing is asked.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice kv\r\n\
+:srv.example 366 alice #test :End\r\n\
+:srv.example 352 alice #test ~kv host9.example.org srv.example kv H :0 \x034\x0fKv\r\n",
+            )
+            .unwrap();
+        // The next thing the client sends is its QUIT, not a query.
+        let next = read_client_line(&mut lines);
+        assert!(next.starts_with("QUIT"), "{next:?}");
+    });
+    let events = run_fixture(config(port), |events| !avatar_events(events).is_empty());
+    server.join().unwrap();
+    assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+}
+#[test]
 fn ctcp_requests_are_answered_privately_and_shown_readably() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
