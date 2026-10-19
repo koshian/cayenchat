@@ -62,6 +62,8 @@ pub const MAX_PRIVATE_CONVERSATIONS_PER_NETWORK: usize = 100;
 pub const HISTORY_RESERVE: usize = 256;
 /// Lines kept per conversation; the oldest 1,000 go when it is exceeded.
 const MAX_RETAINED: usize = 2_000;
+/// System lines kept for the combined log across all networks.
+const MAX_SYSTEM_MESSAGES: usize = 200;
 /// Notified lines waiting to be visited; the oldest are forgotten beyond it.
 const MAX_ATTENTION: usize = 200;
 /// Lines asked for per older page. The backend lowers it to what its
@@ -146,6 +148,9 @@ pub struct AppState {
     active_servers: HashSet<NetworkId>,
     statuses: HashMap<NetworkId, ConnectionStatus>,
     server_messages: HashMap<NetworkId, Vec<Message>>,
+    /// Server lines that are also shown in the combined log (CTCP requests
+    /// and replies), oldest first; the same lines stay in `server_messages`.
+    system_messages: VecDeque<(NetworkId, Message)>,
     next_message_sequence: u64,
     /// Conversation IDs are never reused, so UI state keyed by a removed
     /// conversation cannot attach to a new one.
@@ -264,6 +269,7 @@ impl AppState {
             active_servers: HashSet::new(),
             statuses: HashMap::new(),
             server_messages: HashMap::new(),
+            system_messages: VecDeque::new(),
             next_message_sequence: SEQUENCE_ORIGIN,
             next_conversation_id: 1,
             avatars: avatars::AvatarDirectory::default(),
@@ -317,6 +323,7 @@ impl AppState {
             removed.extend(self.remove_conversations(id));
             self.statuses.remove(&id);
             self.server_messages.remove(&id);
+            self.system_messages.retain(|(network, _)| *network != id);
             self.active_servers.remove(&id);
             self.avatars.remove_network(id);
             self.channel_orders.remove(&id);
@@ -359,6 +366,7 @@ impl AppState {
         let selected_here = self.selected_network().map(|selected| selected.id) == Some(network);
         let removed = self.remove_conversations(network);
         self.server_messages.remove(&network);
+        self.system_messages.retain(|(owner, _)| *owner != network);
         self.active_servers.remove(&network);
         // The logs that could show old avatars are gone.
         self.avatars.remove_network(network);
@@ -668,6 +676,26 @@ impl AppState {
         message.sequence = self.next_sequence();
         let messages = self.server_messages.entry(id).or_default();
         push_bounded(messages, message);
+    }
+
+    /// Adds a system line to `id`'s server log and to the combined log. It
+    /// never marks anything unread or notifies.
+    pub fn append_system_message(&mut self, id: NetworkId, text: String) {
+        if !self.networks.iter().any(|network| network.id == id) {
+            return;
+        }
+        let mut message = new_message("server".into(), text, Line::Activity, MessageMeta::live());
+        message.sequence = self.next_sequence();
+        self.system_messages.push_back((id, message.clone()));
+        if self.system_messages.len() > MAX_SYSTEM_MESSAGES {
+            self.system_messages.pop_front();
+        }
+        push_bounded(self.server_messages.entry(id).or_default(), message);
+    }
+
+    /// System lines for the combined log, oldest first.
+    pub fn system_messages(&self) -> &VecDeque<(NetworkId, Message)> {
+        &self.system_messages
     }
 
     fn next_sequence(&mut self) -> u64 {

@@ -1202,6 +1202,16 @@ each, one refusal line and no disconnection. Not checked against other
 servers' flood limits; ten NOTICEs per ten seconds is below the defaults of
 common servers.
 
+**Amendment 2026-10-19 (issue 497): CTCP lines also in the combined log.**
+Every CTCP line (requests, replies, round trips, timeouts, refusals and
+"not sent" notes; `Event::CtcpLine`, not `Event::ServerLine`) stays in the
+server log and is also shown in the combined subwindow as
+`[network] text` in the configurable system message color (the former
+"channel event" color; same setting key and defaults, only the name
+changed). They are still never chat rows, unread marks, highlights or
+notifications. `AppState` keeps the newest 200 such lines across networks
+for the combined log; a double-click on one opens that network's server log.
+
 ## D030 — Older channel history pages on scroll
 
 **Status:** Accepted (experimental)

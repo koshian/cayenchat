@@ -1162,8 +1162,11 @@ monotonic send time. A NOTICE echoing the token from the same nick becomes
 the round trip line; `CtcpReplies::next_deadline`/`tick` report pings
 without a reply after 30 seconds, and the pending list ends with the
 worker. Each
-admitted request or reply becomes one `Event::ServerLine`
-(`CTCP VERSION request from bob`); replayed, own and misaddressed ones are
+admitted request or reply becomes one `Event::CtcpLine`
+(`CTCP VERSION request from bob`), which the UI keeps in the server log and
+in `AppState::system_messages`, from where the combined log shows it as
+`[network] text` in the system message color (the `channel_event_color`
+setting); replayed, own and misaddressed ones are
 dropped silently. Two budgets (requests; replies) each admit five per ten
 seconds and two per user, remember only admitted entries, and report a
 refusal at most once per ten seconds.
