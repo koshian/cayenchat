@@ -197,7 +197,7 @@ impl ChatWindow {
             Scope::Private => cayenchat_irc_core::text::nickname_key(conversation),
         };
         Some(Record {
-            time: time.unwrap_or_else(SystemTime::now),
+            time: received_time(time, SystemTime::now()),
             network: self.log_network_name(network)?,
             scope,
             conversation,
@@ -399,7 +399,7 @@ impl ChatWindow {
     ) {
         if let Some(mut record) = self.conversation_logs.pending.remove(&(network, local_id)) {
             if let Some(time) = server_time {
-                record.time = time;
+                record.time = received_time(Some(time), SystemTime::now());
             }
             // The server may have changed the text; an ACTION's own text
             // comes apart from the `* …` the conversation shows.
@@ -432,8 +432,31 @@ impl ChatWindow {
     }
 }
 
+/// How far the server's time may be from ours before it is not believed.
+const SERVER_TIME_TOLERANCE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The time a line is logged with: the server's (`server-time`) when it is
+/// within 24 hours of `now`, else `now`. Only lines received now are logged,
+/// so a lying or wrong clock must not spread files over any number of days.
+fn received_time(server: Option<SystemTime>, now: SystemTime) -> SystemTime {
+    match server {
+        Some(time) => {
+            let gap = time
+                .duration_since(now)
+                .unwrap_or_else(|error| error.duration());
+            if gap <= SERVER_TIME_TOLERANCE {
+                time
+            } else {
+                now
+            }
+        }
+        None => now,
+    }
+}
+
 /// The server's name in the log's path: the display name, else the host.
-/// Servers that share it are told apart by the end of their profile ID
+/// Servers that share it, compared without regard to case (many file systems
+/// ignore it), are told apart by the end of their profile ID
 /// (generated IDs share their `custom-` start).
 fn network_directory(
     servers: &[cayenchat_storage::ServerProfile],
@@ -447,9 +470,10 @@ fn network_directory(
         }
     };
     let name = label(profile);
+    let folded = name.to_lowercase();
     let shared = servers
         .iter()
-        .any(|other| other.id != profile.id && label(other) == name);
+        .any(|other| other.id != profile.id && label(other).to_lowercase() == folded);
     Some(if shared {
         let mut short: Vec<char> = profile.id.chars().rev().take(8).collect();
         short.reverse();
@@ -637,7 +661,41 @@ impl SettingsWindow {
 mod tests {
     use cayenchat_storage::Settings;
 
-    use super::network_directory;
+    use std::time::{Duration, SystemTime};
+
+    use super::{network_directory, received_time};
+
+    #[test]
+    fn servers_differing_only_in_case_get_different_directories() {
+        let mut settings = Settings::default();
+        settings.add_server("a.example.net").display_name = "Libera".into();
+        settings.add_server("b.example.net").display_name = "libera".into();
+        settings.add_server("c.example.net").display_name = "Other".into();
+        let names: Vec<_> = settings
+            .servers
+            .iter()
+            .filter_map(|profile| network_directory(&settings.servers, profile))
+            .collect();
+        assert_ne!(
+            names[0].to_lowercase(),
+            names[1].to_lowercase(),
+            "{names:?}"
+        );
+        assert!(names[0].starts_with("Libera (") && names[1].starts_with("libera ("));
+        assert_eq!(names[2], "Other");
+    }
+
+    #[test]
+    fn server_time_is_believed_within_a_day() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let hour = Duration::from_secs(3600);
+        let day = Duration::from_secs(48 * 3600);
+        assert_eq!(received_time(Some(now + hour), now), now + hour);
+        assert_eq!(received_time(Some(now - hour), now), now - hour);
+        assert_eq!(received_time(Some(now + day), now), now);
+        assert_eq!(received_time(Some(now - day), now), now);
+        assert_eq!(received_time(None, now), now);
+    }
 
     #[test]
     fn servers_added_with_the_same_name_get_different_directories() {

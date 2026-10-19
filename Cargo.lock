@@ -910,6 +910,7 @@ version = "1.0.0-rc.1"
 name = "cayenchat-storage"
 version = "1.0.0-rc.1"
 dependencies = [
+ "cayenchat-model",
  "chrono",
  "dirs 5.0.1",
  "keyring",

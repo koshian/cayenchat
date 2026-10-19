@@ -237,7 +237,7 @@ impl Scan {
         self.cursor >= self.sources.len()
     }
 
-    /// The scan stopped at [`MAX_HITS`]; more lines match than are listed.
+    /// More than [`MAX_HITS`] lines match; the oldest are not listed.
     pub fn is_truncated(&self) -> bool {
         self.truncated
     }
@@ -267,12 +267,6 @@ impl Scan {
                 if !self.query.is_match(&message.text) {
                     continue;
                 }
-                if self.hits.len() >= MAX_HITS {
-                    self.truncated = true;
-                    self.cursor = self.sources.len();
-                    finished_source = false;
-                    break;
-                }
                 self.hits.push(Hit {
                     source: self.sources[self.cursor],
                     sequence: message.sequence,
@@ -285,6 +279,11 @@ impl Scan {
         }
         if self.sources.len() > 1 && self.hits.len() != before {
             self.hits.sort_unstable_by_key(|hit| hit.sequence);
+        }
+        // Keep the newest MAX_HITS: the oldest matches go, once per step.
+        if self.hits.len() > MAX_HITS {
+            self.hits.drain(..self.hits.len() - MAX_HITS);
+            self.truncated = true;
         }
         self.is_done()
     }
@@ -545,10 +544,49 @@ mod tests {
                 state.append_conversation_activity(id, "needle".into());
             }
         }
+        let all = {
+            let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
+            scan.step(&state, 1_000_000);
+            scan
+        };
+        assert!(all.is_truncated());
+        assert_eq!(all.hits().len(), MAX_HITS);
+        // The newest MAX_HITS of all matches stay.
+        let mut every: Vec<u64> = channels
+            .iter()
+            .flat_map(|name| {
+                let id = state.channel_id(NetworkId(1), name).unwrap();
+                messages(&state, Source::Conversation(id))
+                    .iter()
+                    .map(|m| m.sequence)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        every.sort_unstable();
+        let kept: Vec<u64> = all.hits().iter().map(|h| h.sequence).collect();
+        assert_eq!(kept, every[every.len() - MAX_HITS..]);
+        // Small slices give the same list.
+        let mut sliced = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
+        while !sliced.step(&state, 777) {}
+        assert!(sliced.is_truncated());
+        assert_eq!(sliced.hits(), all.hits());
+    }
+
+    #[test]
+    fn hits_under_the_cap_are_all_kept() {
+        let mut state = AppState::with_networks(vec![NetworkConfig {
+            id: NetworkId(1),
+            name: "one".into(),
+            channels: vec!["#c".into()],
+        }]);
+        let id = state.channel_id(NetworkId(1), "#c").unwrap();
+        for _ in 0..2_000 {
+            state.append_conversation_activity(id, "needle".into());
+        }
         let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
-        while !scan.step(&state, 1_000_000) {}
-        assert!(scan.is_truncated());
-        assert_eq!(scan.hits().len(), MAX_HITS);
+        while !scan.step(&state, 100) {}
+        assert!(!scan.is_truncated());
+        assert_eq!(scan.hits().len(), 2_000);
     }
 
     #[test]
