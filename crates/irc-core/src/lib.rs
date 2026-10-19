@@ -2,6 +2,7 @@
 //! IRC transport adapter. Third-party IRC types stay inside this crate.
 
 mod accounts;
+mod avatar_mask;
 mod cap;
 mod chanmodes;
 mod charsets;
@@ -18,6 +19,7 @@ mod replay;
 mod tags;
 pub mod text;
 
+pub use avatar_mask::{MAX_REMEMBERED_MASKS, PeerAvatarCache};
 pub use cap::Ircv3Options;
 pub use charsets::ChannelEncoding;
 pub use history::{
@@ -176,6 +178,10 @@ pub struct ConnectionConfig {
     /// sent at registration carries KVIrc's avatar mark; the URL itself can
     /// change later with [`Connection::share_avatar`].
     pub shared_avatar: Option<String>,
+    /// The CTCP AVATAR pictures remembered by user mask (D058). Keep the
+    /// same cache for a network's later connections so a reconnect does not
+    /// ask everybody again; it is memory only.
+    pub peer_avatar_cache: PeerAvatarCache,
     /// Channels whose log was cut off when the previous connection ended,
     /// with the newest message received before it. With chathistory
     /// negotiated, the first JOIN of each asks only for what came after
@@ -249,6 +255,7 @@ impl ConnectionConfig {
             sasl: None,
             ircv3: Ircv3Options::default(),
             shared_avatar: None,
+            peer_avatar_cache: PeerAvatarCache::default(),
             resume_history: Vec::new(),
             history_targets_since: None,
             channel_encodings: Vec::new(),
@@ -816,6 +823,16 @@ pub enum Event {
     /// or no longer shares a channel with us). The URL is untrusted text;
     /// it may contain the registry's `{size}` placeholder.
     UserAvatar {
+        nickname: String,
+        url: Option<String>,
+    },
+    /// A user's CTCP AVATAR picture (D058), or `None` when they answered
+    /// that they have none. Unlike [`Event::UserAvatar`] it is not tied to
+    /// the user's presence: the application keeps it for the name, and
+    /// nothing is sent when the user leaves or the connection ends. A
+    /// metadata avatar, when there is one, takes precedence. The URL is
+    /// untrusted text.
+    PeerAvatar {
         nickname: String,
         url: Option<String>,
     },
@@ -2418,9 +2435,10 @@ async fn run_cancellable(
     let registration_realname = config.wire_realname();
     let quit_message = config.wire_quit_message();
     let peers = config.ircv3.peer_avatars.then(|| {
-        peer_avatar::PeerAvatars::new(
+        peer_avatar::PeerAvatars::with_cache(
             wire_encoding.eq_ignore_ascii_case("UTF-8"),
             config.shared_avatar.clone(),
+            config.peer_avatar_cache.clone(),
         )
     });
     let ctcp = ctcp::CtcpReplies::new(config.ircv3.peer_avatars, &config.host);
@@ -3702,14 +3720,27 @@ impl Worker {
 
     /// Turns the message into events for the application.
     async fn deliver(&mut self, message: IrcMessage, replayed: bool) -> Flow {
-        // Peer avatars end before metadata's events for the
-        // same message are merged, so a departed user's
-        // peer avatar cannot stand in for their metadata.
+        // Peer avatars follow who is present before metadata's events for
+        // the same message are looked at, so a departed user's peer state
+        // cannot stand in for their metadata.
         let mut lifecycle = self
             .peers
             .as_mut()
-            .map(|peers| peers.lifecycle(&message, &self.roster.presence, &self.current_nick))
+            .map(|peers| {
+                let mut events =
+                    peers.lifecycle(&message, &self.roster.presence, &self.current_nick);
+                if !replayed {
+                    events.extend(peers.joined(&message, &self.current_nick));
+                }
+                events
+            })
             .unwrap_or_default();
+        // The speaker's user@host, for the remembered pictures.
+        let speaker_identity = self
+            .peers
+            .as_ref()
+            .filter(|_| !replayed)
+            .and_then(|_| peer_avatar::speaker_identity(&message));
         let metadata_events = if self.metadata_enabled {
             // Only our own departure ends the synchronization; others
             // leaving are handled by `metadata.lifecycle`.
@@ -3801,9 +3832,24 @@ impl Worker {
                     replayed: false,
                     ..
                 } => {
-                    let note = self.peers.as_mut().and_then(|peers| {
-                        peers.speaker(sender, &self.current_nick, &self.roster.presence)
-                    });
+                    let (remembered, note) = match self.peers.as_mut() {
+                        Some(peers) => (
+                            speaker_identity.as_ref().and_then(|(user, host)| {
+                                peers.remembered(
+                                    sender,
+                                    user,
+                                    host,
+                                    &self.current_nick,
+                                    Some(&self.roster.presence),
+                                )
+                            }),
+                            peers.speaker(sender, &self.current_nick, &self.roster.presence),
+                        ),
+                        None => (None, None),
+                    };
+                    if let Some(event) = remembered {
+                        self.emit_all(vec![event]).await?;
+                    }
                     if let Some(note) = note {
                         self.note(note).await;
                     }
@@ -4130,13 +4176,13 @@ async fn history_finished(
     events.send(event).await.is_ok()
 }
 
-/// Passes metadata's avatar events through the peer avatar merge when
-/// CTCP AVATAR exchange is on.
+/// Lets the peer avatars see metadata's avatar events (they do not ask
+/// users who have a metadata avatar) and passes them on unchanged.
 fn merged(peers: &mut Option<peer_avatar::PeerAvatars>, events: Vec<Event>) -> Vec<Event> {
-    match peers {
-        Some(peers) => peers.merge_metadata(events),
-        None => events,
+    if let Some(peers) = peers {
+        peers.observe_metadata(&events);
     }
+    events
 }
 
 /// Sends commands the worker made itself and records them in the

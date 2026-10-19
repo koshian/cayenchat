@@ -4391,7 +4391,7 @@ fn avatar_events(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match event {
-            Event::UserAvatar { nickname, url } => {
+            Event::UserAvatar { nickname, url } | Event::PeerAvatar { nickname, url } => {
                 Some(format!("{nickname}={}", url.as_deref().unwrap_or("-")))
             }
             Event::AvatarMoved { from, to } => Some(format!("{from}->{to}")),
@@ -4597,7 +4597,12 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
         channel_messages(events).len() == 2 && !avatar_events(events).is_empty()
     });
     server.join().unwrap();
-    assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+    // A file offer or an empty answer is reported as "no picture": the
+    // application keeps names, so it must hear that a picture is gone.
+    assert_eq!(
+        avatar_events(&events),
+        ["kv=https://example.com/kv.png", "bob=-", "carol=-"]
+    );
     assert_eq!(
         channel_messages(&events)
             .into_iter()
@@ -4616,6 +4621,100 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
             _ => {}
         }
     }
+}
+
+#[test]
+fn a_reconnect_gives_a_remembered_mask_its_picture_without_asking() {
+    let cache = PeerAvatarCache::default();
+    let config = |port: u16| {
+        let mut config = plain_config(
+            port,
+            Ircv3Options {
+                peer_avatars: true,
+                ..Ircv3Options::default()
+            },
+        );
+        config.peer_avatar_cache = cache.clone();
+        config
+    };
+    // The first connection: kv speaks, is looked up, queried and answers.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice kv\r\n\
+:srv.example 366 alice #test :End\r\n\
+:kv!~kv@host1.example.org PRIVMSG #test :hello\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "WHO kv");
+        socket
+            .write_all(
+                b":srv.example 352 alice #test ~kv host1.example.org srv.example kv H :0 \x034\x0fKv\r\n\
+:srv.example 315 alice kv :End of /WHO list.\r\n",
+            )
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "PRIVMSG kv \u{1}AVATAR\u{1}");
+        socket
+            .write_all(
+                b":kv!~kv@host1.example.org NOTICE alice :\x01AVATAR https://example.com/kv.png M\x01\r\n",
+            )
+            .unwrap();
+        assert!(read_client_line(&mut lines).starts_with("QUIT"));
+    });
+    let events = run_fixture(config(port), |events| !avatar_events(events).is_empty());
+    server.join().unwrap();
+    assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+    assert_eq!(cache.len(), 1);
+    // The second connection: the same user returns from another host of the
+    // same domain. Nothing is asked and the picture is there at once; the
+    // first thing the client sends after joining is its QUIT.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        assert_eq!(read_client_line(&mut lines), "CAP END");
+        assert_eq!(read_client_line(&mut lines), "NICK alice");
+        read_client_line(&mut lines);
+        socket
+            .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
+            .unwrap();
+        assert_eq!(read_client_line(&mut lines), "JOIN #test");
+        socket
+            .write_all(
+                b":alice!u@h JOIN #test\r\n\
+:srv.example 353 alice = #test :alice\r\n\
+:srv.example 366 alice #test :End\r\n\
+:KV!kv@host9.example.org JOIN #test\r\n\
+:KV!kv@host9.example.org PRIVMSG #test :back\r\n",
+            )
+            .unwrap();
+        let next = read_client_line(&mut lines);
+        assert!(next.starts_with("QUIT"), "asked again: {next:?}");
+    });
+    let events = run_fixture(config(port), |events| {
+        !avatar_events(events).is_empty() && !channel_messages(events).is_empty()
+    });
+    server.join().unwrap();
+    assert_eq!(avatar_events(&events), ["KV=https://example.com/kv.png"]);
 }
 
 #[test]
