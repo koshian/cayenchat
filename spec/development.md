@@ -1458,6 +1458,28 @@ the server log; `PRIVMSG #chan :\x01VERSION\x01` shows
 most five answers (two per sender) and one "Too many CTCP requests" line.
 No GUI run was made for this change.
 
+### CTCP AVATAR pictures by user mask (D058)
+
+Unit tests cover the mask (host names, IPv4, IPv6, cloaks, ident marks,
+case), the bounded cache, rejoining with the same mask without a lookup,
+another nickname being asked afresh, forgetting on an empty answer, the
+worker over a reconnect that shares the cache, the name table's bounds and
+its use for earlier lines. Real server:
+`crates/irc-core/tests/peer_avatar_interop.rs` (ignored by default) runs
+CayenChat's connection against the pinned Ergo 2.19.1 from
+`scripts/ergo-metadata-interop.sh`, with a raw bot that marks its realname
+and answers CTCP AVATAR:
+
+```sh
+CAYENCHAT_INTEROP_IRC=127.0.0.1:PORT cargo test --locked -p cayenchat-irc-core --test peer_avatar_interop -- --ignored --nocapture
+```
+
+The picture arrives after the bot's first line (`PeerAvatar` follows the
+`ChannelMessage`, which the application shows on that line); after the bot
+quits and joins again under the same nick and username, `PeerAvatar` comes
+with the JOIN and neither a WHO nor a query is sent; `bot_` is looked up
+with a WHO. It passed on 2026-10-20.
+
 ### Native settings appearance checks (D019)
 
 The regression tests in `ui::settings_theme` render macOS Sonoma, Windows 11,

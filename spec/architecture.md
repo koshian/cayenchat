@@ -1130,8 +1130,10 @@ only while it is on:
 - A CTCP AVATAR NOTICE (answer or announcement), live, from a user who
   shares a channel with us (to us) or is in the channel it is sent to,
   sets that user's peer avatar: an `http(s)` URL passing the metadata
-  value rules, or none (empty, file name, other scheme). The second field is
-  ignored; nothing about DCC exists.
+  value rules, or none (empty, file name, other scheme). It is reported as
+  `Event::PeerAvatar` (also when unchanged or none) and remembered under the
+  sender's mask (D058, below). The second field is ignored; nothing about
+  DCC exists.
 - Discovery: realnames in 311 (read, still collected for WHOIS) and 352
   replies; a live `ChannelMessage` or `PrivateMessage` sender who shares a
   channel and has nothing known queues one `WHO <nick>`; a marked realname
@@ -1139,7 +1141,8 @@ only while it is on:
   avatar. Queue ≤ 32, one probe per 2 s, ≤ 4 outstanding, 30 s timeout,
   `263` pauses 30 s; our 352/315/401 are consumed. Per-user state is
   cleared on QUIT or leaving the last shared channel and moved on NICK
-  (a WHO in flight for the old name is absorbed unused). Channel names in
+  (a WHO in flight for the old name is absorbed unused); the picture itself
+  is not (D058). Channel names in
   PART/KICK and the rosters are compared with the nickname case mapping
   (RFC 1459), in metadata and peer avatars alike. A speaker already known
   is not looked up again without scanning the rosters. A select branch
@@ -1149,13 +1152,24 @@ only while it is on:
   (RPL_YOURID) skips that word when it has this shape and a realname
   follows; without 042 the realname follows the hops as in RFC 2812. The
   flag lives in the connection's worker, so a reconnect learns it again.
-- Merge: the struct keeps each user's metadata and peer reference and
-  emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);
-  metadata's own events pass through `merge_metadata`, its moves are
-  absorbed (the peer lifecycle, run first for the same message, already
-  moved or ended the user), and `AvatarsReset` is followed by the peer
-  avatars again. With the option off nothing is merged and metadata
-  events are unchanged.
+- Masks (D058): `irc-core::avatar_mask` builds the key `nick!user@host` —
+  case-mapped nickname, username without leading `~ ^ = + -`, host loosened
+  (three or more labels → `*.` + last two; IPv4 → first two numbers;
+  IPv6 → first four groups; names with `/` and shorter ones unchanged), all
+  case-insensitive — and `PeerAvatarCache`, at most 512 masks, the least
+  recently used dropped first. The cache is created with the connection
+  configuration and reused by the application for the network's later
+  connections (`apply_connection`), so it outlives the worker; memory only,
+  never saved. A JOIN, or a live message from a user nothing is known
+  about, whose mask is in the cache yields `Event::PeerAvatar` and no WHO or
+  query; NICK carries the picture to the new name and mask; an answer
+  without a picture, or our WHO finding no mark, drops it.
+- Events: the struct keeps each user's metadata and peer reference only to
+  decide whom to ask (a metadata avatar means no query). Peer pictures are
+  reported as `Event::PeerAvatar { nickname, url }` and nothing is reported
+  when the user leaves or the connection ends; metadata's events pass
+  through `merged` untouched (noted by `observe_metadata`). With the option
+  off no peer events exist and metadata events are unchanged.
 
 Other CTCP (D029): `irc-core::ctcp::CtcpReplies` runs in the worker after
 `PeerAvatars` and before `translate_message`, and consumes every CTCP
@@ -1926,9 +1940,11 @@ and `performance.md`.
 irc-core metadata (draft/metadata-2) + peer_avatar (CTCP AVATAR, opt-in)
         |  (metadata first)                                a future Matrix client
         |  Event::UserAvatar / AvatarMoved / AvatarsReset      |
+        |  Event::PeerAvatar (CTCP AVATAR, D058)               |
         v                                                      v
 app::avatars::AvatarDirectory  (per network: user key -> avatar reference,
-        |                       occupancy delimited by message sequences)
+        |                       occupancy delimited by message sequences;
+        |                       CTCP AVATAR: name -> latest picture)
         |   for_message(network, key, sequence) / current(network, key)
         v
 ui::avatars (only while "Show user avatars" is on, only for drawn rows)
@@ -1966,6 +1982,21 @@ Disconnected events end every occupancy of their network; resetting or
 removing a server forgets its directory. The member list shows only
 current occupancies. Bounds: 2,048 current and 512 retired entries per
 network, the oldest-ended retired entries dropped first.
+
+CTCP AVATAR is the exception (D058): it is a stop-gap for servers without
+metadata and is not held to occupancies. Its picture belongs to the sender's
+mask `nick!user@*.host.top` (per network, memory only, 512 masks, see
+Peer avatars above) and, in the directory, to the name: message rows and the
+member list show the name's latest picture (2,048 names per network, the
+least recently set dropped first) on every line, earlier and
+before-the-answer lines included, whatever the sequence. QUIT, leaving,
+disconnects and the lost metadata capability do not remove it; a name
+without a current holder shows the last picture learned for it. A metadata
+avatar wins where its occupancy applies. The accepted cost: a different
+person using the name shows the previous one's picture, also on the previous
+one's old lines, until a lookup finds no avatar; IRCv3 metadata is the way
+to avoid it. Removing or resetting a server forgets the directory, the
+mask cache is dropped with the server's session.
 
 Display: with the setting on (the only avatar switch, for every server),
 main-log channel message rows (not activity
