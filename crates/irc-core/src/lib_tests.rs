@@ -1545,6 +1545,15 @@ fn modes_after_rejoining_from_a_kick_reach_the_roster() {
 
 /// Connects to a server that sends `script` after the JOIN and returns the last roster.
 fn roster_after_script(script: &'static [u8], settle_events: usize) -> Vec<String> {
+    roster_after_script_as("me", script, settle_events)
+}
+
+/// [`roster_after_script`] for a client registered as `nick`.
+fn roster_after_script_as(
+    nick: &'static str,
+    script: &'static [u8],
+    settle_events: usize,
+) -> Vec<String> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
@@ -1555,12 +1564,15 @@ fn roster_after_script(script: &'static [u8], settle_events: usize) -> Vec<Strin
         let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
-            .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
+            .write_all(
+                format!(":server 001 {nick} :Welcome\r\n:server 376 {nick} :End of MOTD\r\n")
+                    .as_bytes(),
+            )
             .unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
         socket.write_all(script).unwrap();
     });
-    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec!["#a".into()]);
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), nick.into(), vec!["#a".into()]);
     config.port = port;
     config.use_tls = false;
     let mut connection = Connection::connect(config).unwrap();
@@ -1604,6 +1616,85 @@ fn a_kick_of_someone_using_our_old_nick_keeps_the_roster() {
         2,
     );
     assert_eq!(last, ["+bob", "@op", "renamed"]);
+}
+
+/// A KICK of us is recognised under the connection's casemapping, whatever
+/// case the server spells our nickname in.
+fn own_kick_with_spelling(casemapping: &str, nick: &str, kicked: &str) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let welcome = format!(
+        ":server 001 {nick} :Welcome\r\n:server 005 {nick} CASEMAPPING={casemapping} :are supported\r\n:server 376 {nick} :End of MOTD\r\n"
+    );
+    let script = format!(
+        ":{nick}!u@h JOIN #c\r\n:server 324 {nick} #c +n\r\n:op!o@h KICK #c {kicked} :bye\r\n:server 324 {nick} #c +m\r\n"
+    );
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+        while !lines.next().unwrap().unwrap().starts_with("USER ") {}
+        socket.write_all(welcome.as_bytes()).unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), "JOIN #c");
+        socket.write_all(script.as_bytes()).unwrap();
+        // Keep the socket open until the client has read everything.
+        let _ = lines.next();
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), nick.into(), vec!["#c".into()]);
+    config.port = port;
+    config.use_tls = false;
+    let mut connection = Connection::connect(config).unwrap();
+    let mut modes = Vec::new();
+    let mut kicked_own = None;
+    let mut parted = false;
+    let mut kicked_at: Option<Instant> = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // Linger after the kick to see whether later lines are still tracked.
+    while Instant::now() < deadline
+        && kicked_at.is_none_or(|at| at.elapsed() < Duration::from_millis(300))
+    {
+        match connection.try_recv() {
+            Some(Event::ChannelModes { flags, .. }) => modes.push(flags),
+            Some(Event::ChannelActivity {
+                kind: ChannelActivityKind::Kicked { own, .. },
+                ..
+            }) => {
+                kicked_own = Some(own);
+                kicked_at = Some(Instant::now());
+            }
+            Some(Event::Parted { .. }) => parted = true,
+            Some(_) => {}
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    assert_eq!(kicked_own, Some(true));
+    assert!(parted);
+    // The 324 after the kick finds no tracked channel.
+    assert_eq!(modes, ["n"]);
+    drop(connection);
+    server.join().unwrap();
+}
+
+#[test]
+fn a_kick_of_us_spelled_in_another_rfc1459_case_is_ours() {
+    own_kick_with_spelling("rfc1459", "nick[1]", "nick{1}");
+}
+
+#[test]
+fn rejoining_after_a_kick_spelled_in_another_rfc1459_case_starts_a_fresh_roster() {
+    let last = roster_after_script_as(
+        "nick[1]",
+        b":server 353 nick[1] = #a :@op bob nick[1]\r\n:server 366 nick[1] #a :End of NAMES\r\n:op!o@h KICK #a nick{1} :bye\r\n:nick[1]!u@h JOIN #a\r\n:server 353 nick[1] = #a :charlie nick[1]\r\n:server 366 nick[1] #a :End of NAMES\r\n",
+        3,
+    );
+    assert_eq!(last, ["charlie", "nick[1]"]);
+}
+
+#[test]
+fn a_kick_of_us_spelled_in_another_ascii_case_is_ours() {
+    own_kick_with_spelling("ascii", "Alice", "alice");
 }
 
 #[test]

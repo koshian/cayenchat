@@ -33,10 +33,12 @@
 //! no channel-wide WHO and no query to users without the mark. IRCnet's
 //! ircd (2.11 and later) puts the server's ID between the hop count and the
 //! realname in 352 (`:<hops> <sid> <realname>`, the ID being a digit and
-//! three of `[0-9A-Z]`; `s_user.c` `who_one`) and sends 042 (RPL_YOURID)
-//! at registration: on a connection that received 042 that word is skipped
-//! when it has this shape and something follows, otherwise the realname
-//! follows the hop count as in RFC 2812. Lookups and
+//! three of `[0-9A-Z]`; `s_user.c` `who_one`). Bouncers (Tiarra) do not
+//! pass 042 (RPL_YOURID) on, so the ID is not tied to it: a realname that
+//! does not start with a mark as it is gets that word skipped when it has
+//! this shape and something follows, and is checked again. A 315 or 401
+//! name may carry `@network` (Tiarra); it is matched before the `@`.
+//! Lookups and
 //! queries are deduplicated per user until the user leaves (or the
 //! connection ends), queued up to a bound, sent one at a time at most every
 //! two seconds with a few outstanding, and given up after a timeout.
@@ -230,6 +232,12 @@ fn skip_server_id(real: &str) -> &str {
     }
 }
 
+/// A nickname in a reply's name parameter without the `@network` some
+/// bouncers (Tiarra in multi-server mode) append; `@` is not valid in nicks.
+fn without_network(name: &str) -> &str {
+    name.split_once('@').map_or(name, |(nick, _)| nick)
+}
+
 /// The parameters of a CTCP AVATAR message (after the tag), or `None` for
 /// any other text. The closing 0x01 is optional, as in other clients.
 fn avatar_ctcp(text: &str) -> Option<&str> {
@@ -336,9 +344,6 @@ enum Stage {
 #[derive(Debug)]
 pub(crate) struct PeerAvatars {
     utf8: bool,
-    /// Whether this connection received 042 (RPL_YOURID): its servers put a
-    /// server ID between the hop count and the realname in 352 (IRCnet).
-    server_ids: bool,
     /// The URL answered to queries, if we share one.
     share: Option<String>,
     /// Pictures by user mask, kept across connections (D058).
@@ -375,7 +380,6 @@ impl PeerAvatars {
     pub(crate) fn with_cache(utf8: bool, share: Option<String>, cache: PeerAvatarCache) -> Self {
         Self {
             utf8,
-            server_ids: false,
             share: share.filter(|url| shareable(url, utf8).is_ok()),
             cache,
             avatars: HashMap::new(),
@@ -549,14 +553,9 @@ impl PeerAvatars {
                 .position(|probe| probe.kind == kind && probe.key == key)
         };
         match code {
-            // RPL_YOURID: the line is left to the server log as before.
-            42 => {
-                self.server_ids = true;
-                None
-            }
             // RPL_WHOREPLY: <me> <channel> <user> <host> <server> <nick>
-            // <flags> :<hops> <realname>; with a server ID (see
-            // `server_ids`) :<hops> <sid> <realname>
+            // <flags> :<hops> <realname>; with a server ID (IRCnet)
+            // :<hops> <sid> <realname>
             352 if args.len() >= 8 => {
                 let nick = &args[5];
                 let found = ours(ProbeKind::Who, nick);
@@ -565,10 +564,13 @@ impl PeerAvatars {
                 if !stale {
                     let trailing = args.last().map(String::as_str).unwrap_or_default();
                     let real = trailing.split_once(' ').map_or("", |(_, real)| real);
-                    let real = if self.server_ids {
-                        skip_server_id(real)
-                    } else {
+                    // Bouncers do not pass 042 on, so the ID is not tied to
+                    // it: a word of its shape is skipped only when the
+                    // realname does not start with a mark as it is.
+                    let real = if advertises_avatar(real) {
                         real
+                    } else {
+                        skip_server_id(real)
                     };
                     // Only our own lookup can report what it found; another
                     // user's WHO stays a server line, with nothing to attach.
@@ -582,7 +584,7 @@ impl PeerAvatars {
             }
             // RPL_ENDOFWHO: <me> <mask> :End of WHO
             315 => {
-                let index = ours(ProbeKind::Who, args.get(1)?)?;
+                let index = ours(ProbeKind::Who, without_network(args.get(1)?))?;
                 self.in_flight.remove(index);
                 Some(Handled::default())
             }
@@ -595,8 +597,7 @@ impl PeerAvatars {
             }
             // ERR_NOSUCHNICK for a lookup or query of ours: they are gone.
             401 => {
-                let nick = args.get(1)?;
-                let key = nickname_key(nick);
+                let key = nickname_key(without_network(args.get(1)?));
                 let before = self.in_flight.len();
                 self.in_flight.retain(|probe| probe.key != key);
                 (self.in_flight.len() != before).then(Handled::default)
@@ -1654,10 +1655,60 @@ mod tests {
     }
 
     #[test]
-    fn server_id_is_not_assumed_without_042() {
-        assert!(who_reply_sends(false, "0 1ABC \\x034\\x03Name").is_empty());
+    fn server_id_is_skipped_without_042() {
+        let query = ["PRIVMSG kv \u{1}AVATAR\u{1}"];
+        assert_eq!(who_reply_sends(false, "0 1ABC \\x034\\x03Name"), query);
         assert_eq!(
-            who_reply_sends(false, "0 \\x034\\x03Name"),
+            who_reply_sends(false, "0 392L \u{2}\u{16}\u{16}\u{2}Name"),
+            query
+        );
+        assert_eq!(who_reply_sends(false, "0 392L \u{3}4\u{f}Name"), query);
+        assert_eq!(who_reply_sends(false, "0 \\x034\\x03Name"), query);
+        assert_eq!(who_reply_sends(false, "0 \u{3}4\u{f}Name"), query);
+        // The first word is not an ID: not a mark.
+        assert!(who_reply_sends(false, "0 hello \u{2}\u{16}\u{16}\u{2}").is_empty());
+        assert!(who_reply_sends(false, "0 392L Plain name").is_empty());
+    }
+
+    #[test]
+    fn network_suffix_in_315_and_401_is_ignored() {
+        let now = Instant::now();
+        let rosters = rosters();
+        let mut peers = PeerAvatars::new(true, None);
+        peers.speaker("kv", ME, &rosters);
+        assert_eq!(wire(&peers.tick(now, ME, &rosters).send), ["WHO kv"]);
+        assert!(
+            observe(
+                &mut peers,
+                ":srv 315 alice kv@ircnet :End of WHO list.",
+                now
+            )
+            .is_some()
+        );
+        assert!(peers.in_flight.is_empty());
+        peers.speaker("bob", ME, &rosters);
+        assert_eq!(
+            wire(&peers.tick(now + PROBE_INTERVAL, ME, &rosters).send),
+            ["WHO bob"]
+        );
+        assert!(observe(&mut peers, ":srv 401 alice bob@ircnet :No such nick", now).is_some());
+        assert!(peers.in_flight.is_empty());
+    }
+
+    #[test]
+    fn tiarra_multi_server_who_is_followed_by_a_query() {
+        let now = Instant::now();
+        let rosters = rosters();
+        let mut peers = PeerAvatars::new(true, None);
+        peers.speaker("kv", ME, &rosters);
+        assert_eq!(wire(&peers.tick(now, ME, &rosters).send), ["WHO kv"]);
+        let reply = ":dh.ircnet.ne.jp 352 alice *@ircnet ~koshian bouncer.example.net \
+                     dh.ircnet.ne.jp kv H :0 392L \u{2}\u{16}\u{16}\u{2}Example Name";
+        assert!(observe(&mut peers, reply, now).is_some());
+        let end = ":dh.ircnet.ne.jp 315 alice kv@ircnet :End of WHO list.";
+        assert!(observe(&mut peers, end, now).is_some());
+        assert_eq!(
+            wire(&peers.tick(now + PROBE_INTERVAL, ME, &rosters).send),
             ["PRIVMSG kv \u{1}AVATAR\u{1}"]
         );
     }
