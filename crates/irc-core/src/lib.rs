@@ -32,6 +32,7 @@ pub use regain::OpRegainStatus;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt,
+    hash::{BuildHasher as _, Hasher as _},
     ops::ControlFlow,
     sync::{
         Arc, Mutex,
@@ -88,7 +89,7 @@ const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(90);
 /// socket buffer; the crate checks the deadline before it looks at buffered
 /// data. This is a margin, not a bound; a dead connection still ends after it.
 const PING_TIMEOUT_SECS: u32 = 120;
-/// How long [`Connection::check_alive`] waits for any line from the server.
+/// How long [`Connection::check_alive`] waits for the `PONG` to its `PING`.
 /// Longer than a round trip over a network that has just come back, and
 /// short enough that a lost connection is replaced soon after waking.
 const ALIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -2246,9 +2247,11 @@ impl Connection {
     }
 
     /// Verifies that the server still answers, for after the machine has
-    /// slept: the worker sends a `PING` to the server and, when no line at
-    /// all arrives within [`ALIVE_CHECK_TIMEOUT`], ends with
-    /// `Event::Disconnected`. A connection that answers is left alone. Only a
+    /// slept: the worker sends a `PING` with a token of its own and, when no
+    /// `PONG` carrying that token arrives within [`ALIVE_CHECK_TIMEOUT`],
+    /// ends with `Event::Disconnected`. Other lines, such as ones that were
+    /// already buffered before the sleep, are handled as usual but do not
+    /// end the check. A connection that answers is left alone. Only a
     /// registered connection is checked, and a check already running is not
     /// restarted or extended. Messages and commands sent meanwhile are held
     /// and written once the server has answered; if it has not, they are
@@ -2623,6 +2626,10 @@ async fn run_cancellable(
         history_available: false,
         alive_check: None,
         alive_checks: 0,
+        alive_nonce: std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish() as u32,
+        alive_token: String::new(),
         held: VecDeque::new(),
     };
 
@@ -2778,10 +2785,16 @@ struct Worker {
     accounts: accounts::Accounts,
     targets_asked: bool,
     history_available: bool,
-    /// When the running alive check gives up; any line from the server ends it.
+    /// When the running alive check gives up; only a `PONG` carrying
+    /// `alive_token` ends it.
     alive_check: Option<tokio::time::Instant>,
     /// Alive checks started, for their `PING` tokens.
     alive_checks: u64,
+    /// Random per connection, so a token of an earlier connection or one
+    /// typed by another user is not mistaken for ours.
+    alive_nonce: u32,
+    /// The `PING` token of the running alive check.
+    alive_token: String,
     /// Commands received during the alive check, in order.
     held: VecDeque<Outgoing>,
 }
@@ -3131,24 +3144,37 @@ impl Worker {
         self.emit_all(handled.events).await
     }
 
-    /// Asks the server for a `PONG` (any line from it counts as the answer).
+    /// Asks the server for a `PONG` (only one carrying our token counts as
+    /// the answer; lines read from the buffer of before the sleep do not).
     /// Ignored before registration and while a check is already running.
     async fn start_alive_check(&mut self, timeout: Duration) -> Flow {
         if !self.registered || self.alive_check.is_some() {
             return ControlFlow::Continue(());
         }
         self.alive_checks += 1;
-        let token = format!("cayenchat-wake-{}", self.alive_checks);
-        self.send_commands(vec![IrcCommand::PING(token, None)])
+        self.alive_token = format!(
+            "cayenchat-wake-{:08x}-{}",
+            self.alive_nonce, self.alive_checks
+        );
+        self.send_commands(vec![IrcCommand::PING(self.alive_token.clone(), None)])
             .await?;
         self.alive_check = Some(tokio::time::Instant::now() + timeout);
         self.note("Checking that the server still answers.").await;
         ControlFlow::Continue(())
     }
 
-    /// Ends a running alive check because the server sent a line.
-    async fn alive_check_answered(&mut self) {
-        if self.alive_check.take().is_some() {
+    /// Ends a running alive check when `message` is the `PONG` to our `PING`.
+    /// Servers send `PONG <server> :<token>` or `PONG <token>`, so either
+    /// argument may hold the token. A bouncer answering for the server also
+    /// counts: the link to it is alive.
+    async fn alive_check_answered(&mut self, message: &IrcMessage) {
+        let IrcCommand::PONG(first, second) = &message.command else {
+            return;
+        };
+        if self.alive_check.is_some()
+            && (*first == self.alive_token || second.as_deref() == Some(&self.alive_token))
+            && self.alive_check.take().is_some()
+        {
             self.note("The server answered the connection check.").await;
         }
     }
@@ -3315,7 +3341,7 @@ impl Worker {
     ) -> Flow {
         match incoming {
             Some(Ok(message)) => {
-                self.alive_check_answered().await;
+                self.alive_check_answered(&message).await;
                 self.on_irc_message(message).await
             }
             // irc consumes 432/433 and reports NoUsableNick because no
