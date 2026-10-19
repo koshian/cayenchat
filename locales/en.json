@@ -555,6 +555,8 @@
   "ircv3_peer_share_exposure": "Anyone on this network who asks gets this URL, and after reconnecting your real name shows that you have an avatar. Never include passwords or access tokens.",
   "ircv3_peer_stop": "Stop Sharing",
   "ircv3_peer_sharing": "Shared with peers: {url}",
+  "ircv3_peer_invisible_mark": "Start the real name with an invisible mark",
+  "ircv3_peer_invisible_mark_hint": "On ISO-2022-JP servers, adds invisible formatting codes to the start of your real name so that other CayenChat users can find your avatar. KVIrc does not read this mark. Applies from the next connection. Through a bouncer it has no effect; write \\x034\\x03 into the bouncer's real name for the network instead.",
   "ircv3_peer_reconnect": "Reconnect to update the avatar mark in your real name.",
   "ircv3_peer_size_placeholder": "Other clients do not fill in {size}; share a URL without it.",
   "experimental_tab": "Experimental",

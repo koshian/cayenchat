@@ -1034,7 +1034,8 @@ What CayenChat does:
   (`WhoisInfo::avatar_mark`) and the server exchanges avatars. It sends
   one CTCP AVATAR query even if the user was asked before; it goes
   through the same queue (spacing, bounds, one query per user), and only
-  for users who share a channel with us.
+  for users who share a channel with us. D057 adds an invisible mark that
+  CayenChat itself sends on ISO-2022-JP.
 
 Interoperability: verified against wire-accurate fixtures written from
 KVIrc's source (realname mark, query, `M`-suffixed answer, empty answer,
@@ -1286,6 +1287,59 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D057 — Invisible mark in the realname on ISO-2022-JP (#490)
+
+**Status:** Accepted
+
+- Adds to the "ISO-2022-JP and the textual mark" paragraph of D025, which
+  stays as it was: KVIrc's mark is still never sent on ISO-2022-JP and the
+  textual `\x034\x03` is still receive-only. Observations are in
+  `avatar-mark-research-2026-10-19.md`.
+- The mark is the four raw control codes `02 16 16 02` (bold on, reverse on,
+  reverse off, bold off; `peer_avatar::INVISIBLE_MARK`). Checked on IRCnet
+  (WHO 352 and WHOIS 311 return the realname as sent) and in LimeChat for Mac:
+
+  | Leading bytes | IRCnet | LimeChat WHOIS | LimeChat stability |
+  | --- | --- | --- | --- |
+  | `03 '4' 0F` (KVIrc's) | passed through | `4` shows | became unstable |
+  | `03 '4' 03` | passed through | `4` shows | fine |
+  | `02 02` | passed through | nothing shows | fine |
+
+  KVIrc's mark cannot be sent: KVIrc wants U+000F as the third character after
+  decoding, and in ISO-2022-JP only a raw 0x0F makes it, which is out of the
+  standard; LimeChat retries a failed conversion byte by byte from the end of
+  the line, which unsettled it (SO, 0x0E, has the same problem). A colour code
+  (0x03) is not used because LimeChat's WHOIS dialog shows its digits. Bold and
+  reverse are bytes ISO-2022-JP may carry, hold no digit, and do nothing for
+  clients that format, since they are switched back at once. Four bytes, with
+  the reverse pair between, make a name that does not begin so by chance.
+- Per server, `peer_avatar_invisible_mark` (default **on**; files without it
+  read as on), switch shown on the IRCv3 tab only when the encoding is
+  ISO-2022-JP and peer avatars are on. With ISO-2022-JP, peer avatars on, a
+  shared URL and the switch on, `USER` and `SETNAME` start the realname with
+  the mark (`ConnectionConfig::marks_avatar_invisibly`). Any mark the user
+  typed is replaced, never doubled. Other encodings keep KVIrc's mark and
+  ignore the switch.
+- Receiving: a realname starting with the mark always means "has an avatar"
+  (it holds no digit). `without_mark` strips KVIrc's, the invisible and the
+  textual mark, in any order and number, so CayenChat's own WHOIS and
+  `SETNAME` displays show none of them.
+- On by default because other clients show nothing for it; the costs are four
+  bytes of the realname limit and that it applies only from the next
+  connection (IRCnet has no SETNAME).
+- KVIrc users: on ISO-2022-JP KVIrc does not find a CayenChat user by itself
+  (it does not read this mark). A CTCP AVATAR query from KVIrc is answered as
+  before, and CayenChat still queries a KVIrc user who has KVIrc's mark.
+- Through a bouncer the switch has no effect, because the bouncer sends its
+  own configured realname in `USER` (and raw control codes are hard to write
+  into its settings): write the textual mark into the bouncer's realname for
+  that network (Tiarra `name:` in the network block; soju
+  `network update <network> -realname '\x034\x03Name'`).
+- The "reconnect" hint compares the connection's mark (KVIrc's or invisible,
+  `ConnectionConfig::marks_avatar`) with what the settings now give.
+- `SETNAME` is checked against the connection's mark, and only when an
+  avatar is shared (the mark is fixed per connection, like `USER`).
 
 ## D056 — Regain operator status whenever alone without it (#478)
 

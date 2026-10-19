@@ -358,6 +358,7 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
@@ -383,6 +384,7 @@ fn member_modes_are_split_to_the_announced_limit_and_validated_first() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(2)),
@@ -424,6 +426,7 @@ fn member_modes_are_not_sent_in_part_when_the_queue_is_nearly_full() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(1)),
@@ -455,6 +458,7 @@ fn taken_events_can_be_awaited_until_the_worker_ends() {
         quit: Arc::default(),
         events: Some(Events(events)),
         encoding: "UTF-8".into(),
+        realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
@@ -4810,10 +4814,17 @@ fn the_configured_realname_is_registered_with_the_avatar_mark_only_on_the_wire()
         !config.advertises_avatar(),
         "SI does not survive ISO-2022-JP"
     );
+    assert_eq!(
+        config.wire_realname(),
+        "\u{2}\u{16}\u{16}\u{2}Alice Liddell",
+        "the invisible mark instead"
+    );
+    config.peer_avatar_invisible_mark = false;
     assert_eq!(config.wire_realname(), "Alice Liddell");
     assert!(config.validate().is_ok());
     config.realname = "\\x034\\x03Alice".into();
     assert_eq!(config.wire_realname(), "\\x034\\x03Alice", "sent as typed");
+    config.peer_avatar_invisible_mark = true;
     config.encoding = "UTF-8".into();
     config.realname = "a\r\nQUIT".into();
     assert!(config.validate().is_err());
@@ -4927,6 +4938,78 @@ fn setname_changes_the_realname_and_the_server_confirms_it() {
     );
     connection.disconnect().unwrap();
     assert_eq!(server.join().unwrap(), "USER alice 0 * \u{3}4\u{f}Alice");
+}
+
+#[test]
+fn the_invisible_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold() {
+    let mut config = plain_config(6667, Ircv3Options::default());
+    config.realname = "Alice".into();
+    config.encoding = "ISO-2022-JP".into();
+    config.ircv3.peer_avatars = true;
+    config.shared_avatar = Some("https://example.com/a.png".into());
+    assert!(config.peer_avatar_invisible_mark, "on by default");
+    assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
+    assert!(config.marks_avatar_invisibly() && config.marks_avatar());
+    assert!(!config.advertises_avatar());
+    assert!(config.validate().is_ok());
+    // The line reaches the wire with the four bytes untouched.
+    let line = format!("USER alice 0 * :{}\r\n", config.wire_realname());
+    let bytes = encode_strict(&line, "ISO-2022-JP").unwrap();
+    assert!(
+        bytes.windows(4).any(|w| w == [0x02, 0x16, 0x16, 0x02]),
+        "{bytes:?}"
+    );
+    assert!(!bytes.contains(&0x0f) && !bytes.contains(&0x0e));
+    // Each condition missing leaves the realname as it was.
+    let mut off = config.clone();
+    off.peer_avatar_invisible_mark = false;
+    assert_eq!(off.wire_realname(), "Alice");
+    assert!(!off.marks_avatar());
+    let mut off = config.clone();
+    off.ircv3.peer_avatars = false;
+    assert_eq!(off.wire_realname(), "Alice");
+    let mut off = config.clone();
+    off.shared_avatar = None;
+    assert_eq!(off.wire_realname(), "Alice");
+    // Typed by the user already: not doubled.
+    config.realname = "\u{2}\u{16}\u{16}\u{2}Alice".into();
+    assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
+    config.realname = "\\x034\\x03Alice".into();
+    assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
+    // Other encodings keep KVIrc's mark and ignore the switch.
+    config.realname = "Alice".into();
+    config.encoding = "UTF-8".into();
+    assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
+    assert!(!config.marks_avatar_invisibly());
+    config.peer_avatar_invisible_mark = false;
+    assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
+}
+
+#[test]
+fn setname_on_iso_2022_jp_follows_the_invisible_mark_of_the_connection() {
+    let (port, server) = setname_server("server-time setname", |send, lines| {
+        assert_eq!(read_client_line(lines), "SETNAME \u{2}\u{16}\u{16}\u{2}Bob");
+        send(":alice!u@h SETNAME :\u{2}\u{16}\u{16}\u{2}Bob\r\n");
+        let _ = read_client_line(lines);
+    });
+    let mut config = plain_config(port, setname_options());
+    config.realname = "Alice".into();
+    config.encoding = "ISO-2022-JP".into();
+    config.ircv3.peer_avatars = true;
+    config.shared_avatar = Some("https://example.com/a.png".into());
+    let mut connection = Connection::connect(config).unwrap();
+    wait_for(&mut connection, |event| {
+        matches!(event, Event::Registered { .. })
+    });
+    connection.set_real_name("Bob").unwrap();
+    wait_for(&mut connection, |event| {
+        matches!(event, Event::RealNameChanged { .. })
+    });
+    connection.disconnect().unwrap();
+    assert_eq!(
+        server.join().unwrap(),
+        "USER alice 0 * \u{2}\u{16}\u{16}\u{2}Alice"
+    );
 }
 
 #[test]

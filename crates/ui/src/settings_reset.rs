@@ -140,6 +140,7 @@ impl SettingsWindow {
                     profile.ircv3 = Ircv3Preferences::default();
                     // Peer avatars are off again, so nothing is shared.
                     profile.peer_avatar_url.clear();
+                    profile.peer_avatar_invisible_mark = true;
                 }
             }
             SettingsTab::ImageUpload => self.select_upload_provider(None, cx),
