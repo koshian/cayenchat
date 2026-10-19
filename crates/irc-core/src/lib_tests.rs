@@ -4819,12 +4819,12 @@ fn the_configured_realname_is_registered_with_the_avatar_mark_only_on_the_wire()
         "\u{2}\u{16}\u{16}\u{2}Alice Liddell",
         "the invisible mark instead"
     );
-    config.peer_avatar_invisible_mark = false;
+    config.shared_avatar = None;
     assert_eq!(config.wire_realname(), "Alice Liddell");
     assert!(config.validate().is_ok());
     config.realname = "\\x034\\x03Alice".into();
     assert_eq!(config.wire_realname(), "\\x034\\x03Alice", "sent as typed");
-    config.peer_avatar_invisible_mark = true;
+    config.shared_avatar = Some("https://example.com/a.png".into());
     config.encoding = "UTF-8".into();
     config.realname = "a\r\nQUIT".into();
     assert!(config.validate().is_err());
@@ -4941,13 +4941,12 @@ fn setname_changes_the_realname_and_the_server_confirms_it() {
 }
 
 #[test]
-fn the_invisible_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold() {
+fn the_invisible_mark_is_added_only_on_iso_2022_jp_when_all_three_conditions_hold() {
     let mut config = plain_config(6667, Ircv3Options::default());
     config.realname = "Alice".into();
     config.encoding = "ISO-2022-JP".into();
     config.ircv3.peer_avatars = true;
     config.shared_avatar = Some("https://example.com/a.png".into());
-    assert!(config.peer_avatar_invisible_mark, "on by default");
     assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
     assert!(config.marks_avatar_invisibly() && config.marks_avatar());
     assert!(!config.advertises_avatar());
@@ -4962,10 +4961,6 @@ fn the_invisible_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold
     assert!(!bytes.contains(&0x0f) && !bytes.contains(&0x0e));
     // Each condition missing leaves the realname as it was.
     let mut off = config.clone();
-    off.peer_avatar_invisible_mark = false;
-    assert_eq!(off.wire_realname(), "Alice");
-    assert!(!off.marks_avatar());
-    let mut off = config.clone();
     off.ircv3.peer_avatars = false;
     assert_eq!(off.wire_realname(), "Alice");
     let mut off = config.clone();
@@ -4976,13 +4971,11 @@ fn the_invisible_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold
     assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
     config.realname = "\\x034\\x03Alice".into();
     assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
-    // Other encodings keep KVIrc's mark and ignore the switch.
+    // Other encodings keep KVIrc's mark.
     config.realname = "Alice".into();
     config.encoding = "UTF-8".into();
     assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
     assert!(!config.marks_avatar_invisibly());
-    config.peer_avatar_invisible_mark = false;
-    assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
 }
 
 #[test]

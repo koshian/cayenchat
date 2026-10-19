@@ -48,8 +48,8 @@
 //! with the shared URL, rate-limited per user and in total. Channel queries
 //! are not answered, and nothing is answered while nothing is shared. The
 //! realname mark is decided at registration by the caller
-//! ([`marked_realname`]): KVIrc's, or on ISO-2022-JP, unless the user
-//! turned it off, CayenChat's invisible one; the shared URL can change while
+//! ([`marked_realname`]): KVIrc's, or on ISO-2022-JP,
+//! CayenChat's invisible one (there is no switch); the shared URL can change while
 //! connected.
 //!
 //! A user who queried us is remembered (bounded, only while they share a
