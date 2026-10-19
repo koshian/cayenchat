@@ -35,7 +35,7 @@ open target/CayenChat.app
 
 ## ヒント
 
-- **Tiarra 経由や ISO-2022-JP のサーバーでアバターを見てもらう(ピアアバター)。** KVIrc の「アバターあり」の目印は ISO-2022-JP では壊れるため、ISO-2022-JP のサーバーでは、代わりに他のクライアントに表示されない見えない目印(制御コード)を実名の先頭に自動で付けます(次の接続から反映)。既定でオンで、IRCv3 タブの「実名の先頭に見えない目印を付ける」で切り替えられます(ISO-2022-JP のサーバーでピアアバターがオンのときだけ表示)。この目印を見かけた CayenChat があなたのアバターを問い合わせます。KVIrc はこの目印を認識しません。bouncer 経由ではサーバーに送る実名が bouncer の設定のものなのでスイッチは効きません。bouncer のそのネットワークの実名に、目印を書く必要があります。書き方は Wiki の [Bouncer setup](https://github.com/koshian/cayenchat/wiki/Bouncer-setup) を参照してください。[D025](spec/decisions.md) と [D057](spec/decisions.md) を参照してください。
+- **Tiarra 経由や ISO-2022-JP のサーバーでアバターを見てもらう(ピアアバター)。** KVIrc の「アバターあり」の目印は ISO-2022-JP では壊れるため、ISO-2022-JP のサーバーでは、代わりに他のクライアントに表示されない見えない目印(制御コード)を実名の先頭に自動で付けます(次の接続から反映)。切り替えるスイッチはありません。この目印を見かけた CayenChat があなたのアバターを問い合わせます。KVIrc はこの目印を認識しません。CayenChat が付ける目印は、bouncer 経由ではサーバーに届きません。サーバーに送る実名が bouncer の設定のものだからです。bouncer のそのネットワークの実名に、目印を書く必要があります。書き方は Wiki の [Bouncer setup](https://github.com/koshian/cayenchat/wiki/Bouncer-setup) を参照してください。[D025](spec/decisions.md) と [D057](spec/decisions.md) を参照してください。
 
 ## 会話ログ
 

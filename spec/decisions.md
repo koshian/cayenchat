@@ -1314,26 +1314,25 @@ future work. Details in `architecture.md` (Channel history).
   reverse are bytes ISO-2022-JP may carry, hold no digit, and do nothing for
   clients that format, since they are switched back at once. Four bytes, with
   the reverse pair between, make a name that does not begin so by chance.
-- Per server, `peer_avatar_invisible_mark` (default **on**; files without it
-  read as on), switch shown on the IRCv3 tab only when the encoding is
-  ISO-2022-JP and peer avatars are on. With ISO-2022-JP, peer avatars on, a
-  shared URL and the switch on, `USER` and `SETNAME` start the realname with
-  the mark (`ConnectionConfig::marks_avatar_invisibly`). Any mark the user
-  typed is replaced, never doubled. Other encodings keep KVIrc's mark and
-  ignore the switch.
+- With ISO-2022-JP, peer avatars on and a shared URL, `USER` and `SETNAME`
+  start the realname with the mark (`ConnectionConfig::marks_avatar_invisibly`).
+  Any mark the user typed is replaced, never doubled. Other encodings keep
+  KVIrc's mark.
+- No switch (#490, #500): other clients show nothing for the mark, and the
+  only cost is four bytes of the realname limit. It is treated like KVIrc's
+  mark, which is always sent on UTF-8. A `peer_avatar_invisible_mark` left
+  in an old settings file is ignored as an unknown field.
 - Receiving: a realname starting with the mark always means "has an avatar"
   (it holds no digit). `without_mark` strips KVIrc's, the invisible and the
   textual mark, in any order and number, so CayenChat's own WHOIS and
   `SETNAME` displays show none of them.
-- On by default because other clients show nothing for it; the costs are four
-  bytes of the realname limit and that it applies only from the next
-  connection (IRCnet has no SETNAME).
+- It applies only from the next connection (IRCnet has no SETNAME).
 - KVIrc users: on ISO-2022-JP KVIrc does not find a CayenChat user by itself
   (it does not read this mark). A CTCP AVATAR query from KVIrc is answered as
   before, and CayenChat still queries a KVIrc user who has KVIrc's mark.
-- Through a bouncer the switch has no effect, because the bouncer sends its
-  own configured realname in `USER` (and raw control codes are hard to write
-  into its settings): write the textual mark into the bouncer's realname for
+- Through a bouncer the mark CayenChat adds does not reach the server,
+  because the bouncer sends its own configured realname in `USER` (and raw
+  control codes are hard to write into its settings): write the textual mark into the bouncer's realname for
   that network (Tiarra `name:` in the network block; soju
   `network update <network> -realname '\x034\x03Name'`).
 - The "reconnect" hint compares the connection's mark (KVIrc's or invisible,
