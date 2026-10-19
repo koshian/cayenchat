@@ -1682,6 +1682,13 @@ impl AppState {
         self.avatars.set(network, key, avatar, next);
     }
 
+    /// Records a name's CTCP AVATAR picture (`None`: it has none). Unlike
+    /// [`State::set_avatar`] it is not tied to an occupancy of the name; see
+    /// [`avatars`].
+    pub fn set_peer_avatar(&mut self, network: NetworkId, key: &str, avatar: Option<&str>) {
+        self.avatars.set_peer(network, key, avatar);
+    }
+
     /// A user changed name; their avatar follows them.
     pub fn rename_avatar(&mut self, network: NetworkId, from: &str, to: &str) {
         let next = self.next_message_sequence + 1;

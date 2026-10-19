@@ -2057,7 +2057,7 @@ impl ChatWindow {
     fn apply_connection(
         &mut self,
         network: NetworkId,
-        config: ConnectionConfig,
+        mut config: ConnectionConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
@@ -2067,6 +2067,11 @@ impl ChatWindow {
         session.close();
         session.manual_disconnect = false;
         session.retry_attempt = 0;
+        // CTCP AVATAR pictures remembered by mask outlive connections of
+        // the same network (D058).
+        if let Some(previous) = &session.active_config {
+            config.peer_avatar_cache = previous.peer_avatar_cache.clone();
+        }
         session.active_config = Some(config.clone());
         session.connection_starting(&config);
         session.diagnostics.clear();
@@ -5181,6 +5186,10 @@ impl ChatWindow {
             Event::UserAvatar { nickname, url } => {
                 let key = cayenchat_irc_core::text::nickname_key(&nickname);
                 self.state.set_avatar(network, &key, url.as_deref());
+            }
+            Event::PeerAvatar { nickname, url } => {
+                let key = cayenchat_irc_core::text::nickname_key(&nickname);
+                self.state.set_peer_avatar(network, &key, url.as_deref());
             }
             Event::AvatarMoved { from, to } => {
                 let from = cayenchat_irc_core::text::nickname_key(&from);
