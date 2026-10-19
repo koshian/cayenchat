@@ -772,8 +772,13 @@ Duplicate notices are harmless.
 The UI waits 3 s (`WAKE_GRACE`, the network may still be coming back; notices
 during the wait join the same check) and calls `Connection::check_alive()` on
 every registered connection that the user did not end. The worker sends
-`PING :cayenchat-wake-<n>` to the server (never a CTCP PING) and allows 15 s
-for **any** line from it. A server that answers is left alone, with no log
+`PING :cayenchat-wake-<nonce>-<n>` to the server (never a CTCP PING; `<nonce>`
+is random per connection) and allows 15 s for the **`PONG` whose token matches**,
+in either argument (`PONG <server> :<token>` or `PONG <token>`). Other lines,
+including ones that sat in the receive buffer from before the sleep, are handled
+as usual but do not end the check, so a dead link is not taken for a live one.
+A bouncer that answers for the server counts, since the link to it works.
+A server that answers is left alone, with no log
 line in the chat. A silent one ends with `Event::Disconnected("No response
 from the server after waking from sleep.")`, which takes the usual path:
 `record_disconnect`, the activity line in every channel, and the retry
