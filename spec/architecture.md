@@ -2019,6 +2019,17 @@ with the reason of the disconnect (ping timeout, user disconnect…), or the QUI
 text sent when the application quits; it is written before the channels are
 reset (#389).
 `Event::Topic` carries who changed the topic and the server time for it.
+Three guards keep what a server or peer sends from shaping the files:
+bidirectional controls (U+202A–U+202E, U+2066–U+2069, the range of
+`model::display::is_bidi_control`, kept equal by a test since `storage` does
+not depend on `model`) become U+FFFD in nicknames and text like other control
+characters, and are `%XX`-escaped in conversation names by `path_component`;
+servers whose display name (else host) is the same when lowercased are all
+given the profile ID suffix, as case-insensitive file systems would otherwise
+merge their folders; and a server time more than 24 hours from the moment the
+line is received (for `log_record` and the echo in `release_own_message`) is
+replaced by the received time, so a wrong or hostile clock cannot make any
+number of day files.
 
 ## Log search (#404)
 

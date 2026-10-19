@@ -28,3 +28,5 @@ test-build = []
 
 [dev-dependencies]
 tempfile = "3"
+# Checks that `is_bidi_control` here covers the range the display uses.
+cayenchat-model.workspace = true
