@@ -1217,7 +1217,7 @@ mod tests {
         stop_sharing_if_avatar_differs, toggle_feature,
     };
     use crate::session::PeerAvatarConnection;
-    use cayenchat_storage::{Ircv3Preferences, Language, ServerProfile, Settings, TextEncoding};
+    use cayenchat_storage::{Ircv3Preferences, Language, ServerProfile, Settings};
 
     #[test]
     fn server_label_prefers_the_display_name_over_host_and_port() {

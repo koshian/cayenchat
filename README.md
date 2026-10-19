@@ -35,7 +35,8 @@ Add a server in the settings window that opens at startup (`Cmd+,` / `Ctrl+,`), 
 
 ## Tips
 
-- **Avatars through Tiarra, or on ISO-2022-JP servers (peer avatars).** KVIrc's mark for "has an avatar" cannot survive ISO-2022-JP, so on those servers CayenChat adds an invisible mark (control codes that other clients do not display) to the start of the real name instead, from the next connection. There is no switch for it. CayenChat clients that see the mark ask you for your avatar; KVIrc does not recognize it. The mark CayenChat adds does not reach the server through a bouncer, because the bouncer sends its own real name: the mark has to be written in the bouncer's real name for that network. See [Bouncer setup](https://github.com/koshian/cayenchat/wiki/Bouncer-setup) on the wiki for how. See [D025](spec/decisions.md) and [D057](spec/decisions.md).
+- **Avatars through Tiarra, or on ISO-2022-JP servers (peer avatars).** KVIrc's mark for "has an avatar" cannot survive ISO-2022-JP, so on those servers CayenChat adds an invisible mark (control codes that other clients do not display) to the start of the real name instead, from the next connection. There is no switch for it. CayenChat clients that see the mark ask you for your avatar; KVIrc does not recognize it.
+  Through a bouncer (Tiarra, soju and so on), on a server of any encoding, the mark CayenChat adds (KVIrc's on UTF-8 and similar, the invisible one on ISO-2022-JP) does not reach the server, because the bouncer sends its own real name for that network. Write a mark that fits the network's encoding in the bouncer's real name for it. See [Bouncer setup](https://github.com/koshian/cayenchat/wiki/Bouncer-setup) on the wiki for how. See [D025](spec/decisions.md) and [D057](spec/decisions.md).
 
 ## Conversation logs
 
