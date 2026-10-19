@@ -481,3 +481,19 @@ fn tall_server_line_is_revealed(scope: Scope, cx: &mut TestAppContext) {
         });
     }
 }
+
+#[gpui::test]
+fn the_toolbar_magnifier_toggles_the_bar(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    let open = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+        chat.read_with(cx, |chat, _| {
+            chat.search.as_ref().is_some_and(|search| search.is_open())
+        })
+    };
+    chat.update_in(cx, |chat, window, cx| chat.toggle_search(window, cx));
+    assert!(open(&chat, cx));
+    chat.update_in(cx, |chat, window, cx| chat.toggle_search(window, cx));
+    assert!(!open(&chat, cx));
+    chat.update_in(cx, |chat, window, cx| chat.toggle_search(window, cx));
+    assert!(open(&chat, cx));
+}

@@ -187,6 +187,16 @@ impl ChatWindow {
         cx.notify();
     }
 
+    /// The toolbar's magnifier: closes the bar when it is open, opens it
+    /// otherwise.
+    pub(crate) fn toggle_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.as_ref().is_some_and(|search| search.open) {
+            self.close_search(&CloseSearch, window, cx);
+        } else {
+            self.open_search(&FindInLog, window, cx);
+        }
+    }
+
     /// Closes the bar and returns to the draft. The line found stays where
     /// it is in the log.
     pub(crate) fn close_search(
