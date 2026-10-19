@@ -1371,7 +1371,10 @@ Measured with the ignored `search_cost` test in `cayenchat-app` (50
 conversations of the 2,000 retained lines each, 100,000 lines of about 60
 characters, release build, Linux): a full scan of the "all" scope with no
 match took 37 ms in six slices, the longest 7.4 ms; a term matching everything
-stops at the 10,000-hit cap after 2 ms. With 100 further lines of 16,000 `a`
+now reads every log and keeps the newest 10,000 hits (the oldest are dropped
+at the end of each slice): 34 ms in eleven slices, the longest 8.6 ms (it
+stopped at the cap after 2 ms before, and so missed the newer lines of the
+logs read last). With 100 further lines of 16,000 `a`
 and the 512-`a`-plus-`b` term the scan took 60 ms in total in 11 slices, the
 longest 9.3 ms (it was 5.11 s in one slice before the matcher was made linear). The debug build takes about 250 ms in
 total and 55 ms for the longest slice. Memory is at most 10,000 hits of 16

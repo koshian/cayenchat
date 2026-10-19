@@ -2046,8 +2046,10 @@ slice sooner), and `Hit`s that name a
 log and a `Message::sequence`, never a row index. A scan resumes each log by
 sequence, so lines that arrive, are trimmed or inserted above between slices are
 neither skipped nor read twice, and a log that vanished is skipped. Hits are
-capped at `MAX_HITS` (10,000; the count then shows `+`) and ascend by sequence,
-which is log order. Matching is against `Message::text` as received; the
+capped at `MAX_HITS` (10,000) and ascend by sequence, which is log order. Past
+the cap the scan still reads every log and drops the oldest matches (by
+sequence) at the end of each step, so the newest 10,000 stay; the count then
+shows `+`. Matching is against `Message::text` as received; the
 display conversions (shortened links, decoded numeric character references)
 are not searched, but match ranges are mapped to the drawn text with
 `Compact::shown_range`, so the highlight lands on the right characters.
