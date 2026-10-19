@@ -93,21 +93,23 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
     // Network 2 answers it.
     let server_answering = thread::spawn(move || {
         let (mut reader, mut socket) = accept_registered(&answering);
-        let ping = next_line(&mut reader, "PING ").expect("a check");
-        assert!(ping.starts_with("PING cayenchat-wake-"), "{ping:?}");
-        let token = ping
-            .trim_end()
-            .trim_start_matches("PING ")
-            .trim_start_matches(':');
-        socket
-            .write_all(format!(":server PONG server :{token}\r\n").as_bytes())
-            .unwrap();
         // Closing ends the test's wait for this server.
         reader
             .get_ref()
             .set_read_timeout(Some(Duration::from_secs(20)))
             .unwrap();
-        let _ = next_line(&mut reader, "QUIT");
+        // Every check is answered: if the first PONG arrives before the
+        // duplicate wake notice is handled, that one starts a second check.
+        while let Some(ping) = next_line(&mut reader, "PING ") {
+            assert!(ping.starts_with("PING cayenchat-wake-"), "{ping:?}");
+            let token = ping
+                .trim_end()
+                .trim_start_matches("PING ")
+                .trim_start_matches(':');
+            socket
+                .write_all(format!(":server PONG server :{token}\r\n").as_bytes())
+                .unwrap();
+        }
     });
     // Network 3 was disconnected by the user: nothing is sent to it.
     let (pinged, wait_pinged) = mpsc::channel();
