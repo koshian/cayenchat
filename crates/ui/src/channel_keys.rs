@@ -87,6 +87,15 @@ pub fn use_stored_keys(
     }
 }
 
+/// Swaps in `keys` for a running connection's keys, unless the new set does
+/// not validate: then the keys it had stay.
+fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, String>) {
+    let before = std::mem::replace(&mut config.channel_keys, keys);
+    if config.validate().is_err() {
+        config.channel_keys = before;
+    }
+}
+
 fn stored_channel_keys(
     profile: &ServerProfile,
     store: &CredentialStore,
@@ -396,11 +405,7 @@ impl ChatWindow {
                     return;
                 }
                 if let Some(config) = session.active_config.as_mut() {
-                    let before = std::mem::replace(&mut config.channel_keys, keys);
-                    if config.validate().is_err() {
-                        config.channel_keys = before;
-                        config.channel_keys.clear();
-                    }
+                    replace_keys_if_valid(config, keys);
                 }
             });
         })
@@ -683,4 +688,37 @@ fn same_channel(casemapping: CaseMapping, a: &str, b: &str) -> bool {
 enum StoreChange {
     Save(Secret),
     Forget,
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::{BTreeMap, ConnectionConfig, replace_keys_if_valid};
+
+    fn config_with(key: &str) -> ConnectionConfig {
+        let mut config =
+            ConnectionConfig::tls("irc.example".into(), "nick".into(), vec!["#a".into()]);
+        config.channel_keys = BTreeMap::from([("#a".to_owned(), key.to_owned())]);
+        config
+    }
+
+    #[test]
+    fn a_valid_new_set_replaces_the_keys() {
+        let mut config = config_with("old");
+        replace_keys_if_valid(
+            &mut config,
+            BTreeMap::from([("#a".to_owned(), "new".to_owned())]),
+        );
+        assert_eq!(config.channel_keys["#a"], "new");
+    }
+
+    #[test]
+    fn an_invalid_new_set_keeps_the_keys_it_had() {
+        let mut config = config_with("old");
+        assert!(config.validate().is_ok());
+        replace_keys_if_valid(
+            &mut config,
+            BTreeMap::from([("#a".to_owned(), "k".repeat(1000))]),
+        );
+        assert_eq!(config.channel_keys["#a"], "old");
+    }
 }
