@@ -3731,6 +3731,11 @@ impl Worker {
                     peers.lifecycle(&message, &self.roster.presence, &self.current_nick);
                 if !replayed {
                     events.extend(peers.joined(&message, &self.current_nick));
+                    events.extend(peers.remembered_who(
+                        &message,
+                        &self.current_nick,
+                        &self.roster.presence,
+                    ));
                 }
                 events
             })
@@ -3740,7 +3745,7 @@ impl Worker {
             .peers
             .as_ref()
             .filter(|_| !replayed)
-            .and_then(|_| peer_avatar::speaker_identity(&message));
+            .and_then(|peers| peers.unseen_speaker_identity(&message));
         let metadata_events = if self.metadata_enabled {
             // Only our own departure ends the synchronization; others
             // leaving are handled by `metadata.lifecycle`.

@@ -662,6 +662,36 @@ impl PeerAvatars {
         None
     }
 
+    /// The username and host of a live message's sender, copied only for
+    /// someone not looked at yet (the only case `remembered` can use), so
+    /// the usual message copies nothing.
+    pub(crate) fn unseen_speaker_identity(&self, message: &IrcMessage) -> Option<(String, String)> {
+        let key = nickname_key(message.source_nickname()?);
+        if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
+            return None;
+        }
+        speaker_identity(message)
+    }
+
+    /// Someone's WHO reply (any WHO, not only our lookup) names a mask with
+    /// a remembered picture: they get it without being asked, like a
+    /// speaker. The line itself stays a server line.
+    pub(crate) fn remembered_who(
+        &mut self,
+        message: &IrcMessage,
+        current_nick: &str,
+        presence: &PresenceIndex,
+    ) -> Option<Event> {
+        let (352, args) = numeric(message)? else {
+            return None;
+        };
+        // <me> <channel> <user> <host> <server> <nick> ...
+        if args.len() < 8 {
+            return None;
+        }
+        self.remembered(&args[5], &args[2], &args[3], current_nick, Some(presence))
+    }
+
     /// A user seen with `user`@`host` (a live speaker, or someone who
     /// joined) whose mask has a remembered picture gets it without being
     /// asked. With `presence` they must share a channel with us.
@@ -2052,6 +2082,32 @@ mod tests {
                 .remembered("bob", "bob", "x.example.org", ME, Some(&rosters))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_who_reply_for_a_remembered_mask_restores_the_picture_without_asking() {
+        let rosters = rosters();
+        let cache = PeerAvatarCache::default();
+        drop(bob_answered(&cache));
+        // A reconnect: bob is already in the channel and only the channel's
+        // WHO tells us his mask; it carries the mark, yet nothing is asked.
+        let mut again = PeerAvatars::with_cache(true, None, cache.clone());
+        let who =
+            line(":srv 352 alice #a ~bob host9.example.org srv bob H :0 \u{3}4\u{f}KVIrc user");
+        let event = again.remembered_who(&who, ME, &rosters).unwrap();
+        assert_eq!(avatars(&[event]), [format!("bob={BOB_PNG}")]);
+        assert!(
+            again
+                .observe(&who, ME, &rosters, false, Instant::now())
+                .is_none()
+        );
+        assert!(again.queue.is_empty());
+        // A reply for someone who left is ignored, and so is a mask nobody
+        // remembers.
+        let gone = line(":srv 352 alice #a ~bob host9.example.org srv ghost H :0 x");
+        assert!(again.remembered_who(&gone, ME, &rosters).is_none());
+        let other = line(":srv 352 alice #a ~bob other.net srv carol H :0 x");
+        assert!(again.remembered_who(&other, ME, &rosters).is_none());
     }
 
     #[test]
