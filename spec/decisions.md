@@ -1046,10 +1046,11 @@ Known limits: KVIrc finds a CayenChat user only when a WHO reply shows it
 our realname; KVIrc accepts our answer's URL
 but applies its own image limits; users who never speak and are not
 WHOISed are not discovered; `{size}` is not shared. IRCnet's 352 carries a
-server ID before the realname; a connection that received 042 (RPL_YOURID)
-skips a word of the ID's shape there, others read the realname right after
-the hop count (RFC 2812), so a realname starting with such a word is not
-misread on RFC servers. The observations behind these choices (IRCnet's
+server ID before the realname, and bouncers (Tiarra) do not pass 042
+(RPL_YOURID) on, so a realname without a mark as it is gets a first word of
+the ID's shape skipped and is checked again (on an RFC server a realname
+`1ABC <mark>` costs one extra query, accepted). Some bouncers append
+`@network` to the name in 315 and 401; it is matched before the `@`. The observations behind these choices (IRCnet's
 352, a raw KVIrc mark on IRCnet, how KVIrc and LimeChat read it, bouncers'
 realnames) are recorded in Japanese in
 `spec/avatar-mark-research-2026-10-19.md`.
