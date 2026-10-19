@@ -1145,10 +1145,14 @@ only while it is on:
   is not looked up again without scanning the rosters. A select branch
   exists only while a probe is queued or outstanding.
 - IRCnet's ircd (2.11+) writes 352 as `:<hops> <sid> <realname>` (sid: a
-  digit and three of `[0-9A-Z]`). A connection that received 042
-  (RPL_YOURID) skips that word when it has this shape and a realname
-  follows; without 042 the realname follows the hops as in RFC 2812. The
-  flag lives in the connection's worker, so a reconnect learns it again.
+  digit and three of `[0-9A-Z]`). Bouncers such as Tiarra do not pass
+  042 (RPL_YOURID) on, so the ID is not tied to it: when the realname
+  does not start with a mark as it is, a first word of that shape is
+  skipped and the rest is checked again (a realname that happens to start
+  with such a word followed by a mark costs one extra query, within the
+  existing bounds). The 352 realname is only used to find the mark. Some
+  bouncers (Tiarra, multi-server mode) write `nick@network` in 315 and
+  401; the name is matched before the `@`.
 - Merge: the struct keeps each user's metadata and peer reference and
   emits `UserAvatar`/`AvatarMoved` for the shown one (metadata first);
   metadata's own events pass through `merge_metadata`, its moves are
