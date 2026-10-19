@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       prefix:
-        description: File name prefix of the regular Windows and macOS zips
+        description: File name prefix of the regular packages
         required: false
         type: string
         default: cayenchat
@@ -76,7 +76,7 @@ jobs:
           if [ "$TEST" = true ]; then
             echo "PACKAGE=cayenchat-test-$(git rev-parse --short=7 HEAD)-linux-x86_64${SUFFIX}" >> "$GITHUB_ENV"
           else
-            echo "PACKAGE=cayenchat-linux-x86_64" >> "$GITHUB_ENV"
+            echo "PACKAGE=${PREFIX}-linux-x86_64" >> "$GITHUB_ENV"
           fi
 
       - name: Install Rust
@@ -114,7 +114,10 @@ jobs:
         run: |
           set -euxo pipefail
           if [ "$TEST" != true ]; then
+            # cargo-deb names the file after the Debian version, which has a
+            # `~` in a pre-release; GitHub rewrites that in asset names.
             cargo deb --no-build --profile "$BUILD_PROFILE"
+            mv target/debian/*.deb "$PACKAGE.deb"
             exit 0
           fi
           # The variant is defined here, not read from the ref, so that refs
@@ -155,7 +158,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-x86_64
-          path: target/debian/*.deb
+          path: ${{ env.PACKAGE }}.deb
           if-no-files-found: error
 
   windows-x86_64:
