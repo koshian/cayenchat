@@ -6202,26 +6202,34 @@ fn sync_survives(leave: &'static str) -> bool {
             )
             .unwrap();
         socket.write_all(leave.as_bytes()).unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(2500)))
-            .unwrap();
-        let mut synced = false;
-        loop {
+        // Read on another thread: a socket read timeout is not reliable on
+        // every platform, so wait on a channel instead.
+        socket.set_read_timeout(None).unwrap();
+        let (line_tx, line_rx) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
             let mut line = String::new();
-            if !matches!(lines.read_line(&mut line), Ok(n) if n > 0) {
-                break;
+            while matches!(lines.read_line(&mut line), Ok(n) if n > 0) {
+                let _ = line_tx.send(line.trim_end().to_owned());
+                line.clear();
             }
-            if line.trim_end() == "METADATA #test SYNC" {
-                synced = true;
-                break;
+        });
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        let mut synced = false;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match line_rx.recv_timeout(left) {
+                Ok(line) if line == "METADATA #test SYNC" => {
+                    synced = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
             }
         }
         socket
             .write_all(b":dave!u@h PRIVMSG #other :done\r\n")
             .unwrap();
         // Hold the connection until the client quits.
-        let mut rest = String::new();
-        while matches!(lines.read_line(&mut rest), Ok(n) if n > 0) {}
+        reader.join().unwrap();
         synced
     });
     let options = Ircv3Options {
