@@ -176,9 +176,9 @@ pub struct ConnectionConfig {
     /// change later with [`Connection::share_avatar`].
     pub shared_avatar: Option<String>,
     /// Whether an ISO-2022-JP connection that shares an avatar starts the
-    /// realname with CayenChat's textual mark (`\x034\x03`), the only mark
-    /// that encoding can carry. Ignored with other encodings.
-    pub peer_avatar_text_mark: bool,
+    /// realname with CayenChat's invisible mark (`02 16 16 02`), the only
+    /// mark that encoding can carry. Ignored with other encodings.
+    pub peer_avatar_invisible_mark: bool,
     /// Channels whose log was cut off when the previous connection ended,
     /// with the newest message received before it. With chathistory
     /// negotiated, the first JOIN of each asks only for what came after
@@ -221,7 +221,10 @@ impl fmt::Debug for ConnectionConfig {
             .field("sasl", &self.sasl)
             .field("ircv3", &self.ircv3)
             .field("shared_avatar", &self.shared_avatar)
-            .field("peer_avatar_text_mark", &self.peer_avatar_text_mark)
+            .field(
+                "peer_avatar_invisible_mark",
+                &self.peer_avatar_invisible_mark,
+            )
             .field("resume_history", &self.resume_history.len())
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
@@ -253,7 +256,7 @@ impl ConnectionConfig {
             sasl: None,
             ircv3: Ircv3Options::default(),
             shared_avatar: None,
-            peer_avatar_text_mark: false,
+            peer_avatar_invisible_mark: true,
             resume_history: Vec::new(),
             history_targets_since: None,
             channel_encodings: Vec::new(),
@@ -270,27 +273,27 @@ impl ConnectionConfig {
             && peer_avatar::carries_mark(&self.encoding)
     }
 
-    /// Whether registration marks the realname with CayenChat's textual
+    /// Whether registration marks the realname with CayenChat's invisible
     /// mark: ISO-2022-JP, which cannot carry KVIrc's, with peer exchange
-    /// on, a URL shared and the user's choice.
-    pub fn marks_avatar_with_text(&self) -> bool {
+    /// on, a URL shared and the switch on.
+    pub fn marks_avatar_invisibly(&self) -> bool {
         self.ircv3.peer_avatars
             && self.shared_avatar.is_some()
-            && self.peer_avatar_text_mark
+            && self.peer_avatar_invisible_mark
             && !peer_avatar::carries_mark(&self.encoding)
     }
 
     /// Whether the realname carries any mark for a shared avatar, so a
     /// change of what is shared needs a reconnect.
     pub fn marks_avatar(&self) -> bool {
-        self.advertises_avatar() || self.marks_avatar_with_text()
+        self.advertises_avatar() || self.marks_avatar_invisibly()
     }
 
     pub(crate) fn realname_mark(&self) -> peer_avatar::RealnameMark {
         if self.advertises_avatar() {
             peer_avatar::RealnameMark::Kvirc
-        } else if self.marks_avatar_with_text() {
-            peer_avatar::RealnameMark::Text
+        } else if self.marks_avatar_invisibly() {
+            peer_avatar::RealnameMark::Invisible
         } else {
             peer_avatar::RealnameMark::None
         }

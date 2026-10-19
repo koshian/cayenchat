@@ -48,8 +48,8 @@
 //! with the shared URL, rate-limited per user and in total. Channel queries
 //! are not answered, and nothing is answered while nothing is shared. The
 //! realname mark is decided at registration by the caller
-//! ([`marked_realname`]): KVIrc's, or on ISO-2022-JP, only if the user
-//! chose it, CayenChat's textual one; the shared URL can change while
+//! ([`marked_realname`]): KVIrc's, or on ISO-2022-JP, unless the user
+//! turned it off, CayenChat's invisible one; the shared URL can change while
 //! connected.
 //!
 //! A user who queried us is remembered (bounded, only while they share a
@@ -128,10 +128,16 @@ pub(crate) fn carries_mark(encoding: &str) -> bool {
 /// CayenChat's own mark, recognized when receiving only: the text
 /// `\x03<digit>\x03` (nine printable ASCII characters, not control
 /// characters) at the start of a realname. It survives every encoding and
-/// Tiarra. We add it only to an ISO-2022-JP connection whose user chose to
-/// (D057); anyone may also type it into the realname.
+/// Tiarra. We never add it; a user behind a bouncer types it into the
+/// realname.
 const TEXT_MARK_PREFIX: &str = "\\x03";
 const TEXT_MARK_SUFFIX: &str = "\\x03";
+
+/// CayenChat's invisible mark, added on ISO-2022-JP (D057): the raw control
+/// codes bold on, reverse on, reverse off, bold off. They hold no digit and
+/// ISO-2022-JP carries them; other clients show nothing for them. Its
+/// presence always means "has an avatar".
+pub(crate) const INVISIBLE_MARK: &str = "\u{2}\u{16}\u{16}\u{2}";
 
 /// Which mark the realname sent in `USER` and `SETNAME` starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,20 +145,17 @@ pub(crate) enum RealnameMark {
     None,
     /// KVIrc's ETX, digit and SI.
     Kvirc,
-    /// The nine printable characters `\x034\x03`.
-    Text,
+    /// [`INVISIBLE_MARK`].
+    Invisible,
 }
 
-/// `base` with `mark` in front. The textual mark replaces one the user
-/// already typed, so it is never doubled.
+/// `base` with `mark` in front. The invisible mark replaces any mark the
+/// user already typed, so it is never doubled.
 pub(crate) fn marked_realname(base: &str, mark: RealnameMark) -> String {
     match mark {
         RealnameMark::None => base.to_owned(),
         RealnameMark::Kvirc => realname(base, true),
-        RealnameMark::Text => format!(
-            "{TEXT_MARK_PREFIX}{AVATAR_BIT}{TEXT_MARK_SUFFIX}{}",
-            without_mark(base)
-        ),
+        RealnameMark::Invisible => format!("{INVISIBLE_MARK}{}", without_mark(base)),
     }
 }
 
@@ -165,23 +168,31 @@ fn text_mark(realname: &str) -> Option<(u8, usize)> {
         .then_some((digit, TEXT_MARK_PREFIX.len() + 1 + TEXT_MARK_SUFFIX.len()))
 }
 
-/// A realname without a leading mark (KVIrc's ETX, a digit, SI, or the
-/// textual `\x03<digit>\x03`), as the user configured it. When we add
-/// KVIrc's mark to a realname the user began with a textual one, both go.
-pub(crate) fn without_mark(realname: &str) -> &str {
-    let rest = match realname.as_bytes() {
-        [0x03, b'0'..=b'7', 0x0f, ..] => &realname[3..],
-        _ => realname,
-    };
-    match text_mark(rest) {
-        Some((_, len)) => &rest[len..],
-        None => rest,
+/// A realname without its leading marks (KVIrc's ETX, a digit, SI; the
+/// invisible one; the textual `\x03<digit>\x03`, in any order and number),
+/// as the user configured it.
+pub(crate) fn without_mark(mut realname: &str) -> &str {
+    loop {
+        let rest = if let Some(rest) = realname.strip_prefix(INVISIBLE_MARK) {
+            rest
+        } else if let [0x03, b'0'..=b'7', 0x0f, ..] = realname.as_bytes() {
+            &realname[3..]
+        } else if let Some((_, len)) = text_mark(realname) {
+            &realname[len..]
+        } else {
+            return realname;
+        };
+        realname = rest;
     }
 }
 
-/// Whether a realname starts with a mark for an avatar: KVIrc's, or the
-/// textual one, whose digit must also have the fours place set.
+/// Whether a realname starts with a mark for an avatar: the invisible one,
+/// KVIrc's, or the textual one, whose digit must also have the fours place
+/// set.
 pub(crate) fn advertises_avatar(realname: &str) -> bool {
+    if realname.starts_with(INVISIBLE_MARK) {
+        return true;
+    }
     if let Some((digit, _)) = text_mark(realname) {
         return matches!(digit, b'4'..=b'7');
     }
@@ -1014,6 +1025,42 @@ mod tests {
         assert_eq!(without_mark("\\X034\\x03Alice"), "\\X034\\x03Alice");
         assert_eq!(without_mark("Alice \\x034\\x03"), "Alice \\x034\\x03");
         assert_eq!(without_mark("\u{3}4\u{f}\\x034\\x03Bob"), "Bob");
+    }
+
+    #[test]
+    fn the_invisible_mark_means_an_avatar_and_is_stripped_in_any_order() {
+        let invisible = INVISIBLE_MARK;
+        assert!(advertises_avatar(&format!("{invisible}Alice")));
+        assert!(advertises_avatar(invisible));
+        for real in [
+            "\u{2}\u{16}Alice",
+            "\u{2}\u{16}\u{2}\u{16}Alice",
+            " \u{2}\u{16}\u{16}\u{2}Alice",
+            "Alice\u{2}\u{16}\u{16}\u{2}",
+        ] {
+            assert!(!advertises_avatar(real), "{real:?}");
+        }
+        let kvirc = "\u{3}4\u{f}";
+        let text = "\\x034\\x03";
+        for marks in [
+            [invisible, kvirc, text],
+            [invisible, text, kvirc],
+            [kvirc, invisible, text],
+            [kvirc, text, invisible],
+            [text, invisible, kvirc],
+            [text, kvirc, invisible],
+        ] {
+            assert_eq!(without_mark(&format!("{}Bob", marks.concat())), "Bob");
+        }
+        assert_eq!(without_mark(&format!("{invisible}{invisible}Bob")), "Bob");
+        assert_eq!(
+            without_mark("Bob\u{2}\u{16}\u{16}\u{2}"),
+            "Bob\u{2}\u{16}\u{16}\u{2}"
+        );
+        assert_eq!(
+            marked_realname("\u{3}4\u{f}Bob", RealnameMark::Invisible),
+            format!("{invisible}Bob")
+        );
     }
 
     #[test]

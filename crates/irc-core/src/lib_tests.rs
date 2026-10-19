@@ -4814,10 +4814,17 @@ fn the_configured_realname_is_registered_with_the_avatar_mark_only_on_the_wire()
         !config.advertises_avatar(),
         "SI does not survive ISO-2022-JP"
     );
+    assert_eq!(
+        config.wire_realname(),
+        "\u{2}\u{16}\u{16}\u{2}Alice Liddell",
+        "the invisible mark instead"
+    );
+    config.peer_avatar_invisible_mark = false;
     assert_eq!(config.wire_realname(), "Alice Liddell");
     assert!(config.validate().is_ok());
     config.realname = "\\x034\\x03Alice".into();
     assert_eq!(config.wire_realname(), "\\x034\\x03Alice", "sent as typed");
+    config.peer_avatar_invisible_mark = true;
     config.encoding = "UTF-8".into();
     config.realname = "a\r\nQUIT".into();
     assert!(config.validate().is_err());
@@ -4934,20 +4941,28 @@ fn setname_changes_the_realname_and_the_server_confirms_it() {
 }
 
 #[test]
-fn the_textual_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold() {
+fn the_invisible_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold() {
     let mut config = plain_config(6667, Ircv3Options::default());
     config.realname = "Alice".into();
     config.encoding = "ISO-2022-JP".into();
     config.ircv3.peer_avatars = true;
     config.shared_avatar = Some("https://example.com/a.png".into());
-    config.peer_avatar_text_mark = true;
-    assert_eq!(config.wire_realname(), "\\x034\\x03Alice");
-    assert!(config.marks_avatar_with_text() && config.marks_avatar());
+    assert!(config.peer_avatar_invisible_mark, "on by default");
+    assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
+    assert!(config.marks_avatar_invisibly() && config.marks_avatar());
     assert!(!config.advertises_avatar());
     assert!(config.validate().is_ok());
+    // The line reaches the wire with the four bytes untouched.
+    let line = format!("USER alice 0 * :{}\r\n", config.wire_realname());
+    let bytes = encode_strict(&line, "ISO-2022-JP").unwrap();
+    assert!(
+        bytes.windows(4).any(|w| w == [0x02, 0x16, 0x16, 0x02]),
+        "{bytes:?}"
+    );
+    assert!(!bytes.contains(&0x0f) && !bytes.contains(&0x0e));
     // Each condition missing leaves the realname as it was.
     let mut off = config.clone();
-    off.peer_avatar_text_mark = false;
+    off.peer_avatar_invisible_mark = false;
     assert_eq!(off.wire_realname(), "Alice");
     assert!(!off.marks_avatar());
     let mut off = config.clone();
@@ -4957,22 +4972,24 @@ fn the_textual_mark_is_added_only_on_iso_2022_jp_when_all_four_conditions_hold()
     off.shared_avatar = None;
     assert_eq!(off.wire_realname(), "Alice");
     // Typed by the user already: not doubled.
+    config.realname = "\u{2}\u{16}\u{16}\u{2}Alice".into();
+    assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
     config.realname = "\\x034\\x03Alice".into();
-    assert_eq!(config.wire_realname(), "\\x034\\x03Alice");
+    assert_eq!(config.wire_realname(), "\u{2}\u{16}\u{16}\u{2}Alice");
     // Other encodings keep KVIrc's mark and ignore the switch.
     config.realname = "Alice".into();
     config.encoding = "UTF-8".into();
     assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
-    assert!(!config.marks_avatar_with_text());
-    config.peer_avatar_text_mark = false;
+    assert!(!config.marks_avatar_invisibly());
+    config.peer_avatar_invisible_mark = false;
     assert_eq!(config.wire_realname(), "\u{3}4\u{f}Alice");
 }
 
 #[test]
-fn setname_on_iso_2022_jp_follows_the_textual_mark_of_the_connection() {
+fn setname_on_iso_2022_jp_follows_the_invisible_mark_of_the_connection() {
     let (port, server) = setname_server("server-time setname", |send, lines| {
-        assert_eq!(read_client_line(lines), "SETNAME \\x034\\x03Bob");
-        send(":alice!u@h SETNAME :\\x034\\x03Bob\r\n");
+        assert_eq!(read_client_line(lines), "SETNAME \u{2}\u{16}\u{16}\u{2}Bob");
+        send(":alice!u@h SETNAME :\u{2}\u{16}\u{16}\u{2}Bob\r\n");
         let _ = read_client_line(lines);
     });
     let mut config = plain_config(port, setname_options());
@@ -4980,7 +4997,6 @@ fn setname_on_iso_2022_jp_follows_the_textual_mark_of_the_connection() {
     config.encoding = "ISO-2022-JP".into();
     config.ircv3.peer_avatars = true;
     config.shared_avatar = Some("https://example.com/a.png".into());
-    config.peer_avatar_text_mark = true;
     let mut connection = Connection::connect(config).unwrap();
     wait_for(&mut connection, |event| {
         matches!(event, Event::Registered { .. })
@@ -4990,7 +5006,10 @@ fn setname_on_iso_2022_jp_follows_the_textual_mark_of_the_connection() {
         matches!(event, Event::RealNameChanged { .. })
     });
     connection.disconnect().unwrap();
-    assert_eq!(server.join().unwrap(), "USER alice 0 * \\x034\\x03Alice");
+    assert_eq!(
+        server.join().unwrap(),
+        "USER alice 0 * \u{2}\u{16}\u{16}\u{2}Alice"
+    );
 }
 
 #[test]

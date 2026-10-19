@@ -118,7 +118,6 @@ pub(crate) fn toggle_feature(profile: &mut ServerProfile, toggle: fn(&mut Ircv3P
     toggle(&mut profile.ircv3);
     if !profile.ircv3.peer_avatars {
         profile.peer_avatar_url.clear();
-        profile.peer_avatar_text_mark = false;
     }
 }
 
@@ -479,24 +478,25 @@ impl SettingsWindow {
                         )
                     }),
             )
-            .when(text_mark_switch_shown(profile), |section| {
+            .when(invisible_mark_switch_shown(profile), |section| {
                 section
                     .child(
                         div()
-                            .id("ircv3-peer-text-mark")
+                            .id("ircv3-peer-invisible-mark")
                             .flex()
                             .items_center()
                             .gap_2()
                             .cursor_pointer()
                             .child(settings_theme::checkbox(
-                                profile.peer_avatar_text_mark,
+                                profile.peer_avatar_invisible_mark,
                                 true,
                                 cx,
                             ))
-                            .child(self.i18n.text("ircv3_peer_text_mark"))
+                            .child(self.i18n.text("ircv3_peer_invisible_mark"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(profile) = this.settings.values.selected_profile_mut() {
-                                    profile.peer_avatar_text_mark = !profile.peer_avatar_text_mark;
+                                    profile.peer_avatar_invisible_mark =
+                                        !profile.peer_avatar_invisible_mark;
                                     cx.notify();
                                 }
                             })),
@@ -504,7 +504,7 @@ impl SettingsWindow {
                     .child(
                         div()
                             .text_color(theme.text_secondary)
-                            .child(self.i18n.text("ircv3_peer_text_mark_hint")),
+                            .child(self.i18n.text("ircv3_peer_invisible_mark_hint")),
                     )
             })
             .when(reconnect, |section| {
@@ -1157,12 +1157,12 @@ pub(crate) fn peer_reconnect_needed(status: &OwnAvatarStatus, profile: &ServerPr
     status.connected
         && (status.peer.enabled != profile.ircv3.peer_avatars
             || status.peer.advertised
-                != (shared && (!iso_2022_jp || profile.peer_avatar_text_mark)))
+                != (shared && (!iso_2022_jp || profile.peer_avatar_invisible_mark)))
 }
 
-/// The realname's textual mark is offered only where KVIrc's cannot be
+/// The realname's invisible mark is offered only where KVIrc's cannot be
 /// sent: an ISO-2022-JP server with peer avatars on.
-pub(crate) fn text_mark_switch_shown(profile: &ServerProfile) -> bool {
+pub(crate) fn invisible_mark_switch_shown(profile: &ServerProfile) -> bool {
     profile.encoding == TextEncoding::Iso2022Jp && profile.ircv3.peer_avatars
 }
 
@@ -1250,9 +1250,9 @@ pub(crate) fn server_label(
 #[cfg(test)]
 mod tests {
     use super::{
-        IRCV3_FEATURES, OwnAvatarStatus, avatar_url_problem, peer_avatar_url_problem,
-        peer_reconnect_needed, place_uploaded_avatar, share_draft_with_peers,
-        stop_sharing_if_avatar_differs, text_mark_switch_shown, toggle_feature,
+        IRCV3_FEATURES, OwnAvatarStatus, avatar_url_problem, invisible_mark_switch_shown,
+        peer_avatar_url_problem, peer_reconnect_needed, place_uploaded_avatar,
+        share_draft_with_peers, stop_sharing_if_avatar_differs, toggle_feature,
     };
     use crate::session::PeerAvatarConnection;
     use cayenchat_storage::{Ircv3Preferences, Language, ServerProfile, Settings, TextEncoding};
@@ -1350,22 +1350,21 @@ mod tests {
     }
 
     #[test]
-    fn the_text_mark_switch_needs_iso_2022_jp_and_peer_avatars() {
+    fn the_invisible_mark_switch_needs_iso_2022_jp_and_peer_avatars() {
         let mut settings = Settings::default();
         let profile = settings.add_server("irc.example.org");
-        assert!(!text_mark_switch_shown(profile));
+        assert!(profile.peer_avatar_invisible_mark, "on by default");
+        assert!(!invisible_mark_switch_shown(profile));
         profile.ircv3.peer_avatars = true;
-        assert!(!text_mark_switch_shown(profile), "UTF-8");
+        assert!(!invisible_mark_switch_shown(profile), "UTF-8");
         profile.encoding = TextEncoding::Iso2022Jp;
-        assert!(text_mark_switch_shown(profile));
-        profile.peer_avatar_text_mark = true;
-        // Turning peer avatars off clears it, as it clears the shared URL.
+        assert!(invisible_mark_switch_shown(profile));
         toggle_feature(profile, IRCV3_FEATURES.last().unwrap().toggle);
-        assert!(!profile.peer_avatar_text_mark && !text_mark_switch_shown(profile));
+        assert!(!invisible_mark_switch_shown(profile));
     }
 
     #[test]
-    fn a_reconnect_is_asked_for_when_the_text_mark_is_switched_while_connected() {
+    fn a_reconnect_is_asked_for_when_the_invisible_mark_is_switched_while_connected() {
         let mut settings = Settings::default();
         let profile = settings.add_server("irc.example.org");
         profile.encoding = TextEncoding::Iso2022Jp;
@@ -1380,11 +1379,12 @@ mod tests {
             },
             ..OwnAvatarStatus::default()
         };
-        assert!(!peer_reconnect_needed(&connected(false), profile));
-        profile.peer_avatar_text_mark = true;
+        // On by default: a connection made without the mark needs one.
+        assert!(profile.peer_avatar_invisible_mark);
         assert!(peer_reconnect_needed(&connected(false), profile));
         assert!(!peer_reconnect_needed(&connected(true), profile));
-        profile.peer_avatar_text_mark = false;
+        profile.peer_avatar_invisible_mark = false;
+        assert!(!peer_reconnect_needed(&connected(false), profile));
         assert!(peer_reconnect_needed(&connected(true), profile));
     }
 
@@ -1414,9 +1414,12 @@ mod tests {
         // Stopped: the mark stays until reconnecting.
         profile.peer_avatar_url.clear();
         assert!(peer_reconnect_needed(&connected(true, true), profile));
-        // ISO-2022-JP never carries the mark, so sharing needs no reconnect.
+        // ISO-2022-JP carries the invisible mark, so it follows that switch.
         profile.peer_avatar_url = "https://example.com/me.png".into();
         profile.encoding = cayenchat_storage::TextEncoding::Iso2022Jp;
+        assert!(peer_reconnect_needed(&connected(true, false), profile));
+        assert!(!peer_reconnect_needed(&connected(true, true), profile));
+        profile.peer_avatar_invisible_mark = false;
         assert!(!peer_reconnect_needed(&connected(true, false), profile));
         assert!(peer_reconnect_needed(&connected(true, true), profile));
     }
