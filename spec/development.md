@@ -647,7 +647,10 @@ this delay.
    (`\x01AVATAR me.png 2048\x01`) removes it and sends no DCC. Speaking
    again asks nothing more; a user without the mark is never queried;
    joining a large channel sends no WHO. Change the peer's nick: the avatar
-   follows; quit and reuse the nick from another client: none. **共有を停止**
+   follows. Quit and rejoin with the same mask (D058): the avatar returns
+   without a query. Use the same nick with another mask: the last avatar
+   stays; it goes away when a WHO finds a user without the mark, or when an
+   answer carries no image (an accepted problem, D058). **共有を停止**
    and turning the option off stop answering at once.
 
 The upper channel-message body and the server log lines can be drag-selected and copied with Cmd/Ctrl+C or the right-click menu.
@@ -1457,6 +1460,28 @@ the server log; `PRIVMSG #chan :\x01VERSION\x01` shows
 `… to #chan (not answered)` and gets nothing; ten quick requests get at
 most five answers (two per sender) and one "Too many CTCP requests" line.
 No GUI run was made for this change.
+
+### CTCP AVATAR pictures by user mask (D058)
+
+Unit tests cover the mask (host names, IPv4, IPv6, cloaks, ident marks,
+case), the bounded cache, rejoining with the same mask without a lookup,
+another nickname being asked afresh, forgetting on an empty answer, the
+worker over a reconnect that shares the cache, the name table's bounds and
+its use for earlier lines. Real server:
+`crates/irc-core/tests/peer_avatar_interop.rs` (ignored by default) runs
+CayenChat's connection against the pinned Ergo 2.19.1 from
+`scripts/ergo-metadata-interop.sh`, with a raw bot that marks its realname
+and answers CTCP AVATAR:
+
+```sh
+CAYENCHAT_INTEROP_IRC=127.0.0.1:PORT cargo test --locked -p cayenchat-irc-core --test peer_avatar_interop -- --ignored --nocapture
+```
+
+The picture arrives after the bot's first line (`PeerAvatar` follows the
+`ChannelMessage`, which the application shows on that line); after the bot
+quits and joins again under the same nick and username, `PeerAvatar` comes
+with the JOIN and neither a WHO nor a query is sent; `bot_` is looked up
+with a WHO. It passed on 2026-10-20.
 
 ### Native settings appearance checks (D019)
 

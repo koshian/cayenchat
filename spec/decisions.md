@@ -735,6 +735,8 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   tab only holds our own avatar (and, since D025, the separate peer
   avatar option). Files that still carry the old
   `ircv3.metadata` field load without it.
+- **Occupancy applies to metadata only** (D058): avatars from CTCP AVATAR
+  (D025) are tied to a user mask and the name, not to occupancies.
 
 `user_avatars` was added without a settings version change (like batch),
 read as off when absent. On load, a file that still has `appearance.user_avatars`
@@ -997,14 +999,18 @@ What CayenChat does:
   a metadata value: the media layer applies the avatar URL policy, fetch
   limits, redirects, validation, decoding limits and cache (D023). No DCC
   GET/SEND is sent or accepted and no DCC code exists.
-- **Identity**: peer avatars follow the metadata rules — per connection,
-  moved on NICK (a lookup in flight for the old name is absorbed but not
-  used), ended on QUIT or leaving the last shared channel, reset by a
-  reconnect — and the application's occupancy policy is unchanged.
-- **Metadata wins**: `irc-core::peer_avatar` keeps both references per user
-  and reports the metadata one when present, the peer one otherwise; a
-  user with a metadata avatar is not queried. Losing metadata
-  (`AvatarsReset`) reports the peer avatars again.
+- **Identity** (changed by D058, 2026-10-19): a peer avatar is not tied to
+  an occupancy. It is remembered by user mask `nick!user@host` (loosened)
+  and per network in memory, and shown on every line of the name, earlier
+  ones included. The per-connection tracking (moved on NICK, a lookup in
+  flight for the old name absorbed but not used, ended on QUIT or leaving
+  the last shared channel) now only decides who is asked. Metadata keeps
+  the application's occupancy policy.
+- **Metadata wins**: peer pictures are reported as their own event
+  (`Event::PeerAvatar`) and metadata's events pass through untouched; the
+  application shows the metadata avatar where it applies and the name's
+  peer picture otherwise. `irc-core::peer_avatar` only notes metadata, so a
+  user with a metadata avatar is not queried.
 - CTCP AVATAR traffic makes no chat row, unread mark, highlight,
   notification or preview. With the option off, CTCP AVATAR is never
   answered and is shown like other CTCP (D029), for example
@@ -1288,6 +1294,58 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D058 — CTCP AVATAR pictures tied to a user mask, without occupancies (#510)
+
+**Status:** Accepted (changes the identity rules of D025; D023's occupancy
+policy stays for IRCv3 metadata)
+
+2026-10-19. The first line of a speaker whose avatar was looked up stayed
+on the default icon after the answer, because an avatar belonged to an
+occupancy of the name and an occupancy began at the line after the avatar
+was learned (D023). A reconnect or a rejoin under another name also
+started the exchange again. The maintainer decided that CTCP AVATAR, a
+stop-gap that lets clients show avatars before servers carry them in
+IRCv3 metadata, need not be handled that strictly.
+
+- **Key.** A CTCP AVATAR picture is tied to `nick!user@host` of its sender
+  and the network, in the shape KVIrc uses for its avatar cache (KVIrc's
+  `KviIrcMask::NickCleanUserSmartNet`; read for its behavior, no code
+  copied, D042): the nickname under the server's case mapping, the
+  username without leading ident marks (`~ ^ = + -`), and the host
+  loosened — a host name of three or more labels becomes `*.` plus the last
+  two (`host1.example.org` → `*.example.org`), IPv4 keeps two numbers
+  (`203.0.*`), IPv6 the first four groups (`2001:db8:1:2:*`), a cloak
+  containing `/` and shorter names are kept; all case-insensitive. Another
+  nickname (`bob_`) is another key and is asked again, as in KVIrc.
+  `irc-core::avatar_mask`.
+- **Memory only, bounded.** The table is shared with the connection's
+  worker (`ConnectionConfig::peer_avatar_cache`), kept for the application's
+  lifetime across reconnects of a network, at most 512 masks, the least
+  recently used first. It is never written to disk (KVIrc keeps 30 days):
+  it holds other people's data.
+- **Learning and using.** A CTCP AVATAR NOTICE updates its sender's mask
+  (no picture removes it), as does a NICK for the new name and mask. Someone
+  seen with a remembered mask — a JOIN, a live message — gets the picture
+  without a WHO or a query; otherwise discovery is as in D025. A lookup of
+  ours finding no mark drops the name's and the mask's picture. "Get
+  avatar" in the WHOIS window still queries.
+- **Display.** The worker reports `Event::PeerAvatar { nickname, url }`.
+  `app::avatars` keeps one picture per name and network (2,048 names, the
+  least recently set first), and message rows and the member list ask for
+  the name's picture whatever the message's sequence. It survives QUIT,
+  leaving and disconnects, and the last known picture is used when nobody
+  holds the name. A metadata avatar still takes precedence where its
+  occupancy applies. Lines already shown change when the picture is learned.
+  Removing or resetting a server drops the names' pictures.
+- **Accepted problems.** Another person using the same name shows the
+  previous one's picture on their lines, and on past lines of the previous
+  one, until a lookup says otherwise (a lookup finding no mark clears it).
+  People sharing a mask (a bouncer, or the same cloak and nick) share a
+  picture. A name's picture can outlive its owner. These cannot be solved
+  with CTCP AVATAR, which is why IRCv3 metadata, handled with occupancies,
+  is the right way to carry avatars.
+- Not done: persistence; any change to metadata.
 
 ## D057 — Invisible mark in the realname on ISO-2022-JP (#490)
 

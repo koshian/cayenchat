@@ -61,23 +61,35 @@
 //! two seconds, only the latest state. Nothing goes to channels: clients
 //! that do not speak CTCP AVATAR would show it.
 //!
-//! Server metadata wins: [`PeerAvatars`] keeps both references per user and
-//! reports the metadata avatar when there is one, the peer one otherwise,
-//! and passes metadata events through that merge. Avatars belong to the
-//! user's presence: they move on NICK and end when the user quits or leaves
-//! the last channel we share, and everything lives in the connection's
-//! worker, so a reconnect starts empty.
+//! Pictures are tied to a mask, not to presence (D058). CTCP AVATAR is a
+//! stop-gap for servers without metadata, so it is not held to the
+//! occupancy rules metadata follows. A picture learned from a user is
+//! reported as [`Event::PeerAvatar`] (the application keeps it for the
+//! name) and remembered in a [`PeerAvatarCache`] under the mask
+//! `nick!user@host`, loosened as `avatar_mask` describes. The cache lives in
+//! memory across connections of a network. Whoever is seen with a
+//! remembered mask (a JOIN, a live message, ...) gets the picture
+//! without being looked up or asked; others are found as above. A NICK
+//! carries the picture to the new name and mask, an answer without a
+//! picture (or a lookup of ours finding no mark) drops it, and QUIT or
+//! leaving ends only what this struct tracks about the user: the picture
+//! stays with the name and the mask. Metadata is passed on untouched; it is
+//! only noted here, so users who have a metadata avatar are not asked, and
+//! the application prefers it. The per-user state lives in the connection's
+//! worker, so a reconnect starts with the cache only.
 
 use std::{
     collections::{HashMap, VecDeque},
     time::Duration,
 };
 
+use cayenchat_model::names::CaseMapping;
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Prefix};
 use tokio::time::Instant;
 
 use crate::{
-    Event,
+    Event, PeerAvatarCache,
+    avatar_mask::AvatarMask,
     metadata::{Handled, MAX_AVATAR_USERS, MAX_PUBLISHED_AVATAR_BYTES, avatar_value, numeric},
     presence::PresenceIndex,
     text::{nickname_key, same_nickname},
@@ -269,8 +281,9 @@ pub fn shareable(url: &str, utf8: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Where each user's avatar comes from. The shown one is the metadata
-/// avatar if there is one.
+/// What is known about each present user's avatars. The application shows
+/// the metadata one when there is one; it is kept here to not ask such
+/// users for a CTCP AVATAR.
 #[derive(Debug)]
 struct Sources {
     nickname: String,
@@ -278,9 +291,23 @@ struct Sources {
     peer: Option<String>,
 }
 
-impl Sources {
-    fn shown(&self) -> Option<String> {
-        self.metadata.clone().or_else(|| self.peer.clone())
+/// The username and host of a live message's sender, if its prefix has them.
+pub(crate) fn speaker_identity(message: &IrcMessage) -> Option<(String, String)> {
+    if !matches!(
+        message.command,
+        IrcCommand::PRIVMSG(..) | IrcCommand::NOTICE(..)
+    ) {
+        return None;
+    }
+    prefix_identity(message)
+}
+
+fn prefix_identity(message: &IrcMessage) -> Option<(String, String)> {
+    match &message.prefix {
+        Some(Prefix::Nickname(_, user, host)) if !host.is_empty() => {
+            Some((user.clone(), host.clone()))
+        }
+        _ => None,
     }
 }
 
@@ -320,6 +347,10 @@ pub(crate) struct PeerAvatars {
     utf8: bool,
     /// The URL answered to queries, if we share one.
     share: Option<String>,
+    /// Pictures by user mask, kept across connections (D058).
+    cache: PeerAvatarCache,
+    /// The server's CASEMAPPING, for the nickname in a cache key.
+    casemapping: CaseMapping,
     avatars: HashMap<String, Sources>,
     stages: HashMap<String, Stage>,
     queue: VecDeque<Probe>,
@@ -344,10 +375,17 @@ struct Asker {
 }
 
 impl PeerAvatars {
+    #[cfg(test)]
     pub(crate) fn new(utf8: bool, share: Option<String>) -> Self {
+        Self::with_cache(utf8, share, PeerAvatarCache::default())
+    }
+
+    pub(crate) fn with_cache(utf8: bool, share: Option<String>, cache: PeerAvatarCache) -> Self {
         Self {
             utf8,
             share: share.filter(|url| shareable(url, utf8).is_ok()),
+            cache,
+            casemapping: CaseMapping::default(),
             avatars: HashMap::new(),
             stages: HashMap::new(),
             queue: VecDeque::new(),
@@ -359,6 +397,10 @@ impl PeerAvatars {
             askers: HashMap::new(),
             next_notify: None,
         }
+    }
+
+    pub(crate) fn set_casemapping(&mut self, casemapping: CaseMapping) {
+        self.casemapping = casemapping;
     }
 
     /// Changes the URL answered to queries; `None` stops answering. The
@@ -493,6 +535,12 @@ impl PeerAvatars {
                     self.stages.insert(key, Stage::Queried);
                 }
                 let url = reply_url(params, self.utf8);
+                if let Some((user, host)) = prefix_identity(message) {
+                    self.cache.set(
+                        &AvatarMask::new(self.casemapping, sender, &user, &host),
+                        url.as_deref(),
+                    );
+                }
                 handled.events.extend(self.set_peer(sender, url));
                 Some(handled)
             }
@@ -522,6 +570,7 @@ impl PeerAvatars {
                 let nick = &args[5];
                 let found = ours(ProbeKind::Who, nick);
                 let stale = found.is_some_and(|index| self.in_flight[index].stale);
+                let mut events = Vec::new();
                 if !stale {
                     let trailing = args.last().map(String::as_str).unwrap_or_default();
                     let real = trailing.split_once(' ').map_or("", |(_, real)| real);
@@ -533,9 +582,15 @@ impl PeerAvatars {
                     } else {
                         skip_server_id(real)
                     };
-                    self.realname_seen(nick, real, current_nick, presence);
+                    // Only our own lookup can report what it found; another
+                    // user's WHO stays a server line, with nothing to attach.
+                    let identity = found.map(|_| (args[2].as_str(), args[3].as_str()));
+                    events.extend(self.realname_seen(nick, real, identity, current_nick, presence));
                 }
-                found.map(|_| Handled::default())
+                found.map(|_| Handled {
+                    events,
+                    ..Handled::default()
+                })
             }
             // RPL_ENDOFWHO: <me> <mask> :End of WHO
             315 => {
@@ -547,7 +602,7 @@ impl PeerAvatars {
             // user asked for it; it is only read.
             311 if args.len() > 5 => {
                 let real = args.last().map(String::as_str).unwrap_or_default();
-                self.realname_seen(&args[1], real, current_nick, presence);
+                self.realname_seen(&args[1], real, None, current_nick, presence);
                 None
             }
             // ERR_NOSUCHNICK for a lookup or query of ours: they are gone.
@@ -578,24 +633,35 @@ impl PeerAvatars {
     }
 
     /// A realname from WHO or WHOIS: a marked user present now is queried
-    /// once, unless the server's metadata gave an avatar.
+    /// once, unless the server's metadata gave an avatar. A user without the
+    /// mark has no CTCP AVATAR picture now: the name's and, when `identity`
+    /// (username and host) is given, the mask's are dropped, which is
+    /// reported.
     fn realname_seen(
         &mut self,
         nick: &str,
         real: &str,
+        identity: Option<(&str, &str)>,
         current_nick: &str,
         presence: &PresenceIndex,
-    ) {
+    ) -> Option<Event> {
         if same_nickname(nick, current_nick) || !valid_sender(nick) || !presence.shares(nick, None)
         {
-            return;
+            return None;
         }
         let key = nickname_key(nick);
         if !advertises_avatar(real) {
             if !self.stages.contains_key(&key) && self.stages.len() < MAX_PROBED_USERS {
                 self.stages.insert(key, Stage::Seen);
             }
-            return;
+            let (user, host) = identity?;
+            self.cache
+                .set(&AvatarMask::new(self.casemapping, nick, user, host), None);
+            self.set_peer(nick, None);
+            return Some(Event::PeerAvatar {
+                nickname: nick.to_owned(),
+                url: None,
+            });
         }
         let from_metadata = self
             .avatars
@@ -604,6 +670,69 @@ impl PeerAvatars {
         if self.stages.get(&key) != Some(&Stage::Queried) && !from_metadata {
             self.enqueue(ProbeKind::Query, nick, key);
         }
+        None
+    }
+
+    /// The username and host of a live message's sender, copied only for
+    /// someone not looked at yet (the only case `remembered` can use), so
+    /// the usual message copies nothing.
+    pub(crate) fn unseen_speaker_identity(&self, message: &IrcMessage) -> Option<(String, String)> {
+        let key = nickname_key(message.source_nickname()?);
+        if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
+            return None;
+        }
+        speaker_identity(message)
+    }
+
+    /// Someone's WHO reply (any WHO, not only our lookup) names a mask with
+    /// a remembered picture: they get it without being asked, like a
+    /// speaker. The line itself stays a server line.
+    pub(crate) fn remembered_who(
+        &mut self,
+        message: &IrcMessage,
+        current_nick: &str,
+        presence: &PresenceIndex,
+    ) -> Option<Event> {
+        let (352, args) = numeric(message)? else {
+            return None;
+        };
+        // <me> <channel> <user> <host> <server> <nick> ...
+        if args.len() < 8 {
+            return None;
+        }
+        self.remembered(&args[5], &args[2], &args[3], current_nick, Some(presence))
+    }
+
+    /// A user seen with `user`@`host` (a live speaker, or someone who
+    /// joined) whose mask has a remembered picture gets it without being
+    /// asked. With `presence` they must share a channel with us.
+    pub(crate) fn remembered(
+        &mut self,
+        nick: &str,
+        user: &str,
+        host: &str,
+        current_nick: &str,
+        presence: Option<&PresenceIndex>,
+    ) -> Option<Event> {
+        if same_nickname(nick, current_nick)
+            || !valid_sender(nick)
+            || presence.is_some_and(|presence| !presence.shares(nick, None))
+        {
+            return None;
+        }
+        // Like `speaker`: anyone already looked at is not looked up again,
+        // which also keeps this off the per-message path.
+        let key = nickname_key(nick);
+        if self.stages.contains_key(&key) || self.avatars.contains_key(&key) {
+            return None;
+        }
+        let url = self
+            .cache
+            .get(&AvatarMask::new(self.casemapping, nick, user, host))?;
+        if self.stages.len() < MAX_PROBED_USERS {
+            self.stages.insert(key, Stage::Queried);
+        }
+        self.set_peer(nick, Some(url))
     }
 
     /// Someone spoke live where we can see them: look up their realname
@@ -733,10 +862,12 @@ impl PeerAvatars {
     }
 
     /// Follows who is present, judged from the membership published before
-    /// `message`, like metadata's lifecycle: NICK moves a user's avatar and
-    /// what we asked; QUIT, or PART/KICK from the last shared channel, ends
-    /// them. Call it before passing metadata's events for the same message
-    /// through [`PeerAvatars::merge_metadata`].
+    /// `message`, like metadata's lifecycle: NICK moves a user's picture
+    /// and what we asked; QUIT, or PART/KICK from the last shared channel,
+    /// ends what we know and ask about them (their picture stays with the
+    /// name and the mask in the application and the cache, D058). Call it
+    /// before passing metadata's events for the same message through
+    /// [`PeerAvatars::observe_metadata`].
     pub(crate) fn lifecycle(
         &mut self,
         message: &IrcMessage,
@@ -748,15 +879,28 @@ impl PeerAvatars {
         };
         let ours = |nick: &str| same_nickname(nick, current_nick);
         if let IrcCommand::NICK(new) = &message.command {
-            return self.rename(actor, new);
+            return self.rename(actor, new, prefix_identity(message));
         }
-        let gone = presence.departed(message, actor, ours);
-        gone.iter().filter_map(|nick| self.forget(nick)).collect()
+        for nick in presence.departed(message, actor, ours) {
+            self.forget(&nick);
+        }
+        Vec::new()
     }
 
-    /// The user left: their avatar ends, and what we were asking about them
-    /// is dropped (answers still out are swallowed unused).
-    fn forget(&mut self, nick: &str) -> Option<Event> {
+    /// Someone who joined (live) and whose mask has a remembered picture
+    /// gets it without being asked. The joiner is in the channel by
+    /// definition, whatever the membership published so far says.
+    pub(crate) fn joined(&mut self, message: &IrcMessage, current_nick: &str) -> Option<Event> {
+        let IrcCommand::JOIN(..) = &message.command else {
+            return None;
+        };
+        let (user, host) = prefix_identity(message)?;
+        self.remembered(message.source_nickname()?, &user, &host, current_nick, None)
+    }
+
+    /// The user left: what we were asking about them is dropped (answers
+    /// still out are swallowed unused).
+    fn forget(&mut self, nick: &str) {
         let key = nickname_key(nick);
         self.stages.remove(&key);
         self.askers.remove(&key);
@@ -768,14 +912,12 @@ impl PeerAvatars {
                 probe.stale = true;
             }
         }
-        let sources = self.avatars.remove(&key)?;
-        sources.shown().map(|_| Event::UserAvatar {
-            nickname: sources.nickname,
-            url: None,
-        })
+        self.avatars.remove(&key);
     }
 
-    fn rename(&mut self, from: &str, to: &str) -> Vec<Event> {
+    /// `identity` is the username and host of the NICK message's prefix; the
+    /// picture is remembered for the new name's mask too.
+    fn rename(&mut self, from: &str, to: &str, identity: Option<(String, String)>) -> Vec<Event> {
         let (from_key, to_key) = (nickname_key(from), nickname_key(to));
         if from_key == to_key {
             if let Some(sources) = self.avatars.get_mut(&from_key) {
@@ -787,7 +929,8 @@ impl PeerAvatars {
             return Vec::new();
         }
         // Anything under the new name belonged to someone who left it.
-        let mut events: Vec<Event> = self.forget(to).into_iter().collect();
+        self.forget(to);
+        let mut events = Vec::new();
         if let Some(stage) = self.stages.remove(&from_key) {
             self.stages.insert(to_key.clone(), stage);
         }
@@ -817,10 +960,18 @@ impl PeerAvatars {
         }
         if let Some(mut sources) = self.avatars.remove(&from_key) {
             sources.nickname = to.to_owned();
-            if sources.shown().is_some() {
-                events.push(Event::AvatarMoved {
-                    from: from.to_owned(),
-                    to: to.to_owned(),
+            // The picture goes with them: to the new name (the old one
+            // keeps its last known picture) and to the new mask.
+            if let Some(url) = &sources.peer {
+                if let Some((user, host)) = &identity {
+                    self.cache.set(
+                        &AvatarMask::new(self.casemapping, to, user, host),
+                        Some(url),
+                    );
+                }
+                events.push(Event::PeerAvatar {
+                    nickname: to.to_owned(),
+                    url: Some(url.clone()),
                 });
             }
             self.avatars.insert(to_key, sources);
@@ -828,76 +979,57 @@ impl PeerAvatars {
         events
     }
 
+    /// Records a user's CTCP AVATAR picture (`None`: they have none) and
+    /// reports it. It is reported even when unchanged here: the
+    /// application keeps names across the user's absences, and this table
+    /// does not.
     fn set_peer(&mut self, nickname: &str, url: Option<String>) -> Option<Event> {
-        self.set(nickname, |sources| sources.peer = url)
+        let key = nickname_key(nickname);
+        if url.is_some() || self.avatars.contains_key(&key) {
+            self.track(nickname, |sources| sources.peer = url.clone());
+        }
+        Some(Event::PeerAvatar {
+            nickname: nickname.to_owned(),
+            url,
+        })
     }
 
-    /// Applies one source's change and reports the shown avatar if it
-    /// changed. A new user beyond the bound is ignored.
-    fn set(&mut self, nickname: &str, change: impl FnOnce(&mut Sources)) -> Option<Event> {
+    /// Applies one source's change. A new user beyond the bound is ignored.
+    fn track(&mut self, nickname: &str, change: impl FnOnce(&mut Sources)) {
         let key = nickname_key(nickname);
         if !self.avatars.contains_key(&key) && self.avatars.len() >= MAX_AVATAR_USERS {
-            return None;
+            return;
         }
         let sources = self.avatars.entry(key.clone()).or_insert_with(|| Sources {
             nickname: nickname.to_owned(),
             metadata: None,
             peer: None,
         });
-        let before = sources.shown();
         change(sources);
         sources.nickname = nickname.to_owned();
-        let after = sources.shown();
         if sources.metadata.is_none() && sources.peer.is_none() {
             self.avatars.remove(&key);
         }
-        (before != after).then(|| Event::UserAvatar {
-            nickname: nickname.to_owned(),
-            url: after,
-        })
     }
 
-    /// Passes metadata's avatar events through the merge: the metadata
-    /// avatar is shown when there is one, the peer one otherwise. Moves
-    /// were already made by [`PeerAvatars::lifecycle`].
-    pub(crate) fn merge_metadata(&mut self, events: Vec<Event>) -> Vec<Event> {
-        let mut merged = Vec::new();
+    /// Notes metadata's avatars, which win over ours in the application
+    /// and make asking unnecessary. Moves were already made by
+    /// [`PeerAvatars::lifecycle`].
+    pub(crate) fn observe_metadata(&mut self, events: &[Event]) {
         for event in events {
             match event {
                 Event::UserAvatar { nickname, url } => {
-                    let key = nickname_key(&nickname);
-                    if url.is_some()
-                        && !self.avatars.contains_key(&key)
-                        && self.avatars.len() >= MAX_AVATAR_USERS
-                    {
-                        // Not tracked here; metadata still reports it.
-                        merged.push(Event::UserAvatar { nickname, url });
-                    } else {
-                        merged.extend(self.set(&nickname, |sources| sources.metadata = url));
-                    }
-                }
-                Event::AvatarMoved { from, to } => {
-                    if !self.avatars.contains_key(&nickname_key(&to)) {
-                        merged.push(Event::AvatarMoved { from, to });
-                    }
+                    self.track(nickname, |sources| sources.metadata = url.clone());
                 }
                 Event::AvatarsReset => {
-                    // The application forgets every avatar of the
-                    // connection; peer ones are reported again.
-                    merged.push(Event::AvatarsReset);
                     self.avatars.retain(|_, sources| {
                         sources.metadata = None;
                         sources.peer.is_some()
                     });
-                    merged.extend(self.avatars.values().map(|sources| Event::UserAvatar {
-                        nickname: sources.nickname.clone(),
-                        url: sources.peer.clone(),
-                    }));
                 }
-                other => merged.push(other),
+                _ => {}
             }
         }
-        merged
     }
 
     fn may_reply(&mut self, sender: &str, now: Instant) -> bool {
@@ -969,7 +1101,7 @@ mod tests {
         events
             .iter()
             .map(|event| match event {
-                Event::UserAvatar { nickname, url } => {
+                Event::UserAvatar { nickname, url } | Event::PeerAvatar { nickname, url } => {
                     format!("{nickname}={}", url.as_deref().unwrap_or("-"))
                 }
                 Event::AvatarMoved { from, to } => format!("{from}->{to}"),
@@ -1339,12 +1471,15 @@ mod tests {
         .unwrap();
         assert_eq!(avatars(&handled.events), ["bob=-"]);
         assert!(handled.send.is_empty());
-        // An empty answer removes it too; nothing to remove is silent.
+        // An empty answer removes it too. It is reported again even though
+        // nothing is held here: the application keeps names beyond a
+        // user's presence and must hear that the picture is gone.
         let mut peers = with_kv_avatar("https://example.com/kv.png");
         let handled = observe(&mut peers, ":kv!u@h NOTICE alice :\u{1}AVATAR \u{1}", now).unwrap();
         assert_eq!(avatars(&handled.events), ["kv=-"]);
         let handled = observe(&mut peers, ":kv!u@h NOTICE alice :\u{1}AVATAR\u{1}", now).unwrap();
-        assert!(handled.events.is_empty());
+        assert_eq!(avatars(&handled.events), ["kv=-"]);
+        assert!(peers.avatars.is_empty());
     }
 
     #[test]
@@ -1458,19 +1593,22 @@ mod tests {
     }
 
     #[test]
-    fn avatars_follow_one_user_and_are_never_inherited() {
+    fn what_we_know_follows_one_user_and_the_picture_goes_with_the_name() {
         let rosters = rosters();
         let mut peers = with_kv_avatar("https://example.com/kv.png");
-        // NICK moves it.
+        // NICK moves it, reported for the new name; the old name keeps its
+        // picture in the application and nothing says otherwise.
         let events = peers.lifecycle(&line(":kv!u@h NICK kv2"), &rosters, ME);
-        assert_eq!(avatars(&events), ["kv->kv2"]);
+        assert_eq!(avatars(&events), ["kv2=https://example.com/kv.png"]);
+        assert!(peers.avatars.contains_key("kv2") && !peers.avatars.contains_key("kv"));
         let moved = PresenceIndex::from_rosters(&HashMap::from([(
             "#a".to_owned(),
             vec!["alice".into(), "kv2".into(), "bob".into()],
         )]));
-        // QUIT ends it; the next holder of the name gets nothing from it.
+        // QUIT ends what we track, silently: the picture stays with the
+        // name (D058), and the next holder is looked up afresh.
         let events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &moved, ME);
-        assert_eq!(avatars(&events), ["kv2=-"]);
+        assert!(events.is_empty());
         assert!(peers.avatars.is_empty());
         // PART from the last shared channel ends it; from one of two not.
         let mut peers = PeerAvatars::new(true, None);
@@ -1479,22 +1617,19 @@ mod tests {
             ":carol!u@h NOTICE #b :\u{1}AVATAR https://example.com/c.png\u{1}",
             Instant::now(),
         );
-        assert!(
-            peers
-                .lifecycle(&line(":carol!u@h PART #a"), &rosters, ME)
-                .is_empty()
-        );
+        peers.lifecycle(&line(":carol!u@h PART #a"), &rosters, ME);
+        assert!(peers.avatars.contains_key("carol"));
         let only_b = PresenceIndex::from_rosters(&HashMap::from([(
             "#b".to_owned(),
             vec!["alice".to_owned(), "carol".to_owned()],
         )]));
-        let events = peers.lifecycle(&line(":carol!u@h PART #b"), &only_b, ME);
-        assert_eq!(avatars(&events), ["carol=-"]);
+        peers.lifecycle(&line(":carol!u@h PART #b"), &only_b, ME);
+        assert!(!peers.avatars.contains_key("carol"));
         // Our own PART ends everyone we shared only through that channel.
         let mut peers = with_kv_avatar("https://example.com/kv.png");
-        let events = peers.lifecycle(&line(":alice!u@h PART #a"), &rosters, ME);
-        assert_eq!(avatars(&events), ["kv=-"]);
-        // Renaming onto a name with an avatar ends that one first.
+        peers.lifecycle(&line(":alice!u@h PART #a"), &rosters, ME);
+        assert!(peers.avatars.is_empty());
+        // Renaming onto a name with a picture replaces it with the mover's.
         let mut peers = with_kv_avatar("https://example.com/kv.png");
         observe(
             &mut peers,
@@ -1502,7 +1637,8 @@ mod tests {
             Instant::now(),
         );
         let events = peers.lifecycle(&line(":bob!u@h NICK kv"), &rosters, ME);
-        assert_eq!(avatars(&events), ["kv=-", "bob->kv"]);
+        assert_eq!(avatars(&events), ["kv=https://example.com/bob.png"]);
+        assert_eq!(peers.avatars.len(), 1);
     }
 
     #[test]
@@ -1520,14 +1656,16 @@ mod tests {
             );
             peers
         };
-        let events = known("bob").lifecycle(&line(":bob!u@h PART #room"), &rosters, ME);
-        assert_eq!(avatars(&events), ["bob=-"]);
-        let events = known("carol").lifecycle(&line(":alice!u@h PART #OTHER"), &rosters, ME);
-        assert_eq!(avatars(&events), ["carol=-"]);
+        let mut peers = known("bob");
+        peers.lifecycle(&line(":bob!u@h PART #room"), &rosters, ME);
+        assert!(peers.avatars.is_empty());
+        let mut peers = known("carol");
+        peers.lifecycle(&line(":alice!u@h PART #OTHER"), &rosters, ME);
+        assert!(peers.avatars.is_empty());
+        let mut peers = known("carol");
+        peers.lifecycle(&line(":carol!u@h PART #room"), &rosters, ME);
         assert!(
-            known("carol")
-                .lifecycle(&line(":carol!u@h PART #room"), &rosters, ME)
-                .is_empty(),
+            peers.avatars.contains_key("carol"),
             "carol still shares #Other"
         );
     }
@@ -1645,48 +1783,62 @@ mod tests {
     }
 
     #[test]
-    fn server_metadata_wins_and_peers_fill_in() {
+    fn metadata_stops_queries_and_peer_pictures_are_reported_apart() {
         let rosters = rosters();
         let meta = |nick: &str, url: Option<&str>| Event::UserAvatar {
             nickname: nick.into(),
             url: url.map(str::to_owned),
         };
+        let both = |peers: &PeerAvatars, nick: &str| {
+            peers
+                .avatars
+                .get(nick)
+                .map(|sources| (sources.metadata.clone(), sources.peer.clone()))
+        };
         let mut peers = PeerAvatars::new(true, None);
-        let events = peers.merge_metadata(vec![meta("kv", Some("https://meta.example/kv"))]);
-        assert_eq!(avatars(&events), ["kv=https://meta.example/kv"]);
+        // Metadata events are only noted; the application merges them.
+        peers.observe_metadata(&[meta("kv", Some("https://meta.example/kv"))]);
         // A marked user with a metadata avatar is not queried.
         let whois = ":srv 311 alice kv ~kv host * :\u{3}4\u{f}KV";
         observe(&mut peers, whois, Instant::now());
         assert!(peers.queue.is_empty());
-        // A peer answer does not replace it, but stands in when it goes.
+        // A peer answer is reported as its own kind, whatever metadata says.
         let handled = observe(
             &mut peers,
             ":kv!u@h NOTICE alice :\u{1}AVATAR https://peer.example/kv.png\u{1}",
             Instant::now(),
         )
         .unwrap();
-        assert!(handled.events.is_empty());
-        let events = peers.merge_metadata(vec![meta("kv", None)]);
-        assert_eq!(avatars(&events), ["kv=https://peer.example/kv.png"]);
-        let events = peers.merge_metadata(vec![meta("kv", Some("https://meta.example/kv2"))]);
-        assert_eq!(avatars(&events), ["kv=https://meta.example/kv2"]);
-        // One move for both sources; metadata's own move is absorbed.
-        let mut events = peers.lifecycle(&line(":kv!u@h NICK kv2"), &rosters, ME);
-        events.extend(peers.merge_metadata(vec![Event::AvatarMoved {
-            from: "kv".into(),
-            to: "kv2".into(),
-        }]));
-        assert_eq!(avatars(&events), ["kv->kv2"]);
-        // Losing metadata: everything is reset, peer avatars come back.
-        let events = peers.merge_metadata(vec![Event::AvatarsReset]);
+        assert_eq!(avatars(&handled.events), ["kv=https://peer.example/kv.png"]);
+        assert!(matches!(handled.events[0], Event::PeerAvatar { .. }));
+        peers.observe_metadata(&[meta("kv", None)]);
         assert_eq!(
-            avatars(&events),
-            ["reset", "kv2=https://peer.example/kv.png"]
+            both(&peers, "kv"),
+            Some((None, Some("https://peer.example/kv.png".into())))
         );
-        // A departure ends both without the peer one standing in.
-        let mut events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &rosters, ME);
-        events.extend(peers.merge_metadata(vec![meta("kv2", None)]));
-        assert_eq!(avatars(&events), ["kv2=-"]);
+        peers.observe_metadata(&[meta("kv", Some("https://meta.example/kv2"))]);
+        // NICK moves both; only the peer picture is reported (metadata
+        // reports its own move).
+        let events = peers.lifecycle(&line(":kv!u@h NICK kv2"), &rosters, ME);
+        assert_eq!(avatars(&events), ["kv2=https://peer.example/kv.png"]);
+        assert_eq!(
+            both(&peers, "kv2"),
+            Some((
+                Some("https://meta.example/kv2".into()),
+                Some("https://peer.example/kv.png".into())
+            ))
+        );
+        // Losing metadata forgets its avatars and keeps ours.
+        peers.observe_metadata(&[Event::AvatarsReset]);
+        assert_eq!(
+            both(&peers, "kv2"),
+            Some((None, Some("https://peer.example/kv.png".into())))
+        );
+        // A departure ends what we track and says nothing: the picture
+        // stays with the name in the application.
+        let events = peers.lifecycle(&line(":kv2!u@h QUIT :bye"), &rosters, ME);
+        assert!(events.is_empty());
+        assert!(peers.avatars.is_empty());
     }
 
     const URL: &str = "https://example.com/me.png";
@@ -1895,5 +2047,155 @@ mod tests {
         );
         let handled = observe(&mut peers, ":kv!u@h NOTICE alice :\u{1}AVATAR\u{1}", now).unwrap();
         assert_eq!(avatars(&handled.events), ["kv=-"]);
+    }
+
+    const BOB_PNG: &str = "https://example.com/bob.png";
+
+    /// bob answered from `bob!~bob@host1.example.org`, in a connection that
+    /// shares `cache`.
+    fn bob_answered(cache: &PeerAvatarCache) -> PeerAvatars {
+        let mut peers = PeerAvatars::with_cache(true, None, cache.clone());
+        let notice =
+            format!(":bob!~bob@host1.example.org NOTICE alice :\u{1}AVATAR {BOB_PNG}\u{1}");
+        let handled = observe(&mut peers, &notice, Instant::now()).unwrap();
+        assert_eq!(avatars(&handled.events), [format!("bob={BOB_PNG}")]);
+        assert_eq!(cache.len(), 1, "remembered under bob's mask");
+        peers
+    }
+
+    #[test]
+    fn the_same_mask_gets_its_picture_back_without_asking() {
+        let rosters = rosters();
+        let cache = PeerAvatarCache::default();
+        let mut peers = bob_answered(&cache);
+        // bob quits; what we track is gone, the mask is remembered.
+        peers.lifecycle(&line(":bob!~bob@host1.example.org QUIT :bye"), &rosters, ME);
+        assert!(peers.avatars.is_empty());
+        // Back with another host label and a different ident mark: the same
+        // mask, so the join brings the picture and nothing is asked.
+        let joined = line(":Bob!bob@host7.EXAMPLE.org JOIN #a");
+        let event = peers.joined(&joined, ME).unwrap();
+        assert_eq!(avatars(&[event]), [format!("Bob={BOB_PNG}")]);
+        assert_eq!(
+            peers.speaker("bob", ME, &rosters),
+            None,
+            "nothing to look up"
+        );
+        assert!(peers.queue.is_empty());
+        // A reconnect: a new worker state with the shared cache is the same.
+        let mut again = PeerAvatars::with_cache(true, None, cache.clone());
+        let speaking = line(":bob!bob@host2.example.org PRIVMSG #a :hi");
+        let identity = speaker_identity(&speaking).unwrap();
+        let event = again
+            .remembered("bob", &identity.0, &identity.1, ME, Some(&rosters))
+            .unwrap();
+        assert_eq!(avatars(&[event]), [format!("bob={BOB_PNG}")]);
+        assert_eq!(again.speaker("bob", ME, &rosters), None);
+        assert!(again.queue.is_empty());
+        // Nothing is repeated for someone already looked at.
+        assert!(
+            again
+                .remembered("bob", "bob", "x.example.org", ME, Some(&rosters))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_who_reply_for_a_remembered_mask_restores_the_picture_without_asking() {
+        let rosters = rosters();
+        let cache = PeerAvatarCache::default();
+        drop(bob_answered(&cache));
+        // A reconnect: bob is already in the channel and only the channel's
+        // WHO tells us his mask; it carries the mark, yet nothing is asked.
+        let mut again = PeerAvatars::with_cache(true, None, cache.clone());
+        let who =
+            line(":srv 352 alice #a ~bob host9.example.org srv bob H :0 \u{3}4\u{f}KVIrc user");
+        let event = again.remembered_who(&who, ME, &rosters).unwrap();
+        assert_eq!(avatars(&[event]), [format!("bob={BOB_PNG}")]);
+        assert!(
+            again
+                .observe(&who, ME, &rosters, false, Instant::now())
+                .is_none()
+        );
+        assert!(again.queue.is_empty());
+        // A reply for someone who left is ignored, and so is a mask nobody
+        // remembers.
+        let gone = line(":srv 352 alice #a ~bob host9.example.org srv ghost H :0 x");
+        assert!(again.remembered_who(&gone, ME, &rosters).is_none());
+        let other = line(":srv 352 alice #a ~bob other.net srv carol H :0 x");
+        assert!(again.remembered_who(&other, ME, &rosters).is_none());
+    }
+
+    #[test]
+    fn another_nick_or_user_is_asked_afresh() {
+        let rosters = PresenceIndex::from_rosters(&HashMap::from([(
+            "#a".to_owned(),
+            vec!["alice".into(), "bob".into(), "bob_".into(), "carol".into()],
+        )]));
+        let cache = PeerAvatarCache::default();
+        bob_answered(&cache);
+        // KVIrc's rule: the nick is part of the key, so bob_ is asked.
+        let mut peers = PeerAvatars::with_cache(true, None, cache.clone());
+        let join = line(":bob_!~bob@host1.example.org JOIN #a");
+        assert!(peers.joined(&join, ME).is_none());
+        peers.speaker("bob_", ME, &rosters);
+        assert_eq!(
+            wire(&peers.tick(Instant::now(), ME, &rosters).send),
+            ["WHO bob_"]
+        );
+        // Another user or another network part is another person.
+        for join in [
+            ":bob!carol@host1.example.org JOIN #a",
+            ":bob!bob@host1.example.net JOIN #a",
+            ":bob!bob@203.0.113.9 JOIN #a",
+        ] {
+            let mut peers = PeerAvatars::with_cache(true, None, cache.clone());
+            assert!(peers.joined(&line(join), ME).is_none(), "{join}");
+        }
+        // Ourselves and other commands never match.
+        let mut peers = PeerAvatars::with_cache(true, None, cache);
+        assert!(
+            peers
+                .joined(&line(":alice!~bob@host1.example.org JOIN #a"), ME)
+                .is_none()
+        );
+        assert!(
+            peers
+                .joined(&line(":bob!~bob@host1.example.org PART #a"), ME)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_answer_without_a_picture_or_an_unmarked_realname_forgets_the_mask() {
+        let cache = PeerAvatarCache::default();
+        let mut peers = bob_answered(&cache);
+        let handled = observe(
+            &mut peers,
+            ":bob!~bob@host1.example.org NOTICE alice :\u{1}AVATAR\u{1}",
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(avatars(&handled.events), ["bob=-"]);
+        assert!(cache.is_empty());
+        // A lookup of ours that finds no mark also drops the old picture.
+        let mut peers = bob_answered(&cache);
+        peers.avatars.clear();
+        peers.stages.clear();
+        peers.in_flight.push(Probe {
+            kind: ProbeKind::Who,
+            nickname: "bob".into(),
+            key: "bob".into(),
+            deadline: Instant::now() + PROBE_TIMEOUT,
+            stale: false,
+        });
+        let handled = observe(
+            &mut peers,
+            ":srv 352 alice #a ~bob host1.example.org srv bob H :0 Bob",
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(avatars(&handled.events), ["bob=-"]);
+        assert!(cache.is_empty());
     }
 }

@@ -879,6 +879,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_ctcp_avatar_answer_also_shows_on_the_line_that_caused_the_lookup(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        let peer = |url: Option<&str>| Event::PeerAvatar {
+            nickname: "Bob".into(),
+            url: url.map(Into::into),
+        };
+        // bob's first line comes before his answer.
+        events(&chat, cx, vec![say("bob", "first line")]);
+        chat.read_with(cx, |chat, _| {
+            assert!(chat.state.avatars().is_empty());
+        });
+        events(&chat, cx, vec![peer(Some(BOB)), say("bob", "second line")]);
+        // Leaving and a reconnect do not take it away, and metadata that
+        // ends later does not either.
+        events(
+            &chat,
+            cx,
+            vec![Event::Registered {
+                nickname: "me".into(),
+            }],
+        );
+        chat.read_with(cx, |chat, _| {
+            let messages = &chat.state.selected_channel().unwrap().messages;
+            for message in messages.iter().filter(|m| m.sender == "bob") {
+                let shown = chat
+                    .state
+                    .avatars()
+                    .for_message(NetworkId(1), "bob", message.sequence)
+                    .map(|url| url.to_string());
+                assert_eq!(shown.as_deref(), Some(BOB), "{}", message.text);
+            }
+            assert!(chat.state.avatars().current(NetworkId(1), "bob").is_some());
+        });
+        // Someone else with a mask without a picture: the name loses it.
+        events(&chat, cx, vec![peer(None)]);
+        chat.read_with(cx, |chat, _| {
+            assert!(chat.state.avatars().current(NetworkId(1), "bob").is_none());
+        });
+    }
+
+    #[gpui::test]
     fn avatars_and_previews_share_the_fetch_limit(cx: &mut TestAppContext) {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, true, &fetcher);
