@@ -5016,6 +5016,10 @@ fn remembered_pictures_follow_the_servers_casemapping() {
     // not restore the picture: he is looked up.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    // The WHO follows the message after the probe interval; the client may
+    // quit only once the server has read it.
+    let who_seen = Arc::new(AtomicBool::new(false));
+    let server_who_seen = Arc::clone(&who_seen);
     let server = thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket
@@ -5042,8 +5046,12 @@ fn remembered_pictures_follow_the_servers_casemapping() {
             )
             .unwrap();
         assert_eq!(read_client_line(&mut lines), "WHO bo{b");
+        server_who_seen.store(true, Ordering::SeqCst);
+        assert!(read_client_line(&mut lines).starts_with("QUIT"));
     });
-    let events = run_fixture(config(port), |events| !channel_messages(events).is_empty());
+    let events = run_fixture(config(port), |events| {
+        !channel_messages(events).is_empty() && who_seen.load(Ordering::SeqCst)
+    });
     server.join().unwrap();
     assert!(
         avatar_events(&events).is_empty(),

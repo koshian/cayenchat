@@ -647,7 +647,10 @@ this delay.
    (`\x01AVATAR me.png 2048\x01`) removes it and sends no DCC. Speaking
    again asks nothing more; a user without the mark is never queried;
    joining a large channel sends no WHO. Change the peer's nick: the avatar
-   follows; quit and reuse the nick from another client: none. **共有を停止**
+   follows. Quit and rejoin with the same mask (D058): the avatar returns
+   without a query. Use the same nick with another mask: the last avatar
+   stays; it goes away when a WHO finds a user without the mark, or when an
+   answer carries no image (an accepted problem, D058). **共有を停止**
    and turning the option off stop answering at once.
 
 The upper channel-message body and the server log lines can be drag-selected and copied with Cmd/Ctrl+C or the right-click menu.
