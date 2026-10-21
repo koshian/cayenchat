@@ -147,6 +147,12 @@ pub struct Config {
     #[cfg(any(feature = "tls-native", feature = "tls-rust"))]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub dangerously_accept_invalid_certs: Option<bool>,
+    /// Refuses the server's certificates when this returns `true` for any
+    /// of them (DER), before the usual verification; not part of any
+    /// configuration file (CayenChat addition).
+    #[cfg(feature = "tls-rust")]
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub refuse_server_cert: Option<fn(&[u8]) -> bool>,
     /// The encoding type used for this connection.
     /// This is typically UTF-8, but could be something else.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
