@@ -82,9 +82,10 @@ jobs:
             echo "::error::Tag $TAG no longer points to $SHA; tags must never be moved"
             exit 1
           fi
-          git fetch --no-tags origin master:refs/remotes/origin/master
-          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/master; then
-            echo "::error::Tagged commit $SHA is not on master"
+          # 0.9.x maintenance releases are tagged on `release/0.9`.
+          git fetch --no-tags origin release/0.9:refs/remotes/origin/release/0.9
+          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/release/0.9; then
+            echo "::error::Tagged commit $SHA is not on release/0.9"
             exit 1
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
