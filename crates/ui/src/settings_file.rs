@@ -29,6 +29,7 @@ thread_local! {
     static FILE: std::cell::RefCell<Option<Settings>> = const { std::cell::RefCell::new(None) };
     static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static UNREADABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Makes saving fail (or work again) to test what a failed save leaves.
@@ -37,8 +38,17 @@ pub(crate) fn fail_saves(failing: bool) {
     FAILING.set(failing);
 }
 
+/// Makes loading fail (or work again), as an unsupported or damaged file does.
+#[cfg(test)]
+pub(crate) fn fail_loads(failing: bool) {
+    UNREADABLE.set(failing);
+}
+
 #[cfg(test)]
 pub(crate) fn load() -> Result<Option<Settings>, String> {
+    if UNREADABLE.get() {
+        return Err("cannot read the settings file".into());
+    }
     Ok(FILE.with_borrow(Clone::clone))
 }
 
@@ -79,6 +89,7 @@ impl Drop for TestFile {
     fn drop(&mut self) {
         ENABLED.set(false);
         FAILING.set(false);
+        UNREADABLE.set(false);
         FILE.with_borrow_mut(|file| *file = None);
     }
 }

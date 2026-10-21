@@ -1295,6 +1295,43 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D061 — First-run setup wizard (#521)
+
+**Status:** Accepted
+
+- **When.** Only when startup found no saved server: no settings file, or one
+  that was read but holds no server (the wizard also reaches a user who saved
+  only general settings). A file that cannot be read (damaged or from a newer
+  version) is not a first run, so an existing user is never interrupted. The
+  wizard stands in for the settings window that used to open for an empty
+  configuration. It is drawn in the chat window (`setup_wizard.rs`) and is
+  the same on every OS. Cancelling ("Not now", Escape) writes and connects
+  nothing; with no server saved it opens again at the next start.
+- **Three choices**, quick setup preselected and marked as recommended:
+  quick setup; manual setup, which closes the wizard and opens the
+  connection settings; import, which is the File menu's import (D059).
+  While the import is picked, read or confirmed the wizard is hidden; if it
+  ends without a server (cancelled or failed) the choices are shown again.
+- **Quick setup** shows the fixed server (`irc.ircnet.com`, the first
+  preset), ISO-2022-JP and `#CayenChat`, and asks only for a nickname. Only
+  "Connect with these settings" writes anything: it checks the nickname with
+  the checks of a connection, adds one ordinary server profile (a new
+  server's defaults for port, TLS and passwords; `#CayenChat` as an enabled
+  auto-join entry; connect on startup) to the settings file, applies it
+  through `apply_settings_change` and connects through `connect_profile`.
+  There is no connection path of its own. The `USER` username is the chosen
+  nickname and the real name stays at the built-in default; nothing comes
+  from the operating system. The save runs in the background, adds to the
+  file's current content (never replaces it; a file that cannot be read at
+  that point is left untouched, nothing is connected and the error is
+  shown), and a failed save leaves the
+  settings and connections as they were with the error shown. A connection
+  that cannot even start leaves the saved profile and offers the connection
+  settings; a connection that fails later is shown by the normal log and
+  reconnect behavior.
+- **Not done:** no menu entry to run the wizard again (the settings window
+  and File → Import stay the ways in once servers exist).
+
 ## D060 — Numeric character references for text ISO-2022-JP cannot hold (#522)
 
 **Status:** Accepted

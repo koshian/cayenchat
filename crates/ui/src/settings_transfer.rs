@@ -67,6 +67,11 @@ impl TransferDialog {
         self.reading || matches!(self.step, Some(Step::Working))
     }
 
+    /// Nothing is shown, picked or written.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.step.is_none() && !self.reading
+    }
+
     #[cfg(test)]
     pub(crate) fn result(&self) -> Option<&[String]> {
         match &self.step {
@@ -333,7 +338,12 @@ impl ChatWindow {
         .detach();
     }
 
-    fn answer_transfer(&mut self, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn answer_transfer(
+        &mut self,
+        confirmed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if matches!(self.transfer_dialog.step, None | Some(Step::Working)) {
             return;
         }
