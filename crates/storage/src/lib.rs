@@ -493,8 +493,9 @@ pub struct Appearance {
     pub compact_urls: bool,
     /// Draw HTML numeric character references (`&#x1F352;`, `&#127826;`) in
     /// received text as the characters they name; the stored text is not
-    /// changed. Added after version 15 without a version change; files
-    /// without it read as off.
+    /// changed. Added after version 15 without a version change; on by
+    /// default (#523), so files without it read as on while an explicit
+    /// `false` stays off.
     pub decode_char_refs: bool,
     /// Reiwa mode, a channel log layout: the avatar spans two lines, the
     /// first line holds the nickname and time and the second the message,
@@ -582,7 +583,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             compact_urls: false,
-            decode_char_refs: false,
+            decode_char_refs: true,
             reiwa_mode: false,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -2627,8 +2628,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_char_refs_default_off_for_old_settings_and_round_trip() {
-        assert!(!Settings::default().appearance.decode_char_refs);
+    fn decode_char_refs_default_on_for_old_settings_and_explicit_off_is_kept() {
+        assert!(Settings::default().appearance.decode_char_refs);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut old = serde_json::to_value(Settings::default()).unwrap();
@@ -2639,10 +2640,12 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert!(!settings.appearance.decode_char_refs);
-        settings.appearance.decode_char_refs = true;
+        assert!(settings.appearance.decode_char_refs);
+        settings.appearance.decode_char_refs = false;
         save_to(&path, &settings).unwrap();
-        assert_eq!(load_from(&path).unwrap(), Some(settings));
+        let reloaded = load_from(&path).unwrap().unwrap();
+        assert!(!reloaded.appearance.decode_char_refs);
+        assert_eq!(reloaded, settings);
     }
 
     #[test]
