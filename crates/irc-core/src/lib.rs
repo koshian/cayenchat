@@ -2032,7 +2032,10 @@ impl Connection {
                 == Some(encoding_rs::ISO_2022_JP);
             // Credentials for services stay as typed and go through the
             // strict encoding check, so a password is never altered.
-            if self.char_refs_for_iso2022jp && sent_as_iso2022jp && !is_service_secret(target, text)
+            // The target may list several recipients, one of them a service.
+            if self.char_refs_for_iso2022jp
+                && sent_as_iso2022jp
+                && !target.split(',').any(|one| is_service_secret(one, text))
             {
                 charsets::apply_char_refs(text, display_text);
             }

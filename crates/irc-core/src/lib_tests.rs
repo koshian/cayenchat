@@ -453,6 +453,14 @@ fn iso2022jp_credentials_for_services_are_never_converted() {
             .send_private_message("NickServ", "REGISTER dummy😀 a@b.c", false)
             .is_err()
     );
+    // A service among several recipients counts, wherever it is listed.
+    for command in [
+        "/msg NickServ,bob IDENTIFY dummy😀",
+        "/msg bob,NickServ IDENTIFY dummy😀",
+        "/notice bob,NickServ REGISTER dummy😀 a@b.c",
+    ] {
+        assert!(connection.send_command(command, None).is_err(), "{command}");
+    }
     assert!(queued.try_recv().is_err());
     // Other text to a service is still converted.
     connection

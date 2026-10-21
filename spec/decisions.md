@@ -1317,7 +1317,8 @@ future work. Details in `architecture.md` (Channel history).
   order (ZWJ and variation selectors included; no normalisation). Other CTCP
   texts, nicknames, channel names and every other command are unchanged and
   keep the strict check. Credentials sent to services (`is_service_secret`:
-  `IDENTIFY`, `REGISTER`, ...) are never converted and keep the strict check.
+  `IDENTIFY`, `REGISTER`, ...) are never converted and keep the strict check;
+  a comma-separated target list counts if any recipient is such a service.
   Off, a message with such a character is refused.
 - `Outgoing::Message.display_text` follows the converted text, so the
   confirmed line and the log show what was sent; the input box keeps the
