@@ -902,13 +902,35 @@ pub(crate) const URL_TOOLTIP_BRIDGE: (Pixels, Pixels) = (px(10.), px(18.));
 /// The look shared by the hover popups in the logs (the full URL and the
 /// character reference original): the tooltip layout with the appearance
 /// colors. Only the background is translucent, so text and buttons stay
-/// readable.
-fn hover_popup(text: SharedString, cx: &App) -> Div {
+/// readable. At a high transparency over a light log the translucent
+/// background alone leaves light text on a light gray, so the content sits on
+/// a plate of the same color that is at least `HOVER_PLATE_ALPHA` opaque; the
+/// setting still decides how much shows through around and beyond it.
+fn hover_popup(content: impl IntoElement, cx: &App) -> Div {
     let theme = crate::theme::current(cx);
-    settings_theme::tooltip(text, cx)
+    let plate = hover_plate(theme.panes.url_tooltip);
+    settings_theme::tooltip(SharedString::default(), cx)
+        .p(px(0.))
         .bg(theme.panes.url_tooltip)
         .text_color(theme.panes.url_tooltip_text)
         .border_color(hsla(0., 0., 1., 0.2))
+        .child(
+            div()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded(px(3.))
+                .bg(plate)
+                .child(content),
+        )
+}
+
+/// Least opacity of the plate under the text of a hover popup.
+const HOVER_PLATE_ALPHA: f32 = 0.7;
+
+fn hover_plate(background: Rgba) -> Hsla {
+    let mut plate: Hsla = background.into();
+    plate.a = plate.a.max(HOVER_PLATE_ALPHA);
+    plate
 }
 
 /// The popup showing a shortened URL in full. It is drawn in the link
@@ -963,39 +985,39 @@ impl Render for CharRefTooltip {
             .pl(URL_TOOLTIP_BRIDGE.0)
             .pt(URL_TOOLTIP_BRIDGE.1)
             .child(
-                hover_popup(SharedString::default(), cx)
-                    .id("char-ref-tooltip")
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            .child(self.title.clone())
-                            .child(
-                                div()
-                                    .debug_selector(|| "char-ref-original".into())
-                                    .child(self.original.clone()),
-                            )
-                            .child(
-                                div()
-                                    .id("char-ref-copy")
-                                    .debug_selector(|| "char-ref-copy".into())
-                                    .px(px(6.))
-                                    .py(px(1.))
-                                    .rounded(px(3.))
-                                    .border_1()
-                                    .border_color(hsla(0., 0., 1., 0.3))
-                                    .text_color(theme.panes.url_tooltip_link)
-                                    .cursor_pointer()
-                                    .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
-                                    .child(self.copy_label.clone())
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            original.to_string(),
-                                        ));
-                                    }),
-                            ),
-                    ),
+                hover_popup(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(self.title.clone())
+                        .child(
+                            div()
+                                .debug_selector(|| "char-ref-original".into())
+                                .child(self.original.clone()),
+                        )
+                        .child(
+                            div()
+                                .id("char-ref-copy")
+                                .debug_selector(|| "char-ref-copy".into())
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(3.))
+                                .border_1()
+                                .border_color(hsla(0., 0., 1., 0.3))
+                                .text_color(theme.panes.url_tooltip_link)
+                                .cursor_pointer()
+                                .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
+                                .child(self.copy_label.clone())
+                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        original.to_string(),
+                                    ));
+                                }),
+                        ),
+                    cx,
+                )
+                .id("char-ref-tooltip"),
             )
     }
 }
@@ -1223,6 +1245,20 @@ pub(crate) fn server_label(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hover_plate_stays_mostly_opaque_at_high_transparency() {
+        let bg = |a: f32| gpui::Rgba {
+            r: 0.1,
+            g: 0.1,
+            b: 0.1,
+            a,
+        };
+        for opacity in [0.2, 0.25, 0.3] {
+            assert!(super::hover_plate(bg(opacity)).a >= 0.7);
+        }
+        assert_eq!(super::hover_plate(bg(0.9)).a, 0.9);
+    }
+
     use super::{
         IRCV3_FEATURES, OwnAvatarStatus, avatar_url_problem, peer_avatar_url_problem,
         peer_reconnect_needed, place_uploaded_avatar, share_draft_with_peers,
