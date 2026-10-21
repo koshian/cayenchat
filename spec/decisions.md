@@ -1295,6 +1295,71 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D059 — Exporting and importing the settings file, without credentials (#520)
+
+**Status:** Accepted
+
+2026-10-21. The File menu (CayenChat menu on macOS) has "Export Settings…"
+and "Import Settings…", and the Application page has the same two buttons.
+They move `settings.json` between computers; `cayenchat_storage::transfer`
+does the work, `settings_transfer` draws the questions in the chat window
+(like the quit dialog, Cancel focused first).
+
+- **Export** copies the saved settings (the file, else the window's copy) in
+  the current versioned format to a file the user picks (default name
+  `cayenchat-settings.json`), replacing it whole or not at all, user-only
+  permissions. The settings file is not touched. Secrets cannot get in:
+  they are not in `Settings` (D014; the legacy plaintext fields are never
+  serialized) and nothing reads the credential store. A notice before the
+  save dialog says what the file does contain (server, channel, nick and
+  real names).
+- **Import** replaces the whole configuration; no merging, no selection of
+  servers (future work). The file must be a regular file of at most 1 MiB,
+  an object with a supported `version` (older ones go through the normal
+  migration, a newer one is refused with the settings left alone), a server
+  list (at most 256 servers) and valid values. A list that loading would
+  quietly trim (a server without id or host, a repeated id, port 0) is
+  refused, as is a damaged version 1 file (no or unknown `server`, a custom
+  server without host, port 0), so an import never restores less than the file lists. It is read in the background
+  and only then confirmed: what is replaced, that every connection is
+  dropped, that passwords are not carried over, how many servers connect on
+  startup (none connects now), and that another OS's settings may not fit.
+- **Credentials.** Every imported server gets a fresh `custom-<uuid>`
+  profile id (the selection follows), so a credential-store entry of this
+  computer can never be taken for an imported server's, even when ids
+  happened to match; plaintext passwords of old files are dropped, not
+  migrated. The credentials of the servers being replaced are left in the
+  store (not deleted, so restoring the backup still finds them); they are
+  unused entries until removed by hand or by a later cleanup.
+- **Machine-specific values** stay as this computer has them: the
+  credential backend, the debug log file, and the conversation log folder
+  (the choice to log is imported).
+- **Off the UI thread.** The export write and the import's backup (synced
+  to disk), replacement and reload of the current file run in the
+  background while the dialog shows a notice and ignores answers; the
+  settings window cannot be opened meanwhile. The running state is changed
+  only after the file was replaced. The confirmation's text scrolls inside
+  the window height so its buttons stay reachable in a small window. One
+  transfer runs at a time from the moment a file picker opens: a `reading`
+  flag, separate from what the dialog shows, keeps another import or export
+  and the settings window out until the pick and read finish, so a slow
+  read cannot replace a running write's dialog. While an export's save
+  dialog is open its notice is replaced by the working notice, so it cannot
+  be cancelled and a late outcome of the dialog cannot close another
+  transfer's state.
+- **Applying.** The backup copy `settings-backup-<milliseconds>.json` is
+  written next to the file first (a failure stops the import), then the
+  file is replaced atomically. The result is applied to the running window
+  through the path a settings-window save uses
+  (`ChatWindow::apply_settings_change`), so the window and the file agree;
+  the open settings window is closed first, since it would save its older
+  form over the import. Sessions of the replaced servers are closed;
+  nothing connects, `connect_on_startup` counts at the next start. Settings
+  read only at startup (the Linux display system) apply then. A failed
+  import shows the error, with the current settings unchanged.
+- **Not included:** credentials and encrypted backups, `channel-order.json`,
+  `window.json`, history, caches and logs.
+
 ## D058 — CTCP AVATAR pictures tied to a user mask, without occupancies (#510)
 
 **Status:** Accepted (changes the identity rules of D025; D023's occupancy

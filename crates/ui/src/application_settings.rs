@@ -4,9 +4,55 @@
 use cayenchat_storage::{Language, LinuxDisplay};
 use gpui::{prelude::*, *};
 
-use crate::{SettingsTab, SettingsWindow, account_settings, settings_theme};
+use crate::{
+    ExportSettings, ImportSettings, SettingsTab, SettingsWindow, account_settings, settings_theme,
+};
 
 impl SettingsWindow {
+    /// Export and import of the settings file (#520); the questions are
+    /// drawn in the chat window, which the buttons ask.
+    fn render_settings_transfer(&self, cx: &mut Context<Self>) -> Div {
+        let theme = settings_theme::palette(cx);
+        div()
+            .ml(settings_theme::LABEL_INDENT)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("transfer_heading")),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("transfer_hint")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        settings_theme::button("export-settings", false, cx)
+                            .child(self.i18n.text("menu_export_settings"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let _ = this.owner.update(cx, |owner, window, cx| {
+                                    owner.export_settings(&ExportSettings, window, cx)
+                                });
+                            })),
+                    )
+                    .child(
+                        settings_theme::button("import-settings", false, cx)
+                            .child(self.i18n.text("menu_import_settings"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let _ = this.owner.update(cx, |owner, window, cx| {
+                                    owner.import_settings(&ImportSettings, window, cx)
+                                });
+                            })),
+                    ),
+            )
+    }
+
     fn language_selector(&self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let mut selector = div().flex().flex_col().child(
@@ -308,6 +354,7 @@ impl SettingsWindow {
                     .child(self.i18n.text("decode_char_refs_hint")),
             )
             .child(self.render_conversation_log_settings(cx))
+            .child(self.render_settings_transfer(cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })

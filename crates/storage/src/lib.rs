@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod layout;
 pub mod order;
 mod private_file;
+pub mod transfer;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -1614,7 +1615,17 @@ pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("Could not read settings: {error}")),
     };
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+    parse_settings(
+        &bytes,
+        &format!("Settings were left unchanged at {}.", path.display()),
+    )
+    .map(Some)
+}
+
+/// Parses and migrates the bytes of a settings file. `unchanged` is the
+/// sentence the errors about an unsupported version end with.
+fn parse_settings(bytes: &[u8], unchanged: &str) -> Result<Settings, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|error| format!("Could not parse settings: {error}"))?;
     let mut value = value;
     move_legacy_user_avatars(&mut value);
@@ -1632,19 +1643,17 @@ pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
             return Err(format!(
                 "Settings version {version} is newer than this app supports (1–{SETTINGS_VERSION}). \
                  Update CayenChat to a version that supports these settings. \
-                 Settings were left unchanged at {}.",
-                path.display()
+                 {unchanged}"
             ));
         }
         _ => {
             return Err(format!(
                 "The settings version is missing or invalid; this app supports versions 1–{SETTINGS_VERSION}. \
-                 Restore a valid settings file from a backup. Settings were left unchanged at {}.",
-                path.display()
+                 Restore a valid settings file from a backup. {unchanged}"
             ));
         }
     };
-    Ok(Some(settings))
+    Ok(settings)
 }
 
 /// Writes settings to `path`, readable only by the user, replacing the file
