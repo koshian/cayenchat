@@ -6702,3 +6702,55 @@ fn metadata_sync_stops_when_we_leave_or_are_kicked() {
     assert!(!sync_survives(":alice!u@h PART #test\r\n"));
     assert!(!sync_survives(":op!u@h KICK #test ALICE :out\r\n"));
 }
+
+#[test]
+fn input_too_long_and_unknown_error_replies_are_reported_and_kept_in_the_log() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+        while !lines.next().unwrap().unwrap().starts_with("USER ") {}
+        socket
+            .write_all(
+                b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n\
+                  :server 417 alice :Input line was too long\r\n\
+                  :server 400 alice MODE :Cannot do that\r\n\
+                  :server 400 alice :No command named\r\n",
+            )
+            .unwrap();
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+    config.port = port;
+    config.use_tls = false;
+    let mut connection = Connection::connect(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut rejected = Vec::new();
+    let mut lines = Vec::new();
+    while Instant::now() < deadline && rejected.len() < 3 {
+        match connection.try_recv() {
+            Some(Event::CommandRejected {
+                code,
+                command,
+                reason,
+            }) => rejected.push((code, command, reason)),
+            Some(Event::ServerLine(line)) => lines.push(line),
+            Some(_) => {}
+            None => thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    server.join().unwrap();
+    assert_eq!(
+        rejected,
+        vec![
+            (417, None, "Input line was too long".to_owned()),
+            (400, Some("MODE".to_owned()), "Cannot do that".to_owned()),
+            (400, None, "No command named".to_owned()),
+        ]
+    );
+    assert!(lines.iter().any(|line| line.contains("417")));
+    assert!(lines.iter().any(|line| line.contains("Cannot do that")));
+}
