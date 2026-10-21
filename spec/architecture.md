@@ -612,7 +612,7 @@ encoding still covers everything but that text. The UI keeps the overrides in
 `ServerProfile::channel_charsets` and copies them into the profile's active
 configuration so reconnects keep them.
 With `ConnectionConfig::char_refs_for_iso2022jp` (`ServerProfile::iso2022jp_char_refs`,
-on by default, D059) the text of a message sent in ISO-2022-JP has the scalar
+on by default, D060) the text of a message sent in ISO-2022-JP has the scalar
 values that encoding cannot hold replaced by decimal `&#N;` references in
 `Connection::pinned`, before any check, so the 512-byte and relayed-length
 checks see the longer text; nothing else on the line changes.
