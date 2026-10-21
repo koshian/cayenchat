@@ -16,6 +16,13 @@ pub(crate) fn save(settings: &Settings) -> Result<(), String> {
     cayenchat_storage::save(settings)
 }
 
+/// Replaces the file with `settings` after copying the old one beside it;
+/// returns where the copy is (`None` when there was no file).
+#[cfg(not(test))]
+pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>, String> {
+    cayenchat_storage::transfer::replace_settings(settings)
+}
+
 #[cfg(test)]
 thread_local! {
     /// `None` while no test holds a file; then the file's content.
@@ -44,6 +51,14 @@ pub(crate) fn save(settings: &Settings) -> Result<(), String> {
         FILE.with_borrow_mut(|file| *file = Some(settings.clone()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>, String> {
+    let backup = FILE
+        .with_borrow(Clone::clone)
+        .map(|_| "settings-backup.json".into());
+    save(settings).map(|()| backup)
 }
 
 /// The in-memory file of the running test, gone again when dropped.
