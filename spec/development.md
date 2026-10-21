@@ -335,14 +335,18 @@ what Xvfb on Linux cannot exercise:
 - anything the issue itself asks a person to confirm.
 
 **What Linux under Xvfb alone settles.** GPUI draws the app's own widgets
-(buttons, menus, inputs, settings screens), so how they look and move is the
-same on macOS and Windows. When Xvfb shows no problem, do not ask for a
-pre-merge check for another OS on any of these:
+(buttons, menus, inputs, settings screens), so their look and movement are
+mostly the same on macOS and Windows. The exception is anything that depends
+on the OS's text rendering or fonts, listed in the next section. When Xvfb
+shows no problem, do not ask for a pre-merge check for another OS on a change
+that does not touch that exception and only affects:
 
 - layout, spacing, colors, themes (light and dark) and icons;
 - the order of items in menus and pop-ups, which are grayed out, and where
   they open;
-- hover, selection, scrolling and wrapping.
+- hover, selection and scrolling, and wrapping that does not depend on glyph
+  widths, fonts or line height (wrapping of text, where those decide the
+  break, belongs to the next section).
 
 A change that only touches these (removing one background color of a log
 decoration, say) needs no person, however many items a checklist could list.
