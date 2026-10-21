@@ -78,13 +78,13 @@ pub(crate) fn apply_char_refs(text: &mut String, display_text: &mut String) {
             }
             *text = new_text;
         }
-    } else if !text.starts_with('\u{1}') {
-        if let std::borrow::Cow::Owned(converted) = with_char_refs(text) {
-            if display_text == text {
-                display_text.clone_from(&converted);
-            }
-            *text = converted;
+    } else if !text.starts_with('\u{1}')
+        && let std::borrow::Cow::Owned(converted) = with_char_refs(text)
+    {
+        if display_text == text {
+            display_text.clone_from(&converted);
         }
+        *text = converted;
     }
 }
 

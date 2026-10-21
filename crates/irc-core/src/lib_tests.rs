@@ -441,6 +441,30 @@ fn iso2022jp_text_without_a_character_gets_references_when_enabled() {
 }
 
 #[test]
+fn iso2022jp_credentials_for_services_are_never_converted() {
+    let (connection, mut queued) = queueing_connection("ISO-2022-JP", true, &[]);
+    assert!(
+        connection
+            .send_command("/msg NickServ IDENTIFY dummy😀", None)
+            .is_err()
+    );
+    assert!(
+        connection
+            .send_private_message("NickServ", "REGISTER dummy😀 a@b.c", false)
+            .is_err()
+    );
+    assert!(queued.try_recv().is_err());
+    // Other text to a service is still converted.
+    connection
+        .send_private_message("NickServ", "HELP 😀", false)
+        .unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [("HELP &#128512;".into(), "HELP &#128512;".into())]
+    );
+}
+
+#[test]
 fn iso2022jp_text_is_refused_when_the_option_is_off_or_the_text_is_not_iso2022jp() {
     let (connection, mut queued) = queueing_connection("ISO-2022-JP", false, &[]);
     assert!(connection.send_message("#t", "😀", false).is_err());

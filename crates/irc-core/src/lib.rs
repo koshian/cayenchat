@@ -2030,7 +2030,10 @@ impl Connection {
             // checked, shown and written is the same text in that encoding.
             let sent_as_iso2022jp = encoder.or_else(|| charsets::resolve(&self.encoding).ok())
                 == Some(encoding_rs::ISO_2022_JP);
-            if self.char_refs_for_iso2022jp && sent_as_iso2022jp {
+            // Credentials for services stay as typed and go through the
+            // strict encoding check, so a password is never altered.
+            if self.char_refs_for_iso2022jp && sent_as_iso2022jp && !is_service_secret(target, text)
+            {
                 charsets::apply_char_refs(text, display_text);
             }
         }

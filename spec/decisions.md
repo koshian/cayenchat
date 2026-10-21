@@ -1316,7 +1316,9 @@ future work. Details in `architecture.md` (Channel history).
   scalar value ISO-2022-JP cannot hold becomes `&#<decimal>;` on its own, in
   order (ZWJ and variation selectors included; no normalisation). Other CTCP
   texts, nicknames, channel names and every other command are unchanged and
-  keep the strict check. Off, a message with such a character is refused.
+  keep the strict check. Credentials sent to services (`is_service_secret`:
+  `IDENTIFY`, `REGISTER`, ...) are never converted and keep the strict check.
+  Off, a message with such a character is refused.
 - `Outgoing::Message.display_text` follows the converted text, so the
   confirmed line and the log show what was sent; the input box keeps the
   original and is cleared only on success. Receiving (D043) is independent:
