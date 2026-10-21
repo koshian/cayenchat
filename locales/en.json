@@ -220,7 +220,7 @@
   "compact_urls": "Show long URLs compactly",
   "compact_urls_hint": "Shortens long links in the channel log to the host and the start of the path, marked with an arrow. Hover shows the full URL in a bubble you can click to open; opening, selecting and copying use it too.",
   "decode_char_refs": "Show HTML numeric character references as characters",
-  "decode_char_refs_hint": "Draws references such as &#x1F352; or &#127826; in received text as the characters they name, on a faint background. Hover shows the original text in a bubble with a button to copy it; selecting and copying use the characters shown. Named references (&amp;) and HTML tags are left alone, and the message itself is not changed.",
+  "decode_char_refs_hint": "Draws references such as &#x1F352; or &#127826; in received text as the characters they name. Hover shows the original text in a bubble with a button to copy it; selecting and copying use the characters shown. Named references (&amp;) and HTML tags are left alone, and the message itself is not changed.",
   "copy_original_text": "Copy original text",
   "char_ref_origin": "Converted from HTML numeric character references",
   "reiwa_mode": "Show the channel log in Reiwa mode",

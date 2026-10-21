@@ -2034,8 +2034,11 @@ The maintainer approved this specification on the issue (2026-10-13).
 - It reuses the presentation mapping of compact URLs (`compact_urls.rs`):
   one drawn text with spans mapping drawn and original byte positions, so
   links, highlights and selections keep working on original offsets.
-- A run has a neutral (not link-colored, not underlined) background and a
-  hover bubble with the original text and one "copy original" button. There
+- A run has a hover bubble with the original text and one "copy original"
+  button. It has no decoration of its own: it is drawn exactly like the same
+  characters typed directly, with no background (#524 dropped the neutral
+  background #320 gave it, which showed as a grey box behind emoji). Selection,
+  search matches and keyword highlights still shade it. There
   is no button for the converted characters; selecting and copying copies the
   characters shown. Short URL bubbles and these bubbles share the hover
   machinery; they never overlap because references inside URLs are not decoded.
