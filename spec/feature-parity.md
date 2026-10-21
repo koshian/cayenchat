@@ -101,7 +101,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — initial/switch focus, common OS editing shortcuts, undo/redo and
   platform-specific app bindings; user-customized macOS text bindings unsupported
   by GPUI 0.2.2, Windows/Linux runtime unverified
-- DONE — errors and warnings of the chat window (refused sends, connection, WHOIS, join/part, settings saving) and the server's 417/400 answers to a command the user just sent are shown in a closable dialog, never in the draft row; the server log keeps the replies (D061)
+- DONE — errors and warnings of the chat window (refused sends, connection, WHOIS, join/part, settings saving) and the server's 417/400 answers to a command the user just sent are shown in a closable dialog, never in the draft row; the server log keeps the replies (D062)
 - PARTIAL — CR/LF normalized to spaces; 512-byte encoded IRC-line limit, counted for messages as the line the recipient gets (with the sender's `:nick!user@host ` prefix); no automatic splitting of long messages
 
 ## Attachments
@@ -137,6 +137,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — Image Upload tab: provider None/ImgBB, connect/reconnect/disconnect account (account API key)
 - DONE — settings open in a separate window; closing it leaves the chat window running
 - DONE — "Export Settings…" / "Import Settings…" (File menu, CayenChat menu on macOS, and the Application page) copy `settings.json` to and from a file of the user's choice without any credential; an import is checked, confirmed, backed up and replaces everything with fresh server ids, and connects nothing (D059)
+- DONE — With no saved server (no settings file, or one without servers), a first-run wizard offers quick setup (IRCnet `#CayenChat`, ISO-2022-JP, nickname only), manual setup and import; nothing is saved or connected until "Connect with these settings" (D061)
 - DONE — settings categories are a left-hand list (Up/Down move through it) beside the selected category's page; the Startup & Behavior page (起動と動作, right after Connection) holds the app's own behavior: language, login startup, restoring the window layout, image link previews, user avatars, the Reiwa-mode layout, compact long URLs, shortening a pasted long Amazon product URL, Linux display (Linux) and menu bar auto-hide (Windows/Linux); each page except Connection and Credentials ends with a "Restore Defaults" (Japanese: すべて元に戻す) at the bottom right for exactly what it shows, disabled when nothing differs and confirmed first; login startup is never reset (D038)
 - DONE — Experimental settings tab with opt-in stderr file logging, native destination picker, immediate switching, append and saved preferences; Windows release builds suppress the startup console (Windows runtime verification pending)
 - DONE — settings save automatically as they change, except server settings (the Connection tab and the per-server IRCv3 options), which are written by a Save button; adding a server shows only suggestions (irc.ircnet.com by default plus the ircnet.info list); removing a saved server asks first (D021)
