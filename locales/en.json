@@ -31,6 +31,8 @@
   "port": "Port",
   "encoding": "Character encoding",
   "encoding_hint": "Default for this server: channel names and messages use it. A channel can use another one for its messages with /charset.",
+  "iso2022jp_char_refs": "Send characters ISO-2022-JP cannot hold as numeric character references",
+  "iso2022jp_char_refs_hint": "Only when a message is sent in ISO-2022-JP (this server's encoding or a channel's /charset): characters it cannot hold, such as emoji, are sent as &#128512; instead of the message being refused. Other clients that do not decode them show the references as written. Applies from the next connection.",
   "on": "On",
   "off": "Off",
   "verify_certificates": "Verify certificates",

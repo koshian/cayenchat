@@ -290,6 +290,7 @@ fn connection_config(
     config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.regain_ops = profile.regain_ops;
     config.encoding = profile.encoding.label().into();
+    config.char_refs_for_iso2022jp = profile.iso2022jp_char_refs;
     config.channel_encodings = channel_encodings(profile);
     config.ircv3 = ircv3_options(profile.ircv3);
     config.shared_avatar = shared_peer_avatar(profile);
@@ -1936,6 +1937,7 @@ impl ChatWindow {
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
+                    config.char_refs_for_iso2022jp = profile.iso2022jp_char_refs;
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     config.channels = profile.channels();
