@@ -7882,15 +7882,23 @@ impl ChatWindow {
             selected_range,
             &style.theme,
         );
-        let styled =
-            match self
-                .phrase_joins
-                .borrow_mut()
-                .joins(self.auto_phrase, &prefix, compact.text())
-            {
-                Some(joins) => styled.with_wrap_joins(joins),
-                None => styled,
-            };
+        // Links, link chips and nick highlights keep their normal wrapping,
+        // as do activity lines; the prefix is never analysed.
+        let protected: Vec<_> = urls
+            .iter()
+            .map(|(range, _)| range.clone())
+            .chain(chips.iter().cloned())
+            .chain(highlights.iter().cloned())
+            .collect();
+        let styled = match self.phrase_joins.borrow_mut().joins(
+            self.auto_phrase && !message.activity,
+            prefix_len,
+            compact.text(),
+            &protected,
+        ) {
+            Some(joins) => styled.with_wrap_joins(joins),
+            None => styled,
+        };
         let layout = styled.layout().clone();
         // While a search jump to this line is unfinished, report where its
         // first match is painted (the layout is only valid once painted).
