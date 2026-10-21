@@ -239,11 +239,9 @@ fn a_failing_store_is_reported_and_the_join_stands(cx: &mut TestAppContext) {
                 .any(|line| line.contains("#secret") && line.contains("test backend"))
         );
         assert!(log.iter().all(|line| !line.contains("hunter2")));
-        assert!(
-            chat.feedback
-                .as_deref()
-                .is_some_and(|f| !f.contains("hunter2"))
-        );
+        let notices = chat.notices.all();
+        assert!(!notices.is_empty());
+        assert!(notices.iter().all(|n| !n.detail.contains("hunter2")));
     });
 }
 

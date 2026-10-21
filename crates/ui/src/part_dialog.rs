@@ -179,7 +179,7 @@ impl ChatWindow {
                     }
                     session.pending_parts.insert(folded, Instant::now());
                 }
-                self.set_feedback(None);
+                self.prompt_feedback = None;
                 self.close_part_prompt(window, cx);
             }
             Err(error) => {

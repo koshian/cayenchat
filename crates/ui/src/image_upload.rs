@@ -18,7 +18,12 @@ use cayenchat_storage::SecretKey;
 use cayenchat_upload::{ExternalUploader, UploadError};
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, SettingsTab, input, localization::Localizer, secrets};
+use crate::{
+    ChatWindow, SettingsTab, input,
+    localization::Localizer,
+    notices::{Notice, Origin},
+    secrets,
+};
 
 /// The uploader for `provider` (a provider ID from settings) and what the
 /// attachment flow should know about it; `replacement` (tests) wins.
@@ -266,7 +271,7 @@ impl ChatWindow {
                 name,
                 size,
             } => {
-                let answer = window.prompt(
+                let answer = self.chat_prompt(
                     PromptLevel::Info,
                     &self
                         .i18n
@@ -279,6 +284,7 @@ impl ChatWindow {
                         PromptButton::ok(self.i18n.text("upload_confirm")),
                         PromptButton::cancel(self.i18n.text("cancel")),
                     ],
+                    window,
                     cx,
                 );
                 cx.spawn_in(window, async move |this, cx| {
@@ -373,7 +379,7 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let answer = window.prompt(
+        let answer = self.chat_prompt(
             PromptLevel::Info,
             &title,
             Some(&detail),
@@ -381,6 +387,7 @@ impl ChatWindow {
                 PromptButton::ok(action),
                 PromptButton::cancel(self.i18n.text("cancel")),
             ],
+            window,
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
@@ -402,7 +409,6 @@ impl ChatWindow {
         let Some(job) = self.attachments.confirm() else {
             return;
         };
-        self.feedback = None;
         cx.notify();
         let id = job.id;
         let upload = upload_in_background(uploader, job, cx);
@@ -428,15 +434,12 @@ impl ChatWindow {
                 if let Some(input) = self.inputs.get(&target) {
                     input.update(cx, |input, cx| input.insert_link(&url, cx));
                 }
-                // The inserted link is the feedback; clear the progress note.
-                self.feedback = None;
             }
             Completion::Failed {
                 provider,
                 failure: UploadFailure::Authentication,
             } => {
                 // An expired or revoked credential: offer to reconnect.
-                self.feedback = None;
                 self.prompt_upload_setup(
                     self.i18n
                         .format("upload_reconnect_title", &[("provider", &provider)]),
@@ -469,6 +472,7 @@ impl ChatWindow {
 
     /// Reports an upload problem in a dialog. It stays until the user closes
     /// it and takes no room from the draft row; closing it changes nothing.
+    /// It queues behind any other dialog of the window.
     fn show_upload_notice(
         &mut self,
         title: &str,
@@ -476,18 +480,12 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.feedback = None;
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &self.i18n.text(title),
-            Some(detail),
-            &[PromptButton::ok(self.i18n.text("upload_failed_close"))],
-            cx,
-        );
-        cx.spawn(async move |_, _| {
-            let _ = answer.await;
-        })
-        .detach();
+        let notice = Notice {
+            title: self.i18n.text(title),
+            detail: detail.to_owned(),
+        };
+        self.post_notice(notice, Origin::User, cx);
+        self.open_next_notice(window, cx);
         cx.notify();
     }
 
@@ -668,7 +666,7 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.pending_prompt().is_none());
         assert_eq!(draft(&input, cx), "draft");
-        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        let feedback = chat.read_with(cx, |chat, _| chat.prompt_feedback.clone());
         assert!(feedback.is_none(), "{feedback:?}");
     }
 
@@ -741,7 +739,7 @@ mod tests {
         cx.simulate_prompt_answer("Close");
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
-        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        let feedback = chat.read_with(cx, |chat, _| chat.prompt_feedback.clone());
         assert!(feedback.is_none(), "{feedback:?}");
     }
 
@@ -761,6 +759,8 @@ mod tests {
         assert!(job.is_some(), "the confirmed upload must be running");
         assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_some()));
         chat.update_in(cx, |chat, window, cx| chat.cancel_upload(window, cx));
+        // The notice waits for the answered confirmation to be handled.
+        cx.run_until_parked();
         let (title, detail) = cx.pending_prompt().expect("cancellation dialog");
         assert!(title.contains("cancelled"), "{title}");
         assert!(detail.contains("Fake Host"), "{detail}");
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(fake.calls(), 0);
         assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_none()));
         assert_eq!(draft(&input, cx), "draft");
-        let feedback = chat.read_with(cx, |chat, _| chat.feedback.clone());
+        let feedback = chat.read_with(cx, |chat, _| chat.prompt_feedback.clone());
         assert!(feedback.is_none(), "{feedback:?}");
     }
 

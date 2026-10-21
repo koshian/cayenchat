@@ -272,7 +272,12 @@ fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut Test
     chat.update(cx, |chat, cx| {
         chat.member_modes(cayenchat_irc_core::MemberMode::Op, cx);
         assert!(chat.member_menu.is_none());
-        assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
+        assert!(
+            chat.notices
+                .all()
+                .iter()
+                .any(|n| n.detail.contains(&chat.i18n.text("not_connected")))
+        );
     });
 }
 
@@ -1331,7 +1336,7 @@ fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestApp
             chat.submit_member_prompt(window, cx);
             // Not connected: kept open with the reason.
             assert!(chat.member_prompt.is_some());
-            assert_eq!(chat.feedback, Some(chat.i18n.text("not_connected")));
+            assert_eq!(chat.prompt_feedback, Some(chat.i18n.text("not_connected")));
         });
     }
 }
@@ -3513,7 +3518,7 @@ fn starts_without_servers_and_shows_one_once_added(cx: &mut TestAppContext) {
     // The draft still accepts text and Enter reports that nothing is connected.
     cx.simulate_input("hello");
     cx.dispatch_action(super::SendMessage);
-    chat.read_with(cx, |chat, _| assert!(chat.feedback.is_some()));
+    chat.read_with(cx, |chat, _| assert!(!chat.notices.all().is_empty()));
 
     let settings = crate::settings_with_channels("#a");
     chat.update(cx, |chat, cx| chat.apply_servers(settings, cx));
@@ -3616,80 +3621,6 @@ fn the_window_lays_out_at_its_smallest_size_and_recovers(cx: &mut TestAppContext
     cx.simulate_resize(gpui::size(px(960.), px(600.)));
     cx.run_until_parked();
     assert!(cx.debug_bounds("members-split").is_some());
-}
-
-#[gpui::test]
-fn editing_a_draft_clears_only_its_own_send_failure(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
-    let settings = crate::settings_with_channels("#a");
-    let (chat, cx) = cx.add_window_view(|window, cx| {
-        ChatWindow::with_settings(settings.clone(), None, window, cx)
-    });
-    let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());
-    input.update(cx, |input, cx| input.set_text("first", cx));
-    chat.update_in(cx, |chat, window, cx| chat.send_draft(false, window, cx));
-    let failure = chat.read_with(cx, |chat, _| chat.feedback.clone());
-    assert!(failure.is_some());
-    // Unedited, the cause stays readable; moving the cursor is no edit.
-    input.update(cx, |_, cx| cx.notify());
-    assert_eq!(chat.read_with(cx, |chat, _| chat.feedback.clone()), failure);
-    // A paste, a deletion or a select-all delete all change the text.
-    input.update(cx, |input, cx| input.set_text("first and more", cx));
-    assert_eq!(chat.read_with(cx, |chat, _| chat.feedback.clone()), None);
-
-    // Emptying the draft clears it too.
-    input.update(cx, |input, cx| input.set_text("second", cx));
-    chat.update_in(cx, |chat, window, cx| chat.send_draft(false, window, cx));
-    assert!(chat.read_with(cx, |chat, _| chat.feedback.is_some()));
-    input.update(cx, |input, cx| input.set_text("", cx));
-    assert_eq!(chat.read_with(cx, |chat, _| chat.feedback.clone()), None);
-
-    // Feedback from another source survives edits.
-    input.update(cx, |input, cx| input.set_text("third", cx));
-    chat.update_in(cx, |chat, window, cx| chat.send_draft(false, window, cx));
-    chat.update(cx, |chat, _| chat.feedback = Some("settings failed".into()));
-    input.update(cx, |input, cx| input.set_text("third!", cx));
-    assert_eq!(
-        chat.read_with(cx, |chat, _| chat.feedback.clone())
-            .as_deref(),
-        Some("settings failed")
-    );
-}
-
-#[gpui::test]
-fn same_worded_warning_from_another_source_survives_draft_edits(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
-    let settings = crate::settings_with_channels("#a");
-    let (chat, cx) = cx.add_window_view(|window, cx| {
-        ChatWindow::with_settings(settings.clone(), None, window, cx)
-    });
-    let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());
-    input.update(cx, |input, cx| input.set_text("first", cx));
-    chat.update_in(cx, |chat, window, cx| chat.send_draft(false, window, cx));
-    let failure = chat
-        .read_with(cx, |chat, _| chat.feedback.clone())
-        .expect("the send failed");
-    // Another action reports the very same words.
-    chat.update(cx, |chat, _| chat.set_feedback(Some(failure.clone())));
-    input.update(cx, |input, cx| input.set_text("first!", cx));
-    assert_eq!(
-        chat.read_with(cx, |chat, _| chat.feedback.clone()),
-        Some(failure)
-    );
 }
 
 #[gpui::test]

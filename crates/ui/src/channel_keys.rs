@@ -176,7 +176,7 @@ impl ChatWindow {
             match sent {
                 Ok(()) => self.note_join(network, &channel, saved.is_some()),
                 Err(error) => {
-                    self.set_feedback(Some(error));
+                    self.raise_error(Some(network), error, crate::notices::Origin::User, cx);
                     break;
                 }
             }
@@ -374,7 +374,7 @@ impl ChatWindow {
                     ],
                 );
                 self.state.append_server_message(network, text.clone());
-                self.set_feedback(Some(text));
+                self.raise_error(Some(network), text, crate::notices::Origin::User, cx);
             }
         }
         cx.notify();
