@@ -69,6 +69,8 @@ pub(crate) struct SettingsForm {
     pub(crate) dark_link_background: Entity<TextInput>,
     pub(crate) url_tooltip_link_color: Entity<TextInput>,
     pub(crate) dark_url_tooltip_link_color: Entity<TextInput>,
+    pub(crate) url_tooltip_text_color: Entity<TextInput>,
+    pub(crate) dark_url_tooltip_text_color: Entity<TextInput>,
     /// Percent, as typed.
     pub(crate) url_tooltip_opacity: Entity<TextInput>,
     pub(crate) main_log_font: Entity<TextInput>,
@@ -240,9 +242,9 @@ impl SettingsForm {
                 false,
                 cx,
             ),
-            url_tooltip_color: field("#FFFFFF", &values.appearance.url_tooltip_color, false, cx),
+            url_tooltip_color: field("#1B1D20", &values.appearance.url_tooltip_color, false, cx),
             dark_url_tooltip_color: field(
-                "#2A2D32",
+                "#1B1D20",
                 &values.appearance.dark.url_tooltip_color,
                 false,
                 cx,
@@ -262,7 +264,7 @@ impl SettingsForm {
                 cx,
             ),
             url_tooltip_link_color: field(
-                "#0645AD",
+                "#78AAFF",
                 &values.appearance.url_tooltip_link_color,
                 false,
                 cx,
@@ -270,6 +272,18 @@ impl SettingsForm {
             dark_url_tooltip_link_color: field(
                 "#78AAFF",
                 &values.appearance.dark.url_tooltip_link_color,
+                false,
+                cx,
+            ),
+            url_tooltip_text_color: field(
+                "#E3E6EA",
+                &values.appearance.url_tooltip_text_color,
+                false,
+                cx,
+            ),
+            dark_url_tooltip_text_color: field(
+                "#E3E6EA",
+                &values.appearance.dark.url_tooltip_text_color,
                 false,
                 cx,
             ),
@@ -363,7 +377,7 @@ impl SettingsForm {
     }
 
     /// The `#RRGGBB` code fields shown in the colors tab.
-    fn color_inputs(&self) -> [&Entity<TextInput>; 24] {
+    fn color_inputs(&self) -> [&Entity<TextInput>; 26] {
         [
             &self.member_list_background,
             &self.dark_member_list_background,
@@ -389,6 +403,8 @@ impl SettingsForm {
             &self.dark_url_tooltip_color,
             &self.url_tooltip_link_color,
             &self.dark_url_tooltip_link_color,
+            &self.url_tooltip_text_color,
+            &self.dark_url_tooltip_text_color,
         ]
     }
 
@@ -457,6 +473,7 @@ impl SettingsForm {
             link_color: value(&self.link_color),
             link_background: value(&self.link_background),
             url_tooltip_link_color: value(&self.url_tooltip_link_color),
+            url_tooltip_text_color: value(&self.url_tooltip_text_color),
             url_tooltip_opacity: value(&self.url_tooltip_opacity)
                 .parse()
                 .ok()
@@ -488,6 +505,7 @@ impl SettingsForm {
                 link_color: value(&self.dark_link_color),
                 link_background: value(&self.dark_link_background),
                 url_tooltip_link_color: value(&self.dark_url_tooltip_link_color),
+                url_tooltip_text_color: value(&self.dark_url_tooltip_text_color),
             },
             saved_colors: self.values.appearance.saved_colors.clone(),
         };
@@ -524,7 +542,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 46] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 48] {
         [
             &self.custom_host,
             &self.port,
@@ -563,6 +581,8 @@ impl SettingsForm {
             &self.dark_link_background,
             &self.url_tooltip_link_color,
             &self.dark_url_tooltip_link_color,
+            &self.url_tooltip_text_color,
+            &self.dark_url_tooltip_text_color,
             &self.url_tooltip_opacity,
             &self.main_log_font,
             &self.sub_log_font,
@@ -3045,6 +3065,12 @@ impl SettingsWindow {
                 &self.i18n.text("url_tooltip_link_color"),
                 &self.settings.url_tooltip_link_color,
                 &self.settings.dark_url_tooltip_link_color,
+                cx,
+            ))
+            .child(self.color_pair(
+                &self.i18n.text("url_tooltip_text_color"),
+                &self.settings.url_tooltip_text_color,
+                &self.settings.dark_url_tooltip_text_color,
                 cx,
             ))
             .child(settings_field(

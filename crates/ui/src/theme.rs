@@ -20,15 +20,18 @@ pub struct PaneColors {
     pub highlight: Rgba,
     pub sub_log: Rgba,
     pub sub_alternate: Rgba,
-    /// Bubble showing a shortened URL in full, with its opacity as alpha.
+    /// Background of the hover popups (full URL, character reference
+    /// original), with its opacity as alpha; their text stays opaque.
     pub url_tooltip: Rgba,
     /// Text and underline of URLs in the channel logs only; `Theme::link`
     /// stays for the rest of the UI.
     pub log_link: Rgba,
     /// Background behind URLs in the channel logs; `None` is automatic.
     pub log_link_background: Option<Rgba>,
-    /// Link text color in the URL bubble only.
+    /// Link text color in the hover popups only.
     pub url_tooltip_link: Rgba,
+    /// Plain text color in the hover popups.
+    pub url_tooltip_text: Rgba,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,12 +114,13 @@ impl Theme {
                 sub_log: color(&appearance.sub_log_background, 0xf9fafb),
                 sub_alternate: color(&appearance.sub_log_alternate, 0xf2f5ff),
                 url_tooltip: translucent(
-                    color(&appearance.url_tooltip_color, 0xffffff),
+                    color(&appearance.url_tooltip_color, 0x1b1d20),
                     appearance.url_tooltip_opacity,
                 ),
                 log_link: color(&appearance.link_color, 0x0645ad),
                 log_link_background: color_value(&appearance.link_background).map(rgb),
-                url_tooltip_link: color(&appearance.url_tooltip_link_color, 0x0645ad),
+                url_tooltip_link: color(&appearance.url_tooltip_link_color, 0x78aaff),
+                url_tooltip_text: color(&appearance.url_tooltip_text_color, 0xe3e6ea),
             },
         }
     }
@@ -153,12 +157,13 @@ impl Theme {
                 sub_log: color(&colors.sub_log_background, 0x24272b),
                 sub_alternate: color(&colors.sub_log_alternate, 0x2c3036),
                 url_tooltip: translucent(
-                    color(&colors.url_tooltip_color, 0x2a2d32),
+                    color(&colors.url_tooltip_color, 0x1b1d20),
                     appearance.url_tooltip_opacity,
                 ),
                 log_link: color(&colors.link_color, 0x78aaff),
                 log_link_background: color_value(&colors.link_background).map(rgb),
                 url_tooltip_link: color(&colors.url_tooltip_link_color, 0x78aaff),
+                url_tooltip_text: color(&colors.url_tooltip_text_color, 0xe3e6ea),
             },
         }
     }
@@ -230,7 +235,7 @@ mod tests {
         let defaults = Appearance::default();
         let light = Theme::new(ThemeMode::Light, WindowAppearance::Light, &defaults);
         let dark = Theme::new(ThemeMode::Dark, WindowAppearance::Dark, &defaults);
-        assert_eq!(light.panes.url_tooltip_link, rgb(0x0645ad));
+        assert_eq!(light.panes.url_tooltip_link, rgb(0x78aaff));
         assert_eq!(dark.panes.url_tooltip_link, rgb(0x78aaff));
 
         let appearance = Appearance {

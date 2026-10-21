@@ -899,8 +899,20 @@ impl Render for TextTooltip {
 /// to the pointer and is not part of the bubble.
 pub(crate) const URL_TOOLTIP_BRIDGE: (Pixels, Pixels) = (px(10.), px(18.));
 
-/// The bubble showing a shortened URL in full. It is drawn in its own link
-/// color on the (translucent) appearance color, and a click on it opens the URL.
+/// The look shared by the hover popups in the logs (the full URL and the
+/// character reference original): the tooltip layout with the appearance
+/// colors. Only the background is translucent, so text and buttons stay
+/// readable.
+fn hover_popup(text: SharedString, cx: &App) -> Div {
+    let theme = crate::theme::current(cx);
+    settings_theme::tooltip(text, cx)
+        .bg(theme.panes.url_tooltip)
+        .text_color(theme.panes.url_tooltip_text)
+        .border_color(hsla(0., 0., 1., 0.2))
+}
+
+/// The popup showing a shortened URL in full. It is drawn in the link
+/// color, and a click on it opens the URL.
 pub(crate) struct UrlTooltip(pub(crate) SharedString);
 
 impl Render for UrlTooltip {
@@ -914,9 +926,8 @@ impl Render for UrlTooltip {
             .pl(URL_TOOLTIP_BRIDGE.0)
             .pt(URL_TOOLTIP_BRIDGE.1)
             .child(
-                settings_theme::tooltip(self.0.clone(), cx)
+                hover_popup(self.0.clone(), cx)
                     .id("url-tooltip")
-                    .bg(theme.panes.url_tooltip)
                     .text_color(theme.panes.url_tooltip_link)
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| cx.open_url(&url)),
@@ -952,7 +963,7 @@ impl Render for CharRefTooltip {
             .pl(URL_TOOLTIP_BRIDGE.0)
             .pt(URL_TOOLTIP_BRIDGE.1)
             .child(
-                settings_theme::tooltip(SharedString::default(), cx)
+                hover_popup(SharedString::default(), cx)
                     .id("char-ref-tooltip")
                     .child(
                         div()
@@ -973,9 +984,10 @@ impl Render for CharRefTooltip {
                                     .py(px(1.))
                                     .rounded(px(3.))
                                     .border_1()
-                                    .border_color(theme.border)
+                                    .border_color(hsla(0., 0., 1., 0.3))
+                                    .text_color(theme.panes.url_tooltip_link)
                                     .cursor_pointer()
-                                    .hover(|d| d.bg(theme.hover))
+                                    .hover(|d| d.bg(hsla(0., 0., 1., 0.12)))
                                     .child(self.copy_label.clone())
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
