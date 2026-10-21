@@ -46,6 +46,7 @@ mod settings_reset;
 mod settings_theme;
 mod settings_transfer;
 mod settings_window;
+mod setup_wizard;
 mod shortcut_settings;
 mod shortcuts;
 #[cfg(target_os = "linux")]
@@ -674,6 +675,7 @@ struct ChatWindow {
     quit_dialog: quit_dialog::QuitDialog,
     /// The export and import of the settings file (#520).
     transfer_dialog: settings_transfer::TransferDialog,
+    setup_wizard: setup_wizard::SetupWizard,
     /// The question a double click on a joined channel row opens (#451).
     part_prompt: Option<part_dialog::PartPrompt>,
     layout_file: Option<std::path::PathBuf>,
@@ -1198,6 +1200,7 @@ impl ChatWindow {
             quit_prompt_open: false,
             quit_dialog: quit_dialog::QuitDialog::new(cx),
             transfer_dialog: settings_transfer::TransferDialog::new(cx),
+            setup_wizard: setup_wizard::SetupWizard::new(cx),
             part_prompt: None,
             layout_file: None,
             channel_orders: Default::default(),
@@ -2795,6 +2798,7 @@ impl ChatWindow {
             .chain(self.part_prompt.iter().map(|prompt| &prompt.input))
             .chain(self.nick_prompts.iter().map(|prompt| &prompt.input))
             .chain(self.key_prompts.iter().map(|prompt| prompt.input()))
+            .chain(std::iter::once(self.setup_wizard.nickname()))
             .any(|input| input.read(cx).is_composing())
     }
 
@@ -4387,6 +4391,10 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.wizard_nickname_focused(window, cx) {
+            self.wizard_move_focus(false, window, cx);
+            return;
+        }
         if self
             .member_prompt
             .as_ref()
@@ -5375,7 +5383,9 @@ impl ChatWindow {
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
-        if self.part_prompt_field_focused(window, cx) {
+        if self.wizard_nickname_focused(window, cx) {
+            self.wizard_connect(window, cx);
+        } else if self.part_prompt_field_focused(window, cx) {
             self.confirm_part_prompt(window, cx);
         } else if let Some(network) = self.focused_nick_prompt(window, cx) {
             self.submit_nick_prompt(network, window, cx);
@@ -5393,7 +5403,9 @@ impl ChatWindow {
     }
 
     fn notice(&mut self, _: &Notice, window: &mut Window, cx: &mut Context<Self>) {
-        if self.part_prompt_field_focused(window, cx) {
+        if self.wizard_nickname_focused(window, cx) {
+            self.wizard_connect(window, cx);
+        } else if self.part_prompt_field_focused(window, cx) {
             self.confirm_part_prompt(window, cx);
         } else if let Some(network) = self.focused_nick_prompt(window, cx) {
             self.submit_nick_prompt(network, window, cx);
@@ -7220,6 +7232,7 @@ impl ChatWindow {
         let quit_dialog = self.render_quit_dialog(window, cx);
         let part_prompt = self.render_part_prompt(window, cx);
         let transfer_dialog = self.render_transfer_dialog(window, cx);
+        let setup_wizard = self.render_setup_wizard(window, cx);
         div()
             .id("chat-window")
             .key_context("ChatWindow")
@@ -7314,6 +7327,7 @@ impl ChatWindow {
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
+            .when_some(setup_wizard, |d, dialog| d.child(dialog))
             .when_some(transfer_dialog, |d, dialog| d.child(dialog))
             .when_some(quit_dialog, |d, dialog| d.child(dialog))
             .into_any_element()
@@ -8892,10 +8906,20 @@ fn select_linux_display(saved: cayenchat_storage::LinuxDisplay) {
     }
 }
 
+/// Whether startup found no settings file; a file that exists, even one with
+/// no servers, or one that cannot be read, is not a first run.
+fn is_first_run(loaded: &Result<Option<Settings>, String>) -> bool {
+    matches!(loaded, Ok(None))
+}
+
 /// Loads settings and moves plaintext passwords saved by older versions into
-/// the credential store. Returns a notice for the chat window.
-fn load_settings_at_startup() -> (Settings, Option<String>) {
-    let mut saved = match cayenchat_storage::load() {
+/// the credential store. Returns a notice for the chat window, and whether
+/// there was no settings file at all (the first run, #521); a file that
+/// cannot be read is not a first run.
+fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
+    let loaded = cayenchat_storage::load();
+    let first_run = is_first_run(&loaded);
+    let mut saved = match loaded {
         Ok(saved) => saved.unwrap_or_default(),
         Err(error) => {
             // The next save replaces the file, so keep what could not be read.
@@ -8903,7 +8927,7 @@ fn load_settings_at_startup() -> (Settings, Option<String>) {
                 Ok(copy) => format!("{error}\nA copy was kept at {}.", copy.display()),
                 Err(_) => error,
             };
-            return (Settings::default(), Some(error));
+            return (Settings::default(), Some(error), false);
         }
     };
     let i18n = Localizer::new(saved.language);
@@ -8921,7 +8945,7 @@ fn load_settings_at_startup() -> (Settings, Option<String>) {
         (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
         (notice, logging_error) => notice.or(logging_error),
     };
-    (saved, notice)
+    (saved, notice, first_run)
 }
 
 fn main() {
@@ -8934,7 +8958,7 @@ fn main() {
         ),
         Err(error) => eprintln!("CayenChat test build: {error}"),
     }
-    let (saved, notice) = load_settings_at_startup();
+    let (saved, notice, first_run) = load_settings_at_startup();
     #[cfg(target_os = "linux")]
     select_linux_display(saved.linux_display);
     #[cfg(target_os = "linux")]
@@ -9098,7 +9122,14 @@ fn main() {
                         &chat.i18n,
                     ));
                     let startup = std::mem::take(&mut chat.startup_connections);
-                    let mut settings_for = startup.is_empty().then(|| chat.selected_profile_id());
+                    // With no settings file the setup wizard stands in for
+                    // the settings window; it writes nothing unless asked.
+                    let wizard = first_run && startup.is_empty();
+                    if wizard {
+                        chat.open_setup_wizard(cx);
+                    }
+                    let mut settings_for =
+                        (startup.is_empty() && !wizard).then(|| chat.selected_profile_id());
                     for (network, config) in startup {
                         let failed = match config {
                             Ok(config) => {
