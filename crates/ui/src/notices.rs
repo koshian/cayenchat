@@ -150,36 +150,27 @@ impl SentCommands {
     }
 }
 
-/// The IRC commands a typed line may be refused as. `/raw` and `/quote` send
-/// their own first word. Empty when the first word is not one this knows; such
+/// The IRC commands a typed line may be refused as, as `irc-core` sends
+/// them: plain text, `/me`, `/msg` and the CTCP commands go out as PRIVMSG,
+/// `/notice` as NOTICE, `/raw` and `/quote` send their own first word, and any
+/// other command is sent as typed. Empty when there is no word to go by; such
 /// a line is answered by a 417 only.
 pub(crate) fn typed_verbs(text: &str) -> Vec<String> {
     let Some(rest) = text.strip_prefix('/') else {
         return vec!["PRIVMSG".into(), "NOTICE".into()];
     };
     let mut words = rest.split_whitespace();
-    let word = words.next().unwrap_or("");
-    let verbs: &[&str] = match word.to_ascii_lowercase().as_str() {
-        "raw" | "quote" => {
-            return words
-                .next()
-                .map(|verb| vec![verb.to_ascii_uppercase()])
-                .unwrap_or_default();
-        }
-        "msg" | "query" | "me" | "describe" | "privmsg" | "say" => &["PRIVMSG"],
-        "notice" => &["NOTICE"],
-        "join" | "j" => &["JOIN"],
-        "part" | "leave" => &["PART"],
-        "nick" => &["NICK"],
-        "mode" => &["MODE"],
-        "topic" => &["TOPIC"],
-        "whois" => &["WHOIS"],
-        "invite" => &["INVITE"],
-        "kick" => &["KICK"],
-        "away" => &["AWAY"],
-        _ => &[],
+    let word = words.next().unwrap_or("").to_ascii_uppercase();
+    let verb = match word.as_str() {
+        "RAW" | "QUOTE" => words.next().unwrap_or("").to_ascii_uppercase(),
+        "ME" | "MSG" | "PRIVMSG" | "CTCP" | "PING" => "PRIVMSG".into(),
+        _ => word,
     };
-    verbs.iter().map(|verb| verb.to_string()).collect()
+    if verb.is_empty() {
+        Vec::new()
+    } else {
+        vec![verb]
+    }
 }
 
 /// The longest server text shown in a dialog.
@@ -437,6 +428,16 @@ mod sent_tests {
     }
 
     #[test]
+    fn verbs_follow_what_irc_core_sends() {
+        assert_eq!(typed_verbs("/names #demo"), ["NAMES"]);
+        assert_eq!(typed_verbs("/ctcp bob VERSION"), ["PRIVMSG"]);
+        assert_eq!(typed_verbs("/ping bob"), ["PRIVMSG"]);
+        assert_eq!(typed_verbs("/me waves"), ["PRIVMSG"]);
+        assert_eq!(typed_verbs("/notice bob hi"), ["NOTICE"]);
+        assert_eq!(typed_verbs("/whois bob"), ["WHOIS"]);
+    }
+
+    #[test]
     fn each_server_keeps_its_own_command() {
         let (a, b, now) = (NetworkId(1), NetworkId(2), Instant::now());
         let mut sent = SentCommands::default();
@@ -451,8 +452,10 @@ mod sent_tests {
         let (a, now) = (NetworkId(1), Instant::now());
         let mut sent = SentCommands::default();
         sent.note(a, &typed_verbs("/frobnicate"), now);
-        assert!(!sent.answer(a, Some("FROBNICATE"), now));
+        assert!(!sent.answer(a, Some("CHATHISTORY"), now));
         assert!(sent.answer(a, None, now), "a 417 still answers it");
+        sent.note(a, &typed_verbs("/raw"), now);
+        assert!(!sent.answer(a, Some("PRIVMSG"), now), "no word to go by");
         sent.note(a, &[] as &[&str], now);
         assert!(!sent.answer(a, None, now + ANSWER_WINDOW));
     }

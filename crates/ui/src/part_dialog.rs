@@ -179,6 +179,7 @@ impl ChatWindow {
                     }
                     session.pending_parts.insert(folded, Instant::now());
                 }
+                self.note_user_command(network, &["PART"]);
                 self.prompt_feedback = None;
                 self.close_part_prompt(window, cx);
             }

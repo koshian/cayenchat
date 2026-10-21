@@ -103,6 +103,11 @@ fn a_double_click_on_a_joined_row_asks_before_leaving(cx: &mut TestAppContext) {
                 .pending_parts
                 .contains_key("#a")
         );
+        // The PART is registered, so the server's 417 or `400 PART` shows.
+        assert!(
+            chat.sent_commands
+                .answer(NetworkId(1), Some("PART"), std::time::Instant::now())
+        );
         chat.activate_channel_row(a, window, cx);
         assert!(chat.part_prompt.is_none());
     });
