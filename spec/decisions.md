@@ -1925,7 +1925,8 @@ The maintainer approved this specification on the issue (2026-10-13).
 
 **Status:** Accepted
 
-- Startup & Behavior option `appearance.decode_char_refs` (off by default):
+- Startup & Behavior option `appearance.decode_char_refs` (on by default since #523; it was off
+  when added, and a saved explicit `false` stays off):
   `&#x1F352;` and `&#127826;` in received text are drawn as the characters.
   Display only: the stored text, search, sending and the wire are unchanged.
   Named references (`&amp;`) and tags are never interpreted.
