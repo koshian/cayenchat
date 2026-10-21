@@ -399,7 +399,7 @@ fn styling_a_line_full_of_matches_takes_linear_time() {
         .ranges(&text);
     assert_eq!(found.len(), 8_000);
     let start = std::time::Instant::now();
-    let _ = super::styled_log_text("", &text, &[], &[], &[], &[], &found, true, None, &theme);
+    let _ = super::styled_log_text("", &text, &[], &[], &[], &found, true, None, &theme);
     assert!(start.elapsed() < Duration::from_millis(500));
 }
 

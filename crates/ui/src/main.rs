@@ -5549,7 +5549,6 @@ fn styled_log_text(
     text: &str,
     urls: &[(std::ops::Range<usize>, String)],
     chips: &[std::ops::Range<usize>],
-    decoded: &[std::ops::Range<usize>],
     highlights: &[std::ops::Range<usize>],
     found: &[std::ops::Range<usize>],
     found_current: bool,
@@ -5561,17 +5560,10 @@ fn styled_log_text(
     let found: Vec<_> = found.iter().map(moved).collect();
     let urls: Vec<_> = urls.iter().map(|(range, _)| moved(range)).collect();
     let chips: Vec<_> = chips.iter().map(moved).collect();
-    let decoded: Vec<_> = decoded.iter().map(moved).collect();
     let highlights: Vec<_> = highlights.iter().map(moved).collect();
     let selected = selected.as_ref().map(moved);
     let mut boundaries = vec![0, shift, shift + text.len()];
-    for range in urls
-        .iter()
-        .chain(&highlights)
-        .chain(&chips)
-        .chain(&decoded)
-        .chain(&found)
-    {
+    for range in urls.iter().chain(&highlights).chain(&chips).chain(&found) {
         boundaries.extend([range.start, range.end]);
     }
     if let Some(range) = &selected {
@@ -5595,9 +5587,6 @@ fn styled_log_text(
         let is_highlight = highlights
             .iter()
             .any(|word| word.start <= range.start && range.end <= word.end);
-        let is_decoded = decoded
-            .iter()
-            .any(|span| span.start <= range.start && range.end <= span.end);
         // Matches ascend and do not overlap, as do the segments: step past
         // the ones already behind instead of testing them all each time.
         while found
@@ -5609,42 +5598,32 @@ fn styled_log_text(
         let is_found = found
             .get(next_found)
             .is_some_and(|span| span.start <= range.start && range.end <= span.end);
-        (is_prefix || is_url || is_chip || is_decoded || is_selected || is_highlight || is_found)
-            .then_some((
-                range,
-                HighlightStyle {
-                    color: if is_prefix {
-                        Some(theme.nickname.into())
-                    } else if is_url {
-                        Some(theme.panes.log_link.into())
-                    } else {
-                        is_highlight.then_some(theme.panes.highlight.into())
-                    },
-                    font_weight: is_highlight.then_some(FontWeight::BOLD),
-                    underline: is_url.then_some(UnderlineStyle {
-                        color: Some(theme.panes.log_link.into()),
-                        thickness: px(1.),
-                        wavy: false,
-                    }),
-                    background_color: if is_selected {
-                        Some(theme.selected.into())
-                    } else if is_found {
-                        Some(search_match_color(found_current).into())
-                    } else if is_decoded {
-                        // Neutral, so it is not mistaken for a link.
-                        Some(
-                            Rgba {
-                                a: 0.22,
-                                ..theme.text_secondary
-                            }
-                            .into(),
-                        )
-                    } else {
-                        link_background(theme, is_url, is_chip).map(Into::into)
-                    },
-                    ..Default::default()
+        (is_prefix || is_url || is_chip || is_selected || is_highlight || is_found).then_some((
+            range,
+            HighlightStyle {
+                color: if is_prefix {
+                    Some(theme.nickname.into())
+                } else if is_url {
+                    Some(theme.panes.log_link.into())
+                } else {
+                    is_highlight.then_some(theme.panes.highlight.into())
                 },
-            ))
+                font_weight: is_highlight.then_some(FontWeight::BOLD),
+                underline: is_url.then_some(UnderlineStyle {
+                    color: Some(theme.panes.log_link.into()),
+                    thickness: px(1.),
+                    wavy: false,
+                }),
+                background_color: if is_selected {
+                    Some(theme.selected.into())
+                } else if is_found {
+                    Some(search_match_color(found_current).into())
+                } else {
+                    link_background(theme, is_url, is_chip).map(Into::into)
+                },
+                ..Default::default()
+            },
+        ))
     });
     StyledText::new(format!("{prefix}{text}")).with_highlights(highlights)
 }
@@ -7716,7 +7695,6 @@ impl ChatWindow {
                         &[],
                         &[],
                         &[],
-                        &[],
                         &found,
                         current,
                         selected,
@@ -7827,7 +7805,6 @@ impl ChatWindow {
             .collect();
         let urls = compact.shown_urls(urls);
         let chips: Vec<_> = compact.linked().collect();
-        let decoded: Vec<_> = originals.iter().map(|(range, _)| range.clone()).collect();
         let selected_range = self
             .log_selection
             .filter(|selection| selection.source == Selection::Channel(selected_channel))
@@ -7860,7 +7837,6 @@ impl ChatWindow {
             compact.text(),
             &urls,
             &chips,
-            &decoded,
             &highlights,
             &found,
             found_current,
@@ -8194,10 +8170,6 @@ impl ChatWindow {
             style.compact_urls,
             style.decode_char_refs,
         );
-        let decoded: Vec<_> = compact
-            .decoded(&message.text)
-            .map(|(range, _)| range)
-            .collect();
         let highlights: Vec<_> = message
             .highlights
             .as_slice()
@@ -8213,7 +8185,6 @@ impl ChatWindow {
             compact.text(),
             &urls,
             &chips,
-            &decoded,
             &highlights,
             &[],
             false,
@@ -8285,7 +8256,6 @@ impl ChatWindow {
         let styled = styled_log_text(
             &prefix,
             &message.text,
-            &[],
             &[],
             &[],
             &[],
