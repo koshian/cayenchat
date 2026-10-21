@@ -99,6 +99,8 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
     }
     if source_version >= 2 {
         check_servers(object)?;
+    } else {
+        check_version_1(object)?;
     }
     let mut settings = parse_settings(bytes, "The current settings were left unchanged.")?;
     if settings.servers.len() > MAX_IMPORT_SERVERS {
@@ -161,6 +163,30 @@ fn check_servers(object: &serde_json::Map<String, serde_json::Value>) -> Result<
         if server.get("port").and_then(serde_json::Value::as_u64) == Some(0) {
             return Err(format!("Server {number} has port 0."));
         }
+    }
+    Ok(())
+}
+
+/// Version 1 keeps its one server in flat fields. Loading fills in defaults
+/// for what is missing and drops a custom server without host or with port
+/// 0, which would restore a default or no server from a damaged file.
+fn check_version_1(object: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let Some(choice) = object.get("server").and_then(serde_json::Value::as_str) else {
+        return Err("The file has no server, so it is not a CayenChat settings file.".into());
+    };
+    if !matches!(choice, "ircnet" | "ircnet_ipv6" | "custom") {
+        return Err(format!("The file names an unknown server \"{choice}\"."));
+    }
+    if choice == "custom"
+        && object
+            .get("custom_host")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|host| host.trim().is_empty())
+    {
+        return Err("The file's custom server has no host.".into());
+    }
+    if object.get("port").and_then(serde_json::Value::as_u64) == Some(0) {
+        return Err("The file's server has port 0.".into());
     }
     Ok(())
 }
@@ -291,6 +317,16 @@ mod tests {
         assert_eq!(import.source_version, 1);
         assert_eq!(import.settings.servers[0].nickname, "bob");
         assert_eq!(import.settings.version, SETTINGS_VERSION);
+
+        for damaged in [
+            serde_json::json!({ "version": 1 }),
+            serde_json::json!({ "version": 1, "server": "custom", "custom_host": "", "port": 6667 }),
+            serde_json::json!({ "version": 1, "server": "custom", "custom_host": "h", "port": 0 }),
+            serde_json::json!({ "version": 1, "server": "nowhere" }),
+        ] {
+            let result = import_from_bytes(damaged.to_string().as_bytes());
+            assert!(result.is_err(), "{damaged}");
+        }
 
         let newer = serde_json::json!({ "version": SETTINGS_VERSION + 1, "servers": [] });
         let error = import_from_bytes(newer.to_string().as_bytes()).unwrap_err();

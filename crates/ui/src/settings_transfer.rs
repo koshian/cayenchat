@@ -220,18 +220,24 @@ impl ChatWindow {
         let chosen = cx.prompt_for_new_path(&directory, Some(EXPORT_FILE_NAME));
         cx.spawn_in(window, async move |this, cx| {
             let result = chosen.await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(Ok(Some(path))) => this.write_export(&path, window, cx),
-                Ok(Ok(None)) => this.close_transfer(window, cx),
-                Ok(Err(error)) => {
-                    this.transfer_failed("transfer_export_title", &error.to_string(), window, cx)
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.transfer_dialog.reading = false;
+                match result {
+                    Ok(Ok(Some(path))) => this.write_export(&path, window, cx),
+                    Ok(Ok(None)) => this.close_transfer(window, cx),
+                    Ok(Err(error)) => this.transfer_failed(
+                        "transfer_export_title",
+                        &error.to_string(),
+                        window,
+                        cx,
+                    ),
+                    Err(_) => this.transfer_failed(
+                        "transfer_export_title",
+                        &this.i18n.text("transfer_picker_failed"),
+                        window,
+                        cx,
+                    ),
                 }
-                Err(_) => this.transfer_failed(
-                    "transfer_export_title",
-                    &this.i18n.text("transfer_picker_failed"),
-                    window,
-                    cx,
-                ),
             });
         })
         .detach();
@@ -336,8 +342,10 @@ impl ChatWindow {
         };
         match (step, confirmed) {
             (Step::ExportNotice, true) => {
-                // The notice stays up while the save dialog is open.
-                self.transfer_dialog.step = Some(Step::ExportNotice);
+                // The save dialog is open: the notice can no longer be
+                // answered, and nothing else starts, until it is done.
+                self.transfer_dialog.reading = true;
+                self.transfer_dialog.step = Some(Step::Working);
                 self.choose_export_path(window, cx);
             }
             (Step::ImportConfirm(pending), true) => self.apply_import(*pending, window, cx),
@@ -744,6 +752,29 @@ mod tests {
         );
         drop(file);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
+    fn an_open_save_dialog_holds_the_transfer(cx: &mut TestAppContext) {
+        let current = english(settings_with_channels("#old"));
+        let file = TestFile::with(&current);
+        let (chat, cx) = window(&current, cx);
+        chat.update_in(cx, |chat, window, cx| {
+            chat.export_settings(&crate::ExportSettings, window, cx);
+            chat.answer_transfer(true, window, cx);
+            // The save dialog is open: the notice cannot be cancelled and
+            // nothing else starts, so its late outcome cannot touch them.
+            assert!(chat.transfer_dialog_busy());
+            chat.answer_transfer(false, window, cx);
+            assert!(chat.transfer_dialog_busy());
+            chat.export_settings(&crate::ExportSettings, window, cx);
+            chat.import_settings(&crate::ImportSettings, window, cx);
+            assert!(matches!(
+                chat.transfer_dialog.step,
+                Some(super::Step::Working)
+            ));
+        });
+        drop(file);
     }
 
     #[gpui::test]
