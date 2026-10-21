@@ -360,6 +360,7 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
+        char_refs_for_iso2022jp: true,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -374,6 +375,119 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
     assert!(connection.is_closed());
 }
 
+/// A connection whose queue the test reads, with the server's `encoding`,
+/// `char_refs` set and the given channel overrides.
+fn queueing_connection(
+    encoding: &str,
+    char_refs: bool,
+    overrides: &[ChannelEncoding],
+) -> (Connection, mpsc::Receiver<Outgoing>) {
+    let (commands, queued) = mpsc::channel(8);
+    let (_event_tx, events) = mpsc::channel(1);
+    let connection = Connection {
+        commands,
+        cancel: Arc::new(Notify::new()),
+        quit: Arc::default(),
+        events: Some(Events(events)),
+        encoding: encoding.into(),
+        realname_mark: peer_avatar::RealnameMark::None,
+        charsets: Arc::new(ChannelCharsets::new(overrides).unwrap()),
+        char_refs_for_iso2022jp: char_refs,
+        part_message: None,
+        modes_per_line: Arc::new(AtomicUsize::new(0)),
+        relay_prefix: Arc::new(AtomicUsize::new(0)),
+        closed: None,
+        transcript: Arc::default(),
+    };
+    (connection, queued)
+}
+
+fn queued_texts(queued: &mut mpsc::Receiver<Outgoing>) -> Vec<(String, String)> {
+    let mut sent = Vec::new();
+    while let Ok(Outgoing::Message {
+        text, display_text, ..
+    }) = queued.try_recv()
+    {
+        sent.push((text, display_text));
+    }
+    sent
+}
+
+#[test]
+fn iso2022jp_text_without_a_character_gets_references_when_enabled() {
+    let (connection, mut queued) = queueing_connection("ISO-2022-JP", true, &[]);
+    connection
+        .send_message("#t", "こんにちは😀", false)
+        .unwrap();
+    connection.send_private_message("bob", "🍒", true).unwrap();
+    connection.send_command("/msg #t 🍒おいしい", None).unwrap();
+    connection.send_command("/me 笑う😀", Some("#t")).unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [
+            ("こんにちは&#128512;".into(), "こんにちは&#128512;".into()),
+            ("&#127826;".into(), "&#127826;".into()),
+            ("&#127826;おいしい".into(), "&#127826;おいしい".into()),
+            (
+                "\u{1}ACTION 笑う&#128512;\u{1}".into(),
+                "* 笑う&#128512;".into()
+            ),
+        ]
+    );
+    // Nothing but the text: a target with such a character is still refused.
+    assert!(connection.send_message("#t😀", "x", false).is_err());
+    assert!(connection.send_command("/msg a😀 hi", None).is_err());
+    assert!(connection.send_command("/topic #t 😀", None).is_err());
+}
+
+#[test]
+fn iso2022jp_text_is_refused_when_the_option_is_off_or_the_text_is_not_iso2022jp() {
+    let (connection, mut queued) = queueing_connection("ISO-2022-JP", false, &[]);
+    assert!(connection.send_message("#t", "😀", false).is_err());
+    assert!(connection.send_command("/me 😀", Some("#t")).is_err());
+    assert!(queued.try_recv().is_err());
+
+    // UTF-8 is not touched, with the option on.
+    let (connection, mut queued) = queueing_connection("UTF-8", true, &[]);
+    connection.send_message("#t", "😀", false).unwrap();
+    assert_eq!(queued_texts(&mut queued), [("😀".into(), "😀".into())]);
+
+    // The channel's own encoding decides, whichever the server's is.
+    let channel = |encode: &str| {
+        [ChannelEncoding {
+            channel: "#jp".into(),
+            decode: None,
+            encode: Some(encode.into()),
+        }]
+    };
+    let (connection, mut queued) = queueing_connection("UTF-8", true, &channel("ISO-2022-JP"));
+    connection.send_message("#jp", "😀", false).unwrap();
+    connection.send_message("#other", "😀", false).unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [
+            ("&#128512;".into(), "&#128512;".into()),
+            ("😀".into(), "😀".into())
+        ]
+    );
+    let (connection, mut queued) = queueing_connection("ISO-2022-JP", true, &channel("UTF-8"));
+    connection.send_message("#jp", "😀", false).unwrap();
+    assert_eq!(queued_texts(&mut queued), [("😀".into(), "😀".into())]);
+}
+
+#[test]
+fn iso2022jp_references_count_toward_the_wire_limit() {
+    let (connection, mut queued) = queueing_connection("ISO-2022-JP", true, &[]);
+    // "PRIVMSG #t :" is 12 bytes and the CRLF 2; each reference is 9.
+    let fits = "😀".repeat((512 - 14) / 9);
+    connection.send_message("#t", &fits, false).unwrap();
+    assert_eq!(queued_texts(&mut queued).len(), 1);
+    let too_long = "😀".repeat((512 - 14) / 9 + 1);
+    let error = connection.send_message("#t", &too_long, false).unwrap_err();
+    assert!(error.contains("512"), "{error}");
+    assert!(queued.try_recv().is_err());
+}
+
 #[test]
 fn member_modes_are_split_to_the_announced_limit_and_validated_first() {
     let (commands, mut queued) = mpsc::channel(8);
@@ -386,6 +500,7 @@ fn member_modes_are_split_to_the_announced_limit_and_validated_first() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
+        char_refs_for_iso2022jp: true,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(2)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -428,6 +543,7 @@ fn member_modes_are_not_sent_in_part_when_the_queue_is_nearly_full() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
+        char_refs_for_iso2022jp: true,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(1)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -460,6 +576,7 @@ fn taken_events_can_be_awaited_until_the_worker_ends() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
+        char_refs_for_iso2022jp: true,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -739,6 +856,7 @@ fn iso_2022_jp_channel_name_and_message_round_trip() {
     config.port = port;
     config.use_tls = false;
     config.encoding = "ISO-2022-JP".into();
+    config.char_refs_for_iso2022jp = false;
     let mut connection = Connection::connect(config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut joined = false;
@@ -844,6 +962,7 @@ fn channels_of_one_server_use_their_own_text_encodings() {
     let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
     config.port = port;
     config.use_tls = false;
+    config.char_refs_for_iso2022jp = false;
     config.channel_encodings = vec![
         ChannelEncoding {
             channel: "#jp".into(),

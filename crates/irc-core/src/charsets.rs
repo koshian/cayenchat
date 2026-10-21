@@ -38,6 +38,56 @@ pub(crate) fn resolve(label: &str) -> Result<&'static Encoding, String> {
         .ok_or_else(|| format!("Unsupported character encoding: {label}"))
 }
 
+/// `text` with each character ISO-2022-JP cannot hold written as a decimal
+/// numeric character reference (`&#128512;`), one scalar value at a time and
+/// in order. Characters it can hold, and references already in the text, are
+/// left as they are.
+fn with_char_refs(text: &str) -> std::borrow::Cow<'_, str> {
+    let encoding = encoding_rs::ISO_2022_JP;
+    if !encoding.encode(text).2 {
+        return text.into();
+    }
+    let mut converted = String::with_capacity(text.len() + 16);
+    let mut buffer = [0; 4];
+    for ch in text.chars() {
+        if encoding.encode(ch.encode_utf8(&mut buffer)).2 {
+            converted.push_str(&format!("&#{};", u32::from(ch)));
+        } else {
+            converted.push(ch);
+        }
+    }
+    converted.into()
+}
+
+/// Converts the body of the message `text` for a send in ISO-2022-JP: all of
+/// a plain text, only the user's description of a CTCP ACTION. Other CTCP
+/// requests keep their text, and with it the check that refuses them. The
+/// `display_text` follows, so the log shows what was sent.
+pub(crate) fn apply_char_refs(text: &mut String, display_text: &mut String) {
+    if let Some(action) = crate::text::action_text(text) {
+        let closed = text.ends_with('\u{1}');
+        let converted = with_char_refs(action);
+        if converted != action {
+            let shown = display_text.strip_prefix("* ") == Some(action);
+            let new_text = format!(
+                "\u{1}ACTION {converted}{}",
+                if closed { "\u{1}" } else { "" }
+            );
+            if shown {
+                *display_text = format!("* {converted}");
+            }
+            *text = new_text;
+        }
+    } else if !text.starts_with('\u{1}') {
+        if let std::borrow::Cow::Owned(converted) = with_char_refs(text) {
+            if display_text == text {
+                display_text.clone_from(&converted);
+            }
+            *text = converted;
+        }
+    }
+}
+
 struct Entry {
     channel: String,
     decode: Option<&'static Encoding>,
@@ -261,6 +311,41 @@ impl BodyCharsets for ChannelCharsets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn converted(text: &str) -> (String, String) {
+        let (mut text, mut shown) = (text.to_owned(), text.to_owned());
+        apply_char_refs(&mut text, &mut shown);
+        (text, shown)
+    }
+
+    #[test]
+    fn unencodable_scalars_become_decimal_references_in_order() {
+        for (input, want) in [
+            ("こんにちは😀", "こんにちは&#128512;"),
+            ("🍒おいしい", "&#127826;おいしい"),
+            ("ABCあいう", "ABCあいう"),
+            ("既に &#128512; という表記", "既に &#128512; という表記"),
+            // ZWJ sequence: each scalar on its own, nothing guessed.
+            ("👨\u{200d}👩", "&#128104;&#8205;&#128105;"),
+            ("☺\u{fe0f}", "&#9786;&#65039;"),
+        ] {
+            let (text, shown) = converted(input);
+            assert_eq!(text, want, "{input}");
+            assert_eq!(shown, want, "{input}");
+        }
+    }
+
+    #[test]
+    fn only_the_description_of_an_action_is_converted() {
+        let mut text = "\u{1}ACTION 笑う😀\u{1}".to_owned();
+        let mut shown = "* 笑う😀".to_owned();
+        apply_char_refs(&mut text, &mut shown);
+        assert_eq!(text, "\u{1}ACTION 笑う&#128512;\u{1}");
+        assert_eq!(shown, "* 笑う&#128512;");
+        // Other CTCP stays as it is, so it is still refused.
+        let (text, _) = converted("\u{1}VERSION 😀\u{1}");
+        assert_eq!(text, "\u{1}VERSION 😀\u{1}");
+    }
 
     fn one(channel: &str, decode: Option<&str>, encode: Option<&str>) -> ChannelCharsets {
         ChannelCharsets::new(&[ChannelEncoding {
