@@ -206,3 +206,8 @@ implementations, `PathPromptOptions` has a `filter: Option<PathPromptFilter>`
 - Linux: an `ashpd` `FileFilter` with a lower- and an upper-case glob per
   extension (portal globs are case-sensitive). Portals that ignore filters show
   every file.
+
+In `src/window/prompts.rs`, the root of `FallbackPromptRenderer` occludes the
+mouse (`.occlude()`). Without it a click on the dialog's button (or anywhere on
+its backdrop) also reached the views behind it, so closing a CayenChat notice
+could select the channel tree row under the button.

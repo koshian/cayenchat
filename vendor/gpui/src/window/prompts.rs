@@ -155,6 +155,7 @@ impl Render for FallbackPromptRenderer {
 
         div()
             .size_full()
+            .occlude()
             .child(
                 div()
                     .size_full()
