@@ -44,6 +44,7 @@ mod session;
 mod settings_file;
 mod settings_reset;
 mod settings_theme;
+mod settings_transfer;
 mod settings_window;
 mod shortcut_settings;
 mod shortcuts;
@@ -212,6 +213,8 @@ actions!(
         HistoryPrevious,
         HistoryNext,
         OpenSettings,
+        ExportSettings,
+        ImportSettings,
         About,
         Connect,
         Disconnect,
@@ -669,6 +672,8 @@ struct ChatWindow {
     confirm_quit: bool,
     quit_prompt_open: bool,
     quit_dialog: quit_dialog::QuitDialog,
+    /// The export and import of the settings file (#520).
+    transfer_dialog: settings_transfer::TransferDialog,
     /// The question a double click on a joined channel row opens (#451).
     part_prompt: Option<part_dialog::PartPrompt>,
     layout_file: Option<std::path::PathBuf>,
@@ -1192,6 +1197,7 @@ impl ChatWindow {
             confirm_quit: saved.confirm_quit,
             quit_prompt_open: false,
             quit_dialog: quit_dialog::QuitDialog::new(cx),
+            transfer_dialog: settings_transfer::TransferDialog::new(cx),
             part_prompt: None,
             layout_file: None,
             channel_orders: Default::default(),
@@ -7208,6 +7214,7 @@ impl ChatWindow {
         let key_prompts = self.render_key_prompts(origin, window, cx);
         let quit_dialog = self.render_quit_dialog(window, cx);
         let part_prompt = self.render_part_prompt(window, cx);
+        let transfer_dialog = self.render_transfer_dialog(window, cx);
         div()
             .id("chat-window")
             .key_context("ChatWindow")
@@ -7247,6 +7254,8 @@ impl ChatWindow {
             .on_action(cx.listener(Self::history_previous))
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::export_settings))
+            .on_action(cx.listener(Self::import_settings))
             .on_action(cx.listener(Self::open_search))
             .when(self.can_disconnect_selected(), |d| {
                 d.on_action(cx.listener(Self::disconnect_action))
@@ -7300,6 +7309,7 @@ impl ChatWindow {
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
+            .when_some(transfer_dialog, |d, dialog| d.child(dialog))
             .when_some(quit_dialog, |d, dialog| d.child(dialog))
             .into_any_element()
     }
@@ -8568,6 +8578,8 @@ fn app_menus(
     ]);
     app_items.extend([
         MenuItem::action(i18n.text("menu_settings"), OpenSettings),
+        MenuItem::action(i18n.text("menu_export_settings"), ExportSettings),
+        MenuItem::action(i18n.text("menu_import_settings"), ImportSettings),
         MenuItem::separator(),
     ]);
     #[cfg(target_os = "macos")]
