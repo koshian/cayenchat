@@ -393,8 +393,23 @@ impl Connection {
                 }
             }
 
-            let builder = builder.with_root_certificates(root_store);
-            make_client_auth!(builder)
+            // CayenChat: the usual verification, after the caller's own
+            // refusal (see distrust.rs).
+            if let Some(refuse) = config.refuse_server_cert {
+                let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+                    Arc::new(root_store),
+                    builder.crypto_provider().clone(),
+                )
+                .build()
+                .map_err(|err| error::Error::Io(Error::new(ErrorKind::InvalidInput, err)))?;
+                let builder = builder.dangerous().with_custom_certificate_verifier(Arc::new(
+                    crate::client::distrust::RefusingVerifier::new(verifier, refuse),
+                ));
+                make_client_auth!(builder)
+            } else {
+                let builder = builder.with_root_certificates(root_store);
+                make_client_auth!(builder)
+            }
         };
 
         let connector = TlsConnector::from(Arc::new(tls_config));

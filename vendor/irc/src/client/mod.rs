@@ -89,6 +89,8 @@ use crate::{
 
 pub mod conn;
 pub mod data;
+#[cfg(feature = "tls-rust")]
+mod distrust;
 mod mock;
 pub mod prelude;
 pub mod transport;
