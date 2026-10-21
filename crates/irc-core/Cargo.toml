@@ -17,6 +17,8 @@ tokio.workspace = true
 futures-util.workspace = true
 base64.workspace = true
 chrono.workspace = true
+# Hashes the keys of server certificates refused in `distrust`.
+sha2 = "0.10"
 
 [dev-dependencies]
 # The encodings the application offers, round-tripped through the codec.

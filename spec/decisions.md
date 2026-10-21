@@ -1295,6 +1295,37 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D059 — Distrusted keys refused in IRC TLS on top of the trusted roots
+
+**Status:** Accepted
+
+2026-10-21. The private keys of eight eMudhra intermediate CAs could be
+computed from their public keys (Mozilla bug 2083449). Browsers block
+them with their own revocation mechanisms (OneCRL, CRLSets, the OS's
+verification), and Mozilla withdrew the root above them. CayenChat's TLS
+is rustls, which checks neither revocation nor Certificate Transparency,
+with webpki-roots and, for IRC, the operating system's root list. Removing
+the root (webpki-roots 1.0.10) is not enough: Sectigo cross-signed the same
+keys under AAA Certificate Services, which Windows and macOS still list,
+and the cross-certificates are only revoked. The OS's own blocking does not
+help either, since rustls takes the OS's roots but does its own
+verification.
+
+- **Decision.** IRC connections refuse any server certificate chain in
+  which a certificate the server sent holds a listed key (SHA-256 of the
+  DER `SubjectPublicKeyInfo`, the eight keys Go 1.27.3 lists too). A chain
+  through a listed key has to carry the certificate with it, since none is
+  a root, so the sent certificates are enough. The OS's root list stays
+  trusted, so private CAs added there keep working.
+- **Where.** The list and the check are in `irc-core` (`distrust`); the
+  vendored `irc` takes a `refuse_server_cert` function in its `Config` and
+  checks it before the usual verification. With certificate verification
+  turned off for a server nothing is checked, as before.
+- **Images and uploads** (ureq) trust webpki-roots only, which no longer
+  has the root nor ever had AAA Certificate Services, so they need no list.
+- **Adding keys** is a code change and a release; there is no download of
+  revocation data.
+
 ## D058 — CTCP AVATAR pictures tied to a user mask, without occupancies (#510)
 
 **Status:** Accepted (changes the identity rules of D025; D023's occupancy
