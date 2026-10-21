@@ -1316,9 +1316,17 @@ future work. Details in `architecture.md` (Channel history).
   emoji around Japanese are never touched. Not every phrase starts a line:
   the wrapper only prefers phrase boundaries.
 - Scope: channel and direct-message log rows. Server, activity and
-  sub-log rows are unchanged. Offsets are cached per row text (512
-  entries, `phrase_wrap.rs`); the offsets are part of GPUI's wrapped-line
-  cache key.
+  sub-log rows are unchanged. Only the message's natural-language
+  stretches are analysed: the sender prefix, links, link chips and nick
+  highlights are excluded (each remaining stretch is analysed on its own,
+  offsets mapped back to the whole row). Offsets are cached per row (text,
+  prefix length and protected ranges; 512 entries, `phrase_wrap.rs`); the
+  offsets are part of GPUI's wrapped-line cache key.
+- Japanese detection is conservative: a text is analysed only if it
+  contains kana, so Chinese and kanji-only text keep the normal wrapper, and
+  joins only join kana, kanji, CJK punctuation and full-width/half-width
+  katakana forms (not half-width Hangul). Mixed Chinese/Japanese text is
+  analysed as Japanese; kanji-only Japanese text is not analysed.
 - Limits: no kinsoku (line-start/end prohibition) handling beyond what the
   model implies; other languages' models are future work.
 
