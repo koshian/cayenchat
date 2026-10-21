@@ -4,6 +4,7 @@
 mod accounts;
 mod cap;
 mod ctcp;
+mod distrust;
 mod echo;
 mod history;
 mod metadata;
@@ -1636,6 +1637,7 @@ fn library_config(config: &ConnectionConfig) -> Config {
         use_tls: Some(config.use_tls),
         encoding: Some(config.encoding.clone()),
         dangerously_accept_invalid_certs: Some(config.use_tls && !config.verify_tls_certificates),
+        refuse_server_cert: Some(distrust::has_distrusted_key),
         ..Config::default()
     }
 }
