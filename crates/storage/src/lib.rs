@@ -275,6 +275,10 @@ fn default_regain_ops() -> bool {
     true
 }
 
+fn default_iso2022jp_char_refs() -> bool {
+    true
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextEncoding {
@@ -699,6 +703,13 @@ pub struct ServerProfile {
     #[serde(default = "default_verify_tls_certificates")]
     pub verify_tls_certificates: bool,
     pub encoding: TextEncoding,
+    /// Send the characters ISO-2022-JP cannot hold in a message as decimal
+    /// numeric character references (`&#128512;`) instead of refusing the
+    /// message (#522). Used only while the text is sent in ISO-2022-JP; the
+    /// value is kept for other encodings. Added without a version change, so
+    /// files without it read as on.
+    #[serde(default = "default_iso2022jp_char_refs")]
+    pub iso2022jp_char_refs: bool,
     /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
@@ -808,6 +819,7 @@ impl ServerProfile {
             use_tls: false,
             verify_tls_certificates: true,
             encoding: TextEncoding::Utf8,
+            iso2022jp_char_refs: true,
             remember_passwords: false,
             allow_plaintext_pass: false,
             nickname: String::new(),
@@ -2963,6 +2975,39 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
         assert!(loaded.servers.iter().all(|s| s.regain_ops));
+    }
+
+    #[test]
+    fn iso2022jp_char_refs_defaults_on_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("a.example");
+        settings.add_server("b.example");
+        assert!(settings.servers.iter().all(|s| s.iso2022jp_char_refs));
+        settings.servers[0].iso2022jp_char_refs = false;
+        save_to(&path, &settings).unwrap();
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded
+                .servers
+                .iter()
+                .map(|s| s.iso2022jp_char_refs)
+                .collect::<Vec<_>>(),
+            [false, true]
+        );
+        // A file from before the setting reads as on.
+        for server in saved["servers"].as_array_mut().unwrap() {
+            server
+                .as_object_mut()
+                .unwrap()
+                .remove("iso2022jp_char_refs");
+        }
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.servers.iter().all(|s| s.iso2022jp_char_refs));
     }
 
     #[test]

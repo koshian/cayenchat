@@ -198,6 +198,12 @@ pub struct ConnectionConfig {
     /// Rejoin a channel that leaves us alone without operator status, to
     /// become its operator (#444, #478). Off unless the caller enables it.
     pub regain_ops: bool,
+    /// Write the characters ISO-2022-JP cannot hold in the text of a message
+    /// as decimal HTML numeric character references (`&#128512;`) instead of
+    /// refusing it (#522). Applies only when the text is sent in ISO-2022-JP
+    /// (the server's encoding or the channel's override); nothing else on
+    /// the line is touched.
+    pub char_refs_for_iso2022jp: bool,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -228,6 +234,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
             .field("regain_ops", &self.regain_ops)
+            .field("char_refs_for_iso2022jp", &self.char_refs_for_iso2022jp)
             .finish()
     }
 }
@@ -260,6 +267,7 @@ impl ConnectionConfig {
             history_targets_since: None,
             channel_encodings: Vec::new(),
             regain_ops: false,
+            char_refs_for_iso2022jp: true,
         }
     }
 
@@ -1878,6 +1886,8 @@ pub struct Connection {
     realname_mark: peer_avatar::RealnameMark,
     /// Channels with an encoding of their own for their text.
     charsets: Arc<ChannelCharsets>,
+    /// See [`ConnectionConfig::char_refs_for_iso2022jp`].
+    char_refs_for_iso2022jp: bool,
     /// Reason for a `PART` that names none.
     part_message: Option<String>,
     /// The server's announced `MODES` limit; 0 until one is seen.
@@ -1907,6 +1917,7 @@ impl Connection {
         let charsets = Arc::new(ChannelCharsets::new(&config.channel_encodings)?);
         let worker_charsets = charsets.clone();
         let part_message = config.wire_part_message();
+        let char_refs_for_iso2022jp = config.char_refs_for_iso2022jp;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
         let cancel = Arc::new(Notify::new());
@@ -1966,6 +1977,7 @@ impl Connection {
             encoding,
             realname_mark,
             charsets,
+            char_refs_for_iso2022jp,
             part_message,
             modes_per_line,
             relay_prefix,
@@ -2017,10 +2029,27 @@ impl Connection {
     /// this one.
     fn pinned(&self, mut outgoing: Outgoing) -> Outgoing {
         if let Outgoing::Message {
-            target, encoder, ..
+            target,
+            text,
+            display_text,
+            encoder,
+            ..
         } = &mut outgoing
         {
             *encoder = self.charsets.encoder(target);
+            // Converted here, after the encoding is fixed, so what is
+            // checked, shown and written is the same text in that encoding.
+            let sent_as_iso2022jp = encoder.or_else(|| charsets::resolve(&self.encoding).ok())
+                == Some(encoding_rs::ISO_2022_JP);
+            // Credentials for services stay as typed and go through the
+            // strict encoding check, so a password is never altered.
+            // The target may list several recipients, one of them a service.
+            if self.char_refs_for_iso2022jp
+                && sent_as_iso2022jp
+                && !target.split(',').any(|one| is_service_secret(one, text))
+            {
+                charsets::apply_char_refs(text, display_text);
+            }
         }
         outgoing
     }
