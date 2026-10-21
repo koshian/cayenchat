@@ -49,7 +49,7 @@ fn model() -> &'static Model {
 /// Byte offsets at which BudouX starts a new phrase (never 0). Empty for
 /// text without Japanese characters, which is not analysed at all.
 pub fn boundaries(text: &str) -> Vec<usize> {
-    if !text.chars().any(is_japanese) {
+    if !text.chars().any(is_kana) {
         return Vec::new();
     }
     scan(text)
@@ -63,7 +63,7 @@ pub fn boundaries(text: &str) -> Vec<usize> {
 /// characters should keep them together there. Text around the Japanese
 /// (ASCII words, URLs, emoji) contributes nothing, so it wraps as before.
 pub fn joins(text: &str) -> Vec<u32> {
-    if !text.chars().any(is_japanese) {
+    if !text.chars().any(is_kana) {
         return Vec::new();
     }
     scan(text)
@@ -150,17 +150,29 @@ fn scan(text: &str) -> Vec<(usize, bool, bool)> {
     out
 }
 
-/// Kana, kanji, CJK punctuation and full-width forms: the characters a
-/// wrapper may otherwise break between freely.
-fn is_japanese(c: char) -> bool {
+/// Hiragana, katakana (including the small and half-width forms). Kanji are
+/// shared with Chinese, so text is treated as Japanese only when it has
+/// kana; kanji-only text (and Chinese) is left to the normal wrapper. A
+/// mixed Chinese/Japanese text is analysed as Japanese.
+fn is_kana(c: char) -> bool {
     matches!(c,
-        '\u{3000}'..='\u{30FF}'
+        '\u{3041}'..='\u{30FF}'
         | '\u{31F0}'..='\u{31FF}'
-        | '\u{3400}'..='\u{4DBF}'
-        | '\u{4E00}'..='\u{9FFF}'
-        | '\u{F900}'..='\u{FAFF}'
-        | '\u{FF00}'..='\u{FFEF}'
-        | '\u{20000}'..='\u{2FFFF}')
+        | '\u{FF66}'..='\u{FF9F}')
+}
+
+/// Kana, kanji, CJK punctuation and full-width forms: the characters a
+/// wrapper may otherwise break between freely. Half-width Hangul
+/// (U+FFA0..) is not included.
+fn is_japanese(c: char) -> bool {
+    is_kana(c)
+        || matches!(c,
+            '\u{3000}'..='\u{303F}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FF00}'..='\u{FF9F}'
+            | '\u{20000}'..='\u{2FFFF}')
 }
 
 #[cfg(test)]
@@ -228,6 +240,17 @@ mod tests {
         assert!(joins("hello 😀 world").is_empty());
         assert!(boundaries("").is_empty());
         assert!(boundaries("あ").is_empty());
+    }
+
+    #[test]
+    fn chinese_and_hangul_are_not_treated_as_japanese() {
+        assert!(joins("这是一个中文消息测试。").is_empty());
+        assert!(boundaries("这是一个中文消息测试。").is_empty());
+        assert!(joins("東京都庁舎前").is_empty());
+        assert!(joins("ﾡﾢﾣﾤ한국어").is_empty());
+        // Kana makes the text Japanese; half-width Hangul still never joins.
+        assert!(!joins("今日は天気です。").is_empty());
+        assert!(!is_japanese('\u{FFA0}'));
     }
 
     #[test]
