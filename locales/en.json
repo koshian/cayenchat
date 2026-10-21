@@ -560,6 +560,8 @@
   "ircv3_peer_reconnect": "Reconnect to update the avatar mark in your real name.",
   "ircv3_peer_size_placeholder": "Other clients do not fill in {size}; share a URL without it.",
   "experimental_tab": "Experimental",
+  "auto_phrase": "Auto Phrase (BudouX)",
+  "auto_phrase_hint": "Wraps Japanese chat text at natural phrase boundaries (BudouX 0.9.3 model) when it fits the window width. Only the display changes; copied, searched and saved text stays as received. Long words and URLs still wrap anywhere.",
   "debug_logging": "Save debug logs (stderr)",
   "debug_log_file": "Log file",
   "debug_log_no_file": "No file selected",

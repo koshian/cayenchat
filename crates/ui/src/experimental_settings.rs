@@ -51,6 +51,7 @@ impl SettingsWindow {
         let theme = settings_theme::palette(cx);
         let settings = &self.settings.values.experimental;
         let enabled = settings.debug_logging;
+        let auto_phrase = settings.auto_phrase;
         let path = settings
             .stderr_file
             .as_ref()
@@ -65,6 +66,29 @@ impl SettingsWindow {
         };
         account_settings::panel(cx)
             .child(self.tab_heading("experimental_tab"))
+            .child(
+                div()
+                    .id("auto-phrase-toggle")
+                    .debug_selector(|| "auto-phrase-toggle".into())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(auto_phrase, true, cx))
+                    .child(self.i18n.text("auto_phrase"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.experimental.auto_phrase;
+                        *value = !*value;
+                        this.feedback = None;
+                        this.autosave_now(None, cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("auto_phrase_hint")),
+            )
             .child(
                 div()
                     .id("debug-logging-toggle")
