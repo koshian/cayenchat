@@ -1295,7 +1295,7 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
-## D060 — First-run setup wizard (#521)
+## D061 — First-run setup wizard (#521)
 
 **Status:** Accepted
 
@@ -1331,6 +1331,37 @@ future work. Details in `architecture.md` (Channel history).
   reconnect behavior.
 - **Not done:** no menu entry to run the wizard again (the settings window
   and File → Import stay the ways in once servers exist).
+
+## D060 — Numeric character references for text ISO-2022-JP cannot hold (#522)
+
+**Status:** Accepted
+
+- Per-server `ServerProfile::iso2022jp_char_refs`, on by default (files
+  without it read as on), a checkbox below the encoding on the server's
+  settings page. It is kept for every encoding but acts only when the text of
+  a message is sent in ISO-2022-JP: the server's encoding, or the channel's
+  `/charset` send override (which decides, either way). The worker reads the
+  value of the connection's start, so a saved change applies from the next
+  connection (`apply_servers` updates `active_config` for reconnects).
+- `Connection::pinned` converts after it fixes the channel's encoding, so
+  the converted text is what is checked (encodability, 512 bytes, the length
+  once relayed (#330)), queued and written, even if the override changes
+  while the message waits. Over the limit the message is refused as before;
+  nothing is cut or split.
+- Only the text of `PRIVMSG` / `NOTICE` (`send_message`, `send_private_message`,
+  `/msg`, `/notice`) and the description in `/me` is converted. Each Unicode
+  scalar value ISO-2022-JP cannot hold becomes `&#<decimal>;` on its own, in
+  order (ZWJ and variation selectors included; no normalisation). Other CTCP
+  texts, nicknames, channel names and every other command are unchanged and
+  keep the strict check. Credentials sent to services (`is_service_secret`:
+  `IDENTIFY`, `REGISTER`, ...) are never converted and keep the strict check;
+  a comma-separated target list counts if any recipient is such a service.
+  Off, a message with such a character is refused.
+- `Outgoing::Message.display_text` follows the converted text, so the
+  confirmed line and the log show what was sent; the input box keeps the
+  original and is cleared only on success. Receiving (D043) is independent:
+  with it on, the log draws the characters back with the sent reference in
+  the hover bubble.
 
 ## D059 — Exporting and importing the settings file, without credentials (#520)
 
@@ -2040,8 +2071,11 @@ The maintainer approved this specification on the issue (2026-10-13).
 - It reuses the presentation mapping of compact URLs (`compact_urls.rs`):
   one drawn text with spans mapping drawn and original byte positions, so
   links, highlights and selections keep working on original offsets.
-- A run has a neutral (not link-colored, not underlined) background and a
-  hover bubble with the original text and one "copy original" button. There
+- A run has a hover bubble with the original text and one "copy original"
+  button. It has no decoration of its own: it is drawn exactly like the same
+  characters typed directly, with no background (#524 dropped the neutral
+  background #320 gave it, which showed as a grey box behind emoji). Selection,
+  search matches and keyword highlights still shade it. There
   is no button for the converted characters; selecting and copying copies the
   characters shown. Short URL bubbles and these bubbles share the hover
   machinery; they never overlap because references inside URLs are not decoded.

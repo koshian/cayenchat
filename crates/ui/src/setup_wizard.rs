@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The first-run setup (#521, D060): a choice of quick setup, manual setup
+//! The first-run setup (#521, D061): a choice of quick setup, manual setup
 //! and import, drawn in the chat window like the transfer dialog.
 //!
-//! It opens only when there was no settings file at startup. Cancelling it
+//! It opens only when startup found no saved server: no settings file, or a
+//! readable one without servers. Cancelling it
 //! writes and connects nothing. Quick setup adds one ordinary server profile
 //! to the settings through the paths the settings window uses (the settings
 //! file, `apply_settings_change`, `connect_profile`); it has no connection
