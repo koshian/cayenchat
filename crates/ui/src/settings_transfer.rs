@@ -28,6 +28,9 @@ enum Step {
     /// Tells what an export contains before the save dialog opens.
     ExportNotice,
     ImportConfirm(Box<PendingImport>),
+    /// The file is being written in the background; nothing can be answered
+    /// and no other transfer starts until it is done.
+    Working,
     /// The end of an export or an import, successful or not.
     Result {
         title: String,
@@ -55,6 +58,10 @@ impl TransferDialog {
         }
     }
 
+    fn is_working(&self) -> bool {
+        matches!(self.step, Some(Step::Working))
+    }
+
     #[cfg(test)]
     pub(crate) fn result(&self) -> Option<&[String]> {
         match &self.step {
@@ -70,6 +77,11 @@ impl TransferDialog {
 }
 
 impl ChatWindow {
+    /// A file is being written for an export or import.
+    pub(crate) fn transfer_dialog_busy(&self) -> bool {
+        self.transfer_dialog.is_working()
+    }
+
     fn show_transfer(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
         if self.transfer_dialog.step.is_none() {
             self.transfer_dialog.previous = window.focused(cx);
@@ -211,36 +223,43 @@ impl ChatWindow {
         .detach();
     }
 
-    /// Writes a copy of the saved settings to `path`.
+    /// Writes a copy of the saved settings to `path` in the background.
     pub(crate) fn write_export(
         &mut self,
         path: &Path,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.show_transfer(Step::Working, window, cx);
+        let path = path.to_owned();
         // The file is the truth (a settings window saves into it); this
         // window's copy stands in until there is one.
-        let settings = match settings_file::load() {
-            Ok(file) => file.unwrap_or_else(|| self.saved.clone()),
-            Err(error) => return self.transfer_failed("transfer_export_title", &error, window, cx),
-        };
-        match transfer::export_to(path, &settings) {
-            Ok(()) => self.show_transfer(
-                Step::Result {
-                    title: self.i18n.text("transfer_export_title"),
-                    lines: vec![
-                        self.i18n.format(
-                            "transfer_export_done",
-                            &[("path", &path.display().to_string())],
-                        ),
-                        self.i18n.text("transfer_export_caution"),
-                    ],
-                },
-                window,
-                cx,
-            ),
-            Err(error) => self.transfer_failed("transfer_export_title", &error, window, cx),
-        }
+        let stand_in = self.saved.clone();
+        let writing = cx.background_spawn(async move {
+            let settings = settings_file::load()?.unwrap_or(stand_in);
+            transfer::export_to(&path, &settings).map(|()| path)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = writing.await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(path) => this.show_transfer(
+                    Step::Result {
+                        title: this.i18n.text("transfer_export_title"),
+                        lines: vec![
+                            this.i18n.format(
+                                "transfer_export_done",
+                                &[("path", &path.display().to_string())],
+                            ),
+                            this.i18n.text("transfer_export_caution"),
+                        ],
+                    },
+                    window,
+                    cx,
+                ),
+                Err(error) => this.transfer_failed("transfer_export_title", &error, window, cx),
+            });
+        })
+        .detach();
     }
 
     /// Replaces the settings with the confirmed import and applies them to
@@ -255,37 +274,49 @@ impl ChatWindow {
         if let Some(handle) = self.settings_window.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
-        let current = settings_file::load()
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| self.saved.clone());
-        let settings = pending.import.into_settings(Some(&current));
-        let backup = match settings_file::replace(&settings) {
-            Ok(backup) => backup,
-            Err(error) => return self.transfer_failed("transfer_import_title", &error, window, cx),
-        };
-        let previous = self.saved.clone();
-        self.apply_settings_change(&previous, settings, true, window, cx);
-        let mut lines = vec![self.i18n.text("transfer_import_done")];
-        lines.push(match backup {
-            Some(backup) => self.i18n.format(
-                "transfer_import_backup",
-                &[("path", &backup.display().to_string())],
-            ),
-            None => self.i18n.text("transfer_import_no_backup"),
+        self.show_transfer(Step::Working, window, cx);
+        // The backup is synced to disk and the file replaced off the UI
+        // thread; the running state follows only when that succeeded.
+        let stand_in = self.saved.clone();
+        let replacing = cx.background_spawn(async move {
+            let current = settings_file::load().ok().flatten().unwrap_or(stand_in);
+            let settings = pending.import.into_settings(Some(&current));
+            settings_file::replace(&settings).map(|backup| (settings, backup))
         });
-        lines.push(self.i18n.text("transfer_import_credentials_after"));
-        self.show_transfer(
-            Step::Result {
-                title: self.i18n.text("transfer_import_title"),
-                lines,
-            },
-            window,
-            cx,
-        );
+        cx.spawn_in(window, async move |this, cx| {
+            let result = replacing.await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok((settings, backup)) => {
+                    let previous = this.saved.clone();
+                    this.apply_settings_change(&previous, settings, true, window, cx);
+                    let mut lines = vec![this.i18n.text("transfer_import_done")];
+                    lines.push(match backup {
+                        Some(backup) => this.i18n.format(
+                            "transfer_import_backup",
+                            &[("path", &backup.display().to_string())],
+                        ),
+                        None => this.i18n.text("transfer_import_no_backup"),
+                    });
+                    lines.push(this.i18n.text("transfer_import_credentials_after"));
+                    this.show_transfer(
+                        Step::Result {
+                            title: this.i18n.text("transfer_import_title"),
+                            lines,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                Err(error) => this.transfer_failed("transfer_import_title", &error, window, cx),
+            });
+        })
+        .detach();
     }
 
     fn answer_transfer(&mut self, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.transfer_dialog.step, None | Some(Step::Working)) {
+            return;
+        }
         let Some(step) = self.transfer_dialog.step.take() else {
             return;
         };
@@ -356,8 +387,14 @@ impl ChatWindow {
                 self.import_lines(pending),
                 Some(self.i18n.text("transfer_import_confirm")),
             ),
+            Step::Working => (
+                String::new(),
+                vec![self.i18n.text("transfer_working")],
+                None,
+            ),
             Step::Result { title, lines } => (title.clone(), lines.clone(), None),
         };
+        let working = matches!(step, Step::Working);
         if self.transfer_dialog.focus_pending {
             self.transfer_dialog.focus_pending = false;
             window.focus(&self.transfer_dialog.cancel);
@@ -395,6 +432,7 @@ impl ChatWindow {
         };
         Some(
             dialog::overlay("transfer-dialog", &theme)
+                .pb(px(16.))
                 .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                     match event.keystroke.key.as_str() {
                         "escape" => this.answer_transfer(false, window, cx),
@@ -417,15 +455,32 @@ impl ChatWindow {
                     dialog::dialog_box(&theme)
                         .debug_selector(|| "transfer-dialog-box".into())
                         .max_w(box_width)
+                        .max_h_full()
                         .h_auto()
-                        .child(div().font_weight(FontWeight::BOLD).child(title))
-                        .children(lines.into_iter().map(|line| {
+                        .when(!title.is_empty(), |this| {
+                            this.child(div().flex_none().font_weight(FontWeight::BOLD).child(title))
+                        })
+                        // The text scrolls in a small window; the buttons
+                        // below it stay in view.
+                        .child(
                             div()
-                                .w(box_width - px(26.))
-                                .text_color(theme.text)
-                                .child(line)
-                        }))
-                        .child(buttons),
+                                .id("transfer-dialog-text")
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .children(lines.into_iter().map(|line| {
+                                    div()
+                                        .w(box_width - px(26.))
+                                        .text_color(theme.text)
+                                        .child(line)
+                                })),
+                        )
+                        .when(!working, |this| {
+                            this.child(div().flex_none().child(buttons))
+                        }),
                 )
                 .into_any_element(),
         )
@@ -616,6 +671,11 @@ mod tests {
         });
         assert!(cx.debug_bounds("transfer-dialog-confirm").is_some());
         chat.update_in(cx, |chat, window, cx| chat.write_export(&path, window, cx));
+        // The file is written in the background; until then only a notice shows.
+        chat.read_with(cx, |chat, _| assert!(chat.transfer_dialog_busy()));
+        assert!(cx.debug_bounds("transfer-dialog-confirm").is_none());
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| assert!(!chat.transfer_dialog_busy()));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(&current.servers[0].host));
         assert!(!text.to_lowercase().contains("password\":"));
@@ -626,6 +686,48 @@ mod tests {
         chat.read_with(cx, |chat, _| {
             assert!(chat.transfer_dialog.result().is_some())
         });
+        drop(file);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
+    fn the_confirmation_keeps_its_buttons_in_a_small_window_and_ignores_answers_while_writing(
+        cx: &mut TestAppContext,
+    ) {
+        let current = english(settings_with_channels("#old"));
+        let file = TestFile::with(&current);
+        let (chat, cx) = window(&current, cx);
+        let mut other = english(settings_with_channels("#new"));
+        other.servers[0].connect_on_startup = true;
+        other.conversation_log.directory =
+            Some(PathBuf::from("/a/very/long/folder/of/another/machine"));
+        let directory = directory("small");
+        let path = directory.join("cayenchat-settings.json");
+        transfer::export_to(&path, &other).unwrap();
+
+        cx.simulate_resize(gpui::size(gpui::px(640.), gpui::px(300.)));
+        chat.update_in(cx, |chat, window, cx| chat.read_import(path, window, cx));
+        cx.run_until_parked();
+        let window_height = cx.update(|window, _| window.viewport_size().height);
+        for id in ["transfer-dialog-confirm", "transfer-dialog-cancel"] {
+            let bounds = cx.debug_bounds(id).expect("the button is drawn");
+            assert!(bounds.bottom() <= window_height, "{id} is below the window");
+        }
+
+        // While the file is written, answers and further imports are ignored.
+        chat.update_in(cx, |chat, window, cx| {
+            chat.answer_transfer(true, window, cx);
+            assert!(chat.transfer_dialog_busy());
+            chat.answer_transfer(false, window, cx);
+            assert!(chat.transfer_dialog_busy());
+        });
+        assert!(cx.debug_bounds("transfer-dialog-confirm").is_none());
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| assert!(!chat.transfer_dialog_busy()));
+        assert_eq!(
+            settings_file::load().unwrap().unwrap().servers[0].channels,
+            "#new"
+        );
         drop(file);
         std::fs::remove_dir_all(directory).unwrap();
     }

@@ -602,5 +602,6 @@
   "transfer_import_credentials_after": "Credentials were not carried over. Enter the passwords again in each server's settings.",
   "transfer_unchanged": "The current settings were not changed.",
   "transfer_picker_failed": "The file dialog could not be opened.",
+  "transfer_working": "Working on the file. Please wait…",
   "transfer_close": "Close"
 }

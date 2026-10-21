@@ -97,6 +97,9 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
     {
         return Err("The file has no server list, so it is not a CayenChat settings file.".into());
     }
+    if source_version >= 2 {
+        check_servers(object)?;
+    }
     let mut settings = parse_settings(bytes, "The current settings were left unchanged.")?;
     if settings.servers.len() > MAX_IMPORT_SERVERS {
         return Err(format!(
@@ -132,6 +135,34 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         source_version,
         dropped_local_paths,
     })
+}
+
+/// Refuses a server list that loading would quietly repair by dropping
+/// servers (no id, a repeated id, no host, port 0): an import must not
+/// restore less than the file lists.
+fn check_servers(object: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let Some(servers) = object.get("servers").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    let mut ids = std::collections::HashSet::new();
+    for (index, server) in servers.iter().enumerate() {
+        let number = index + 1;
+        let text = |key| server.get(key).and_then(serde_json::Value::as_str);
+        let id = text("id").unwrap_or_default();
+        if id.is_empty() {
+            return Err(format!("Server {number} has no id."));
+        }
+        if !ids.insert(id) {
+            return Err(format!("Server {number} repeats the id \"{id}\"."));
+        }
+        if text("host").is_none_or(|host| host.trim().is_empty()) {
+            return Err(format!("Server {number} has no host."));
+        }
+        if server.get("port").and_then(serde_json::Value::as_u64) == Some(0) {
+            return Err(format!("Server {number} has port 0."));
+        }
+    }
+    Ok(())
 }
 
 fn fresh_id() -> String {
@@ -291,6 +322,27 @@ mod tests {
         fs::write(&big, vec![b' '; MAX_IMPORT_BYTES as usize + 1]).unwrap();
         assert!(read_import(&big).unwrap_err().contains("larger"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_server_list_that_loading_would_trim_is_refused() {
+        let server = |id: &str, host: &str, port: u16| serde_json::json!({ "id": id, "host": host, "port": port });
+        let lists = [
+            vec![server("a", "irc.example.org", 0)],
+            vec![
+                server("a", "irc.example.org", 6667),
+                server("a", "b.example", 6667),
+            ],
+            vec![server("", "irc.example.org", 6667)],
+            vec![server("a", "  ", 6667)],
+        ];
+        for servers in lists {
+            let value = serde_json::json!({
+                "version": SETTINGS_VERSION, "selected_server": "a", "servers": servers
+            });
+            let error = import_from_bytes(value.to_string().as_bytes()).unwrap_err();
+            assert!(error.starts_with("Server "), "{error}");
+        }
     }
 
     #[test]

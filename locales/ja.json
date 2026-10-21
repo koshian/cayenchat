@@ -602,5 +602,6 @@
   "transfer_import_credentials_after": "認証情報は移行されていません。サーバーの設定からパスワードを入力し直してください。",
   "transfer_unchanged": "現在の設定は変更していません。",
   "transfer_picker_failed": "ファイル選択ダイアログを開けませんでした。",
+  "transfer_working": "ファイルを処理しています。しばらくお待ちください…",
   "transfer_close": "閉じる"
 }

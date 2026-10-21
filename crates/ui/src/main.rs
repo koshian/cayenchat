@@ -3813,6 +3813,11 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A settings window opened while a transfer writes would save its
+        // older form over the result.
+        if self.transfer_dialog_busy() {
+            return;
+        }
         if let Some(handle) = self.settings_window
             && handle
                 .update(cx, |settings, window, cx| {

@@ -1317,7 +1317,9 @@ does the work, `settings_transfer` draws the questions in the chat window
   servers (future work). The file must be a regular file of at most 1 MiB,
   an object with a supported `version` (older ones go through the normal
   migration, a newer one is refused with the settings left alone), a server
-  list (at most 256 servers) and valid values. It is read in the background
+  list (at most 256 servers) and valid values. A list that loading would
+  quietly trim (a server without id or host, a repeated id, port 0) is
+  refused, so an import never restores less than the file lists. It is read in the background
   and only then confirmed: what is replaced, that every connection is
   dropped, that passwords are not carried over, how many servers connect on
   startup (none connects now), and that another OS's settings may not fit.
@@ -1331,6 +1333,12 @@ does the work, `settings_transfer` draws the questions in the chat window
 - **Machine-specific values** stay as this computer has them: the
   credential backend, the debug log file, and the conversation log folder
   (the choice to log is imported).
+- **Off the UI thread.** The export write and the import's backup (synced
+  to disk), replacement and reload of the current file run in the
+  background while the dialog shows a notice and ignores answers; the
+  settings window cannot be opened meanwhile. The running state is changed
+  only after the file was replaced. The confirmation's text scrolls inside
+  the window height so its buttons stay reachable in a small window.
 - **Applying.** The backup copy `settings-backup-<milliseconds>.json` is
   written next to the file first (a failure stops the import), then the
   file is replaced atomically. The result is applied to the running window
