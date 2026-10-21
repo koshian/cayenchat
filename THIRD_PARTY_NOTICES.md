@@ -39,3 +39,11 @@ distributed binary, including the transitive ones above, are collected in
 `THIRD_PARTY_LICENSES.html`. The package workflow generates it with
 `cargo about` (configured by `about.toml` and `about.hbs`) and puts it next to
 this file in every package. It is not committed to the repository.
+
+## BudouX Japanese model
+
+`crates/model/data/budoux-ja-v0.9.3.json` is `budoux/models/ja.json` from
+[BudouX v0.9.3](https://github.com/google/budoux/releases/tag/v0.9.3),
+Copyright 2021 Google LLC, licensed under Apache License 2.0
+(`crates/model/data/BUDOUX-LICENSE-APACHE-2.0.txt`). It is embedded unchanged;
+`crates/model/src/phrase.rs` is our own implementation of its scoring.
