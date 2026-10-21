@@ -635,7 +635,7 @@ struct ChatWindow {
     prompt_open: bool,
     /// The server the user last sent a command to and when, to tell the 417
     /// or 400 that answers it from one a background process caused.
-    user_command: Option<(NetworkId, Instant)>,
+    sent_commands: notices::SentCommands,
     /// The image file being read off the UI thread; a newer drop replaces it.
     file_read: Option<Task<()>>,
     /// What startup reported, such as where unreadable settings were kept.
@@ -902,6 +902,18 @@ enum MemberPromptKind {
     Mode,
     /// Change the topic of the channel named by the prompt's nickname.
     Topic,
+}
+
+/// The IRC commands a member prompt's answer may be refused as.
+fn member_prompt_verbs(kind: MemberPromptKind) -> &'static [&'static str] {
+    match kind {
+        MemberPromptKind::PrivateMessage => &["PRIVMSG", "NOTICE"],
+        MemberPromptKind::Invite => &["INVITE"],
+        MemberPromptKind::Join => &["JOIN"],
+        MemberPromptKind::Nick => &["NICK"],
+        MemberPromptKind::Mode => &["MODE"],
+        MemberPromptKind::Topic => &["TOPIC"],
+    }
 }
 
 /// The dialog heading, with the nickname as drawn.
@@ -1189,7 +1201,7 @@ impl ChatWindow {
                 notices
             },
             prompt_open: false,
-            user_command: None,
+            sent_commands: Default::default(),
             file_read: None,
             sessions,
             next_network_id,
@@ -2453,14 +2465,14 @@ impl ChatWindow {
         };
         if command == MemberCommand::Whois {
             let result = self.request_whois(menu.network, &menu.nickname, cx);
-            self.report_sent(menu.network, result, cx);
+            self.report_sent(menu.network, &["WHOIS"], result, cx);
             cx.notify();
             return;
         }
         let result = self
             .registered_connection(menu.network)
             .and_then(|connection| connection.send_member_command(&menu.nickname, command));
-        self.report_sent(menu.network, result, cx);
+        self.report_sent(menu.network, &[], result, cx);
         cx.notify();
     }
 
@@ -2502,7 +2514,7 @@ impl ChatWindow {
             let result = self
                 .registered_connection(menu.network)
                 .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &group));
-            self.report_sent(menu.network, result, cx);
+            self.report_sent(menu.network, &["MODE"], result, cx);
         }
         cx.notify();
     }
@@ -2903,7 +2915,7 @@ impl ChatWindow {
             self.registered_connection(network)
                 .and_then(|connection| connection.send_command(&format!("/part {channel}"), None))
         };
-        self.report_sent(network, result, cx);
+        self.report_sent(network, &[if join { "JOIN" } else { "PART" }], result, cx);
         cx.notify();
     }
 
@@ -2974,7 +2986,7 @@ impl ChatWindow {
             return;
         };
         let result = self.request_whois(network, &nickname, cx);
-        self.report_sent(network, result, cx);
+        self.report_sent(network, &["WHOIS"], result, cx);
         cx.notify();
     }
 
@@ -3744,7 +3756,7 @@ impl ChatWindow {
                     self.note_join_request(prompt.network, &format!("/join {}", value.trim()));
                 }
                 self.prompt_feedback = None;
-                self.note_user_command(network);
+                self.note_user_command(network, member_prompt_verbs(kind));
                 window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
             }
             // The prompt stays open and shows the error itself.
@@ -5313,7 +5325,7 @@ impl ChatWindow {
                     }
                     // Only what went to the server can be answered by it.
                     if !local_command {
-                        self.note_user_command(network);
+                        self.note_user_command(network, &notices::typed_verbs(&text));
                     }
                 }
                 self.input_history.record(&text, private_peer.as_deref());

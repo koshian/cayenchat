@@ -115,14 +115,14 @@ fn server_rejections_open_a_dialog_only_as_the_answer_to_the_user(cx: &mut TestA
 
     // Another server's command does not explain it.
     chat.update(cx, |chat, cx| {
-        chat.note_user_command(NetworkId(network.0 + 1));
+        chat.note_user_command(NetworkId(network.0 + 1), &[]);
         chat.handle_event(network, reject(417, None, "Input line was too long"), cx)
     });
     cx.run_until_parked();
     assert!(!cx.has_pending_prompt());
 
     chat.update(cx, |chat, cx| {
-        chat.note_user_command(network);
+        chat.note_user_command(network, &[]);
         chat.handle_event(network, reject(417, None, "Input line was too long"), cx)
     });
     cx.run_until_parked();
@@ -142,7 +142,7 @@ fn server_rejections_open_a_dialog_only_as_the_answer_to_the_user(cx: &mut TestA
     assert!(!cx.has_pending_prompt());
 
     chat.update(cx, |chat, cx| {
-        chat.note_user_command(network);
+        chat.note_user_command(network, &[]);
         chat.handle_event(network, reject(400, Some("MODE"), "Cannot do that"), cx)
     });
     cx.run_until_parked();

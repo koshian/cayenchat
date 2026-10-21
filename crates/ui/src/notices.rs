@@ -16,7 +16,7 @@
 //!   What the user triggers is always shown again.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -96,6 +96,81 @@ impl Notices {
 /// How long after the user's own command a 417 or 400 still counts as its
 /// answer.
 const ANSWER_WINDOW: Duration = Duration::from_secs(10);
+/// The most commands remembered per server.
+const MAX_SENT: usize = 8;
+
+/// The commands the user sent lately, per server, so that a 417 or 400 can be
+/// told from one a background process caused. A reply answers one command and
+/// uses it up. A 400 names its command: it answers only a command of that
+/// name. A command whose name is not known (`verbs` empty) can be answered by
+/// any reply of its server; a reply that matches nothing stays in the log.
+#[derive(Default)]
+pub(crate) struct SentCommands {
+    sent: HashMap<NetworkId, VecDeque<(Instant, Vec<String>)>>,
+}
+
+impl SentCommands {
+    /// Remembers a command sent to `network` that the server may refuse with
+    /// one of `verbs` (upper case IRC command names; empty when unknown).
+    pub fn note(&mut self, network: NetworkId, verbs: &[&str], now: Instant) {
+        let queue = self.sent.entry(network).or_default();
+        queue.retain(|(at, _)| now.duration_since(*at) < ANSWER_WINDOW);
+        if queue.len() >= MAX_SENT {
+            queue.pop_front();
+        }
+        queue.push_back((now, verbs.iter().map(|verb| verb.to_string()).collect()));
+    }
+
+    /// Takes the newest command of `network` that a reply naming `command`
+    /// (a 400's) can answer. Returns whether there was one.
+    pub fn answer(&mut self, network: NetworkId, command: Option<&str>, now: Instant) -> bool {
+        let Some(queue) = self.sent.get_mut(&network) else {
+            return false;
+        };
+        queue.retain(|(at, _)| now.duration_since(*at) < ANSWER_WINDOW);
+        let found = queue.iter().rposition(|(_, verbs)| {
+            verbs.is_empty()
+                || command.is_none_or(|command| {
+                    verbs.iter().any(|verb| verb.eq_ignore_ascii_case(command))
+                })
+        });
+        if queue.is_empty() {
+            self.sent.remove(&network);
+            return false;
+        }
+        match found {
+            Some(index) => {
+                queue.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// The IRC commands a typed line may be refused as. Empty when the first word
+/// is not one this knows, so that any reply of the server may answer it.
+pub(crate) fn typed_verbs(text: &str) -> Vec<&'static str> {
+    let Some(rest) = text.strip_prefix('/') else {
+        return vec!["PRIVMSG", "NOTICE"];
+    };
+    let word = rest.split_whitespace().next().unwrap_or("");
+    let verbs: &[&'static str] = match word.to_ascii_lowercase().as_str() {
+        "msg" | "query" | "me" | "describe" | "privmsg" | "say" => &["PRIVMSG"],
+        "notice" => &["NOTICE"],
+        "join" | "j" => &["JOIN"],
+        "part" | "leave" => &["PART"],
+        "nick" => &["NICK"],
+        "mode" => &["MODE"],
+        "topic" => &["TOPIC"],
+        "whois" => &["WHOIS"],
+        "invite" => &["INVITE"],
+        "kick" => &["KICK"],
+        "away" => &["AWAY"],
+        _ => &[],
+    };
+    verbs.to_vec()
+}
 /// The longest server text shown in a dialog.
 const MAX_REASON_CHARS: usize = 400;
 
@@ -112,11 +187,12 @@ impl ChatWindow {
     pub(crate) fn report_sent(
         &mut self,
         network: NetworkId,
+        verbs: &[&str],
         result: Result<(), String>,
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok(()) => self.note_user_command(network),
+            Ok(()) => self.note_user_command(network, verbs),
             Err(error) => self.raise_error(Some(network), error, Origin::User, cx),
         }
     }
@@ -166,7 +242,7 @@ impl ChatWindow {
             PromptLevel::Warning,
             &notice.title,
             Some(&notice.detail),
-            &[PromptButton::ok(self.i18n.text("upload_failed_close"))],
+            &[PromptButton::cancel(self.i18n.text("upload_failed_close"))],
             window,
             cx,
         ));
@@ -214,10 +290,11 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Remembers that the user just sent something to `network`, so a 417 or
+    /// Remembers that the user just sent a command to `network` (see
+    /// [`SentCommands`]), so a 417 or
     /// 400 that follows can be told from one a background process caused.
-    pub(crate) fn note_user_command(&mut self, network: NetworkId) {
-        self.user_command = Some((network, Instant::now()));
+    pub(crate) fn note_user_command(&mut self, network: NetworkId, verbs: &[&str]) {
+        self.sent_commands.note(network, verbs, Instant::now());
     }
 
     /// A 417 or 400 reply. It is in the server log already. It opens a dialog
@@ -231,14 +308,12 @@ impl ChatWindow {
         reason: String,
         cx: &mut Context<Self>,
     ) {
-        let answers = matches!(
-            self.user_command,
-            Some((sent_to, at)) if sent_to == network && at.elapsed() < ANSWER_WINDOW
-        );
-        if !answers {
+        if !self
+            .sent_commands
+            .answer(network, command.as_deref(), Instant::now())
+        {
             return;
         }
-        self.user_command = None;
         let reason = cayenchat_irc_core::text::strip_formatting(&reason);
         let reason: String = display::neutralize_bidi(&reason)
             .chars()
@@ -319,5 +394,42 @@ mod tests {
             assert!(notices.post(notice(&index.to_string()), Origin::User, now));
         }
         assert!(!notices.post(notice("more"), Origin::User, now));
+    }
+}
+
+#[cfg(test)]
+mod sent_tests {
+    use super::{ANSWER_WINDOW, SentCommands, typed_verbs};
+    use cayenchat_model::NetworkId;
+    use std::time::Instant;
+
+    #[test]
+    fn a_400_for_another_command_does_not_use_up_the_users_command() {
+        let (a, now) = (NetworkId(1), Instant::now());
+        let mut sent = SentCommands::default();
+        sent.note(a, &typed_verbs("hello"), now);
+        assert!(!sent.answer(a, Some("CHATHISTORY"), now));
+        assert!(sent.answer(a, None, now), "the later 417 still shows");
+        assert!(!sent.answer(a, None, now), "one reply per command");
+    }
+
+    #[test]
+    fn each_server_keeps_its_own_command() {
+        let (a, b, now) = (NetworkId(1), NetworkId(2), Instant::now());
+        let mut sent = SentCommands::default();
+        sent.note(a, &[], now);
+        sent.note(b, &[], now);
+        assert!(sent.answer(a, None, now));
+        assert!(sent.answer(b, None, now));
+    }
+
+    #[test]
+    fn a_command_of_unknown_name_and_old_ones() {
+        let (a, now) = (NetworkId(1), Instant::now());
+        let mut sent = SentCommands::default();
+        sent.note(a, &typed_verbs("/frobnicate"), now);
+        assert!(sent.answer(a, Some("FROBNICATE"), now));
+        sent.note(a, &[], now);
+        assert!(!sent.answer(a, None, now + ANSWER_WINDOW));
     }
 }

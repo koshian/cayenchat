@@ -1327,7 +1327,12 @@ with a Close button (`window.prompt`, `notices.rs`).
   `Event::CommandRejected` next to the `ServerLine`, so the server log keeps
   them. The window opens a dialog (server, code, command for a 400, the
   server's text without formatting codes) only when the user sent a command to
-  the same server in the last 10 seconds, and only once per command. Replies
+  the same server in the last 10 seconds, and only once per command. Commands
+  are remembered per server (at most 8) with the IRC command name they may be
+  refused as: a 400 names its command and answers only a command of that name,
+  so a background `400 CHATHISTORY` after a message neither opens a dialog nor
+  uses the message up for its own 417. A typed command whose name is not known
+  can be answered by any reply of its server. Replies
   with no such command (history, metadata and other background traffic) stay in
   the log. A line refused locally by the 512-byte check was never sent, so no
   417 follows it.
