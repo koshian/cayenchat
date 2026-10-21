@@ -1338,7 +1338,11 @@ does the work, `settings_transfer` draws the questions in the chat window
   background while the dialog shows a notice and ignores answers; the
   settings window cannot be opened meanwhile. The running state is changed
   only after the file was replaced. The confirmation's text scrolls inside
-  the window height so its buttons stay reachable in a small window.
+  the window height so its buttons stay reachable in a small window. One
+  transfer runs at a time from the moment an import's file picker opens: a
+  `reading` flag, separate from what the dialog shows, keeps another import
+  or export and the settings window out until the pick and read finish, so a
+  slow read cannot replace a running write's dialog.
 - **Applying.** The backup copy `settings-backup-<milliseconds>.json` is
   written next to the file first (a failure stops the import), then the
   file is replaced atomically. The result is applied to the running window

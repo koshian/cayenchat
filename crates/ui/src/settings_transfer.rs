@@ -45,6 +45,10 @@ pub(crate) struct TransferDialog {
     confirm: FocusHandle,
     previous: Option<FocusHandle>,
     focus_pending: bool,
+    /// An import is being picked or read. Claimed before the picker opens so
+    /// that a slow pick or read cannot overlap another transfer, and released
+    /// when its outcome is shown.
+    reading: bool,
 }
 
 impl TransferDialog {
@@ -55,11 +59,12 @@ impl TransferDialog {
             confirm: cx.focus_handle().tab_stop(true),
             previous: None,
             focus_pending: false,
+            reading: false,
         }
     }
 
     fn is_working(&self) -> bool {
-        matches!(self.step, Some(Step::Working))
+        self.reading || matches!(self.step, Some(Step::Working))
     }
 
     #[cfg(test)]
@@ -123,7 +128,7 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.transfer_dialog.step.is_none() {
+        if self.transfer_dialog.step.is_none() && !self.transfer_dialog.reading {
             window.activate_window();
             self.show_transfer(Step::ExportNotice, window, cx);
         }
@@ -136,9 +141,10 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.transfer_dialog.step.is_some() {
+        if self.transfer_dialog.step.is_some() || self.transfer_dialog.reading {
             return;
         }
+        self.transfer_dialog.reading = true;
         window.activate_window();
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -155,16 +161,20 @@ impl ChatWindow {
                         this.read_import(path, window, cx);
                     }
                 }
-                Ok(Ok(None)) => {}
+                Ok(Ok(None)) => this.transfer_dialog.reading = false,
                 Ok(Err(error)) => {
+                    this.transfer_dialog.reading = false;
                     this.transfer_failed("transfer_import_title", &error.to_string(), window, cx)
                 }
-                Err(_) => this.transfer_failed(
-                    "transfer_import_title",
-                    &this.i18n.text("transfer_picker_failed"),
-                    window,
-                    cx,
-                ),
+                Err(_) => {
+                    this.transfer_dialog.reading = false;
+                    this.transfer_failed(
+                        "transfer_import_title",
+                        &this.i18n.text("transfer_picker_failed"),
+                        window,
+                        cx,
+                    )
+                }
             });
         })
         .detach();
@@ -178,19 +188,23 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.transfer_dialog.reading = true;
         let reading = {
             let path = path.clone();
             cx.background_spawn(async move { transfer::read_import(&path) })
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = reading.await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(import) => this.show_transfer(
-                    Step::ImportConfirm(Box::new(PendingImport { path, import })),
-                    window,
-                    cx,
-                ),
-                Err(error) => this.transfer_failed("transfer_import_title", &error, window, cx),
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.transfer_dialog.reading = false;
+                match result {
+                    Ok(import) => this.show_transfer(
+                        Step::ImportConfirm(Box::new(PendingImport { path, import })),
+                        window,
+                        cx,
+                    ),
+                    Err(error) => this.transfer_failed("transfer_import_title", &error, window, cx),
+                }
             });
         })
         .detach();
@@ -727,6 +741,37 @@ mod tests {
         assert_eq!(
             settings_file::load().unwrap().unwrap().servers[0].channels,
             "#new"
+        );
+        drop(file);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[gpui::test]
+    fn a_pending_read_blocks_other_transfers_and_the_settings_window(cx: &mut TestAppContext) {
+        let current = english(settings_with_channels("#old"));
+        let file = TestFile::with(&current);
+        let (chat, cx) = window(&current, cx);
+        let other = english(settings_with_channels("#new"));
+        let directory = directory("pending");
+        let path = directory.join("cayenchat-settings.json");
+        transfer::export_to(&path, &other).unwrap();
+
+        // The read has not finished: nothing else may start.
+        chat.update_in(cx, |chat, window, cx| {
+            chat.read_import(path, window, cx);
+            assert!(chat.transfer_dialog_busy());
+            chat.import_settings(&crate::ImportSettings, window, cx);
+            chat.export_settings(&crate::ExportSettings, window, cx);
+            assert!(chat.transfer_dialog.step.is_none());
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert!(!chat.transfer_dialog_busy());
+            assert!(chat.transfer_dialog.is_confirming_import());
+        });
+        assert_eq!(
+            settings_file::load().unwrap().unwrap().servers[0].channels,
+            "#old"
         );
         drop(file);
         std::fs::remove_dir_all(directory).unwrap();
