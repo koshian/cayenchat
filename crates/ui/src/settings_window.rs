@@ -1426,6 +1426,25 @@ impl SettingsWindow {
         servers_changed: bool,
         cx: &mut Context<Self>,
     ) {
+        let _ = self.owner.update(cx, |owner, window, cx| {
+            owner.apply_settings_change(previous, saved, servers_changed, window, cx)
+        });
+    }
+}
+
+impl ChatWindow {
+    /// Applies what differs between `previous` and `saved` to this window;
+    /// the settings window's saves and the import of a settings file both end
+    /// here.
+    pub(crate) fn apply_settings_change(
+        &mut self,
+        previous: &Settings,
+        saved: Settings,
+        servers_changed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = self;
         let appearance_changed =
             previous.appearance != saved.appearance || previous.theme != saved.theme;
         let language_changed = previous.language != saved.language;
@@ -1443,7 +1462,7 @@ impl SettingsWindow {
         let provider = saved.image_upload.provider.clone();
         let shorten_amazon_urls = saved.shorten_amazon_urls;
         let rules = notification_rules(&saved.notifications);
-        let _ = self.owner.update(cx, |owner, window, cx| {
+        {
             owner.image_provider = provider;
             owner.confirm_quit = confirm_quit;
             owner.apply_conversation_log(&saved.conversation_log);
@@ -1478,9 +1497,11 @@ impl SettingsWindow {
             if servers_changed {
                 owner.apply_servers(saved, cx);
             }
-        });
+        }
     }
+}
 
+impl SettingsWindow {
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.autosave_now(None, cx);
         window.remove_window();

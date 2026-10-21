@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod layout;
 pub mod order;
 mod private_file;
+pub mod transfer;
 
 pub use credentials::{CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey};
 
@@ -499,8 +500,9 @@ pub struct Appearance {
     pub compact_urls: bool,
     /// Draw HTML numeric character references (`&#x1F352;`, `&#127826;`) in
     /// received text as the characters they name; the stored text is not
-    /// changed. Added after version 15 without a version change; files
-    /// without it read as off.
+    /// changed. Added after version 15 without a version change; on by
+    /// default (#523), so files without it read as on while an explicit
+    /// `false` stays off.
     pub decode_char_refs: bool,
     /// Reiwa mode, a channel log layout: the avatar spans two lines, the
     /// first line holds the nickname and time and the second the message,
@@ -597,7 +599,7 @@ impl Default for Appearance {
             alternate_rows: false,
             image_previews: false,
             compact_urls: false,
-            decode_char_refs: false,
+            decode_char_refs: true,
             reiwa_mode: false,
             main_log_font: String::new(),
             sub_log_font: String::new(),
@@ -1688,7 +1690,17 @@ pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("Could not read settings: {error}")),
     };
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+    parse_settings(
+        &bytes,
+        &format!("Settings were left unchanged at {}.", path.display()),
+    )
+    .map(Some)
+}
+
+/// Parses and migrates the bytes of a settings file. `unchanged` is the
+/// sentence the errors about an unsupported version end with.
+fn parse_settings(bytes: &[u8], unchanged: &str) -> Result<Settings, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|error| format!("Could not parse settings: {error}"))?;
     let mut value = value;
     move_legacy_user_avatars(&mut value);
@@ -1707,19 +1719,17 @@ pub fn load_from(path: &Path) -> Result<Option<Settings>, String> {
             return Err(format!(
                 "Settings version {version} is newer than this app supports (1–{SETTINGS_VERSION}). \
                  Update CayenChat to a version that supports these settings. \
-                 Settings were left unchanged at {}.",
-                path.display()
+                 {unchanged}"
             ));
         }
         _ => {
             return Err(format!(
                 "The settings version is missing or invalid; this app supports versions 1–{SETTINGS_VERSION}. \
-                 Restore a valid settings file from a backup. Settings were left unchanged at {}.",
-                path.display()
+                 Restore a valid settings file from a backup. {unchanged}"
             ));
         }
     };
-    Ok(Some(settings))
+    Ok(settings)
 }
 
 /// Writes settings to `path`, readable only by the user, replacing the file
@@ -2703,8 +2713,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_char_refs_default_off_for_old_settings_and_round_trip() {
-        assert!(!Settings::default().appearance.decode_char_refs);
+    fn decode_char_refs_default_on_for_old_settings_and_explicit_off_is_kept() {
+        assert!(Settings::default().appearance.decode_char_refs);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut old = serde_json::to_value(Settings::default()).unwrap();
@@ -2715,10 +2725,12 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
         let mut settings = load_from(&path).unwrap().unwrap();
-        assert!(!settings.appearance.decode_char_refs);
-        settings.appearance.decode_char_refs = true;
+        assert!(settings.appearance.decode_char_refs);
+        settings.appearance.decode_char_refs = false;
         save_to(&path, &settings).unwrap();
-        assert_eq!(load_from(&path).unwrap(), Some(settings));
+        let reloaded = load_from(&path).unwrap().unwrap();
+        assert!(!reloaded.appearance.decode_char_refs);
+        assert_eq!(reloaded, settings);
     }
 
     #[test]
