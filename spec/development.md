@@ -334,6 +334,40 @@ what Xvfb on Linux cannot exercise:
   at login, drag and drop from other apps;
 - anything the issue itself asks a person to confirm.
 
+**What Linux under Xvfb alone settles.** GPUI draws the app's own widgets
+(buttons, menus, inputs, settings screens), so how they look and move is the
+same on macOS and Windows. When Xvfb shows no problem, do not ask for a
+pre-merge check for another OS on any of these:
+
+- layout, spacing, colors, themes (light and dark) and icons;
+- the order of items in menus and pop-ups, which are grayed out, and where
+  they open;
+- hover, selection, scrolling and wrapping.
+
+A change that only touches these (removing one background color of a log
+decoration, say) needs no person, however many items a checklist could list.
+
+**What can differ by OS, so Linux alone may not be enough.** GPUI still uses
+the OS for the following. Think about a per-OS check only when the change
+touches one of them, and judge it together with the list above (`cfg(target_os
+= ...)`, IME, the desktop around the app):
+
+- text rendering: GPUI uses cosmic-text on Linux, Core Text on macOS and
+  DirectWrite on Windows, so font selection, fallback fonts, emoji, weight,
+  glyph widths and line height can change;
+- which fonts exist: fonts the app does not bundle, and the Japanese fonts
+  the OS provides;
+- the window frame: title bar, border, minimize and maximize buttons,
+  position across several monitors, and what the OS draws itself (the macOS
+  application menu);
+- display scale and HiDPI sharpness;
+- where the IME candidate window appears.
+
+**When a person must judge how it looks** (a design decision, say), put
+Linux (Xvfb) screenshots on the issue and let them decide from the images
+("Visual checks under Xvfb"). Handing out test builds for each OS is only for
+changes that fall under the second list above.
+
 Changes that only run after they are merged, such as workflows triggered by
 pushes to `master`, tags or releases, cannot be tried on the PR branch and
 are an exception: review them, run what can run from the branch (for
@@ -1124,7 +1158,11 @@ scaling and HiDPI sharpness, multiple monitors, IME and non-ASCII typing,
 native file dialogs, the system credential stores, notifications, drag and
 drop from other apps, and how smooth motion feels (screens are stills).
 Which of these must be checked by a person before merging, and which on the
-beta afterwards, is in "Changes that need a person's confirmation". Coordinates from one screenshot go stale after the
+beta afterwards, is in "Changes that need a person's confirmation", which
+also says what Xvfb alone settles (the app's own drawing) and what can differ
+by OS (text rendering, fonts, window frame, scale, IME). When a person has to
+judge how something looks, attach the `shot` images to the issue instead of
+asking for a test build. Coordinates from one screenshot go stale after the
 layout changes, and judging an image is not a pixel comparison: a lasting
 check belongs in a test.
 
