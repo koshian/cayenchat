@@ -102,8 +102,9 @@ const MAX_SENT: usize = 8;
 /// The commands the user sent lately, per server, so that a 417 or 400 can be
 /// told from one a background process caused. A reply answers one command and
 /// uses it up. A 400 names its command: it answers only a command of that
-/// name. A command whose name is not known (`verbs` empty) can be answered by
-/// any reply of its server; a reply that matches nothing stays in the log.
+/// name, so a command whose name is not known (`verbs` empty) is never
+/// matched by a 400 and only a 417 can answer it. A reply that matches nothing
+/// stays in the log.
 #[derive(Default)]
 pub(crate) struct SentCommands {
     sent: HashMap<NetworkId, VecDeque<(Instant, Vec<String>)>>,
@@ -112,13 +113,16 @@ pub(crate) struct SentCommands {
 impl SentCommands {
     /// Remembers a command sent to `network` that the server may refuse with
     /// one of `verbs` (upper case IRC command names; empty when unknown).
-    pub fn note(&mut self, network: NetworkId, verbs: &[&str], now: Instant) {
+    pub fn note<S: AsRef<str>>(&mut self, network: NetworkId, verbs: &[S], now: Instant) {
         let queue = self.sent.entry(network).or_default();
         queue.retain(|(at, _)| now.duration_since(*at) < ANSWER_WINDOW);
         if queue.len() >= MAX_SENT {
             queue.pop_front();
         }
-        queue.push_back((now, verbs.iter().map(|verb| verb.to_string()).collect()));
+        queue.push_back((
+            now,
+            verbs.iter().map(|verb| verb.as_ref().to_string()).collect(),
+        ));
     }
 
     /// Takes the newest command of `network` that a reply naming `command`
@@ -128,11 +132,9 @@ impl SentCommands {
             return false;
         };
         queue.retain(|(at, _)| now.duration_since(*at) < ANSWER_WINDOW);
-        let found = queue.iter().rposition(|(_, verbs)| {
-            verbs.is_empty()
-                || command.is_none_or(|command| {
-                    verbs.iter().any(|verb| verb.eq_ignore_ascii_case(command))
-                })
+        let found = queue.iter().rposition(|(_, verbs)| match command {
+            Some(command) => verbs.iter().any(|verb| verb.eq_ignore_ascii_case(command)),
+            None => true,
         });
         if queue.is_empty() {
             self.sent.remove(&network);
@@ -148,14 +150,22 @@ impl SentCommands {
     }
 }
 
-/// The IRC commands a typed line may be refused as. Empty when the first word
-/// is not one this knows, so that any reply of the server may answer it.
-pub(crate) fn typed_verbs(text: &str) -> Vec<&'static str> {
+/// The IRC commands a typed line may be refused as. `/raw` and `/quote` send
+/// their own first word. Empty when the first word is not one this knows; such
+/// a line is answered by a 417 only.
+pub(crate) fn typed_verbs(text: &str) -> Vec<String> {
     let Some(rest) = text.strip_prefix('/') else {
-        return vec!["PRIVMSG", "NOTICE"];
+        return vec!["PRIVMSG".into(), "NOTICE".into()];
     };
-    let word = rest.split_whitespace().next().unwrap_or("");
-    let verbs: &[&'static str] = match word.to_ascii_lowercase().as_str() {
+    let mut words = rest.split_whitespace();
+    let word = words.next().unwrap_or("");
+    let verbs: &[&str] = match word.to_ascii_lowercase().as_str() {
+        "raw" | "quote" => {
+            return words
+                .next()
+                .map(|verb| vec![verb.to_ascii_uppercase()])
+                .unwrap_or_default();
+        }
         "msg" | "query" | "me" | "describe" | "privmsg" | "say" => &["PRIVMSG"],
         "notice" => &["NOTICE"],
         "join" | "j" => &["JOIN"],
@@ -169,8 +179,9 @@ pub(crate) fn typed_verbs(text: &str) -> Vec<&'static str> {
         "away" => &["AWAY"],
         _ => &[],
     };
-    verbs.to_vec()
+    verbs.iter().map(|verb| verb.to_string()).collect()
 }
+
 /// The longest server text shown in a dialog.
 const MAX_REASON_CHARS: usize = 400;
 
@@ -414,11 +425,23 @@ mod sent_tests {
     }
 
     #[test]
+    fn raw_lines_use_their_own_verb() {
+        let (a, now) = (NetworkId(1), Instant::now());
+        assert_eq!(typed_verbs("/raw privmsg #demo :hi"), ["PRIVMSG"]);
+        assert_eq!(typed_verbs("/quote MODE #demo +m"), ["MODE"]);
+        assert!(typed_verbs("/raw").is_empty());
+        let mut sent = SentCommands::default();
+        sent.note(a, &typed_verbs("/raw PRIVMSG #demo :hi"), now);
+        assert!(!sent.answer(a, Some("CHATHISTORY"), now));
+        assert!(sent.answer(a, None, now), "the later 417 still shows");
+    }
+
+    #[test]
     fn each_server_keeps_its_own_command() {
         let (a, b, now) = (NetworkId(1), NetworkId(2), Instant::now());
         let mut sent = SentCommands::default();
-        sent.note(a, &[], now);
-        sent.note(b, &[], now);
+        sent.note(a, &[] as &[&str], now);
+        sent.note(b, &[] as &[&str], now);
         assert!(sent.answer(a, None, now));
         assert!(sent.answer(b, None, now));
     }
@@ -428,8 +451,9 @@ mod sent_tests {
         let (a, now) = (NetworkId(1), Instant::now());
         let mut sent = SentCommands::default();
         sent.note(a, &typed_verbs("/frobnicate"), now);
-        assert!(sent.answer(a, Some("FROBNICATE"), now));
-        sent.note(a, &[], now);
+        assert!(!sent.answer(a, Some("FROBNICATE"), now));
+        assert!(sent.answer(a, None, now), "a 417 still answers it");
+        sent.note(a, &[] as &[&str], now);
         assert!(!sent.answer(a, None, now + ANSWER_WINDOW));
     }
 }

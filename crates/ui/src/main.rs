@@ -2471,8 +2471,14 @@ impl ChatWindow {
         }
         let result = self
             .registered_connection(menu.network)
-            .and_then(|connection| connection.send_member_command(&menu.nickname, command));
-        self.report_sent(menu.network, &[], result, cx);
+            .and_then(|connection| connection.send_member_command(&menu.nickname, command.clone()));
+        let verbs: &[&str] = match command {
+            MemberCommand::Whois => &["WHOIS"],
+            MemberCommand::Invite { .. } => &["INVITE"],
+            MemberCommand::GiveOp { .. } | MemberCommand::Deop { .. } => &["MODE"],
+            MemberCommand::Ctcp { .. } => &["PRIVMSG"],
+        };
+        self.report_sent(menu.network, verbs, result, cx);
         cx.notify();
     }
 
@@ -5325,7 +5331,9 @@ impl ChatWindow {
                     }
                     // Only what went to the server can be answered by it.
                     if !local_command {
-                        self.note_user_command(network, &notices::typed_verbs(&text));
+                        let verbs = notices::typed_verbs(&text);
+                        let verbs: Vec<&str> = verbs.iter().map(String::as_str).collect();
+                        self.note_user_command(network, &verbs);
                     }
                 }
                 self.input_history.record(&text, private_peer.as_deref());
