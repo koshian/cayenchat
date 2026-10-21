@@ -217,8 +217,9 @@ impl ChatWindow {
         #[cfg(test)]
         let redirect = self.setup_wizard.redirect.clone();
         let saving = cx.background_spawn(async move {
-            // The file is the truth when there is one.
-            let mut settings = settings_file::load().ok().flatten().unwrap_or(stand_in);
+            // The file is the truth when there is one. One that cannot be
+            // read is kept as it is: saving would replace it.
+            let mut settings = settings_file::load()?.unwrap_or(stand_in);
             let id = add_easy_server(&mut settings, &nickname);
             // A test connects to a server of its own, not to IRCnet.
             #[cfg(test)]
@@ -590,7 +591,14 @@ impl ChatWindow {
                     cx.stop_propagation();
                 }
             }))
-            .on_click(cx.listener(move |this, _, window, cx| on_press(this, window, cx)))
+            // Enter and Space act on the key down above. The click GPUI makes
+            // of the key up would otherwise land on the card that Back just
+            // focused and open the nickname step again.
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if !event.is_keyboard() {
+                    on_press(this, window, cx);
+                }
+            }))
     }
 }
 
@@ -659,9 +667,10 @@ mod tests {
     }
 
     #[test]
-    fn only_a_missing_settings_file_is_a_first_run() {
+    fn a_missing_file_or_one_without_servers_is_a_first_run() {
         assert!(crate::is_first_run(&Ok(None)));
-        assert!(!crate::is_first_run(&Ok(Some(Settings::default()))));
+        assert!(crate::is_first_run(&Ok(Some(Settings::default()))));
+        assert!(!crate::is_first_run(&Ok(Some(english_with_server()))));
         assert!(!crate::is_first_run(&Err("damaged".into())));
     }
 
@@ -782,6 +791,58 @@ mod tests {
         });
         assert!(!visible(&chat, cx));
         drop(listener);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unreadable_settings_file_is_neither_replaced_nor_connected(cx: &mut TestAppContext) {
+        let file = TestFile::with(&english());
+        let (chat, cx) = window(&english(), cx);
+        chat.update(cx, |chat, cx| {
+            chat.open_setup_wizard(cx);
+            chat.setup_wizard
+                .nickname
+                .update(cx, |input, cx| input.set_text("tester", cx))
+        });
+        chat.update_in(cx, |chat, window, cx| chat.wizard_choose_easy(window, cx));
+        settings_file::fail_loads(true);
+        chat.update_in(cx, |chat, window, cx| chat.wizard_connect(window, cx));
+        cx.run_until_parked();
+        settings_file::fail_loads(false);
+        chat.read_with(cx, |chat, _| {
+            let super::Step::Easy { error: Some(error) } = &chat.setup_wizard.step else {
+                panic!("the wizard stays on the nickname step");
+            };
+            assert!(error.contains("cannot read"), "{error}");
+            assert!(chat.saved.servers.is_empty());
+            assert!(chat.sessions.is_empty());
+        });
+        assert!(settings_file::load().unwrap().unwrap().servers.is_empty());
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn tab_and_enter_reach_back_and_return_to_the_choices(cx: &mut TestAppContext) {
+        let file = TestFile::with(&english());
+        let (chat, cx) = window(&english(), cx);
+        chat.update(cx, |chat, cx| chat.open_setup_wizard(cx));
+        chat.update_in(cx, |chat, window, cx| chat.wizard_choose_easy(window, cx));
+        cx.run_until_parked();
+        for keys in ["tab", "tab"] {
+            cx.simulate_keystrokes(keys);
+        }
+        chat.update_in(cx, |chat, window, _| {
+            assert!(chat.setup_wizard.secondary.is_focused(window), "on Back");
+        });
+        cx.simulate_keystrokes("enter");
+        // The key up of the same press, which GPUI turns into a click.
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert!(matches!(chat.setup_wizard.step, super::Step::Choose));
+        });
         drop(file);
     }
 

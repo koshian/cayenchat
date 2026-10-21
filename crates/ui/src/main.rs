@@ -8906,16 +8906,21 @@ fn select_linux_display(saved: cayenchat_storage::LinuxDisplay) {
     }
 }
 
-/// Whether startup found no settings file; a file that exists, even one with
-/// no servers, or one that cannot be read, is not a first run.
+/// Whether startup found no saved connection settings: no settings file, or
+/// one that was read but holds no server. A file that cannot be read is not a
+/// first run, since it may hold what the user set up.
 fn is_first_run(loaded: &Result<Option<Settings>, String>) -> bool {
-    matches!(loaded, Ok(None))
+    match loaded {
+        Ok(None) => true,
+        Ok(Some(settings)) => settings.servers.is_empty(),
+        Err(_) => false,
+    }
 }
 
 /// Loads settings and moves plaintext passwords saved by older versions into
 /// the credential store. Returns a notice for the chat window, and whether
-/// there was no settings file at all (the first run, #521); a file that
-/// cannot be read is not a first run.
+/// there was no saved server (the first run, #521); a file that cannot be
+/// read is not a first run.
 fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
     let loaded = cayenchat_storage::load();
     let first_run = is_first_run(&loaded);
@@ -9122,7 +9127,7 @@ fn main() {
                         &chat.i18n,
                     ));
                     let startup = std::mem::take(&mut chat.startup_connections);
-                    // With no settings file the setup wizard stands in for
+                    // With no saved server the setup wizard stands in for
                     // the settings window; it writes nothing unless asked.
                     let wizard = first_run && startup.is_empty();
                     if wizard {
