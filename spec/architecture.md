@@ -87,10 +87,10 @@ on and the link stays. The codec reports each drop through
 `BodyCharsets::refused_line` (a count and a wake-up, no content), and the
 worker shows "Send failed: N line(s) with a line break or NUL were refused".
 The transcript is written when the line is queued, before the codec runs, so
-`Transcript::line` shows any line holding CR, LF or NUL (after the usual
-redaction) only as `[refused: line break or NUL]`: the redaction knows the
-usual shapes, and a line that slipped past the checks may be anything. A
-dropped line is never logged.
+`Transcript::line` checks the complete formatted line for CR, LF or NUL before
+redaction can trim line endings or shorten tags. Any such line is shown only as
+`[refused: line break or NUL]`; otherwise normal secret redaction and tag
+shortening apply. A dropped line is never logged with its contents.
 
 ### storage
 

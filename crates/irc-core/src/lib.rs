@@ -1427,14 +1427,17 @@ impl Transcript {
     /// The line to record for `message`, if lines are recorded now.
     fn line(&self, message: &IrcMessage) -> Option<String> {
         (!self.registered || self.requested.load(Ordering::Relaxed)).then(|| {
-            let line = redacted_wire_line(message);
-            // The redaction knows the usual shapes only. A line that the
-            // codec will refuse for a line break or NUL (#554) may be
-            // anything, so none of it is shown.
-            if line.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0)) {
+            // Check the complete formatted line before transcript formatting
+            // can trim its ending or shorten an oversized tag section.
+            let raw_line = message.to_string();
+            let content = raw_line.strip_suffix("\r\n").unwrap_or(&raw_line);
+            if content
+                .bytes()
+                .any(|byte| matches!(byte, b'\r' | b'\n' | 0))
+            {
                 "[refused: line break or NUL]".into()
             } else {
-                line
+                redacted_wire_line(message)
             }
         })
     }

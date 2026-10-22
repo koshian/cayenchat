@@ -7008,3 +7008,35 @@ fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
     let written = server.join().unwrap();
     assert!(written.is_empty(), "{written:?}");
 }
+
+#[test]
+fn transcript_refuses_unsafe_bytes_before_trimming_or_shortening() {
+    let (events, _receiver) = mpsc::channel(1);
+    let transcript = Transcript {
+        events: EventSender::new(events),
+        started: Instant::now(),
+        requested: Arc::new(AtomicBool::new(true)),
+        registered: true,
+    };
+    let messages = [
+        IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "private-secret\r".into())),
+        IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "private-secret\n".into())),
+        IrcMessage::from(IrcCommand::PRIVMSG(
+            "#t".into(),
+            "private-secret\r\n".into(),
+        )),
+        IrcMessage {
+            tags: Some(vec![irc::proto::message::Tag(
+                format!("{}\r", "k".repeat(600)),
+                None,
+            )]),
+            ..IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "private-secret".into()))
+        },
+    ];
+    let recorded: Vec<_> = messages
+        .iter()
+        .map(|message| transcript.line(message).unwrap())
+        .collect();
+    assert_eq!(recorded, vec!["[refused: line break or NUL]"; 4]);
+    assert!(!format!("{recorded:?}").contains("private-secret"));
+}
