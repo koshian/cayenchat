@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use super::{compact_urls::ICON, link_icon_origin};
+use super::{
+    compact_urls::{self, ICON},
+    link_icon_origin,
+};
 use gpui::{
     Context, IntoElement, ParentElement, Render, Styled, StyledText, TextLayout, Window, div, px,
 };
@@ -49,6 +52,17 @@ fn icon_follows_its_room_across_a_wrap(cx: &mut gpui::TestAppContext) {
                 .expect("painted");
             assert_eq!(origin.y, body.y, "icon row for room at {start}");
             assert!(origin.x < body.x, "icon is left of its URL at {start}");
+            // The room is never split by a wrap, and the painted icon ends
+            // before the URL's first letter.
+            for part in [compact_urls::LEAD.len(), 5, 8, 11] {
+                let at = layout.position_for_index(start + part).expect("painted");
+                assert_eq!(at.y, body.y, "room split at {part} for room at {start}");
+            }
+            let first = layout
+                .position_for_index(start + ICON.len())
+                .expect("painted");
+            let icon_end = origin.x + layout.line_height() * 0.65;
+            assert!(icon_end <= first.x, "icon covers the URL at {start}");
             let plain = layout.position_for_index(start).expect("painted");
             wrapped += usize::from(plain.y != origin.y);
         }
