@@ -29,6 +29,9 @@ pub trait BodyCharsets: Send + Sync {
     fn take_pin(&self, _line: &str) -> Option<Pin> {
         None
     }
+    /// Called when the codec drops a line holding CR, LF or NUL instead of
+    /// writing it. The line itself is not passed on: it may hold secrets.
+    fn refused_line(&self) {}
 }
 
 /// What was fixed for a queued line.

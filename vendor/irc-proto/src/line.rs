@@ -112,6 +112,18 @@ impl Decoder for LineCodec {
     }
 }
 
+/// Whether `line`, already formatted, is one line: apart from the closing
+/// `\r\n` it holds no CR, LF or NUL. One pass, no allocation.
+///
+/// This is the last stop before the socket (CRLF injection, #554): every line
+/// of the `irc` crate passes `encode`, including its own PONG, CTCP replies
+/// and JOINs. A line that fails is dropped whole, unwritten and unlogged (it
+/// may hold secrets); the lines after it go on.
+fn is_single_line(line: &str) -> bool {
+    let body = line.strip_suffix("\r\n").unwrap_or(line);
+    !body.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0))
+}
+
 impl Encoder<String> for LineCodec {
     type Error = error::ProtocolError;
 
@@ -132,6 +144,12 @@ impl Encoder<String> for LineCodec {
                 }
                 None => None,
             };
+            if !is_single_line(&msg) {
+                if let Some(charsets) = self.charsets.as_deref() {
+                    charsets.refused_line();
+                }
+                return Ok(());
+            }
             let charsets = match &pinned {
                 Some(fixed) => Some(fixed as &dyn crate::charsets::BodyCharsets),
                 None => self.charsets.as_deref(),
@@ -142,6 +160,9 @@ impl Encoder<String> for LineCodec {
 
         #[cfg(not(feature = "encoding"))]
         {
+            if !is_single_line(&msg) {
+                return Ok(());
+            }
             dst.extend(msg.into_bytes());
         }
 
@@ -253,6 +274,27 @@ mod tests {
         let mut dst = BytesMut::new();
         codec.encode("PRIVMSG #a :あ\r\n".into(), &mut dst).unwrap();
         assert!(dst.is_empty());
+    }
+
+    #[test]
+    fn a_line_with_cr_lf_or_nul_is_not_written() {
+        use tokio_util::codec::Encoder;
+        let mut codec = LineCodec::new("utf-8").unwrap();
+        let mut dst = BytesMut::new();
+        for bad in [
+            "PRIVMSG #a :x\r\nQUIT\r\n",
+            "PRIVMSG #a\n:x\r\n",
+            "PRIVMSG #a :x\0\r\n",
+            "PRIVMSG #a :x\r",
+            "@k=\rv PING\r\n",
+            "PRIVMSG #a :x\r\n\r\n",
+        ] {
+            codec.encode(bad.into(), &mut dst).unwrap();
+        }
+        assert!(dst.is_empty());
+        // The lines after a dropped one go on.
+        codec.encode("PRIVMSG #a :ok\r\n".into(), &mut dst).unwrap();
+        assert_eq!(&dst[..], b"PRIVMSG #a :ok\r\n");
     }
 
     #[cfg(feature = "encoding")]
