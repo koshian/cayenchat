@@ -206,3 +206,11 @@ implementations, `PathPromptOptions` has a `filter: Option<PathPromptFilter>`
 - Linux: an `ashpd` `FileFilter` with a lower- and an upper-case glob per
   extension (portal globs are case-sensitive). Portals that ignore filters show
   every file.
+
+In `src/text_system.rs`, `src/text_system/line_layout.rs` and
+`src/elements/text.rs`, phrase-aware wrapping (CayenChat #537): `StyledText::with_wrap_joins`
+takes sorted byte offsets, passed through the new `TextSystem::shape_text_joined`
+(`shape_text` is unchanged and passes none) into `compute_wrap_boundaries`, which
+then does not use a position before such an offset as a wrap opportunity. A line
+with no other opportunity still breaks at the overflowing glyph. The offsets are
+part of the wrapped-line cache key.

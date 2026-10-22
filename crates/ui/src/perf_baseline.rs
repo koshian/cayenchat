@@ -49,6 +49,7 @@ const TYPING_SAMPLES: usize = 300;
 const SWITCH_SAMPLES: usize = 200;
 const BURST_SAMPLES: usize = 100;
 const SCROLL_SAMPLES: usize = 200;
+const RESIZE_SAMPLES: usize = 40;
 /// Members of the large channel in the member-list step.
 const LARGE_ROSTER: usize = 2_000;
 const ROSTER_SAMPLES: usize = 100;
@@ -246,6 +247,26 @@ fn run(
     short_urls: bool,
     nick_links: bool,
 ) {
+    run_with(cx, servers, images, avatars, short_urls, nick_links, false)
+}
+
+/// The default run with the Experimental Auto Phrase option on (the lines
+/// include Japanese and mixed text): compare with `perf_baseline`.
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_auto_phrase(cx: &mut TestAppContext) {
+    run_with(cx, 1, false, false, false, false, true);
+}
+
+fn run_with(
+    cx: &mut TestAppContext,
+    servers: usize,
+    images: bool,
+    avatars: bool,
+    short_urls: bool,
+    nick_links: bool,
+    auto_phrase: bool,
+) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
         crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
@@ -262,6 +283,7 @@ fn run(
         server.user_avatars = avatars;
     }
     settings.appearance.compact_urls = short_urls;
+    settings.experimental.auto_phrase = auto_phrase;
     let fetcher = memory_fetcher();
     let (chat, cx) = cx.add_window_view(|window, cx| {
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
@@ -474,6 +496,19 @@ fn run(
         });
     }
     burst.report();
+
+    // Narrowing and widening the window: every visible row is laid out
+    // again. Last, so the steps above keep their historical window size.
+    let mut resizing = Timings::new(servers, "resize");
+    for index in 0..RESIZE_SAMPLES {
+        let width = if index % 2 == 0 { 700. } else { 1000. };
+        resizing.time(|| {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.)));
+            cx.update(|window, _| window.refresh());
+        });
+        cx.run_until_parked();
+    }
+    resizing.report();
 
     chat.read_with(cx, |chat, _| {
         let cache = chat.previews.cache();

@@ -130,6 +130,7 @@ impl LineLayout {
         text: &str,
         wrap_width: Pixels,
         max_lines: Option<usize>,
+        joins: Option<&[u32]>,
     ) -> SmallVec<[WrapBoundary; 1]> {
         let mut boundaries = SmallVec::new();
         let mut first_non_whitespace_ix = None;
@@ -152,12 +153,13 @@ impl LineLayout {
                         WrapBoundary { run_ix, glyph_ix },
                         character,
                         glyph.position.x,
+                        glyph.index,
                     )
                 })
             })
             .peekable();
 
-        while let Some((boundary, ch, x)) = glyphs.next() {
+        while let Some((boundary, ch, x, byte_ix)) = glyphs.next() {
             if ch == '\n' {
                 continue;
             }
@@ -170,7 +172,11 @@ impl LineLayout {
                     last_candidate_x = x;
                 }
             } else {
-                if ch != ' ' && first_non_whitespace_ix.is_some() {
+                // `joins`: the caller wants no break before this character
+                // (phrase-aware wrapping); it can still break here when
+                // nothing earlier on the line fits.
+                let joined = joins.is_some_and(|joins| joins.binary_search(&(byte_ix as u32)).is_ok());
+                if ch != ' ' && first_non_whitespace_ix.is_some() && !joined {
                     last_candidate_ix = Some(boundary);
                     last_candidate_x = x;
                 }
@@ -180,7 +186,7 @@ impl LineLayout {
                 first_non_whitespace_ix = Some(boundary);
             }
 
-            let next_x = glyphs.peek().map_or(self.width, |(_, _, x)| *x);
+            let next_x = glyphs.peek().map_or(self.width, |(_, _, x, _)| *x);
             let width = next_x - last_boundary_x;
 
             if width > wrap_width && boundary > last_boundary {
@@ -472,6 +478,7 @@ impl LineLayoutCache {
         runs: &[FontRun],
         wrap_width: Option<Pixels>,
         max_lines: Option<usize>,
+        joins: Option<&Arc<[u32]>>,
     ) -> Arc<WrappedLineLayout>
     where
         Text: AsRef<str>,
@@ -483,6 +490,7 @@ impl LineLayoutCache {
             runs,
             wrap_width,
             force_width: None,
+            joins: joins.map(|joins| &**joins),
         } as &dyn AsCacheKeyRef;
 
         let current_frame = self.current_frame.upgradable_read();
@@ -503,7 +511,12 @@ impl LineLayoutCache {
             let text = SharedString::from(text);
             let unwrapped_layout = self.layout_line::<&SharedString>(&text, font_size, runs, None);
             let wrap_boundaries = if let Some(wrap_width) = wrap_width {
-                unwrapped_layout.compute_wrap_boundaries(text.as_ref(), wrap_width, max_lines)
+                unwrapped_layout.compute_wrap_boundaries(
+                    text.as_ref(),
+                    wrap_width,
+                    max_lines,
+                    joins.map(|joins| &**joins),
+                )
             } else {
                 SmallVec::new()
             };
@@ -518,6 +531,7 @@ impl LineLayoutCache {
                 runs: SmallVec::from(runs),
                 wrap_width,
                 force_width: None,
+                joins: joins.cloned(),
             });
 
             let mut current_frame = self.current_frame.write();
@@ -547,6 +561,7 @@ impl LineLayoutCache {
             runs,
             wrap_width: None,
             force_width,
+            joins: None,
         } as &dyn AsCacheKeyRef;
 
         let current_frame = self.current_frame.upgradable_read();
@@ -583,6 +598,7 @@ impl LineLayoutCache {
                 runs: SmallVec::from(runs),
                 wrap_width: None,
                 force_width,
+                joins: None,
             });
             let layout = Arc::new(layout);
             current_frame.lines.insert(key.clone(), layout.clone());
@@ -610,6 +626,7 @@ struct CacheKey {
     runs: SmallVec<[FontRun; 1]>,
     wrap_width: Option<Pixels>,
     force_width: Option<Pixels>,
+    joins: Option<Arc<[u32]>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -619,6 +636,7 @@ struct CacheKeyRef<'a> {
     runs: &'a [FontRun],
     wrap_width: Option<Pixels>,
     force_width: Option<Pixels>,
+    joins: Option<&'a [u32]>,
 }
 
 impl PartialEq for dyn AsCacheKeyRef + '_ {
@@ -643,6 +661,7 @@ impl AsCacheKeyRef for CacheKey {
             runs: self.runs.as_slice(),
             wrap_width: self.wrap_width,
             force_width: self.force_width,
+            joins: self.joins.as_deref(),
         }
     }
 }

@@ -114,9 +114,14 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         .map_err(|error| format!("The file holds an invalid appearance setting: {error}"))?;
     // Passwords of old versions are never carried over.
     drop(settings.take_legacy_secrets());
-    let dropped_local_paths = settings.experimental != Experimental::default()
+    let dropped_local_paths = settings.experimental.debug_logging
+        || settings.experimental.stderr_file.is_some()
         || settings.conversation_log.directory.is_some();
-    settings.experimental = Experimental::default();
+    // Logging belongs to this machine; Auto Phrase is a display preference.
+    settings.experimental = Experimental {
+        auto_phrase: settings.experimental.auto_phrase,
+        ..Experimental::default()
+    };
     settings.conversation_log = ConversationLog {
         directory: None,
         ..settings.conversation_log
@@ -202,7 +207,10 @@ impl Import {
         let mut settings = self.settings;
         if let Some(current) = current {
             settings.credential_backend = current.credential_backend;
-            settings.experimental = current.experimental.clone();
+            settings.experimental = Experimental {
+                auto_phrase: settings.experimental.auto_phrase,
+                ..current.experimental.clone()
+            };
             settings.conversation_log.directory = current.conversation_log.directory.clone();
         }
         settings
@@ -388,6 +396,7 @@ mod tests {
         other.experimental = Experimental {
             debug_logging: true,
             stderr_file: Some(PathBuf::from("/other/debug.log")),
+            auto_phrase: true,
         };
         other.conversation_log.directory = Some(PathBuf::from("C:\\logs"));
         other.conversation_log.channels = true;
@@ -398,7 +407,15 @@ mod tests {
         current.conversation_log.directory = Some(PathBuf::from("/home/me/logs"));
         let settings = import.into_settings(Some(&current));
         assert_eq!(settings.credential_backend, current.credential_backend);
-        assert_eq!(settings.experimental, current.experimental);
+        assert!(settings.experimental.auto_phrase);
+        assert_eq!(
+            settings.experimental.stderr_file,
+            current.experimental.stderr_file
+        );
+        assert_eq!(
+            settings.experimental.debug_logging,
+            current.experimental.debug_logging
+        );
         assert_eq!(
             settings.conversation_log.directory,
             current.conversation_log.directory

@@ -1468,6 +1468,11 @@ impl ChatWindow {
                 owner.note_window_bounds(window);
                 owner.schedule_layout_save(cx);
             }
+            if owner.auto_phrase != saved.experimental.auto_phrase {
+                // Shown rows are laid out again on the next draw.
+                owner.auto_phrase = saved.experimental.auto_phrase;
+                cx.notify();
+            }
             if appearance_changed {
                 owner.apply_appearance(saved.appearance.clone(), saved.theme, cx);
             }

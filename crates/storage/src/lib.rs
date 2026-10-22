@@ -1090,12 +1090,16 @@ impl ConversationLog {
     }
 }
 
-/// Opt-in diagnostics. Additive defaults keep older settings compatible.
+/// Opt-in diagnostics and experiments. Additive defaults keep older settings
+/// compatible.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Experimental {
     pub debug_logging: bool,
     pub stderr_file: Option<PathBuf>,
+    /// Wrap Japanese chat text at BudouX phrase boundaries where it fits
+    /// (display only; the text itself is never changed). Off by default.
+    pub auto_phrase: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2390,6 +2394,7 @@ mod tests {
         settings.experimental = Experimental {
             debug_logging: true,
             stderr_file: Some(directory.path().join("日本語 debug.log")),
+            auto_phrase: true,
         };
         save_to(&path, &settings).unwrap();
         assert_eq!(

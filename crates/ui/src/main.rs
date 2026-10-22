@@ -34,6 +34,7 @@ mod notifier;
 mod part_dialog;
 #[cfg(test)]
 mod perf_baseline;
+mod phrase_wrap;
 #[cfg(any(target_os = "windows", test))]
 mod placement;
 mod previews;
@@ -92,7 +93,7 @@ use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::ops::Range;
 use std::{
     borrow::Cow,
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
     sync::Arc,
@@ -715,6 +716,11 @@ struct ChatWindow {
     /// The log search bar (#404), made when it is first opened.
     search: Option<log_search::LogSearch>,
     appearance: Appearance,
+    /// Experimental "Auto Phrase": wrap Japanese chat text at phrase
+    /// boundaries. The cache is behind a `RefCell` because rows borrow the
+    /// window state while they are drawn.
+    auto_phrase: bool,
+    phrase_joins: RefCell<phrase_wrap::PhraseJoins>,
     theme_mode: ThemeMode,
     i18n: Localizer,
     log_focus: FocusHandle,
@@ -1226,6 +1232,8 @@ impl ChatWindow {
                 bar
             },
             appearance: saved.appearance.clone(),
+            auto_phrase: saved.experimental.auto_phrase,
+            phrase_joins: RefCell::default(),
             theme_mode: saved.theme,
             image_provider: saved.image_upload.provider.clone(),
             notification_rules: notification_rules(&saved.notifications),
@@ -7874,6 +7882,23 @@ impl ChatWindow {
             selected_range,
             &style.theme,
         );
+        // Links, link chips and nick highlights keep their normal wrapping,
+        // as do activity lines; the prefix is never analysed.
+        let protected: Vec<_> = urls
+            .iter()
+            .map(|(range, _)| range.clone())
+            .chain(chips.iter().cloned())
+            .chain(highlights.iter().cloned())
+            .collect();
+        let styled = match self.phrase_joins.borrow_mut().joins(
+            self.auto_phrase && !message.activity,
+            prefix_len,
+            compact.text(),
+            &protected,
+        ) {
+            Some(joins) => styled.with_wrap_joins(joins),
+            None => styled,
+        };
         let layout = styled.layout().clone();
         // While a search jump to this line is unfinished, report where its
         // first match is painted (the layout is only valid once painted).

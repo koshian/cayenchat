@@ -905,6 +905,9 @@ dependencies = [
 [[package]]
 name = "cayenchat-model"
 version = "1.0.0-rc.2"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "cayenchat-storage"

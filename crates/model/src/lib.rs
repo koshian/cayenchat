@@ -4,6 +4,7 @@
 pub mod attachment;
 pub mod display;
 pub mod names;
+pub mod phrase;
 
 use std::ops::Range;
 

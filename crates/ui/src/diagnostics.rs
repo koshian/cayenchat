@@ -29,6 +29,7 @@ pub fn configuration() -> Experimental {
     Experimental {
         debug_logging: output.path.is_some(),
         stderr_file: output.path.clone(),
+        ..Experimental::default()
     }
 }
 
@@ -331,6 +332,7 @@ mod tests {
         let first = Experimental {
             debug_logging: true,
             stderr_file: Some(directory.join("日本語 debug.log")),
+            ..Experimental::default()
         };
         configure(&first).unwrap();
         assert_eq!(configuration(), first);
@@ -342,6 +344,7 @@ mod tests {
         let invalid = Experimental {
             debug_logging: true,
             stderr_file: Some(directory.join("missing").join("log")),
+            ..Experimental::default()
         };
         assert!(configure(&invalid).is_err());
         assert_eq!(configuration(), first);
@@ -349,6 +352,7 @@ mod tests {
         configure(&Experimental {
             debug_logging: true,
             stderr_file: Some(directory.join("second.log")),
+            ..Experimental::default()
         })
         .unwrap();
         eprintln!("second file marker");

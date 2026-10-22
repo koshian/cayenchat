@@ -36,7 +36,7 @@ impl Element for &'static str {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut state = TextLayout::default();
-        let layout_id = state.layout(SharedString::from(*self), None, window, cx);
+        let layout_id = state.layout(SharedString::from(*self), None, None, window, cx);
         (layout_id, state)
     }
 
@@ -102,7 +102,7 @@ impl Element for SharedString {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut state = TextLayout::default();
-        let layout_id = state.layout(self.clone(), None, window, cx);
+        let layout_id = state.layout(self.clone(), None, None, window, cx);
         (layout_id, state)
     }
 
@@ -149,6 +149,7 @@ pub struct StyledText {
     text: SharedString,
     runs: Option<Vec<TextRun>>,
     delayed_highlights: Option<Vec<(Range<usize>, HighlightStyle)>>,
+    joins: Option<Arc<[u32]>>,
     layout: TextLayout,
 }
 
@@ -159,8 +160,17 @@ impl StyledText {
             text: text.into(),
             runs: None,
             delayed_highlights: None,
+            joins: None,
             layout: TextLayout::default(),
         }
+    }
+
+    /// Sorted byte offsets before which a wrap is avoided when an earlier
+    /// opportunity on the line fits (phrase-aware wrapping). The text is not
+    /// changed.
+    pub fn with_wrap_joins(mut self, joins: Arc<[u32]>) -> Self {
+        self.joins = Some(joins);
+        self
     }
 
     /// Get the layout for this element. This can be used to map indices to pixels and vice versa.
@@ -269,7 +279,7 @@ impl Element for StyledText {
             })
         });
 
-        let layout_id = self.layout.layout(self.text.clone(), runs, window, cx);
+        let layout_id = self.layout.layout(self.text.clone(), runs, self.joins.clone(), window, cx);
         (layout_id, ())
     }
 
@@ -325,6 +335,7 @@ impl TextLayout {
         &self,
         text: SharedString,
         runs: Option<Vec<TextRun>>,
+        joins: Option<Arc<[u32]>>,
         window: &mut Window,
         _: &mut App,
     ) -> LayoutId {
@@ -392,12 +403,13 @@ impl TextLayout {
 
                 let Some(lines) = window
                     .text_system()
-                    .shape_text(
+                    .shape_text_joined(
                         text,
                         font_size,
                         &runs,
                         wrap_width,            // Wrap if we know the width.
                         text_style.line_clamp, // Limit the number of lines if line_clamp is set.
+                        joins.as_ref(),
                     )
                     .log_err()
                 else {

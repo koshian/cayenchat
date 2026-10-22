@@ -1382,3 +1382,31 @@ bytes each; no log is copied. The headless baseline of this document
 (`perf_baseline`, `run_baseline.py`) was not rerun: the receive path and the
 channel-switch path are unchanged, and a search that is closed does nothing in
 them.
+
+## Auto Phrase (2026-10-22, issue #537, D062)
+
+Experimental, off by default. Off: `PhraseJoins::joins` returns before any
+work (it only clears its cache), so the log path is the old one. On: each
+drawn row analyses its natural-language stretches (not the sender prefix,
+links, link chips or nick highlights) with BudouX once and keeps the offsets
+in a 512-row cache keyed by shift, protected ranges and text; the offsets
+also key GPUI's wrapped-line cache. Text without kana is not analysed.
+
+Measured with the ignored `perf_baseline` tests (`perf_baseline` against
+`perf_baseline_auto_phrase`, which turns the option on; its lines include
+Japanese and mixed text; new `resize` step narrows and widens the window 40
+times), release build, Linux Xvfb, three runs each, medians in µs:
+
+| step | off | on |
+|---|---|---|
+| typing | 345 / 306 / 304 | 310 / 304 / 305 |
+| channel_switch | 1823 / 1747 / 1757 | 1736 / 1769 / 1728 |
+| scroll_20_rows | 1336 / 1319 / 1315 | 1311 / 1328 / 1317 |
+| event_batch_256 | 1697 / 1700 / 1716 | 1684 / 1715 / 1705 |
+| resize | 2083 / 2102 / 2041 | 2033 / 2090 / 2012 |
+
+No difference beyond run-to-run noise. Limits: the headless test's text
+system is the test platform's, so this shows the cost of the analysis and
+the cache, not real glyph shaping; it was not compared with a separate
+master build (the option-off path only adds an early return) and no
+Windows/macOS run was made.

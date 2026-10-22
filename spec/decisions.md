@@ -1295,6 +1295,41 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D062 — Auto Phrase: BudouX phrase wrapping for Japanese (#537)
+
+**Status:** Accepted (experimental)
+
+- Experimental option `experimental.auto_phrase`, off by default (reset with
+  the tab). Off, nothing is analysed and layout is exactly as before.
+- Display only. The text, selection, copy, search offsets, links, stored
+  logs and what is sent are untouched; no characters are inserted.
+- Model: BudouX v0.9.3 `ja.json`, embedded unchanged in
+  `crates/model/data/` (Apache-2.0, notice and update steps in its
+  `README.md`). `model::phrase` reimplements the scorer (not copied code)
+  and a test compares splits with the official `parser.py` output.
+- Mechanism: `phrase::joins` lists byte offsets between two Japanese
+  characters where BudouX has no phrase boundary. They reach GPUI through
+  `StyledText::with_wrap_joins` (a patch in `vendor/gpui`, see its
+  `PATCHES.md`) and the wrapper does not use those offsets as wrap
+  opportunities. A line with no other opportunity breaks anywhere as
+  before, so long words and URLs still fall back safely. ASCII, URLs and
+  emoji around Japanese are never touched. Not every phrase starts a line:
+  the wrapper only prefers phrase boundaries.
+- Scope: channel and direct-message log rows. Server, activity and
+  sub-log rows are unchanged. Only the message's natural-language
+  stretches are analysed: the sender prefix, links, link chips and nick
+  highlights are excluded (each remaining stretch is analysed on its own,
+  offsets mapped back to the whole row). Offsets are cached per row (text,
+  prefix length and protected ranges; 512 entries, `phrase_wrap.rs`); the
+  offsets are part of GPUI's wrapped-line cache key.
+- Japanese detection is conservative: a text is analysed only if it
+  contains kana, so Chinese and kanji-only text keep the normal wrapper, and
+  joins only join kana, kanji, CJK punctuation and full-width/half-width
+  katakana forms (not half-width Hangul). Mixed Chinese/Japanese text is
+  analysed as Japanese; kanji-only Japanese text is not analysed.
+- Limits: no kinsoku (line-start/end prohibition) handling beyond what the
+  model implies; other languages' models are future work.
+
 ## D061 — First-run setup wizard (#521)
 
 **Status:** Accepted

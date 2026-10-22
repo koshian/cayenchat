@@ -560,6 +560,8 @@
   "ircv3_peer_reconnect": "実名欄のアバター表示を更新するには再接続してください。",
   "ircv3_peer_size_placeholder": "ほかのクライアントは {size} を置き換えません。{size} を含まない URL を共有してください。",
   "experimental_tab": "Experimental",
+  "auto_phrase": "Auto Phrase (BudouX)",
+  "auto_phrase_hint": "日本語のメッセージを、ウィンドウ幅に収まる範囲で自然な文節の位置で折り返します（BudouX 0.9.3 モデル）。表示だけが変わり、コピー・検索・保存されるテキストは受信したままです。長い語句や URL はこれまでどおり途中で折り返します。",
   "debug_logging": "デバッグログ（stderr）を保存する",
   "debug_log_file": "ログファイル",
   "debug_log_no_file": "ファイルが選択されていません",
