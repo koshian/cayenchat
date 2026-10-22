@@ -6913,6 +6913,7 @@ fn input_too_long_and_unknown_error_replies_are_reported_and_kept_in_the_log() {
 fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
+    let (finished, done) = std_mpsc::channel::<()>();
     let server = thread::spawn(move || {
         let mut reader = registered_server(listener, b"");
         let mut lines = Vec::new();
@@ -6920,6 +6921,8 @@ fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
             let mut line = Vec::new();
             assert_ne!(reader.read_until(b'\n', &mut line).unwrap(), 0, "closed");
             if line.starts_with(b"PRIVMSG #t fine") {
+                // Stay connected until the client has reported everything.
+                done.recv().ok();
                 break lines;
             }
             lines.push(line);
@@ -6961,25 +6964,47 @@ fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
         ))))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut sent = false;
-    while !sent {
-        assert!(Instant::now() < deadline, "no transcript of the good line");
+    let (mut sent, mut refused, mut wires) = (false, false, Vec::new());
+    while !(sent && refused) {
+        assert!(
+            Instant::now() < deadline,
+            "no transcript of the good line or notice"
+        );
         match connection.try_recv() {
             Some(Event::Wire {
                 direction: WireDirection::Sent,
                 line,
                 ..
-            }) => sent = line.contains("fine"),
+            }) => {
+                sent |= line.contains("fine");
+                wires.push(line);
+            }
+            Some(Event::ServerLine(line)) => {
+                refused |= line.starts_with("Send failed:") && line.contains("refused");
+            }
             Some(Event::Disconnected(reason)) => panic!("unexpected disconnect: {reason}"),
             Some(_) => {}
             None => thread::sleep(Duration::from_millis(10)),
         }
     }
-    let written = server.join().unwrap();
+    // Nothing of a refused line is shown, however it looks.
     assert!(
-        written.iter().all(|line| !line.starts_with(b"QUIT")
-            && !line.starts_with(b"X")
-            && !line.contains(&0)),
-        "{written:?}"
+        wires.iter().all(|line| line.contains("fine")
+            || line == "[refused: line break or NUL]"
+            || ["CAP ", "NICK ", "USER "]
+                .iter()
+                .any(|verb| line.starts_with(verb))),
+        "{wires:?}"
     );
+    assert_eq!(
+        wires
+            .iter()
+            .filter(|line| *line == "[refused: line break or NUL]")
+            .count(),
+        8
+    );
+    // Not even the part before the line break reaches the socket.
+    finished.send(()).unwrap();
+    let written = server.join().unwrap();
+    assert!(written.is_empty(), "{written:?}");
 }

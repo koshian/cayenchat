@@ -145,6 +145,9 @@ impl Encoder<String> for LineCodec {
                 None => None,
             };
             if !is_single_line(&msg) {
+                if let Some(charsets) = self.charsets.as_deref() {
+                    charsets.refused_line();
+                }
                 return Ok(());
             }
             let charsets = match &pinned {

@@ -83,10 +83,14 @@ the vendored `irc-proto`, where every line of the `irc` crate (the worker's and
 the library's own PONG, CTCP replies and configured JOINs) is written to the
 socket. It scans the already formatted line once, with no allocation, and drops
 a line with a CR, LF or NUL before the final CRLF whole; the lines after it go
-on and the link stays. Accepted limitation: the codec cannot report back, so a
-dropped line is neither logged (it may hold a secret) nor shown as an error;
-the checks where a line is made give the visible errors, and the transcript,
-written when the line is queued, still shows it as sent.
+on and the link stays. The codec reports each drop through
+`BodyCharsets::refused_line` (a count and a wake-up, no content), and the
+worker shows "Send failed: N line(s) with a line break or NUL were refused".
+The transcript is written when the line is queued, before the codec runs, so
+`Transcript::line` shows any line holding CR, LF or NUL (after the usual
+redaction) only as `[refused: line break or NUL]`: the redaction knows the
+usual shapes, and a line that slipped past the checks may be anything. A
+dropped line is never logged.
 
 ### storage
 
