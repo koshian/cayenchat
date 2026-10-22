@@ -454,7 +454,9 @@ fn wrap_in_window<V: 'static>(
             }
         }));
     // A bar that is always there does not slide in (and cannot stop half way).
-    let bar = if state.always {
+    // Neither does one with an open menu: its popup lives inside the clipped
+    // bar, so Alt+letter would flicker while the bar grows.
+    let bar = if state.always || state.open {
         bar.into_any_element()
     } else {
         bar.with_animation(
