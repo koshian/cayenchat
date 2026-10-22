@@ -167,7 +167,14 @@ impl LineLayout {
             // Here is very similar to `LineWrapper::wrap_line` to determine text wrapping,
             // but there are some differences, so we have to duplicate the code here.
             if LineWrapper::is_word_char(ch) {
-                if prev_ch == ' ' && ch != ' ' && first_non_whitespace_ix.is_some() {
+                // The start of a link icon room (U+00A0 before U+2007) may
+                // follow any text, so a long unspaced prefix cannot force a
+                // break inside the room or at the URL's first letter.
+                let icon_room = ch == '\u{a0}'
+                    && text[byte_ix + ch.len_utf8()..].starts_with('\u{2007}');
+                if (icon_room || prev_ch == ' ' && ch != ' ')
+                    && first_non_whitespace_ix.is_some()
+                {
                     last_candidate_ix = Some(boundary);
                     last_candidate_x = x;
                 }

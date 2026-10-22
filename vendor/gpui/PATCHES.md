@@ -219,3 +219,14 @@ takes sorted byte offsets, passed through the new `TextSystem::shape_text_joined
 then does not use a position before such an offset as a wrap opportunity. A line
 with no other opportunity still breaks at the overflowing glyph. The offsets are
 part of the wrapped-line cache key.
+
+In `src/text_system/line_wrapper.rs`, `LineWrapper::is_word_char` counts the
+no-break space (U+00A0), figure space (U+2007) and narrow no-break space
+(U+202F) as word characters. They offered a wrap opportunity before each of
+them, so the room CayenChat keeps before a link icon (#550) could be split
+across two rows and the icon covered the start of the URL. Both wrappers
+(`LineWrapper::wrap_line` and `compute_wrap_boundaries`) use this function.
+`compute_wrap_boundaries` also offers a wrap opportunity before a no-break space
+that is followed by a figure space (the start of that room) even when no space
+precedes it, so a long unspaced prefix cannot force a break inside the room or
+at the URL's first letter.
