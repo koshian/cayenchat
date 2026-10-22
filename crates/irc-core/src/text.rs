@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //! IRC message text: formatting codes, CTCP ACTION and nickname mentions.
 
-use cayenchat_model::names;
+use cayenchat_model::{
+    display::{each_plain_char, is_formatting_code},
+    names,
+};
 use std::ops::Range;
 
-/// Removes mIRC formatting: bold, italics, underline, strikethrough,
-/// monospace, reverse, reset and color codes with their `fg[,bg]` digits.
-/// CTCP delimiters are dropped as well.
-pub fn strip_formatting(text: &str) -> String {
-    let mut plain = String::with_capacity(text.len());
-    each_plain_char(text, |_, ch| plain.push(ch));
-    plain
-}
+pub use cayenchat_model::display::strip_formatting;
 
 /// Runs `find` on `text` without formatting codes (as [`strip_formatting`]
 /// removes them) and returns the ranges it found as byte ranges of `text`.
@@ -34,53 +30,6 @@ pub fn plain_ranges(text: &str, find: impl FnOnce(&str) -> Vec<Range<usize>>) ->
         .filter(|range| !range.is_empty())
         .map(|range| offsets[range.start]..offsets[range.end - 1] + 1)
         .collect()
-}
-
-/// Whether `ch` starts a formatting code (a color code also takes the
-/// digits after it).
-fn is_formatting_code(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{1}'
-            | '\u{2}'
-            | '\u{3}'
-            | '\u{f}'
-            | '\u{11}'
-            | '\u{16}'
-            | '\u{1d}'
-            | '\u{1e}'
-            | '\u{1f}'
-    )
-}
-
-/// Calls `keep` with the offset and character of everything in `text` but
-/// formatting codes.
-fn each_plain_char(text: &str, mut keep: impl FnMut(usize, char)) {
-    fn digits(chars: &mut std::iter::Peekable<std::str::CharIndices>) -> usize {
-        let mut count = 0;
-        while count < 2 && chars.peek().is_some_and(|(_, ch)| ch.is_ascii_digit()) {
-            chars.next();
-            count += 1;
-        }
-        count
-    }
-    let mut chars = text.char_indices().peekable();
-    while let Some((offset, ch)) = chars.next() {
-        match ch {
-            '\u{3}' => {
-                if digits(&mut chars) > 0 && chars.peek().is_some_and(|(_, ch)| *ch == ',') {
-                    let mut ahead = chars.clone();
-                    ahead.next();
-                    if ahead.peek().is_some_and(|(_, ch)| ch.is_ascii_digit()) {
-                        chars.next();
-                        digits(&mut chars);
-                    }
-                }
-            }
-            ch if is_formatting_code(ch) => {}
-            ch => keep(offset, ch),
-        }
-    }
 }
 
 /// The action text of a CTCP ACTION (`/me`) message.

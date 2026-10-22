@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The settings window and the form it edits.
 
+use crate::os_text::WindowOsText;
 use crate::{
     ChatWindow, Connect, CopyDiagnostics, Disconnect, FocusNextField, FocusPreviousField,
     OpenSettings, Reconnect, ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts,
@@ -993,7 +994,7 @@ impl SettingsWindow {
     ) {
         self.settings.values.language = language;
         self.i18n = Localizer::new(language);
-        window.set_window_title(&self.i18n.text("settings_title"));
+        window.os_set_title(&self.i18n.text("settings_title"));
         for (field, key) in [
             (&self.settings.custom_host, "server_host_placeholder"),
             (&self.settings.nickname, "nickname"),
@@ -1046,7 +1047,7 @@ impl SettingsWindow {
         // The title given at window creation reaches X11 only as Latin-1 `WM_NAME`;
         // setting it again also writes the UTF-8 `_NET_WM_NAME` (issue #143).
         let i18n = Localizer::new(values.language);
-        window.set_window_title(&i18n.text("settings_title"));
+        window.os_set_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
         let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
         window.focus(&settings.nickname.focus_handle(cx));
@@ -1219,7 +1220,7 @@ impl SettingsWindow {
         }
         if loaded.language != self.settings.values.language {
             self.i18n = Localizer::new(loaded.language);
-            window.set_window_title(&self.i18n.text("settings_title"));
+            window.os_set_title(&self.i18n.text("settings_title"));
         }
         self.settings = SettingsForm::new(loaded.clone(), &self.i18n, &secrets::store(cx), cx);
         self._field_subscriptions = Self::observe_fields(&self.settings, window, cx);
@@ -1675,7 +1676,7 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        let answer = window.prompt(
+        let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("password_warning_title"),
             Some(&self.i18n.format(
@@ -1713,7 +1714,7 @@ impl SettingsWindow {
             return;
         }
         let id = profile.id.clone();
-        let answer = window.prompt(
+        let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("plaintext_pass_title"),
             Some(&self.i18n.text("plaintext_pass_detail")),
@@ -2080,7 +2081,7 @@ impl SettingsWindow {
             self.show_selected_server(cx);
             return;
         };
-        let answer = window.prompt(
+        let answer = window.os_prompt(
             PromptLevel::Warning,
             &self
                 .i18n

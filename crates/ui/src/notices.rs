@@ -24,7 +24,7 @@ use cayenchat_model::NetworkId;
 use cayenchat_model::display;
 use gpui::{prelude::*, *};
 
-use crate::ChatWindow;
+use crate::{ChatWindow, os_text::WindowOsText};
 
 const MAX_PENDING: usize = 8;
 const COOLDOWN: Duration = Duration::from_secs(30);
@@ -249,7 +249,7 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> futures_channel::oneshot::Receiver<usize> {
         self.prompt_open = true;
-        let answer = window.prompt(level, title, detail, buttons, cx);
+        let answer = window.os_prompt(level, title, detail, buttons, cx);
         let (sender, receiver) = futures_channel::oneshot::channel();
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(chosen) = answer.await {
