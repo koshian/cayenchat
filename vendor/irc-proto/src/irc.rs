@@ -60,6 +60,8 @@ impl Encoder<Message> for IrcCodec {
     type Error = error::ProtocolError;
 
     fn encode(&mut self, msg: Message, dst: &mut BytesMut) -> error::Result<()> {
-        self.inner.encode(IrcCodec::sanitize(msg.to_string()), dst)
+        // Not cut at a line break, as upstream did, which sent the first part
+        // as a command of its own: `LineCodec` drops the whole line (#554).
+        self.inner.encode(msg.to_string(), dst)
     }
 }

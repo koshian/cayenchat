@@ -1426,8 +1426,20 @@ struct Transcript {
 impl Transcript {
     /// The line to record for `message`, if lines are recorded now.
     fn line(&self, message: &IrcMessage) -> Option<String> {
-        (!self.registered || self.requested.load(Ordering::Relaxed))
-            .then(|| redacted_wire_line(message))
+        (!self.registered || self.requested.load(Ordering::Relaxed)).then(|| {
+            // Check the complete formatted line before transcript formatting
+            // can trim its ending or shorten an oversized tag section.
+            let raw_line = message.to_string();
+            let content = raw_line.strip_suffix("\r\n").unwrap_or(&raw_line);
+            if content
+                .bytes()
+                .any(|byte| matches!(byte, b'\r' | b'\n' | 0))
+            {
+                "[refused: line break or NUL]".into()
+            } else {
+                redacted_wire_line(message)
+            }
+        })
     }
 
     async fn record(&self, direction: WireDirection, line: Option<String>) {
@@ -2772,6 +2784,18 @@ async fn run_cancellable(
             {
                 worker.on_alive_deadline().await;
                 break;
+            }
+            // The codec dropped a line holding CR, LF or NUL (#554).
+            () = worker.charsets.refusal() => {
+                let count = worker.charsets.take_refused();
+                if count > 0 {
+                    let notice = Event::ServerLine(format!(
+                        "Send failed: {count} line(s) with a line break or NUL were refused"
+                    ));
+                    if worker.emit(notice).await.is_break() {
+                        break;
+                    }
+                }
             }
             _ = registration_progress.tick(), if worker.waiting_for_registration() => {
                 worker.note("Still waiting for IRC registration (001 welcome).").await;

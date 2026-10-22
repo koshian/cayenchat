@@ -130,6 +130,10 @@ pub(crate) struct ChannelCharsets {
     pinned: AtomicUsize,
     /// Lines the codec skipped because of `UTF8ONLY`.
     skipped: AtomicUsize,
+    /// Lines the codec dropped for holding CR, LF or NUL (#554), and the
+    /// wake-up that tells the worker to report them.
+    refused: AtomicUsize,
+    refusal: tokio::sync::Notify,
 }
 
 impl ChannelCharsets {
@@ -164,7 +168,19 @@ impl ChannelCharsets {
             pins: Mutex::new(HashMap::new()),
             pinned: AtomicUsize::new(0),
             skipped: AtomicUsize::new(0),
+            refused: AtomicUsize::new(0),
+            refusal: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Resolves when the codec has dropped lines; [`Self::take_refused`]
+    /// then says how many.
+    pub(crate) async fn refusal(&self) {
+        self.refusal.notified().await;
+    }
+
+    pub(crate) fn take_refused(&self) -> usize {
+        self.refused.swap(0, Ordering::Relaxed)
     }
 
     /// Fixes the encoding of the text of `line`, which is about to be queued
@@ -281,6 +297,11 @@ impl ChannelCharsets {
 impl BodyCharsets for ChannelCharsets {
     fn is_empty(&self) -> bool {
         !self.any.load(Ordering::Relaxed) && self.pinned.load(Ordering::Relaxed) == 0
+    }
+
+    fn refused_line(&self) {
+        self.refused.fetch_add(1, Ordering::Relaxed);
+        self.refusal.notify_one();
     }
 
     fn take_pin(&self, line: &str) -> Option<Pin> {

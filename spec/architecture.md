@@ -75,6 +75,23 @@ IRC transport, protocol handling, capability negotiation, TLS, reconnect behavio
 
 Must not depend on GPUI.
 
+No line with a CR, LF or NUL reaches the socket (CRLF injection, #554), however
+it was made. The checks where a line is made (`checked_command`,
+`validate_message_text`, `valid_channel`, ...) stay for their clear errors, but
+they are not what protects the server. One gate does: `LineCodec::encode` of
+the vendored `irc-proto`, where every line of the `irc` crate (the worker's and
+the library's own PONG, CTCP replies and configured JOINs) is written to the
+socket. It scans the already formatted line once, with no allocation, and drops
+a line with a CR, LF or NUL before the final CRLF whole; the lines after it go
+on and the link stays. The codec reports each drop through
+`BodyCharsets::refused_line` (a count and a wake-up, no content), and the
+worker shows "Send failed: N line(s) with a line break or NUL were refused".
+The transcript is written when the line is queued, before the codec runs, so
+`Transcript::line` checks the complete formatted line for CR, LF or NUL before
+redaction can trim line endings or shorten tags. Any such line is shown only as
+`[refused: line break or NUL]`; otherwise normal secret redaction and tag
+shortening apply. A dropped line is never logged with its contents.
+
 ### storage
 
 Persistent configuration, preferences, and history/log storage.
@@ -165,7 +182,7 @@ goes through its gate; a change that cannot should say why.
 
 | Sink | Gate | Status |
 | --- | --- | --- |
-| IRC socket: every line written | One check of the whole line before `client.send` (no CR, LF or NUL before the final CRLF); the per-command validators (`checked_command`, `validate_message_text`, `valid_channel`, ...) give the errors | Per command today; the single gate is #554 |
+| IRC socket: every line written | One check of the whole line in `LineCodec::encode`, just before the socket (no CR, LF or NUL before the final CRLF); the per-command validators (`checked_command`, `validate_message_text`, `valid_channel`, ...) give the errors | Done (#554) |
 | Log file paths | `storage::chatlog::path_component` | Done; more Windows reserved names in #553 |
 | Log file contents | The line escaping in `storage::chatlog` (controls, bidirectional controls) | Done |
 | Retained lines: messages, topics, server lines | `app::new_message` (and the topic and edit paths): bidirectional controls become U+200B, of the same length, so offsets for links and selection hold. It is the only way a retained line is built | Done |
