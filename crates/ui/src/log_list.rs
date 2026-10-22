@@ -204,6 +204,17 @@ impl LogList {
         self.scroll_to_row(self.state.item_count(), px(0.));
     }
 
+    /// Whether the end of the last row is out of view. Reads the layout of
+    /// the previous frame, so it is cheap, and a list whose rows all fit has
+    /// nothing behind.
+    pub fn is_behind_latest(&self) -> bool {
+        /// Less than this is rounding of the measured heights.
+        const TOLERANCE: f32 = 1.;
+        let max = f32::from(self.state.max_offset_for_scrollbar().height);
+        let offset = f32::from(-self.state.scroll_px_offset_for_scrollbar().y);
+        offset < max - TOLERANCE
+    }
+
     /// How many message rows lie above row `visible_start` (the first row a
     /// scroll event reports as visible).
     pub fn message_rows_above(&self, visible_start: usize) -> usize {

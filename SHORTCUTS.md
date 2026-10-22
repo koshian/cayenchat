@@ -10,6 +10,7 @@
 | Next unread channel | `Ctrl+Tab` or `Opt+Space` | `Ctrl+Tab` |
 | Previous unread channel | `Ctrl+Shift+Tab` or `Opt+Shift+Space` | `Ctrl+Shift+Tab` |
 | Previously selected channel | `Opt+Tab` | `Alt+Left` |
+| Scroll the upper log to the latest message (also a button at its lower right) | `Cmd+J` | `Ctrl+End` |
 | Previous / next active channel | `Cmd+Up/Down` or `Cmd+Opt+Up/Down` | `Ctrl+PageUp/PageDown` |
 | Previous / next channel | `Cmd+[` / `Cmd+]` or `Ctrl+Up/Down` | `Alt+Up/Down` |
 | Previous / next active server | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
