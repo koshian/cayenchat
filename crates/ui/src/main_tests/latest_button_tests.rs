@@ -167,3 +167,42 @@ fn an_empty_log_is_left_alone(cx: &mut TestAppContext) {
     assert!(!behind(&chat, cx));
     assert!(!button_shown(&chat, cx));
 }
+
+#[gpui::test]
+fn the_button_follows_a_resize_without_further_input(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx, 200);
+    // One wheel step above the end of the log: the button shows.
+    chat.update(cx, |chat, _| {
+        chat.main_lists[&chat.state.selection()]
+            .state
+            .scroll_to(ListOffset {
+                item_ix: 150,
+                offset_in_item: px(0.),
+            });
+    });
+    draw(cx);
+    assert!(button_shown(&chat, cx));
+
+    // A window tall enough to show everything from here: only the real
+    // updates run, none is forced.
+    cx.simulate_resize(gpui::size(px(1000.), px(6000.)));
+    cx.run_until_parked();
+    assert!(!behind(&chat, cx));
+    assert!(!button_shown(&chat, cx));
+}
+
+#[gpui::test]
+fn a_dialog_keeps_the_shortcut_from_moving_the_log(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx, 200);
+    scroll_to_top(&chat, cx);
+    chat.update_in(cx, |chat, window, cx| {
+        chat.export_settings(&crate::ExportSettings, window, cx)
+    });
+    draw(cx);
+    assert!(chat.read_with(cx, |chat, _| !chat.transfer_dialog.is_idle()));
+
+    cx.simulate_keystrokes(JUMP);
+    draw(cx);
+    assert!(behind(&chat, cx), "the log stayed where it was");
+    assert!(button_shown(&chat, cx));
+}

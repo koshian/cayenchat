@@ -124,7 +124,7 @@ impl ChatWindow {
     /// Whether the wizard is on screen: not while an import is picked, read
     /// or confirmed (it comes back if that ends without servers), and not
     /// once there are servers, except to report a failed connection.
-    fn setup_wizard_visible(&self) -> bool {
+    pub(crate) fn setup_wizard_visible(&self) -> bool {
         self.setup_wizard.open
             && self.transfer_dialog.is_idle()
             && (self.saved.servers.is_empty()

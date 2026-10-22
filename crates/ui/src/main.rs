@@ -4202,7 +4202,16 @@ impl ChatWindow {
     /// the focus, the selection or the search; nothing happens under a
     /// question that has the window's attention.
     fn scroll_main_log_to_latest(&mut self, cx: &mut Context<Self>) {
-        if self.quit_prompt_open || self.part_prompt.is_some() || self.member_prompt.is_some() {
+        // The shortcut runs before a dialog's own key handling, so every
+        // dialog drawn over the window has to be excluded here.
+        if self.quit_prompt_open
+            || self.part_prompt.is_some()
+            || self.member_prompt.is_some()
+            || !self.nick_prompts.is_empty()
+            || !self.key_prompts.is_empty()
+            || !self.transfer_dialog.is_idle()
+            || self.setup_wizard_visible()
+        {
             return;
         }
         self.sync_log_lists();
@@ -6349,6 +6358,24 @@ impl ChatWindow {
                 {
                     self.latest_button_drawn = latest_button.is_some();
                 }
+                // The button follows the previous frame's layout, which
+                // changes without a scroll when the window is resized or a
+                // row is measured. Check once after this frame is laid out and
+                // draw again only when the answer changed.
+                let shown = latest_button.is_some();
+                let selected = selection;
+                let chat = cx.weak_entity();
+                cx.defer(move |cx| {
+                    let _ = chat.update(cx, |chat, cx| {
+                        let behind = chat
+                            .main_lists
+                            .get(&selected)
+                            .is_some_and(|list| list.is_behind_latest());
+                        if behind != shown && chat.state.selection() == selected {
+                            cx.notify();
+                        }
+                    });
+                });
                 div()
                     .relative()
                     .size_full()
