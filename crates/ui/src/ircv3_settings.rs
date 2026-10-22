@@ -34,6 +34,7 @@ use crate::{
     input,
     session::PeerAvatarConnection,
     settings_theme,
+    tooltip::TextTooltip,
 };
 
 /// Server descriptions shown with a rejection are cut to this many
