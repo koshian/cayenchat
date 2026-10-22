@@ -535,8 +535,8 @@ mod tests {
         };
         assert_eq!(latest(&Overrides::new()), [default]);
         assert_eq!(
-            latest(&overrides(&[("scroll_to_latest", "ctrl-alt-j")])),
-            ["ctrl-alt-j"]
+            latest(&overrides(&[("scroll_to_latest", "ctrl-shift-j")])),
+            ["ctrl-shift-j"]
         );
     }
 
