@@ -3951,7 +3951,7 @@ impl ChatWindow {
         self.set_toolbar_shown(shown, cx);
     }
 
-    /// Hides the menu bar until Alt or F10 (the settings window's checkbox)
+    /// Hides the menu bar until a keyboard or pointer request (the settings window's checkbox)
     /// or shows it all the time, and remembers the choice.
     fn toggle_menu_bar(&mut self, _: &ToggleMenuBar, _: &mut Window, cx: &mut Context<Self>) {
         let auto_hide = self.menu_bar.always();

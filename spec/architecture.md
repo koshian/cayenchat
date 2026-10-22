@@ -470,21 +470,22 @@ saved credentials are available at startup. The macOS
 application menu (Settings…) and Command+, open that window (menus: D045);
 Windows/Linux use Ctrl+, or an in-window menu bar that is shown all the time by
 default (users found a hidden bar hard to discover, issue #60). The Startup &
-Behavior tab has "Hide the menu bar until Alt or F10" (`menu_bar_auto_hide`, off by default,
-added without a version change): then the bar is revealed by pressing Alt alone,
-by F10, or by resting the pointer for 0.4 s in a 6 px strip at the top of the
-content. Alt alone is commonly an IME on/off key, in which case the IME consumes
-it and the app never sees it, so F10 and hover are the reliable routes. A
+Behavior tab has "Hide the menu bar until requested" (`menu_bar_auto_hide`, off by default,
+added without a version change): then the bar is revealed by F10, an explicit
+Alt+menu access key, or by resting the pointer for 0.4 s in a 6 px strip at the
+top of the content. Alt alone is not inferred as a menu request because it can
+be an IME or OS key. A
 hover-revealed bar slides in and hides again once the pointer moves more than
 12 px below it, unless a menu is open. Hover reveal is not a Windows/GNOME
 convention (it resembles macOS full-screen menus). A bar that is always shown
 has no slide-in animation (a frozen animation was one suspected cause of a
-half-drawn bar, issue #87) and Alt/F10 only move keyboard use in and out of it.
+half-drawn bar, issue #87); Alt only underlines access keys and F10 enters or
+leaves keyboard use.
 View → Hide/Show Menu Bar (Windows/Linux only; macOS's bar is the system's, #391)
 flips the same `menu_bar_auto_hide` setting and saves it, independently of
 the toolbar item; its label follows the setting, and an open settings window
-follows the file. A hidden bar stays reachable by Alt, F10 and hover, and
-its View menu offers Show Menu Bar.
+follows the file. A hidden bar stays reachable by F10, explicit Alt+menu access
+keys and hover; its View menu offers Show Menu Bar.
 The settings window has no bar (issue #145; its menus were all disabled).
 In it Escape (#339) closes one open layer per press (auto-join dialog, avatar
 editor, color or font picker, server, language or encoding list) and then the window

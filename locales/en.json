@@ -205,7 +205,7 @@
   "shortcut_conflict_fixed": "Also used by a shortcut that cannot be changed",
   "shortcut_voiceover": "Ctrl+Option is used by VoiceOver",
   "shortcut_altgr": "Ctrl+Alt is AltGr on some layouts",
-  "menu_bar_auto_hide": "Hide the menu bar until Alt or F10",
+  "menu_bar_auto_hide": "Hide the menu bar until requested",
   "text_key_theme": "Draft editing keys",
   "text_key_theme_auto": "Follow GTK",
   "text_key_theme_standard": "Standard",

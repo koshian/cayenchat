@@ -5,7 +5,7 @@ use std::time::Duration;
 
 const HEIGHT: f32 = 28.;
 /// Invisible strip at the top of the content that reveals the bar on hover.
-/// Alt alone is often an IME toggle, so it cannot be the only way in.
+/// Alt alone is not treated as a menu request; F10 and hover remain available.
 const HOT_ZONE: f32 = 6.;
 const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(400);
 /// How often a hover-revealed bar checks whether the pointer has left it.
@@ -51,7 +51,6 @@ pub struct MenuBar {
     open: bool,
     selected: Option<usize>,
     alt_down: bool,
-    alt_candidate: bool,
     /// Shown by hovering, so leaving the bar hides it again.
     hover_reveal: bool,
     /// Invalidates pending hover timers when the pointer moves on.
@@ -81,15 +80,13 @@ impl MenuBar {
         let handle = window.window_handle();
         let owner = cx.weak_entity();
         // GPUI dispatches key bindings before element key listeners. Intercept
-        // first so Enter/arrows cannot send or edit a draft while using menus,
-        // and bound Alt shortcuts also cancel the lone-Alt candidate.
+        // first so Enter/arrows cannot send or edit a draft while using menus.
         let keys = cx.intercept_keystrokes(move |event, window, cx| {
             if window.window_handle() != handle {
                 return;
             }
             let _ = owner.update(cx, |this, cx| {
                 let state = access(this);
-                state.alt_candidate = false;
                 let key = &event.keystroke;
                 if key.key == "f10" && !key.modifiers.modified() {
                     if state.visible {
@@ -135,9 +132,8 @@ impl MenuBar {
             "left" | "right" => self.move_menu(key.key == "left", menus.len()),
             "up" | "down" => self.move_item(key.key == "up", &enabled[self.active]),
             "enter" | "space" => {
-                // A bar that was only reached (an IME toggle such as Alt+~ can
-                // look like a lone Alt) has no item chosen yet: leave the key to
-                // the input instead of opening a menu with it.
+                // Revealing the bar alone does not select a menu item: leave
+                // Enter/Space to the input instead of opening a menu.
                 let (true, Some(row)) = (self.open, self.selected) else {
                     self.close();
                     return false;
@@ -184,7 +180,6 @@ impl MenuBar {
         self.visible = false;
         self.open = false;
         self.selected = None;
-        self.alt_candidate = false;
         self.hover_reveal = false;
         self.hover_generation += 1;
     }
@@ -214,7 +209,6 @@ impl MenuBar {
         if composing {
             return false;
         }
-        self.alt_candidate = false;
         self.hover_reveal = false;
         self.hover_generation += 1;
         if !self.visible {
@@ -227,21 +221,6 @@ impl MenuBar {
     }
 
     fn modifiers_changed(&mut self, modifiers: Modifiers) {
-        let other =
-            modifiers.control || modifiers.shift || modifiers.platform || modifiers.function;
-        if modifiers.alt && !self.alt_down {
-            self.alt_candidate = !other;
-        }
-        if other {
-            self.alt_candidate = false;
-        }
-        if self.alt_down && !modifiers.alt && self.alt_candidate {
-            if self.visible {
-                self.close();
-            } else {
-                self.reveal(false);
-            }
-        }
         self.alt_down = modifiers.alt;
     }
 
@@ -395,7 +374,6 @@ fn wrap_in_window<V: 'static>(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         let state = access(this);
-                        state.alt_candidate = false;
                         state.hover_reveal = false;
                         // Using the bar by mouse also lets the keyboard
                         // move around it, as when it was revealed.
@@ -476,7 +454,9 @@ fn wrap_in_window<V: 'static>(
             }
         }));
     // A bar that is always there does not slide in (and cannot stop half way).
-    let bar = if state.always {
+    // Neither does one with an open menu: its popup lives inside the clipped
+    // bar, so Alt+letter would flicker while the bar grows.
+    let bar = if state.always || state.open {
         bar.into_any_element()
     } else {
         bar.with_animation(
@@ -508,9 +488,6 @@ fn wrap_in_window<V: 'static>(
         .text_size(px(13.))
         .line_height(px(26.))
         .text_color(theme.text)
-        .capture_any_mouse_down(cx.listener(move |this, _, _, _| {
-            access(this).alt_candidate = false;
-        }))
         .on_modifiers_changed(
             cx.listener(move |this, event: &ModifiersChangedEvent, _, cx| {
                 access(this).modifiers_changed(event.modifiers);
@@ -525,7 +502,6 @@ fn wrap_in_window<V: 'static>(
                 .child(content)
                 .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
                     let state = access(this);
-                    state.alt_candidate = false;
                     if state.visible {
                         state.close();
                         cx.stop_propagation();
@@ -674,14 +650,14 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert_eq!(state(cx), (true, false, false));
 
-        // Alt only moves keyboard use in and out; the bar never goes away.
+        // Alt may underline access keys, but releasing it never opens menus.
         let alt = Modifiers {
             alt: true,
             ..Modifiers::default()
         };
         cx.simulate_modifiers_change(alt);
         cx.simulate_modifiers_change(Modifiers::default());
-        assert_eq!(state(cx), (true, true, false));
+        assert_eq!(state(cx), (true, false, false));
         cx.simulate_modifiers_change(alt);
         cx.simulate_modifiers_change(Modifiers::default());
         assert_eq!(state(cx), (true, false, false));
@@ -692,7 +668,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn first_render_and_alt_reveal_use_a_ready_dispatch_tree(cx: &mut gpui::TestAppContext) {
+    fn first_render_and_menu_reveal_use_a_ready_dispatch_tree(cx: &mut gpui::TestAppContext) {
         use gpui::{
             Context, Entity, Focusable, IntoElement, Menu, MenuItem, Render, Window, div,
             prelude::*,
@@ -760,15 +736,11 @@ mod tests {
         };
         cx.simulate_modifiers_change(alt);
         cx.simulate_modifiers_change(Modifiers::default());
-        assert!(view.read_with(cx, |view, _| view.menu.visible));
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
         cx.update(|window, cx| {
             assert!(window.is_action_available(&crate::CopyDiagnostics, cx));
         });
-        cx.simulate_modifiers_change(alt);
-        cx.simulate_modifiers_change(Modifiers::default());
-        assert!(!view.read_with(cx, |view, _| view.menu.visible));
-
-        // F10 works when Alt alone is taken by an IME toggle.
+        // F10 is the keyboard entry point when Alt is an IME or OS key.
         cx.simulate_keystrokes("f10");
         assert!(view.read_with(cx, |view, _| view.menu.visible));
         assert_eq!(
@@ -777,14 +749,6 @@ mod tests {
         );
         cx.simulate_keystrokes("f10");
         assert!(!view.read_with(cx, |view, _| view.menu.visible));
-
-        // A lone-Alt look-alike (IME toggle) must not let Enter pick a menu
-        // item: it closes the bar and goes on to the input.
-        cx.simulate_modifiers_change(alt);
-        cx.simulate_modifiers_change(Modifiers::default());
-        assert!(view.read_with(cx, |view, _| view.menu.visible));
-        cx.simulate_keystrokes("enter");
-        assert!(view.read_with(cx, |view, _| !view.menu.visible && !view.menu.open));
 
         // Alt+letter opens that menu and shows the bar; releasing Alt first and
         // then typing the letter does not.
@@ -848,27 +812,12 @@ mod tests {
     }
 
     #[test]
-    fn alt_alone_toggles_but_chords_do_not() {
+    fn alt_alone_does_not_reveal_menu() {
         let mut state = MenuBar::default();
         let alt = Modifiers {
             alt: true,
             ..Modifiers::default()
         };
-        state.modifiers_changed(alt);
-        assert!(!state.visible);
-        state.modifiers_changed(Modifiers::default());
-        assert!(state.visible);
-        state.modifiers_changed(alt);
-        state.modifiers_changed(Modifiers::default());
-        assert!(!state.visible);
-        state.modifiers_changed(alt);
-        state.alt_candidate = false; // A normal key or mouse click while Alt is held.
-        state.modifiers_changed(Modifiers::default());
-        assert!(!state.visible);
-        state.modifiers_changed(Modifiers {
-            control: true,
-            ..alt
-        });
         state.modifiers_changed(alt);
         state.modifiers_changed(Modifiers::default());
         assert!(!state.visible);
