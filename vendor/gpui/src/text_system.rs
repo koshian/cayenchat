@@ -414,6 +414,21 @@ impl WindowTextSystem {
         wrap_width: Option<Pixels>,
         line_clamp: Option<usize>,
     ) -> Result<SmallVec<[WrappedLine; 1]>> {
+        self.shape_text_joined(text, font_size, runs, wrap_width, line_clamp, None)
+    }
+
+    /// [`Self::shape_text`] with `joins`: sorted byte offsets into `text`
+    /// before which the wrapper does not start a new line unless nothing
+    /// earlier on the line fits (CayenChat: phrase-aware wrapping).
+    pub fn shape_text_joined(
+        &self,
+        text: SharedString,
+        font_size: Pixels,
+        runs: &[TextRun],
+        wrap_width: Option<Pixels>,
+        line_clamp: Option<usize>,
+        joins: Option<&Arc<[u32]>>,
+    ) -> Result<SmallVec<[WrappedLine; 1]>> {
         let mut runs = runs.iter().filter(|run| run.len > 0).cloned().peekable();
         let mut font_runs = self.font_runs_pool.lock().pop().unwrap_or_default();
 
@@ -476,12 +491,25 @@ impl WindowTextSystem {
                 run_start += run_len_within_line;
             }
 
+            // The offsets are relative to the whole text; a later line gets
+            // its own, shifted copy.
+            let line_joins: Option<Arc<[u32]>> = joins.map(|joins| {
+                if line_start == 0 {
+                    joins.clone()
+                } else {
+                    joins
+                        .iter()
+                        .filter_map(|at| at.checked_sub(line_start as u32))
+                        .collect()
+                }
+            });
             let layout = self.line_layout_cache.layout_wrapped_line(
                 &line_text,
                 font_size,
                 &font_runs,
                 wrap_width,
                 Some(max_wrap_lines - wrapped_lines),
+                line_joins.as_ref(),
             );
             wrapped_lines += layout.wrap_boundaries.len();
 
