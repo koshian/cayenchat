@@ -471,15 +471,21 @@ pub struct Appearance {
     pub highlight_color: String,
     pub sub_log_background: String,
     pub sub_log_alternate: String,
-    /// Background of the bubble that shows a shortened URL in full. Added
-    /// after version 15 without a version change; files without it read as
-    /// the default.
+    /// Background of the hover popups in the logs, shared by the full URL of
+    /// a shortened one and the original of a decoded character reference
+    /// (the `url_tooltip_` keys predate the second). Added after version 15
+    /// without a version change; files without it read as the default.
     pub url_tooltip_color: String,
-    /// Link text color in that bubble. Added after version 15 without a
+    /// Link text color in those popups. Added after version 15 without a
     /// version change; files without it read as the default.
     pub url_tooltip_link_color: String,
-    /// How opaque that bubble is, in percent (`MIN_URL_TOOLTIP_OPACITY` to
-    /// 100). Added after version 15 without a version change.
+    /// Plain text color in those popups. Added after version 15 without a
+    /// version change; its absence marks a file that still has the former
+    /// light popup defaults (see `migrate_hover_popup_defaults`).
+    pub url_tooltip_text_color: String,
+    /// How opaque the popup background is, in percent
+    /// (`MIN_URL_TOOLTIP_OPACITY` to 100); the text and buttons stay opaque.
+    /// Added after version 15 without a version change.
     pub url_tooltip_opacity: u8,
     /// Text and underline of URLs in the channel logs. Added after version 15
     /// without a version change; files without it read as the default.
@@ -528,7 +534,13 @@ pub struct Appearance {
 /// Colors the palette holds.
 pub const MAX_SAVED_COLORS: usize = 24;
 
-/// Opacity of the full-URL bubble, in percent. Below the minimum the text
+/// Defaults of the hover popups: a dark popup in both themes.
+const HOVER_POPUP_COLOR: &str = "#1B1D20";
+const HOVER_POPUP_LINK_COLOR: &str = "#78AAFF";
+const HOVER_POPUP_TEXT_COLOR: &str = "#E3E6EA";
+
+/// Opacity of the hover popup background, in percent (the transparency is
+/// 100 minus it). The minimum allows 80% transparency; below it the text
 /// would be hard to read.
 pub const MIN_URL_TOOLTIP_OPACITY: u8 = 20;
 pub const DEFAULT_URL_TOOLTIP_OPACITY: u8 = 80;
@@ -548,6 +560,7 @@ pub struct DarkColors {
     pub link_color: String,
     pub link_background: String,
     pub url_tooltip_link_color: String,
+    pub url_tooltip_text_color: String,
 }
 
 impl Default for DarkColors {
@@ -561,10 +574,11 @@ impl Default for DarkColors {
             highlight_color: "#EFA0BE".into(),
             sub_log_background: "#24272B".into(),
             sub_log_alternate: "#2C3036".into(),
-            url_tooltip_color: "#2A2D32".into(),
+            url_tooltip_color: HOVER_POPUP_COLOR.into(),
             link_color: "#78AAFF".into(),
             link_background: String::new(),
-            url_tooltip_link_color: "#78AAFF".into(),
+            url_tooltip_link_color: HOVER_POPUP_LINK_COLOR.into(),
+            url_tooltip_text_color: HOVER_POPUP_TEXT_COLOR.into(),
         }
     }
 }
@@ -580,8 +594,9 @@ impl Default for Appearance {
             highlight_color: "#D46A8E".into(),
             sub_log_background: "#F9FAFB".into(),
             sub_log_alternate: "#F2F5FF".into(),
-            url_tooltip_color: "#FFFFFF".into(),
-            url_tooltip_link_color: "#0645AD".into(),
+            url_tooltip_color: HOVER_POPUP_COLOR.into(),
+            url_tooltip_link_color: HOVER_POPUP_LINK_COLOR.into(),
+            url_tooltip_text_color: HOVER_POPUP_TEXT_COLOR.into(),
             url_tooltip_opacity: DEFAULT_URL_TOOLTIP_OPACITY,
             link_color: "#0645AD".into(),
             link_background: String::new(),
@@ -657,6 +672,8 @@ impl Appearance {
             ("Dark link", &self.dark.link_color),
             ("URL tooltip link", &self.url_tooltip_link_color),
             ("Dark URL tooltip link", &self.dark.url_tooltip_link_color),
+            ("URL tooltip text", &self.url_tooltip_text_color),
+            ("Dark URL tooltip text", &self.dark.url_tooltip_text_color),
             ("Dark member list", &self.dark.member_list_background),
             ("Dark main log", &self.dark.main_log_background),
             ("Dark main alternate", &self.dark.main_log_alternate),
@@ -1595,6 +1612,64 @@ fn clear_saved_passwords_from(path: &Path, server_id: &str) -> Result<(), String
     Ok(())
 }
 
+/// The hover popups became dark by default and gained a text color. A file
+/// without `url_tooltip_text_color` predates that, and the settings window
+/// saved every color, so the former defaults (white popup with a blue link,
+/// dark gray with a light blue link) are in it even where the user never
+/// chose them. Those exact values move to the new defaults; any other color
+/// the user picked is kept. Once the file is saved with the text color, later
+/// choices of the old values stay. A user who had chosen exactly an old
+/// default loses it once; that cannot be told apart.
+fn migrate_hover_popup_defaults(value: &mut serde_json::Value) {
+    let Some(appearance) = value
+        .get_mut("appearance")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    if appearance.contains_key("url_tooltip_text_color") {
+        return;
+    }
+    fn replace(
+        colors: &mut serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        old: &[&str],
+        new: &str,
+    ) {
+        let is_old = colors
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| old.iter().any(|old| old.eq_ignore_ascii_case(value)));
+        if is_old {
+            colors.insert(key.into(), new.into());
+        }
+    }
+    replace(
+        appearance,
+        "url_tooltip_color",
+        &["#FFFFFF", "#2A2D32"],
+        HOVER_POPUP_COLOR,
+    );
+    replace(
+        appearance,
+        "url_tooltip_link_color",
+        &["#0645AD"],
+        HOVER_POPUP_LINK_COLOR,
+    );
+    if let Some(dark) = appearance
+        .get_mut("dark")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        replace(dark, "url_tooltip_color", &["#2A2D32"], HOVER_POPUP_COLOR);
+        replace(
+            dark,
+            "url_tooltip_link_color",
+            &["#78AAFF"],
+            HOVER_POPUP_LINK_COLOR,
+        );
+    }
+}
+
 /// Moves the old application-wide `appearance.user_avatars` into every server
 /// that has no value of its own, then drops it, so a file is migrated once
 /// and the old key is never written back (D023). A missing or non-boolean
@@ -1645,6 +1720,7 @@ fn parse_settings(bytes: &[u8], unchanged: &str) -> Result<Settings, String> {
         .map_err(|error| format!("Could not parse settings: {error}"))?;
     let mut value = value;
     move_legacy_user_avatars(&mut value);
+    migrate_hover_popup_defaults(&mut value);
     let version = value.get("version").and_then(serde_json::Value::as_u64);
     let settings = match version {
         Some(1) => serde_json::from_value::<OldSettings>(value)
@@ -2686,7 +2762,8 @@ mod tests {
         dark.remove("url_tooltip_link_color");
         let settings: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(settings.appearance, Appearance::default());
-        assert_eq!(settings.appearance.url_tooltip_link_color, "#0645AD");
+        assert_eq!(settings.appearance.url_tooltip_link_color, "#78AAFF");
+        assert_eq!(settings.appearance.url_tooltip_text_color, "#E3E6EA");
         assert_eq!(settings.appearance.dark.url_tooltip_link_color, "#78AAFF");
         assert_eq!(settings.appearance.url_tooltip_opacity, 80);
 
@@ -2707,6 +2784,43 @@ mod tests {
         appearance.url_tooltip_link_color = "#0645AD".into();
         appearance.dark.url_tooltip_link_color = "blue".into();
         assert!(appearance.validate().is_err());
+        appearance.dark.url_tooltip_link_color = "#78AAFF".into();
+        appearance.url_tooltip_text_color = "white".into();
+        assert!(appearance.validate().is_err());
+    }
+
+    #[test]
+    fn hover_popup_defaults_migrate_once_and_keep_chosen_colors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        // A file saved before the text color existed: the former defaults in
+        // the light colors, a custom link color in the dark ones.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        let appearance = old["appearance"].as_object_mut().unwrap();
+        appearance.remove("url_tooltip_text_color");
+        appearance.insert("url_tooltip_color".into(), "#ffffff".into());
+        appearance.insert("url_tooltip_link_color".into(), "#0645AD".into());
+        appearance.insert("url_tooltip_opacity".into(), 55.into());
+        let dark = appearance["dark"].as_object_mut().unwrap();
+        dark.remove("url_tooltip_text_color");
+        dark.insert("url_tooltip_color".into(), "#2A2D32".into());
+        dark.insert("url_tooltip_link_color".into(), "#FFEE00".into());
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let settings = load_from(&path).unwrap().unwrap();
+        let appearance = &settings.appearance;
+        assert_eq!(appearance.url_tooltip_color, "#1B1D20");
+        assert_eq!(appearance.url_tooltip_link_color, "#78AAFF");
+        assert_eq!(appearance.url_tooltip_opacity, 55);
+        assert_eq!(appearance.dark.url_tooltip_color, "#1B1D20");
+        assert_eq!(appearance.dark.url_tooltip_link_color, "#FFEE00");
+
+        // After a save the text color is there, so a later choice of an old
+        // value is kept.
+        let mut settings = settings;
+        settings.appearance.url_tooltip_color = "#FFFFFF".into();
+        save_to(&path, &settings).unwrap();
+        let reloaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(reloaded.appearance.url_tooltip_color, "#FFFFFF");
     }
 
     #[test]

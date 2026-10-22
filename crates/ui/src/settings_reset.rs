@@ -192,6 +192,14 @@ impl SettingsWindow {
                 &form.dark_url_tooltip_link_color,
                 &dark.url_tooltip_link_color,
             ),
+            (
+                &form.url_tooltip_text_color,
+                &appearance.url_tooltip_text_color,
+            ),
+            (
+                &form.dark_url_tooltip_text_color,
+                &dark.url_tooltip_text_color,
+            ),
             (&form.main_log_font, &appearance.main_log_font),
             (&form.sub_log_font, &appearance.sub_log_font),
             (&form.member_font, &appearance.member_font),
