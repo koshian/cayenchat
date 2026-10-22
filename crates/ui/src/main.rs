@@ -7834,15 +7834,16 @@ impl ChatWindow {
             style.compact_urls,
             style.decode_char_refs,
         ));
-        let full_urls: Vec<_> = compact
-            .shortened(urls)
-            .map(|(range, url)| (range, SharedString::from(url.to_owned())))
-            .collect();
         let originals: Vec<_> = compact
             .decoded(&message.text)
             .map(|(range, original)| (range, SharedString::from(original.to_owned())))
             .collect();
         let urls = compact.shown_urls(urls);
+        // Every URL shows its full form on hover, shortened or not.
+        let full_urls: Vec<_> = urls
+            .iter()
+            .map(|(range, url)| (range.clone(), SharedString::from(url.clone())))
+            .collect();
         let chips: Vec<_> = compact.linked().collect();
         let selected_range = self
             .log_selection
@@ -7931,7 +7932,7 @@ impl ChatWindow {
         let styled = if full_urls.is_empty() && originals.is_empty() {
             styled.into_any_element()
         } else {
-            // The full URL of a shortened one shows on hover; clicking it
+            // The full URL of any link shows on hover; clicking it
             // opens the URL. A decoded character reference shows its
             // original text, which a button copies.
             InteractiveText::new(("message-urls", index), styled)

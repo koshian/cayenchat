@@ -33,8 +33,6 @@ struct Span {
     shown: Range<usize>,
     /// Characters of decoded character references, as opposed to a URL.
     decoded: bool,
-    /// A URL whose label leaves out part of it.
-    cut: bool,
 }
 
 /// A message's text as drawn, with the URLs found in it.
@@ -71,26 +69,26 @@ impl Compact {
         shorten: bool,
         decode: bool,
     ) -> Self {
-        // (original range, shown text, decoded reference, cut URL)
-        let mut replacements: Vec<(Range<usize>, String, bool, bool)> = Vec::new();
+        // (original range, shown text, decoded reference)
+        let mut replacements: Vec<(Range<usize>, String, bool)> = Vec::new();
         if shorten {
-            replacements.extend(urls.iter().map(|(range, _)| {
-                let (label, cut) = label(&text[range.clone()]);
-                (range.clone(), label, false, cut)
-            }));
+            replacements.extend(
+                urls.iter()
+                    .map(|(range, _)| (range.clone(), label(&text[range.clone()]).0, false)),
+            );
         }
         if decode {
             replacements.extend(
                 crate::char_refs::find(text, urls)
                     .into_iter()
-                    .map(|(range, shown)| (range, shown, true, false)),
+                    .map(|(range, shown)| (range, shown, true)),
             );
             replacements.sort_by_key(|(range, ..)| range.start);
         }
         let mut shown = String::new();
         let mut spans = Vec::new();
         let mut cursor = 0;
-        for (range, label, decoded, cut) in replacements {
+        for (range, label, decoded) in replacements {
             shown.push_str(&text[cursor..range.start]);
             let start = shown.len();
             shown.push_str(&label);
@@ -98,7 +96,6 @@ impl Compact {
                 original: range.clone(),
                 shown: start..shown.len(),
                 decoded,
-                cut,
             });
             cursor = range.end;
         }
@@ -202,21 +199,6 @@ impl Compact {
             .filter(|span| !span.decoded)
             .map(|span| span.shown.clone())
     }
-
-    /// The full URLs whose short form is drawn, with where.
-    pub(crate) fn shortened<'a>(
-        &'a self,
-        urls: &'a [(Range<usize>, String)],
-    ) -> impl Iterator<Item = (Range<usize>, &'a str)> + 'a {
-        self.spans
-            .iter()
-            .filter(|span| !span.decoded && span.cut)
-            .filter_map(|span| {
-                urls.iter()
-                    .find(|(range, _)| *range == span.original)
-                    .map(|(_, url)| (span.shown.clone(), url.as_str()))
-            })
-    }
 }
 
 #[cfg(test)]
@@ -240,7 +222,6 @@ mod tests {
             compact.text(),
             "see \u{a0}\u{2007}\u{2007}\u{202f}https://example.com/a\u{a0} now"
         );
-        assert_eq!(compact.shortened(&urls(text)).count(), 0);
         assert_eq!(compact.linked().next(), Some(4..38));
         assert_eq!(compact.original(4), 4);
         assert_eq!(compact.original(38), 25);
@@ -321,10 +302,21 @@ mod tests {
         let text = "https://github.com/koshian/cayenchat/issues/151?tab=a";
         let found = urls(text);
         let compact = Compact::new(text, &found, true, false);
-        let shortened: Vec<_> = compact.shortened(&found).collect();
-        assert_eq!(shortened.len(), 1);
-        assert_eq!(shortened[0].1, found[0].1);
-        assert_eq!(compact.shown_urls(&found)[0].0, 0..compact.text().len());
+        let shown = compact.shown_urls(&found);
+        assert_eq!(shown[0].1, found[0].1);
+        assert_eq!(shown[0].0, 0..compact.text().len());
+    }
+
+    #[test]
+    fn every_url_is_located_in_the_drawn_text() {
+        let text = "a https://example.com/ b";
+        let found = urls(text);
+        let plain = Compact::new(text, &found, false, false);
+        assert_eq!(plain.shown_urls(&found), found);
+        let marked = Compact::new(text, &found, true, false);
+        let shown = marked.shown_urls(&found);
+        assert_eq!(shown[0].1, found[0].1);
+        assert!(marked.text()[shown[0].0.clone()].contains("example.com"));
     }
 
     #[test]
@@ -332,16 +324,11 @@ mod tests {
         let text = "see https://github.com/koshian/cayenchat/issues/151?tab=a ok";
         let found = urls(text);
         let compact = Compact::new(text, &found, true, false);
-        // Rendering looks the URLs up by their original ranges.
-        let shortened: Vec<_> = compact.shortened(&found).collect();
-        assert_eq!(shortened.len(), 1);
-        let (range, url) = &shortened[0];
+        let shown = compact.shown_urls(&found);
+        assert_eq!(shown.len(), 1);
+        let (range, url) = &shown[0];
         assert_eq!(url, &found[0].1);
-        assert_eq!(*range, compact.shown_urls(&found)[0].0);
         assert!(compact.text()[range.clone()].contains("github.com"));
-        // Drawn ranges never match original ranges, so they must not be used.
-        let drawn = compact.shown_urls(&found);
-        assert_eq!(compact.shortened(&drawn).count(), 0);
     }
 }
 
@@ -402,7 +389,7 @@ mod decoded_tests {
             compact.text(),
             "A \u{a0}\u{2007}\u{2007}\u{202f}github.com/koshian/cayencha…\u{a0} C"
         );
-        assert_eq!(compact.shortened(&found).count(), 1);
+        assert_eq!(compact.shown_urls(&found).len(), 1);
         assert_eq!(compact.decoded(text).count(), 2);
         let copied = compact.copy_text(text, 0..text.len());
         assert_eq!(
