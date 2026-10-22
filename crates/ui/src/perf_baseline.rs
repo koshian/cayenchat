@@ -275,6 +275,7 @@ fn perf_baseline_auto_phrase(cx: &mut TestAppContext) {
     run_with(cx, 1, false, false, false, false, true, false);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_with(
     cx: &mut TestAppContext,
     servers: usize,
