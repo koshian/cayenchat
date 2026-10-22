@@ -321,6 +321,19 @@ pub enum LinuxDisplay {
     X11,
 }
 
+/// Where the main log is scrolled when the user selects a channel or DM that
+/// is unread at that moment (#545). Read conversations always keep their
+/// position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnreadLogPosition {
+    /// Keep the position the conversation was left at.
+    #[default]
+    Previous,
+    /// Scroll to the newest line and follow the bottom again.
+    Latest,
+}
+
 /// Modifier for the numbered channel shortcuts on Windows and Linux. Many
 /// Linux desktops reserve Ctrl+digit for workspace switching.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1156,6 +1169,9 @@ pub struct Settings {
     /// puts on the wire; the draft keeps what was typed. On by default, also
     /// for files saved before it existed.
     pub shorten_amazon_urls: bool,
+    /// Log position when an unread conversation is selected. Files saved
+    /// before it existed keep the previous position.
+    pub unread_log_position: UnreadLogPosition,
     pub credential_backend: CredentialBackendKind,
     pub image_upload: ImageUpload,
     /// Navigation shortcuts the user changed: action id → the key as GPUI
@@ -1205,6 +1221,7 @@ impl Default for Settings {
             always_on_top: false,
             confirm_quit: false,
             shorten_amazon_urls: true,
+            unread_log_position: UnreadLogPosition::Previous,
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
             keybindings: BTreeMap::new(),
@@ -3581,6 +3598,21 @@ mod tests {
         settings.confirm_quit = true;
         save_to(&path, &settings).unwrap();
         assert!(load_from(&path).unwrap().unwrap().confirm_quit);
+    }
+
+    #[test]
+    fn unread_log_position_defaults_to_previous_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.unread_log_position, UnreadLogPosition::Previous);
+        settings.unread_log_position = UnreadLogPosition::Latest;
+        save_to(&path, &settings).unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().unwrap().unread_log_position,
+            UnreadLogPosition::Latest
+        );
     }
 
     #[test]

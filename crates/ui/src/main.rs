@@ -80,7 +80,7 @@ use cayenchat_storage::chatlog::{Kind as LogKind, Scope};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialError, CredentialStore,
     Ircv3Preferences, Language, Notifications, Secret, SecretKey, ServerProfile, Settings,
-    TextKeyTheme, ThemeMode,
+    TextKeyTheme, ThemeMode, UnreadLogPosition,
 };
 use futures_util::StreamExt;
 use gpui::{prelude::*, *};
@@ -673,6 +673,8 @@ struct ChatWindow {
     /// Ask before the user quits (a setting), and whether that question is
     /// on screen, so a second quit request does not open another.
     confirm_quit: bool,
+    /// Where the log goes when an unread conversation is selected (a setting).
+    unread_log_position: UnreadLogPosition,
     quit_prompt_open: bool,
     quit_dialog: quit_dialog::QuitDialog,
     /// The export and import of the settings file (#520).
@@ -1217,6 +1219,7 @@ impl ChatWindow {
             window_handle: window.window_handle().downcast::<ChatWindow>(),
             restore_layout: saved.restore_window_layout,
             confirm_quit: saved.confirm_quit,
+            unread_log_position: saved.unread_log_position,
             quit_prompt_open: false,
             quit_dialog: quit_dialog::QuitDialog::new(cx),
             transfer_dialog: settings_transfer::TransferDialog::new(cx),
@@ -4342,11 +4345,32 @@ impl ChatWindow {
         self.member_menu = None;
         self.channel_menu = None;
         self.log_menu = None;
+        // Selecting clears the unread mark, so note it first (#545).
+        let unread_before: Vec<ConversationId> =
+            if self.unread_log_position == UnreadLogPosition::Latest {
+                self.state
+                    .conversations()
+                    .iter()
+                    .map(|conversation| conversation.id)
+                    .filter(|id| self.state.is_unread(*id))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let selection_before = self.state.selection();
         self.state.dispatch(command);
         self.log_selection = None;
         self.prompt_feedback = None;
         if let Some((id, sequence)) = self.state.take_reveal() {
             self.reveal_message(id, sequence, cx);
+        } else if let selection @ Selection::Channel(id) = self.state.selection()
+            && selection != selection_before
+            && unread_before.contains(&id)
+        {
+            self.sync_log_lists();
+            if let Some(list) = self.main_lists.get(&selection) {
+                list.scroll_to_end();
+            }
         }
         self.update_title(window);
         cx.notify();
@@ -9320,3 +9344,7 @@ mod part_dialog_tests;
 #[cfg(test)]
 #[path = "main_tests/tree_reveal_tests.rs"]
 mod tree_reveal_tests;
+
+#[cfg(test)]
+#[path = "main_tests/unread_log_position_tests.rs"]
+mod unread_log_position_tests;
