@@ -186,7 +186,11 @@ impl LineWrapper {
         // `2^3`, `a~b`, `a=1`, `Self::new`, etc.
         matches!(c, '-' | '_' | '.' | '\'' | '$' | '%' | '@' | '#' | '^' | '~' | ',' | '=' | ':') ||
         // `⋯` character is special used in Zed, to keep this at the end of the line.
-        matches!(c, '⋯')
+        matches!(c, '⋯') ||
+        // No-break spaces (no-break, figure, narrow no-break) never offer a
+        // wrap opportunity, so the room CayenChat keeps before a link icon
+        // stays on one row with the text that follows it.
+        matches!(c, '\u{a0}' | '\u{2007}' | '\u{202f}')
     }
 
     #[inline(always)]
@@ -648,6 +652,7 @@ mod tests {
         assert_word("a=1");
         assert_word("Self::is_word_char");
         assert_word("more⋯");
+        assert_word("\u{a0}\u{2007}\u{202f}");
 
         // Space
         assert_not_word("foo bar");
