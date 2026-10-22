@@ -93,83 +93,62 @@ impl Notices {
     }
 }
 
-/// How long after the user's own command a 417 or 400 still counts as its
+/// How long after a message the user sent a 417 or 400 still counts as its
 /// answer.
 const ANSWER_WINDOW: Duration = Duration::from_secs(10);
-/// The most commands remembered per server.
+/// The most sends remembered per server.
 const MAX_SENT: usize = 8;
 
-/// The commands the user sent lately, per server, so that a 417 or 400 can be
-/// told from one a background process caused. A reply answers one command and
-/// uses it up. A 400 names its command: it answers only a command of that
-/// name, so a command whose name is not known (`verbs` empty) is never
-/// matched by a 400 and only a 417 can answer it. A reply that matches nothing
-/// stays in the log.
+/// When the user lately spoke on each server (a message or `/me` from the
+/// draft), so that a 417 or 400 can be told from one a background process
+/// caused. A reply answers one send and uses it up; a reply with nothing to
+/// answer stays in the log.
 #[derive(Default)]
-pub(crate) struct SentCommands {
-    sent: HashMap<NetworkId, VecDeque<(Instant, Vec<String>)>>,
+pub(crate) struct SentMessages {
+    sent: HashMap<NetworkId, VecDeque<Instant>>,
 }
 
-impl SentCommands {
-    /// Remembers a command sent to `network` that the server may refuse with
-    /// one of `verbs` (upper case IRC command names; empty when unknown).
-    pub fn note<S: AsRef<str>>(&mut self, network: NetworkId, verbs: &[S], now: Instant) {
+impl SentMessages {
+    /// Remembers that a message was sent to `network` at `now`.
+    pub fn note(&mut self, network: NetworkId, now: Instant) {
         let queue = self.sent.entry(network).or_default();
-        queue.retain(|(at, _)| now.duration_since(*at) < ANSWER_WINDOW);
+        queue.retain(|at| now.duration_since(*at) < ANSWER_WINDOW);
         if queue.len() >= MAX_SENT {
             queue.pop_front();
         }
-        queue.push_back((
-            now,
-            verbs.iter().map(|verb| verb.as_ref().to_string()).collect(),
-        ));
+        queue.push_back(now);
     }
 
-    /// Takes the newest command of `network` that a reply naming `command`
-    /// (a 400's) can answer. Returns whether there was one.
+    /// Uses up the newest send of `network` that a reply can still answer.
+    /// A 400 (`command` given) answers only a PRIVMSG or NOTICE; a 417 any
+    /// send. Returns whether there was one.
     pub fn answer(&mut self, network: NetworkId, command: Option<&str>, now: Instant) -> bool {
+        if let Some(command) = command
+            && !command.eq_ignore_ascii_case("PRIVMSG")
+            && !command.eq_ignore_ascii_case("NOTICE")
+        {
+            return false;
+        }
         let Some(queue) = self.sent.get_mut(&network) else {
             return false;
         };
-        queue.retain(|(at, _)| now.duration_since(*at) < ANSWER_WINDOW);
-        let found = queue.iter().rposition(|(_, verbs)| match command {
-            Some(command) => verbs.iter().any(|verb| verb.eq_ignore_ascii_case(command)),
-            None => true,
-        });
+        queue.retain(|at| now.duration_since(*at) < ANSWER_WINDOW);
+        let answered = queue.pop_back().is_some();
         if queue.is_empty() {
             self.sent.remove(&network);
-            return false;
         }
-        match found {
-            Some(index) => {
-                queue.remove(index);
-                true
-            }
-            None => false,
-        }
+        answered
     }
 }
 
-/// The IRC commands a typed line may be refused as, as `irc-core` sends
-/// them: plain text, `/me`, `/msg` and the CTCP commands go out as PRIVMSG,
-/// `/notice` as NOTICE, `/raw` and `/quote` send their own first word, and any
-/// other command is sent as typed. Empty when there is no word to go by; such
-/// a line is answered by a 417 only.
-pub(crate) fn typed_verbs(text: &str) -> Vec<String> {
-    let Some(rest) = text.strip_prefix('/') else {
-        return vec!["PRIVMSG".into(), "NOTICE".into()];
-    };
-    let mut words = rest.split_whitespace();
-    let word = words.next().unwrap_or("").to_ascii_uppercase();
-    let verb = match word.as_str() {
-        "RAW" | "QUOTE" => words.next().unwrap_or("").to_ascii_uppercase(),
-        "ME" | "MSG" | "PRIVMSG" | "CTCP" | "PING" => "PRIVMSG".into(),
-        _ => word,
-    };
-    if verb.is_empty() {
-        Vec::new()
-    } else {
-        vec![verb]
+/// Whether a draft goes out as something the user said: plain text or `/me`.
+pub(crate) fn is_spoken(text: &str) -> bool {
+    match text.strip_prefix('/') {
+        None => true,
+        Some(rest) => rest
+            .split_whitespace()
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case("me")),
     }
 }
 
@@ -185,17 +164,15 @@ impl ChatWindow {
     }
 
     /// The outcome of sending a command the user asked for to `network`: a
-    /// failure is reported, a success is remembered for [`Self::server_rejected`].
+    /// failure is reported.
     pub(crate) fn report_sent(
         &mut self,
         network: NetworkId,
-        verbs: &[&str],
         result: Result<(), String>,
         cx: &mut Context<Self>,
     ) {
-        match result {
-            Ok(()) => self.note_user_command(network, verbs),
-            Err(error) => self.raise_error(Some(network), error, Origin::User, cx),
+        if let Err(error) = result {
+            self.raise_error(Some(network), error, Origin::User, cx);
         }
     }
 
@@ -292,16 +269,17 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Remembers that the user just sent a command to `network` (see
-    /// [`SentCommands`]), so a 417 or
-    /// 400 that follows can be told from one a background process caused.
-    pub(crate) fn note_user_command(&mut self, network: NetworkId, verbs: &[&str]) {
-        self.sent_commands.note(network, verbs, Instant::now());
+    /// Remembers that the user just said something on `network` from the
+    /// draft (see [`SentMessages`]), so a 417 or 400 that follows can be told
+    /// from one a background process caused.
+    pub(crate) fn note_spoken(&mut self, network: NetworkId) {
+        self.sent_messages.note(network, Instant::now());
     }
 
     /// A 417 or 400 reply. It is in the server log already. It opens a dialog
-    /// only as the answer to a command the user just sent to this server, and
-    /// only once per command; any other reply stays in the log.
+    /// only as the answer to something the user just said from the draft on
+    /// this server (a 400 only when it names PRIVMSG or NOTICE), and only once
+    /// per send; any other reply stays in the log.
     pub(crate) fn server_rejected(
         &mut self,
         network: NetworkId,
@@ -311,7 +289,7 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         if !self
-            .sent_commands
+            .sent_messages
             .answer(network, command.as_deref(), Instant::now())
         {
             return;
@@ -401,62 +379,53 @@ mod tests {
 
 #[cfg(test)]
 mod sent_tests {
-    use super::{ANSWER_WINDOW, SentCommands, typed_verbs};
+    use super::{ANSWER_WINDOW, SentMessages, is_spoken};
     use cayenchat_model::NetworkId;
     use std::time::Instant;
 
     #[test]
-    fn a_400_for_another_command_does_not_use_up_the_users_command() {
+    fn a_400_for_another_command_does_not_use_up_the_message() {
         let (a, now) = (NetworkId(1), Instant::now());
-        let mut sent = SentCommands::default();
-        sent.note(a, &typed_verbs("hello"), now);
+        let mut sent = SentMessages::default();
+        sent.note(a, now);
         assert!(!sent.answer(a, Some("CHATHISTORY"), now));
-        assert!(sent.answer(a, None, now), "the later 417 still shows");
-        assert!(!sent.answer(a, None, now), "one reply per command");
+        assert!(!sent.answer(a, Some("JOIN"), now));
+        assert!(sent.answer(a, Some("privmsg"), now));
+        assert!(!sent.answer(a, None, now), "one reply per send");
+        sent.note(a, now);
+        assert!(sent.answer(a, Some("NOTICE"), now));
+        sent.note(a, now);
+        assert!(sent.answer(a, None, now), "a 417 answers any send");
     }
 
     #[test]
-    fn raw_lines_use_their_own_verb() {
-        let (a, now) = (NetworkId(1), Instant::now());
-        assert_eq!(typed_verbs("/raw privmsg #demo :hi"), ["PRIVMSG"]);
-        assert_eq!(typed_verbs("/quote MODE #demo +m"), ["MODE"]);
-        assert!(typed_verbs("/raw").is_empty());
-        let mut sent = SentCommands::default();
-        sent.note(a, &typed_verbs("/raw PRIVMSG #demo :hi"), now);
-        assert!(!sent.answer(a, Some("CHATHISTORY"), now));
-        assert!(sent.answer(a, None, now), "the later 417 still shows");
+    fn only_messages_and_me_are_spoken() {
+        assert!(is_spoken("hello"));
+        assert!(is_spoken("/me waves"));
+        assert!(is_spoken("/ME"));
+        for text in [
+            "/msg bob hi",
+            "/notice bob hi",
+            "/join #a",
+            "/part",
+            "/names #a",
+            "/ctcp bob VERSION",
+            "/raw PRIVMSG #a :hi",
+            "/mean",
+            "/",
+        ] {
+            assert!(!is_spoken(text), "{text}");
+        }
     }
 
     #[test]
-    fn verbs_follow_what_irc_core_sends() {
-        assert_eq!(typed_verbs("/names #demo"), ["NAMES"]);
-        assert_eq!(typed_verbs("/ctcp bob VERSION"), ["PRIVMSG"]);
-        assert_eq!(typed_verbs("/ping bob"), ["PRIVMSG"]);
-        assert_eq!(typed_verbs("/me waves"), ["PRIVMSG"]);
-        assert_eq!(typed_verbs("/notice bob hi"), ["NOTICE"]);
-        assert_eq!(typed_verbs("/whois bob"), ["WHOIS"]);
-    }
-
-    #[test]
-    fn each_server_keeps_its_own_command() {
+    fn each_server_keeps_its_own_sends_and_they_expire() {
         let (a, b, now) = (NetworkId(1), NetworkId(2), Instant::now());
-        let mut sent = SentCommands::default();
-        sent.note(a, &[] as &[&str], now);
-        sent.note(b, &[] as &[&str], now);
+        let mut sent = SentMessages::default();
+        sent.note(a, now);
+        assert!(!sent.answer(b, None, now));
         assert!(sent.answer(a, None, now));
-        assert!(sent.answer(b, None, now));
-    }
-
-    #[test]
-    fn a_command_of_unknown_name_and_old_ones() {
-        let (a, now) = (NetworkId(1), Instant::now());
-        let mut sent = SentCommands::default();
-        sent.note(a, &typed_verbs("/frobnicate"), now);
-        assert!(!sent.answer(a, Some("CHATHISTORY"), now));
-        assert!(sent.answer(a, None, now), "a 417 still answers it");
-        sent.note(a, &typed_verbs("/raw"), now);
-        assert!(!sent.answer(a, Some("PRIVMSG"), now), "no word to go by");
-        sent.note(a, &[] as &[&str], now);
-        assert!(!sent.answer(a, None, now + ANSWER_WINDOW));
+        sent.note(b, now);
+        assert!(!sent.answer(b, None, now + ANSWER_WINDOW));
     }
 }

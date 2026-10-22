@@ -1326,19 +1326,16 @@ with a Close button (`window.prompt`, `notices.rs`).
 - **Server replies 417 and 400.** `irc-core` reports them as
   `Event::CommandRejected` next to the `ServerLine`, so the server log keeps
   them. The window opens a dialog (server, code, command for a 400, the
-  server's text without formatting codes) only when the user sent a command to
-  the same server in the last 10 seconds, and only once per command. Commands
-  are remembered per server (at most 8) with the IRC command name they may be
-  refused as: a 400 names its command and answers only a command of that name,
-  so a background `400 CHATHISTORY` after a message neither opens a dialog nor
-  uses the message up for its own 417. The name is what `irc-core` sends: plain
-  text, `/me`, `/msg` and the CTCP commands are PRIVMSG, `/raw` and `/quote`
-  use their own first word, any other command its own word. The part
-  confirmation, member menu and other UI sends register their command too.
-  A line with no word to go by is answered by a 417 only. Replies
-  with no such command (history, metadata and other background traffic) stay in
-  the log. A line refused locally by the 512-byte check was never sent, so no
-  417 follows it.
+  server's text without formatting codes) only as the answer to something the
+  user said from the draft: a message in a channel or query, or `/me`. That one
+  place in `send_draft` records the time per server (at most 8). A 417, or a
+  400 whose command is PRIVMSG or NOTICE, within 10 seconds of it opens one
+  dialog and uses that send up. Every other reply stays in the log: commands
+  (`/msg`, `/raw`, `/names`, CTCP and the like), JOIN (also the one resent
+  with a channel key), PART (also the leave confirmation), the member menu and
+  automatic traffic. There is no guessing of the command a line is sent as.
+  A line refused locally by the 512-byte check was never sent, so no 417
+  follows it.
 - **Uploads** keep their dialogs (#481) through the same queue; progress and
   Cancel are unchanged.
 
