@@ -6,6 +6,29 @@ Before making changes, read the relevant files under `spec/` rather than loading
 
 Keep changes small and reversible. Avoid unrelated refactors.
 
+## Design principles
+
+**Keep it simple (KISS).** Choose the simplest design that meets the issue.
+Do not add options, abstractions, caches or state machines for cases the
+issue does not need. When review keeps finding holes in a mechanism added to
+answer earlier review, first ask whether removing it or narrowing the
+feature is better than patching it again (#324, #331, #541: each was solved
+by a simpler approach, not by more exceptions). A guess that can never be
+exact (which command a numeric reply answers, where a URL ends in prose) is
+kept narrow, or the feature is changed so it is not needed.
+
+**Don't repeat yourself (DRY).** Each rule lives in one place: a check, a
+conversion, a limit, a list of names or a piece of wording. Reuse the
+existing helper instead of writing a second one, and when two places must
+agree, make one call the other or share a function (a test that keeps two
+copies equal is the fallback when a crate boundary forbids sharing, as with
+`storage` and `model::display`). This is about one rule, not code that only
+looks alike: do not merge two things that happen to be similar now but
+change for different reasons.
+
+The two meet at sinks: one gate per sink (`spec/architecture.md`, "Untrusted
+values and their sinks") is both the simplest and the only copy of the rule.
+
 ## Development environment
 
 Before starting implementation, inspect the available development environment and determine whether the current machine has the tools required to build and run the project.
