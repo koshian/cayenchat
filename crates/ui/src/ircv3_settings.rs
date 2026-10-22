@@ -910,7 +910,7 @@ fn hover_popup(content: impl IntoElement, cx: &App) -> Div {
     let theme = crate::theme::current(cx);
     let plate = hover_plate(theme.panes.url_tooltip);
     settings_theme::tooltip(SharedString::default(), cx)
-        .p(px(0.))
+        .p(px(3.))
         .bg(theme.panes.url_tooltip)
         .text_color(theme.panes.url_tooltip_text)
         .border_color(hsla(0., 0., 1., 0.2))
@@ -925,7 +925,7 @@ fn hover_popup(content: impl IntoElement, cx: &App) -> Div {
 }
 
 /// Least opacity of the plate under the text of a hover popup.
-const HOVER_PLATE_ALPHA: f32 = 0.7;
+const HOVER_PLATE_ALPHA: f32 = 0.9;
 
 fn hover_plate(background: Rgba) -> Hsla {
     let mut plate: Hsla = background.into();
@@ -1254,9 +1254,15 @@ mod tests {
             a,
         };
         for opacity in [0.2, 0.25, 0.3] {
-            assert!(super::hover_plate(bg(opacity)).a >= 0.7);
+            let plate = super::hover_plate(bg(opacity)).a;
+            assert!(plate >= 0.9);
+            // The plate sits on the translucent background: what shows
+            // through the content is the log at at most a tenth of
+            // the remaining light.
+            let through = (1.0 - plate) * (1.0 - opacity);
+            assert!(through <= 0.1, "{through} at {opacity}");
         }
-        assert_eq!(super::hover_plate(bg(0.9)).a, 0.9);
+        assert_eq!(super::hover_plate(bg(0.95)).a, 0.95);
     }
 
     use super::{
