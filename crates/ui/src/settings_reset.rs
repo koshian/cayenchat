@@ -27,6 +27,7 @@ impl SettingsWindow {
                         || current.always_on_top == defaults.always_on_top)
                     && current.confirm_quit == defaults.confirm_quit
                     && current.shorten_amazon_urls == defaults.shorten_amazon_urls
+                    && current.unread_log_position == defaults.unread_log_position
                     && current.conversation_log == defaults.conversation_log
                     && (cfg!(target_os = "macos")
                         || current.menu_bar_auto_hide == defaults.menu_bar_auto_hide)
@@ -87,6 +88,7 @@ impl SettingsWindow {
                 }
                 values.confirm_quit = defaults.confirm_quit;
                 values.shorten_amazon_urls = defaults.shorten_amazon_urls;
+                values.unread_log_position = defaults.unread_log_position;
                 values.conversation_log = defaults.conversation_log;
                 // Settings hidden on this platform keep their saved values.
                 if !cfg!(target_os = "macos") {
@@ -364,7 +366,9 @@ mod tests {
     /// reset leaves exactly its own page default and the others untouched.
     #[gpui::test]
     fn each_page_reset_covers_its_own_items_and_no_others(cx: &mut gpui::TestAppContext) {
-        use cayenchat_storage::{ChannelNumberModifier, Language, LinuxDisplay, Settings};
+        use cayenchat_storage::{
+            ChannelNumberModifier, Language, LinuxDisplay, Settings, UnreadLogPosition,
+        };
 
         type Change = fn(&mut Settings);
 
@@ -378,6 +382,7 @@ mod tests {
                 }
                 values.confirm_quit = !values.confirm_quit;
                 values.shorten_amazon_urls = !values.shorten_amazon_urls;
+                values.unread_log_position = UnreadLogPosition::Latest;
                 values.conversation_log.channels = !values.conversation_log.channels;
                 values.menu_bar_auto_hide = !values.menu_bar_auto_hide;
                 values.linux_display = LinuxDisplay::X11;

@@ -1465,6 +1465,7 @@ impl ChatWindow {
         {
             owner.image_provider = provider;
             owner.confirm_quit = confirm_quit;
+            owner.unread_log_position = saved.unread_log_position;
             owner.apply_conversation_log(&saved.conversation_log);
             cx.set_global(crate::input::ShortenPastedAmazon(shorten_amazon_urls));
             owner.notification_rules = rules;

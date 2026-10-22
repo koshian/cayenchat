@@ -1295,7 +1295,7 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
-## D064 — Jump to the latest message: shortcut and log button (#546)
+## D065 — Jump to the latest message: shortcut and log button (#546)
 
 **Status:** Accepted
 
@@ -1323,6 +1323,26 @@ future work. Details in `architecture.md` (Channel history).
   per-frame work of its own. It takes its own mouse down, so a click does not
   move focus to the log. Tooltip: the action's name and its current keys.
   The sub log has none.
+
+## D064 — Log position when an unread conversation is selected (#545)
+
+**Status:** Implemented
+
+`Settings::unread_log_position` (Application page), `previous` by default and
+added without a version change, so older files read as `previous`.
+
+- **`previous`:** the position the conversation was left at, as before.
+- **`latest`:** the main log scrolls to its end once and follows the bottom
+  again (`LogList::scroll_to_end`, the state of a never-scrolled list).
+- **When:** only if the selection changes to a channel or DM that is unread at
+  that moment, by any means (Ctrl+Tab, toolbar, tree click, number keys,
+  notification). `ChatWindow::dispatch_keeping_focus` notes the unread
+  conversations before `AppState::select_channel` clears the mark. Read
+  conversations, the server log and the combined log always keep their
+  position. A search or notification jump to a message wins over it.
+- It is a single scroll at selection: scrolling up afterwards, new messages,
+  CHATHISTORY and preview row changes behave as usual. When the unread mark is
+  cleared is unchanged.
 
 ## D063 — Errors of the chat window are dialogs, never a line in the draft row (#528)
 

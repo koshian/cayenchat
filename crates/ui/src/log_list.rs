@@ -198,14 +198,10 @@ impl LogList {
         }
     }
 
-    /// Scrolls to the newest line and follows the bottom again, as when the
-    /// user scrolls all the way down. The next layout reaches the end and
-    /// drops the explicit position.
+    /// Scrolls to the newest line and follows the bottom again, the same
+    /// state as a list that was never scrolled.
     pub fn scroll_to_end(&self) {
-        self.state.scroll_to(ListOffset {
-            item_ix: self.state.item_count(),
-            offset_in_item: px(0.),
-        });
+        self.scroll_to_row(self.state.item_count(), px(0.));
     }
 
     /// Whether the end of the last row is out of view. Reads the layout of

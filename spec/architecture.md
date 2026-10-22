@@ -202,7 +202,7 @@ network names in the nickname color and no fixed channel column (the
 former `sub_log_name_width` setting is gone and ignored when read); the
 former `wrap_long_nicknames` setting is gone and ignored when read. The
 main log keeps separate scroll positions for each server or
-channel, and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
+channel (selecting an unread conversation can jump to the bottom, D064), and both left logs follow incoming messages while at the bottom. User scrolling pauses follow mode
 until the bottom is reached again, including during initial IRC history bursts.
 Both logs, the user list and the channel tree are virtualized (GPUI `list` /
 `uniform_list`), so

@@ -1410,3 +1410,39 @@ system is the test platform's, so this shows the cost of the analysis and
 the cache, not real glyph shaping; it was not compared with a separate
 master build (the option-off path only adds an early return) and no
 Windows/macOS run was made.
+
+## Log position for unread channels (2026-10-22, issue #545, D064)
+
+`dispatch_keeping_focus` collects the unread conversation ids before a
+command only while the setting is "Scroll to the latest line" (a scan of
+`conversations()` with a `HashSet` lookup each; no allocation otherwise), and a
+selection of one of them scrolls its log to the end once (`sync_log_lists`,
+`LogList::scroll_to_end`). Nothing runs per received message, per frame or on a
+timer. "Keep the previous position" (the default) skips the scan.
+
+Measured with the ignored `perf_baseline` tests. New steps: `select_same`
+(`SelectChannel` of the channel already selected, so the scan runs and nothing
+moves) and `switch_unread` (`NextUnreadChannel` onto a channel that received
+lines while it was not selected, as Ctrl+Tab does; the lines arrive outside the
+timed section). New tests `perf_baseline_unread_latest` and
+`perf_baseline_4_servers_unread_latest` turn the setting on (10 and 40
+conversations of 2,000 lines). Release build, Linux (headless test platform),
+`cargo test --release --locked -p cayenchat-ui <test> -- --ignored --nocapture
+--test-threads=1 --exact perf_baseline::<test>`, three runs each, medians in µs.
+"master" is `6e91bba` plus this commit's `perf_baseline.rs` (setting line
+removed), built in a separate worktree.
+
+| servers | step | master | Previous (default) | Latest |
+|---|---|---|---|---|
+| 1 | channel_switch | 1746 / 1793 / 1753 | 1728 / 1758 / 1732 | 1735 / 1981 / 1768 |
+| 1 | select_same | 1362 / 1369 / 1368 | 1360 / 1358 / 1349 | 1348 / 1335 / 1362 |
+| 1 | switch_unread | 1776 / 1787 / 1760 | 1767 / 1762 / 1754 | 1757 / 1755 / 1773 |
+| 4 | channel_switch | 1597 / 1915 / 1954 | 1634 / 1563 / 1650 | 1545 / 1630 / 1753 |
+| 4 | select_same | 1455 / 1503 / 1471 | 1426 / 1448 / 1457 | 1461 / 1453 / 1486 |
+| 4 | switch_unread | 1778 / 1745 / 1751 | 1729 / 1672 / 1698 | 1678 / 1714 / 1906 |
+
+No difference beyond run-to-run noise (the scan over 40 conversations is
+well below it), so the capture was not narrowed. Limits: the test platform's
+text system is a no-op, so real glyph shaping of the newly shown last page is
+not included; at most 1,000 conversations per network are scanned, which was
+not measured; no Windows/macOS run.
