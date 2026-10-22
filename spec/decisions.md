@@ -1368,8 +1368,9 @@ with a Close button (`window.prompt`, `notices.rs`).
 - Display only. The text, selection, copy, search offsets, links, stored
   logs and what is sent are untouched; no characters are inserted.
 - Model: BudouX v0.9.3 `ja.json`, embedded unchanged in
-  `crates/model/data/` (Apache-2.0, notice and update steps in its
-  `README.md`). `model::phrase` reimplements the scorer (not copied code)
+  `crates/model/data/` (Apache-2.0, update steps in its `README.md`; the
+  license text is `licenses/BUDOUX-APACHE-2.0.txt`, shipped in every
+  package, and `THIRD_PARTY_NOTICES.md` names it). `model::phrase` reimplements the scorer (not copied code)
   and a test compares splits with the official `parser.py` output.
 - Mechanism: `phrase::joins` lists byte offsets between two Japanese
   characters where BudouX has no phrase boundary. They reach GPUI through
