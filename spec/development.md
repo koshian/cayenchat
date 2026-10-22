@@ -26,8 +26,13 @@ copies equal is the fallback when a crate boundary forbids sharing, as with
 looks alike: do not merge two things that happen to be similar now but
 change for different reasons.
 
-The two meet at sinks: one gate per sink (`spec/architecture.md`, "Untrusted
-values and their sinks") is both the simplest and the only copy of the rule.
+The two meet at sinks (`spec/architecture.md`, "Untrusted values and their
+sinks"). When the same kind of value leaves through several exits, first ask
+whether those exits can become one: one function that writes every IRC line,
+one path for every dialog. Fewer exits are simpler than many exits sharing a
+helper. Exits that stay separate each have their own gate; do not force one
+shared helper onto exits that need different rules (log rows keep byte
+offsets, a dialog strips formatting) just to avoid repeating a line.
 
 ## Development environment
 
