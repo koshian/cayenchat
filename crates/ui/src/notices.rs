@@ -120,12 +120,20 @@ impl SentMessages {
     }
 
     /// Uses up the newest send of `network` that a reply can still answer.
-    /// A 400 (`command` given) answers only a PRIVMSG or NOTICE; a 417 any
-    /// send. Returns whether there was one.
-    pub fn answer(&mut self, network: NetworkId, command: Option<&str>, now: Instant) -> bool {
-        if let Some(command) = command
-            && !command.eq_ignore_ascii_case("PRIVMSG")
-            && !command.eq_ignore_ascii_case("NOTICE")
+    /// A 400 answers only when it names PRIVMSG or NOTICE (one naming no
+    /// command or another one stays in the log); a 417 answers any send.
+    /// Returns whether there was one.
+    pub fn answer(
+        &mut self,
+        network: NetworkId,
+        code: u16,
+        command: Option<&str>,
+        now: Instant,
+    ) -> bool {
+        if code != 417
+            && !command.is_some_and(|command| {
+                command.eq_ignore_ascii_case("PRIVMSG") || command.eq_ignore_ascii_case("NOTICE")
+            })
         {
             return false;
         }
@@ -290,7 +298,7 @@ impl ChatWindow {
     ) {
         if !self
             .sent_messages
-            .answer(network, command.as_deref(), Instant::now())
+            .answer(network, code, command.as_deref(), Instant::now())
         {
             return;
         }
@@ -388,14 +396,15 @@ mod sent_tests {
         let (a, now) = (NetworkId(1), Instant::now());
         let mut sent = SentMessages::default();
         sent.note(a, now);
-        assert!(!sent.answer(a, Some("CHATHISTORY"), now));
-        assert!(!sent.answer(a, Some("JOIN"), now));
-        assert!(sent.answer(a, Some("privmsg"), now));
-        assert!(!sent.answer(a, None, now), "one reply per send");
+        assert!(!sent.answer(a, 400, Some("CHATHISTORY"), now));
+        assert!(!sent.answer(a, 400, Some("JOIN"), now));
+        assert!(!sent.answer(a, 400, None, now), "no command named");
+        assert!(sent.answer(a, 400, Some("privmsg"), now));
+        assert!(!sent.answer(a, 417, None, now), "one reply per send");
         sent.note(a, now);
-        assert!(sent.answer(a, Some("NOTICE"), now));
+        assert!(sent.answer(a, 400, Some("NOTICE"), now));
         sent.note(a, now);
-        assert!(sent.answer(a, None, now), "a 417 answers any send");
+        assert!(sent.answer(a, 417, None, now), "a 417 answers any send");
     }
 
     #[test]
@@ -423,9 +432,9 @@ mod sent_tests {
         let (a, b, now) = (NetworkId(1), NetworkId(2), Instant::now());
         let mut sent = SentMessages::default();
         sent.note(a, now);
-        assert!(!sent.answer(b, None, now));
-        assert!(sent.answer(a, None, now));
+        assert!(!sent.answer(b, 417, None, now));
+        assert!(sent.answer(a, 417, None, now));
         sent.note(b, now);
-        assert!(!sent.answer(b, None, now + ANSWER_WINDOW));
+        assert!(!sent.answer(b, 417, None, now + ANSWER_WINDOW));
     }
 }

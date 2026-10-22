@@ -255,6 +255,13 @@ fn only_what_the_draft_said_is_answered_by_a_dialog(cx: &mut TestAppContext) {
     reply(cx, reject(417, None));
     assert!(answered(cx));
 
+    // So does a 400 that names no command.
+    send(cx, "hello");
+    reply(cx, reject(400, None));
+    assert!(!answered(cx));
+    reply(cx, reject(417, None));
+    assert!(answered(cx));
+
     // Commands and other paths are not answered, whatever the reply.
     for text in [
         "/msg bob hi",
