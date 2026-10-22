@@ -6,7 +6,7 @@
 use cayenchat_storage::{Appearance, Ircv3Preferences, Settings};
 use gpui::{prelude::*, *};
 
-use crate::{SettingsTab, SettingsWindow, settings_theme};
+use crate::{SettingsTab, SettingsWindow, os_text::WindowOsText, settings_theme};
 
 impl SettingsWindow {
     /// Whether everything `tab` shows already has its default value. The
@@ -219,7 +219,7 @@ impl SettingsWindow {
     /// Asks, then resets: a reset can discard many choices at once, and the
     /// button is easy to click by mistake.
     fn request_reset(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
-        let answer = window.prompt(
+        let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("reset_confirm_title"),
             Some(&self.i18n.text("reset_confirm_detail")),

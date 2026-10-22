@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use crate::{ChatWindow, localization::Localizer};
+use crate::{ChatWindow, localization::Localizer, os_text::WindowOsText};
 use cayenchat_irc_core::WhoisInfo;
 use cayenchat_model::{NetworkId, display, names::CaseMapping};
 use gpui::{prelude::*, *};
@@ -74,14 +74,16 @@ impl WhoisWindow {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(300.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(title.clone().into()),
+                    // A fixed title: the nickname is server text and reaches
+                    // the OS only through the gate below (`os_set_title`).
+                    title: Some("CayenChat".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
             move |window, cx| {
                 // Gives X11 the UTF-8 title too (issue #143).
-                window.set_window_title(&title);
+                window.os_set_title(&title);
                 cx.new(|cx| {
                     let focus = cx.focus_handle();
                     window.focus(&focus);
@@ -112,7 +114,7 @@ impl WhoisWindow {
     /// Replaces the shown reply; a missing nickname keeps the last known details.
     pub fn set_info(&mut self, info: WhoisInfo, window: &mut Window, cx: &mut Context<Self>) {
         if info.found() {
-            window.set_window_title(&window_title(&info));
+            window.os_set_title(&window_title(&info));
             let selected = self.info.channels.get(self.selected_channel).cloned();
             self.selected_channel = selected
                 .and_then(|entry| info.channels.iter().position(|other| *other == entry))
