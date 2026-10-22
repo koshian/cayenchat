@@ -11,9 +11,7 @@ use std::borrow::Cow;
 
 use gpui::{prelude::*, *};
 
-use crate::{
-    ChatWindow, Connect, Disconnect, OpenSettings, Reconnect, ircv3_settings::TextTooltip,
-};
+use crate::{ChatWindow, Connect, Disconnect, OpenSettings, Reconnect, tooltip::TextTooltip};
 use crate::{key_recorder, shortcuts, theme::Theme};
 use cayenchat_app::Command;
 

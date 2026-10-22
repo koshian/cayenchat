@@ -2885,7 +2885,7 @@ impl SettingsWindow {
                     .cursor_pointer()
                     .tooltip(move |_, cx| {
                         let text = hint.clone();
-                        cx.new(|_| ircv3_settings::TextTooltip(text)).into()
+                        cx.new(|_| crate::tooltip::TextTooltip(text)).into()
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.apply_palette_color(&apply, cx);

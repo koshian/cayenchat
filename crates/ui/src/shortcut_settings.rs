@@ -7,10 +7,10 @@ use gpui::{prelude::*, *};
 
 use crate::{
     SettingsTab, SettingsWindow, account_settings,
-    ircv3_settings::TextTooltip,
     key_recorder::{self, Recorded, Rejection},
     settings_theme,
     shortcuts::{self, Caution, Owner, ShortcutAction},
+    tooltip::TextTooltip,
 };
 
 /// A key being recorded for one action.
