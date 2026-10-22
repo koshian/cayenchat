@@ -1430,6 +1430,16 @@ impl Transcript {
             .then(|| redacted_wire_line(message))
     }
 
+    /// Says that a line was refused; it is not recorded as sent.
+    async fn refused(&self) {
+        diagnostic(
+            &self.events,
+            self.started,
+            format!("Send failed: {REFUSED_LINE}"),
+        )
+        .await;
+    }
+
     async fn record(&self, direction: WireDirection, line: Option<String>) {
         if let Some(line) = line {
             let _ = self
@@ -1442,6 +1452,42 @@ impl Transcript {
                 .await;
         }
     }
+}
+
+/// Why [`send_line`] did not queue a line.
+enum LineError {
+    /// The line holds CR, LF or NUL; the link is fine and later lines may go.
+    Refused,
+    /// The link failed.
+    Link(String),
+}
+
+impl LineError {
+    fn detail(self) -> String {
+        match self {
+            Self::Refused => REFUSED_LINE.into(),
+            Self::Link(detail) => detail,
+        }
+    }
+}
+
+/// Shown where a refused line is reported. It names no part of the line,
+/// which may hold a secret.
+const REFUSED_LINE: &str = "the line holds a line break or NUL character and was not sent";
+
+/// Queues `message` for the socket: the only way this worker does it. A line
+/// with a CR, LF or NUL anywhere (tags, source, command, arguments) is
+/// refused whatever checked it earlier, since it would run as more than one
+/// command on the server. The checks where a line is made stay for their
+/// clearer errors. The `irc` crate checks again where it writes the socket,
+/// for the lines it makes itself (PONG, CTCP replies, configured JOINs).
+fn send_line(client: &Client, message: IrcMessage) -> Result<(), LineError> {
+    if !message.is_single_line() {
+        return Err(LineError::Refused);
+    }
+    client
+        .send(message)
+        .map_err(|error| LineError::Link(error_chain(&error)))
 }
 
 fn error_chain(error: &dyn std::error::Error) -> String {
@@ -2623,8 +2669,8 @@ async fn run_cancellable(
     for command in registration {
         let message = IrcMessage::from(command);
         let line = transcript.line(&message);
-        if let Err(error) = client.send(message) {
-            let detail = error_chain(&error);
+        if let Err(error) = send_line(&client, message) {
+            let detail = error.detail();
             diagnostic(
                 &events,
                 started,
@@ -3123,9 +3169,9 @@ impl Worker {
             .and_then(|()| validate_tagged_wire(&message, wire))
             .and_then(|_| {
                 self.charsets.pin(&written, encoder);
-                self.client.send(message).map_err(|error| {
+                send_line(&self.client, message).map_err(|error| {
                     self.charsets.unpin(&written);
-                    error.to_string()
+                    error.detail()
                 })
             });
         let event = match result {
@@ -3158,7 +3204,7 @@ impl Worker {
             _ => String::new(),
         };
         let result = validate_wire(&message.to_string(), self.wire())
-            .and_then(|_| self.client.send(message).map_err(|error| error.to_string()));
+            .and_then(|_| send_line(&self.client, message).map_err(LineError::detail));
         match result {
             Ok(()) => {
                 self.transcript.record(WireDirection::Sent, line).await;
@@ -3306,8 +3352,13 @@ impl Worker {
             Ok(command) => {
                 let message = IrcMessage::from(command);
                 let line = self.transcript.line(&message);
-                if let Err(error) = self.client.send(message) {
-                    return self.disconnect(error_chain(&error)).await;
+                match send_line(&self.client, message) {
+                    Ok(()) => {}
+                    Err(LineError::Refused) => {
+                        self.transcript.refused().await;
+                        return ControlFlow::Continue(());
+                    }
+                    Err(LineError::Link(detail)) => return self.disconnect(detail).await,
                 }
                 self.transcript.record(WireDirection::Sent, line).await;
                 ControlFlow::Continue(())
@@ -3331,7 +3382,7 @@ impl Worker {
             ));
             let line = self.transcript.line(&message);
             match validate_wire(&message.to_string(), &self.wire_encoding)
-                .and_then(|_| self.client.send(message).map_err(|error| error.to_string()))
+                .and_then(|_| send_line(&self.client, message).map_err(LineError::detail))
             {
                 Ok(()) => {
                     self.pending_setname += 1;
@@ -3375,7 +3426,7 @@ impl Worker {
     ) -> Flow {
         let quit = IrcMessage::from(IrcCommand::QUIT(Some(reason)));
         let line = self.transcript.line(&quit);
-        if self.client.send(quit).is_ok() {
+        if send_line(&self.client, quit).is_ok() {
             self.transcript.record(WireDirection::Sent, line).await;
         }
         // Polling the stream writes the queue, QUIT included. The server
@@ -4132,8 +4183,10 @@ impl Worker {
         for command in handled.send {
             let message = IrcMessage::from(command);
             let line = self.transcript.line(&message);
-            if self.client.send(message).is_ok() {
-                self.transcript.record(WireDirection::Sent, line).await;
+            match send_line(&self.client, message) {
+                Ok(()) => self.transcript.record(WireDirection::Sent, line).await,
+                Err(LineError::Refused) => self.transcript.refused().await,
+                Err(LineError::Link(_)) => {}
             }
         }
         for note in handled.notes {
@@ -4262,8 +4315,11 @@ async fn send_all(
     for command in commands {
         let message = IrcMessage::from(command);
         let line = transcript.line(&message);
-        client.send(message).map_err(|error| error_chain(&error))?;
-        transcript.record(WireDirection::Sent, line).await;
+        match send_line(client, message) {
+            Ok(()) => transcript.record(WireDirection::Sent, line).await,
+            Err(LineError::Refused) => transcript.refused().await,
+            Err(LineError::Link(detail)) => return Err(detail),
+        }
     }
     Ok(())
 }

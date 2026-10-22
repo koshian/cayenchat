@@ -75,6 +75,19 @@ IRC transport, protocol handling, capability negotiation, TLS, reconnect behavio
 
 Must not depend on GPUI.
 
+No line with a CR, LF or NUL reaches the socket (CRLF injection, #554), however
+it was made. The checks where a line is made (`checked_command`,
+`validate_message_text`, `valid_channel`, ...) stay for their clear errors, but
+they are not what protects the server. Two gates do, each one function and one
+pass over the formatted line (`Message::is_single_line`, no allocation of its
+own): `send_line` in `irc-core`, which every `client.send` of the worker goes
+through (a refused line is not sent, shown as "Send failed" or in the command
+result, and not recorded in the transcript; the other lines go on and the link
+stays), and the `Outgoing` future of the vendored `irc` crate, the last stop
+before the codec, which also covers the lines the library queues itself (PONG,
+CTCP replies, configured JOINs) and drops a failing line with a log entry that
+does not hold the line. New code that sends must use `send_line`.
+
 ### storage
 
 Persistent configuration, preferences, and history/log storage.

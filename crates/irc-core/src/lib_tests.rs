@@ -6905,3 +6905,89 @@ fn input_too_long_and_unknown_error_replies_are_reported_and_kept_in_the_log() {
     assert!(lines.iter().any(|line| line.contains("417")));
     assert!(lines.iter().any(|line| line.contains("Cannot do that")));
 }
+
+/// Lines made without the checks of the places that send (here queued as raw
+/// messages) with a CR, LF or NUL anywhere are not written; the line after
+/// them is, the refusal is shown, and the transcript does not hold them.
+#[test]
+fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        let mut lines = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            assert_ne!(reader.read_until(b'\n', &mut line).unwrap(), 0, "closed");
+            if line.starts_with(b"PRIVMSG #t fine") {
+                break lines;
+            }
+            lines.push(line);
+        }
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
+    config.port = port;
+    config.use_tls = false;
+    let mut connection = Connection::connect(config).unwrap();
+    connection.set_transcript(true);
+    let tag = |key: &str| vec![irc::proto::message::Tag(key.into(), None)];
+    let bad = [
+        IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "a\r\nQUIT".into())),
+        IrcMessage::from(IrcCommand::PRIVMSG("#t\nQUIT".into(), "a".into())),
+        IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "a\0b".into())),
+        IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "a\rQUIT".into())),
+        IrcMessage::from(IrcCommand::Raw("X\nQUIT".into(), Vec::new())),
+        IrcMessage::from(IrcCommand::Raw("X".into(), vec!["a\r\nQUIT".into()])),
+        IrcMessage {
+            tags: Some(tag("k\r\nQUIT")),
+            ..IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "a".into()))
+        },
+        IrcMessage {
+            prefix: Some("n\r\nQUIT".into()),
+            ..IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "a".into()))
+        },
+    ];
+    let count = bad.len();
+    for message in bad {
+        connection
+            .commands
+            .try_send(Outgoing::Raw(message))
+            .unwrap();
+    }
+    connection
+        .commands
+        .try_send(Outgoing::Raw(IrcMessage::from(IrcCommand::PRIVMSG(
+            "#t".into(),
+            "fine".into(),
+        ))))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (mut refused, mut sent) = (0, Vec::new());
+    while !sent.iter().any(|line: &String| line.contains("fine")) {
+        assert!(Instant::now() < deadline, "no transcript of the good line");
+        match connection.try_recv() {
+            Some(Event::ServerLine(text)) if text.contains("line break or NUL") => refused += 1,
+            Some(Event::Wire {
+                direction: WireDirection::Sent,
+                line,
+                ..
+            }) => sent.push(line),
+            Some(Event::Disconnected(reason)) => panic!("unexpected disconnect: {reason}"),
+            Some(_) => {}
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(refused, count);
+    assert!(
+        sent.iter()
+            .all(|line| !line.contains("QUIT") && !line.contains('\0')),
+        "{sent:?}"
+    );
+    let written = server.join().unwrap();
+    assert!(
+        written.iter().all(|line| !line.starts_with(b"QUIT")
+            && !line.starts_with(b"X")
+            && !line.contains(&0)),
+        "{written:?}"
+    );
+}
