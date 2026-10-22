@@ -247,7 +247,24 @@ fn run(
     short_urls: bool,
     nick_links: bool,
 ) {
-    run_with(cx, servers, images, avatars, short_urls, nick_links, false)
+    run_with(
+        cx, servers, images, avatars, short_urls, nick_links, false, false,
+    )
+}
+
+/// The default run with "Scroll to the latest line" for unread channels (#545):
+/// compare `switch_unread` and `select_same` with `perf_baseline`.
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_unread_latest(cx: &mut TestAppContext) {
+    run_with(cx, 1, false, false, false, false, false, true);
+}
+
+/// Four servers (40 conversations) with the same setting.
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_4_servers_unread_latest(cx: &mut TestAppContext) {
+    run_with(cx, 4, false, false, false, false, false, true);
 }
 
 /// The default run with the Experimental Auto Phrase option on (the lines
@@ -255,9 +272,10 @@ fn run(
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_auto_phrase(cx: &mut TestAppContext) {
-    run_with(cx, 1, false, false, false, false, true);
+    run_with(cx, 1, false, false, false, false, true, false);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_with(
     cx: &mut TestAppContext,
     servers: usize,
@@ -266,6 +284,7 @@ fn run_with(
     short_urls: bool,
     nick_links: bool,
     auto_phrase: bool,
+    unread_latest: bool,
 ) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
@@ -284,6 +303,9 @@ fn run_with(
     }
     settings.appearance.compact_urls = short_urls;
     settings.experimental.auto_phrase = auto_phrase;
+    if unread_latest {
+        settings.unread_log_position = cayenchat_storage::UnreadLogPosition::Latest;
+    }
     let fetcher = memory_fetcher();
     let (chat, cx) = cx.add_window_view(|window, cx| {
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
@@ -386,6 +408,61 @@ fn run_with(
         cx.run_until_parked();
     }
     switching.report();
+
+    // A command that selects the conversation already selected: the capture
+    // of unread conversations runs, nothing moves.
+    let current = chat.read_with(cx, |chat, _| chat.state.selection());
+    let Selection::Channel(current_id) = current else {
+        unreachable!("a channel is selected");
+    };
+    let mut same = Timings::new(servers, "select_same");
+    for _ in 0..SWITCH_SAMPLES {
+        same.time(|| {
+            cx.update(|window, cx| {
+                chat.update(cx, |chat, cx| {
+                    chat.dispatch(Command::SelectChannel(current_id), window, cx)
+                })
+            })
+        });
+        cx.run_until_parked();
+    }
+    same.report();
+
+    // Moving to the next unread conversation, as Ctrl+Tab does. A line in
+    // every channel of every server marks them unread (the selected one
+    // stays read); the lines arrive outside the timed section.
+    let mut unread = Timings::new(servers, "switch_unread");
+    for _ in 0..SWITCH_SAMPLES {
+        if chat.read_with(cx, |chat, _| {
+            !chat
+                .state
+                .conversations()
+                .iter()
+                .any(|c| chat.state.is_unread(c.id))
+        }) {
+            for network in &networks {
+                let batch: Vec<Event> = (0..CHANNELS)
+                    .flat_map(|_| {
+                        sequence += 1;
+                        incoming(sequence, images, short_urls, nick_links)
+                    })
+                    .collect();
+                chat.update(cx, |chat, cx| {
+                    chat.handle_events(*network, batch, Worker::Running, cx)
+                });
+            }
+            cx.run_until_parked();
+        }
+        unread.time(|| {
+            cx.update(|window, cx| {
+                chat.update(cx, |chat, cx| {
+                    chat.dispatch(Command::NextUnreadChannel, window, cx)
+                })
+            })
+        });
+        cx.run_until_parked();
+    }
+    unread.report();
 
     // Scrolling the selected main log up through its history, 20 rows (one
     // image line with previews on) per step, and back down.

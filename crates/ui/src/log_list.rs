@@ -198,6 +198,12 @@ impl LogList {
         }
     }
 
+    /// Scrolls to the newest line and follows the bottom again, the same
+    /// state as a list that was never scrolled.
+    pub fn scroll_to_end(&self) {
+        self.scroll_to_row(self.state.item_count(), px(0.));
+    }
+
     /// How many message rows lie above row `visible_start` (the first row a
     /// scroll event reports as visible).
     pub fn message_rows_above(&self, visible_start: usize) -> usize {
