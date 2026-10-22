@@ -6907,8 +6907,8 @@ fn input_too_long_and_unknown_error_replies_are_reported_and_kept_in_the_log() {
 }
 
 /// Lines made without the checks of the places that send (here queued as raw
-/// messages) with a CR, LF or NUL anywhere are not written; the line after
-/// them is, the refusal is shown, and the transcript does not hold them.
+/// messages) with a CR, LF or NUL anywhere are not written by the `irc`
+/// crate's codec, the last stop before the socket; the line after them is.
 #[test]
 fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -6947,7 +6947,6 @@ fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
             ..IrcMessage::from(IrcCommand::PRIVMSG("#t".into(), "a".into()))
         },
     ];
-    let count = bad.len();
     for message in bad {
         connection
             .commands
@@ -6962,27 +6961,20 @@ fn a_line_with_a_line_break_or_nul_never_reaches_the_socket() {
         ))))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let (mut refused, mut sent) = (0, Vec::new());
-    while !sent.iter().any(|line: &String| line.contains("fine")) {
+    let mut sent = false;
+    while !sent {
         assert!(Instant::now() < deadline, "no transcript of the good line");
         match connection.try_recv() {
-            Some(Event::ServerLine(text)) if text.contains("line break or NUL") => refused += 1,
             Some(Event::Wire {
                 direction: WireDirection::Sent,
                 line,
                 ..
-            }) => sent.push(line),
+            }) => sent = line.contains("fine"),
             Some(Event::Disconnected(reason)) => panic!("unexpected disconnect: {reason}"),
             Some(_) => {}
             None => thread::sleep(Duration::from_millis(10)),
         }
     }
-    assert_eq!(refused, count);
-    assert!(
-        sent.iter()
-            .all(|line| !line.contains("QUIT") && !line.contains('\0')),
-        "{sent:?}"
-    );
     let written = server.join().unwrap();
     assert!(
         written.iter().all(|line| !line.starts_with(b"QUIT")

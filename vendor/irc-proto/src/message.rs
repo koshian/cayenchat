@@ -64,36 +64,6 @@ impl Message {
         })
     }
 
-    /// Whether the line this message is written as is a single line: apart
-    /// from the terminating `\r\n` it holds no CR, LF or NUL. Tags, source,
-    /// command and every argument are covered. A line that fails would end at
-    /// that byte for the peer, and what follows would run as another command.
-    ///
-    /// One pass over the formatted line, with no allocation of its own.
-    pub fn is_single_line(&self) -> bool {
-        /// How much of the closing `\r\n` the scan has seen; nothing may
-        /// follow it.
-        #[derive(Default)]
-        struct Scan {
-            terminator: u8,
-        }
-        impl Write for Scan {
-            fn write_str(&mut self, text: &str) -> FmtResult {
-                for byte in text.bytes() {
-                    match (byte, self.terminator) {
-                        (b'\r', 0) => self.terminator = 1,
-                        (b'\n', 1) => self.terminator = 2,
-                        (b'\r' | b'\n' | 0, _) | (_, 1..) => return Err(std::fmt::Error),
-                        _ => {}
-                    }
-                }
-                Ok(())
-            }
-        }
-        let mut scan = Scan::default();
-        write!(scan, "{}", self).is_ok() && matches!(scan.terminator, 2)
-    }
-
     /// Gets the nickname of the message source, if it exists.
     ///
     /// # Example
@@ -348,30 +318,6 @@ mod test {
             Message::new(None, "PRIVMSG", vec!["test", "Testing!"]).unwrap(),
             message
         )
-    }
-
-    #[test]
-    fn single_line() {
-        let line = |tags: Option<Vec<Tag>>, prefix: Option<&str>, command: super::Command| {
-            Message {
-                tags,
-                prefix: prefix.map(Into::into),
-                command,
-            }
-            .is_single_line()
-        };
-        assert!(line(None, None, PRIVMSG("#a".into(), "hi there".into())));
-        let tag = |value: &str| vec![Tag("k".into(), Some(value.into()))];
-        // Tag values are escaped when written.
-        assert!(line(Some(tag("a\r\nb")), None, QUIT(None)));
-        for bad in ["a\rb", "a\nb", "a\0b", "a\r\n", "\n"] {
-            assert!(!line(None, None, PRIVMSG(bad.into(), "x".into())), "{bad:?}");
-            assert!(!line(None, None, PRIVMSG("#a".into(), bad.into())), "{bad:?}");
-            assert!(!line(None, None, Raw(bad.into(), vec![])), "{bad:?}");
-            assert!(!line(None, None, Raw("X".into(), vec![bad.into()])), "{bad:?}");
-            assert!(!line(None, Some(bad), QUIT(None)), "{bad:?}");
-            assert!(!line(Some(vec![Tag(bad.into(), None)]), None, QUIT(None)), "{bad:?}");
-        }
     }
 
     #[test]

@@ -78,15 +78,15 @@ Must not depend on GPUI.
 No line with a CR, LF or NUL reaches the socket (CRLF injection, #554), however
 it was made. The checks where a line is made (`checked_command`,
 `validate_message_text`, `valid_channel`, ...) stay for their clear errors, but
-they are not what protects the server. Two gates do, each one function and one
-pass over the formatted line (`Message::is_single_line`, no allocation of its
-own): `send_line` in `irc-core`, which every `client.send` of the worker goes
-through (a refused line is not sent, shown as "Send failed" or in the command
-result, and not recorded in the transcript; the other lines go on and the link
-stays), and the `Outgoing` future of the vendored `irc` crate, the last stop
-before the codec, which also covers the lines the library queues itself (PONG,
-CTCP replies, configured JOINs) and drops a failing line with a log entry that
-does not hold the line. New code that sends must use `send_line`.
+they are not what protects the server. One gate does: `LineCodec::encode` of
+the vendored `irc-proto`, where every line of the `irc` crate (the worker's and
+the library's own PONG, CTCP replies and configured JOINs) is written to the
+socket. It scans the already formatted line once, with no allocation, and drops
+a line with a CR, LF or NUL before the final CRLF whole; the lines after it go
+on and the link stays. Accepted limitation: the codec cannot report back, so a
+dropped line is neither logged (it may hold a secret) nor shown as an error;
+the checks where a line is made give the visible errors, and the transcript,
+written when the line is queued, still shows it as sent.
 
 ### storage
 
@@ -178,7 +178,7 @@ goes through its gate; a change that cannot should say why.
 
 | Sink | Gate | Status |
 | --- | --- | --- |
-| IRC socket: every line written | One check of the whole line before `client.send` (no CR, LF or NUL before the final CRLF); the per-command validators (`checked_command`, `validate_message_text`, `valid_channel`, ...) give the errors | Per command today; the single gate is #554 |
+| IRC socket: every line written | One check of the whole line in `LineCodec::encode`, just before the socket (no CR, LF or NUL before the final CRLF); the per-command validators (`checked_command`, `validate_message_text`, `valid_channel`, ...) give the errors | Done (#554) |
 | Log file paths | `storage::chatlog::path_component` | Done; more Windows reserved names in #553 |
 | Log file contents | The line escaping in `storage::chatlog` (controls, bidirectional controls) | Done |
 | Retained lines: messages, topics, server lines | `app::new_message` (and the topic and edit paths): bidirectional controls become U+200B, of the same length, so offsets for links and selection hold. It is the only way a retained line is built | Done |

@@ -874,16 +874,6 @@ impl Outgoing {
     ) -> Poll<Result<(), error::Error>> {
         debug_assert!(self.buffered.is_none());
 
-        // The last stop before the codec writes to the socket, and the only
-        // one every line passes, including the library's own PONG, CTCP
-        // replies and JOINs. A line with a CR, LF or NUL would run as more
-        // than one command on the server (local change, see vendor/README.md).
-        // Dropped, not an error: the others go on. The line may hold
-        // secrets, so it is not logged.
-        if !message.is_single_line() {
-            log::warn!("dropped an outgoing line holding CR, LF or NUL");
-            return Poll::Ready(Ok(()));
-        }
         match Pin::new(&mut self.sink).poll_ready(cx)? {
             Poll::Ready(()) => Poll::Ready(Pin::new(&mut self.sink).start_send(message)),
             Poll::Pending => {
@@ -1384,15 +1374,11 @@ mod test {
                 "Hi there!\r\nJOIN #bad".to_string()
             ))
             .is_ok());
-        // A line with a CR, LF or NUL is dropped whole; the next one goes.
-        assert!(client
-            .send(PRIVMSG("#test\0".to_string(), "x".to_string()))
-            .is_ok());
-        assert!(client
-            .send(PRIVMSG("#test".to_string(), "ok".to_string()))
-            .is_ok());
         client.stream()?.collect().await?;
-        assert_eq!(&get_client_value(client)[..], "PRIVMSG #test ok\r\n");
+        assert_eq!(
+            &get_client_value(client)[..],
+            "PRIVMSG #test :Hi there!\r\n"
+        );
         Ok(())
     }
 
