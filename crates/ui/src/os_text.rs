@@ -97,3 +97,53 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    const DIRTY: &str = "a\u{202E}b\u{3}c\u{2}d\u{2028}e\u{2029}f\u{7}g\nh";
+
+    fn assert_clean(text: &str, newline_ok: bool) {
+        assert!(
+            !text.chars().any(|c| matches!(c,
+                '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}')
+                || (c.is_control() && !(newline_ok && c == '\n'))),
+            "{text:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn prompt_text_is_cleaned_whoever_calls(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let long = "x".repeat(10_000);
+        cx.update(|window, cx| {
+            drop(window.os_prompt(
+                PromptLevel::Info,
+                &format!("{DIRTY}{long}"),
+                Some(&format!("{DIRTY}{long}")),
+                &[PromptButton::ok("OK")],
+                cx,
+            ));
+        });
+        let (title, detail) = cx.pending_prompt().expect("prompt");
+        assert_clean(&title, false);
+        assert_clean(&detail, true);
+        assert_eq!(title, os_title(&format!("{DIRTY}{long}")));
+        assert_eq!(detail, os_body(&format!("{DIRTY}{long}")));
+        assert!(detail.contains('\n') && title.chars().count() <= 200);
+        assert!(detail.chars().count() <= 2000);
+    }
+
+    #[gpui::test]
+    fn window_title_is_cleaned_whoever_calls(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let dirty = format!("{DIRTY}{}", "y".repeat(10_000));
+        cx.update(|window, _| window.os_set_title(&dirty));
+        let title = cx.window_title().expect("title");
+        assert_clean(&title, false);
+        assert_eq!(title, os_title(&dirty));
+        assert!(title.chars().count() <= 200);
+    }
+}

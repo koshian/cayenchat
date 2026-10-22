@@ -74,7 +74,9 @@ impl WhoisWindow {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(360.), px(300.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some(title.clone().into()),
+                    // A fixed title: the nickname is server text and reaches
+                    // the OS only through the gate below (`os_set_title`).
+                    title: Some("CayenChat".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
