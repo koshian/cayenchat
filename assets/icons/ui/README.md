@@ -30,6 +30,7 @@ and record that here.
 | `chevron-down.svg` | `chevron-down` | 1.56.0 | Search bar: next match |
 | `circle-x.svg` | `circle-x` | 1.56.0 | Search bar: clear the keyword |
 | `x.svg` | `x` | 1.56.0 | Search bar: close |
+| `arrow-down-to-line.svg` | `arrow-down-to-line` | 1.56.0 | Main log: jump to the latest message |
 | `link.svg` | `link` | 1.56.0 | Log: marks a URL when "Show long URLs compactly" is on (the diagonal chain, not `link-2`) |
 
 The files are unchanged from upstream (`stroke="currentColor"`); the toolbar

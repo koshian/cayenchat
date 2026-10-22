@@ -1295,6 +1295,35 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D064 — Jump to the latest message: shortcut and log button (#546)
+
+**Status:** Accepted
+
+- **One action.** `scroll_to_latest` is an entry of `shortcuts::ACTIONS`, so
+  the settings tab, saving, conflict warnings and reset work as for the
+  navigation actions (#114). Its `Target::ScrollToLatest` is a `ui` action
+  (`ScrollToLatest`) handled by `ChatWindow`; `cayenchat_app::Command` and
+  the application state do not know it. Defaults: Ctrl+End on Windows/Linux
+  (the draft binds plain End only), Cmd+J on macOS (Cmd+Down is the next
+  active channel; MacBooks have no End).
+- **One scroll.** The shortcut and the button call
+  `ChatWindow::scroll_main_log_to_latest`, which syncs the selected
+  conversation's `LogList` and calls `LogList::scroll_to_end`. The list then
+  follows the bottom again; scrolling up releases it as before. Only that
+  conversation's list is touched, and not the draft, caret, focus, selection
+  or search. It does nothing while the quit question, the leave question or
+  the member prompt is open; the settings window is another window, and a
+  recording key press is consumed by it. #545 uses the same function.
+- **Button.** A 28 px round button in the main log's lower right, left of the
+  scrollbar strip, drawn only while `LogList::is_behind_latest` (the scroll
+  distance is more than 1 px short of the maximum, so a partly visible last
+  row counts as behind and a log that fits never does). It reads the list's
+  state of the previous layout when the pane renders; the pane already
+  redraws on scroll, scrollbar drag and chat state changes, so there is no
+  per-frame work of its own. It takes its own mouse down, so a click does not
+  move focus to the log. Tooltip: the action's name and its current keys.
+  The sub log has none.
+
 ## D063 — Errors of the chat window are dialogs, never a line in the draft row (#528)
 
 **Status:** Accepted

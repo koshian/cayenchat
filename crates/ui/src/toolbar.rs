@@ -259,6 +259,15 @@ fn tooltip_text(name: &str, keys: &[String]) -> String {
     }
 }
 
+/// The tooltip for shortcut action `id` with the keys it has now.
+pub(crate) fn action_tooltip(name: &str, id: &'static str, cx: &gpui::App) -> String {
+    let overrides = cx
+        .try_global::<crate::ShortcutPrefs>()
+        .map(|prefs| prefs.overrides.clone())
+        .unwrap_or_default();
+    tooltip_text(name, &shown_keys(Keys::Action(id), &overrides))
+}
+
 /// The keys of `keys` now, labelled for display.
 fn shown_keys(keys: Keys, overrides: &shortcuts::Overrides) -> Vec<String> {
     let keys: Vec<String> = match keys {
@@ -504,6 +513,10 @@ impl Render for Toolbar {
 pub struct Icons;
 
 const ICONS: &[(&str, &[u8])] = &[
+    (
+        "icons/ui/arrow-down-to-line.svg",
+        include_bytes!("../../../assets/icons/ui/arrow-down-to-line.svg"),
+    ),
     (
         "icons/ui/bring-to-front.svg",
         include_bytes!("../../../assets/icons/ui/bring-to-front.svg"),

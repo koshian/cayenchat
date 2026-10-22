@@ -10,6 +10,7 @@
 | 次の未読チャンネル | `Ctrl+Tab` または `Opt+Space` | `Ctrl+Tab` |
 | 前の未読チャンネル | `Ctrl+Shift+Tab` または `Opt+Shift+Space` | `Ctrl+Shift+Tab` |
 | 直前に選択したチャンネル | `Opt+Tab` | `Alt+Left` |
+| 上側ログを最新発言までスクロール（右下のボタンでも可） | `Cmd+J` | `Ctrl+End` |
 | 前後のアクティブなチャンネル | `Cmd+Up/Down`、`Cmd+Opt+Up/Down` | `Ctrl+PageUp/PageDown` |
 | 前後のチャンネル | `Cmd+[` / `Cmd+]`、`Ctrl+Up/Down` | `Alt+Up/Down` |
 | 前後のアクティブなサーバー | `Cmd+Opt+Left/Right` | `Ctrl+Alt+PageUp/PageDown` |
