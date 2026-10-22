@@ -226,3 +226,7 @@ no-break space (U+00A0), figure space (U+2007) and narrow no-break space
 them, so the room CayenChat keeps before a link icon (#550) could be split
 across two rows and the icon covered the start of the URL. Both wrappers
 (`LineWrapper::wrap_line` and `compute_wrap_boundaries`) use this function.
+`compute_wrap_boundaries` also offers a wrap opportunity before a no-break space
+that is followed by a figure space (the start of that room) even when no space
+precedes it, so a long unspaced prefix cannot force a break inside the room or
+at the URL's first letter.

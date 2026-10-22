@@ -25,13 +25,24 @@ impl Render for Text {
 /// the previous row) and when the room is in the middle of a row.
 #[gpui::test]
 fn icon_follows_its_room_across_a_wrap(cx: &mut gpui::TestAppContext) {
+    check_rooms_across_wraps(cx, " ");
+}
+
+/// The same holds when the text before the URL has no space, so no ordinary
+/// wrap opportunity exists and only the start of the room can take the break.
+#[gpui::test]
+fn icon_follows_its_room_after_an_unspaced_prefix(cx: &mut gpui::TestAppContext) {
+    check_rooms_across_wraps(cx, "");
+}
+
+fn check_rooms_across_wraps(cx: &mut gpui::TestAppContext, separator: &str) {
     let url = "https://example.com/a";
     let mut text = String::new();
     let mut starts = Vec::new();
     // Rows of different fill make some URL start at a wrap boundary.
-    for filler in 0..12 {
+    for filler in 0..40 {
         text.push_str(&"w".repeat(filler));
-        text.push(' ');
+        text.push_str(separator);
         starts.push(text.len());
         text.push_str(&format!("{ICON}{url} "));
     }
