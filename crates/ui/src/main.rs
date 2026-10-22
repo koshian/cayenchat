@@ -229,6 +229,7 @@ actions!(
         ToggleMenuBar,
         CopyDiagnostics,
         CopyLogSelection,
+        ScrollToLatest,
         FindInLog,
         CloseSearch,
         SearchNext,
@@ -769,6 +770,9 @@ struct ChatWindow {
     window_active: bool,
     #[cfg(test)]
     pane_renders: usize,
+    /// Whether the last draw of the main log included the jump button.
+    #[cfg(test)]
+    latest_button_drawn: bool,
 }
 
 /// An incoming channel or private message, as `notify_message` needs it.
@@ -1281,6 +1285,8 @@ impl ChatWindow {
             window_active: window.is_window_active(),
             #[cfg(test)]
             pane_renders: 0,
+            #[cfg(test)]
+            latest_button_drawn: false,
         };
         this.update_title(window);
         cx.spawn(async move |this, cx| {
@@ -4186,6 +4192,35 @@ impl ChatWindow {
         self.copy_selected_log(cx);
     }
 
+    fn scroll_to_latest(&mut self, _: &ScrollToLatest, _: &mut Window, cx: &mut Context<Self>) {
+        self.scroll_main_log_to_latest(cx);
+    }
+
+    /// Scrolls the selected conversation's main log to its newest line and
+    /// follows new lines again. The one place the shortcut and the button
+    /// (and, later, #545) go through. Nothing else changes: not the draft,
+    /// the focus, the selection or the search; nothing happens under a
+    /// question that has the window's attention.
+    fn scroll_main_log_to_latest(&mut self, cx: &mut Context<Self>) {
+        // The shortcut runs before a dialog's own key handling, so every
+        // dialog drawn over the window has to be excluded here.
+        if self.quit_prompt_open
+            || self.part_prompt.is_some()
+            || self.member_prompt.is_some()
+            || !self.nick_prompts.is_empty()
+            || !self.key_prompts.is_empty()
+            || !self.transfer_dialog.is_idle()
+            || self.setup_wizard_visible()
+        {
+            return;
+        }
+        self.sync_log_lists();
+        if let Some(list) = self.main_lists.get(&self.state.selection()) {
+            list.scroll_to_end();
+            cx.notify();
+        }
+    }
+
     fn copy_log_selection_menu(&mut self, _: &input::Copy, _: &mut Window, cx: &mut Context<Self>) {
         self.copy_selected_log(cx);
     }
@@ -6316,6 +6351,31 @@ impl ChatWindow {
                     });
                 }
                 let bar = scrollbar::scrollbar("scrollbar-main", &main.state, theme.text_muted);
+                let latest_button = main
+                    .is_behind_latest()
+                    .then(|| Self::render_latest_button(&theme, cx));
+                #[cfg(test)]
+                {
+                    self.latest_button_drawn = latest_button.is_some();
+                }
+                // The button follows the previous frame's layout, which
+                // changes without a scroll when the window is resized or a
+                // row is measured. Check once after this frame is laid out and
+                // draw again only when the answer changed.
+                let shown = latest_button.is_some();
+                let selected = selection;
+                let chat = cx.weak_entity();
+                cx.defer(move |cx| {
+                    let _ = chat.update(cx, |chat, cx| {
+                        let behind = chat
+                            .main_lists
+                            .get(&selected)
+                            .is_some_and(|list| list.is_behind_latest());
+                        if behind != shown && chat.state.selection() == selected {
+                            cx.notify();
+                        }
+                    });
+                });
                 div()
                     .relative()
                     .size_full()
@@ -6323,6 +6383,7 @@ impl ChatWindow {
                         list(main.state.clone(), cx.processor(Self::render_main_row)).size_full(),
                     )
                     .child(bar)
+                    .children(latest_button)
                     .into_any_element()
             }
             PaneKind::SubLog => div()
@@ -6364,6 +6425,50 @@ impl ChatWindow {
             }
             PaneKind::Channels => self.render_channel_tree(window, cx),
         }
+    }
+
+    /// The button over the main log's lower right corner that scrolls to the
+    /// newest line (#546). Drawn only while the end of the log is out of
+    /// view. It sits left of the scrollbar's strip and takes its own clicks,
+    /// so neither the log's selection nor the focus is touched.
+    fn render_latest_button(theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        const SIZE: f32 = 28.;
+        let hover = theme.hover_strong;
+        let chat = cx.weak_entity();
+        div()
+            .id("scroll-to-latest")
+            .debug_selector(|| "scroll-to-latest".to_owned())
+            .absolute()
+            .right(px(16.))
+            .bottom(px(8.))
+            .size(px(SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(SIZE / 2.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .shadow_sm()
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .occlude()
+            .child(
+                svg()
+                    .path("icons/ui/arrow-down-to-line.svg")
+                    .size(px(16.))
+                    .text_color(theme.text),
+            )
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| this.scroll_main_log_to_latest(cx)))
+            .tooltip(move |_, cx| {
+                let name = chat
+                    .read_with(cx, |chat, _| chat.i18n.text("shortcut_scroll_to_latest"))
+                    .unwrap_or_default();
+                let text = toolbar::action_tooltip(&name, "scroll_to_latest", cx);
+                cx.new(|_| ircv3_settings::TextTooltip(text.into())).into()
+            })
+            .into_any_element()
     }
 
     fn render_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -7263,6 +7368,7 @@ impl ChatWindow {
             .text_color(theme.text)
             .bg(theme.surface)
             .on_action(cx.listener(Self::navigate))
+            .on_action(cx.listener(Self::scroll_to_latest))
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::notice))
@@ -9332,6 +9438,10 @@ mod charset_command_tests;
 #[cfg(test)]
 #[path = "main_tests/search_tests.rs"]
 mod search_tests;
+
+#[cfg(test)]
+#[path = "main_tests/latest_button_tests.rs"]
+mod latest_button_tests;
 
 #[cfg(test)]
 #[path = "main_tests/channel_key_tests.rs"]

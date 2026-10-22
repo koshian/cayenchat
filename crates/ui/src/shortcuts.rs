@@ -20,9 +20,19 @@ use gpui::{KeyBinding, Keystroke};
 /// What the user changed: action id → key.
 pub type Overrides = BTreeMap<String, String>;
 
+/// What an action does: a navigation command of the application, or a
+/// change of the view that the window makes without the application's state
+/// knowing (#546).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Command(Command),
+    /// Scroll the main log to its newest line.
+    ScrollToLatest,
+}
+
 pub struct ShortcutAction {
     pub id: &'static str,
-    pub command: Command,
+    pub target: Target,
     /// The keys it has until the user chooses another; all of them go.
     pub defaults: &'static [&'static str],
 }
@@ -34,7 +44,7 @@ const fn action(
 ) -> ShortcutAction {
     ShortcutAction {
         id,
-        command,
+        target: Target::Command(command),
         defaults,
     }
 }
@@ -119,6 +129,14 @@ pub const ACTIONS: &[ShortcutAction] = &[
         Command::PreviousSelectedChannel,
         per_platform!(&["alt-tab"], &["alt-left"]),
     ),
+    // Ctrl+End is the text key for "to the end"; the draft binds plain End
+    // only. Cmd+Down is taken (next active channel) and MacBooks have no End,
+    // so J for "jump" there.
+    ShortcutAction {
+        id: "scroll_to_latest",
+        target: Target::ScrollToLatest,
+        defaults: per_platform!(&["cmd-j"], &["ctrl-end"]),
+    },
 ];
 
 /// Whether pressing `keystroke` is how a character is typed on that system:
@@ -210,7 +228,7 @@ pub fn keys(action: &ShortcutAction, overrides: &Overrides) -> Vec<String> {
     }
 }
 
-/// The navigation bindings for the defaults and what the user changed.
+/// The action bindings for the defaults and what the user changed.
 /// Entries for unknown actions and unusable keys are ignored.
 pub fn bindings(overrides: &Overrides) -> Vec<KeyBinding> {
     ACTIONS
@@ -218,7 +236,12 @@ pub fn bindings(overrides: &Overrides) -> Vec<KeyBinding> {
         .flat_map(|action| {
             keys(action, overrides)
                 .into_iter()
-                .map(|key| crate::navigation_binding(&key, action.command))
+                .map(|key| match action.target {
+                    Target::Command(command) => crate::navigation_binding(&key, command),
+                    Target::ScrollToLatest => {
+                        KeyBinding::new(&key, crate::ScrollToLatest, Some("ChatWindow"))
+                    }
+                })
         })
         .collect()
 }
@@ -288,19 +311,19 @@ mod tests {
             .collect()
     }
 
-    /// (key, command) of every navigation binding made.
+    /// (key, command) of every navigation binding made; actions that are not
+    /// commands have their own test.
     fn navigation(overrides: &Overrides) -> Vec<(String, Command)> {
         bindings(overrides)
             .iter()
-            .map(|binding| {
+            .filter_map(|binding| {
                 let key = binding.keystrokes()[0].unparse();
                 let command = binding
                     .action()
                     .as_any()
-                    .downcast_ref::<Navigate>()
-                    .expect("a navigation binding")
+                    .downcast_ref::<Navigate>()?
                     .command;
-                (key, command)
+                Some((key, command))
             })
             .collect()
     }
@@ -488,6 +511,33 @@ mod tests {
     fn the_defaults_conflict_with_nothing() {
         let fixed = crate::fixed_bindings(cayenchat_storage::ChannelNumberModifier::Ctrl);
         assert_eq!(conflicts(&Overrides::new(), &fixed), Vec::new());
+    }
+
+    #[test]
+    fn scrolling_to_the_latest_line_is_an_action_of_its_own_and_can_be_changed() {
+        let latest = |overrides: &Overrides| {
+            bindings(overrides)
+                .iter()
+                .filter(|binding| {
+                    binding
+                        .action()
+                        .as_any()
+                        .downcast_ref::<crate::ScrollToLatest>()
+                        .is_some()
+                })
+                .map(|binding| binding.keystrokes()[0].unparse())
+                .collect::<Vec<_>>()
+        };
+        let default = if cfg!(target_os = "macos") {
+            "cmd-j"
+        } else {
+            "ctrl-end"
+        };
+        assert_eq!(latest(&Overrides::new()), [default]);
+        assert_eq!(
+            latest(&overrides(&[("scroll_to_latest", "ctrl-shift-j")])),
+            ["ctrl-shift-j"]
+        );
     }
 
     #[test]

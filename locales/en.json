@@ -190,6 +190,7 @@
   "shortcut_previous_unread_channel": "Previous unread channel",
   "shortcut_next_unread_channel": "Next unread channel",
   "shortcut_next_notified_message": "Next notified message",
+  "shortcut_scroll_to_latest": "Scroll to the latest message",
   "shortcut_previous_selected_channel": "Previously selected channel",
   "shortcut_change": "Change",
   "shortcut_reset": "Reset",
