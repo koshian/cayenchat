@@ -2414,6 +2414,33 @@ impl SettingsWindow {
             )
             .child(
                 div()
+                    .id("iso2022jp-char-refs")
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        profile.iso2022jp_char_refs,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("iso2022jp_char_refs"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(profile) = this.settings.values.selected_profile_mut() {
+                            profile.iso2022jp_char_refs = !profile.iso2022jp_char_refs;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("iso2022jp_char_refs_hint")),
+            )
+            .child(
+                div()
                     .flex()
                     .items_center()
                     .gap_2()
