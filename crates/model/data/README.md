@@ -3,7 +3,8 @@
 `budoux-ja-v0.9.3.json` is `budoux/models/ja.json` from Google's
 [BudouX v0.9.3](https://github.com/google/budoux/releases/tag/v0.9.3)
 (the 2026 Japanese model), Copyright 2021 Google LLC, Apache License 2.0
-(`BUDOUX-LICENSE-APACHE-2.0.txt`). It is embedded unchanged and read by
+(`licenses/BUDOUX-APACHE-2.0.txt` at the repository root, which every
+package ships). It is embedded unchanged and read by
 `src/phrase.rs`, which reimplements the scoring of the official
 `budoux/parser.py` (no code is copied).
 
