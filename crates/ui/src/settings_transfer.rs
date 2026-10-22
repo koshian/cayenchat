@@ -9,12 +9,41 @@
 
 use std::path::{Path, PathBuf};
 
-use cayenchat_storage::transfer;
+use cayenchat_model::display;
+use cayenchat_storage::{ServerProfile, transfer};
 use gpui::{prelude::*, *};
 
 use crate::{ChatWindow, button_order, dialog, settings_file, theme};
 
 const BOX_MAX_WIDTH: Pixels = px(420.);
+/// Longest name or host shown for an imported server, in characters.
+const SHOWN_NAME_MAX: usize = 64;
+/// How many imported servers are listed whatever their settings; further ones
+/// are listed only when their connection settings are unsafe.
+const SERVERS_LISTED: usize = 16;
+
+/// One imported server as the confirmation shows it.
+struct ServerRow {
+    endpoint: String,
+    warnings: Vec<String>,
+}
+
+/// A value from the file made safe to draw: controls (including line breaks)
+/// become spaces, bidirectional controls are neutralized and a long value is
+/// cut. Done where the value is drawn, whatever the import check allowed.
+fn shown(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let flat = display::neutralize_bidi_owned(flat);
+    let mut chars = flat.trim().chars();
+    let mut out: String = chars.by_ref().take(SHOWN_NAME_MAX).collect();
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
+}
 /// The file name the save dialog starts with.
 const EXPORT_FILE_NAME: &str = "cayenchat-settings.json";
 
@@ -364,6 +393,55 @@ impl ChatWindow {
         cx.notify();
     }
 
+    /// Where each imported server really connects, with a warning for each
+    /// unsafe connection setting; the display name never replaces the host.
+    fn import_servers(&self, pending: &PendingImport) -> Vec<ServerRow> {
+        let servers = &pending.import.settings.servers;
+        let unsafe_connection =
+            |s: &ServerProfile| !s.use_tls || !s.verify_tls_certificates || s.allow_plaintext_pass;
+        let mut rows: Vec<ServerRow> = servers
+            .iter()
+            .enumerate()
+            .filter(|(index, s)| *index < SERVERS_LISTED || unsafe_connection(s))
+            .map(|(_, s)| {
+                let host = shown(&s.host);
+                let port = s.port.to_string();
+                let name = shown(&s.display_name);
+                let endpoint = if name.is_empty() {
+                    self.i18n.format(
+                        "transfer_import_server",
+                        &[("host", &host), ("port", &port)],
+                    )
+                } else {
+                    self.i18n.format(
+                        "transfer_import_server_named",
+                        &[("name", &name), ("host", &host), ("port", &port)],
+                    )
+                };
+                let mut warnings = Vec::new();
+                if !s.use_tls {
+                    warnings.push(self.i18n.text("transfer_import_warn_plain"));
+                } else if !s.verify_tls_certificates {
+                    warnings.push(self.i18n.text("transfer_import_warn_unverified"));
+                }
+                if s.allow_plaintext_pass {
+                    warnings.push(self.i18n.text("transfer_import_warn_plain_pass"));
+                }
+                ServerRow { endpoint, warnings }
+            })
+            .collect();
+        let hidden = servers.len() - rows.len();
+        if hidden > 0 {
+            rows.push(ServerRow {
+                endpoint: self
+                    .i18n
+                    .format("transfer_import_more", &[("count", &hidden.to_string())]),
+                warnings: Vec::new(),
+            });
+        }
+        rows
+    }
+
     /// The summary and consequences of a valid import, one paragraph each.
     fn import_lines(&self, pending: &PendingImport) -> Vec<String> {
         let import = &pending.import;
@@ -405,6 +483,8 @@ impl ChatWindow {
         let step = self.transfer_dialog.step.as_ref()?;
         // The title, the paragraphs, and the confirm button's label (none
         // when the step only says what happened).
+        // The servers an import lists go after the first paragraph.
+        let mut servers = Vec::new();
         let (title, lines, confirm_label) = match step {
             Step::ExportNotice => (
                 self.i18n.text("transfer_export_title"),
@@ -414,11 +494,14 @@ impl ChatWindow {
                 ],
                 Some(self.i18n.text("transfer_export_choose")),
             ),
-            Step::ImportConfirm(pending) => (
-                self.i18n.text("transfer_import_title"),
-                self.import_lines(pending),
-                Some(self.i18n.text("transfer_import_confirm")),
-            ),
+            Step::ImportConfirm(pending) => {
+                servers = self.import_servers(pending);
+                (
+                    self.i18n.text("transfer_import_title"),
+                    self.import_lines(pending),
+                    Some(self.i18n.text("transfer_import_confirm")),
+                )
+            }
             Step::Working => (
                 String::new(),
                 vec![self.i18n.text("transfer_working")],
@@ -426,12 +509,39 @@ impl ChatWindow {
             ),
             Step::Result { title, lines } => (title.clone(), lines.clone(), None),
         };
+        let text_width = dialog::box_width(BOX_MAX_WIDTH, window) - px(26.);
+        let theme = theme::current(cx);
+        let mut blocks: Vec<AnyElement> = Vec::new();
+        let mut lines = lines.into_iter();
+        let paragraph = |line: String| {
+            div()
+                .w(text_width)
+                .text_color(theme.text)
+                .child(line)
+                .into_any_element()
+        };
+        blocks.extend(lines.next().map(paragraph));
+        blocks.extend(servers.into_iter().map(|row| {
+            div()
+                .w(text_width)
+                .flex()
+                .flex_col()
+                .text_color(theme.text)
+                .child(div().child(row.endpoint))
+                .children(row.warnings.into_iter().map(|warning| {
+                    div()
+                        .text_color(theme.warning)
+                        .font_weight(FontWeight::BOLD)
+                        .child(format!("⚠ {warning}"))
+                }))
+                .into_any_element()
+        }));
+        blocks.extend(lines.map(paragraph));
         let working = matches!(step, Step::Working);
         if self.transfer_dialog.focus_pending {
             self.transfer_dialog.focus_pending = false;
             window.focus(&self.transfer_dialog.cancel);
         }
-        let theme = theme::current(cx);
         let box_width = dialog::box_width(BOX_MAX_WIDTH, window);
         let cancel = dialog::cancel_button(
             "transfer-dialog-cancel",
@@ -503,12 +613,7 @@ impl ChatWindow {
                                 .flex_1()
                                 .min_h_0()
                                 .overflow_y_scroll()
-                                .children(lines.into_iter().map(|line| {
-                                    div()
-                                        .w(box_width - px(26.))
-                                        .text_color(theme.text)
-                                        .child(line)
-                                })),
+                                .children(blocks),
                         )
                         .when(!working, |this| {
                             this.child(div().flex_none().child(buttons))
@@ -563,6 +668,72 @@ mod tests {
     fn english(mut settings: Settings) -> Settings {
         settings.language = Language::English;
         settings
+    }
+
+    #[test]
+    fn shown_values_lose_controls_and_bidi_marks_and_are_cut() {
+        assert_eq!(
+            super::shown("irc\u{202E}ten\r\n\u{7}\u{0}"),
+            "irc\u{200B}ten"
+        );
+        let long = "a".repeat(500);
+        let cut = super::shown(&long);
+        assert_eq!(cut.chars().count(), super::SHOWN_NAME_MAX + 1);
+        assert!(cut.ends_with('…'));
+        assert_eq!(
+            super::shown(&"b".repeat(super::SHOWN_NAME_MAX))
+                .chars()
+                .count(),
+            64
+        );
+    }
+
+    #[gpui::test]
+    fn the_import_confirmation_lists_real_hosts_and_unsafe_settings(cx: &mut TestAppContext) {
+        let current = english(settings_with_channels("#old"));
+        let _file = TestFile::with(&current);
+        let (chat, cx) = window(&current, cx);
+
+        let mut other = english(settings_with_channels("#new"));
+        let template = other.servers[0].clone();
+        other.servers.clear();
+        for index in 0..40 {
+            let mut server = template.clone();
+            server.id = format!("s{index}");
+            server.use_tls = true;
+            server.allow_plaintext_pass = false;
+            server.host = format!("irc{index}.example");
+            // Only the 30th is unsafe, beyond the listed head.
+            server.verify_tls_certificates = index != 30;
+            if index == 0 {
+                server.display_name = "IRCnet\u{202E}".into();
+                server.host = "evil\u{202E}.example\nline".into();
+            }
+            other.servers.push(server);
+        }
+        let directory = directory("import-servers");
+        let path = directory.join("cayenchat-settings.json");
+        transfer::export_to(&path, &other).unwrap();
+
+        chat.update_in(cx, |chat, window, cx| {
+            chat.read_import(path.clone(), window, cx)
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            let Some(super::Step::ImportConfirm(pending)) = &chat.transfer_dialog.step else {
+                panic!("not confirming");
+            };
+            let rows = chat.import_servers(pending);
+            // 16 listed, the unsafe 31st, and the rest counted.
+            assert_eq!(rows.len(), 16 + 1 + 1);
+            assert!(rows[0].endpoint.contains("IRCnet"));
+            assert!(rows[0].endpoint.contains("evil\u{200B}.example line"));
+            assert!(!rows[0].endpoint.contains('\u{202E}'));
+            assert!(rows[0].warnings.is_empty());
+            assert_eq!(rows[16].warnings.len(), 1);
+            assert!(rows[16].endpoint.contains("irc30.example:"));
+            assert!(rows[17].endpoint.contains("23"));
+        });
     }
 
     #[gpui::test]

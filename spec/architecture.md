@@ -164,6 +164,32 @@ network tasks
 
 Tokio is a likely runtime for networking, but the integration strategy should be validated against current GPUI behavior before being treated as final.
 
+## Untrusted values and their sinks
+
+Values from IRC servers and other users, fetched URLs and images, and files
+read from disk (settings, imports, logs) are made safe **at the sink**: right
+before they are written to the socket, put into a file path or file, drawn,
+or handed to the OS. Earlier checks stay where they give a clearer error
+(validating a channel name when it is typed, refusing an import), but a sink
+never relies on them, or on a value having been checked when it was loaded.
+Each sink has one gate that every path goes through, and applying a gate
+twice gives the same result. A new sink, or a new path to an existing one,
+goes through its gate; a change that cannot should say why.
+
+| Sink | Gate | Status |
+| --- | --- | --- |
+| IRC socket: every line written | One check of the whole line before `client.send` (no CR, LF or NUL before the final CRLF); the per-command validators (`checked_command`, `validate_message_text`, `valid_channel`, ...) give the errors | Per command today; the single gate is #554 |
+| Log file paths | `storage::chatlog::path_component` | Done; more Windows reserved names in #553 |
+| Log file contents | The line escaping in `storage::chatlog` (controls, bidirectional controls) | Done |
+| Retained lines: messages, topics, server lines | `app::new_message` (and the topic and edit paths): bidirectional controls become U+200B, of the same length, so offsets for links and selection hold. It is the only way a retained line is built | Done |
+| Names drawn in the app (nicknames, channel and server names, WHOIS fields) | `model::display::neutralize_bidi` at each draw site | Done, per site |
+| Dialogs, desktop notifications, window title | One gate per sink before the OS call (bidirectional and other controls, IRC formatting, length); Linux notification markup is escaped in `notifier` | Markup escaping done; the gates are #558 |
+| Settings import confirmation | Hosts and unsafe connection flags shown, sanitized when drawn | #552 |
+| Fetched URLs (previews, avatars) | `media::policy::check_request` on every request and redirect, and the resolver's public-address filter | Done |
+| Links opened | `app::links::find` (`http`/`https` only), opened by the OS without a shell | Done |
+| Localized text with values | `localization::fill`: one pass, values never read as placeholders | Done |
+| Clipboard | Copies use the retained text and `sender_prefix`; the diagnostics copy is the raw transcript on purpose | Done |
+
 ## Platform boundary
 
 macOS and Windows are equal primary targets.
