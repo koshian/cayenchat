@@ -336,7 +336,12 @@ def reconnect_gap(display, proxy, peer):
     peer.say("B sent while away")
     peer.say("C also missed")
     time.sleep(1)
-    display.settle("disconnected")
+    notice = display.settle("disconnected")
+    # The disconnect opens a notice that blocks the window until it is closed;
+    # a real Escape closes it, which the screen shows.
+    display.xdo("key", "Escape")
+    closed = display.settle("notice_closed")
+    check(closed[2] != notice[2], "Escape closes the disconnect notice")
     proxy.accepting = True
     resumed = proxy.wait_for("gap recovery",
                              lambda l: l.startswith(f"CHATHISTORY LATEST {CHANNEL} msgid="), timeout=40)

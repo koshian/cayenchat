@@ -1295,6 +1295,50 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D063 — Errors of the chat window are dialogs, never a line in the draft row (#528)
+
+**Status:** Accepted
+
+A long error in the draft row took the room of the text field, so the draft
+could not be edited. Nothing is drawn in the draft row now besides the field
+and the upload progress. Every error and warning that used to be there (a
+failed or refused send, connection, disconnect, WHOIS, join/part, member
+command, settings and order saving, start-up notices) opens a modal dialog
+with a Close button (`window.prompt`, `notices.rs`).
+
+- **Opened from events.** `post_notice` queues the notice and opens it from a
+  spawned task on the window handle, so a failure that has no `Window` at hand
+  and a failure found while drawing alike never create a dialog in a draw.
+- **One at a time, bounded.** A notice equal to the open or a waiting one is
+  dropped; other notices wait (at most 8, then dropped and logged) and open one
+  after another. Any other dialog of the chat window (upload confirmation,
+  disconnect-all) counts as open too, so it is never replaced. A notice a
+  background process raised (the selected server's connection ending) is also
+  dropped for 30 seconds after the same text was closed, so failing retries do
+  not reopen it; what the user triggered is shown every time.
+- **Closing changes nothing.** The draft, caret, selection and undo history are
+  untouched, nothing is sent, retried or selected. When nothing has the focus
+  afterwards, the draft of the selected conversation gets it; a form the user
+  is working in keeps it.
+- **Member prompt.** `prompt_feedback` is the error line inside the nickname,
+  topic, mode, join and similar prompt; it stays there and opens no second
+  dialog. Settings windows keep their own validation lines.
+- **Server replies 417 and 400.** `irc-core` reports them as
+  `Event::CommandRejected` next to the `ServerLine`, so the server log keeps
+  them. The window opens a dialog (server, code, command for a 400, the
+  server's text without formatting codes) only as the answer to something the
+  user said from the draft: a message in a channel or query, or `/me`. That one
+  place in `send_draft` records the time per server (at most 8). A 417, or a
+  400 whose command is PRIVMSG or NOTICE, within 10 seconds of it opens one
+  dialog and uses that send up. Every other reply stays in the log: commands
+  (`/msg`, `/raw`, `/names`, CTCP and the like), JOIN (also the one resent
+  with a channel key), PART (also the leave confirmation), the member menu and
+  automatic traffic. There is no guessing of the command a line is sent as.
+  A line refused locally by the 512-byte check was never sent, so no 417
+  follows it.
+- **Uploads** keep their dialogs (#481) through the same queue; progress and
+  Cancel are unchanged.
+
 ## D062 — Auto Phrase: BudouX phrase wrapping for Japanese (#537)
 
 **Status:** Accepted (experimental)

@@ -799,6 +799,17 @@ pub enum Event {
         nickname: String,
     },
     ServerLine(String),
+    /// The server refused a command with 417 `ERR_INPUTTOOLONG` or 400
+    /// `ERR_UNKNOWNERROR`. The line also stays a [`Event::ServerLine`]. It is
+    /// not tied to anything we sent: the UI decides whether a user action
+    /// explains it.
+    CommandRejected {
+        code: u16,
+        /// The command a 400 names; 417 names none.
+        command: Option<String>,
+        /// The server's own text.
+        reason: String,
+    },
     /// A line about CTCP (a request, a reply, a refusal): a server line that
     /// the combined log shows too.
     CtcpLine(String),
@@ -4409,6 +4420,29 @@ impl WhoisCollector {
     }
 }
 
+/// A 417 or 400 reply as an event. The text is the server's last parameter,
+/// so a server cannot make it anything but text.
+fn command_rejection(message: &IrcMessage) -> Option<Event> {
+    let (code, args) = match &message.command {
+        IrcCommand::Response(Response::ERR_UNKNOWNERROR, args) => (400, args),
+        IrcCommand::Raw(verb, args) if verb == "417" => (417, args),
+        _ => return None,
+    };
+    // `<nick> [<command>] :<text>`; the nick comes first.
+    let rest = args.get(1..).unwrap_or_default();
+    let (reason, command) = match rest {
+        [] => return None,
+        [reason] => (reason, None),
+        [command, .., reason] if code == 400 => (reason, Some(command.clone())),
+        [.., reason] => (reason, None),
+    };
+    Some(Event::CommandRejected {
+        code,
+        command,
+        reason: reason.clone(),
+    })
+}
+
 /// The channel topic a server line states or changes, if it is one.
 fn topic_event(message: &IrcMessage, server_time: Option<SystemTime>) -> Option<Event> {
     let (channel, topic) = match &message.command {
@@ -4765,6 +4799,7 @@ fn translate_message(
             events.push(Event::ServerLine(tags::untagged_line(
                 shown.as_ref().unwrap_or(&message),
             )));
+            events.extend(command_rejection(&message));
             events
         }
     };

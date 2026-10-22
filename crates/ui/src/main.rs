@@ -30,6 +30,7 @@ mod log_list;
 mod log_search;
 mod member_selection;
 mod menu_bar;
+mod notices;
 mod notifier;
 mod part_dialog;
 #[cfg(test)]
@@ -609,13 +610,6 @@ fn i18n_error(language: Language, key: &str) -> String {
     Localizer::new(language).text(key)
 }
 
-/// A draft that failed to send and the warning shown for it.
-struct SendFailure {
-    selection: Selection,
-    text: String,
-    message: String,
-}
-
 struct ChatWindow {
     state: AppState,
     // Virtualized logs keep a separate scroll position per server or channel.
@@ -634,12 +628,18 @@ struct ChatWindow {
     sub_rows: Vec<SubRow>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
-    feedback: Option<String>,
+    /// The error of the open member prompt, drawn inside it. Errors anywhere
+    /// else go to `notices`, never into the draft row (#528).
+    prompt_feedback: Option<String>,
+    /// Errors waiting for, or shown in, a dialog.
+    notices: notices::Notices,
+    /// A dialog of this window is open; another one must wait for it.
+    prompt_open: bool,
+    /// When the user last spoke on each server, to tell the 417
+    /// or 400 that answers it from one a background process caused.
+    sent_messages: notices::SentMessages,
     /// The image file being read off the UI thread; a newer drop replaces it.
     file_read: Option<Task<()>>,
-    /// The draft whose failed send put `feedback` on screen; editing that
-    /// draft makes the warning obsolete, unrelated feedback stays.
-    send_failure: Option<SendFailure>,
     /// What startup reported, such as where unreadable settings were kept.
     /// It is shown again when the settings cannot be opened for the same reason.
     startup_notice: Option<String>,
@@ -1183,9 +1183,22 @@ impl ChatWindow {
             sub_rows: Vec::new(),
             inputs,
             startup_notice: feedback.clone(),
-            feedback,
+            prompt_feedback: None,
+            notices: {
+                let mut notices = notices::Notices::default();
+                if let Some(detail) = feedback {
+                    let title = i18n.text("notice_title");
+                    notices.post(
+                        notices::Notice { title, detail },
+                        notices::Origin::User,
+                        Instant::now(),
+                    );
+                }
+                notices
+            },
+            prompt_open: false,
+            sent_messages: Default::default(),
             file_read: None,
-            send_failure: None,
             sessions,
             next_network_id,
             server_menu: None,
@@ -1280,10 +1293,6 @@ impl ChatWindow {
             }
         })
         .detach();
-        let keys: Vec<Selection> = this.inputs.keys().copied().collect();
-        for key in keys {
-            this.watch_input(key, cx);
-        }
         // GPUI reports the macOS/Windows appearance and, on Linux, the XDG
         // desktop portal color scheme.
         cx.observe_window_appearance(window, |this, _, cx| {
@@ -1799,7 +1808,7 @@ impl ChatWindow {
                 && let Err(error) =
                     cayenchat_storage::order::save_orders_to(path, &self.channel_orders)
             {
-                self.set_feedback(Some(error));
+                self.raise_error(Some(network), error, notices::Origin::User, cx);
             }
         }
         cx.notify();
@@ -1823,7 +1832,7 @@ impl ChatWindow {
             Ok(Some(settings)) => settings,
             Ok(None) => self.saved.clone(),
             Err(error) => {
-                self.set_feedback(Some(error));
+                self.report(Some(error), cx);
                 cx.notify();
                 return;
             }
@@ -1839,7 +1848,7 @@ impl ChatWindow {
         match settings_file::save(&settings) {
             Ok(()) => self.apply_servers(settings, cx),
             Err(error) => {
-                self.set_feedback(Some(error));
+                self.report(Some(error), cx);
                 cx.notify();
             }
         }
@@ -1866,35 +1875,8 @@ impl ChatWindow {
         for key in keys {
             if let std::collections::hash_map::Entry::Vacant(slot) = self.inputs.entry(key) {
                 slot.insert(cx.new(|cx| TextInput::new_live(&placeholder, cx)));
-                self.watch_input(key, cx);
             }
         }
-    }
-
-    /// Replaces the warning. Whatever it said before, it no longer belongs to
-    /// a failed send, even when a later failure words it the same.
-    fn set_feedback(&mut self, feedback: Option<String>) {
-        self.send_failure = None;
-        self.feedback = feedback;
-    }
-
-    /// Clears the warning of a failed send once its draft is edited.
-    fn watch_input(&mut self, key: Selection, cx: &mut Context<Self>) {
-        let input = self.inputs[&key].clone();
-        cx.observe(&input, move |this, input, cx| {
-            let Some(failure) = &this.send_failure else {
-                return;
-            };
-            if failure.selection != key || input.read(cx).text() == failure.text {
-                return;
-            }
-            if this.feedback.as_deref() == Some(failure.message.as_str()) {
-                this.set_feedback(None);
-            }
-            this.send_failure = None;
-            cx.notify();
-        })
-        .detach();
     }
 
     /// Drops UI state kept for conversations that no longer exist.
@@ -2131,13 +2113,13 @@ impl ChatWindow {
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.irc = Some(connection);
                 }
-                self.set_feedback(None);
+                self.prompt_feedback = None;
                 self.spawn_event_pump(network, cx);
                 window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
                 Ok(())
             }
             Err(error) => {
-                self.record_disconnect(network, error.clone());
+                self.record_disconnect(network, error.clone(), cx);
                 self.schedule_retry(network, cx);
                 Err(error)
             }
@@ -2187,8 +2169,9 @@ impl ChatWindow {
         session.retry_pending = false;
         session.retry_token += 1;
         if let Some(connection) = &session.irc {
-            let result = connection.disconnect();
-            self.set_feedback(result.err());
+            if let Err(error) = connection.disconnect() {
+                self.raise_error(Some(network), error, notices::Origin::User, cx);
+            }
         } else if cancelled_retry {
             let message = self.i18n.text("event_retry_cancelled");
             self.state.append_server_message(network, message);
@@ -2209,7 +2192,7 @@ impl ChatWindow {
         if self.disconnectable_networks().is_empty() {
             return;
         }
-        let answer = window.prompt(
+        let answer = self.chat_prompt(
             PromptLevel::Warning,
             &self.i18n.text("disconnect_all_title"),
             Some(&self.i18n.text("disconnect_all_detail")),
@@ -2217,6 +2200,7 @@ impl ChatWindow {
                 PromptButton::ok(self.i18n.text("disconnect_all_confirm")),
                 PromptButton::cancel(self.i18n.text("cancel")),
             ],
+            window,
             cx,
         );
         cx.spawn(async move |this, cx| {
@@ -2323,7 +2307,7 @@ impl ChatWindow {
                     let _ = self.apply_connection(network, config, window, cx);
                 }
                 Err(error) => {
-                    self.set_feedback(Some(error));
+                    self.raise_error(Some(network), error, notices::Origin::User, cx);
                     self.open_settings_for(Some(profile_id), window, cx);
                 }
             }
@@ -2356,7 +2340,7 @@ impl ChatWindow {
         self.state.set_status(network, ConnectionStatus::Connecting);
         self.state
             .append_server_message(network, self.i18n.text("event_reconnecting"));
-        self.set_feedback(None);
+        self.prompt_feedback = None;
         match Connection::connect(config) {
             Ok(connection) => {
                 connection.set_transcript(self.debug_enabled);
@@ -2366,7 +2350,7 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                self.record_disconnect(network, error);
+                self.record_disconnect(network, error, cx);
                 self.schedule_retry(network, cx);
             }
         }
@@ -2433,7 +2417,7 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn record_disconnect(&mut self, network: NetworkId, reason: String) {
+    fn record_disconnect(&mut self, network: NetworkId, reason: String, cx: &mut Context<Self>) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.connection_started = None;
             session
@@ -2459,7 +2443,7 @@ impl ChatWindow {
         self.state.append_server_message(network, message.clone());
         // Another server's disconnect is shown in its tree row and log only.
         if self.selected_network_id() == Some(network) {
-            self.set_feedback(Some(message));
+            self.raise_error(Some(network), message, notices::Origin::Background, cx);
         }
     }
 
@@ -2480,14 +2464,14 @@ impl ChatWindow {
         };
         if command == MemberCommand::Whois {
             let result = self.request_whois(menu.network, &menu.nickname, cx);
-            self.set_feedback(result.err());
+            self.report_sent(menu.network, result, cx);
             cx.notify();
             return;
         }
         let result = self
             .registered_connection(menu.network)
-            .and_then(|connection| connection.send_member_command(&menu.nickname, command));
-        self.set_feedback(result.err());
+            .and_then(|connection| connection.send_member_command(&menu.nickname, command.clone()));
+        self.report_sent(menu.network, result, cx);
         cx.notify();
     }
 
@@ -2525,14 +2509,12 @@ impl ChatWindow {
         };
         let group = self.menu_group_now(&menu);
         // Nobody left to act on: nothing is sent.
-        let feedback = if group.is_empty() {
-            None
-        } else {
-            self.registered_connection(menu.network)
-                .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &group))
-                .err()
-        };
-        self.set_feedback(feedback);
+        if !group.is_empty() {
+            let result = self
+                .registered_connection(menu.network)
+                .and_then(|connection| connection.send_member_modes(&menu.channel, mode, &group));
+            self.report_sent(menu.network, result, cx);
+        }
         cx.notify();
     }
 
@@ -2903,7 +2885,8 @@ impl ChatWindow {
                         self.ensure_inputs(cx);
                         self.dispatch(Command::SelectChannel(id), window, cx);
                     } else {
-                        self.set_feedback(Some(self.i18n.text("private_conversation_limit")));
+                        let message = self.i18n.text("private_conversation_limit");
+                        self.raise_error(Some(menu.network), message, notices::Origin::User, cx);
                     }
                 }
             }
@@ -2926,14 +2909,13 @@ impl ChatWindow {
         join: bool,
         cx: &mut Context<Self>,
     ) {
-        let feedback = if join {
-            self.join_channel(network, channel, cx).err()
+        let result = if join {
+            self.join_channel(network, channel, cx)
         } else {
             self.registered_connection(network)
                 .and_then(|connection| connection.send_command(&format!("/part {channel}"), None))
-                .err()
         };
-        self.set_feedback(feedback);
+        self.report_sent(network, result, cx);
         cx.notify();
     }
 
@@ -3004,7 +2986,7 @@ impl ChatWindow {
             return;
         };
         let result = self.request_whois(network, &nickname, cx);
-        self.set_feedback(result.err());
+        self.report_sent(network, result, cx);
         cx.notify();
     }
 
@@ -3121,7 +3103,7 @@ impl ChatWindow {
             Ok(None) => self.saved.clone(),
             Err(error) => {
                 // Saving over a file that cannot be read could destroy it.
-                self.set_feedback(Some(error));
+                self.report(Some(error), cx);
                 cx.notify();
                 return;
             }
@@ -3166,7 +3148,7 @@ impl ChatWindow {
             }
             Err(error) => Some(error),
         };
-        self.set_feedback(feedback);
+        self.report(feedback, cx);
         cx.notify();
     }
 
@@ -3445,7 +3427,7 @@ impl ChatWindow {
             }
             Err(error) => {
                 let message = self.i18n.format("whois_open_failed", &[("error", &error)]);
-                self.set_feedback(Some(message));
+                self.report(Some(message), cx);
             }
         }
     }
@@ -3536,7 +3518,7 @@ impl ChatWindow {
             input.update(cx, |input, cx| input.select_everything(cx));
         }
         let viewport = window.viewport_size();
-        self.set_feedback(None);
+        self.prompt_feedback = None;
         self.member_prompt = Some(MemberPrompt {
             position: Some(point(
                 position.x.min((viewport.width - px(300.)).max(px(0.))),
@@ -3700,7 +3682,7 @@ impl ChatWindow {
 
     fn cancel_member_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.member_prompt = None;
-        self.set_feedback(None);
+        self.prompt_feedback = None;
         window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
         cx.notify();
     }
@@ -3773,10 +3755,11 @@ impl ChatWindow {
                 {
                     self.note_join_request(prompt.network, &format!("/join {}", value.trim()));
                 }
-                self.set_feedback(None);
+                self.prompt_feedback = None;
                 window.focus(&self.inputs[&self.state.selection()].focus_handle(cx));
             }
-            Err(error) => self.set_feedback(Some(error)),
+            // The prompt stays open and shows the error itself.
+            Err(error) => self.prompt_feedback = Some(error),
         }
         cx.notify();
     }
@@ -3859,7 +3842,7 @@ impl ChatWindow {
                     Some(notice) if notice.starts_with(&error) => notice.clone(),
                     _ => error,
                 };
-                self.set_feedback(Some(message));
+                self.report(Some(message), cx);
                 cx.notify();
                 return;
             }
@@ -3933,7 +3916,7 @@ impl ChatWindow {
                 let message = self
                     .i18n
                     .format("settings_open_failed", &[("error", &error.to_string())]);
-                self.set_feedback(Some(message))
+                self.report(Some(message), cx);
             }
         }
         cx.notify();
@@ -3952,7 +3935,7 @@ impl ChatWindow {
     /// file, starting from the file, which a settings window may have updated.
     fn toggle_toolbar(&mut self, _: &ToggleToolbar, _: &mut Window, cx: &mut Context<Self>) {
         let shown = !self.toolbar_shown;
-        self.save_view_setting(|settings| settings.show_toolbar = shown);
+        self.save_view_setting(|settings| settings.show_toolbar = shown, cx);
         self.set_toolbar_shown(shown, cx);
     }
 
@@ -3960,24 +3943,24 @@ impl ChatWindow {
     /// or shows it all the time, and remembers the choice.
     fn toggle_menu_bar(&mut self, _: &ToggleMenuBar, _: &mut Window, cx: &mut Context<Self>) {
         let auto_hide = self.menu_bar.always();
-        self.save_view_setting(|settings| settings.menu_bar_auto_hide = auto_hide);
+        self.save_view_setting(|settings| settings.menu_bar_auto_hide = auto_hide, cx);
         self.set_menu_bar_auto_hide(auto_hide, cx);
     }
 
     /// Saves a View menu choice, starting from the settings file, which a
     /// settings window may have updated.
-    fn save_view_setting(&mut self, apply: impl FnOnce(&mut Settings)) {
+    fn save_view_setting(&mut self, apply: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         let mut settings = match settings_file::load() {
             Ok(Some(settings)) => settings,
             Ok(None) => self.saved.clone(),
             Err(error) => {
-                self.set_feedback(Some(error));
+                self.report(Some(error), cx);
                 return;
             }
         };
         apply(&mut settings);
         if let Err(error) = settings_file::save(&settings) {
-            self.set_feedback(Some(error));
+            self.report(Some(error), cx);
         }
         self.saved.show_toolbar = settings.show_toolbar;
         self.saved.menu_bar_auto_hide = settings.menu_bar_auto_hide;
@@ -4361,7 +4344,7 @@ impl ChatWindow {
         self.log_menu = None;
         self.state.dispatch(command);
         self.log_selection = None;
-        self.set_feedback(None);
+        self.prompt_feedback = None;
         if let Some((id, sequence)) = self.state.take_reveal() {
             self.reveal_message(id, sequence, cx);
         }
@@ -4500,7 +4483,7 @@ impl ChatWindow {
                 } => self.key_join_refused(network, channel, *bad_key, cx),
                 _ => {}
             }
-            self.handle_event(network, event);
+            self.handle_event(network, event, cx);
         }
         for (network, info, requested) in std::mem::take(&mut self.whois_replies) {
             self.show_whois(network, info, requested, cx);
@@ -4528,6 +4511,7 @@ impl ChatWindow {
             self.handle_event(
                 network,
                 Event::Disconnected("IRC worker stopped unexpectedly.".into()),
+                cx,
             );
             cx.notify();
         }
@@ -4548,7 +4532,7 @@ impl ChatWindow {
         true
     }
 
-    fn handle_event(&mut self, network: NetworkId, event: Event) {
+    fn handle_event(&mut self, network: NetworkId, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Diagnostic { elapsed, message } => {
                 self.push_diagnostic(
@@ -5008,6 +4992,11 @@ impl ChatWindow {
                 }
             }
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::CommandRejected {
+                code,
+                command,
+                reason,
+            } => self.server_rejected(network, code, command, reason, cx),
             Event::CtcpLine(line) => self.state.append_system_message(network, line),
             Event::UserAccount {
                 nickname,
@@ -5057,7 +5046,7 @@ impl ChatWindow {
                     .is_some_and(|session| session.pending_whois.remove(&key.1));
                 if requested && !info.found() && !self.whois_windows.contains_key(&key) {
                     let message = self.i18n.format_nickname("whois_not_found", &info.nickname);
-                    self.set_feedback(Some(message));
+                    self.raise_error(Some(network), message, notices::Origin::User, cx);
                 }
                 if requested || self.whois_windows.contains_key(&key) {
                     self.whois_replies.push((network, info, requested));
@@ -5208,7 +5197,7 @@ impl ChatWindow {
                 }
                 self.state.end_avatars(network);
                 self.update_own_avatar(network, OwnAvatar::connection_ended);
-                self.record_disconnect(network, reason);
+                self.record_disconnect(network, reason, cx);
             }
             // Avatar references are recorded whether or not they are shown;
             // showing them (and downloading images) is the Appearance setting.
@@ -5294,6 +5283,7 @@ impl ChatWindow {
         // Local to the application: nothing of it goes to the server, so it
         // works before registration and while disconnected too.
         let charset = charset_command::parse(&text);
+        let local_command = charset.is_some();
         let result = if let Some(parsed) = charset {
             match parsed {
                 Ok(request) => self.run_charset(request, cx),
@@ -5329,28 +5319,25 @@ impl ChatWindow {
         } else {
             Err(self.i18n.text("not_connected"))
         };
-        self.send_failure = None;
-        self.feedback = match result {
+        match result {
             Ok(()) => {
                 // A plain `/join` was noted when it was sent, with its keys.
-                if let Some(network) = network
-                    && channel_keys::plain_join_channels(&text).is_none()
-                {
-                    self.note_join_request(network, &text);
+                if let Some(network) = network {
+                    if channel_keys::plain_join_channels(&text).is_none() {
+                        self.note_join_request(network, &text);
+                    }
+                    // The one place a send is remembered for a 417 or 400:
+                    // what the user said, not commands and not local ones.
+                    if !local_command && notices::is_spoken(&text) {
+                        self.note_spoken(network);
+                    }
                 }
                 self.input_history.record(&text, private_peer.as_deref());
                 input.update(cx, |input, cx| input.clear_after_send(cx));
-                None
             }
-            Err(error) => {
-                self.send_failure = Some(SendFailure {
-                    selection,
-                    text,
-                    message: error.clone(),
-                });
-                Some(error)
-            }
-        };
+            // The draft stays as typed; the dialog says why it was not sent.
+            Err(error) => self.raise_error(network, error, notices::Origin::User, cx),
+        }
         cx.notify();
         window.refresh();
     }
@@ -5471,10 +5458,10 @@ impl ChatWindow {
                 let mut settings = file.unwrap_or_else(|| self.saved.clone());
                 settings.always_on_top = enabled;
                 if let Err(error) = settings_file::save(&settings) {
-                    self.set_feedback(Some(error));
+                    self.report(Some(error), cx);
                 }
             }
-            Err(error) => self.set_feedback(Some(error)),
+            Err(error) => self.report(Some(error), cx),
         }
         self.saved.always_on_top = enabled;
         self.apply_always_on_top(enabled, window, cx);
@@ -5492,7 +5479,7 @@ impl ChatWindow {
     fn apply_always_on_top(&mut self, enabled: bool, window: &Window, cx: &mut Context<Self>) {
         self.always_on_top = enabled;
         if let Err(error) = set_window_always_on_top(window, enabled) {
-            self.set_feedback(Some(error));
+            self.report(Some(error), cx);
         }
         for handle in self.whois_windows.values() {
             let _ = handle.update(cx, |_, window, _| {
@@ -6533,9 +6520,6 @@ impl ChatWindow {
                                 })),
                         ),
                 )
-            })
-            .when_some(self.feedback.clone(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
             });
         let column_bounds = self.left_column_bounds.clone();
         let left = div()
@@ -7182,7 +7166,7 @@ impl ChatWindow {
                 .gap_2()
                 .child(div().font_weight(FontWeight::BOLD).child(title))
                 .child(prompt.input.clone())
-                .when_some(self.feedback.clone(), |d, feedback| {
+                .when_some(self.prompt_feedback.clone(), |d, feedback| {
                     d.child(div().text_color(theme.warning).child(feedback))
                 })
                 .child(
@@ -9124,6 +9108,8 @@ fn main() {
                         !chat.menu_bar.always(),
                         &chat.i18n,
                     ));
+                    // What startup reported while the settings were read.
+                    chat.open_next_notice(window, cx);
                     let startup = std::mem::take(&mut chat.startup_connections);
                     // With no saved server the setup wizard stands in for
                     // the settings window; it writes nothing unless asked.
@@ -9141,7 +9127,7 @@ fn main() {
                             Err(error) => {
                                 let message =
                                     chat.i18n.format("startup_invalid", &[("error", &error)]);
-                                chat.set_feedback(Some(message));
+                                chat.raise_error(Some(network), message, notices::Origin::User, cx);
                                 cx.notify();
                                 true
                             }
@@ -9218,6 +9204,10 @@ mod log_tests;
 #[cfg(test)]
 #[path = "main_tests/startup_tests.rs"]
 mod startup_tests;
+
+#[cfg(test)]
+#[path = "main_tests/notice_tests.rs"]
+mod notice_tests;
 
 /// [`conversation_participants`] of the selected conversation. Takes the
 /// fields rather than the window so the rows can be held while the member

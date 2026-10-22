@@ -248,7 +248,7 @@ fn topic_mode_and_nick_open_the_shared_prompt_from_the_toolbar(cx: &mut TestAppC
         // A cancel sends nothing and closes the prompt.
         chat.cancel_member_prompt(window, cx);
         assert!(chat.member_prompt.is_none());
-        assert!(chat.feedback.is_none());
+        assert!(chat.notices.all().is_empty());
 
         // Confirming a topic sends it.
         chat.toolbar_topic(window, cx);
@@ -259,7 +259,7 @@ fn topic_mode_and_nick_open_the_shared_prompt_from_the_toolbar(cx: &mut TestAppC
             .update(cx, |input, cx| input.set_text("new topic", cx));
         chat.submit_member_prompt(window, cx);
         assert!(chat.member_prompt.is_none());
-        assert!(chat.feedback.is_none());
+        assert!(chat.notices.all().is_empty());
 
         // Mode: an empty string input, sent as /mode only on confirm.
         chat.toolbar_mode(window, cx);
@@ -270,7 +270,7 @@ fn topic_mode_and_nick_open_the_shared_prompt_from_the_toolbar(cx: &mut TestAppC
             .update(cx, |input, cx| input.set_text("+m", cx));
         chat.submit_member_prompt(window, cx);
         assert!(chat.member_prompt.is_none());
-        assert!(chat.feedback.is_none());
+        assert!(chat.notices.all().is_empty());
 
         // Nick: the own nickname of the selected channel's network.
         chat.toolbar_nick(window, cx);
@@ -281,7 +281,7 @@ fn topic_mode_and_nick_open_the_shared_prompt_from_the_toolbar(cx: &mut TestAppC
             .update(cx, |input, cx| input.set_text("me2", cx));
         chat.submit_member_prompt(window, cx);
         assert!(chat.member_prompt.is_none());
-        assert!(chat.feedback.is_none());
+        assert!(chat.notices.all().is_empty());
 
         // With a server selected the channel buttons have nothing to act on;
         // their handlers do nothing instead of guessing a channel.

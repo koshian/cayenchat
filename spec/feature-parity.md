@@ -101,6 +101,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - PARTIAL — initial/switch focus, common OS editing shortcuts, undo/redo and
   platform-specific app bindings; user-customized macOS text bindings unsupported
   by GPUI 0.2.2, Windows/Linux runtime unverified
+- DONE — errors and warnings of the chat window (refused sends, connection, WHOIS, join/part, settings saving) and the server's 417/400 answers to a message the user just sent from the draft are shown in a closable dialog, never in the draft row; the server log keeps the replies (D063)
 - PARTIAL — CR/LF normalized to spaces; 512-byte encoded IRC-line limit, counted for messages as the line the recipient gets (with the sender's `:nick!user@host ` prefix); no automatic splitting of long messages
 
 ## Attachments

@@ -36,7 +36,7 @@ fn a_double_click_on_a_joined_row_asks_before_leaving(cx: &mut TestAppContext) {
         let a = id(chat, "#a");
         chat.activate_channel_row(a, window, cx);
         assert!(chat.part_prompt.is_none());
-        assert!(chat.feedback.is_none());
+        assert!(chat.notices.all().is_empty());
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut config =
