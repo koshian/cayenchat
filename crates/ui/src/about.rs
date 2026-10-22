@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use crate::localization::Localizer;
+use crate::{localization::Localizer, os_text::WindowOsText};
 use gpui::{prelude::*, *};
 
 const REPOSITORY_URL: &str = "https://github.com/koshian/cayenchat";
@@ -89,7 +89,7 @@ pub fn open(i18n: &Localizer, cx: &mut App) {
         },
         move |window, cx| {
             // Gives X11 the UTF-8 title too (issue #143).
-            window.set_window_title(&title);
+            window.os_set_title(&title);
             cx.new(|cx| {
                 let focus = cx.focus_handle();
                 window.focus(&focus);
@@ -113,7 +113,7 @@ pub fn set_localizer(i18n: &Localizer, cx: &mut App) {
         return;
     };
     let _ = handle.update(cx, |view, window, cx| {
-        window.set_window_title(&i18n.text("about_title"));
+        window.os_set_title(&i18n.text("about_title"));
         view.i18n = i18n.clone();
         cx.notify();
     });
