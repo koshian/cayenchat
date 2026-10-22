@@ -57,6 +57,7 @@ mod signals;
 mod splitter;
 mod theme;
 mod toolbar;
+mod tooltip;
 mod wake;
 mod whois;
 mod window_layout;
@@ -6468,7 +6469,7 @@ impl ChatWindow {
                     .read_with(cx, |chat, _| chat.i18n.text("shortcut_scroll_to_latest"))
                     .unwrap_or_default();
                 let text = toolbar::action_tooltip(&name, "scroll_to_latest", cx);
-                cx.new(|_| ircv3_settings::TextTooltip(text.into())).into()
+                cx.new(|_| tooltip::TextTooltip(text.into())).into()
             })
             .into_any_element()
     }
@@ -8073,7 +8074,7 @@ impl ChatWindow {
                             let (title, copy) = labels.clone().unwrap_or_default();
                             let original = original.clone();
                             return cx
-                                .new(|_| ircv3_settings::CharRefTooltip::new(original, title, copy))
+                                .new(|_| tooltip::CharRefTooltip::new(original, title, copy))
                                 .into();
                         }
                         let url = full_urls
@@ -8081,13 +8082,10 @@ impl ChatWindow {
                             .find(|(url, _)| url.start == start)
                             .map(|(_, url)| url.clone())
                             .unwrap_or_default();
-                        cx.new(|_| ircv3_settings::UrlTooltip(url)).into()
+                        cx.new(|_| tooltip::UrlTooltip(url)).into()
                     },
                 )
-                .tooltip_bridge(
-                    ircv3_settings::URL_TOOLTIP_BRIDGE.0,
-                    ircv3_settings::URL_TOOLTIP_BRIDGE.1,
-                )
+                .tooltip_bridge(tooltip::TOOLTIP_OFFSET.0, tooltip::TOOLTIP_OFFSET.1)
                 .into_any_element()
         };
         let avatar = (!message.activity && self.avatars_shown(network)).then(|| {
@@ -8532,7 +8530,7 @@ impl ChatWindow {
                             display::neutralize_bidi(&member).into_owned().into();
                         move |_, cx| {
                             let full = full.clone();
-                            cx.new(|_| ircv3_settings::TextTooltip(full)).into()
+                            cx.new(|_| tooltip::TextTooltip(full)).into()
                         }
                     })
                     .on_mouse_down(

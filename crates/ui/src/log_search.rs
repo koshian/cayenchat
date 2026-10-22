@@ -19,8 +19,8 @@ use gpui::{prelude::*, *};
 
 use crate::{
     ChatWindow, CloseSearch, CompleteNickname, FindInLog, HistoryNext, HistoryPrevious, Notice,
-    SearchNext, SearchPrevious, SendMessage, input::TextInput, ircv3_settings::TextTooltip,
-    theme::Theme, yield_now,
+    SearchNext, SearchPrevious, SendMessage, input::TextInput, theme::Theme, tooltip::TextTooltip,
+    yield_now,
 };
 
 /// Height of the bar, including its bottom border.
