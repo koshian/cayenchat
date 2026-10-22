@@ -22,6 +22,8 @@ use cayenchat_storage::{Ircv3Preferences, ServerProfile, Settings, TextEncoding}
 use cayenchat_upload::ExternalUploader;
 use gpui::{prelude::*, *};
 
+use crate::os_text::WindowOsText;
+
 use crate::{
     ChatWindow, SettingsTab, SettingsWindow,
     account_settings::panel,
@@ -512,7 +514,7 @@ impl SettingsWindow {
     }
 
     fn confirm_avatar_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let answer = window.prompt(
+        let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("ircv3_avatar_remove_title"),
             Some(&self.i18n.text("ircv3_avatar_remove_detail")),

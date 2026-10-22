@@ -32,6 +32,7 @@ mod member_selection;
 mod menu_bar;
 mod notices;
 mod notifier;
+mod os_text;
 mod part_dialog;
 #[cfg(test)]
 mod perf_baseline;
@@ -89,6 +90,7 @@ use ircv3_settings::own_avatar_failure;
 use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
+use os_text::WindowOsText;
 use session::ServerSession;
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::ops::Range;
@@ -1114,7 +1116,7 @@ impl ChatWindow {
     }
 
     fn update_title(&self, window: &mut Window) {
-        window.set_window_title(&self.window_title());
+        window.os_set_title(&self.window_title());
     }
 
     fn with_settings(
@@ -5824,7 +5826,7 @@ impl Render for ChatWindow {
         // The topic can change with any server event, not only on selection.
         let title = self.window_title();
         if title != self.shown_title {
-            window.set_window_title(&title);
+            window.os_set_title(&title);
             self.shown_title = title.clone();
         }
         let content = self.render_chat(window, cx);

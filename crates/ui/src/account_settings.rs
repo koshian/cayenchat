@@ -4,7 +4,9 @@
 use cayenchat_storage::{CredentialBackendKind, Secret, SecretKey, Settings, credentials};
 use gpui::{prelude::*, *};
 
-use crate::{SettingsTab, SettingsWindow, secrets, settings_file, settings_theme};
+use crate::{
+    SettingsTab, SettingsWindow, os_text::WindowOsText, secrets, settings_file, settings_theme,
+};
 
 /// Every secret this configuration may have stored, for moving them when the
 /// credential backend changes.
@@ -56,7 +58,7 @@ impl SettingsWindow {
             return;
         }
         // Plaintext storage is never chosen without an explicit confirmation.
-        let answer = window.prompt(
+        let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("credential_switch_title"),
             Some(&self.i18n.format(

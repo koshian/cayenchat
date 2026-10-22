@@ -6,12 +6,28 @@
 //! Windows. Showing a notification can block (D-Bus round trip, macOS
 //! delivery confirmation), so a worker thread does it off the UI thread.
 
+use cayenchat_model::display;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopNotification {
     pub summary: String,
     pub body: String,
     /// Also beep and flash the taskbar button (Windows only).
     pub sound: bool,
+}
+
+impl DesktopNotification {
+    /// The subject and body as the operating system may show them. Both
+    /// `Notifier::show` variants pass every notification through here, so
+    /// no caller can hand over unchecked text. The Linux markup escape
+    /// stays in `platform::body`, after this.
+    fn cleaned(self) -> Self {
+        Self {
+            summary: display::os_title(&self.summary),
+            body: display::os_body(&self.body),
+            sound: self.sound,
+        }
+    }
 }
 
 pub struct Notifier {
@@ -54,6 +70,7 @@ impl Notifier {
 
     #[cfg(not(test))]
     pub fn show(&mut self, notification: DesktopNotification) {
+        let notification = notification.cleaned();
         if let Some(sender) = &self.sender {
             // The worker exits only when the platform cannot notify at all.
             let _ = sender.send(notification);
@@ -62,7 +79,7 @@ impl Notifier {
 
     #[cfg(test)]
     pub fn show(&mut self, notification: DesktopNotification) {
-        self.shown.push(notification);
+        self.shown.push(notification.cleaned());
     }
 }
 
@@ -182,6 +199,28 @@ fn escape_markup(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn show_cleans_text_the_caller_left_raw() {
+        let mut notifier = Notifier::new();
+        notifier.show(DesktopNotification {
+            summary: "a\u{202E}b\n\u{2}c\u{7}".into(),
+            body: format!("x\u{2028}y\n\u{3}04z\u{202A}{}", "あ".repeat(5000)),
+            sound: true,
+        });
+        let shown = &notifier.shown[0];
+        assert_eq!(shown.summary, "a\u{200B}b c");
+        assert!(shown.body.starts_with("x y\nz\u{200B}あ"));
+        assert_eq!(shown.body.chars().count(), display::OS_BODY_LIMIT);
+        assert!(shown.body.ends_with('…'));
+        assert!(shown.sound);
+        // A second pass changes nothing.
+        let again = shown.clone();
+        notifier.show(again.clone());
+        assert_eq!(notifier.shown[1], again);
+    }
+
     #[test]
     fn markup_is_escaped_for_freedesktop_servers() {
         assert_eq!(
