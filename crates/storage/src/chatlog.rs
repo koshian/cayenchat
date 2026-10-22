@@ -126,7 +126,9 @@ pub fn default_directory() -> Option<PathBuf> {
 /// Makes `name` one safe path component on every OS. Characters no OS
 /// accepts (`/ \ : * ? " < > |`, controls), bidirectional controls, `%` and `~` become `%XX`, as do a
 /// name that is only dots, a trailing dot or space and the first letter of a
-/// Windows device name (`CON`, `NUL`, `COM1`…). An empty name becomes `%00`.
+/// Windows device name (`CON`, `NUL`, `CONIN$`, `CONOUT$`, `COM1`…`COM9`,
+/// `COM¹`…`COM³`, `LPT1`… in any case, also with an extension or trailing
+/// spaces). An empty name becomes `%00`.
 /// A result longer than 200 bytes is cut and ends in `~` and a hash of the
 /// whole name, so that names with the same start stay apart; as no other
 /// name keeps a `~`, a cut name never equals another name.
@@ -182,13 +184,19 @@ pub fn path_component(name: &str) -> String {
 
 fn is_device_name(stem: &str) -> bool {
     let upper = stem.trim_end().to_ascii_uppercase();
-    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || upper
-            .strip_prefix("COM")
-            .or_else(|| upper.strip_prefix("LPT"))
-            .is_some_and(|number| {
-                matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-            })
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"))
+        .is_some_and(|number| {
+            // Windows treats the superscript digits as device numbers too.
+            matches!(
+                number,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
 }
 
 /// Bidirectional embedding, override and isolate controls (U+202A–U+202E,
@@ -798,6 +806,19 @@ mod tests {
         assert_eq!(path_component("nul.txt"), "%6Eul.txt");
         assert_eq!(path_component("com1"), "%63om1");
         assert_eq!(path_component("console"), "console");
+        assert_eq!(path_component("CONIN$"), "%43ONIN$");
+        assert_eq!(path_component("conout$"), "%63onout$");
+        assert_eq!(path_component("CONIN$.txt"), "%43ONIN$.txt");
+        assert_eq!(path_component("CONOUT$ "), "%43ONOUT$%20");
+        assert_eq!(path_component("COM¹"), "%43OM¹");
+        assert_eq!(path_component("lpt²"), "%6Cpt²");
+        assert_eq!(path_component("Com³.log"), "%43om³.log");
+        assert_eq!(path_component("LPT³ "), "%4CPT³%20");
+        for plain in [
+            "CONNECT", "COM10", "#CON", "COM0", "COM¹¹", "CONIN", "CONOUT", "CONIN$$",
+        ] {
+            assert_eq!(path_component(plain), plain);
+        }
         assert_eq!(path_component(""), "%00");
         assert_eq!(path_component("../../etc"), "..%2F..%2Fetc");
     }

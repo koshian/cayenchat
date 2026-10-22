@@ -2112,7 +2112,8 @@ The maintainer approved this specification on the issue (2026-10-13).
 - **Safe names** (`storage::chatlog::path_component`, the same on every OS):
   `/ \ : * ? " < > |`, controls, `%` and `~` become `%XX` (UTF-8 bytes); a name
   of only dots, a trailing dot or space and the first letter of a Windows
-  device name (`CON`, `NUL`, `COM1`…) are escaped too; an empty name is
+  device name (`CON`, `NUL`, `CONIN$`, `CONOUT$`, `COM1`…, `COM¹`…`COM³`)
+  are escaped too; an empty name is
   `%00`; a component over 200 bytes is cut and ends in `~` and 16 hex digits
   of the SHA-256 of the whole name, so long names with the same start (and
   network names whose ID suffix would be cut) stay apart; no other name
