@@ -1521,6 +1521,19 @@ does the work, `settings_transfer` draws the questions in the chat window
   and only then confirmed: what is replaced, that every connection is
   dropped, that passwords are not carried over, how many servers connect on
   startup (none connects now), and that another OS's settings may not fit.
+- **Where each server connects (#552).** The file is untrusted, and a
+  display name can read "IRCnet" while the host is another machine that will
+  receive the passwords typed after the import. The confirmation therefore
+  lists the imported servers one by one with the real host and port, next to
+  the display name when there is one (`name → connects to host:port`), and a
+  bold warning line for each of: no TLS, TLS without certificate
+  verification, and permission to send the server password without TLS. The
+  first 16 servers are always listed; beyond them only servers with such a
+  warning are, and the rest are counted ("and N more"). Names and hosts are
+  made safe where they are drawn, not trusted from the import check:
+  controls and line breaks become spaces, bidirectional controls are
+  neutralized (`model::display`), and a value is cut at 64 characters.
+  What the import accepts is unchanged.
 - **Credentials.** Every imported server gets a fresh `custom-<uuid>`
   profile id (the selection follows), so a credential-store entry of this
   computer can never be taken for an imported server's, even when ids
