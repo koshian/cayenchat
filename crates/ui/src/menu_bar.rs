@@ -57,6 +57,9 @@ pub struct MenuBar {
     hover_generation: u64,
     /// Restarts the slide-in animation for each reveal.
     reveals: usize,
+    /// The current reveal slides in. Fixed for the whole reveal: switching
+    /// the bar between animated and plain would restart the animation.
+    slide: bool,
     _keys: Option<Subscription>,
 }
 
@@ -191,6 +194,7 @@ impl MenuBar {
         self.open = false;
         self.selected = None;
         self.reveals += 1;
+        self.slide = true;
     }
 
     /// Alt held together with a menu's letter opens that menu. Only reached
@@ -213,6 +217,9 @@ impl MenuBar {
         self.hover_generation += 1;
         if !self.visible {
             self.reveal(false);
+            // The popup lives inside the clipped bar, so it would flicker
+            // while the bar grows.
+            self.slide = false;
         }
         self.active = index;
         self.open = true;
@@ -454,9 +461,8 @@ fn wrap_in_window<V: 'static>(
             }
         }));
     // A bar that is always there does not slide in (and cannot stop half way).
-    // Neither does one with an open menu: its popup lives inside the clipped
-    // bar, so Alt+letter would flicker while the bar grows.
-    let bar = if state.always || state.open {
+    // Neither does one revealed by an access key (see `access_key`).
+    let bar = if state.always || !state.slide {
         bar.into_any_element()
     } else {
         bar.with_animation(
@@ -809,6 +815,26 @@ mod tests {
         assert!(!state.visible);
         assert!(state.access_key(&press("alt-e"), &keys, 3, false));
         assert!((state.visible, state.open, state.active) == (true, true, 2));
+    }
+
+    #[test]
+    fn slide_choice_is_fixed_for_a_whole_reveal() {
+        let mut state = MenuBar::default();
+        state.reveal(false);
+        assert!(state.slide);
+        // Opening and closing menus must not switch the bar's element shape.
+        state.open = true;
+        assert!(state.slide);
+        state.open = false;
+        assert!(state.slide);
+        state.close();
+        let keys = super::AccessKeys {
+            keys: vec![Some('f')],
+            suffix: false,
+        };
+        let alt_f = gpui::Keystroke::parse("alt-f").unwrap();
+        assert!(state.access_key(&alt_f, &keys, 1, false));
+        assert!(!state.slide);
     }
 
     #[test]
