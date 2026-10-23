@@ -150,8 +150,11 @@ Keep channel/server navigation semantics in `app::Command` and bind keys only in
 `ui`. Follow the supplied Chocoa-like macOS shortcuts. On Windows and Linux, use
 Ctrl+Tab for unread channels and substitute non-system-reserved key combinations
 for Option+Tab/Space and macOS Command navigation; preserve Ctrl+Left/Right for
-draft word movement. Numbered channel shortcuts follow visible tree order across
-servers, with `0` as the tenth item. Because Linux desktops commonly reserve
+draft word movement. Numbered channel shortcuts follow visible tree order within
+the selected server (the server of the selected channel or server row; #580),
+counted from 1 for each server, with `0` as the tenth item. A number with no
+conversation, or no selected server, does nothing and never reaches another
+server. Because Linux desktops commonly reserve
 Ctrl+digit for workspaces, a Windows/Linux preference selects Ctrl, Alt or Super
 for channel numbers (default Ctrl); server numbers remain Ctrl+Alt. Live messages and join/registration state drive
 the unread and active sets; the offline mock retains deterministic fixture state.
