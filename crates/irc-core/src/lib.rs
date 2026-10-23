@@ -1430,14 +1430,10 @@ impl Transcript {
             // Check the complete formatted line before transcript formatting
             // can trim its ending or shorten an oversized tag section.
             let raw_line = message.to_string();
-            let content = raw_line.strip_suffix("\r\n").unwrap_or(&raw_line);
-            if content
-                .bytes()
-                .any(|byte| matches!(byte, b'\r' | b'\n' | 0))
-            {
-                "[refused: line break or NUL]".into()
-            } else {
+            if irc::proto::line::is_single_line(&raw_line) {
                 redacted_wire_line(message)
+            } else {
+                "[refused: line break or NUL]".into()
             }
         })
     }
