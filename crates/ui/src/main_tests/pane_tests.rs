@@ -2981,7 +2981,7 @@ fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppConte
         // Formatting codes do not hide the excluded text.
         assert_eq!(found("\u{2}<dalk>\u{2} \u{3}04hi"), (false, false, vec![]));
         assert_eq!(found("[ビルド] 失敗"), (false, false, vec![]));
-        assert_eq!(found("[ビルド] ビルド失敗").1, true);
+        assert!(found("[ビルド] ビルド失敗").1);
     });
 }
 
