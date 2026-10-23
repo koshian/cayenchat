@@ -26,7 +26,7 @@
 | Copy connection diagnostics | `Cmd+Shift+L` | `Ctrl+Shift+L` |
 | Copy selected upper-log text | `Cmd+C` | `Ctrl+C` |
 
-On Windows/Linux, press and release Alt alone or press F10 to show the menu bar.
+On Windows/Linux, press F10 to show the menu bar, or hold Alt and press a menu's letter (Alt+F, Alt+C, Alt+E, Alt+V, Alt+H) to open that menu. Alt alone does not show it, since it may switch the input method.
 
 ## While a list has focus
 
