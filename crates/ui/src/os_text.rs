@@ -34,6 +34,7 @@ impl WindowOsText for Window {
         cx: &mut App,
     ) -> futures_channel::oneshot::Receiver<usize> {
         let buttons: Vec<PromptButton> = buttons.iter().map(clean_button).collect();
+        #[allow(clippy::disallowed_methods)] // the gate
         self.prompt(
             level,
             &os_title(title),
@@ -44,6 +45,7 @@ impl WindowOsText for Window {
     }
 
     fn os_set_title(&mut self, title: &str) {
+        #[allow(clippy::disallowed_methods)] // the gate
         self.set_window_title(&os_title(title));
     }
 }

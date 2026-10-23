@@ -127,6 +127,7 @@ mod platform {
             .body(&body(&notification.body));
         #[cfg(all(unix, not(target_os = "macos")))]
         builder.hint(notify_rust::Hint::Category("im.received".into()));
+        #[allow(clippy::disallowed_methods)] // the gate
         builder.show().map(|_| ())
     }
 
