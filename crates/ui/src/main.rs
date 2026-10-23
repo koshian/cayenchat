@@ -18,6 +18,7 @@ mod default_avatar;
 mod desktop;
 mod diagnostics;
 mod dialog;
+mod double_enter;
 mod experimental_settings;
 mod image_upload;
 mod input;
@@ -81,7 +82,7 @@ use cayenchat_model::{
 use cayenchat_storage::chatlog::{Kind as LogKind, Scope};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialError, CredentialStore,
-    Ircv3Preferences, Language, Notifications, Secret, SecretKey, ServerProfile, Settings,
+    Ircv3Preferences, Language, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
     TextKeyTheme, ThemeMode, UnreadLogPosition,
 };
 use futures_util::StreamExt;
@@ -215,7 +216,7 @@ actions!(
     [
         CompleteNickname,
         SendMessage,
-        Notice,
+        SendMessageWithCtrl,
         HistoryPrevious,
         HistoryNext,
         OpenSettings,
@@ -677,6 +678,11 @@ struct ChatWindow {
     /// Ask before the user quits (a setting), and whether that question is
     /// on screen, so a second quit request does not open another.
     confirm_quit: bool,
+    /// Which key press sends the chat draft (a setting), and the first Enter
+    /// of "Enter twice" while it waits for the second.
+    send_key: SendKey,
+    double_enter: double_enter::DoubleEnter,
+    _enter_keys: Subscription,
     /// Where the log goes when an unread conversation is selected (a setting).
     unread_log_position: UnreadLogPosition,
     quit_prompt_open: bool,
@@ -1226,6 +1232,9 @@ impl ChatWindow {
             window_handle: window.window_handle().downcast::<ChatWindow>(),
             restore_layout: saved.restore_window_layout,
             confirm_quit: saved.confirm_quit,
+            send_key: saved.send_key,
+            double_enter: Default::default(),
+            _enter_keys: Self::watch_enter_keys(window, cx),
             unread_log_position: saved.unread_log_position,
             quit_prompt_open: false,
             quit_dialog: quit_dialog::QuitDialog::new(cx),
@@ -5442,6 +5451,21 @@ impl ChatWindow {
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit(false, window, cx);
+    }
+
+    fn send_message_with_ctrl(
+        &mut self,
+        _: &SendMessageWithCtrl,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit(true, window, cx);
+    }
+
+    /// Enter (`ctrl` false) or Ctrl+Enter. The other inputs treat both as
+    /// "done"; the chat draft sends only with the key the setting chose.
+    fn submit(&mut self, ctrl: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.wizard_nickname_focused(window, cx) {
             self.wizard_connect(window, cx);
         } else if self.part_prompt_field_focused(window, cx) {
@@ -5457,28 +5481,61 @@ impl ChatWindow {
         {
             self.submit_member_prompt(window, cx);
         } else {
-            self.send_draft(false, window, cx);
+            self.send_chat_draft(ctrl, window, cx);
         }
     }
 
-    fn notice(&mut self, _: &Notice, window: &mut Window, cx: &mut Context<Self>) {
-        if self.wizard_nickname_focused(window, cx) {
-            self.wizard_connect(window, cx);
-        } else if self.part_prompt_field_focused(window, cx) {
-            self.confirm_part_prompt(window, cx);
-        } else if let Some(network) = self.focused_nick_prompt(window, cx) {
-            self.submit_nick_prompt(network, window, cx);
-        } else if let Some((network, channel)) = self.focused_key_prompt(window, cx) {
-            self.submit_key_prompt(network, &channel, window, cx);
-        } else if self
-            .member_prompt
-            .as_ref()
-            .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
-        {
-            self.submit_member_prompt(window, cx);
-        } else {
-            self.send_draft(true, window, cx);
+    /// Sends the chat draft as a normal message if this key press is the
+    /// chosen one. `/notice` is the only way to send a NOTICE.
+    fn send_chat_draft(&mut self, ctrl: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.send_key, ctrl) {
+            (SendKey::Enter, false) | (SendKey::CtrlEnter, true) => {
+                self.double_enter.reset();
+                self.send_draft(false, window, cx);
+            }
+            (SendKey::DoubleEnter, false) => {
+                let selection = self.state.selection();
+                let input = self.inputs[&selection].clone();
+                let input = input.read(cx);
+                if input.is_composing() || input.text().trim().is_empty() {
+                    self.double_enter.reset();
+                    return;
+                }
+                let (text, cursor) = (input.text().to_owned(), input.selection());
+                if self
+                    .double_enter
+                    .press(selection, &text, cursor, Instant::now())
+                {
+                    self.send_draft(false, window, cx);
+                }
+            }
+            _ => self.double_enter.reset(),
         }
+    }
+
+    /// Any key other than a plain Enter ends the wait of "Enter twice";
+    /// releasing Enter tells a second press from the key's auto-repeat.
+    fn watch_enter_keys(window: &Window, cx: &mut Context<Self>) -> Subscription {
+        let handle = window.window_handle();
+        let owner = cx.weak_entity();
+        cx.intercept_keystrokes(move |event, window, cx| {
+            let key = &event.keystroke;
+            if window.window_handle() != handle || (key.key == "enter" && !key.modifiers.modified())
+            {
+                return;
+            }
+            let _ = owner.update(cx, |this, _| this.double_enter.reset());
+        })
+    }
+
+    /// Starts "Enter twice" over when the draft is not the one that waited.
+    fn check_double_enter(&mut self, window: &Window, cx: &App) {
+        let selection = self.state.selection();
+        let focused = self
+            .inputs
+            .get(&selection)
+            .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
+        self.double_enter.keep_only_for(selection, focused);
     }
 }
 
@@ -5830,6 +5887,7 @@ impl Render for ChatWindow {
             window.os_set_title(&title);
             self.shown_title = title.clone();
         }
+        self.check_double_enter(window, cx);
         let content = self.render_chat(window, cx);
         let content = if self.toolbar_shown {
             let bar = match &self.toolbar {
@@ -7379,7 +7437,12 @@ impl ChatWindow {
             .on_action(cx.listener(Self::scroll_to_latest))
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
-            .on_action(cx.listener(Self::notice))
+            .on_action(cx.listener(Self::send_message_with_ctrl))
+            .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
+                if event.keystroke.key == "enter" {
+                    this.double_enter.key_up();
+                }
+            }))
             .on_action(cx.listener(Self::history_previous))
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::open_settings))
@@ -8939,7 +9002,13 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
         // are never captured by chat commands.
         KeyBinding::new("tab", CompleteNickname, Some("ChatWindow > TextInput")),
         KeyBinding::new("enter", SendMessage, Some("ChatWindow > TextInput")),
-        KeyBinding::new("ctrl-enter", Notice, Some("ChatWindow > TextInput")),
+        // Both reach the same handler; the send key setting decides which of
+        // them sends the chat draft (the other inputs take either as "done").
+        KeyBinding::new(
+            "ctrl-enter",
+            SendMessageWithCtrl,
+            Some("ChatWindow > TextInput"),
+        ),
         KeyBinding::new("up", HistoryPrevious, Some("ChatWindow > TextInput")),
         KeyBinding::new("down", HistoryNext, Some("ChatWindow > TextInput")),
         KeyBinding::new("tab", FocusNextField, Some("SettingsWindow")),
@@ -9463,3 +9532,7 @@ mod tree_reveal_tests;
 #[cfg(test)]
 #[path = "main_tests/unread_log_position_tests.rs"]
 mod unread_log_position_tests;
+
+#[cfg(test)]
+#[path = "main_tests/send_key_tests.rs"]
+mod send_key_tests;

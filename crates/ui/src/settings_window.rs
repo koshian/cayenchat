@@ -14,8 +14,8 @@ use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::ConnectionConfig;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DarkColors, Language, Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    DarkColors, Language, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
+    TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, time::Duration};
@@ -1466,6 +1466,8 @@ impl ChatWindow {
         {
             owner.image_provider = provider;
             owner.confirm_quit = confirm_quit;
+            owner.send_key = saved.send_key;
+            owner.double_enter.reset();
             owner.unread_log_position = saved.unread_log_position;
             owner.apply_conversation_log(&saved.conversation_log);
             cx.set_global(crate::input::ShortenPastedAmazon(shorten_amazon_urls));
@@ -3163,8 +3165,8 @@ impl SettingsWindow {
             .child(self.reset_footer(SettingsTab::Appearance, cx))
     }
 
-    /// Channel-number and draft-editing keys; only Windows and Linux have
-    /// choices here, so macOS hides this tab.
+    /// The send key, plus the channel-number and draft-editing keys that only
+    /// Windows and Linux have choices for.
     fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let hint = |key: &str| {
@@ -3176,20 +3178,34 @@ impl SettingsWindow {
         account_settings::panel(cx)
             .child(self.tab_heading("keyboard"))
             .child(self.option_row(
-                "channel_number_modifier",
+                "send_key",
                 [
-                    (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
-                    (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
-                    (
-                        ChannelNumberModifier::Super,
-                        "channel_number_modifier_super",
-                    ),
+                    (SendKey::Enter, "send_key_enter"),
+                    (SendKey::CtrlEnter, "send_key_ctrl_enter"),
+                    (SendKey::DoubleEnter, "send_key_double_enter"),
                 ],
-                self.settings.values.channel_number_modifier,
-                |settings, modifier| settings.channel_number_modifier = modifier,
+                self.settings.values.send_key,
+                |settings, key| settings.send_key = key,
                 cx,
             ))
-            .child(hint("channel_number_modifier_hint"))
+            .child(hint("send_key_hint"))
+            .when(!cfg!(target_os = "macos"), |d| {
+                d.child(self.option_row(
+                    "channel_number_modifier",
+                    [
+                        (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
+                        (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
+                        (
+                            ChannelNumberModifier::Super,
+                            "channel_number_modifier_super",
+                        ),
+                    ],
+                    self.settings.values.channel_number_modifier,
+                    |settings, modifier| settings.channel_number_modifier = modifier,
+                    cx,
+                ))
+                .child(hint("channel_number_modifier_hint"))
+            })
             .when(cfg!(target_os = "linux"), |d| {
                 d.child(self.option_row(
                     "text_key_theme",
@@ -3370,10 +3386,8 @@ impl SettingsWindow {
             ),
             (SettingsTab::Appearance, "appearance-tab", "appearance"),
         ];
-        if !cfg!(target_os = "macos") {
-            tabs.push((SettingsTab::Keyboard, "keyboard-tab", "keyboard"));
-        }
         tabs.extend([
+            (SettingsTab::Keyboard, "keyboard-tab", "keyboard"),
             (SettingsTab::Shortcuts, "shortcuts-tab", "shortcuts_tab"),
             (
                 SettingsTab::Notifications,

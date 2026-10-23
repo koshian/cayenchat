@@ -52,7 +52,9 @@ impl SettingsWindow {
                 current.appearance == appearance && current.theme == defaults.theme
             }
             SettingsTab::Keyboard => {
-                current.channel_number_modifier == defaults.channel_number_modifier
+                current.send_key == defaults.send_key
+                    && (cfg!(target_os = "macos")
+                        || current.channel_number_modifier == defaults.channel_number_modifier)
                     && (!cfg!(target_os = "linux")
                         || current.text_key_theme == defaults.text_key_theme)
             }
@@ -122,7 +124,10 @@ impl SettingsWindow {
             }
             SettingsTab::Keyboard => {
                 let values = &mut self.settings.values;
-                values.channel_number_modifier = defaults.channel_number_modifier;
+                values.send_key = defaults.send_key;
+                if !cfg!(target_os = "macos") {
+                    values.channel_number_modifier = defaults.channel_number_modifier;
+                }
                 if cfg!(target_os = "linux") {
                     values.text_key_theme = defaults.text_key_theme;
                 }
@@ -366,9 +371,7 @@ mod tests {
     /// reset leaves exactly its own page default and the others untouched.
     #[gpui::test]
     fn each_page_reset_covers_its_own_items_and_no_others(cx: &mut gpui::TestAppContext) {
-        use cayenchat_storage::{
-            ChannelNumberModifier, Language, LinuxDisplay, Settings, UnreadLogPosition,
-        };
+        use cayenchat_storage::{Language, LinuxDisplay, Settings, UnreadLogPosition};
 
         type Change = fn(&mut Settings);
 
@@ -394,7 +397,7 @@ mod tests {
                 values.appearance.alternate_rows = !values.appearance.alternate_rows;
             }),
             (SettingsTab::Keyboard, |values| {
-                values.channel_number_modifier = ChannelNumberModifier::Alt;
+                values.send_key = cayenchat_storage::SendKey::CtrlEnter;
             }),
             (SettingsTab::Shortcuts, |values| {
                 values.keybindings.insert("a".into(), "b".into());

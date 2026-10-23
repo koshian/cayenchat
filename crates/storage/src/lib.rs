@@ -345,6 +345,20 @@ pub enum ChannelNumberModifier {
     Super,
 }
 
+/// The one key press that sends the chat draft as a normal message
+/// (`PRIVMSG`). The others send nothing; `NOTICE` is only the `/notice`
+/// command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendKey {
+    #[default]
+    Enter,
+    /// Ctrl+Enter on every platform, also on macOS.
+    CtrlEnter,
+    /// Enter twice in quick succession.
+    DoubleEnter,
+}
+
 /// Draft-editing key bindings on Linux. `Auto` follows the desktop's GTK
 /// key theme (`gtk-key-theme`), so Emacs users get Ctrl+A/E/K and friends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1143,6 +1157,9 @@ pub struct Settings {
     pub linux_display: LinuxDisplay,
     pub channel_number_modifier: ChannelNumberModifier,
     pub text_key_theme: TextKeyTheme,
+    /// How the chat draft is sent as a normal message. Added after version
+    /// 15 without a version change; files without it read as Enter.
+    pub send_key: SendKey,
     /// Windows and Linux: hide the in-window menu bar until Alt, F10 or the
     /// top edge asks for it. Off shows it all the time. Added after version
     /// 15 without a version change; files without it read as off. macOS has
@@ -1216,6 +1233,7 @@ impl Default for Settings {
             menu_bar_auto_hide: false,
             show_toolbar: true,
             text_key_theme: TextKeyTheme::Auto,
+            send_key: SendKey::Enter,
             appearance: Appearance::default(),
             restore_window_layout: true,
             always_on_top: false,
@@ -3648,6 +3666,27 @@ mod tests {
         settings.text_key_theme = TextKeyTheme::Emacs;
         save_to(&path, &settings).unwrap();
         assert_eq!(load_from(&path).unwrap(), Some(settings));
+    }
+
+    #[test]
+    fn send_key_defaults_to_enter_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert_eq!(settings.send_key, SendKey::Enter);
+        for key in [SendKey::CtrlEnter, SendKey::DoubleEnter, SendKey::Enter] {
+            settings.send_key = key;
+            save_to(&path, &settings).unwrap();
+            assert_eq!(load_from(&path).unwrap(), Some(settings.clone()));
+        }
+        settings.send_key = SendKey::DoubleEnter;
+        save_to(&path, &settings).unwrap();
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"double_enter\"")
+        );
     }
 
     #[test]

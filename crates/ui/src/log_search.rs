@@ -18,9 +18,9 @@ use cayenchat_app::{
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, CloseSearch, CompleteNickname, FindInLog, HistoryNext, HistoryPrevious, Notice,
-    SearchNext, SearchPrevious, SendMessage, input::TextInput, theme::Theme, tooltip::TextTooltip,
-    yield_now,
+    ChatWindow, CloseSearch, CompleteNickname, FindInLog, HistoryNext, HistoryPrevious, SearchNext,
+    SearchPrevious, SendMessage, SendMessageWithCtrl, input::TextInput, theme::Theme,
+    tooltip::TextTooltip, yield_now,
 };
 
 /// Height of the bar, including its bottom border.
@@ -672,9 +672,9 @@ impl ChatWindow {
             .on_action(
                 cx.listener(|this, _: &SendMessage, window, cx| this.search_move(true, window, cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &Notice, window, cx| this.search_move(true, window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &SendMessageWithCtrl, window, cx| {
+                this.search_move(true, window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &HistoryNext, window, cx| this.search_move(true, window, cx)),
             )
