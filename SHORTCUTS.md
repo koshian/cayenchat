@@ -46,6 +46,7 @@ Type `/` at the beginning of the draft to send an IRC command. When the channel 
 
 | Example | Effect |
 | --- | --- |
+| `/help` | List the main commands in the server log (local; nothing is sent) |
 | `/join #other` | Join another channel |
 | `/part` or `/part Leaving now` | Leave the selected channel |
 | `/topic New topic` | Set the selected channel's topic; `/topic` queries it |
