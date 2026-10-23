@@ -509,8 +509,13 @@ fn wrap_in_window<V: 'static>(
                 .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
                     let state = access(this);
                     if state.visible {
+                        // Only a click that dismisses an open menu is spent;
+                        // a bar that is merely shown lets it reach the content.
+                        let popup_open = state.open;
                         state.close();
-                        cx.stop_propagation();
+                        if popup_open {
+                            cx.stop_propagation();
+                        }
                         cx.notify();
                     }
                 })),
@@ -671,6 +676,89 @@ mod tests {
         // Auto-hide restores the old behaviour: no room until asked.
         view.update(cx, |view, _| view.menu.set_always(false));
         assert!(!state(cx).0);
+    }
+
+    #[gpui::test]
+    fn a_click_on_content_passes_through_a_shown_bar_but_not_an_open_menu(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{
+            Context, IntoElement, Menu, MenuItem, MouseButton, Render, Window, div, prelude::*,
+        };
+
+        struct View {
+            menu: MenuBar,
+            clicks: usize,
+        }
+        impl Render for View {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let content = div()
+                    .size_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.clicks += 1),
+                    )
+                    .into_any_element();
+                super::wrap_in_window(
+                    &self.menu,
+                    vec![
+                        Menu {
+                            name: "View".into(),
+                            items: vec![MenuItem::action(
+                                "Copy diagnostics",
+                                crate::CopyDiagnostics,
+                            )],
+                            menu_type: None,
+                        }
+                        .owned(),
+                    ],
+                    super::AccessKeys {
+                        keys: vec![Some('v')],
+                        suffix: false,
+                    },
+                    content,
+                    |this| &mut this.menu,
+                    |_, _| false,
+                    window,
+                    cx,
+                )
+            }
+        }
+
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ))
+        });
+        let (view, cx) = cx.add_window_view(|window, cx| View {
+            menu: MenuBar::new_in_window(window, cx, |this: &mut View| &mut this.menu),
+            clicks: 0,
+        });
+        let state = |cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |view, _| {
+                (view.menu.visible, view.menu.open, view.clicks)
+            })
+        };
+        let content_at = gpui::point(px(40.), px(300.));
+
+        // Shown by F10 with no menu open: the first click reaches the content
+        // and the bar goes away.
+        cx.simulate_keystrokes("f10");
+        assert_eq!(state(cx), (true, false, 0));
+        cx.simulate_mouse_down(content_at, MouseButton::Left, Modifiers::default());
+        assert_eq!(state(cx), (false, false, 1));
+
+        // With a menu open, the outside click only dismisses it.
+        view.update(cx, |view, _| {
+            view.menu.reveal(false);
+            view.menu.open = true;
+        });
+        assert_eq!(state(cx), (true, true, 1));
+        cx.simulate_mouse_down(content_at, MouseButton::Left, Modifiers::default());
+        assert_eq!(state(cx), (false, false, 1));
     }
 
     #[gpui::test]
