@@ -119,7 +119,7 @@ impl Decoder for LineCodec {
 /// of the `irc` crate passes `encode`, including its own PONG, CTCP replies
 /// and JOINs. A line that fails is dropped whole, unwritten and unlogged (it
 /// may hold secrets); the lines after it go on.
-fn is_single_line(line: &str) -> bool {
+pub fn is_single_line(line: &str) -> bool {
     let body = line.strip_suffix("\r\n").unwrap_or(line);
     !body.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0))
 }
