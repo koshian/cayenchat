@@ -1,0 +1,7 @@
+# Sinks that hand text to the OS go through one gate each
+# (spec/architecture.md, "Untrusted values and their sinks").
+disallowed-methods = [
+    { path = "gpui::Window::prompt", reason = "use `WindowOsText::os_prompt` (crates/ui/src/os_text.rs), which cleans the text first" },
+    { path = "gpui::Window::set_window_title", reason = "use `WindowOsText::os_set_title` (crates/ui/src/os_text.rs), which cleans the title first" },
+    { path = "notify_rust::Notification::show", reason = "use `Notifier::show` (crates/ui/src/notifier.rs), which cleans the text first" },
+]
