@@ -2946,7 +2946,8 @@ fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppConte
     });
     let mut settings = crate::settings_with_channels("#a");
     settings.notifications.keywords = vec!["Dalk".into(), "ビルド".into()];
-    settings.notifications.exclude_keywords = vec!["<dalk>".into(), "[ビルド]".into()];
+    settings.notifications.exclude_keywords =
+        vec!["<dalk>".into(), "[ビルド]".into(), "xビルド".into()];
     let (chat, cx) =
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
     chat.update(cx, |chat, cx| {
@@ -2972,6 +2973,11 @@ fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppConte
                 .collect();
             (found.mentioned, found.keyword, shown)
         };
+        // An adjacent valid match survives the excluded one before it.
+        assert_eq!(
+            found("xビルドビルド"),
+            (false, true, vec!["ビルド".to_owned()])
+        );
         assert_eq!(found("Dalk、ちょっと聞いて").2, ["Dalk", "Dalk"]);
         assert_eq!(found("<dalk> こんにちは"), (false, false, vec![]));
         let (mentioned, keyword, shown) = found("<dalk> Dalk、返事して");

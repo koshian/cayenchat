@@ -93,33 +93,48 @@ impl NotificationRules {
 /// has no word boundaries. Characters compare by their lowercase forms, so
 /// ranges stay on the original text's character boundaries.
 pub fn keyword_ranges(text: &str, keywords: &[String]) -> Vec<Range<usize>> {
+    merge_ranges(keyword_matches(text, keywords))
+}
+
+/// Every single keyword occurrence in `text`, unmerged, ascending by start.
+/// Filter these (see [`without_excluded`]) before [`merge_ranges`], so that
+/// adjacent or overlapping matches stay separate while being judged.
+pub fn keyword_matches(text: &str, keywords: &[String]) -> Vec<Range<usize>> {
     let keywords: Vec<Vec<char>> = keywords
         .iter()
         .map(|word| word.trim())
         .filter(|word| !word.is_empty())
         .map(|word| word.chars().flat_map(char::to_lowercase).collect())
         .collect();
+    let mut matches = Vec::new();
     if keywords.is_empty() {
-        return Vec::new();
+        return matches;
     }
-    let mut ranges: Vec<Range<usize>> = Vec::new();
     for (start, _) in text.char_indices() {
-        let end = keywords
-            .iter()
-            .filter_map(|word| match_at(&text[start..], word).map(|len| start + len))
-            .max();
-        if let Some(end) = end {
-            match ranges.last_mut() {
-                Some(last) if last.end >= start => last.end = last.end.max(end),
-                _ => ranges.push(start..end),
+        for word in &keywords {
+            if let Some(len) = match_at(&text[start..], word) {
+                matches.push(start..start + len);
             }
         }
     }
-    ranges
+    matches
+}
+
+/// Merges `ranges` (ascending by start) that touch or overlap.
+pub fn merge_ranges(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if last.end >= range.start => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
 }
 
 /// Drops the `ranges` that overlap an occurrence of one of `excluded` in
-/// `text`; matches outside those occurrences remain. `ranges` ascend by start.
+/// `text`; matches outside those occurrences remain. `ranges` ascend by start
+/// and may overlap each other; they are judged one by one.
 pub fn without_excluded(
     text: &str,
     ranges: Vec<Range<usize>>,
@@ -255,8 +270,8 @@ mod tests {
         let words = vec!["Dalk".to_owned()];
         let excluded = vec!["<dalk>".to_owned()];
         let kept = |text: &str, excluded: &[String]| {
-            let ranges = without_excluded(text, keyword_ranges(text, &words), excluded);
-            ranges.iter().map(|r| text[r.clone()].to_owned()).count()
+            let matches = without_excluded(text, keyword_matches(text, &words), excluded);
+            merge_ranges(matches).len()
         };
         assert_eq!(kept("Dalk、ちょっと聞いて", &excluded), 1);
         assert_eq!(kept("<dalk> こんにちは", &excluded), 0);
@@ -267,8 +282,24 @@ mod tests {
         assert_eq!(kept("<dalk>", &[]), 1);
         assert_eq!(kept("<dalk>", &[" ".into()]), 1);
         // A match only partly inside the excluded text is cancelled too.
-        let ranges = keyword_ranges("xDalkx", &words);
+        let ranges = keyword_matches("xDalkx", &words);
         assert!(without_excluded("xDalkx", ranges, &["lkx".into()]).is_empty());
+    }
+
+    #[test]
+    fn adjacent_and_overlapping_matches_are_excluded_one_by_one() {
+        let remaining = |text: &str, words: &[&str], excluded: &[&str]| {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            let excluded: Vec<String> = excluded.iter().map(|w| (*w).to_owned()).collect();
+            let matches = without_excluded(text, keyword_matches(text, &words), &excluded);
+            merge_ranges(matches)
+        };
+        // The second `Dalk` lies outside the excluded `xDalk`.
+        assert_eq!(remaining("xDalkDalk", &["Dalk"], &["xDalk"]), vec![5..9]);
+        // `cde` survives although `abc` is cancelled.
+        assert_eq!(remaining("abcde", &["abc", "cde"], &["ab"]), vec![2..5]);
+        // A short and a long match from the same start are judged separately.
+        assert_eq!(remaining("Dalkx", &["Dalk", "Dalkx"], &["x"]), vec![0..4]);
     }
 
     #[test]

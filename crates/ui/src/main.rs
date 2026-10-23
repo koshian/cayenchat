@@ -1606,8 +1606,11 @@ impl ChatWindow {
             let excluded = &self.notification_rules.exclude_keywords;
             let ranges = notifications::without_excluded(plain, ranges, excluded);
             mentioned = !ranges.is_empty();
-            let matches = notifications::keyword_ranges(plain, keywords);
+            // Judge each occurrence before merging, so a neighbour of an
+            // excluded match is not lost with it.
+            let matches = notifications::keyword_matches(plain, keywords);
             let matches = notifications::without_excluded(plain, matches, excluded);
+            let matches = notifications::merge_ranges(matches);
             keyword = !matches.is_empty();
             let mut ranges = ranges;
             ranges.extend(matches);

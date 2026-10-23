@@ -1808,7 +1808,10 @@ by the excluded text (`Notifications::exclude_keywords`, comma-separated,
 case-insensitive substrings, empty by default, added without a version
 change): `notifications::without_excluded` drops every mention or keyword
 range that overlaps an occurrence of an excluded string found in the same
-plain text, so ranges outside it still count and the logs, channel-tree
+plain text. Keywords are judged occurrence by occurrence
+(`keyword_matches`) and merged only afterwards (`merge_ranges`), so a
+neighbouring or overlapping valid match survives an excluded one. Ranges
+outside it still count and the logs, channel-tree
 highlight and notifications agree. Private messages notify regardless. The match is one forward sweep
 over the two ascending lists, so it is linear in matches plus links (a 16 KiB
 body full of links holding the nickname costs one extra link scan). The ranges are kept in
