@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Alt/F10/hover-revealed menus for platforms without GPUI native menu rendering.
+//! Alt/hover-revealed menus for platforms without GPUI native menu rendering.
 use gpui::{prelude::*, *};
 use std::time::Duration;
 
 const HEIGHT: f32 = 28.;
 /// Invisible strip at the top of the content that reveals the bar on hover.
-/// Alt alone is not treated as a menu request; F10 and hover remain available.
+/// Alt alone is not treated as a menu request; Alt+letter and hover remain available.
 const HOT_ZONE: f32 = 6.;
 const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(400);
 /// How often a hover-revealed bar checks whether the pointer has left it.
@@ -92,11 +92,9 @@ impl MenuBar {
                 let state = access(this);
                 let key = &event.keystroke;
                 if key.key == "f10" && !key.modifiers.modified() {
-                    if state.visible {
-                        state.close();
-                    } else {
-                        state.reveal(false);
-                    }
+                    // Same as View → Hide/Show Menu Bar, which also saves it.
+                    state.close();
+                    window.dispatch_action(crate::ToggleMenuBar.boxed_clone(), cx);
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -508,14 +506,12 @@ fn wrap_in_window<V: 'static>(
                 .child(content)
                 .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
                     let state = access(this);
-                    if state.visible {
-                        // Only a click that dismisses an open menu is spent;
-                        // a bar that is merely shown lets it reach the content.
-                        let popup_open = state.open;
+                    // Only a click that dismisses an open menu is spent. A bar
+                    // that is merely shown stays: closing it on press would
+                    // shift the content before the release and cancel the click.
+                    if state.visible && state.open {
                         state.close();
-                        if popup_open {
-                            cx.stop_propagation();
-                        }
+                        cx.stop_propagation();
                         cx.notify();
                     }
                 })),
@@ -683,21 +679,30 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use gpui::{
-            Context, IntoElement, Menu, MenuItem, MouseButton, Render, Window, div, prelude::*,
+            Context, Focusable, IntoElement, Menu, MenuItem, Render, Window, div, prelude::*,
         };
 
         struct View {
             menu: MenuBar,
+            input: gpui::Entity<crate::input::TextInput>,
             clicks: usize,
+            toggles: usize,
         }
         impl Render for View {
             fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let content = div()
                     .size_full()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.clicks += 1),
+                    .key_context("ChatWindow")
+                    .child(
+                        div()
+                            .id("button")
+                            .h(px(40.))
+                            .on_click(cx.listener(|this, _, _, _| this.clicks += 1)),
                     )
+                    .child(self.input.clone())
+                    .on_action(cx.listener(|this, _: &crate::ToggleMenuBar, _, _| {
+                        this.toggles += 1;
+                    }))
                     .into_any_element();
                 super::wrap_in_window(
                     &self.menu,
@@ -733,31 +738,44 @@ mod tests {
                 &cayenchat_storage::Appearance::default(),
             ))
         });
-        let (view, cx) = cx.add_window_view(|window, cx| View {
-            menu: MenuBar::new_in_window(window, cx, |this: &mut View| &mut this.menu),
-            clicks: 0,
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| crate::input::TextInput::new_live("Draft", cx));
+            window.focus(&input.focus_handle(cx));
+            View {
+                menu: MenuBar::new_in_window(window, cx, |this: &mut View| &mut this.menu),
+                input,
+                clicks: 0,
+                toggles: 0,
+            }
         });
         let state = |cx: &mut gpui::VisualTestContext| {
             view.read_with(cx, |view, _| {
                 (view.menu.visible, view.menu.open, view.clicks)
             })
         };
-        let content_at = gpui::point(px(40.), px(300.));
+        // The button sits at the top of the content: the bar pushes it down.
+        let button_at = gpui::point(px(300.), px(super::HEIGHT + 6.));
 
-        // Shown by F10 with no menu open: the first click reaches the content
-        // and the bar goes away.
-        cx.simulate_keystrokes("f10");
+        // Shown by resting the pointer at the top, with no menu open: a whole
+        // click (press and release) on the button below the bar works and the
+        // bar stays until the pointer leaves.
+        cx.simulate_mouse_move(gpui::point(px(300.), px(80.)), None, Modifiers::default());
+        cx.simulate_mouse_move(gpui::point(px(300.), px(2.)), None, Modifiers::default());
+        cx.executor().advance_clock(super::HOVER_REVEAL_DELAY * 2);
         assert_eq!(state(cx), (true, false, 0));
-        cx.simulate_mouse_down(content_at, MouseButton::Left, Modifiers::default());
-        assert_eq!(state(cx), (false, false, 1));
+        cx.simulate_mouse_move(button_at, None, Modifiers::default());
+        cx.simulate_click(button_at, Modifiers::default());
+        assert_eq!(state(cx), (true, false, 1));
 
         // With a menu open, the outside click only dismisses it.
-        view.update(cx, |view, _| {
-            view.menu.reveal(false);
-            view.menu.open = true;
-        });
+        view.update(cx, |view, _| view.menu.open = true);
         assert_eq!(state(cx), (true, true, 1));
-        cx.simulate_mouse_down(content_at, MouseButton::Left, Modifiers::default());
+        cx.simulate_click(button_at, Modifiers::default());
+        assert_eq!(state(cx), (false, false, 1));
+
+        // F10 asks for the same toggle as View → Hide/Show Menu Bar.
+        cx.simulate_keystrokes("f10");
+        assert_eq!(view.read_with(cx, |view, _| view.toggles), 1);
         assert_eq!(state(cx), (false, false, 1));
     }
 
@@ -834,15 +852,13 @@ mod tests {
         cx.update(|window, cx| {
             assert!(window.is_action_available(&crate::CopyDiagnostics, cx));
         });
-        // F10 is the keyboard entry point when Alt is an IME or OS key.
+        // F10 toggles the bar setting; it never reveals the bar itself.
         cx.simulate_keystrokes("f10");
-        assert!(view.read_with(cx, |view, _| view.menu.visible));
+        assert!(!view.read_with(cx, |view, _| view.menu.visible));
         assert_eq!(
             view.read_with(cx, |view, cx| view.input.read(cx).text().to_owned()),
             ""
         );
-        cx.simulate_keystrokes("f10");
-        assert!(!view.read_with(cx, |view, _| view.menu.visible));
 
         // Alt+letter opens that menu and shows the bar; releasing Alt first and
         // then typing the letter does not.
