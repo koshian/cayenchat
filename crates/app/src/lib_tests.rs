@@ -148,8 +148,8 @@ fn channel_and_server_indexing_and_cyclic_navigation() {
     assert_eq!(state.selection(), Selection::Channel(ConversationId(4)));
     state.dispatch(Command::NextChannel);
     assert_eq!(state.selection(), Selection::Channel(ConversationId(1)));
-    state.dispatch(Command::SelectChannelAt(2));
-    assert_eq!(state.selection(), Selection::Channel(ConversationId(3)));
+    state.dispatch(Command::SelectChannelAt(1));
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(2)));
     state.dispatch(Command::SelectServerAt(1));
     assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
     state.dispatch(Command::NextChannel);
@@ -597,8 +597,44 @@ fn configured_networks_start_disconnected_and_keep_channels_grouped() {
             (2, "#a".into())
         ]
     );
+    state.dispatch(Command::SelectChannelAt(2));
+    assert_eq!(state.selected_channel().unwrap().name, "#late");
+}
+
+#[test]
+fn numbered_shortcuts_count_within_the_selected_server() {
+    let mut state = two_networks();
+    state.joined_channel(NetworkId(2), "#c");
+    let query = state
+        .private_conversation(NetworkId(2), "alice", "alice", Missing::Create)
+        .unwrap();
+    let selected = |state: &AppState| {
+        let channel = state.selected_channel().unwrap();
+        (channel.network.0, channel.name.clone())
+    };
+    // From a channel of the first server.
+    state.dispatch(Command::SelectChannelAt(1));
+    assert_eq!(selected(&state), (1, "#b".into()));
+    // From the second server's row.
+    state.dispatch(Command::SelectServerAt(1));
+    state.dispatch(Command::SelectChannelAt(0));
+    assert_eq!(selected(&state), (2, "#a".into()));
+    state.dispatch(Command::SelectChannelAt(1));
+    assert_eq!(selected(&state), (2, "#c".into()));
+    // Private conversations are numbered after the channels.
+    state.dispatch(Command::SelectChannelAt(2));
+    assert_eq!(state.selection(), Selection::Channel(query));
+    // A missing number does nothing, and never reaches another server.
     state.dispatch(Command::SelectChannelAt(3));
-    assert_eq!(state.selected_network().unwrap().id, NetworkId(2));
+    assert_eq!(state.selection(), Selection::Channel(query));
+    state.dispatch(Command::SelectServerAt(0));
+    state.dispatch(Command::SelectChannelAt(2));
+    assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+    // Reordering changes the numbers of that server only.
+    let b = state.channel_id(NetworkId(1), "#b").unwrap();
+    state.move_conversation(b, MoveTo::First);
+    state.dispatch(Command::SelectChannelAt(0));
+    assert_eq!(selected(&state), (1, "#b".into()));
 }
 
 #[test]

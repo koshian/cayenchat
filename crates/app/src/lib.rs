@@ -1910,8 +1910,17 @@ impl AppState {
             Command::NextServer => self.cycle_server(true, false),
             Command::PreviousServer => self.cycle_server(false, false),
             Command::SelectChannelAt(index) => {
-                if let Some(id) = self.conversations.get(index).map(|channel| channel.id) {
-                    self.select_channel(id);
+                // Numbers count within the selected server (D009).
+                if let Some(network) = self.selected_network().map(|network| network.id) {
+                    let id = self
+                        .conversations
+                        .iter()
+                        .filter(|channel| channel.network == network)
+                        .nth(index)
+                        .map(|channel| channel.id);
+                    if let Some(id) = id {
+                        self.select_channel(id);
+                    }
                 }
             }
             Command::SelectServerAt(index) => {
