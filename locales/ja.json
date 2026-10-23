@@ -369,6 +369,8 @@
   "charset_not_channel": "/charset はチャンネルに対して使います。チャンネルのタブを選んでください（個人会話とサーバーログには個別の設定がありません）。",
   "charset_unknown": "不明な文字コードです: {name}。対応: {encodings}。",
   "charset_usage": "使い方: /charset [decode|encode] <文字コード> | /charset reset | /charset help",
+  "help_text": "CayenChat で使える主なコマンド（IRC コマンドの完全な一覧ではありません。ほかの /コマンドは入力のままサーバーへ送られます）:\n/help — この一覧を表示\n/join #channel — チャンネルに参加\n/part [reason] — 選択中のチャンネルを退出\n/msg <nick|#channel> text — メッセージを送信（宛先は省略可: /msg :text）\n/notice <nick|#channel> text — NOTICE を送信（宛先は省略可: /notice :text）\n/me text — アクションを送信\n/nick name — ニックネームを変更\n/whois nick — ユーザー情報を取得\n/topic [text] — トピックの取得・変更\n/mode ... — モードの取得・変更\n/kick nick [reason] — ユーザーをキック\n/invite nick — 招待\n/names — メンバー一覧を取得\n/ctcp nick CMD — CTCP 問い合わせ\n/ping nick — ユーザーへの CTCP PING（サーバーへの生 PING ではありません）\n/charset [help|...] — チャンネルの文字コードを設定・確認（ローカルコマンド）\n/raw command、/quote command — IRC コマンドをそのまま送信",
+  "help_usage": "使い方: /help（引数はありません）",
   "charset_utf8only": "このサーバーは UTF-8 を要求しています（UTF8ONLY）。チャンネルに指定できるのは UTF-8 のみです。",
   "charset_server": "サーバー設定",
   "charset_channel": "このチャンネル",
