@@ -183,12 +183,12 @@ goes through its gate; a change that cannot should say why.
 | Sink | Gate | Status |
 | --- | --- | --- |
 | IRC socket: every line written | One check of the whole line in `LineCodec::encode`, just before the socket (no CR, LF or NUL before the final CRLF); the per-command validators (`checked_command`, `validate_message_text`, `valid_channel`, ...) give the errors | Done (#554) |
-| Log file paths | `storage::chatlog::path_component` | Done; more Windows reserved names in #553 |
+| Log file paths | `storage::chatlog::path_component` (Windows reserved names include `CONIN$`, `CONOUT$`, `COM¹`–`COM³`, `LPT¹`–`LPT³`) | Done (#553) |
 | Log file contents | The line escaping in `storage::chatlog` (controls, bidirectional controls) | Done |
 | Retained lines: messages, topics, server lines | `app::new_message` (and the topic and edit paths): bidirectional controls become U+200B, of the same length, so offsets for links and selection hold. It is the only way a retained line is built | Done |
 | Names drawn in the app (nicknames, channel and server names, WHOIS fields) | `model::display::neutralize_bidi` at each draw site | Done, per site |
-| Dialogs, desktop notifications, window title | One gate per sink before the OS call (bidirectional and other controls, IRC formatting, length); Linux notification markup is escaped in `notifier`. Clippy enforces the gates: `clippy.toml` disallows `Window::prompt`, `Window::set_window_title` and `Notification::show`, and only `os_text.rs` and `notifier.rs` allow them | Markup escaping done; the gates are #558 |
-| Settings import confirmation | Hosts and unsafe connection flags shown, sanitized when drawn | #552 |
+| Dialogs, desktop notifications, window title | `model::display::os_title` / `os_body` (bidirectional and other controls, IRC formatting, length): every `Window::prompt` and `set_window_title` goes through `ui::os_text`, notifications through `Notifier::show`; Linux notification markup is also escaped there. Clippy enforces the gates: `clippy.toml` disallows `Window::prompt`, `Window::set_window_title` and `Notification::show`, and only `os_text.rs` and `notifier.rs` allow them | Done (#558) |
+| Settings import confirmation | Real hosts, ports and unsafe connection flags listed, sanitized when drawn (`settings_transfer`) | Done (#552) |
 | Fetched URLs (previews, avatars) | `media::policy::check_request` on every request and redirect, and the resolver's public-address filter | Done |
 | Links opened | `app::links::find` (`http`/`https` only), opened by the OS without a shell | Done |
 | Localized text with values | `localization::fill`: one pass, values never read as placeholders | Done |
