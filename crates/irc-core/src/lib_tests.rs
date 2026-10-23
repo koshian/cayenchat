@@ -2532,6 +2532,28 @@ fn disconnect_sends_the_configured_quit_message() {
 }
 
 #[test]
+fn disconnect_reports_the_quit_reason_that_was_sent() {
+    for (configured, shown) in [(" Back soon ", "Back soon"), ("  ", "Leaving CayenChat")] {
+        let mut closed = None;
+        quit_line_after(
+            |config| config.quit_message = configured.into(),
+            |connection| {
+                connection.disconnect().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < deadline && closed.is_none() {
+                    match connection.try_recv() {
+                        Some(Event::Closed(detail)) => closed = Some(detail),
+                        Some(_) => {}
+                        None => thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+            },
+        );
+        assert_eq!(closed.as_deref(), Some(shown));
+    }
+}
+
+#[test]
 fn sleep_sends_the_sleep_message_and_closes_within_the_limit() {
     let started = Instant::now();
     let line = quit_line_after(

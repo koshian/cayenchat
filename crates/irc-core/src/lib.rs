@@ -2444,7 +2444,7 @@ async fn run_cancellable(
             tokio::net::lookup_host((host.as_str(), port)),
         ) => lookup,
         _ = cancel.notified() => {
-            let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
+            let _ = events.send(Event::Closed(USER_DISCONNECT.into())).await;
             return;
         }
     };
@@ -3058,8 +3058,14 @@ impl Worker {
                     Outgoing::QuitWith(reason) => reason,
                     _ => self.quit_message.clone(),
                 };
-                self.quit(reason, QUIT_FLUSH_LIMIT, USER_DISCONNECT, stream)
-                    .await
+                // The log shows the reason actually sent, so the user can
+                // see that the setting took effect.
+                let closed = if reason.trim().is_empty() {
+                    USER_DISCONNECT.to_owned()
+                } else {
+                    reason.clone()
+                };
+                self.quit(reason, QUIT_FLUSH_LIMIT, &closed, stream).await
             }
         }
     }
