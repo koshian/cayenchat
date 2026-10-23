@@ -1022,10 +1022,21 @@ impl LogSelection {
 }
 
 impl ChatWindow {
+    /// Applies a changed send key: a wait of "Enter twice" ends and the
+    /// drafts' hint names the new key.
+    fn set_send_key(&mut self, send_key: SendKey, cx: &mut Context<Self>) {
+        self.send_key = send_key;
+        self.double_enter.reset();
+        let placeholder = draft_placeholder(&self.i18n, send_key);
+        for input in self.inputs.values() {
+            input.update(cx, |input, cx| input.set_placeholder(&placeholder, cx));
+        }
+    }
+
     fn apply_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
         self.i18n = Localizer::new(language);
         cx.set_global(input::MenuLabels::new(&self.i18n));
-        let placeholder = self.i18n.text("draft_placeholder");
+        let placeholder = draft_placeholder(&self.i18n, self.send_key);
         for input in self.inputs.values() {
             input.update(cx, |input, cx| input.set_placeholder(&placeholder, cx));
         }
@@ -1160,7 +1171,7 @@ impl ChatWindow {
             .collect();
         let state = AppState::with_networks(networks);
         let mut inputs = HashMap::new();
-        let placeholder = i18n.text("draft_placeholder");
+        let placeholder = draft_placeholder(&i18n, saved.send_key);
         for key in std::iter::once(Selection::None)
             .chain(
                 state
@@ -1322,6 +1333,9 @@ impl ChatWindow {
         .detach();
         cx.observe_window_activation(window, |this, window, _| {
             this.window_active = window.is_window_active();
+            // The draft keeps its logical focus while another window is in
+            // front, so a wait of "Enter twice" ends with the activation.
+            this.double_enter.reset();
         })
         .detach();
         // A choice of members (it can be acted on all at once) ends when
@@ -1877,7 +1891,7 @@ impl ChatWindow {
 
     /// Creates draft inputs for servers and conversations that lack one.
     fn ensure_inputs(&mut self, cx: &mut Context<Self>) {
-        let placeholder = self.i18n.text("draft_placeholder");
+        let placeholder = draft_placeholder(&self.i18n, self.send_key);
         // Selection::None has a draft too, shown while no server exists.
         let keys: Vec<Selection> = std::iter::once(Selection::None)
             .chain(
@@ -5537,6 +5551,15 @@ impl ChatWindow {
             .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
         self.double_enter.keep_only_for(selection, focused);
     }
+}
+
+/// The hint in an empty draft, naming the key that sends.
+fn draft_placeholder(i18n: &Localizer, send_key: SendKey) -> String {
+    i18n.text(match send_key {
+        SendKey::Enter => "draft_placeholder",
+        SendKey::CtrlEnter => "draft_placeholder_ctrl_enter",
+        SendKey::DoubleEnter => "draft_placeholder_double_enter",
+    })
 }
 
 fn notification_rules(settings: &Notifications) -> NotificationRules {

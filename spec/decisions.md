@@ -1318,8 +1318,10 @@ sent NOTICEs by mistake.
 - **Enter twice.** The first Enter on a non-empty, non-composing draft only
   waits (no newline: the draft is one line). A second plain Enter within
   700 ms sends once. The wait is dropped by any other keystroke (a Ctrl+Enter
-  included), a change of the text or caret, losing the focus, showing another
-  conversation, a changed setting, or the time. Auto-repeat is not a second
+  included), a change of the text or caret, losing the focus, the window
+  being activated or deactivated (the draft keeps its logical focus while
+  another window is in front), showing another conversation, a changed
+  setting, or the time. The empty draft's hint names the chosen key. Auto-repeat is not a second
   press: not every platform marks repeats, so a press is a repeat when the
   Enter key-up has not been seen since the last press. IME confirmation never
   counts (composing drafts are skipped). State: `double_enter.rs`, checked

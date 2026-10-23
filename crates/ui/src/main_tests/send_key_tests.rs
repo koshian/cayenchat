@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, ShortcutPrefs, apply_shortcuts};
 use cayenchat_storage::SendKey;
-use gpui::{Focusable as _, TestAppContext, VisualTestContext};
+use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
 
 /// A chat window that is not connected: a send that is attempted fails and
 /// opens the error dialog, which is how these tests see it.
@@ -171,4 +171,60 @@ fn an_empty_draft_sends_nothing_and_does_not_wait(cx: &mut TestAppContext) {
     press(cx, "enter");
     assert!(!attempted(cx));
     assert!(chat.read_with(cx, |chat, _| !chat.double_enter.is_waiting()));
+}
+
+#[gpui::test]
+fn another_window_coming_to_the_front_starts_double_enter_over(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx, SendKey::DoubleEnter);
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    press(cx, "enter");
+    assert!(chat.read_with(cx, |chat, _| chat.double_enter.is_waiting()));
+    // The draft keeps its logical focus while the other window is in front.
+    cx.update(|_, cx| {
+        let other = cx.open_window(Default::default(), |_, cx| cx.new(|_| gpui::Empty));
+        other
+            .unwrap()
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert!(chat.read_with(cx, |chat, _| !chat.double_enter.is_waiting()));
+    press(cx, "enter");
+    assert!(
+        !attempted(cx),
+        "the Enter before the switch no longer counts"
+    );
+}
+
+#[gpui::test]
+fn composing_enter_neither_sends_nor_counts(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler as _;
+    let (chat, cx) = open_chat(cx, SendKey::DoubleEnter);
+    let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());
+
+    // An Enter before the composition does not pair with one after it.
+    press(cx, "enter");
+    input.update_in(cx, |input, window, cx| {
+        input.replace_and_mark_text_in_range(None, "かな", None, window, cx);
+        assert!(input.is_composing());
+    });
+    press(cx, "enter");
+    press(cx, "enter");
+    assert!(!attempted(cx), "Enter while composing sends nothing");
+    assert!(chat.read_with(cx, |chat, _| !chat.double_enter.is_waiting()));
+
+    // The Enter that confirms the candidate is not a first Enter either: it
+    // reaches the input, which ends the composition.
+    input.update_in(cx, |input, window, cx| {
+        input.replace_text_in_range(None, "かな", window, cx);
+        assert!(!input.is_composing());
+    });
+    press(cx, "enter");
+    assert!(
+        !attempted(cx),
+        "the first Enter after the commit only waits"
+    );
+    press(cx, "enter");
+    assert!(attempted(cx), "the pair after the commit sends");
 }

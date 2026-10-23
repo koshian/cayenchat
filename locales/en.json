@@ -384,6 +384,8 @@
   "charset_note_utf8only": "The server requires UTF-8 (UTF8ONLY), so the settings of other encodings are not used on this connection.",
   "not_connected": "Disconnected; open Connection Settings to connect.",
   "draft_placeholder": "Message draft — Enter sends, / starts a command",
+  "draft_placeholder_ctrl_enter": "Message draft — Ctrl+Enter sends, / starts a command",
+  "draft_placeholder_double_enter": "Message draft — press Enter twice to send, / starts a command",
   "mock_placeholder": "Message draft — offline mock, sending disabled",
   "server_host_placeholder": "server.example.net",
   "server_password_placeholder": "Optional server password",

@@ -384,6 +384,8 @@
   "charset_note_utf8only": "このサーバーは UTF-8 を要求している（UTF8ONLY）ため、他の文字コードの設定はこの接続では使いません。",
   "not_connected": "切断されています。接続設定を開いて接続してください。",
   "draft_placeholder": "メッセージを入力 — Enter で送信、/ でコマンド",
+  "draft_placeholder_ctrl_enter": "メッセージを入力 — Ctrl+Enter で送信、/ でコマンド",
+  "draft_placeholder_double_enter": "メッセージを入力 — Enter を2回で送信、/ でコマンド",
   "mock_placeholder": "メッセージを入力 — オフラインでは送信できません",
   "server_host_placeholder": "server.example.net",
   "server_password_placeholder": "任意のサーバーパスワード",
