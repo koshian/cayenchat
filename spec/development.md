@@ -732,8 +732,10 @@ choose Custom, set its host and port, and leave TLS off; do not enter credential
 
 1. Launch and verify the server row changes from connecting to registered, and the
    configured channel joins. Select the server to inspect registration and errors.
-2. Send a channel `PRIVMSG` with Enter and `NOTICE` with Ctrl+Enter; verify the IRC
-   peer receives each and the draft clears only after local queue acceptance.
+2. Send a channel `PRIVMSG` with Enter (the default send key) and `NOTICE` with
+   `/notice :text`; verify the IRC peer receives each and the draft clears only after
+   local queue acceptance. In Settings → Keyboard try Ctrl+Enter and Enter twice: only
+   the chosen operation sends, once, and nothing sends a NOTICE.
 3. Deliver a channel message and a NAMES list from the peer; verify the main log and
    upper-right member pane update. Messages in another channel should mark it unread.
 4. Send `/topic new topic`, `/mode +o bob`, `/part`, `/join #test`, and an explicit

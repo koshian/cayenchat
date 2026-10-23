@@ -18,8 +18,8 @@
 | First through tenth channel | `Cmd+1..9, 0` | `Ctrl+1..9, 0` (configurable) |
 | First through tenth channel (order) | Drag channels in the right-hand tree (digits show while dragging), or use the context menu | same |
 | First through tenth server | `Cmd+Ctrl+1..9, 0` | `Ctrl+Alt+1..9, 0` |
-| Send a channel message (`PRIVMSG`) | `Enter` | `Enter` |
-| Send as IRC `NOTICE` | `Ctrl+Enter` | `Ctrl+Enter` |
+| Send a channel message (`PRIVMSG`) | `Enter` (default; Settings → Keyboard: `Ctrl+Enter` or `Enter` twice instead) | same |
+| Send an IRC `NOTICE` | type `/notice :text` or `/notice nick text` (no key) | same |
 | Recall an older / newer sent draft (last 20, this session only) | `Up` / `Down` | `Up` / `Down` |
 | Open connection settings | `Cmd+,` | `Ctrl+,` |
 | Show/hide connection diagnostics | `Cmd+Shift+D` | `Ctrl+Shift+D` |
