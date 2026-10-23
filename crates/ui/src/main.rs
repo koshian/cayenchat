@@ -2137,7 +2137,7 @@ impl ChatWindow {
                 Ok(())
             }
             Err(error) => {
-                self.record_disconnect(network, error.clone(), cx);
+                self.record_disconnect(network, error.clone(), true, cx);
                 self.schedule_retry(network, cx);
                 Err(error)
             }
@@ -2368,7 +2368,7 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                self.record_disconnect(network, error, cx);
+                self.record_disconnect(network, error, true, cx);
                 self.schedule_retry(network, cx);
             }
         }
@@ -2435,7 +2435,16 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn record_disconnect(&mut self, network: NetworkId, reason: String, cx: &mut Context<Self>) {
+    /// Records that `network`'s connection ended. `announce` raises the
+    /// selected server's end as a notice; an end the user asked for is only
+    /// logged.
+    fn record_disconnect(
+        &mut self,
+        network: NetworkId,
+        reason: String,
+        announce: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.connection_started = None;
             session
@@ -2460,7 +2469,7 @@ impl ChatWindow {
         }
         self.state.append_server_message(network, message.clone());
         // Another server's disconnect is shown in its tree row and log only.
-        if self.selected_network_id() == Some(network) {
+        if announce && self.selected_network_id() == Some(network) {
             self.raise_error(Some(network), message, notices::Origin::Background, cx);
         }
     }
@@ -4617,6 +4626,7 @@ impl ChatWindow {
     }
 
     fn handle_event(&mut self, network: NetworkId, event: Event, cx: &mut Context<Self>) {
+        let closed = matches!(event, Event::Closed(_));
         match event {
             Event::Diagnostic { elapsed, message } => {
                 self.push_diagnostic(
@@ -5266,6 +5276,8 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
+                // Closed is the end the user (or sleep) asked for, not a failure.
+                let announce = !closed;
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self
@@ -5281,7 +5293,7 @@ impl ChatWindow {
                 }
                 self.state.end_avatars(network);
                 self.update_own_avatar(network, OwnAvatar::connection_ended);
-                self.record_disconnect(network, reason, cx);
+                self.record_disconnect(network, reason, announce, cx);
             }
             // Avatar references are recorded whether or not they are shown;
             // showing them (and downloading images) is the Appearance setting.
