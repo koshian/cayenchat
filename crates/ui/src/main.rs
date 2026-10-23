@@ -1604,9 +1604,14 @@ impl ChatWindow {
                         .is_none_or(|(link, _)| range.end <= link.start)
                 });
             }
+            // The excluded text is searched once for both kinds of match.
+            let excluded = &self.notification_rules.exclude_keywords;
+            let cuts = notifications::keyword_ranges(plain, excluded);
+            let ranges = notifications::ranges_outside(ranges, &cuts);
             mentioned = !ranges.is_empty();
-            let matches = notifications::keyword_ranges(plain, keywords);
+            let matches = notifications::keyword_ranges_outside(plain, keywords, &cuts);
             keyword = !matches.is_empty();
+            let mut ranges = ranges;
             ranges.extend(matches);
             ranges.sort_by_key(|range| range.start);
             ranges
@@ -5508,6 +5513,7 @@ fn notification_rules(settings: &Notifications) -> NotificationRules {
         mentions: settings.mentions,
         keyword_alerts: settings.keyword_alerts,
         keywords: settings.keywords.clone(),
+        exclude_keywords: settings.exclude_keywords.clone(),
         private_messages: settings.private_messages,
         sound: settings.sound,
     }

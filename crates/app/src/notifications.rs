@@ -27,6 +27,8 @@ pub struct NotificationRules {
     /// Channel messages containing one of `keywords`.
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
+    /// Matches overlapping an occurrence of one of these are dropped.
+    pub exclude_keywords: Vec<String>,
     pub private_messages: bool,
     /// Also draw attention with a sound and the taskbar button.
     pub sound: bool,
@@ -91,29 +93,59 @@ impl NotificationRules {
 /// has no word boundaries. Characters compare by their lowercase forms, so
 /// ranges stay on the original text's character boundaries.
 pub fn keyword_ranges(text: &str, keywords: &[String]) -> Vec<Range<usize>> {
+    keyword_ranges_outside(text, keywords, &[])
+}
+
+/// Like [`keyword_ranges`], but an occurrence overlapping one of `excluded`
+/// (disjoint, ascending, see [`keyword_ranges`]) is dropped before merging, so
+/// a neighbour of a dropped occurrence stays. Occurrences are judged and merged
+/// as they are found; nothing proportional to their number is kept.
+pub fn keyword_ranges_outside(
+    text: &str,
+    keywords: &[String],
+    excluded: &[Range<usize>],
+) -> Vec<Range<usize>> {
     let keywords: Vec<Vec<char>> = keywords
         .iter()
         .map(|word| word.trim())
         .filter(|word| !word.is_empty())
         .map(|word| word.chars().flat_map(char::to_lowercase).collect())
         .collect();
+    let mut merged: Vec<Range<usize>> = Vec::new();
     if keywords.is_empty() {
-        return Vec::new();
+        return merged;
     }
-    let mut ranges: Vec<Range<usize>> = Vec::new();
     for (start, _) in text.char_indices() {
-        let end = keywords
-            .iter()
-            .filter_map(|word| match_at(&text[start..], word).map(|len| start + len))
-            .max();
-        if let Some(end) = end {
-            match ranges.last_mut() {
-                Some(last) if last.end >= start => last.end = last.end.max(end),
-                _ => ranges.push(start..end),
+        for word in &keywords {
+            let Some(len) = match_at(&text[start..], word) else {
+                continue;
+            };
+            let found = start..start + len;
+            if overlaps_any(excluded, &found) {
+                continue;
+            }
+            // Starts ascend, so only the last range can touch this one.
+            match merged.last_mut() {
+                Some(last) if last.end >= found.start => last.end = last.end.max(found.end),
+                _ => merged.push(found),
             }
         }
     }
+    merged
+}
+
+/// The `ranges` that overlap none of `excluded` (disjoint, ascending).
+pub fn ranges_outside(
+    mut ranges: Vec<Range<usize>>,
+    excluded: &[Range<usize>],
+) -> Vec<Range<usize>> {
+    ranges.retain(|range| !overlaps_any(excluded, range));
     ranges
+}
+
+fn overlaps_any(excluded: &[Range<usize>], range: &Range<usize>) -> bool {
+    let next = excluded.partition_point(|cut| cut.end <= range.start);
+    excluded.get(next).is_some_and(|cut| cut.start < range.end)
 }
 
 /// Length in bytes of the prefix of `text` equal to `word` ignoring case.
@@ -188,6 +220,7 @@ mod tests {
             mentions: true,
             keyword_alerts: true,
             keywords: vec!["ビルド".into(), "Deploy".into()],
+            exclude_keywords: Vec::new(),
             private_messages: true,
             sound: false,
         }
@@ -221,6 +254,42 @@ mod tests {
         );
         let overlapping = ["abc".into(), "bcd".into()];
         assert_eq!(keyword_ranges("xabcdx", &overlapping), vec![(1..5)]);
+    }
+
+    #[test]
+    fn excluded_text_drops_only_overlapping_matches() {
+        let words = vec!["Dalk".to_owned()];
+        let excluded = vec!["<dalk>".to_owned()];
+        let kept = |text: &str, excluded: &[String]| {
+            let cuts = keyword_ranges(text, excluded);
+            keyword_ranges_outside(text, &words, &cuts).len()
+        };
+        assert_eq!(kept("Dalk、ちょっと聞いて", &excluded), 1);
+        assert_eq!(kept("<dalk> こんにちは", &excluded), 0);
+        assert_eq!(kept("<dalk> Dalk、返事して", &excluded), 1);
+        assert_eq!(kept("<DALK> Dalk!", &excluded), 1);
+        assert_eq!(kept("<dalk><dalk>", &excluded), 0);
+        assert_eq!(kept("<dalk> dalk <dalk> dalk", &excluded), 2);
+        assert_eq!(kept("<dalk>", &[]), 1);
+        assert_eq!(kept("<dalk>", &[" ".into()]), 1);
+        // A match only partly inside the excluded text is cancelled too.
+        let cuts = keyword_ranges("xDalkx", &["lkx".into()]);
+        assert!(keyword_ranges_outside("xDalkx", &words, &cuts).is_empty());
+    }
+
+    #[test]
+    fn adjacent_and_overlapping_matches_are_excluded_one_by_one() {
+        let remaining = |text: &str, words: &[&str], excluded: &[&str]| {
+            let words: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+            let excluded: Vec<String> = excluded.iter().map(|w| (*w).to_owned()).collect();
+            keyword_ranges_outside(text, &words, &keyword_ranges(text, &excluded))
+        };
+        // The second `Dalk` lies outside the excluded `xDalk`.
+        assert_eq!(remaining("xDalkDalk", &["Dalk"], &["xDalk"]), vec![5..9]);
+        // `cde` survives although `abc` is cancelled.
+        assert_eq!(remaining("abcde", &["abc", "cde"], &["ab"]), vec![2..5]);
+        // A short and a long match from the same start are judged separately.
+        assert_eq!(remaining("Dalkx", &["Dalk", "Dalkx"], &["x"]), vec![0..4]);
     }
 
     #[test]

@@ -2933,6 +2933,65 @@ fn a_nickname_inside_a_link_is_not_a_mention(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppContext) {
+    use cayenchat_irc_core::Event;
+
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a");
+    settings.notifications.keywords = vec!["Dalk".into(), "ビルド".into()];
+    settings.notifications.exclude_keywords =
+        vec!["<dalk>".into(), "[ビルド]".into(), "xビルド".into()];
+    let (chat, cx) =
+        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "dalk".into(),
+                },
+                Event::Joined {
+                    channel: "#a".into(),
+                },
+            ],
+            Worker::Running,
+            cx,
+        );
+        let found = |text: &str| {
+            let found = chat.find_mentions(NetworkId(1), "bob", text, false);
+            let shown: Vec<_> = found
+                .ranges
+                .iter()
+                .map(|r| text[r.clone()].to_owned())
+                .collect();
+            (found.mentioned, found.keyword, shown)
+        };
+        // An adjacent valid match survives the excluded one before it.
+        assert_eq!(
+            found("xビルドビルド"),
+            (false, true, vec!["ビルド".to_owned()])
+        );
+        assert_eq!(found("Dalk、ちょっと聞いて").2, ["Dalk", "Dalk"]);
+        assert_eq!(found("<dalk> こんにちは"), (false, false, vec![]));
+        let (mentioned, keyword, shown) = found("<dalk> Dalk、返事して");
+        assert!(mentioned && keyword);
+        assert_eq!(shown, ["Dalk", "Dalk"]);
+        assert_eq!(found("<DALK> Dalk!").2, ["Dalk", "Dalk"]);
+        // Formatting codes do not hide the excluded text.
+        assert_eq!(found("\u{2}<dalk>\u{2} \u{3}04hi"), (false, false, vec![]));
+        assert_eq!(found("[ビルド] 失敗"), (false, false, vec![]));
+        assert!(found("[ビルド] ビルド失敗").1);
+    });
+}
+
+#[gpui::test]
 fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
