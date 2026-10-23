@@ -7040,3 +7040,21 @@ fn transcript_refuses_unsafe_bytes_before_trimming_or_shortening() {
     assert_eq!(recorded, vec!["[refused: line break or NUL]"; 4]);
     assert!(!format!("{recorded:?}").contains("private-secret"));
 }
+
+#[test]
+fn disconnect_after_the_worker_has_ended_is_not_an_error() {
+    // Nothing listens on the port, so the worker ends with a refusal.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.use_tls = false;
+    config.port = port;
+    let mut connection = Connection::connect(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && connection.try_recv().is_none() {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(connection.wait_closed(Duration::from_secs(5)));
+    assert_eq!(connection.disconnect(), Ok(()));
+}
