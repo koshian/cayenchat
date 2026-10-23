@@ -1073,6 +1073,9 @@ pub struct Notifications {
     /// Channel messages containing one of `keywords`.
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
+    /// Text whose occurrences cancel the mention and keyword matches that
+    /// overlap them. Added without a version change; older files read as empty.
+    pub exclude_keywords: Vec<String>,
     pub private_messages: bool,
     /// Beep and flash the taskbar button (Windows) when a notification
     /// fires. Off by default.
@@ -1086,6 +1089,7 @@ impl Default for Notifications {
             mentions: true,
             keyword_alerts: true,
             keywords: Vec::new(),
+            exclude_keywords: Vec::new(),
             private_messages: true,
             sound: false,
         }

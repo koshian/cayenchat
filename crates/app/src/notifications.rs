@@ -27,6 +27,8 @@ pub struct NotificationRules {
     /// Channel messages containing one of `keywords`.
     pub keyword_alerts: bool,
     pub keywords: Vec<String>,
+    /// Matches overlapping an occurrence of one of these are dropped.
+    pub exclude_keywords: Vec<String>,
     pub private_messages: bool,
     /// Also draw attention with a sound and the taskbar button.
     pub sound: bool,
@@ -116,6 +118,30 @@ pub fn keyword_ranges(text: &str, keywords: &[String]) -> Vec<Range<usize>> {
     ranges
 }
 
+/// Drops the `ranges` that overlap an occurrence of one of `excluded` in
+/// `text`; matches outside those occurrences remain. `ranges` ascend by start.
+pub fn without_excluded(
+    text: &str,
+    ranges: Vec<Range<usize>>,
+    excluded: &[String],
+) -> Vec<Range<usize>> {
+    if ranges.is_empty() {
+        return ranges;
+    }
+    let excluded = keyword_ranges(text, excluded);
+    if excluded.is_empty() {
+        return ranges;
+    }
+    ranges
+        .into_iter()
+        .filter(|range| {
+            // The excluded ranges are disjoint and ascending.
+            let next = excluded.partition_point(|cut| cut.end <= range.start);
+            excluded.get(next).is_none_or(|cut| cut.start >= range.end)
+        })
+        .collect()
+}
+
 /// Length in bytes of the prefix of `text` equal to `word` ignoring case.
 fn match_at(text: &str, word: &[char]) -> Option<usize> {
     let mut wanted = word.iter();
@@ -188,6 +214,7 @@ mod tests {
             mentions: true,
             keyword_alerts: true,
             keywords: vec!["ビルド".into(), "Deploy".into()],
+            exclude_keywords: Vec::new(),
             private_messages: true,
             sound: false,
         }
@@ -221,6 +248,27 @@ mod tests {
         );
         let overlapping = ["abc".into(), "bcd".into()];
         assert_eq!(keyword_ranges("xabcdx", &overlapping), vec![(1..5)]);
+    }
+
+    #[test]
+    fn excluded_text_drops_only_overlapping_matches() {
+        let words = vec!["Dalk".to_owned()];
+        let excluded = vec!["<dalk>".to_owned()];
+        let kept = |text: &str, excluded: &[String]| {
+            let ranges = without_excluded(text, keyword_ranges(text, &words), excluded);
+            ranges.iter().map(|r| text[r.clone()].to_owned()).count()
+        };
+        assert_eq!(kept("Dalk、ちょっと聞いて", &excluded), 1);
+        assert_eq!(kept("<dalk> こんにちは", &excluded), 0);
+        assert_eq!(kept("<dalk> Dalk、返事して", &excluded), 1);
+        assert_eq!(kept("<DALK> Dalk!", &excluded), 1);
+        assert_eq!(kept("<dalk><dalk>", &excluded), 0);
+        assert_eq!(kept("<dalk> dalk <dalk> dalk", &excluded), 2);
+        assert_eq!(kept("<dalk>", &[]), 1);
+        assert_eq!(kept("<dalk>", &[" ".into()]), 1);
+        // A match only partly inside the excluded text is cancelled too.
+        let ranges = keyword_ranges("xDalkx", &words);
+        assert!(without_excluded("xDalkx", ranges, &["lkx".into()]).is_empty());
     }
 
     #[test]
