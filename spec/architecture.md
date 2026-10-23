@@ -480,7 +480,9 @@ hover-revealed bar slides in and hides again once the pointer moves more than
 convention (it resembles macOS full-screen menus). A bar that is always shown
 has no slide-in animation (a frozen animation was one suspected cause of a
 half-drawn bar, issue #87); Alt only underlines access keys and F10 enters or
-leaves keyboard use.
+leaves keyboard use. A click on the content hides a shown bar; it also reaches
+the content (a toolbar button works on the first click, #569) unless a menu is
+open, in which case it only dismisses that menu.
 View → Hide/Show Menu Bar (Windows/Linux only; macOS's bar is the system's, #391)
 flips the same `menu_bar_auto_hide` setting and saves it, independently of
 the toolbar item; its label follows the setting, and an open settings window
