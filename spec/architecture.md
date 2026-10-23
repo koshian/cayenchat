@@ -490,7 +490,8 @@ View → Hide/Show Menu Bar (Windows/Linux only; macOS's bar is the system's, #3
 flips the same `menu_bar_auto_hide` setting and saves it, independently of
 the toolbar item; its label follows the setting, and an open settings window
 follows the file. A hidden bar stays reachable by explicit Alt+menu access
-keys and hover, and F10 shows it again; its View menu offers Show Menu Bar.
+keys and hover; F10 toggles the setting back to always shown, and its View menu
+offers Show Menu Bar.
 The settings window has no bar (issue #145; its menus were all disabled).
 In it Escape (#339) closes one open layer per press (auto-join dialog, avatar
 editor, color or font picker, server, language or encoding list) and then the window
@@ -695,8 +696,8 @@ until registration completes, and afterwards while the debug transcript is on
 for each new one). Stage diagnostics are always sent. A worker panic produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is included
 in the transcript and clipboard export.
-Connection diagnostics are reached through the View menu (Alt+V, F10 or hovering
-below the title bar reveals the menu bar on Linux/Windows) or keyboard shortcuts. There are no permanent diagnostic
+Connection diagnostics are reached through the View menu (Alt+V or hovering
+below the title bar reveals the menu bar on Linux/Windows; F10 only toggles whether it is hidden) or keyboard shortcuts. There are no permanent diagnostic
 buttons. Displaying diagnostics selects the server view, enables the transcript
 and scrolls to its start; copying exports the retained transcript regardless of
 the selected pane. An established session's traffic is in it only from when
