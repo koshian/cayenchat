@@ -841,7 +841,7 @@ impl Render for ChannelDragPreview {
 }
 
 /// The digit a numbered channel shortcut gives the conversation at `index`
-/// of the tree (D009): 1 to 9, then 0; none beyond the tenth.
+/// of its server's part of the tree (D009): 1 to 9, then 0; none beyond the tenth.
 fn shortcut_digit(index: usize) -> Option<char> {
     char::from_digit(((index + 1) % 10) as u32, 10).filter(|_| index < 10)
 }
@@ -6184,7 +6184,12 @@ impl ChatWindow {
                 let private = conversation.is_private();
                 let joined = self.state.is_active_channel(id);
                 let conversations = self.state.conversations();
-                let index = conversations.iter().position(|c| c.id == id).unwrap_or(0);
+                // The number counts within the row's own server (D009).
+                let index = conversations
+                    .iter()
+                    .filter(|c| c.network == network)
+                    .position(|c| c.id == id)
+                    .unwrap_or(0);
                 // While a channel is dragged, every row shows the digit that
                 // reaches it, and the row under the pointer shows where the
                 // drop would put the dragged channel.
