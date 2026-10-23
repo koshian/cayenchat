@@ -1298,6 +1298,18 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D066 — Local `/help` lists the main commands in the server log (#586)
+
+`/help` is handled in `send_draft()` before any connection check, like
+`/charset`; it is never sent to the server. The text (`help_text` in the
+locales, current language) is added line by line to the selected server's log
+with `append_server_message()`: no selection change, no unread mark, no
+notification. Only `/help` with no arguments lists; any argument gives a usage
+line. `/helper` and similar are not `/help`. The list is "main commands of
+CayenChat", not all IRC commands (unknown `/commands` are still sent raw), and
+there are no topics, key listings or search. With no server configured the
+normal "not connected" error is shown.
+
 ## D065 — Jump to the latest message: shortcut and log button (#546)
 
 **Status:** Accepted

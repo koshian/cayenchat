@@ -19,6 +19,7 @@ mod desktop;
 mod diagnostics;
 mod dialog;
 mod experimental_settings;
+mod help_command;
 mod image_upload;
 mod input;
 mod input_history;
@@ -3178,6 +3179,22 @@ impl ChatWindow {
         }
     }
 
+    /// Runs `/help`: the command list as lines of the selected server's log,
+    /// whatever the connection state. The selection does not change.
+    fn run_help(&mut self, request: help_command::Request) -> Result<(), String> {
+        let network = self
+            .selected_network_id()
+            .ok_or_else(|| self.i18n.text("not_connected"))?;
+        let text = match request {
+            help_command::Request::List => self.i18n.text("help_text"),
+            help_command::Request::Usage => self.i18n.text("help_usage"),
+        };
+        for line in text.lines() {
+            self.state.append_server_message(network, line.to_owned());
+        }
+        Ok(())
+    }
+
     /// Runs `/charset` for the selected channel. The result is a line in
     /// that channel's log; the override is saved with the server profile and
     /// applies to the live connection at once, and to later ones through the
@@ -5345,8 +5362,11 @@ impl ChatWindow {
         // Local to the application: nothing of it goes to the server, so it
         // works before registration and while disconnected too.
         let charset = charset_command::parse(&text);
-        let local_command = charset.is_some();
-        let result = if let Some(parsed) = charset {
+        let help = help_command::parse(&text);
+        let local_command = charset.is_some() || help.is_some();
+        let result = if let Some(request) = help {
+            self.run_help(request)
+        } else if let Some(parsed) = charset {
             match parsed {
                 Ok(request) => self.run_charset(request, cx),
                 Err(problem) => Err(self.charset_problem(&problem)),
@@ -9439,6 +9459,10 @@ mod wake_tests;
 #[cfg(test)]
 #[path = "main_tests/charset_command_tests.rs"]
 mod charset_command_tests;
+
+#[cfg(test)]
+#[path = "main_tests/help_command_tests.rs"]
+mod help_command_tests;
 
 #[cfg(test)]
 #[path = "main_tests/search_tests.rs"]
