@@ -1305,9 +1305,11 @@ redrawn only for batches containing those events.
 
 The Connection tab's quick icon section (`ui::avatar_quick_setup`, D023,
 #593) is a second view of the same draft and flow: it calls the same
-chooser, editor and upload, and an upload finished from it (the tab is the
-Connection tab when the upload starts) registers instead of only filling
-the draft. `register_in_profile` is the one place that sets `avatar_url`,
+chooser, editor and upload, and an upload started from its editor registers
+instead of only filling the draft. That intent is fixed when the upload
+button is pressed and kept with the upload job's id
+(`avatar_upload_registers`), so a late completion of a cancelled upload or a
+tab change never changes it. `register_in_profile` is the one place that sets `avatar_url`,
 `user_avatars`, `ircv3.peer_avatars` and `peer_avatar_url`; the Metadata
 publish goes through `ChatWindow::request_own_avatar`. The fold state, the
 way back from the Image Upload tab and the "open image upload settings"

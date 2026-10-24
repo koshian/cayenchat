@@ -425,7 +425,7 @@ impl SettingsWindow {
                         .child(self.i18n.text("ircv3_avatar_edit_loading")),
                 )
             })
-            .children(provider.and_then(|name| self.render_avatar_editor(name, cx)))
+            .children(provider.and_then(|name| self.render_avatar_editor(name, false, cx)))
     }
 
     /// Sharing with other clients through CTCP AVATAR, separate from the
@@ -713,7 +713,7 @@ impl SettingsWindow {
 
     /// The editor's upload button: encode the selected square off the UI
     /// thread, then upload it (the button was the confirmation).
-    pub(crate) fn upload_edited_avatar(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn upload_edited_avatar(&mut self, registers: bool, cx: &mut Context<Self>) {
         let Some(editor) = self.avatar_editor.take() else {
             return;
         };
@@ -730,7 +730,7 @@ impl SettingsWindow {
                     Ok(encoded) => {
                         let name = format!("avatar.{}", encoded.extension);
                         let attachment = Attachment::image(Some(&name), encoded.bytes, kind);
-                        this.upload_avatar_attachment(profile, attachment, cx);
+                        this.upload_avatar_attachment(profile, attachment, registers, cx);
                     }
                     Err(error) => {
                         this.avatar_feedback =
@@ -747,6 +747,7 @@ impl SettingsWindow {
         &mut self,
         profile: String,
         attachment: Result<Attachment, AttachmentError>,
+        registers: bool,
         cx: &mut Context<Self>,
     ) {
         let provider = self.settings.values.image_upload.provider.clone();
@@ -767,7 +768,7 @@ impl SettingsWindow {
             // The editor's upload button, which names the host, was the
             // confirmation.
             Offer::Confirm { .. } => match uploader {
-                Some(uploader) => self.start_avatar_upload(uploader, cx),
+                Some(uploader) => self.start_avatar_upload(uploader, registers, cx),
                 None => self.avatar_upload.decline(),
             },
             Offer::Configure => {
@@ -785,28 +786,43 @@ impl SettingsWindow {
         }
     }
 
-    fn start_avatar_upload(&mut self, uploader: Arc<dyn ExternalUploader>, cx: &mut Context<Self>) {
+    fn start_avatar_upload(
+        &mut self,
+        uploader: Arc<dyn ExternalUploader>,
+        registers: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(job) = self.avatar_upload.confirm() else {
             return;
         };
         let id = job.id;
         // The editor's upload button in the quick icon section also
-        // registers the icon.
-        self.avatar_upload_registers = self.tab == SettingsTab::Connection;
+        // registers the icon. The intent belongs to this job: a stale
+        // completion of another job never reads or clears it.
+        self.avatar_upload_registers = registers.then_some(id);
         let upload = upload_in_background(uploader, job, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = upload.await;
             let _ = this.update(cx, |this, cx| {
                 let completion = this.avatar_upload.finish(id, result);
-                this.complete_avatar_upload(completion, cx);
+                let registers = take_registration(
+                    &mut this.avatar_upload_registers,
+                    id,
+                    matches!(completion, Completion::Ignored),
+                );
+                this.complete_avatar_upload(completion, registers, cx);
             });
         })
         .detach();
     }
 
-    fn complete_avatar_upload(&mut self, completion: Completion<String>, cx: &mut Context<Self>) {
-        let registers = std::mem::take(&mut self.avatar_upload_registers);
+    fn complete_avatar_upload(
+        &mut self,
+        completion: Completion<String>,
+        registers: bool,
+        cx: &mut Context<Self>,
+    ) {
         match completion {
             Completion::InsertLink { target, url } => {
                 match place_uploaded_avatar(&mut self.settings.values, &target, &url) {
@@ -860,11 +876,22 @@ impl SettingsWindow {
 
     pub(crate) fn cancel_avatar_upload(&mut self, cx: &mut Context<Self>) {
         if self.avatar_upload.cancel_upload() {
-            self.avatar_upload_registers = false;
+            self.avatar_upload_registers = None;
             self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_cancelled"));
         }
         cx.notify();
     }
+}
+
+/// Whether the finished upload `id` registers the icon. Only the job that
+/// recorded the intent consumes it: the late completion of an ignored
+/// (cancelled) upload leaves another job's intent alone.
+fn take_registration(slot: &mut Option<u64>, id: u64, ignored: bool) -> bool {
+    if ignored || *slot != Some(id) {
+        return false;
+    }
+    *slot = None;
+    true
 }
 
 /// Puts an uploaded image's URL into the avatar URL draft of `profile_id`
@@ -1224,6 +1251,19 @@ mod tests {
             peer_avatar_url_problem("https://example.com/me.png", true),
             None
         );
+    }
+
+    #[test]
+    fn a_stale_completion_keeps_another_uploads_registration() {
+        // Upload 1 was cancelled, upload 2 (quick section) is running.
+        let mut slot = Some(2);
+        assert!(!super::take_registration(&mut slot, 1, true));
+        assert!(!super::take_registration(&mut slot, 1, false));
+        assert_eq!(slot, Some(2));
+        assert!(super::take_registration(&mut slot, 2, false));
+        assert_eq!(slot, None);
+        // An upload started from the IRCv3 tab never registers.
+        assert!(!super::take_registration(&mut slot, 3, false));
     }
 
     #[test]

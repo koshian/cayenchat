@@ -600,6 +600,7 @@
   "avatar_quick_ctcp_unsaved": "CTCP AVATAR: press Save to turn sharing on.",
   "avatar_quick_ctcp_reconnect": "CTCP AVATAR: not applied to the current connection yet. Reconnect to apply it (CayenChat does not reconnect by itself).",
   "avatar_quick_ctcp_active": "CTCP AVATAR: sharing.",
+  "avatar_quick_ctcp_stale": "CTCP AVATAR: the connection still answers with the previous URL. Press Save again, or reconnect.",
   "avatar_quick_ctcp_ready": "CTCP AVATAR: sharing is set up. Others get it once you connect.",
   "reiwa_mode_global_hint": "This setting applies to the whole app (all servers).",
   "ircv3_peer_size_placeholder": "Other clients do not fill in {size}; share a URL without it.",

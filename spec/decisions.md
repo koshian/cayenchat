@@ -760,7 +760,8 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   nothing. The footer keeps the ways apart: Metadata (published only when
   the server confirmed that URL; "not connected", "unsupported" and
   failures are shown as such) and CTCP AVATAR (needs Save; a reconnect is
-  asked for, never done). The chooser is offered without an image host; its
+  asked for, never done; "sharing" only when the connection answers with
+  that URL, otherwise it says the old URL is still answered). The chooser is offered without an image host; its
   setup and re-authentication guidance (the same as for chat attachments)
   gets a button to the Image Upload tab, which has a way back to the same
   server's section, and nothing is uploaded automatically. The Reiwa mode

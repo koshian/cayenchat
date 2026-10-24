@@ -600,6 +600,7 @@
   "avatar_quick_ctcp_unsaved": "CTCP AVATAR: 「保存」を押すと共有の設定が有効になります。",
   "avatar_quick_ctcp_reconnect": "CTCP AVATAR: 現在の接続にはまだ反映されていません。再接続すると反映されます (自動では再接続しません)。",
   "avatar_quick_ctcp_active": "CTCP AVATAR: 共有中です。",
+  "avatar_quick_ctcp_stale": "CTCP AVATAR: 接続は以前のURLのまま応答しています。もう一度「保存」するか、再接続してください。",
   "avatar_quick_ctcp_ready": "CTCP AVATAR: 共有の設定済みです。接続すると相手に伝わります。",
   "reiwa_mode_global_hint": "この設定はアプリ全体に適用されます (すべてのサーバー)。",
   "ircv3_peer_size_placeholder": "ほかのクライアントは {size} を置き換えません。{size} を含まない URL を共有してください。",

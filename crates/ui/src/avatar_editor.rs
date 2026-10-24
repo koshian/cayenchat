@@ -295,6 +295,7 @@ impl SettingsWindow {
     pub(crate) fn render_avatar_editor(
         &self,
         provider: &str,
+        registers: bool,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let editor = self.avatar_editor.as_ref()?;
@@ -451,9 +452,9 @@ impl SettingsWindow {
                                         &[("provider", provider)],
                                     ),
                                 )
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.upload_edited_avatar(cx)),
-                                ),
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.upload_edited_avatar(registers, cx)
+                                })),
                         )
                         .child(
                             settings_theme::button("avatar-editor-reset", false, cx)

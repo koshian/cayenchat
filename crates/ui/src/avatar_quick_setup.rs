@@ -39,6 +39,29 @@ pub(crate) fn register_in_profile(
     Ok(())
 }
 
+/// The localization key of the CTCP AVATAR line, from what the connection
+/// answers now (not only from what was saved): `None` when not shared.
+fn ctcp_state_key(
+    status: &OwnAvatarStatus,
+    profile: &ServerProfile,
+    saved: bool,
+) -> Option<&'static str> {
+    let shared = crate::shared_peer_avatar(profile)?;
+    Some(if !saved {
+        "avatar_quick_ctcp_unsaved"
+    } else if peer_reconnect_needed(status, profile) {
+        "avatar_quick_ctcp_reconnect"
+    } else if status.connected && status.peer.answering.as_deref() != Some(&shared) {
+        // The connection could not take the new URL (for example its
+        // queue was full) and still answers with the old one.
+        "avatar_quick_ctcp_stale"
+    } else if status.connected {
+        "avatar_quick_ctcp_active"
+    } else {
+        "avatar_quick_ctcp_ready"
+    })
+}
+
 impl SettingsWindow {
     /// The explicit register / update step: puts `url` into the settings of
     /// server `profile_id` and tries to publish it on its connection. Which
@@ -135,22 +158,12 @@ impl SettingsWindow {
         };
         lines.extend(metadata);
         let saved = self.saved.profile(&profile.id);
-        let sharing = crate::shared_peer_avatar(profile).is_some();
-        if sharing {
-            let applied = saved.is_some_and(|saved| {
-                saved.ircv3.peer_avatars == profile.ircv3.peer_avatars
-                    && saved.peer_avatar_url == profile.peer_avatar_url
-            });
-            let key = if !applied {
-                "avatar_quick_ctcp_unsaved"
-            } else if peer_reconnect_needed(status, profile) {
-                "avatar_quick_ctcp_reconnect"
-            } else if status.connected {
-                "avatar_quick_ctcp_active"
-            } else {
-                "avatar_quick_ctcp_ready"
-            };
-            lines.push((self.i18n.text(key), false));
+        let applied = saved.is_some_and(|saved| {
+            saved.ircv3.peer_avatars == profile.ircv3.peer_avatars
+                && saved.peer_avatar_url == profile.peer_avatar_url
+        });
+        if let Some(key) = ctcp_state_key(status, profile, applied) {
+            lines.push((self.i18n.text(key), key == "avatar_quick_ctcp_stale"));
         }
         lines
     }
@@ -301,7 +314,7 @@ impl SettingsWindow {
                             .child(self.i18n.text("ircv3_avatar_edit_loading")),
                     )
                 })
-                .children(provider.and_then(|name| self.render_avatar_editor(name, cx))),
+                .children(provider.and_then(|name| self.render_avatar_editor(name, true, cx))),
         )
     }
 
@@ -339,7 +352,9 @@ impl SettingsWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::register_in_profile;
+    use super::{ctcp_state_key, register_in_profile};
+    use crate::ircv3_settings::OwnAvatarStatus;
+    use crate::session::PeerAvatarConnection;
     use crate::{SettingsTab, SettingsWindow};
     use cayenchat_storage::{ServerProfile, Settings, TextEncoding};
     use gpui::{Entity, TestAppContext, VisualTestContext};
@@ -371,6 +386,40 @@ mod tests {
         let before = profile.clone();
         assert!(register_in_profile(&mut profile, "https://img.example/ア.png").is_err());
         assert_eq!(profile, before);
+    }
+
+    #[test]
+    fn ctcp_state_follows_what_the_connection_answers() {
+        let mut profile = ServerProfile::default();
+        register_in_profile(&mut profile, URL).unwrap();
+        let connected = |answering: Option<&str>| OwnAvatarStatus {
+            connected: true,
+            peer: PeerAvatarConnection {
+                enabled: true,
+                advertised: true,
+                answering: answering.map(str::to_owned),
+            },
+            ..OwnAvatarStatus::default()
+        };
+        let p = profile.clone();
+        let key = |status: &OwnAvatarStatus| ctcp_state_key(status, &p, true);
+        // Updated normally.
+        assert_eq!(key(&connected(Some(URL))), Some("avatar_quick_ctcp_active"));
+        // The update failed: the connection still answers with the old URL.
+        let old = Some("https://img.example/old.png");
+        assert_eq!(key(&connected(old)), Some("avatar_quick_ctcp_stale"));
+        assert_eq!(key(&connected(None)), Some("avatar_quick_ctcp_stale"));
+        // Not connected, not saved, not shared.
+        assert_eq!(
+            key(&OwnAvatarStatus::default()),
+            Some("avatar_quick_ctcp_ready")
+        );
+        assert_eq!(
+            ctcp_state_key(&connected(Some(URL)), &profile, false),
+            Some("avatar_quick_ctcp_unsaved")
+        );
+        profile.ircv3.peer_avatars = false;
+        assert_eq!(ctcp_state_key(&connected(None), &profile, true), None);
     }
 
     fn open(

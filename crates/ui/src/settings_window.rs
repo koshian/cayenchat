@@ -925,9 +925,9 @@ pub(crate) struct SettingsWindow {
     /// The quick icon section at the top of the Connection tab is expanded.
     /// Only a view state: it is never saved and sends nothing.
     pub(crate) avatar_quick_open: bool,
-    /// The uploaded image of the running upload was chosen in the quick
+    /// Id of the running upload that was started in the quick
     /// section, so finishing it registers the icon.
-    pub(crate) avatar_upload_registers: bool,
+    pub(crate) avatar_upload_registers: Option<u64>,
     /// The latest feedback is about the image host, so the quick section
     /// offers the way to the Image Upload tab.
     pub(crate) avatar_setup_link: bool,
@@ -1145,7 +1145,7 @@ impl SettingsWindow {
             auto_join: None,
             avatar_opening: false,
             avatar_quick_open: false,
-            avatar_upload_registers: false,
+            avatar_upload_registers: None,
             avatar_setup_link: false,
             avatar_return: None,
             _field_subscriptions: field_subscriptions,
