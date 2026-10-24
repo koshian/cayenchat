@@ -195,6 +195,27 @@ fn channel_activity_text(actor: &str, kind: ChannelActivityKind) -> String {
     }
 }
 
+/// The valid channel names a typed `/join` command lists; none for any other
+/// command.
+fn join_command_channels(command: &str) -> Vec<&str> {
+    let mut words = command.split_whitespace();
+    if !words
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("/join"))
+    {
+        return Vec::new();
+    }
+    words
+        .next()
+        .map(|channels| {
+            channels
+                .split(',')
+                .filter(|name| valid_channel(name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Positions in `batch` of member lists that a later member list of the same
 /// channel in the batch replaces. A change of case mapping can make the same
 /// name another conversation, so no member list is dropped across one.
@@ -631,6 +652,9 @@ struct ChatWindow {
     tree_rows: Vec<TreeRow>,
     // The selection the tree last scrolled to; a different one is revealed.
     tree_revealed: Option<Selection>,
+    // A channel a typed `/join` just selected; the window catches up (focus,
+    // title) after the event batch.
+    join_selected: Option<ConversationId>,
     // The reveal waits for the rows up to the selection to be laid out.
     tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
@@ -1217,6 +1241,7 @@ impl ChatWindow {
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
             tree_revealed: None,
+            join_selected: None,
             tree_reveal_pending: false,
             sub_source: None,
             reiwa_shapes: None,
@@ -3463,18 +3488,93 @@ impl ChatWindow {
     /// Remembers the channels of a `/join` command just sent, so a refusal of
     /// one that has no conversation yet can still be shown. Bounded.
     fn note_join_request(&mut self, network: NetworkId, command: &str) {
-        let mut words = command.split_whitespace();
-        if !words
-            .next()
-            .is_some_and(|word| word.eq_ignore_ascii_case("/join"))
-        {
+        for channel in join_command_channels(command) {
+            self.note_join(network, channel, false);
+        }
+    }
+
+    /// A `/join` the user typed was sent: selects the channel once our JOIN
+    /// of it is confirmed (see [`session::JoinSwitch`]). A target already
+    /// joined gets no answer from the server, so it is selected now, unless
+    /// a later target of the command is still to be joined.
+    fn note_join_switch(
+        &mut self,
+        network: NetworkId,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if join_command_channels(command).is_empty() {
             return;
         }
-        let Some(channels) = words.next() else {
+        let casemapping = self.state.casemapping(network);
+        let mut joined = None;
+        let mut waiting = std::collections::HashSet::new();
+        for channel in join_command_channels(command) {
+            match self
+                .state
+                .channel_id(network, channel)
+                .filter(|id| self.state.is_active_channel(*id))
+            {
+                Some(id) => {
+                    joined = Some(id);
+                    waiting.clear();
+                }
+                None => {
+                    waiting.insert(casemapping.fold(channel));
+                }
+            }
+        }
+        if let Some(id) = joined {
+            self.dispatch(Command::SelectChannel(id), window, cx);
+        }
+        let expected = self.state.selection();
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.join_switch = (!waiting.is_empty()).then_some(session::JoinSwitch {
+                channels: waiting,
+                expected,
+            });
+        }
+    }
+
+    /// Our JOIN of `channel` was confirmed: selects it if a typed `/join`
+    /// asked for it and the user has not chosen another view since.
+    fn join_confirmed_switch(&mut self, network: NetworkId, channel: &str) {
+        let folded = self.state.casemapping(network).fold(channel);
+        let selection = self.state.selection();
+        let target = self.state.channel_id(network, channel);
+        let Some(session) = self.sessions.get_mut(&network) else {
             return;
         };
-        for channel in channels.split(',').filter(|name| valid_channel(name)) {
-            self.note_join(network, channel, false);
+        let Some(switch) = session.join_switch.as_mut() else {
+            return;
+        };
+        if !switch.channels.remove(&folded) {
+            return;
+        }
+        match target {
+            Some(id) if switch.expected == selection => {
+                switch.expected = Selection::Channel(id);
+                self.state.dispatch(Command::SelectChannel(id));
+                self.join_selected = Some(id);
+            }
+            _ => switch.channels.clear(),
+        }
+        if switch.channels.is_empty() {
+            session.join_switch = None;
+        }
+    }
+
+    /// A JOIN of `channel` was refused: it will not be selected.
+    fn join_refused_switch(&mut self, network: NetworkId, channel: &str) {
+        let folded = self.state.casemapping(network).fold(channel);
+        if let Some(session) = self.sessions.get_mut(&network)
+            && let Some(switch) = session.join_switch.as_mut()
+        {
+            switch.channels.remove(&folded);
+            if switch.channels.is_empty() {
+                session.join_switch = None;
+            }
         }
     }
 
@@ -4630,6 +4730,10 @@ impl ChatWindow {
                     self.show_nick_prompt(network, nickname.clone(), cx)
                 }
                 Event::Registered { .. } => {
+                    // Joins answered on a new connection are not typed ones.
+                    if let Some(session) = self.sessions.get_mut(&network) {
+                        session.join_switch = None;
+                    }
                     self.nick_prompts.retain(|prompt| prompt.network != network);
                     self.start_key_tracking(network);
                 }
@@ -4661,6 +4765,19 @@ impl ChatWindow {
             self.ensure_inputs(cx);
             cx.notify();
         }
+        if let Some(id) = self.join_selected.take()
+            && let Some(handle) = self.window_handle
+        {
+            // The window is being updated now; catch up once it is free.
+            cx.spawn(async move |_, cx| {
+                let _ = handle.update(cx, |this, window, cx| {
+                    if this.state.selection() == Selection::Channel(id) {
+                        this.dispatch(Command::SelectChannel(id), window, cx);
+                    }
+                });
+            })
+            .detach();
+        }
         if worker_closed && !disconnected {
             self.push_diagnostic(
                 network,
@@ -4676,6 +4793,7 @@ impl ChatWindow {
         if disconnected || worker_closed {
             if let Some(session) = self.sessions.get_mut(&network) {
                 session.irc = None;
+                session.join_switch = None;
             }
             self.end_key_tracking(network);
             if refused {
@@ -4749,6 +4867,7 @@ impl ChatWindow {
                     session.pending_joins.remove(&folded);
                 }
                 self.state.joined_channel(network, &channel);
+                self.join_confirmed_switch(network, &channel);
                 self.state.append_server_message(
                     network,
                     self.i18n.format("event_joined", &[("channel", &channel)]),
@@ -4875,6 +4994,9 @@ impl ChatWindow {
                 let text = channel_activity_text(&actor, kind);
                 let meta = MessageMeta::at(server_time);
                 let folded = self.state.casemapping(network).fold(&channel);
+                if join_failed {
+                    self.join_refused_switch(network, &channel);
+                }
                 let requested = join_failed
                     && self
                         .sessions
@@ -5490,6 +5612,7 @@ impl ChatWindow {
                     if channel_keys::plain_join_channels(&text).is_none() {
                         self.note_join_request(network, &text);
                     }
+                    self.note_join_switch(network, &text, window, cx);
                     // The one place a send is remembered for a 417 or 400:
                     // what the user said, not commands and not local ones.
                     if !local_command && notices::is_spoken(&text) {
@@ -9762,6 +9885,10 @@ mod latest_button_tests;
 #[cfg(test)]
 #[path = "main_tests/channel_key_tests.rs"]
 mod channel_key_tests;
+
+#[cfg(test)]
+#[path = "main_tests/join_switch_tests.rs"]
+mod join_switch_tests;
 
 #[cfg(test)]
 #[path = "main_tests/part_dialog_tests.rs"]

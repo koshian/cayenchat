@@ -11,12 +11,23 @@ use std::{
     time::Instant,
 };
 
-use cayenchat_app::{Kind, own_avatar::OwnAvatar};
+use cayenchat_app::{Kind, Selection, own_avatar::OwnAvatar};
 use cayenchat_irc_core::{Connection, ConnectionConfig};
 use cayenchat_model::ConversationId;
 
 /// Newest transcript lines kept per server.
 pub const DIAGNOSTIC_LIMIT: usize = 1000;
+
+/// What a typed `/join` waits for before it selects a channel. Only the
+/// user's own `/join` creates one; auto-joins, rejoins and replayed history
+/// never do.
+pub struct JoinSwitch {
+    /// Case-folded channels still waiting for our JOIN.
+    pub channels: HashSet<String>,
+    /// The selection this request left or set. Anything else means the user
+    /// chose a view meanwhile, which a join must not override.
+    pub expected: Selection,
+}
 
 pub struct ServerSession {
     /// Settings profile this session belongs to.
@@ -40,6 +51,8 @@ pub struct ServerSession {
     /// Case-folded channels this client asked to join and has no answer for
     /// yet, bounded, so a refusal of a new channel can be shown.
     pub pending_joins: HashSet<String>,
+    /// A typed `/join` whose successful channels get selected (#611).
+    pub join_switch: Option<JoinSwitch>,
     /// Case-folded channels this client sent PART for and has no answer to
     /// yet, with when; bounded and expiring (see `part_dialog`).
     pub pending_parts: HashMap<String, Instant>,
@@ -98,6 +111,7 @@ impl ServerSession {
             own_nickname: None,
             pending_whois: HashSet::new(),
             pending_joins: HashSet::new(),
+            join_switch: None,
             pending_parts: HashMap::new(),
             key_joins: Vec::new(),
             diagnostics: VecDeque::new(),
