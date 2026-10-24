@@ -161,7 +161,9 @@ impl LogList {
     /// The sequences present before and after whose shape differs. One
     /// merge walk over both ascending lists, only when shapes changed.
     fn reshaped(&self, sequences: &[u64], shapes: &[u8]) -> Vec<u64> {
-        if shapes == self.shapes.as_slice() {
+        // Equal shape lists say nothing about kept rows when the sequences
+        // moved (trim plus append): row 2 can go from Text to Header.
+        if sequences == self.sequences.as_slice() && shapes == self.shapes.as_slice() {
             return Vec::new();
         }
         let shape = |shapes: &[u8], index: usize| shapes.get(index).copied().unwrap_or(0);
@@ -387,6 +389,15 @@ mod tests {
     }
 
     #[test]
+    fn rows_kept_after_a_trim_are_compared_by_sequence_not_position() {
+        let mut log = LogList::new();
+        log.sync_shaped(0, &[1, 2, 3], &[1, 0, 0]);
+        // Same shape list, but sequence 2 moved from Text to Header.
+        assert_eq!(log.reshaped(&[2, 3, 4], &[1, 0, 0]), [2]);
+        assert!(log.reshaped(&[1, 2, 3], &[1, 0, 0]).is_empty());
+    }
+
+    #[test]
     fn invalidating_a_row_keeps_the_count_and_ignores_unknown_rows() {
         let mut log = LogList::new();
         log.sync(1, &[3, 5, 8]);
@@ -425,7 +436,8 @@ mod tests {
         let heights = Rc::new(RefCell::new(vec![40.; 10]));
         let (view, cx) = cx.add_window_view(|_, _| {
             let mut list = LogList::new();
-            list.sync_shaped(0, &(1..=10).collect::<Vec<_>>(), &[0; 10]);
+            let sequences: Vec<u64> = (1..=10).map(|s| s * 10).collect();
+            list.sync_shaped(0, &sequences, &[0; 10]);
             Log {
                 list,
                 heights: heights.clone(),
@@ -454,7 +466,7 @@ mod tests {
             *log.heights.borrow_mut() = [vec![40., 20.], vec![40.; 9]].concat();
             log.list.sync_shaped(
                 0,
-                &(0..=10).collect::<Vec<_>>(),
+                &(0..=10).map(|s| s * 10).collect::<Vec<_>>(),
                 &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             );
         });
@@ -467,8 +479,8 @@ mod tests {
         // (same lines, new shape) shortens the following one.
         view.update(cx, |log, _| {
             *log.heights.borrow_mut() = [vec![40., 20.], vec![40.; 3], vec![40.; 7]].concat();
-            let mut sequences: Vec<u64> = (0..=10).collect();
-            sequences.insert(5, 100);
+            let mut sequences: Vec<u64> = (0..=10).map(|s| s * 10).collect();
+            sequences.insert(5, 45);
             log.list
                 .sync_shaped(0, &sequences, &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             *log.heights.borrow_mut() =
