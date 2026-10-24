@@ -2355,9 +2355,12 @@ impl Connection {
         // A worker still setting up the transport ends at once; a connected
         // one takes QUIT from the queue and flushes it first.
         self.cancel.notify_one();
-        self.commands
-            .try_send(Outgoing::Quit)
-            .map_err(|error| format!("Could not queue disconnect: {error}"))
+        match self.commands.try_send(Outgoing::Quit) {
+            // The worker has already ended, which is what was asked for; it
+            // reports the end through its events.
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => Ok(()),
+            Err(error) => Err(format!("Could not queue disconnect: {error}")),
+        }
     }
 }
 
@@ -2441,7 +2444,7 @@ async fn run_cancellable(
             tokio::net::lookup_host((host.as_str(), port)),
         ) => lookup,
         _ = cancel.notified() => {
-            let _ = events.send(Event::Disconnected(USER_DISCONNECT.into())).await;
+            let _ = events.send(Event::Closed(USER_DISCONNECT.into())).await;
             return;
         }
     };
@@ -3055,8 +3058,14 @@ impl Worker {
                     Outgoing::QuitWith(reason) => reason,
                     _ => self.quit_message.clone(),
                 };
-                self.quit(reason, QUIT_FLUSH_LIMIT, USER_DISCONNECT, stream)
-                    .await
+                // The log shows the reason actually sent, so the user can
+                // see that the setting took effect.
+                let closed = if reason.trim().is_empty() {
+                    USER_DISCONNECT.to_owned()
+                } else {
+                    reason.clone()
+                };
+                self.quit(reason, QUIT_FLUSH_LIMIT, &closed, stream).await
             }
         }
     }

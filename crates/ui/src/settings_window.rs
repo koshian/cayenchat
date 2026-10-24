@@ -82,6 +82,8 @@ pub(crate) struct SettingsForm {
     pub(crate) time_font: Entity<TextInput>,
     /// Comma-separated notification keywords.
     pub(crate) keywords: Entity<TextInput>,
+    /// Comma-separated text that cancels the matches overlapping it.
+    pub(crate) exclude_keywords: Entity<TextInput>,
     /// Draft URL of our own avatar for the selected server (IRCv3 tab).
     /// Editing it saves the draft; only Publish sends it.
     pub(crate) avatar_url: Entity<TextInput>,
@@ -336,6 +338,12 @@ impl SettingsForm {
                 false,
                 cx,
             ),
+            exclude_keywords: field(
+                &i18n.text("exclude_keywords_placeholder"),
+                &values.notifications.exclude_keywords.join(", "),
+                false,
+                cx,
+            ),
             avatar_url: {
                 let input = field(
                     &i18n.text("ircv3_avatar_url_placeholder"),
@@ -513,6 +521,8 @@ impl SettingsForm {
         settings.appearance.validate()?;
         settings.notifications.keywords =
             notifications::parse_keywords(self.keywords.read(cx).text());
+        settings.notifications.exclude_keywords =
+            notifications::parse_keywords(self.exclude_keywords.read(cx).text());
         Ok(settings)
     }
 
@@ -543,7 +553,7 @@ impl SettingsForm {
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
-    fn text_fields(&self) -> [&Entity<TextInput>; 48] {
+    fn text_fields(&self) -> [&Entity<TextInput>; 49] {
         [
             &self.custom_host,
             &self.port,
@@ -592,6 +602,7 @@ impl SettingsForm {
             &self.input_font,
             &self.time_font,
             &self.keywords,
+            &self.exclude_keywords,
             &self.avatar_url,
         ]
     }
@@ -3307,6 +3318,11 @@ impl SettingsWindow {
                 self.settings.keywords.clone(),
             ))
             .child(hint("keywords_hint"))
+            .child(settings_field(
+                &self.i18n.text("exclude_keywords"),
+                self.settings.exclude_keywords.clone(),
+            ))
+            .child(hint("exclude_keywords_hint"))
             .when(cfg!(target_os = "windows"), |d| {
                 d.child(self.notification_toggle(
                     "notify-sound",

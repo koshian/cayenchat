@@ -571,7 +571,7 @@ also checked against the downloaded crates' manifests and source, including
 
 2026-09-27. Settings must not capture keys for chat features. Scope the chat
 draft bindings (Tab nickname completion, Enter send, Ctrl+Enter; the latter
-was NOTICE until D066 made the send key a setting) to
+was NOTICE until D067 made the send key a setting) to
 `ChatWindow > TextInput`; they formerly matched every `TextInput`, so Tab in a
 settings field dispatched a completion nobody handled and focus never moved.
 In `SettingsWindow`, Tab/Shift+Tab call GPUI's `focus_next`/`focus_prev`.
@@ -1299,7 +1299,7 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
-## D066 — Send key for normal messages is a setting; no Ctrl+Enter NOTICE (#583)
+## D067 — Send key for normal messages is a setting; no Ctrl+Enter NOTICE (#583)
 
 2026-10-24. Replaces the fixed Enter = `PRIVMSG` / Ctrl+Enter = `NOTICE` of
 D020's chat bindings, because people used to Ctrl+Enter as "send" elsewhere
@@ -1327,6 +1327,18 @@ sent NOTICEs by mistake.
   counts (composing drafts are skipped). State: `double_enter.rs`, checked
   on every render and by a keystroke interceptor; nothing is carried between
   conversations.
+
+## D066 — Local `/help` lists the main commands in the server log (#586)
+
+`/help` is handled in `send_draft()` before any connection check, like
+`/charset`; it is never sent to the server. The text (`help_text` in the
+locales, current language) is added line by line to the selected server's log
+with `append_server_message()`: no selection change, no unread mark, no
+notification. Only `/help` with no arguments lists; any argument gives a usage
+line. `/helper` and similar are not `/help`. The list is "main commands of
+CayenChat", not all IRC commands (unknown `/commands` are still sent raw), and
+there are no topics, key listings or search. With no server configured the
+normal "not connected" error is shown.
 
 ## D065 — Jump to the latest message: shortcut and log button (#546)
 

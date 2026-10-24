@@ -20,6 +20,7 @@ mod diagnostics;
 mod dialog;
 mod double_enter;
 mod experimental_settings;
+mod help_command;
 mod image_upload;
 mod input;
 mod input_history;
@@ -1626,9 +1627,14 @@ impl ChatWindow {
                         .is_none_or(|(link, _)| range.end <= link.start)
                 });
             }
+            // The excluded text is searched once for both kinds of match.
+            let excluded = &self.notification_rules.exclude_keywords;
+            let cuts = notifications::keyword_ranges(plain, excluded);
+            let ranges = notifications::ranges_outside(ranges, &cuts);
             mentioned = !ranges.is_empty();
-            let matches = notifications::keyword_ranges(plain, keywords);
+            let matches = notifications::keyword_ranges_outside(plain, keywords, &cuts);
             keyword = !matches.is_empty();
+            let mut ranges = ranges;
             ranges.extend(matches);
             ranges.sort_by_key(|range| range.start);
             ranges
@@ -2154,7 +2160,7 @@ impl ChatWindow {
                 Ok(())
             }
             Err(error) => {
-                self.record_disconnect(network, error.clone(), cx);
+                self.record_disconnect(network, error.clone(), true, cx);
                 self.schedule_retry(network, cx);
                 Err(error)
             }
@@ -2385,7 +2391,7 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                self.record_disconnect(network, error, cx);
+                self.record_disconnect(network, error, true, cx);
                 self.schedule_retry(network, cx);
             }
         }
@@ -2452,7 +2458,16 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn record_disconnect(&mut self, network: NetworkId, reason: String, cx: &mut Context<Self>) {
+    /// Records that `network`'s connection ended. `announce` raises the
+    /// selected server's end as a notice; an end the user asked for is only
+    /// logged.
+    fn record_disconnect(
+        &mut self,
+        network: NetworkId,
+        reason: String,
+        announce: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.connection_started = None;
             session
@@ -2477,7 +2492,7 @@ impl ChatWindow {
         }
         self.state.append_server_message(network, message.clone());
         // Another server's disconnect is shown in its tree row and log only.
-        if self.selected_network_id() == Some(network) {
+        if announce && self.selected_network_id() == Some(network) {
             self.raise_error(Some(network), message, notices::Origin::Background, cx);
         }
     }
@@ -3199,6 +3214,22 @@ impl ChatWindow {
             ),
             charset_command::Problem::Usage => self.i18n.text("charset_usage"),
         }
+    }
+
+    /// Runs `/help`: the command list as lines of the selected server's log,
+    /// whatever the connection state. The selection does not change.
+    fn run_help(&mut self, request: help_command::Request) -> Result<(), String> {
+        let network = self
+            .selected_network_id()
+            .ok_or_else(|| self.i18n.text("not_connected"))?;
+        let text = match request {
+            help_command::Request::List => self.i18n.text("help_text"),
+            help_command::Request::Usage => self.i18n.text("help_usage"),
+        };
+        for line in text.lines() {
+            self.state.append_server_message(network, line.to_owned());
+        }
+        Ok(())
     }
 
     /// Runs `/charset` for the selected channel. The result is a line in
@@ -4618,6 +4649,7 @@ impl ChatWindow {
     }
 
     fn handle_event(&mut self, network: NetworkId, event: Event, cx: &mut Context<Self>) {
+        let closed = matches!(event, Event::Closed(_));
         match event {
             Event::Diagnostic { elapsed, message } => {
                 self.push_diagnostic(
@@ -5267,6 +5299,8 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
+                // Closed is the end the user (or sleep) asked for, not a failure.
+                let announce = !closed;
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self
@@ -5282,7 +5316,7 @@ impl ChatWindow {
                 }
                 self.state.end_avatars(network);
                 self.update_own_avatar(network, OwnAvatar::connection_ended);
-                self.record_disconnect(network, reason, cx);
+                self.record_disconnect(network, reason, announce, cx);
             }
             // Avatar references are recorded whether or not they are shown;
             // showing them (and downloading images) is the Appearance setting.
@@ -5368,8 +5402,11 @@ impl ChatWindow {
         // Local to the application: nothing of it goes to the server, so it
         // works before registration and while disconnected too.
         let charset = charset_command::parse(&text);
-        let local_command = charset.is_some();
-        let result = if let Some(parsed) = charset {
+        let help = help_command::parse(&text);
+        let local_command = charset.is_some() || help.is_some();
+        let result = if let Some(request) = help {
+            self.run_help(request)
+        } else if let Some(parsed) = charset {
             match parsed {
                 Ok(request) => self.run_charset(request, cx),
                 Err(problem) => Err(self.charset_problem(&problem)),
@@ -5568,6 +5605,7 @@ fn notification_rules(settings: &Notifications) -> NotificationRules {
         mentions: settings.mentions,
         keyword_alerts: settings.keyword_alerts,
         keywords: settings.keywords.clone(),
+        exclude_keywords: settings.exclude_keywords.clone(),
         private_messages: settings.private_messages,
         sound: settings.sound,
     }
@@ -9531,6 +9569,10 @@ mod wake_tests;
 #[cfg(test)]
 #[path = "main_tests/charset_command_tests.rs"]
 mod charset_command_tests;
+
+#[cfg(test)]
+#[path = "main_tests/help_command_tests.rs"]
+mod help_command_tests;
 
 #[cfg(test)]
 #[path = "main_tests/search_tests.rs"]

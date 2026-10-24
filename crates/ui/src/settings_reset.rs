@@ -141,6 +141,9 @@ impl SettingsWindow {
                 self.settings
                     .keywords
                     .update(cx, |field, cx| field.set_text("", cx));
+                self.settings
+                    .exclude_keywords
+                    .update(cx, |field, cx| field.set_text("", cx));
             }
             SettingsTab::Ircv3 => {
                 if let Some(profile) = self.settings.values.selected_profile_mut() {
