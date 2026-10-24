@@ -301,8 +301,9 @@ kept key into a label in the order the shortcut tables use (Cmd, Ctrl, Opt,
 Shift); a symbol is shown as the character that arrives (`Cmd+}` for `cmd-}`),
 not mapped back to a key, which would be wrong on layouts that place symbols
 differently (JIS).
-The Shortcuts tab of the settings window (`ui::shortcut_settings`, #118) lists
-the actions with their current keys. Change records the next key pressed
+The Keyboard tab of the settings window lists, below its channel-number and
+draft-editing options, the actions with their current keys
+(`ui::shortcut_settings`, #118; merged into the Keyboard tab by #591). Change records the next key pressed
 (Escape cancels; a refused key keeps recording and says why; the recording ends
 when the tab or the window is left, because it takes the keys of the whole
 application; for an action with several keys it says the new key replaces them); Reset restores

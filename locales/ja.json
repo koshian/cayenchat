@@ -189,7 +189,6 @@
   "notice_key_hint": "既定は「なし」で、どのキーも NOTICE を送信しません。選んだキーで入力中の文を選択中のチャンネルへ NOTICE として送信します。/notice はいつでも使えます。",
   "notice_key_clash": "Ctrl+Enter は通常メッセージの送信キーでもあり、そちらが優先されます。どちらかを変更するまで、この NOTICE キーは働きません。",
   "keyboard": "キー操作",
-  "shortcuts_tab": "ショートカット",
   "shortcut_previous_channel": "前のチャンネル",
   "shortcut_next_channel": "次のチャンネル",
   "shortcut_previous_active_channel": "前のアクティブなチャンネル",

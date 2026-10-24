@@ -189,7 +189,6 @@
   "notice_key_hint": "Off by default: no key sends a NOTICE. The chosen key sends the draft as a NOTICE to the selected channel; /notice always works.",
   "notice_key_clash": "Ctrl+Enter is also the send key, which wins: this NOTICE key does nothing until one of them is changed.",
   "keyboard": "Keyboard",
-  "shortcuts_tab": "Shortcuts",
   "shortcut_previous_channel": "Previous channel",
   "shortcut_next_channel": "Next channel",
   "shortcut_previous_active_channel": "Previous active channel",
