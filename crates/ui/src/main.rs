@@ -4329,16 +4329,16 @@ impl ChatWindow {
         let selection = self.state.selection();
         let current = self.tree_rows.iter().position(|row| match *row {
             TreeRow::Server(id) => selection == Selection::Server(id),
-            TreeRow::Channel(id) => selection == Selection::Channel(id),
+            TreeRow::Channel(id, _) => selection == Selection::Channel(id),
         });
         let target = match (key, current) {
             (ListKey::Parent, Some(at)) => self.tree_rows[..at]
                 .iter()
                 .rposition(|row| matches!(row, TreeRow::Server(_)))
-                .filter(|_| matches!(self.tree_rows[at], TreeRow::Channel(_))),
+                .filter(|_| matches!(self.tree_rows[at], TreeRow::Channel(..))),
             (ListKey::Child, Some(at)) => (at + 1 < self.tree_rows.len()
                 && matches!(self.tree_rows[at], TreeRow::Server(_))
-                && matches!(self.tree_rows[at + 1], TreeRow::Channel(_)))
+                && matches!(self.tree_rows[at + 1], TreeRow::Channel(..)))
             .then_some(at + 1),
             (ListKey::Activate, at) => at,
             (ListKey::Parent | ListKey::Child, None) => None,
@@ -4355,7 +4355,7 @@ impl ChatWindow {
         };
         let command = match row.1 {
             TreeRow::Server(id) => Command::SelectServer(id),
-            TreeRow::Channel(id) => Command::SelectChannel(id),
+            TreeRow::Channel(id, _) => Command::SelectChannel(id),
         };
         if key == ListKey::Activate {
             self.dispatch(command, window, cx);
@@ -6166,13 +6166,15 @@ impl ChatWindow {
             let base = (index as u64) << 32;
             self.tree_rows.push(TreeRow::Server(network.id));
             keys.push(base);
-            for conversation in self
+            for (position, conversation) in self
                 .state
                 .conversations()
                 .iter()
                 .filter(|c| c.network == network.id)
+                .enumerate()
             {
-                self.tree_rows.push(TreeRow::Channel(conversation.id));
+                self.tree_rows
+                    .push(TreeRow::Channel(conversation.id, position));
                 // Private conversations follow the network's channels; the
                 // bit keeps keys ascending in that order.
                 let private = if conversation.is_private() {
@@ -6193,7 +6195,7 @@ impl ChatWindow {
             self.tree_revealed = Some(selection);
             let at = self.tree_rows.iter().position(|row| match *row {
                 TreeRow::Server(id) => selection == Selection::Server(id),
-                TreeRow::Channel(id) => selection == Selection::Channel(id),
+                TreeRow::Channel(id, _) => selection == Selection::Channel(id),
             });
             self.tree_reveal_pending = false;
             if let Some(at) = at {
@@ -6318,7 +6320,7 @@ impl ChatWindow {
                     }))
                     .into_any_element()
             }
-            Some(TreeRow::Channel(id)) => {
+            Some(TreeRow::Channel(id, index)) => {
                 let Some(conversation) = self.state.conversation(id) else {
                     return div().into_any_element();
                 };
@@ -6328,13 +6330,6 @@ impl ChatWindow {
                 let network = conversation.network;
                 let private = conversation.is_private();
                 let joined = self.state.is_active_channel(id);
-                let conversations = self.state.conversations();
-                // The number counts within the row's own server (D009).
-                let index = conversations
-                    .iter()
-                    .filter(|c| c.network == network)
-                    .position(|c| c.id == id)
-                    .unwrap_or(0);
                 // While a channel is dragged, every row shows the digit that
                 // reaches it, and the row under the pointer shows where the
                 // drop would put the dragged channel.
@@ -6344,8 +6339,7 @@ impl ChatWindow {
                     .dragging_channel
                     .zip(self.drop_target)
                     .filter(|(dragged, target)| dragged != target && *target == id)
-                    .and_then(|(dragged, _)| conversations.iter().position(|c| c.id == dragged))
-                    .map(|from| from > index);
+                    .and_then(|(dragged, _)| drop_line_on_top(&self.tree_rows, dragged, index));
                 let dragged = DraggedChannel {
                     id,
                     network,
@@ -7683,7 +7677,19 @@ impl ChatWindow {
 #[derive(Clone, Copy)]
 enum TreeRow {
     Server(NetworkId),
-    Channel(ConversationId),
+    /// The conversation and its position within its server's channels (D009).
+    Channel(ConversationId, usize),
+}
+
+/// Whether the insertion line of a drop on the channel at `index` of its
+/// server goes above the row: the dragged channel comes from below it. Both
+/// positions are within the server, as the move itself is. `None` when the
+/// dragged channel has no row.
+fn drop_line_on_top(rows: &[TreeRow], dragged: ConversationId, index: usize) -> Option<bool> {
+    rows.iter().find_map(|row| match *row {
+        TreeRow::Channel(id, from) if id == dragged => Some(from > index),
+        _ => None,
+    })
 }
 
 #[derive(Clone, Copy)]

@@ -47,7 +47,7 @@ fn selection_visible(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) -> b
             .iter()
             .position(|row| match *row {
                 crate::TreeRow::Server(id) => selection == Selection::Server(id),
-                crate::TreeRow::Channel(id) => selection == Selection::Channel(id),
+                crate::TreeRow::Channel(id, _) => selection == Selection::Channel(id),
             })
             .expect("selected row");
         let view = chat.tree_list.state.viewport_bounds();
