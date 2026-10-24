@@ -698,6 +698,12 @@ pub enum Event {
     Joined {
         channel: String,
     },
+    /// Sent right before the `Joined` of our own JOIN that came from a
+    /// history batch: that join is the past, not a confirmation of a join
+    /// the user just asked for.
+    JoinReplayed {
+        channel: String,
+    },
     /// The mode letters set on a joined channel, in the order learned: from
     /// `RPL_CHANNELMODEIS` after our join, then kept current by `MODE`.
     /// Arguments (key, limit) and member or list modes are not included.
@@ -4772,9 +4778,19 @@ fn translate_message(
                 .unwrap_or_else(|| current_nick.to_owned()),
         }],
         IrcCommand::JOIN(channel, _, _) if own_source => {
-            vec![Event::Joined {
+            let joined = Event::Joined {
                 channel: channel.clone(),
-            }]
+            };
+            if replay.in_history_batch(&message) {
+                vec![
+                    Event::JoinReplayed {
+                        channel: channel.clone(),
+                    },
+                    joined,
+                ]
+            } else {
+                vec![joined]
+            }
         }
         IrcCommand::PART(channel, _) if own_source => {
             vec![Event::Parted {

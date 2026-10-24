@@ -6221,6 +6221,53 @@ fn channel_mode_in_a_history_batch_is_marked_replayed() {
     assert_eq!(seen, [("old", true), ("live", false), ("svc", false)]);
 }
 
+#[test]
+fn own_join_in_a_history_batch_is_marked_replayed() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        register_with(&mut socket, &mut lines, "batch message-tags", "NETWORK=t");
+        socket
+            .write_all(
+                b":srv BATCH +past znc.in/playback #old\r\n\
+                  @batch=past :alice!u@h JOIN #old\r\n\
+                  :srv BATCH -past\r\n\
+                  :alice!u@h JOIN #live\r\n\
+                  :srv NOTICE alice :done\r\n",
+            )
+            .unwrap();
+        let _ = read_client_line(&mut lines);
+    });
+    let events = run_fixture(plain_config(port, sending_options()), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, Event::PrivateMessage { text, .. } if text == "done"))
+    });
+    server.join().unwrap();
+    let seen: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::JoinReplayed { channel } => Some(format!("replayed {channel}")),
+            Event::Joined { channel } => Some(format!("joined {channel}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            "joined #test",
+            "replayed #old",
+            "joined #old",
+            "joined #live"
+        ]
+    );
+}
+
 /// Messages accepted in a channel's Shift_JIS before the server announces
 /// `UTF8ONLY` (the worker is busy delivering events) are never written in it.
 #[test]

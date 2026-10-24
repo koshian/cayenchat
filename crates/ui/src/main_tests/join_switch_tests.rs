@@ -206,3 +206,43 @@ fn the_same_channel_name_on_another_network_is_not_confused(cx: &mut TestAppCont
     });
     assert_eq!((network, name.as_str()), (NetworkId(1), "#shared"));
 }
+
+fn replayed(channel: &str) -> Vec<Event> {
+    vec![
+        Event::JoinReplayed {
+            channel: channel.into(),
+        },
+        joined(channel),
+    ]
+}
+
+fn refused(channel: &str) -> Event {
+    Event::ChannelActivity {
+        channel: channel.into(),
+        actor: String::new(),
+        kind: ChannelActivityKind::JoinFailed {
+            reason: "banned".into(),
+            bad_key: false,
+            banned: false,
+        },
+        server_time: None,
+    }
+}
+
+#[gpui::test]
+fn a_replayed_join_neither_switches_nor_uses_up_the_request(cx: &mut TestAppContext) {
+    let (chat, cx) = setup(cx, "#a");
+    typed(&chat, cx, NetworkId(1), "/join #replay");
+    events(&chat, cx, NetworkId(1), replayed("#replay"));
+    assert_eq!(selected_name(&chat, cx).as_deref(), Some("#a"));
+    // The server then refuses: the view stays where it was.
+    events(&chat, cx, NetworkId(1), vec![refused("#replay")]);
+    assert_eq!(selected_name(&chat, cx).as_deref(), Some("#a"));
+
+    // History first, then the real success: only the real one switches.
+    typed(&chat, cx, NetworkId(1), "/join #real");
+    events(&chat, cx, NetworkId(1), replayed("#real"));
+    assert_eq!(selected_name(&chat, cx).as_deref(), Some("#a"));
+    events(&chat, cx, NetworkId(1), vec![joined("#real")]);
+    assert_eq!(selected_name(&chat, cx).as_deref(), Some("#real"));
+}
