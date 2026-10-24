@@ -462,6 +462,23 @@ mod tests {
         assert_eq!(height_of(cx, 1), Some(px(20.)));
         assert_eq!(height_of(cx, 2), Some(px(40.)));
         assert_eq!(view.read_with(cx, |log, _| log.list.state.item_count()), 11);
+        // A line is inserted in the middle between two lines of one speaker:
+        // the line after it gains a header, and an updated time elsewhere
+        // (same lines, new shape) shortens the following one.
+        view.update(cx, |log, _| {
+            *log.heights.borrow_mut() = [vec![40., 20.], vec![40.; 3], vec![40.; 7]].concat();
+            let mut sequences: Vec<u64> = (0..=10).collect();
+            sequences.insert(5, 100);
+            log.list
+                .sync_shaped(0, &sequences, &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            *log.heights.borrow_mut() =
+                [vec![40., 20.], vec![40.; 3], vec![40., 20.], vec![40.; 6]].concat();
+            log.list
+                .sync_shaped(0, &sequences, &[0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        });
+        draw(cx);
+        assert_eq!(height_of(cx, 6), Some(px(20.)));
+        assert_eq!(height_of(cx, 5), Some(px(40.)));
     }
 
     /// Rows of different heights (wrapped text, image previews) are drawn,

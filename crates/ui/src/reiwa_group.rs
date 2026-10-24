@@ -6,11 +6,16 @@
 //! just above, so older history inserted anywhere, a trimmed head or a
 //! confirmed echo changes it without any bookkeeping.
 
-use cayenchat_model::{Message, names::CaseMapping};
+use cayenchat_model::{Message, Timestamp, names::CaseMapping};
+use chrono::{Local, NaiveDate, TimeZone};
 
-/// Messages further apart than this never join, whatever their minute: the
-/// same "HH:MM" on another day is not a continuation.
-const SAME_DAY_MILLIS: u64 = 24 * 60 * 60 * 1000;
+/// The calendar day of `at` in the zone the shown times use, so messages on
+/// either side of local midnight never join, and the same "HH:MM" on another
+/// day is not a continuation. `None` for an instant chrono cannot represent.
+fn local_date(at: Timestamp) -> Option<NaiveDate> {
+    let millis = i64::try_from(at.as_millis()).ok()?;
+    Some(Local.timestamp_millis_opt(millis).single()?.date_naive())
+}
 
 /// What stands left of / above a Reiwa mode line. The discriminants are the
 /// shape the virtualized list compares to find rows whose height changed.
@@ -42,7 +47,7 @@ pub fn lead(above: Option<&Message>, message: &Message, mapping: CaseMapping) ->
         return Lead::Header;
     }
     if let (Some(a), Some(b)) = (above.timestamp, message.timestamp)
-        && a.as_millis().abs_diff(b.as_millis()) >= SAME_DAY_MILLIS
+        && local_date(a) != local_date(b)
     {
         return Lead::Header;
     }
@@ -56,7 +61,7 @@ pub fn lead(above: Option<&Message>, message: &Message, mapping: CaseMapping) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cayenchat_model::{TimeOfDay, Timestamp};
+    use cayenchat_model::TimeOfDay;
 
     fn said(sender: &str, hour: u8, minute: u8) -> Message {
         Message {
@@ -121,11 +126,26 @@ mod tests {
             timestamp: Some(Timestamp::from_millis(millis)),
             ..said("Alice", 1, 10)
         };
-        let day = SAME_DAY_MILLIS;
-        assert_eq!(lead(Some(&at(1_000)), &at(1_000 + 5_000), MAP), Lead::Text);
-        assert_eq!(lead(Some(&at(1_000)), &at(1_000 + day), MAP), Lead::Header);
+        let local = |day, hour, minute| {
+            Local
+                .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
+                .earliest()
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+        let noon = local(24, 12, 0);
+        assert_eq!(lead(Some(&at(noon)), &at(noon + 5_000), MAP), Lead::Text);
+        assert_eq!(
+            lead(Some(&at(noon)), &at(noon + 2 * 24 * 3_600_000), MAP),
+            Lead::Header
+        );
+        // One minute apart, but across local midnight.
+        assert_eq!(
+            lead(Some(&at(local(24, 23, 59))), &at(local(25, 0, 0)), MAP),
+            Lead::Header
+        );
         // Without a trusted time on one side no date is guessed.
         let bare = said("Alice", 1, 10);
-        assert_eq!(lead(Some(&at(1_000)), &bare, MAP), Lead::Text);
+        assert_eq!(lead(Some(&at(noon)), &bare, MAP), Lead::Text);
     }
 }

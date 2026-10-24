@@ -152,6 +152,9 @@ pub struct AppState {
     /// and replies), oldest first; the same lines stay in `server_messages`.
     system_messages: VecDeque<(NetworkId, Message)>,
     next_message_sequence: u64,
+    /// Counts every access that may change a conversation's lines, so a view
+    /// derived from them can tell it must be rebuilt.
+    log_revision: u64,
     /// Conversation IDs are never reused, so UI state keyed by a removed
     /// conversation cannot attach to a new one.
     next_conversation_id: u32,
@@ -271,6 +274,7 @@ impl AppState {
             server_messages: HashMap::new(),
             system_messages: VecDeque::new(),
             next_message_sequence: SEQUENCE_ORIGIN,
+            log_revision: 0,
             next_conversation_id: 1,
             avatars: avatars::AvatarDirectory::default(),
             duplicates: HashMap::new(),
@@ -1227,6 +1231,7 @@ impl AppState {
             return false;
         }
         message.sequence = self.next_sequence();
+        self.log_revision += 1;
         if push_bounded(&mut self.conversations[position].messages, message) {
             self.prune_attention(id);
         }
@@ -1490,6 +1495,7 @@ impl AppState {
             block.push(message);
         }
         let added = block.len();
+        self.log_revision += 1;
         let messages = &mut self.conversations[position].messages;
         let at = messages.partition_point(|message| message.sequence < start);
         messages.splice(at..at, block);
@@ -1640,6 +1646,7 @@ impl AppState {
             message.sequence = first + offset as u64;
         }
         self.older_sequence_floor = first;
+        self.log_revision += 1;
         self.conversations[position].messages.splice(0..0, block);
         if beginning || added == 0 {
             self.older_history.insert(
@@ -1672,6 +1679,12 @@ impl AppState {
     /// except for older pages, which go before everything else.
     pub fn last_message_sequence(&self) -> u64 {
         self.next_message_sequence
+    }
+
+    /// Changes whenever any conversation's lines may have changed: added,
+    /// inserted in the middle or at the head, dropped, or edited in place.
+    pub fn log_revision(&self) -> u64 {
+        self.log_revision
     }
 
     /// Records a user's avatar (`None` removes it or ends the user's
@@ -1719,6 +1732,7 @@ impl AppState {
     }
 
     pub fn conversation_mut(&mut self, id: ConversationId) -> Option<&mut Conversation> {
+        self.log_revision += 1;
         self.conversations.iter_mut().find(|c| c.id == id)
     }
 

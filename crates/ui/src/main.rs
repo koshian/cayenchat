@@ -634,6 +634,9 @@ struct ChatWindow {
     tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
+    // The Reiwa mode leads of the selected channel's lines, with what they
+    // were derived from: rebuilt only when that changes, not on every redraw.
+    reiwa_shapes: Option<(ReiwaShapeKey, Vec<u8>)>,
     sub_rows: Vec<SubRow>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
@@ -1210,6 +1213,7 @@ impl ChatWindow {
             tree_revealed: None,
             tree_reveal_pending: false,
             sub_source: None,
+            reiwa_shapes: None,
             sub_rows: Vec::new(),
             inputs,
             startup_notice: feedback.clone(),
@@ -7825,12 +7829,23 @@ impl LogStyle {
 
     fn time(&self, time: TimeOfDay) -> Div {
         div()
-            .w(px(42.))
+            .w(px(TIME_WIDTH))
             .flex_shrink_0()
             .font_family(self.time_font.clone())
             .text_color(self.theme.time)
             .child(time.to_string())
     }
+}
+
+/// Width of the time column of a log line.
+const TIME_WIDTH: f32 = 42.;
+
+/// What the cached Reiwa mode leads of a channel were derived from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReiwaShapeKey {
+    channel: ConversationId,
+    revision: u64,
+    mapping: cayenchat_model::names::CaseMapping,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7917,18 +7932,26 @@ impl ChatWindow {
         let mut shapes: Vec<u8> = Vec::new();
         let sequences: Vec<u64> = match self.state.selected_channel() {
             Some(channel) => {
-                // A Reiwa mode line's height follows the line above it.
+                // A Reiwa mode line's height follows the line above it. The
+                // leads are derived again only when the lines, the case
+                // mapping or the mode changed.
                 if self.appearance.reiwa_mode {
                     let mapping = self.state.casemapping(channel.network);
-                    shapes = channel
-                        .messages
-                        .iter()
-                        .enumerate()
-                        .map(|(index, message)| {
+                    let key = ReiwaShapeKey {
+                        channel: channel.id,
+                        revision: self.state.log_revision(),
+                        mapping,
+                    };
+                    if self.reiwa_shapes.as_ref().map(|(k, _)| k) != Some(&key) {
+                        let leads = channel.messages.iter().enumerate().map(|(index, message)| {
                             let above = index.checked_sub(1).map(|above| &channel.messages[above]);
                             reiwa_group::lead(above, message, mapping) as u8
-                        })
-                        .collect();
+                        });
+                        self.reiwa_shapes = Some((key, leads.collect()));
+                    }
+                    if let Some((_, cached)) = &self.reiwa_shapes {
+                        shapes.extend_from_slice(cached);
+                    }
                 }
                 channel.messages.iter().map(|m| m.sequence).collect()
             }
@@ -8332,15 +8355,18 @@ impl ChatWindow {
             );
         // Reiwa mode keeps one lead column left of the text, so it starts at
         // the same x on every line: the avatar, the time of a continuation in
-        // another minute, or blank. Without avatars it is as wide as a time.
-        let lead_width = if avatars_on { avatars::SLOT * 2. } else { 42. };
+        // another minute, or blank. It is as wide as a time (`StyleCtx::time`)
+        // at least, which the avatar alone is not.
+        let lead_width = if avatars_on {
+            (avatars::SLOT * 2.).max(TIME_WIDTH)
+        } else {
+            TIME_WIDTH
+        };
         let row = if reiwa {
             let column = |width: f32| div().w(px(width)).flex_shrink_0();
             match lead {
-                reiwa_group::Lead::Header if avatars_on => row.children(avatar),
-                reiwa_group::Lead::Header | reiwa_group::Lead::Text => {
-                    row.child(column(lead_width))
-                }
+                reiwa_group::Lead::Header => row.child(column(lead_width).children(avatar)),
+                reiwa_group::Lead::Text => row.child(column(lead_width)),
                 reiwa_group::Lead::Time => row.child(
                     column(lead_width)
                         .mt(px(2.))
