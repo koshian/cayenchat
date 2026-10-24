@@ -208,12 +208,9 @@ fn the_same_channel_name_on_another_network_is_not_confused(cx: &mut TestAppCont
 }
 
 fn replayed(channel: &str) -> Vec<Event> {
-    vec![
-        Event::JoinReplayed {
-            channel: channel.into(),
-        },
-        joined(channel),
-    ]
+    vec![Event::JoinedReplayed {
+        channel: channel.into(),
+    }]
 }
 
 fn refused(channel: &str) -> Event {
@@ -245,4 +242,30 @@ fn a_replayed_join_neither_switches_nor_uses_up_the_request(cx: &mut TestAppCont
     assert_eq!(selected_name(&chat, cx).as_deref(), Some("#a"));
     events(&chat, cx, NetworkId(1), vec![joined("#real")]);
     assert_eq!(selected_name(&chat, cx).as_deref(), Some("#real"));
+}
+
+#[gpui::test]
+fn a_replayed_join_on_another_network_does_not_disturb_a_real_one(cx: &mut TestAppContext) {
+    install_globals(cx);
+    let mut settings = crate::settings_with_channels("#a");
+    settings.add_server("irc.example.org").channels = "#a".into();
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    events(&chat, cx, NetworkId(1), vec![joined("#a")]);
+    events(&chat, cx, NetworkId(2), vec![joined("#a")]);
+    chat.update(cx, |chat, _| {
+        let a = chat.state.channel_id(NetworkId(1), "#a").unwrap();
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(a));
+    });
+    typed(&chat, cx, NetworkId(1), "/join #x");
+    typed(&chat, cx, NetworkId(2), "/join #y");
+    // Network 1's history join, network 2's real join, then more history of
+    // network 1: events of different networks interleave freely.
+    events(&chat, cx, NetworkId(1), replayed("#x"));
+    events(&chat, cx, NetworkId(2), vec![joined("#y")]);
+    assert_eq!(selected_name(&chat, cx).as_deref(), Some("#y"));
+    events(&chat, cx, NetworkId(1), replayed("#x"));
+    assert_eq!(selected_name(&chat, cx).as_deref(), Some("#y"));
 }

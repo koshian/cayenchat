@@ -698,10 +698,10 @@ pub enum Event {
     Joined {
         channel: String,
     },
-    /// Sent right before the `Joined` of our own JOIN that came from a
-    /// history batch: that join is the past, not a confirmation of a join
-    /// the user just asked for.
-    JoinReplayed {
+    /// Our own JOIN that came from a history batch, sent instead of `Joined`:
+    /// handle it like `Joined`, except that it is the past, not a
+    /// confirmation of a join the user just asked for.
+    JoinedReplayed {
         channel: String,
     },
     /// The mode letters set on a joined channel, in the order learned: from
@@ -3947,7 +3947,9 @@ impl Worker {
                 _ => {}
             }
             match &event {
-                Event::Joined { channel } => self.regain.joined(channel),
+                Event::Joined { channel } | Event::JoinedReplayed { channel } => {
+                    self.regain.joined(channel)
+                }
                 Event::Parted { channel } => self.regain.parted(channel),
                 Event::Topic { channel, topic, .. } => self.regain.topic(channel, topic),
                 Event::Names { channel, users } => regain_steps.extend(self.regain.roster(
@@ -3969,7 +3971,9 @@ impl Worker {
                     Event::Names { channel, users } => {
                         account_events.extend(self.accounts.names(channel, users))
                     }
-                    Event::Joined { channel } => self.accounts.joined(channel),
+                    Event::Joined { channel } | Event::JoinedReplayed { channel } => {
+                        self.accounts.joined(channel)
+                    }
                     _ => {}
                 }
             }
@@ -4778,19 +4782,12 @@ fn translate_message(
                 .unwrap_or_else(|| current_nick.to_owned()),
         }],
         IrcCommand::JOIN(channel, _, _) if own_source => {
-            let joined = Event::Joined {
-                channel: channel.clone(),
-            };
-            if replay.in_history_batch(&message) {
-                vec![
-                    Event::JoinReplayed {
-                        channel: channel.clone(),
-                    },
-                    joined,
-                ]
+            let channel = channel.clone();
+            vec![if replay.in_history_batch(&message) {
+                Event::JoinedReplayed { channel }
             } else {
-                vec![joined]
-            }
+                Event::Joined { channel }
+            }]
         }
         IrcCommand::PART(channel, _) if own_source => {
             vec![Event::Parted {

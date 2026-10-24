@@ -6252,20 +6252,12 @@ fn own_join_in_a_history_batch_is_marked_replayed() {
     let seen: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
-            Event::JoinReplayed { channel } => Some(format!("replayed {channel}")),
+            Event::JoinedReplayed { channel } => Some(format!("replayed {channel}")),
             Event::Joined { channel } => Some(format!("joined {channel}")),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        seen,
-        [
-            "joined #test",
-            "replayed #old",
-            "joined #old",
-            "joined #live"
-        ]
-    );
+    assert_eq!(seen, ["joined #test", "replayed #old", "joined #live"]);
 }
 
 /// Messages accepted in a channel's Shift_JIS before the server announces

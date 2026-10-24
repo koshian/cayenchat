@@ -655,9 +655,6 @@ struct ChatWindow {
     // A channel a typed `/join` just selected; the window catches up (focus,
     // title) after the event batch.
     join_selected: Option<ConversationId>,
-    // Set by `JoinReplayed` for the `Joined` that follows it at once: a join
-    // from a history batch never confirms a typed `/join`.
-    join_replayed: bool,
     // The reveal waits for the rows up to the selection to be laid out.
     tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
@@ -1245,7 +1242,6 @@ impl ChatWindow {
             tree_rows: Vec::new(),
             tree_revealed: None,
             join_selected: None,
-            join_replayed: false,
             tree_reveal_pending: false,
             sub_source: None,
             reiwa_shapes: None,
@@ -4741,7 +4737,9 @@ impl ChatWindow {
                     self.nick_prompts.retain(|prompt| prompt.network != network);
                     self.start_key_tracking(network);
                 }
-                Event::Joined { channel } => self.key_join_succeeded(network, channel, cx),
+                Event::Joined { channel } | Event::JoinedReplayed { channel } => {
+                    self.key_join_succeeded(network, channel, cx)
+                }
                 Event::ChannelActivity {
                     channel,
                     kind: ChannelActivityKind::JoinFailed { bad_key, .. },
@@ -4814,6 +4812,7 @@ impl ChatWindow {
 
     fn handle_event(&mut self, network: NetworkId, event: Event, cx: &mut Context<Self>) {
         let closed = matches!(event, Event::Closed(_));
+        let replayed = matches!(event, Event::JoinedReplayed { .. });
         match event {
             Event::Diagnostic { elapsed, message } => {
                 self.push_diagnostic(
@@ -4865,13 +4864,14 @@ impl ChatWindow {
                         .format("event_registered", &[("nickname", &nickname)]),
                 );
             }
-            Event::Joined { channel } => {
+            Event::Joined { channel } | Event::JoinedReplayed { channel } => {
                 let folded = self.state.casemapping(network).fold(&channel);
                 if let Some(session) = self.sessions.get_mut(&network) {
                     session.pending_joins.remove(&folded);
                 }
                 self.state.joined_channel(network, &channel);
-                if !std::mem::take(&mut self.join_replayed) {
+                // A join from a history batch never confirms a typed `/join`.
+                if !replayed {
                     self.join_confirmed_switch(network, &channel);
                 }
                 self.state.append_server_message(
@@ -4879,7 +4879,6 @@ impl ChatWindow {
                     self.i18n.format("event_joined", &[("channel", &channel)]),
                 );
             }
-            Event::JoinReplayed { .. } => self.join_replayed = true,
             Event::ChannelModes { channel, flags } => {
                 self.state.set_channel_modes(network, &channel, &flags);
             }
