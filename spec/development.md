@@ -110,8 +110,14 @@ needs tests named after the requirement they check.
 
 GitHub Actions CI builds and tests the whole workspace on Linux x86_64, Windows
 x86_64, Windows ARM64 and macOS ARM64. The Windows jobs also run the ignored
-system credential store probe against Credential Manager. CI does not exercise
-GUI interaction, IME, drag and drop or clipboard images.
+system credential store probe against Credential Manager. The separate
+"Windows x86_64 release" job runs beside them, whenever the Windows x86_64 job
+runs: it builds release, checks the PE subsystem and the exe version, builds
+the signed test MSIX from that same exe and uploads it as the `msix-test`
+artifact. Both must pass. `build-and-test` and that job restore the Cargo
+build cache (`Swatinem/rust-cache`, pinned by commit); only pushes to master
+save it, so a pull request cannot write a cache that master reuses. CI does
+not exercise GUI interaction, IME, drag and drop or clipboard images.
 
 The "Dependency advisories" job runs `cargo deny check advisories` against
 the RustSec database on every pull request and push, whatever changed, since
@@ -250,7 +256,7 @@ The bundle includes `crates/ui/resources/macos/CayenChat.icns`; Windows embeds
 The version lives only in the workspace manifest (`[workspace.package] version`);
 to bump it, change that line and run `cargo update -w` for `Cargo.lock`. The macOS bundle helper reads it with `cargo metadata`, and
 `crates/ui/build.rs` generates the Windows VERSIONINFO resource (FileVersion and
-ProductVersion) from it; the Windows x86_64 CI job checks that the built exe
+ProductVersion) from it; the Windows x86_64 release CI job checks that the built exe
 reports the manifest version.
 When changing the artwork, run `python3 scripts/generate-icons.py` with Pillow
 and `rsvg-convert` (librsvg) installed, then rebuild the app.
@@ -475,7 +481,7 @@ PE header with `dumpbin /headers cayenchat.exe` (subsystem Windows GUI).
 The isolated subprocess tests in `ui::diagnostics` cover direct stderr,
 logger output, panic hooks, failed switches, append/re-enable and restoration;
 a Windows-only test also starts with a null standard-error handle. The Windows
-x86_64 CI job builds release and checks the PE subsystem is Windows GUI.
+x86_64 release CI job builds release and checks the PE subsystem is Windows GUI.
 
 ### Linux (not yet verified)
 
