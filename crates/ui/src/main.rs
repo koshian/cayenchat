@@ -44,6 +44,7 @@ mod phrase_wrap;
 mod placement;
 mod previews;
 mod quit_dialog;
+mod reiwa_group;
 mod scrollbar;
 mod secrets;
 mod session;
@@ -633,6 +634,9 @@ struct ChatWindow {
     tree_reveal_pending: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
+    // The Reiwa mode leads of the selected channel's lines, with what they
+    // were derived from: rebuilt only when that changes, not on every redraw.
+    reiwa_shapes: Option<(ReiwaShapeKey, Vec<u8>)>,
     sub_rows: Vec<SubRow>,
     // Editing and IME state belong to each server or channel.
     inputs: HashMap<Selection, Entity<TextInput>>,
@@ -1209,6 +1213,7 @@ impl ChatWindow {
             tree_revealed: None,
             tree_reveal_pending: false,
             sub_source: None,
+            reiwa_shapes: None,
             sub_rows: Vec::new(),
             inputs,
             startup_notice: feedback.clone(),
@@ -7824,12 +7829,23 @@ impl LogStyle {
 
     fn time(&self, time: TimeOfDay) -> Div {
         div()
-            .w(px(42.))
+            .w(px(TIME_WIDTH))
             .flex_shrink_0()
             .font_family(self.time_font.clone())
             .text_color(self.theme.time)
             .child(time.to_string())
     }
+}
+
+/// Width of the time column of a log line.
+const TIME_WIDTH: f32 = 42.;
+
+/// What the cached Reiwa mode leads of a channel were derived from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReiwaShapeKey {
+    channel: ConversationId,
+    revision: u64,
+    mapping: cayenchat_model::names::CaseMapping,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7913,8 +7929,32 @@ impl ChatWindow {
     /// they lay out their visible rows.
     fn sync_log_lists(&mut self) {
         let prefix = self.main_layout().prefix();
+        let mut shapes: Vec<u8> = Vec::new();
         let sequences: Vec<u64> = match self.state.selected_channel() {
-            Some(channel) => channel.messages.iter().map(|m| m.sequence).collect(),
+            Some(channel) => {
+                // A Reiwa mode line's height follows the line above it. The
+                // leads are derived again only when the lines, the case
+                // mapping or the mode changed.
+                if self.appearance.reiwa_mode {
+                    let mapping = self.state.casemapping(channel.network);
+                    let key = ReiwaShapeKey {
+                        channel: channel.id,
+                        revision: self.state.log_revision(),
+                        mapping,
+                    };
+                    if self.reiwa_shapes.as_ref().map(|(k, _)| k) != Some(&key) {
+                        let leads = channel.messages.iter().enumerate().map(|(index, message)| {
+                            let above = index.checked_sub(1).map(|above| &channel.messages[above]);
+                            reiwa_group::lead(above, message, mapping) as u8
+                        });
+                        self.reiwa_shapes = Some((key, leads.collect()));
+                    }
+                    if let Some((_, cached)) = &self.reiwa_shapes {
+                        shapes.extend_from_slice(cached);
+                    }
+                }
+                channel.messages.iter().map(|m| m.sequence).collect()
+            }
             None => self
                 .selected_network_id()
                 .map(|network| {
@@ -7929,7 +7969,7 @@ impl ChatWindow {
         self.main_lists
             .entry(self.state.selection())
             .or_insert_with(LogList::new)
-            .sync(prefix, &sequences);
+            .sync_shaped(prefix, &sequences, &shapes);
 
         // The combined log shows the newest conversation lines from every other
         // channel; JOIN/PART/QUIT/MODE activity stays in its own channel log.
@@ -8139,6 +8179,16 @@ impl ChatWindow {
         // wrapped lines return to the left edge of the text column. Reiwa
         // mode shows it on its own first line instead.
         let reiwa = style.reiwa_mode && !message.activity;
+        // The same speaker right below their own line continues it; decided
+        // from the line above as it is now, never stored.
+        let lead = if reiwa {
+            let above = index
+                .checked_sub(1)
+                .and_then(|above| channel.messages.get(above));
+            reiwa_group::lead(above, message, self.state.casemapping(network))
+        } else {
+            reiwa_group::Lead::Header
+        };
         let prefix = if message.activity || (reiwa && !message.action) {
             String::new()
         } else {
@@ -8250,27 +8300,29 @@ impl ChatWindow {
                 .tooltip_bridge(tooltip::TOOLTIP_OFFSET.0, tooltip::TOOLTIP_OFFSET.1)
                 .into_any_element()
         };
-        let avatar = (!message.activity && self.avatars_shown(network)).then(|| {
-            self.avatar_slot(
-                self.own_avatar_for(network, &message.sender).or_else(|| {
-                    self.state
-                        .avatars()
-                        .for_message(
-                            network,
-                            &cayenchat_irc_core::text::nickname_key(&message.sender),
-                            message.sequence,
-                        )
-                        .cloned()
-                }),
-                &message.sender,
-                if reiwa {
-                    avatars::SLOT * 2.
-                } else {
-                    avatars::SLOT
-                },
-                cx,
-            )
-        });
+        let avatars_on = self.avatars_shown(network);
+        let avatar =
+            (!message.activity && avatars_on && lead == reiwa_group::Lead::Header).then(|| {
+                self.avatar_slot(
+                    self.own_avatar_for(network, &message.sender).or_else(|| {
+                        self.state
+                            .avatars()
+                            .for_message(
+                                network,
+                                &cayenchat_irc_core::text::nickname_key(&message.sender),
+                                message.sequence,
+                            )
+                            .cloned()
+                    }),
+                    &message.sender,
+                    if reiwa {
+                        avatars::SLOT * 2.
+                    } else {
+                        avatars::SLOT
+                    },
+                    cx,
+                )
+            });
         // One element for the whole message, so both lines of Reiwa mode
         // share the row's alternating background.
         // Only a message line names a speaker to open a conversation with;
@@ -8301,8 +8353,29 @@ impl ChatWindow {
                     cx.stop_propagation();
                 }),
             );
+        // Reiwa mode keeps one lead column left of the text, so it starts at
+        // the same x on every line: the avatar, the time of a continuation in
+        // another minute, or blank. It is as wide as a time (`StyleCtx::time`)
+        // at least, which the avatar alone is not.
+        let lead_width = if avatars_on {
+            (avatars::SLOT * 2.).max(TIME_WIDTH)
+        } else {
+            TIME_WIDTH
+        };
         let row = if reiwa {
-            row.children(avatar)
+            let column = |width: f32| div().w(px(width)).flex_shrink_0();
+            match lead {
+                reiwa_group::Lead::Header => row.child(column(lead_width).children(avatar)),
+                reiwa_group::Lead::Text => row.child(column(lead_width)),
+                reiwa_group::Lead::Time => row.child(
+                    column(lead_width)
+                        .mt(px(2.))
+                        .text_xs()
+                        .font_family(style.time_font.clone())
+                        .text_color(theme.time)
+                        .child(message.time.to_string()),
+                ),
+            }
         } else {
             row.child(style.time(message.time)).children(avatar)
         };
@@ -8392,7 +8465,9 @@ impl ChatWindow {
                     .into_any_element(),
             }
         };
-        if reiwa {
+        if reiwa && lead != reiwa_group::Lead::Header {
+            row.child(body)
+        } else if reiwa {
             // Line one: nickname and time; line two: the message.
             row.child(
                 div()

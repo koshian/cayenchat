@@ -1671,8 +1671,14 @@ fn older_pages_refer_to_the_oldest_line_and_go_before_everything() {
         Provenance::Live,
     );
     let last = state.last_message_sequence();
+    let revision = state.log_revision();
     let added = state.insert_older_history(id, request.request, page(400..403), false);
     assert_eq!(added, 3);
+    assert_ne!(
+        state.log_revision(),
+        revision,
+        "a head insertion is a change"
+    );
     assert_eq!(
         texts(&state, 0),
         [

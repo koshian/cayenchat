@@ -238,7 +238,20 @@ setting `reiwa_mode` (Reiwa mode, off by default; the former key
 `header_line_messages` is still read) instead draws the avatar two lines tall
 at the left, with `nick time` on the first line and the text on the second; the
 time is not a column there. The whole message is one row element, so the
-alternating row background covers both lines. Activity lines
+alternating row background covers both lines. In a channel log, a plain
+message right below a plain message of the same sender (the network's case
+mapping; not across local midnight when both have a `timestamp`)
+continues it (`reiwa_group::lead`): in the same minute it shows the text
+alone, in another minute the time in the avatar's column, and the text starts
+at the same x in every case (the column is as wide as a time, `TIME_WIDTH`,
+with or without avatars).
+Activity, NOTICE, action and failed lines end a group. This is derived from
+the line above at draw time, never stored; `LogList::sync_shaped` gets the
+lead of each row, so a kept row whose lead changed (older history inserted
+above or in the middle, a trimmed head, an updated time) has its measured
+height forgotten. The leads are cached and derived again only when
+`State::log_revision` (bumped by every insertion, trim or mutable access to
+the lines), the channel or the case mapping changes, not on a plain redraw. Activity lines
 keep the compact single-line form in both layouts. The combined log always uses
 the default flow, `time | channel [network] nick: text` with the full channel and
 network names in the nickname color and no fixed channel column (the

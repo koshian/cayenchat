@@ -1446,3 +1446,24 @@ well below it), so the capture was not narrowed. Limits: the test platform's
 text system is a no-op, so real glyph shaping of the newly shown last page is
 not included; at most 1,000 conversations per network are scanned, which was
 not measured; no Windows/macOS run.
+
+## Reiwa mode compact rows (#603)
+
+`perf_baseline_reiwa` is `perf_baseline` with Reiwa mode on. Headless UI test,
+release build, medians in µs, three runs each (main with only the test added
+/ the branch; same machine, run one after the other):
+
+| Typing | Channel switch | Select same | Scroll 20 rows | 256-event batch | Resize |
+| --- | --- | --- | --- | --- | --- |
+| 285 / 284, 335 / 286, 284 / 287 | 1,716 / 1,861, 1,716 / 1,848, 1,720 / 1,850 | 1,311 / 1,284, 1,286 / 1,296, 1,798 / 1,322 | 1,301 / 1,309, 1,296 / 1,307, 1,324 / 1,299 | 1,737 / 1,743, 1,716 / 1,762, 1,702 / 1,772 | 2,256 / 2,227, 2,931 / 2,176, 2,193 / 2,202 |
+
+- Typing, redrawing the same channel, scrolling and the event batch match
+  main within noise: the lead cache is keyed by the log revision, so those
+  paths copy the cached `Vec<u8>` only.
+- Channel switch is about 130 µs (8 %) slower: the first draw of a channel
+  derives the leads of its 2,000 retained lines once.
+- The log revision also rises on mutable access to any conversation (members,
+  topic), so an event for another conversation can recompute the selected
+  channel's leads once (about the same 130 µs, not measured separately). It
+  is not narrowed further; the batch above shows no visible cost.
+- Limits: no-op text system, no Windows/macOS run.

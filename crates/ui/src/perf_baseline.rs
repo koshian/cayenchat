@@ -248,7 +248,7 @@ fn run(
     nick_links: bool,
 ) {
     run_with(
-        cx, servers, images, avatars, short_urls, nick_links, false, false,
+        cx, servers, images, avatars, short_urls, nick_links, false, false, false,
     )
 }
 
@@ -257,14 +257,14 @@ fn run(
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_unread_latest(cx: &mut TestAppContext) {
-    run_with(cx, 1, false, false, false, false, false, true);
+    run_with(cx, 1, false, false, false, false, false, true, false);
 }
 
 /// Four servers (40 conversations) with the same setting.
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_4_servers_unread_latest(cx: &mut TestAppContext) {
-    run_with(cx, 4, false, false, false, false, false, true);
+    run_with(cx, 4, false, false, false, false, false, true, false);
 }
 
 /// The default run with the Experimental Auto Phrase option on (the lines
@@ -272,7 +272,14 @@ fn perf_baseline_4_servers_unread_latest(cx: &mut TestAppContext) {
 #[gpui::test]
 #[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
 fn perf_baseline_auto_phrase(cx: &mut TestAppContext) {
-    run_with(cx, 1, false, false, false, false, true, false);
+    run_with(cx, 1, false, false, false, false, true, false, false);
+}
+
+/// The default run with Reiwa mode on (#603): compare with `perf_baseline`.
+#[gpui::test]
+#[ignore = "performance baseline; run with --release -- --ignored --nocapture"]
+fn perf_baseline_reiwa(cx: &mut TestAppContext) {
+    run_with(cx, 1, false, false, false, false, false, false, true);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -285,6 +292,7 @@ fn run_with(
     nick_links: bool,
     auto_phrase: bool,
     unread_latest: bool,
+    reiwa: bool,
 ) {
     let networks: Vec<NetworkId> = (1..=servers as u32).map(NetworkId).collect();
     cx.update(|cx| {
@@ -303,6 +311,7 @@ fn run_with(
     }
     settings.appearance.compact_urls = short_urls;
     settings.experimental.auto_phrase = auto_phrase;
+    settings.appearance.reiwa_mode = reiwa;
     if unread_latest {
         settings.unread_log_position = cayenchat_storage::UnreadLogPosition::Latest;
     }
