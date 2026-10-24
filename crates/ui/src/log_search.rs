@@ -19,7 +19,7 @@ use gpui::{prelude::*, *};
 
 use crate::{
     ChatWindow, CloseSearch, CompleteNickname, FindInLog, HistoryNext, HistoryPrevious, SearchNext,
-    SearchPrevious, SendMessage, SendMessageWithCtrl, input::TextInput, theme::Theme,
+    SearchPrevious, SendMessage, SendMessageWithCtrl, SendNotice, input::TextInput, theme::Theme,
     tooltip::TextTooltip, yield_now,
 };
 
@@ -675,6 +675,9 @@ impl ChatWindow {
             .on_action(cx.listener(|this, _: &SendMessageWithCtrl, window, cx| {
                 this.search_move(true, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &SendNotice, window, cx| this.search_move(true, window, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &HistoryNext, window, cx| this.search_move(true, window, cx)),
             )

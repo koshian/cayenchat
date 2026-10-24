@@ -53,6 +53,7 @@ impl SettingsWindow {
             }
             SettingsTab::Keyboard => {
                 current.send_key == defaults.send_key
+                    && current.notice_key == defaults.notice_key
                     && (cfg!(target_os = "macos")
                         || current.channel_number_modifier == defaults.channel_number_modifier)
                     && (!cfg!(target_os = "linux")
@@ -125,6 +126,7 @@ impl SettingsWindow {
             SettingsTab::Keyboard => {
                 let values = &mut self.settings.values;
                 values.send_key = defaults.send_key;
+                values.notice_key = defaults.notice_key;
                 if !cfg!(target_os = "macos") {
                     values.channel_number_modifier = defaults.channel_number_modifier;
                 }

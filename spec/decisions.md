@@ -1299,7 +1299,7 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
-## D067 — Send key for normal messages is a setting; no Ctrl+Enter NOTICE (#583)
+## D067 — Send key for normal messages is a setting; optional NOTICE key (#583)
 
 2026-10-24. Replaces the fixed Enter = `PRIVMSG` / Ctrl+Enter = `NOTICE` of
 D020's chat bindings, because people used to Ctrl+Enter as "send" elsewhere
@@ -1310,8 +1310,17 @@ sent NOTICEs by mistake.
   it read as Enter. Applies from the next key press after saving.
 - **Exclusive.** Only the chosen operation sends a normal message from the
   chat draft; the other combinations send nothing. Ctrl+Enter stays Ctrl on
-  macOS (no Cmd+Enter). No key sends a `NOTICE` any more; `/notice` is
-  unchanged.
+  macOS (no Cmd+Enter). `/notice` is unchanged.
+- **Optional NOTICE key.** `Settings.notice_key` (`off` default, `ctrl_enter`,
+  `alt_enter`), same page. Off means no key sends a `NOTICE`; a chosen key
+  sends the draft as one (the `SendNotice` action, bound in `rebind_shortcuts`
+  and part of `ShortcutPrefs`), in the chat draft only (other inputs take it
+  as "done", the log search as "next"). It also ends a wait of Enter twice.
+  Shift+Enter is not offered: the log search uses it for "previous". If it is
+  the send key's own press (Ctrl+Enter for both), the send key wins, the
+  setting page says so, and the NOTICE key is not bound. Files without the
+  field read as off. Added at the maintainer's request after the first
+  version had dropped the key altogether.
 - **Scope.** Only the chat draft. The wizard, prompts, PART confirmation,
   settings and log search keep their Enter handling (both bindings still
   reach the same handler, which only the draft restricts).

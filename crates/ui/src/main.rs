@@ -83,8 +83,8 @@ use cayenchat_model::{
 use cayenchat_storage::chatlog::{Kind as LogKind, Scope};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialError, CredentialStore,
-    Ircv3Preferences, Language, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
-    TextKeyTheme, ThemeMode, UnreadLogPosition,
+    Ircv3Preferences, Language, NoticeKey, Notifications, Secret, SecretKey, SendKey,
+    ServerProfile, Settings, TextKeyTheme, ThemeMode, UnreadLogPosition,
 };
 use futures_util::StreamExt;
 use gpui::{prelude::*, *};
@@ -218,6 +218,7 @@ actions!(
         CompleteNickname,
         SendMessage,
         SendMessageWithCtrl,
+        SendNotice,
         HistoryPrevious,
         HistoryNext,
         OpenSettings,
@@ -5514,9 +5515,18 @@ impl ChatWindow {
         self.submit(true, window, cx);
     }
 
+    /// The optional NOTICE key (bound only when the setting picks one).
+    fn send_notice(&mut self, _: &SendNotice, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_with(Submit::Notice, window, cx);
+    }
+
     /// Enter (`ctrl` false) or Ctrl+Enter. The other inputs treat both as
     /// "done"; the chat draft sends only with the key the setting chose.
     fn submit(&mut self, ctrl: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.submit_with(Submit::Key { ctrl }, window, cx);
+    }
+
+    fn submit_with(&mut self, press: Submit, window: &mut Window, cx: &mut Context<Self>) {
         if self.wizard_nickname_focused(window, cx) {
             self.wizard_connect(window, cx);
         } else if self.part_prompt_field_focused(window, cx) {
@@ -5532,7 +5542,13 @@ impl ChatWindow {
         {
             self.submit_member_prompt(window, cx);
         } else {
-            self.send_chat_draft(ctrl, window, cx);
+            match press {
+                Submit::Key { ctrl } => self.send_chat_draft(ctrl, window, cx),
+                Submit::Notice => {
+                    self.double_enter.reset();
+                    self.send_draft(true, window, cx);
+                }
+            }
         }
     }
 
@@ -5588,6 +5604,15 @@ impl ChatWindow {
             .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
         self.double_enter.keep_only_for(selection, focused);
     }
+}
+
+/// What was pressed to finish an input.
+#[derive(Clone, Copy)]
+enum Submit {
+    /// Enter, or Ctrl+Enter when `ctrl`.
+    Key { ctrl: bool },
+    /// The NOTICE key from the settings.
+    Notice,
 }
 
 /// The hint in an empty draft, naming the key that sends.
@@ -7499,6 +7524,7 @@ impl ChatWindow {
             .on_action(cx.listener(Self::complete_nickname))
             .on_action(cx.listener(Self::send_message))
             .on_action(cx.listener(Self::send_message_with_ctrl))
+            .on_action(cx.listener(Self::send_notice))
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| {
                 if event.keystroke.key == "enter" {
                     this.double_enter.key_up();
@@ -8947,6 +8973,8 @@ fn app_menus(
 struct ShortcutPrefs {
     channel_modifier: ChannelNumberModifier,
     text_keys: TextKeyTheme,
+    /// The NOTICE key in effect: off when it is the send key's own press.
+    notice_key: NoticeKey,
     /// Navigation keys the user changed (action id → key).
     overrides: shortcuts::Overrides,
 }
@@ -8958,6 +8986,11 @@ impl From<&Settings> for ShortcutPrefs {
         Self {
             channel_modifier: settings.channel_number_modifier,
             text_keys: settings.text_key_theme,
+            notice_key: if settings.notice_key.clashes_with(settings.send_key) {
+                NoticeKey::Off
+            } else {
+                settings.notice_key
+            },
             overrides: settings.keybindings.clone(),
         }
     }
@@ -8995,6 +9028,19 @@ fn rebind_shortcuts(cx: &mut App) {
         &prefs.overrides,
         emacs,
     ));
+    // Bound last, so it wins over Ctrl+Enter's own binding in the draft.
+    let notice = match prefs.notice_key {
+        NoticeKey::Off => None,
+        NoticeKey::CtrlEnter => Some("ctrl-enter"),
+        NoticeKey::AltEnter => Some("alt-enter"),
+    };
+    if let Some(key) = notice {
+        cx.bind_keys([KeyBinding::new(
+            key,
+            SendNotice,
+            Some("ChatWindow > TextInput"),
+        )]);
+    }
 }
 
 /// Whether the Emacs text key theme is in effect.

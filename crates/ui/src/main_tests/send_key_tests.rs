@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, ShortcutPrefs, apply_shortcuts};
-use cayenchat_storage::SendKey;
+use cayenchat_storage::{NoticeKey, SendKey};
 use gpui::{AppContext as _, Focusable as _, TestAppContext, VisualTestContext};
 
 /// A chat window that is not connected: a send that is attempted fails and
@@ -9,6 +9,18 @@ fn open_chat(
     cx: &mut TestAppContext,
     send_key: SendKey,
 ) -> (gpui::Entity<ChatWindow>, &mut VisualTestContext) {
+    open_chat_with_notice(cx, send_key, NoticeKey::Off)
+}
+
+fn open_chat_with_notice(
+    cx: &mut TestAppContext,
+    send_key: SendKey,
+    notice_key: NoticeKey,
+) -> (gpui::Entity<ChatWindow>, &mut VisualTestContext) {
+    let mut settings = crate::settings_with_channels("#a,#b");
+    settings.language = cayenchat_storage::Language::English;
+    settings.send_key = send_key;
+    settings.notice_key = notice_key;
     cx.update(|cx| {
         crate::secrets::install_memory(cx);
         cx.set_global(crate::theme::Theme::new(
@@ -16,11 +28,8 @@ fn open_chat(
             gpui::WindowAppearance::Light,
             &cayenchat_storage::Appearance::default(),
         ));
-        apply_shortcuts(ShortcutPrefs::default(), cx);
+        apply_shortcuts(ShortcutPrefs::from(&settings), cx);
     });
-    let mut settings = crate::settings_with_channels("#a,#b");
-    settings.language = cayenchat_storage::Language::English;
-    settings.send_key = send_key;
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
     });
@@ -227,4 +236,50 @@ fn composing_enter_neither_sends_nor_counts(cx: &mut TestAppContext) {
     );
     press(cx, "enter");
     assert!(attempted(cx), "the pair after the commit sends");
+}
+
+#[gpui::test]
+fn no_key_sends_a_notice_by_default(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx, SendKey::Enter);
+    press(cx, "ctrl-enter");
+    press(cx, "alt-enter");
+    press(cx, "shift-enter");
+    assert!(!attempted(cx));
+    assert_eq!(draft(&chat, cx), "hello");
+}
+
+#[gpui::test]
+fn the_chosen_notice_key_sends_while_enter_still_sends_a_message(cx: &mut TestAppContext) {
+    for (notice_key, keys) in [
+        (NoticeKey::CtrlEnter, "ctrl-enter"),
+        (NoticeKey::AltEnter, "alt-enter"),
+    ] {
+        let (chat, cx) = open_chat_with_notice(cx, SendKey::Enter, notice_key);
+        press(cx, keys);
+        assert!(attempted(cx), "{keys} sends the NOTICE");
+        assert_eq!(draft(&chat, cx), "hello", "a failed send keeps the draft");
+        press(cx, "enter");
+        assert!(attempted(cx), "Enter still sends a normal message");
+    }
+}
+
+#[gpui::test]
+fn the_notice_key_is_not_a_second_key_for_double_enter(cx: &mut TestAppContext) {
+    let (_chat, cx) = open_chat_with_notice(cx, SendKey::DoubleEnter, NoticeKey::AltEnter);
+    press(cx, "enter");
+    press(cx, "alt-enter");
+    assert!(attempted(cx), "the NOTICE key sends at once");
+    press(cx, "enter");
+    assert!(!attempted(cx), "and ended the wait of Enter twice");
+}
+
+#[gpui::test]
+fn the_send_key_wins_over_the_same_notice_key(cx: &mut TestAppContext) {
+    let (_chat, cx) = open_chat_with_notice(cx, SendKey::CtrlEnter, NoticeKey::CtrlEnter);
+    press(cx, "ctrl-enter");
+    assert!(attempted(cx), "sent once, as a normal message");
+    assert_eq!(
+        cx.update(|_, cx| cx.global::<ShortcutPrefs>().notice_key),
+        NoticeKey::Off
+    );
 }

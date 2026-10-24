@@ -14,8 +14,8 @@ use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::ConnectionConfig;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DarkColors, Language, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
-    TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    DarkColors, Language, NoticeKey, Notifications, Secret, SecretKey, SendKey, ServerProfile,
+    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, time::Duration};
@@ -3199,6 +3199,32 @@ impl SettingsWindow {
                 cx,
             ))
             .child(hint("send_key_hint"))
+            .child(self.option_row(
+                "notice_key",
+                [
+                    (NoticeKey::Off, "notice_key_off"),
+                    (NoticeKey::CtrlEnter, "notice_key_ctrl_enter"),
+                    (NoticeKey::AltEnter, "notice_key_alt_enter"),
+                ],
+                self.settings.values.notice_key,
+                |settings, key| settings.notice_key = key,
+                cx,
+            ))
+            .child(hint("notice_key_hint"))
+            .when(
+                self.settings
+                    .values
+                    .notice_key
+                    .clashes_with(self.settings.values.send_key),
+                |d| {
+                    d.child(
+                        div()
+                            .ml(settings_theme::LABEL_INDENT)
+                            .text_color(theme.warning)
+                            .child(self.i18n.text("notice_key_clash")),
+                    )
+                },
+            )
             .when(!cfg!(target_os = "macos"), |d| {
                 d.child(self.option_row(
                     "channel_number_modifier",
