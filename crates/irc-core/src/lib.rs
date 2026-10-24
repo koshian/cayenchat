@@ -4494,11 +4494,12 @@ fn topic_event(message: &IrcMessage, server_time: Option<SystemTime>) -> Option<
     })
 }
 
-fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) -> Event {
-    let tracked = client.list_users(channel);
-    let known = tracked.is_some();
+/// The roster event for `channel`, or `None` when the library has no list for
+/// it: it keeps one only for channels we joined, so NAMES for any other
+/// channel is ignored.
+fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) -> Option<Event> {
+    let tracked = client.list_users(channel)?;
     let mut users: Vec<String> = tracked
-        .unwrap_or_default()
         .iter()
         // Servers may pad NAMES with extra spaces, which the client library
         // splits into users without a nickname.
@@ -4515,10 +4516,10 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
             format!("{prefix}{}", user.get_nickname())
         })
         .collect();
-    // The library appends every NAMES reply to the channel's list, so a
-    // repeated reply (e.g. /names) lists everyone twice. Keep the last entry
-    // per nickname: it comes from the newest reply. (Our own KICK no longer
-    // leaves a stale list behind: the vendored `irc` drops it, #342.)
+    // The vendored `irc` rebuilds the list on a repeated NAMES reply and keeps
+    // one entry per nickname (#597; our own KICK drops it, #342). This keeps
+    // the last entry per nickname as well, under the casemapping-insensitive
+    // comparison the library does not do.
     let mut seen = HashSet::new();
     users.reverse();
     users.retain(|user| seen.insert(display_nickname(user).to_lowercase()));
@@ -4544,21 +4545,19 @@ fn names_snapshot(client: &Client, roster: &mut RosterTracker, channel: &str) ->
                 .iter()
                 .any(|user| display_nickname(user).eq_ignore_ascii_case(nickname))
     });
-    // Only channels the library tracks as joined are remembered, so arbitrary
-    // end-of-NAMES replies cannot grow the roster cache.
-    if known {
-        roster.presence.replace_channel(channel, &users);
-        let ranked = users
-            .iter()
-            .filter(|user| display_nickname(user).len() < user.len());
-        roster
-            .ranked
-            .insert(channel.to_owned(), ranked.cloned().collect());
-    }
-    Event::Names {
+    // The library lists only channels we joined (its list starts at our own
+    // JOIN), so arbitrary end-of-NAMES replies cannot grow the roster cache.
+    roster.presence.replace_channel(channel, &users);
+    let ranked = users
+        .iter()
+        .filter(|user| display_nickname(user).len() < user.len());
+    roster
+        .ranked
+        .insert(channel.to_owned(), ranked.cloned().collect());
+    Some(Event::Names {
         channel: channel.to_owned(),
         users,
-    }
+    })
 }
 
 /// Translates a user's PRIVMSG or NOTICE addressed to `current_nick`.
@@ -4818,7 +4817,9 @@ fn translate_message(
             let Some(channel) = args.iter().find(|arg| valid_channel(arg)) else {
                 return Vec::new();
             };
-            vec![names_snapshot(client, roster, channel)]
+            names_snapshot(client, roster, channel)
+                .into_iter()
+                .collect()
         }
         _ => {
             let mut events = topic_event(&message, server_time)
@@ -4872,7 +4873,7 @@ fn translate_message(
     translated.extend(
         changed_channels
             .iter()
-            .map(|channel| names_snapshot(client, roster, channel)),
+            .filter_map(|channel| names_snapshot(client, roster, channel)),
     );
     translated
 }
