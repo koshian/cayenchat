@@ -571,7 +571,8 @@ also checked against the downloaded crates' manifests and source, including
 ## D020 — Standard Tab traversal in settings
 
 2026-09-27. Settings must not capture keys for chat features. Scope the chat
-draft bindings (Tab nickname completion, Enter send, Ctrl+Enter NOTICE) to
+draft bindings (Tab nickname completion, Enter send, Ctrl+Enter; the latter
+was NOTICE until D067 made the send key a setting) to
 `ChatWindow > TextInput`; they formerly matched every `TextInput`, so Tab in a
 settings field dispatched a completion nobody handled and focus never moved.
 In `SettingsWindow`, Tab/Shift+Tab call GPUI's `focus_next`/`focus_prev`.
@@ -1298,6 +1299,44 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D067 — Send key for normal messages is a setting; optional NOTICE key (#583)
+
+2026-10-24. Replaces the fixed Enter = `PRIVMSG` / Ctrl+Enter = `NOTICE` of
+D020's chat bindings, because people used to Ctrl+Enter as "send" elsewhere
+sent NOTICEs by mistake.
+
+- **Setting.** `Settings.send_key` (`enter` default, `ctrl_enter`,
+  `double_enter`), on the Keyboard page (shown on macOS too). Files without
+  it read as Enter. Applies from the next key press after saving.
+- **Exclusive.** Only the chosen operation sends a normal message from the
+  chat draft; the other combinations send nothing. Ctrl+Enter stays Ctrl on
+  macOS (no Cmd+Enter). `/notice` is unchanged.
+- **Optional NOTICE key.** `Settings.notice_key` (`off` default, `ctrl_enter`,
+  `alt_enter`), same page. Off means no key sends a `NOTICE`; a chosen key
+  sends the draft as one (the `SendNotice` action, bound in `rebind_shortcuts`
+  and part of `ShortcutPrefs`), in the chat draft only (other inputs take it
+  as "done", the log search as "next"). It also ends a wait of Enter twice.
+  Shift+Enter is not offered: the log search uses it for "previous". If it is
+  the send key's own press (Ctrl+Enter for both), the send key wins, the
+  setting page says so, and the NOTICE key is not bound. Files without the
+  field read as off. Added at the maintainer's request after the first
+  version had dropped the key altogether.
+- **Scope.** Only the chat draft. The wizard, prompts, PART confirmation,
+  settings and log search keep their Enter handling (both bindings still
+  reach the same handler, which only the draft restricts).
+- **Enter twice.** The first Enter on a non-empty, non-composing draft only
+  waits (no newline: the draft is one line). A second plain Enter within
+  700 ms sends once. The wait is dropped by any other keystroke (a Ctrl+Enter
+  included), a change of the text or caret, losing the focus, the window
+  being activated or deactivated (the draft keeps its logical focus while
+  another window is in front), showing another conversation, a changed
+  setting, or the time. The empty draft's hint names the chosen key. Auto-repeat is not a second
+  press: not every platform marks repeats, so a press is a repeat when the
+  Enter key-up has not been seen since the last press. IME confirmation never
+  counts (composing drafts are skipped). State: `double_enter.rs`, checked
+  on every render and by a keystroke interceptor; nothing is carried between
+  conversations.
 
 ## D066 — Local `/help` lists the main commands in the server log (#586)
 

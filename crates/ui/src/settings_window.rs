@@ -14,8 +14,8 @@ use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::ConnectionConfig;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DarkColors, Language, Notifications, Secret, SecretKey, ServerProfile, Settings, TextEncoding,
-    TextKeyTheme, ThemeMode, color_value,
+    DarkColors, Language, NoticeKey, Notifications, Secret, SecretKey, SendKey, ServerProfile,
+    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, time::Duration};
@@ -1476,6 +1476,7 @@ impl ChatWindow {
         {
             owner.image_provider = provider;
             owner.confirm_quit = confirm_quit;
+            owner.set_send_key(saved.send_key, cx);
             owner.unread_log_position = saved.unread_log_position;
             owner.apply_conversation_log(&saved.conversation_log);
             cx.set_global(crate::input::ShortenPastedAmazon(shorten_amazon_urls));
@@ -3173,8 +3174,8 @@ impl SettingsWindow {
             .child(self.reset_footer(SettingsTab::Appearance, cx))
     }
 
-    /// Channel-number and draft-editing keys (only Windows and Linux have
-    /// choices there), then the shortcut list.
+    /// The send and NOTICE keys, the channel-number and draft-editing keys
+    /// (only Windows and Linux have choices there), then the shortcut list.
     fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let hint = |key: &str| {
@@ -3185,6 +3186,44 @@ impl SettingsWindow {
         };
         account_settings::panel(cx)
             .child(self.tab_heading("keyboard"))
+            .child(self.option_row(
+                "send_key",
+                [
+                    (SendKey::Enter, "send_key_enter"),
+                    (SendKey::CtrlEnter, "send_key_ctrl_enter"),
+                    (SendKey::DoubleEnter, "send_key_double_enter"),
+                ],
+                self.settings.values.send_key,
+                |settings, key| settings.send_key = key,
+                cx,
+            ))
+            .child(hint("send_key_hint"))
+            .child(self.option_row(
+                "notice_key",
+                [
+                    (NoticeKey::Off, "notice_key_off"),
+                    (NoticeKey::CtrlEnter, "notice_key_ctrl_enter"),
+                    (NoticeKey::AltEnter, "notice_key_alt_enter"),
+                ],
+                self.settings.values.notice_key,
+                |settings, key| settings.notice_key = key,
+                cx,
+            ))
+            .child(hint("notice_key_hint"))
+            .when(
+                self.settings
+                    .values
+                    .notice_key
+                    .clashes_with(self.settings.values.send_key),
+                |d| {
+                    d.child(
+                        div()
+                            .ml(settings_theme::LABEL_INDENT)
+                            .text_color(theme.warning)
+                            .child(self.i18n.text("notice_key_clash")),
+                    )
+                },
+            )
             .when(!cfg!(target_os = "macos"), |d| {
                 d.child(self.option_row(
                     "channel_number_modifier",

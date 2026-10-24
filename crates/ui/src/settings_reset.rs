@@ -52,8 +52,10 @@ impl SettingsWindow {
                 current.appearance == appearance && current.theme == defaults.theme
             }
             SettingsTab::Keyboard => {
-                (cfg!(target_os = "macos")
-                    || current.channel_number_modifier == defaults.channel_number_modifier)
+                current.send_key == defaults.send_key
+                    && current.notice_key == defaults.notice_key
+                    && (cfg!(target_os = "macos")
+                        || current.channel_number_modifier == defaults.channel_number_modifier)
                     && (!cfg!(target_os = "linux")
                         || current.text_key_theme == defaults.text_key_theme)
                     && current.keybindings.is_empty()
@@ -123,6 +125,8 @@ impl SettingsWindow {
             }
             SettingsTab::Keyboard => {
                 let values = &mut self.settings.values;
+                values.send_key = defaults.send_key;
+                values.notice_key = defaults.notice_key;
                 // Settings hidden on this platform keep their saved values.
                 if !cfg!(target_os = "macos") {
                     values.channel_number_modifier = defaults.channel_number_modifier;
@@ -223,7 +227,12 @@ impl SettingsWindow {
 
     /// Asks, then resets: a reset can discard many choices at once, and the
     /// button is easy to click by mistake.
-    fn request_reset(&mut self, tab: SettingsTab, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn request_reset(
+        &mut self,
+        tab: SettingsTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("reset_confirm_title"),
@@ -399,6 +408,7 @@ mod tests {
                 values.appearance.alternate_rows = !values.appearance.alternate_rows;
             }),
             (SettingsTab::Keyboard, |values| {
+                values.send_key = cayenchat_storage::SendKey::CtrlEnter;
                 values.channel_number_modifier = ChannelNumberModifier::Alt;
                 values.keybindings.insert("a".into(), "b".into());
             }),

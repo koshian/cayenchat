@@ -209,7 +209,6 @@ impl TextInput {
         &self.content
     }
 
-    #[cfg(test)]
     pub fn selection(&self) -> Range<usize> {
         self.selected_range.clone()
     }

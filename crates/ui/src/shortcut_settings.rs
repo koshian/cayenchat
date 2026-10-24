@@ -309,8 +309,13 @@ mod tests {
             cx.notify();
         });
         assert!(!warned(&form, "next_channel", cx));
-        let reset_all = cx.debug_bounds("reset-defaults").unwrap().center();
-        cx.simulate_click(reset_all, gpui::Modifiers::default());
+        // The page is taller than the test window, so the button is below the
+        // fold; ask for the reset as the button does.
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.request_reset(SettingsTab::Keyboard, window, cx)
+            })
+        });
         let confirm = form.read_with(cx, |form, _| form.i18n.text("reset_to_defaults"));
         cx.simulate_prompt_answer(&confirm);
         cx.run_until_parked();
