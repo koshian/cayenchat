@@ -581,11 +581,6 @@ impl ClientState {
     /// Handles received messages internally for basic client functionality.
     fn handle_message(&self, msg: &Message) -> error::Result<()> {
         log::trace!("[RECV] {}", msg.to_string());
-        if !matches!(msg.command, Command::Response(Response::RPL_NAMREPLY, _))
-            && !self.names_index.read().is_empty()
-        {
-            self.names_index.write().clear();
-        }
         match msg.command {
             JOIN(ref chan, _, _) => self.handle_join(msg.source_nickname().unwrap_or(""), chan),
             PART(ref chan, _) => self.handle_part(msg.source_nickname().unwrap_or(""), chan),
@@ -749,12 +744,14 @@ impl ClientState {
             .is_some_and(|me| src.eq_ignore_ascii_case(me))
         {
             self.names_done.write().remove(chan);
+            self.names_index.write().remove(chan);
             self.chanlists.write().insert(chan.to_owned(), Vec::new());
             return;
         }
         if let Some(vec) = self.chanlists.write().get_mut(&chan.to_owned()) {
             if !src.is_empty() {
-                vec.push(User::new(src))
+                vec.push(User::new(src));
+                self.names_index.write().remove(chan);
             }
         }
     }
@@ -768,6 +765,7 @@ impl ClientState {
             if !src.is_empty() {
                 if let Some(n) = vec.iter().position(|x| x.get_nickname() == src) {
                     vec.swap_remove(n);
+                    self.names_index.write().remove(chan);
                 }
             }
         }
@@ -782,9 +780,10 @@ impl ClientState {
             return;
         }
 
-        for vec in self.chanlists.write().values_mut() {
+        for (chan, vec) in self.chanlists.write().iter_mut() {
             if let Some(p) = vec.iter().position(|x| x.get_nickname() == src) {
                 vec.swap_remove(p);
+                self.names_index.write().remove(chan);
             }
         }
     }
@@ -798,10 +797,11 @@ impl ClientState {
             return;
         }
 
-        for (_, vec) in self.chanlists.write().iter_mut() {
+        for (chan, vec) in self.chanlists.write().iter_mut() {
             if let Some(n) = vec.iter().position(|x| x.get_nickname() == old_nick) {
                 let new_entry = User::new(new_nick);
                 vec[n] = new_entry;
+                self.names_index.write().remove(chan);
             }
         }
     }
@@ -840,6 +840,7 @@ impl ClientState {
             // The first line of a new reply replaces the old list.
             if self.names_done.write().remove(chan) {
                 vec.clear();
+                self.names_index.write().remove(chan);
             }
             // One nick appears once; the later entry wins so its modes are kept. The index
             // keeps a reply of N names linear instead of scanning the list per name.
@@ -1765,6 +1766,61 @@ mod test {
         client.stream()?.collect().await?;
         assert_eq!(client.list_users("#big").unwrap().len(), 40_000);
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn messages_between_names_lines_keep_linear_time() -> Result<()> {
+        let mut value = String::from(":irc.test.net 001 test :Welcome\r\n:test!t@h JOIN #big\r\n");
+        let mut nick = 0;
+        for _ in 0..2000 {
+            let names: Vec<String> = (0..20)
+                .map(|_| {
+                    nick += 1;
+                    format!("n{nick}")
+                })
+                .collect();
+            value.push_str(":irc.test.net NOTICE test :progress\r\n");
+            value.push_str(&format!(
+                ":irc.test.net 353 test = #big :{}\r\n",
+                names.join(" ")
+            ));
+        }
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value),
+            ..test_config()
+        })
+        .await?;
+        let start = std::time::Instant::now();
+        client.stream()?.collect().await?;
+        assert_eq!(client.list_users("#big").unwrap().len(), 40_000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn part_between_names_lines_keeps_the_index_right() -> Result<()> {
+        let value = ":irc.test.net 001 test :Welcome\r\n\
+                     :test!t@h JOIN #test\r\n\
+                     :irc.test.net 353 test = #test :a b c\r\n\
+                     :a!a@h PART #test\r\n\
+                     :irc.test.net 353 test = #test :@c d\r\n";
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value.to_owned()),
+            ..test_config()
+        })
+        .await?;
+        client.stream()?.collect().await?;
+        let mut users: Vec<String> = client
+            .list_users("#test")
+            .unwrap()
+            .iter()
+            .map(|u| u.get_nickname().to_owned())
+            .collect();
+        users.sort();
+        assert_eq!(users, ["b", "c", "d"]);
         Ok(())
     }
 
