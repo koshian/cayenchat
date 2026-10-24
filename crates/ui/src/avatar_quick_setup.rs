@@ -178,20 +178,22 @@ impl SettingsWindow {
         let registered = !profile.avatar_url.is_empty();
         // The row is a disclosure header, not a setting: the chevron shows the
         // fold, the state and action words say what is registered.
+        // The header and the body are one bordered section; inside it only the
+        // URL row uses the label column, the texts start at the section edge.
         let section = div()
             .flex()
             .flex_col()
             .gap_2()
+            .p_2()
+            .border_1()
+            .border_color(theme.border)
             .child(
                 div()
                     .id("avatar-quick-toggle")
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(theme.border)
+                    .gap_x_2()
                     .cursor_pointer()
                     .child(self.i18n.text("avatar_quick_toggle"))
                     .child(div().text_color(theme.text_secondary).child(self.i18n.text(
@@ -218,7 +220,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("avatar-quick-summary")
-                    .ml(settings_theme::LABEL_INDENT)
+                    .min_w_0()
                     .text_color(theme.text_secondary)
                     .child(self.quick_avatar_summary(profile)),
             );
@@ -304,7 +306,6 @@ impl SettingsWindow {
                 }))
                 .child(
                     div()
-                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.warning)
                         .child(self.i18n.text("avatar_quick_notice")),
                 )
@@ -315,23 +316,16 @@ impl SettingsWindow {
                 .child(buttons)
                 .children(lines.into_iter().map(|(text, failed)| {
                     div()
-                        .ml(settings_theme::LABEL_INDENT)
                         .when(failed, |d| d.text_color(theme.warning))
                         .when(!failed, |d| d.text_color(theme.text_secondary))
                         .child(text)
                 }))
                 .when_some(self.avatar_feedback.clone(), |d, feedback| {
-                    d.child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.warning)
-                            .child(feedback),
-                    )
+                    d.child(div().text_color(theme.warning).child(feedback))
                 })
                 .when(self.avatar_opening, |d| {
                     d.child(
                         div()
-                            .ml(settings_theme::LABEL_INDENT)
                             .text_color(theme.text_secondary)
                             .child(self.i18n.text("ircv3_avatar_edit_loading")),
                     )
