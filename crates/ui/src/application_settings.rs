@@ -104,6 +104,28 @@ impl SettingsWindow {
         selector
     }
 
+    /// The Reiwa mode checkbox; the Connection tab shows it too, and both
+    /// edit the same app-wide `appearance.reiwa_mode`.
+    pub(crate) fn reiwa_mode_row(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id(id)
+            .ml(settings_theme::LABEL_INDENT)
+            .flex()
+            .gap_2()
+            .cursor_pointer()
+            .child(settings_theme::checkbox(
+                self.settings.values.appearance.reiwa_mode,
+                true,
+                cx,
+            ))
+            .child(self.i18n.text("reiwa_mode"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                let value = &mut this.settings.values.appearance.reiwa_mode;
+                *value = !*value;
+                cx.notify();
+            }))
+    }
+
     pub(crate) fn render_application_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let language_selector = self.language_selector(cx);
@@ -300,25 +322,7 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("image_previews_hint")),
             )
-            .child(
-                div()
-                    .id("reiwa-mode")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        self.settings.values.appearance.reiwa_mode,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("reiwa_mode"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let value = &mut this.settings.values.appearance.reiwa_mode;
-                        *value = !*value;
-                        cx.notify();
-                    })),
-            )
+            .child(self.reiwa_mode_row("reiwa-mode", cx))
             .child(
                 div()
                     .id("compact-urls")

@@ -297,6 +297,7 @@ impl SettingsWindow {
         let selected = self.settings.values.image_upload.provider.clone();
         let heading = self.tab_heading("image_upload_tab");
         let footer = self.reset_footer(SettingsTab::ImageUpload, cx);
+        let avatar_return = self.render_avatar_return(cx);
         let label = |key: &str| settings_theme::label_column().child(self.i18n.text(key));
         let button =
             |id: &'static str, text: String| settings_theme::button(id, false, cx).child(text);
@@ -339,6 +340,7 @@ impl SettingsWindow {
                     .text_color(theme.warning)
                     .child(self.i18n.text("image_upload_privacy")),
             )
+            .children(avatar_return)
             .child(
                 div()
                     .flex()

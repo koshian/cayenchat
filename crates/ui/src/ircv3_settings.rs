@@ -579,7 +579,7 @@ impl SettingsWindow {
         self.settings.values.selected_profile().is_some()
     }
 
-    fn paste_avatar_image(
+    pub(crate) fn paste_avatar_image(
         &mut self,
         _: &input::Paste,
         window: &mut Window,
@@ -596,7 +596,7 @@ impl SettingsWindow {
         }
     }
 
-    fn drop_avatar_image(
+    pub(crate) fn drop_avatar_image(
         &mut self,
         paths: &[PathBuf],
         keep: Option<Arc<PromisedFiles>>,
@@ -641,7 +641,7 @@ impl SettingsWindow {
         }));
     }
 
-    fn choose_avatar_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn choose_avatar_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -670,6 +670,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         self.avatar_feedback = None;
+        self.avatar_setup_link = false;
         let Some(profile) = self.selected_profile_id() else {
             return;
         };
@@ -695,12 +696,14 @@ impl SettingsWindow {
                 self.open_avatar_editor(profile, attachment.bytes.clone(), attachment.source, cx);
             }
             Ok((UploaderReadiness::NeedsAccount { provider }, _)) => {
+                self.avatar_setup_link = true;
                 self.avatar_feedback = Some(
                     self.i18n
                         .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
                 );
             }
             Ok(_) => {
+                self.avatar_setup_link = true;
                 self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
             }
             Err(error) => self.avatar_feedback = Some(error),
@@ -768,9 +771,11 @@ impl SettingsWindow {
                 None => self.avatar_upload.decline(),
             },
             Offer::Configure => {
+                self.avatar_setup_link = true;
                 self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_needs_setup"));
             }
             Offer::Reconnect { provider } => {
+                self.avatar_setup_link = true;
                 self.avatar_feedback = Some(
                     self.i18n
                         .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
@@ -785,6 +790,9 @@ impl SettingsWindow {
             return;
         };
         let id = job.id;
+        // The editor's upload button in the quick icon section also
+        // registers the icon.
+        self.avatar_upload_registers = self.tab == SettingsTab::Connection;
         let upload = upload_in_background(uploader, job, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -798,6 +806,7 @@ impl SettingsWindow {
     }
 
     fn complete_avatar_upload(&mut self, completion: Completion<String>, cx: &mut Context<Self>) {
+        let registers = std::mem::take(&mut self.avatar_upload_registers);
         match completion {
             Completion::InsertLink { target, url } => {
                 match place_uploaded_avatar(&mut self.settings.values, &target, &url) {
@@ -806,6 +815,10 @@ impl SettingsWindow {
                             self.settings
                                 .avatar_url
                                 .update(cx, |field, cx| field.set_text(&url, cx));
+                        }
+                        if registers {
+                            self.register_avatar(&target, &url, cx);
+                            return;
                         }
                         // Uploading an image means "use it": send it to
                         // the server now, when it is connected.
@@ -831,6 +844,7 @@ impl SettingsWindow {
                 provider,
                 failure: UploadFailure::Authentication,
             } => {
+                self.avatar_setup_link = true;
                 self.avatar_feedback = Some(
                     self.i18n
                         .format("ircv3_avatar_upload_reconnect", &[("provider", &provider)]),
@@ -844,8 +858,9 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn cancel_avatar_upload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn cancel_avatar_upload(&mut self, cx: &mut Context<Self>) {
         if self.avatar_upload.cancel_upload() {
+            self.avatar_upload_registers = false;
             self.avatar_feedback = Some(self.i18n.text("ircv3_avatar_upload_cancelled"));
         }
         cx.notify();
@@ -1054,7 +1069,10 @@ pub(crate) fn own_avatar_failure(failure: AvatarRequestFailure) -> Failure {
 }
 
 /// The line describing `outcome`, and whether it is a failure.
-fn outcome_text(i18n: &crate::localization::Localizer, outcome: &Outcome) -> (String, bool) {
+pub(crate) fn outcome_text(
+    i18n: &crate::localization::Localizer,
+    outcome: &Outcome,
+) -> (String, bool) {
     match outcome {
         Outcome::Waiting(Action::Publish) => (i18n.text("ircv3_avatar_waiting_publish"), false),
         Outcome::Waiting(Action::Remove) => (i18n.text("ircv3_avatar_waiting_remove"), false),

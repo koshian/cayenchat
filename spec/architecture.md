@@ -1303,6 +1303,16 @@ reconnect, removal), which fails a pending request and forgets what the
 server held. The settings window reads it through its owner handle and is
 redrawn only for batches containing those events.
 
+The Connection tab's quick icon section (`ui::avatar_quick_setup`, D023,
+#593) is a second view of the same draft and flow: it calls the same
+chooser, editor and upload, and an upload finished from it (the tab is the
+Connection tab when the upload starts) registers instead of only filling
+the draft. `register_in_profile` is the one place that sets `avatar_url`,
+`user_avatars`, `ircv3.peer_avatars` and `peer_avatar_url`; the Metadata
+publish goes through `ChatWindow::request_own_avatar`. The fold state, the
+way back from the Image Upload tab and the "open image upload settings"
+flag are window state, not settings.
+
 Peer sharing (D025) is shown under the same field while the server's peer
 avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),
 "Share with Peers" (tooltip: exposure warning) when the draft differs from
