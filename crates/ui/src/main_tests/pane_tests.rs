@@ -2481,6 +2481,33 @@ fn shortcut_digits_follow_the_numbered_shortcuts() {
 }
 
 #[test]
+fn the_insertion_line_compares_positions_within_the_server() {
+    use crate::{TreeRow, drop_line_on_top};
+    use cayenchat_model::{ConversationId, NetworkId};
+
+    // Two servers of three channels each; ids ascend across the tree, the
+    // positions restart at every server.
+    let mut rows = Vec::new();
+    for server in 0..2u32 {
+        rows.push(TreeRow::Server(NetworkId(server)));
+        for position in 0..3 {
+            rows.push(TreeRow::Channel(
+                ConversationId(server * 3 + position),
+                position as usize,
+            ));
+        }
+    }
+    for base in [0, 3] {
+        let id = |n: u32| ConversationId(base + n);
+        // Dragged downwards: the line goes below the target.
+        assert_eq!(drop_line_on_top(&rows, id(0), 2), Some(false));
+        // Dragged upwards: the line goes above the target.
+        assert_eq!(drop_line_on_top(&rows, id(2), 0), Some(true));
+    }
+    assert_eq!(drop_line_on_top(&rows, ConversationId(99), 0), None);
+}
+
+#[test]
 fn a_window_with_older_settings_follows_the_servers_order_in_the_file() {
     let profile = |id: &str| {
         let mut profile = cayenchat_storage::ServerProfile::default();
