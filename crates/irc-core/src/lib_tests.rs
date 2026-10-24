@@ -4942,7 +4942,7 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
 }
 
 #[test]
-fn a_reconnect_gives_a_remembered_mask_its_picture_without_asking() {
+fn a_reconnect_gives_a_remembered_mask_its_picture_and_asks_once() {
     let cache = PeerAvatarCache::default();
     let config = |port: u16| {
         let mut config = plain_config(
@@ -4999,8 +4999,8 @@ fn a_reconnect_gives_a_remembered_mask_its_picture_without_asking() {
     assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
     assert_eq!(cache.len(), 1);
     // The second connection: the same user returns from another host of the
-    // same domain. Nothing is asked and the picture is there at once; the
-    // first thing the client sends after joining is its QUIT.
+    // same domain. The picture is there at once, without a WHO, and one
+    // query still goes out so his later change reaches us (#612).
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
@@ -5025,14 +5025,26 @@ fn a_reconnect_gives_a_remembered_mask_its_picture_without_asking() {
 :KV!kv@host9.example.org PRIVMSG #test :back\r\n",
             )
             .unwrap();
+        assert_eq!(read_client_line(&mut lines), "PRIVMSG KV \x01AVATAR\x01");
+        socket
+            .write_all(
+                b":KV!kv@host9.example.org NOTICE alice :\x01AVATAR https://example.com/kv2.png M\x01\r\n",
+            )
+            .unwrap();
         let next = read_client_line(&mut lines);
         assert!(next.starts_with("QUIT"), "asked again: {next:?}");
     });
     let events = run_fixture(config(port), |events| {
-        !avatar_events(events).is_empty() && !channel_messages(events).is_empty()
+        avatar_events(events).len() == 2 && !channel_messages(events).is_empty()
     });
     server.join().unwrap();
-    assert_eq!(avatar_events(&events), ["KV=https://example.com/kv.png"]);
+    assert_eq!(
+        avatar_events(&events),
+        [
+            "KV=https://example.com/kv.png",
+            "KV=https://example.com/kv2.png"
+        ]
+    );
 }
 
 #[test]
@@ -5089,7 +5101,7 @@ fn ircnet_who_reply_with_server_id_leads_to_an_avatar_query() {
 }
 
 #[test]
-fn a_who_reply_after_a_reconnect_restores_the_picture_without_asking() {
+fn a_who_reply_after_a_reconnect_restores_the_picture_and_asks_once() {
     let cache = PeerAvatarCache::default();
     let config = |port: u16| {
         let mut config = plain_config(
@@ -5145,7 +5157,8 @@ fn a_who_reply_after_a_reconnect_restores_the_picture_without_asking() {
     server.join().unwrap();
     assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
     // The second connection: kv is already in the channel and only a WHO
-    // reply (someone else's, marked) tells his mask. Nothing is asked.
+    // reply (someone else's, marked) tells his mask. The picture comes back
+    // at once and he is asked once (#612).
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
@@ -5169,13 +5182,24 @@ fn a_who_reply_after_a_reconnect_restores_the_picture_without_asking() {
 :srv.example 352 alice #test ~kv host9.example.org srv.example kv H :0 \x034\x0fKv\r\n",
             )
             .unwrap();
-        // The next thing the client sends is its QUIT, not a query.
+        assert_eq!(read_client_line(&mut lines), "PRIVMSG kv \x01AVATAR\x01");
+        socket
+            .write_all(
+                b":kv!~kv@host9.example.org NOTICE alice :\x01AVATAR https://example.com/kv2.png M\x01\r\n",
+            )
+            .unwrap();
         let next = read_client_line(&mut lines);
         assert!(next.starts_with("QUIT"), "{next:?}");
     });
-    let events = run_fixture(config(port), |events| !avatar_events(events).is_empty());
+    let events = run_fixture(config(port), |events| avatar_events(events).len() == 2);
     server.join().unwrap();
-    assert_eq!(avatar_events(&events), ["kv=https://example.com/kv.png"]);
+    assert_eq!(
+        avatar_events(&events),
+        [
+            "kv=https://example.com/kv.png",
+            "kv=https://example.com/kv2.png"
+        ]
+    );
 }
 
 #[test]
