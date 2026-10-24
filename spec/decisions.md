@@ -743,10 +743,10 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
 - **Occupancy applies to metadata only** (D058): avatars from CTCP AVATAR
   (D025) are tied to a user mask and the name, not to occupancies.
 - **Quick icon setup on the Connection tab** (#593, 2026-10-24). Directly
-  under the server selector, "Set up an icon" unfolds a section that reuses
+  under the server selector, the "Avatar settings" disclosure row (state "No icon set" / "Icon set", action "Set up" / "Change", a chevron) unfolds a section that reuses
   the IRCv3 tab's URL draft (`SettingsWindow::settings.avatar_url`), image
   chooser, square selection and upload, so both tabs always show the same
-  value. The checkbox is only a fold (an unsaved view state, no stored
+  value. The row is only a fold (#602; an unsaved view state, no stored
   setting): unfolding or folding saves and sends nothing, and folding does
   not remove or stop publishing anything. Folded, one line says whether an
   icon is registered. The section has no "publish" checkbox; **Register /

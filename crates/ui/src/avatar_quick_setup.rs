@@ -175,6 +175,9 @@ impl SettingsWindow {
     ) -> Div {
         let theme = settings_theme::palette(cx);
         let open = self.avatar_quick_open;
+        let registered = !profile.avatar_url.is_empty();
+        // The row is a disclosure header, not a setting: the chevron shows the
+        // fold, the state and action words say what is registered.
         let section = div()
             .flex()
             .flex_col()
@@ -185,9 +188,28 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
                     .cursor_pointer()
-                    .child(settings_theme::checkbox(open, true, cx))
                     .child(self.i18n.text("avatar_quick_toggle"))
+                    .child(div().text_color(theme.text_secondary).child(self.i18n.text(
+                        if registered {
+                            "avatar_quick_state_set"
+                        } else {
+                            "avatar_quick_state_unset"
+                        },
+                    )))
+                    .child(div().flex_grow())
+                    .child(div().text_color(theme.text_secondary).child(self.i18n.text(
+                        if registered {
+                            "avatar_quick_action_change"
+                        } else {
+                            "avatar_quick_action_set"
+                        },
+                    )))
+                    .child(if open { "▴" } else { "▾" })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.avatar_quick_open = !this.avatar_quick_open;
                         cx.notify();
