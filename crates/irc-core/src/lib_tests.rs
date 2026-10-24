@@ -1763,10 +1763,64 @@ fn a_kick_after_our_nick_changed_drops_the_old_roster() {
 #[test]
 fn a_kick_of_someone_using_our_old_nick_keeps_the_roster() {
     let last = roster_after_script(
-        b":server 353 me = #a :@op bob me\r\n:server 366 me #a :End of NAMES\r\n:me!u@h NICK renamed\r\n:me!x@y JOIN #a\r\n:op!o@h KICK #a me :bye\r\n:op!o@h MODE #a +v bob\r\n",
+        b":me!u@h JOIN #a\r\n:server 353 me = #a :@op bob me\r\n:server 366 me #a :End of NAMES\r\n:me!u@h NICK renamed\r\n:me!x@y JOIN #a\r\n:op!o@h KICK #a me :bye\r\n:op!o@h MODE #a +v bob\r\n",
         2,
     );
     assert_eq!(last, ["+bob", "@op", "renamed"]);
+}
+
+/// NAMES for a channel we are not in is ignored (no event, no roster, no
+/// republish on QUIT), a repeated NAMES rebuilds the roster so PART, MODE and
+/// QUIT reach it, and a second end of MOTD joins nothing (#597).
+#[test]
+fn unjoined_names_are_ignored_and_a_repeated_names_rebuilds_the_roster() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+        while !lines.next().unwrap().unwrap().starts_with("USER ") {}
+        socket
+            .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
+            .unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
+        socket.write_all(b":me!u@h JOIN #a\r\n:server 353 me = #a :@op bob carol x1 me\r\n:server 366 me #a :End of NAMES\r\n:server 353 me = #ghost1 :x1 x2 x3\r\n:server 366 me #ghost1 :End of NAMES\r\n:server 353 me = #a :@op bob carol x1 me\r\n:server 366 me #a :End of NAMES\r\n:server 376 me :End of MOTD\r\n:op!o@h MODE #a +o bob\r\n:carol!u@h PART #a\r\n:x1!u@h QUIT :bye\r\nPING :sync\r\n").unwrap();
+        let mut joins = Vec::new();
+        for line in lines {
+            let line = line.unwrap();
+            if line.starts_with("JOIN ") {
+                joins.push(line);
+            } else if line == "PONG sync" || line == "PONG :sync" {
+                break;
+            }
+        }
+        joins
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec!["#a".into()]);
+    config.port = port;
+    config.use_tls = false;
+    let mut connection = Connection::connect(config).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let joins = loop {
+        if server.is_finished() || Instant::now() >= deadline {
+            break server.join().unwrap();
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(joins.is_empty(), "joined again: {joins:?}");
+    thread::sleep(Duration::from_millis(100));
+    let mut last = Vec::new();
+    while let Some(event) = connection.try_recv() {
+        if let Event::Names { channel, users } = event {
+            assert_eq!(channel, "#a", "roster published for an unjoined channel");
+            last = users;
+        }
+    }
+    last.sort();
+    assert_eq!(last, ["@bob", "@op", "me"]);
 }
 
 /// A KICK of us is recognised under the connection's casemapping, whatever
