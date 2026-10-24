@@ -438,3 +438,56 @@ mod sent_tests {
         assert!(!sent.answer(b, 417, None, now + ANSWER_WINDOW));
     }
 }
+
+#[cfg(test)]
+mod disconnect_tests {
+    use cayenchat_irc_core::Event;
+    use cayenchat_model::NetworkId;
+    use gpui::TestAppContext;
+
+    use crate::{ChatWindow, Worker};
+
+    /// A window with one registered server selected; `ended` is the event
+    /// that ends its connection. Returns how many notices are waiting.
+    fn notices_after(ended: Event, cx: &mut TestAppContext) -> usize {
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            let events = vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                ended,
+            ];
+            chat.handle_events(NetworkId(1), events, Worker::Running, cx);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |chat, _| chat.notices.all().len())
+    }
+
+    #[gpui::test]
+    fn a_disconnect_the_user_asked_for_raises_no_notice(cx: &mut TestAppContext) {
+        assert_eq!(
+            notices_after(Event::Closed("Disconnected by user.".into()), cx),
+            0
+        );
+    }
+
+    #[gpui::test]
+    fn a_lost_connection_still_raises_a_notice(cx: &mut TestAppContext) {
+        assert_eq!(
+            notices_after(Event::Disconnected("Connection reset".into()), cx),
+            1
+        );
+    }
+}
