@@ -265,10 +265,11 @@ Source: [upstream Windows input/IME fix](https://github.com/zed-industries/zed/p
 **Status:** Accepted
 
 GPUI draws its own text input, so GTK's `gtk-key-theme=Emacs` never reaches the
-draft on Linux. Key preferences move to a separate Keyboard settings tab, shown
-on Windows and Linux only because macOS has no choices there: the channel-number
-modifier (D009) and, on Linux, draft editing keys with Follow GTK (default),
-Standard and Emacs. Follow GTK reads `gtk-key-theme` from the XDG desktop
+draft on Linux. Key preferences move to a separate Keyboard settings tab: the
+channel-number modifier (D009; Windows and Linux only) and, on Linux, draft
+editing keys with Follow GTK (default), Standard and Emacs. Since #591 the tab
+is shown on every OS and the shortcut list (formerly the Shortcuts tab, #118)
+follows these options, so on macOS the tab holds the list alone. Follow GTK reads `gtk-key-theme` from the XDG desktop
 portal's `org.gnome.desktop.interface` namespace and rebinds live when it
 changes; where the portal lacks the key (for example non-GNOME backends) it
 falls back to `gtk-key-theme-name` in `$XDG_CONFIG_HOME/gtk-3.0/settings.ini`.
@@ -2424,12 +2425,12 @@ dimmed instead when disabled.
   when the app starts" is per server and stays on Connection.
 - **Appearance** (theme, colors, alternating rows, fonts): the saved color palette is the user's own data
   and is kept.
-- **Keyboard**: channel-number modifier, text key theme.
+- **Keyboard**: channel-number modifier (Windows/Linux), text key theme
+  (Linux), and every shortcut override cleared. The per-action "Reset" stays;
+  the old Shortcuts page's "Reset all" is folded into this button (#591).
 - A setting moved between pages moves between resets with it;
   `each_page_reset_covers_its_own_items_and_no_others` fails when a page's
   reset leaves another page's items changed or its own not default.
-- **Shortcuts**: clears every override. The per-action "Reset" stays; the old
-  "Reset all" is this button.
 - **Notifications**, **Experimental**: their defaults (keywords emptied,
   logging off and no file).
 - **IRCv3**: the selected server's opt-ins only (it is per server, and the

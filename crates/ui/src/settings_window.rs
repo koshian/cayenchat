@@ -836,7 +836,6 @@ pub(crate) enum SettingsTab {
     Application,
     Appearance,
     Keyboard,
-    Shortcuts,
     Notifications,
     Ircv3,
     ImageUpload,
@@ -890,7 +889,7 @@ pub(crate) struct SettingsWindow {
     pub(crate) pane_scroll: ScrollHandle,
     pub(crate) font_picker: Option<FontTarget>,
     pub(crate) color_picker: Option<OpenColorPicker>,
-    /// A key being recorded for a shortcut (the Shortcuts tab).
+    /// A key being recorded for a shortcut (the Keyboard tab).
     pub(crate) shortcut_recording: Option<shortcut_settings::ShortcutRecording>,
     /// The system's font names, listed when the font list is first opened.
     fonts: Vec<String>,
@@ -3174,8 +3173,8 @@ impl SettingsWindow {
             .child(self.reset_footer(SettingsTab::Appearance, cx))
     }
 
-    /// Channel-number and draft-editing keys; only Windows and Linux have
-    /// choices here, so macOS hides this tab.
+    /// Channel-number and draft-editing keys (only Windows and Linux have
+    /// choices there), then the shortcut list.
     fn render_keyboard_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = settings_theme::palette(cx);
         let hint = |key: &str| {
@@ -3186,21 +3185,23 @@ impl SettingsWindow {
         };
         account_settings::panel(cx)
             .child(self.tab_heading("keyboard"))
-            .child(self.option_row(
-                "channel_number_modifier",
-                [
-                    (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
-                    (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
-                    (
-                        ChannelNumberModifier::Super,
-                        "channel_number_modifier_super",
-                    ),
-                ],
-                self.settings.values.channel_number_modifier,
-                |settings, modifier| settings.channel_number_modifier = modifier,
-                cx,
-            ))
-            .child(hint("channel_number_modifier_hint"))
+            .when(!cfg!(target_os = "macos"), |d| {
+                d.child(self.option_row(
+                    "channel_number_modifier",
+                    [
+                        (ChannelNumberModifier::Ctrl, "channel_number_modifier_ctrl"),
+                        (ChannelNumberModifier::Alt, "channel_number_modifier_alt"),
+                        (
+                            ChannelNumberModifier::Super,
+                            "channel_number_modifier_super",
+                        ),
+                    ],
+                    self.settings.values.channel_number_modifier,
+                    |settings, modifier| settings.channel_number_modifier = modifier,
+                    cx,
+                ))
+                .child(hint("channel_number_modifier_hint"))
+            })
             .when(cfg!(target_os = "linux"), |d| {
                 d.child(self.option_row(
                     "text_key_theme",
@@ -3215,6 +3216,7 @@ impl SettingsWindow {
                 ))
                 .child(hint("text_key_theme_hint"))
             })
+            .children(self.shortcut_rows(cx))
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
@@ -3385,12 +3387,9 @@ impl SettingsWindow {
                 "application_tab",
             ),
             (SettingsTab::Appearance, "appearance-tab", "appearance"),
+            (SettingsTab::Keyboard, "keyboard-tab", "keyboard"),
         ];
-        if !cfg!(target_os = "macos") {
-            tabs.push((SettingsTab::Keyboard, "keyboard-tab", "keyboard"));
-        }
         tabs.extend([
-            (SettingsTab::Shortcuts, "shortcuts-tab", "shortcuts_tab"),
             (
                 SettingsTab::Notifications,
                 "notifications-tab",
@@ -3618,7 +3617,6 @@ impl SettingsWindow {
             SettingsTab::Application => self.render_application_settings(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsTab::Keyboard => self.render_keyboard_settings(cx).into_any_element(),
-            SettingsTab::Shortcuts => self.render_shortcut_settings(cx).into_any_element(),
             SettingsTab::Notifications => self.render_notification_settings(cx).into_any_element(),
             SettingsTab::Ircv3 => self.render_ircv3_settings(cx).into_any_element(),
             SettingsTab::ImageUpload => self.render_image_upload_settings(cx).into_any_element(),

@@ -52,11 +52,12 @@ impl SettingsWindow {
                 current.appearance == appearance && current.theme == defaults.theme
             }
             SettingsTab::Keyboard => {
-                current.channel_number_modifier == defaults.channel_number_modifier
+                (cfg!(target_os = "macos")
+                    || current.channel_number_modifier == defaults.channel_number_modifier)
                     && (!cfg!(target_os = "linux")
                         || current.text_key_theme == defaults.text_key_theme)
+                    && current.keybindings.is_empty()
             }
-            SettingsTab::Shortcuts => current.keybindings.is_empty(),
             SettingsTab::Notifications => current.notifications == defaults.notifications,
             SettingsTab::Ircv3 => current
                 .selected_profile()
@@ -122,13 +123,14 @@ impl SettingsWindow {
             }
             SettingsTab::Keyboard => {
                 let values = &mut self.settings.values;
-                values.channel_number_modifier = defaults.channel_number_modifier;
+                // Settings hidden on this platform keep their saved values.
+                if !cfg!(target_os = "macos") {
+                    values.channel_number_modifier = defaults.channel_number_modifier;
+                }
                 if cfg!(target_os = "linux") {
                     values.text_key_theme = defaults.text_key_theme;
                 }
-            }
-            SettingsTab::Shortcuts => {
-                self.settings.values.keybindings.clear();
+                values.keybindings.clear();
                 self.shortcut_recording = None;
             }
             SettingsTab::Notifications => {
@@ -376,7 +378,7 @@ mod tests {
         type Change = fn(&mut Settings);
 
         // Each page's items, changed from their defaults.
-        let dirty: [(SettingsTab, Change); 8] = [
+        let dirty: [(SettingsTab, Change); 7] = [
             (SettingsTab::Application, |values| {
                 values.language = Language::English;
                 values.restore_window_layout = !values.restore_window_layout;
@@ -398,8 +400,6 @@ mod tests {
             }),
             (SettingsTab::Keyboard, |values| {
                 values.channel_number_modifier = ChannelNumberModifier::Alt;
-            }),
-            (SettingsTab::Shortcuts, |values| {
                 values.keybindings.insert("a".into(), "b".into());
             }),
             (SettingsTab::Notifications, |values| {
@@ -555,7 +555,7 @@ mod tests {
     fn a_key_recording_and_the_category_list_do_not_disturb_each_other(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (form, cx) = form(SettingsTab::Shortcuts, cx);
+        let (form, cx) = form(SettingsTab::Keyboard, cx);
         cx.update(|window, _| window.activate_window());
         form.update_in(cx, |form, window, cx| {
             window.focus(&form.nav_focus);
@@ -565,7 +565,7 @@ mod tests {
         let state = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
             form.read_with(cx, |form, _| {
                 (
-                    form.tab == SettingsTab::Shortcuts,
+                    form.tab == SettingsTab::Keyboard,
                     form.shortcut_recording.is_some(),
                 )
             })
