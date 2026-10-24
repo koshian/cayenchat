@@ -108,6 +108,25 @@ pub struct ShortenPastedAmazon(pub bool);
 
 impl gpui::Global for ShortenPastedAmazon {}
 
+/// Whether pasting several lines into a message draft asks first
+/// (`confirm_multiline_paste`, #605).
+pub struct ConfirmMultilinePaste(pub bool);
+
+impl gpui::Global for ConfirmMultilinePaste {}
+
+/// A multi-line text pasted into a draft that confirms such pastes. Nothing
+/// was inserted; the enclosing window asks, or calls
+/// [`TextInput::insert_pasted`] when it cannot.
+pub struct MultilinePaste(pub String);
+
+impl gpui::EventEmitter<MultilinePaste> for TextInput {}
+
+/// Pasted text as one line: every line break (a CRLF counts once) becomes a
+/// single space.
+pub fn join_pasted_lines(text: &str) -> String {
+    text.replace("\r\n", " ").replace(['\r', '\n'], " ")
+}
+
 #[derive(Clone)]
 struct EditSnapshot {
     content: SharedString,
@@ -653,6 +672,21 @@ impl TextInput {
         window.show_character_palette();
     }
 
+    /// Inserts pasted text at the caret as one line (shortening a lone long
+    /// Amazon link in a draft when that is on).
+    pub fn insert_pasted(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let short = (self.draft && cx.try_global::<ShortenPastedAmazon>().is_some_and(|g| g.0))
+            .then(|| cayenchat_app::amazon::shorten_pasted(text))
+            .flatten();
+        let start = self.selected_range.start;
+        self.replace_text_in_range(None, &join_pasted_lines(text), window, cx);
+        if let Some(short) = short {
+            // A separate edit, so one undo gives back the long link.
+            self.selected_range = start..self.selected_range.end;
+            self.replace_text_in_range(None, &short, window, cx);
+        }
+    }
+
     /// Text wins when the clipboard holds both text and an image, matching
     /// what text fields elsewhere paste. An image-only clipboard in a draft
     /// propagates the action to the chat window's attachment flow.
@@ -661,16 +695,16 @@ impl TextInput {
             return;
         };
         if let Some(text) = item.text() {
-            let short = (self.draft && cx.try_global::<ShortenPastedAmazon>().is_some_and(|g| g.0))
-                .then(|| cayenchat_app::amazon::shorten_pasted(&text))
-                .flatten();
-            let start = self.selected_range.start;
-            self.replace_text_in_range(None, &text.replace(['\r', '\n'], " "), window, cx);
-            if let Some(short) = short {
-                // A separate edit, so one undo gives back the long link.
-                self.selected_range = start..self.selected_range.end;
-                self.replace_text_in_range(None, &short, window, cx);
+            if self.draft
+                && text.trim().contains(['\r', '\n'])
+                && cx
+                    .try_global::<ConfirmMultilinePaste>()
+                    .is_some_and(|g| g.0)
+            {
+                cx.emit(MultilinePaste(text));
+                return;
             }
+            self.insert_pasted(&text, window, cx);
         } else if self.attachments && clipboard_image(&item).is_some() {
             cx.propagate();
         }

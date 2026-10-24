@@ -241,6 +241,31 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("shorten_amazon_urls_hint")),
             )
+            .child(
+                div()
+                    .id("confirm-multiline-paste")
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.confirm_multiline_paste,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("confirm_multiline_paste"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.confirm_multiline_paste;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("confirm_multiline_paste_hint")),
+            )
             .child(self.option_row(
                 "unread_log_position",
                 [

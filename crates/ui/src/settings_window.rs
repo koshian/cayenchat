@@ -1488,6 +1488,7 @@ impl ChatWindow {
         let show_toolbar = saved.show_toolbar;
         let provider = saved.image_upload.provider.clone();
         let shorten_amazon_urls = saved.shorten_amazon_urls;
+        let confirm_multiline_paste = saved.confirm_multiline_paste;
         let rules = notification_rules(&saved.notifications);
         {
             owner.image_provider = provider;
@@ -1496,6 +1497,7 @@ impl ChatWindow {
             owner.unread_log_position = saved.unread_log_position;
             owner.apply_conversation_log(&saved.conversation_log);
             cx.set_global(crate::input::ShortenPastedAmazon(shorten_amazon_urls));
+            cx.set_global(crate::input::ConfirmMultilinePaste(confirm_multiline_paste));
             owner.notification_rules = rules;
             #[cfg(target_os = "windows")]
             if topmost_changed {

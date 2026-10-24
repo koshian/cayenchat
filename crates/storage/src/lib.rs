@@ -1214,6 +1214,10 @@ pub struct Settings {
     /// puts on the wire; the draft keeps what was typed. On by default, also
     /// for files saved before it existed.
     pub shorten_amazon_urls: bool,
+    /// Ask before a multi-line text pasted into a message draft goes in
+    /// (the paste dialog, #605). Off by default: lines are joined with
+    /// spaces. Also off for files saved before it existed.
+    pub confirm_multiline_paste: bool,
     /// Log position when an unread conversation is selected. Files saved
     /// before it existed keep the previous position.
     pub unread_log_position: UnreadLogPosition,
@@ -1268,6 +1272,7 @@ impl Default for Settings {
             always_on_top: false,
             confirm_quit: false,
             shorten_amazon_urls: true,
+            confirm_multiline_paste: false,
             unread_log_position: UnreadLogPosition::Previous,
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
@@ -3633,6 +3638,18 @@ mod tests {
         settings.restore_window_layout = false;
         save_to(&path, &settings).unwrap();
         assert!(!load_from(&path).unwrap().unwrap().restore_window_layout);
+    }
+
+    #[test]
+    fn multiline_paste_is_confirmed_only_when_switched_on() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.confirm_multiline_paste, "absent reads as off");
+        settings.confirm_multiline_paste = true;
+        save_to(&path, &settings).unwrap();
+        assert!(load_from(&path).unwrap().unwrap().confirm_multiline_paste);
     }
 
     #[test]

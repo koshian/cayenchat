@@ -37,6 +37,7 @@ mod notices;
 mod notifier;
 mod os_text;
 mod part_dialog;
+mod paste_dialog;
 #[cfg(test)]
 mod perf_baseline;
 mod phrase_wrap;
@@ -699,6 +700,10 @@ struct ChatWindow {
     setup_wizard: setup_wizard::SetupWizard,
     /// The question a double click on a joined channel row opens (#451).
     part_prompt: Option<part_dialog::PartPrompt>,
+    paste_prompt: Option<paste_dialog::PastePrompt>,
+    /// A multi-line paste waiting for the next frame, which has the window to
+    /// ask about it in (the draft inputs are made without one).
+    pending_paste: Option<(Entity<TextInput>, String)>,
     layout_file: Option<std::path::PathBuf>,
     /// The channel order chosen by dragging or the menu, and the file it is
     /// written to (`None` writes nothing, as for `layout_file`).
@@ -1151,6 +1156,7 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.set_global(input::ShortenPastedAmazon(saved.shorten_amazon_urls));
+        cx.set_global(input::ConfirmMultilinePaste(saved.confirm_multiline_paste));
         let i18n = Localizer::new(saved.language);
         cx.set_global(input::MenuLabels::new(&i18n));
         // Every configured server is a network in the tree, connected or not.
@@ -1193,7 +1199,7 @@ impl ChatWindow {
                     .map(|channel| Selection::Channel(channel.id)),
             )
         {
-            inputs.insert(key, cx.new(|cx| TextInput::new_live(&placeholder, cx)));
+            inputs.insert(key, Self::new_draft_input(&placeholder, cx));
         }
         window.focus(&inputs[&state.selection()].focus_handle(cx));
         // The conversation log thread wakes the window when it fails or finds
@@ -1260,6 +1266,8 @@ impl ChatWindow {
             transfer_dialog: settings_transfer::TransferDialog::new(cx),
             setup_wizard: setup_wizard::SetupWizard::new(cx),
             part_prompt: None,
+            paste_prompt: None,
+            pending_paste: None,
             layout_file: None,
             channel_orders: Default::default(),
             order_file: None,
@@ -1902,6 +1910,17 @@ impl ChatWindow {
         }
     }
 
+    /// A message draft that hands multi-line pastes to the paste dialog.
+    fn new_draft_input(placeholder: &str, cx: &mut Context<Self>) -> Entity<TextInput> {
+        let input = cx.new(|cx| TextInput::new_live(placeholder, cx));
+        cx.subscribe(&input, |this, input, paste: &input::MultilinePaste, cx| {
+            this.pending_paste = Some((input, paste.0.clone()));
+            cx.notify();
+        })
+        .detach();
+        input
+    }
+
     /// Creates draft inputs for servers and conversations that lack one.
     fn ensure_inputs(&mut self, cx: &mut Context<Self>) {
         let placeholder = draft_placeholder(&self.i18n, self.send_key);
@@ -1922,7 +1941,7 @@ impl ChatWindow {
             .collect();
         for key in keys {
             if let std::collections::hash_map::Entry::Vacant(slot) = self.inputs.entry(key) {
-                slot.insert(cx.new(|cx| TextInput::new_live(&placeholder, cx)));
+                slot.insert(Self::new_draft_input(&placeholder, cx));
             }
         }
     }
@@ -2061,6 +2080,13 @@ impl ChatWindow {
             {
                 self.part_prompt = None;
             }
+            if self
+                .paste_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.network() == id)
+            {
+                self.paste_prompt = None;
+            }
         }
         let removed = self.state.sync_networks(&networks);
         self.restore_channel_orders();
@@ -2146,6 +2172,13 @@ impl ChatWindow {
             .is_some_and(|prompt| prompt.network() == network)
         {
             self.part_prompt = None;
+        }
+        if self
+            .paste_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.network() == network)
+        {
+            self.paste_prompt = None;
         }
         if let Some(session) = self.sessions.get_mut(&network) {
             session.pending_parts.clear();
@@ -2845,6 +2878,7 @@ impl ChatWindow {
             .values()
             .chain(self.member_prompt.iter().map(|prompt| &prompt.input))
             .chain(self.part_prompt.iter().map(|prompt| &prompt.input))
+            .chain(self.paste_prompt.iter().flat_map(|prompt| prompt.inputs()))
             .chain(self.nick_prompts.iter().map(|prompt| &prompt.input))
             .chain(self.key_prompts.iter().map(|prompt| prompt.input()))
             .chain(std::iter::once(self.setup_wizard.nickname()))
@@ -4270,6 +4304,7 @@ impl ChatWindow {
         // dialog drawn over the window has to be excluded here.
         if self.quit_prompt_open
             || self.part_prompt.is_some()
+            || self.paste_prompt.is_some()
             || self.member_prompt.is_some()
             || !self.nick_prompts.is_empty()
             || !self.key_prompts.is_empty()
@@ -5537,6 +5572,7 @@ impl ChatWindow {
             self.wizard_connect(window, cx);
         } else if self.part_prompt_field_focused(window, cx) {
             self.confirm_part_prompt(window, cx);
+        } else if self.submit_paste_prompt_field(window, cx) {
         } else if let Some(network) = self.focused_nick_prompt(window, cx) {
             self.submit_nick_prompt(network, window, cx);
         } else if let Some((network, channel)) = self.focused_key_prompt(window, cx) {
@@ -7485,6 +7521,10 @@ impl ChatWindow {
         let key_prompts = self.render_key_prompts(origin, window, cx);
         let quit_dialog = self.render_quit_dialog(window, cx);
         let part_prompt = self.render_part_prompt(window, cx);
+        if let Some((input, text)) = self.pending_paste.take() {
+            self.open_paste_prompt(&input, &text, window, cx);
+        }
+        let paste_prompt = self.render_paste_prompt(window, cx);
         let transfer_dialog = self.render_transfer_dialog(window, cx);
         let setup_wizard = self.render_setup_wizard(window, cx);
         div()
@@ -7588,6 +7628,7 @@ impl ChatWindow {
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
+            .when_some(paste_prompt, |d, dialog| d.child(dialog))
             .when_some(setup_wizard, |d, dialog| d.child(dialog))
             .when_some(transfer_dialog, |d, dialog| d.child(dialog))
             .when_some(quit_dialog, |d, dialog| d.child(dialog))
@@ -9213,6 +9254,14 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
             FocusPreviousField,
             Some("PartDialog > TextInput"),
         ),
+        KeyBinding::new("tab", FocusNextField, Some("PasteDialog")),
+        KeyBinding::new("shift-tab", FocusPreviousField, Some("PasteDialog")),
+        KeyBinding::new("tab", FocusNextField, Some("PasteDialog > TextInput")),
+        KeyBinding::new(
+            "shift-tab",
+            FocusPreviousField,
+            Some("PasteDialog > TextInput"),
+        ),
         KeyBinding::new("secondary-,", OpenSettings, None),
         // Replaced by F3 under the Emacs key theme on Linux (see
         // `rebind_shortcuts`).
@@ -9717,6 +9766,10 @@ mod channel_key_tests;
 #[cfg(test)]
 #[path = "main_tests/part_dialog_tests.rs"]
 mod part_dialog_tests;
+
+#[cfg(test)]
+#[path = "main_tests/paste_dialog_tests.rs"]
+mod paste_dialog_tests;
 
 #[cfg(test)]
 #[path = "main_tests/tree_reveal_tests.rs"]
