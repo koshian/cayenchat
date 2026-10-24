@@ -19,6 +19,7 @@ pub struct LogList {
     pub state: ListState,
     prefix: usize,
     sequences: Vec<u64>,
+    shapes: Vec<u8>,
     scroll_handler: bool,
 }
 
@@ -67,6 +68,7 @@ impl LogList {
             state: ListState::new(0, alignment, px(OVERDRAW)),
             prefix: 0,
             sequences: Vec::new(),
+            shapes: Vec::new(),
             scroll_handler: false,
         }
     }
@@ -97,12 +99,29 @@ impl LogList {
     /// and rows above it need no measured height. A list following the
     /// bottom keeps following it.
     pub fn sync(&mut self, prefix: usize, sequences: &[u64]) {
+        self.sync_shaped(prefix, sequences, &[]);
+    }
+
+    /// [`sync`](Self::sync) for rows whose look depends on their neighbours.
+    /// `shapes` holds one value per row (empty: all rows have shape 0); a row
+    /// kept from the previous sync whose shape changed has its measured
+    /// height forgotten, as [`invalidate`](Self::invalidate) does.
+    pub fn sync_shaped(&mut self, prefix: usize, sequences: &[u64], shapes: &[u8]) {
         let anchor = self.anchor();
         if prefix != self.prefix {
             self.state.splice(0..self.prefix, prefix);
             self.prefix = prefix;
         }
+        if sequences == self.sequences.as_slice() && shapes == self.shapes.as_slice() {
+            return;
+        }
+        let reshaped = self.reshaped(sequences, shapes);
+        self.shapes.clear();
+        self.shapes.extend_from_slice(shapes);
         if sequences == self.sequences.as_slice() {
+            for sequence in reshaped {
+                self.invalidate(sequence);
+            }
             return;
         }
         // Both lists ascend. Walk from the end so splicing a run of changes
@@ -134,6 +153,33 @@ impl LogList {
         {
             self.scroll_to_row(prefix + index, offset_in_item);
         }
+        for sequence in reshaped {
+            self.invalidate(sequence);
+        }
+    }
+
+    /// The sequences present before and after whose shape differs. One
+    /// merge walk over both ascending lists, only when shapes changed.
+    fn reshaped(&self, sequences: &[u64], shapes: &[u8]) -> Vec<u64> {
+        if shapes == self.shapes.as_slice() {
+            return Vec::new();
+        }
+        let shape = |shapes: &[u8], index: usize| shapes.get(index).copied().unwrap_or(0);
+        let (old, mut changed) = (&self.sequences, Vec::new());
+        let (mut i, mut j) = (0, 0);
+        while i < old.len() && j < sequences.len() {
+            match old[i].cmp(&sequences[j]) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    if shape(&self.shapes, i) != shape(shapes, j) {
+                        changed.push(old[i]);
+                    }
+                    (i, j) = (i + 1, j + 1);
+                }
+            }
+        }
+        changed
     }
 
     /// Like [`sync`](Self::sync) for keys in any order, such as the channel
@@ -163,6 +209,7 @@ impl LogList {
         );
         self.sequences.clear();
         self.sequences.extend_from_slice(keys);
+        self.shapes.clear();
         if let Some((key, offset_in_item)) = anchor
             && let Some(index) = self.sequences.iter().position(|k| *k == key)
         {
@@ -347,6 +394,74 @@ mod tests {
         log.invalidate(4);
         assert_eq!(log.state.item_count(), 4);
         assert_eq!(log.sequences, [3, 5, 8]);
+    }
+
+    /// A row kept across a sync whose shape changed is measured again; the
+    /// row count and the other rows stay as they are.
+    #[gpui::test]
+    fn a_kept_row_whose_shape_changed_is_measured_again(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div, list};
+        use std::{cell::RefCell, rc::Rc};
+
+        struct Log {
+            list: LogList,
+            heights: Rc<RefCell<Vec<f32>>>,
+        }
+        impl Render for Log {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let heights = self.heights.clone();
+                div().w(px(300.)).h(px(300.)).child(
+                    list(self.list.state.clone(), move |index, _, _| {
+                        div()
+                            .w_full()
+                            .h(px(heights.borrow()[index]))
+                            .into_any_element()
+                    })
+                    .size_full(),
+                )
+            }
+        }
+
+        let heights = Rc::new(RefCell::new(vec![40.; 10]));
+        let (view, cx) = cx.add_window_view(|_, _| {
+            let mut list = LogList::new();
+            list.sync_shaped(0, &(1..=10).collect::<Vec<_>>(), &[0; 10]);
+            Log {
+                list,
+                heights: heights.clone(),
+            }
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        };
+        draw(cx);
+        view.update(cx, |log, _| {
+            log.list.state.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            })
+        });
+        draw(cx);
+        let height_of = |cx: &mut gpui::VisualTestContext, index| {
+            view.read_with(cx, |log, _| {
+                log.list.state.bounds_for_item(index).map(|b| b.size.height)
+            })
+        };
+        assert_eq!(height_of(cx, 1), Some(px(40.)));
+        // Older line 0 joins in front of line 1, which loses its header.
+        view.update(cx, |log, _| {
+            *log.heights.borrow_mut() = [vec![40., 20.], vec![40.; 9]].concat();
+            log.list.sync_shaped(
+                0,
+                &(0..=10).collect::<Vec<_>>(),
+                &[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            );
+        });
+        draw(cx);
+        assert_eq!(height_of(cx, 1), Some(px(20.)));
+        assert_eq!(height_of(cx, 2), Some(px(40.)));
+        assert_eq!(view.read_with(cx, |log, _| log.list.state.item_count()), 11);
     }
 
     /// Rows of different heights (wrapped text, image previews) are drawn,
