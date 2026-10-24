@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The Shortcuts tab: the navigation shortcuts by action, with the keys each
+//! The shortcut list on the Keyboard tab: the navigation shortcuts by action, with the keys each
 //! has now. A key is changed by pressing the new combination (#114); a change
 //! can be undone for one action or for all of them.
 
-use gpui::{prelude::*, *};
-
 use crate::{
-    SettingsTab, SettingsWindow, account_settings,
+    SettingsWindow,
     key_recorder::{self, Recorded, Rejection},
     settings_theme,
     shortcuts::{self, Caution, Owner, ShortcutAction},
     tooltip::TextTooltip,
 };
+use gpui::{prelude::*, *};
 
 /// A key being recorded for one action.
 pub(crate) struct ShortcutRecording {
@@ -232,17 +231,13 @@ impl SettingsWindow {
             }))
     }
 
-    pub(crate) fn render_shortcut_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let theme = settings_theme::palette(cx);
-        let mut panel = account_settings::panel(cx).child(self.tab_heading("shortcuts_tab"));
-        for (index, action) in shortcuts::ACTIONS.iter().enumerate() {
-            panel = panel.child(self.shortcut_row(index, action, cx));
-        }
-        panel
-            .when_some(self.status_message(), |d, feedback| {
-                d.child(div().text_color(theme.warning).child(feedback))
-            })
-            .child(self.reset_footer(SettingsTab::Shortcuts, cx))
+    /// The rows of the shortcut list, shown under the Keyboard tab's options.
+    pub(crate) fn shortcut_rows(&mut self, cx: &mut Context<Self>) -> Vec<Div> {
+        shortcuts::ACTIONS
+            .iter()
+            .enumerate()
+            .map(|(index, action)| self.shortcut_row(index, action, cx))
+            .collect()
     }
 }
 
@@ -250,7 +245,8 @@ impl SettingsWindow {
 mod tests {
     use gpui::{Entity, Keystroke};
 
-    use super::{Recorded, SettingsTab, SettingsWindow, shortcuts};
+    use super::{Recorded, SettingsWindow, shortcuts};
+    use crate::SettingsTab;
     #[gpui::test]
     fn shortcuts_are_changed_by_keys(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -267,7 +263,7 @@ mod tests {
         });
         let (form, cx) = cx.add_window_view(|window, cx| {
             let mut form = SettingsWindow::new(owner, settings.clone(), window, cx);
-            form.tab = SettingsTab::Shortcuts;
+            form.tab = SettingsTab::Keyboard;
             form
         });
         cx.run_until_parked();
