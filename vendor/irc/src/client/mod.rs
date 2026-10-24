@@ -505,6 +505,10 @@ struct ClientState {
     /// for one of them starts a new reply and rebuilds the list (local change,
     /// see vendor/README.md).
     names_done: RwLock<HashSet<String>>,
+    /// Nick to position in the list, for the channel whose NAMES reply is being taken in.
+    /// Any message that is not a RPL_NAMREPLY drops it, since the positions may have moved
+    /// (local change, see vendor/README.md).
+    names_index: RwLock<HashMap<String, HashMap<String, usize>>>,
     /// Set by the first end of MOTD; only that one joins the configured channels.
     motd_handled: AtomicBool,
     /// A thread-safe index to track the current alternative nickname being used.
@@ -523,6 +527,7 @@ impl ClientState {
             config,
             chanlists: RwLock::new(HashMap::new()),
             names_done: RwLock::new(HashSet::new()),
+            names_index: RwLock::new(HashMap::new()),
             motd_handled: AtomicBool::new(false),
             alt_nick_index: RwLock::new(0),
             confirmed_nick: RwLock::new(None),
@@ -538,6 +543,14 @@ impl ClientState {
         let msg = msg.into();
         self.handle_sent_message(&msg)?;
         self.sender.send(msg)
+    }
+
+    /// Drops the list of `chan` and the end-of-NAMES mark that goes with it (local change,
+    /// see vendor/README.md). Every path that forgets a channel must use this.
+    fn drop_channel_list(&self, chan: &str) {
+        let _ = self.chanlists.write().remove(chan);
+        self.names_done.write().remove(chan);
+        self.names_index.write().remove(chan);
     }
 
     /// Gets the current nickname in use.
@@ -559,7 +572,7 @@ impl ClientState {
         log::trace!("[SENT] {}", msg.to_string());
 
         if let PART(ref chan, _) = msg.command {
-            let _ = self.chanlists.write().remove(chan);
+            self.drop_channel_list(chan);
         }
 
         Ok(())
@@ -568,6 +581,11 @@ impl ClientState {
     /// Handles received messages internally for basic client functionality.
     fn handle_message(&self, msg: &Message) -> error::Result<()> {
         log::trace!("[RECV] {}", msg.to_string());
+        if !matches!(msg.command, Command::Response(Response::RPL_NAMREPLY, _))
+            && !self.names_index.read().is_empty()
+        {
+            self.names_index.write().clear();
+        }
         match msg.command {
             JOIN(ref chan, _, _) => self.handle_join(msg.source_nickname().unwrap_or(""), chan),
             PART(ref chan, _) => self.handle_part(msg.source_nickname().unwrap_or(""), chan),
@@ -582,7 +600,7 @@ impl ClientState {
                     .as_deref()
                     .is_some_and(|me| user.eq_ignore_ascii_case(me))
                 {
-                    let _ = self.chanlists.write().remove(chan);
+                    self.drop_channel_list(chan);
                     return Ok(());
                 }
                 self.handle_part(user, chan)
@@ -592,7 +610,10 @@ impl ClientState {
                 let old_nick = msg.source_nickname().unwrap_or("");
                 {
                     let mut me = self.confirmed_nick.write();
-                    if me.as_deref().is_some_and(|me| old_nick.eq_ignore_ascii_case(me)) {
+                    if me
+                        .as_deref()
+                        .is_some_and(|me| old_nick.eq_ignore_ascii_case(me))
+                    {
                         *me = Some(new_nick.clone());
                     }
                 }
@@ -641,9 +662,7 @@ impl ClientState {
                     }
                 }
             }
-            Command::Response(Response::RPL_ENDOFNAMES, ref args) => {
-                self.handle_endofnames(args)
-            }
+            Command::Response(Response::RPL_ENDOFNAMES, ref args) => self.handle_endofnames(args),
             Command::Response(Response::ERR_NICKNAMEINUSE, _)
             | Command::Response(Response::ERR_ERRONEOUSNICKNAME, _) => {
                 let alt_nicks = self.config().alternate_nicknames();
@@ -822,10 +841,24 @@ impl ClientState {
             if self.names_done.write().remove(chan) {
                 vec.clear();
             }
+            // One nick appears once; the later entry wins so its modes are kept. The index
+            // keeps a reply of N names linear instead of scanning the list per name.
+            // The first line of a reply starts from a fresh index.
+            let mut indexes = self.names_index.write();
+            let index = indexes.entry(chan.clone()).or_insert_with(|| {
+                vec.iter()
+                    .enumerate()
+                    .map(|(i, u)| (u.get_nickname().to_owned(), i))
+                    .collect()
+            });
             for user in args[3].split(' ') {
                 let user = User::new(user);
-                if !vec.iter().any(|x| x.get_nickname() == user.get_nickname()) {
-                    vec.push(user);
+                match index.get(user.get_nickname()) {
+                    Some(&i) => vec[i] = user,
+                    None => {
+                        index.insert(user.get_nickname().to_owned(), vec.len());
+                        vec.push(user);
+                    }
                 }
             }
         }
@@ -1089,7 +1122,7 @@ impl Client {
     /// better than the built-in nickname comparison that it was kicked (see vendor/README.md).
     #[cfg(feature = "channel-lists")]
     pub fn forget_channel_list(&self, chan: &str) {
-        let _ = self.state.chanlists.write().remove(chan);
+        self.state.drop_channel_list(chan);
     }
 
     /// Does nothing since `channel-lists` feature is disabled.
@@ -1625,6 +1658,113 @@ mod test {
             client.list_users("#test").unwrap(),
             vec![User::new("@alice"), User::new("@bob")]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn names_twice_keeps_roles() -> Result<()> {
+        let value = ":irc.test.net 001 test :Welcome\r\n\
+                     :test!t@h JOIN #test\r\n\
+                     :irc.test.net 353 test = #test :@alice bob\r\n\
+                     :irc.test.net 366 test #test :End of /NAMES list.\r\n\
+                     :irc.test.net 353 test = #test :alice @bob\r\n\
+                     :irc.test.net 366 test #test :End of /NAMES list.\r\n";
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value.to_owned()),
+            ..test_config()
+        })
+        .await?;
+        client.stream()?.collect().await?;
+        let users = client.list_users("#test").unwrap();
+        assert_eq!(users.len(), 2);
+        // `User`'s equality ignores roles, so check them directly.
+        let level = |n: &str| {
+            users
+                .iter()
+                .find(|u| u.get_nickname() == n)
+                .unwrap()
+                .highest_access_level()
+        };
+        assert_eq!(level("alice"), crate::client::data::AccessLevel::Member);
+        assert_eq!(level("bob"), crate::client::data::AccessLevel::Oper);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn join_during_names_takes_the_names_role() -> Result<()> {
+        let value = ":irc.test.net 001 test :Welcome\r\n\
+                     :test!t@h JOIN #test\r\n\
+                     :irc.test.net 353 test = #test :test\r\n\
+                     :bob!b@h JOIN #test\r\n\
+                     :irc.test.net 353 test = #test :@bob\r\n\
+                     :irc.test.net 366 test #test :End of /NAMES list.\r\n";
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value.to_owned()),
+            ..test_config()
+        })
+        .await?;
+        client.stream()?.collect().await?;
+        let users = client.list_users("#test").unwrap();
+        assert_eq!(users.len(), 2);
+        assert_eq!(
+            users[1].highest_access_level(),
+            crate::client::data::AccessLevel::Oper
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn leaving_channels_leaves_no_state() -> Result<()> {
+        let mut value = String::from(":irc.test.net 001 test :Welcome\r\n");
+        for i in 0..200 {
+            value.push_str(&format!(
+                ":test!t@h JOIN #c{i}\r\n:irc.test.net 353 test = #c{i} :test x\r\n\
+                 :irc.test.net 366 test #c{i} :End of /NAMES list.\r\n\
+                 :x!x@h KICK #c{i} test\r\n"
+            ));
+        }
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value),
+            ..test_config()
+        })
+        .await?;
+        client.stream()?.collect().await?;
+        assert!(client.state.chanlists.read().is_empty());
+        assert!(client.state.names_done.read().is_empty());
+        client.forget_channel_list("#c1");
+        assert!(client.state.names_done.read().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn a_large_names_reply_is_taken_in_linear_time() -> Result<()> {
+        let mut value = String::from(":irc.test.net 001 test :Welcome\r\n:test!t@h JOIN #big\r\n");
+        let mut nick = 0;
+        for _ in 0..2000 {
+            let names: Vec<String> = (0..20)
+                .map(|_| {
+                    nick += 1;
+                    format!("n{nick}")
+                })
+                .collect();
+            value.push_str(&format!(
+                ":irc.test.net 353 test = #big :{}\r\n",
+                names.join(" ")
+            ));
+        }
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value),
+            ..test_config()
+        })
+        .await?;
+        let start = std::time::Instant::now();
+        client.stream()?.collect().await?;
+        assert_eq!(client.list_users("#big").unwrap().len(), 40_000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
         Ok(())
     }
 
