@@ -922,6 +922,18 @@ pub(crate) struct SettingsWindow {
     pub(crate) auto_join: Option<AutoJoinDialog>,
     /// An avatar image is being decoded or encoded.
     pub(crate) avatar_opening: bool,
+    /// The quick icon section at the top of the Connection tab is expanded.
+    /// Only a view state: it is never saved and sends nothing.
+    pub(crate) avatar_quick_open: bool,
+    /// Id of the running upload that was started in the quick
+    /// section, so finishing it registers the icon.
+    pub(crate) avatar_upload_registers: Option<u64>,
+    /// The latest feedback is about the image host, so the quick section
+    /// offers the way to the Image Upload tab.
+    pub(crate) avatar_setup_link: bool,
+    /// The server whose quick icon section sent the user to the Image
+    /// Upload tab, to return to.
+    pub(crate) avatar_return: Option<String>,
     /// Observers of `settings`' fields; replaced with the form.
     _field_subscriptions: Vec<Subscription>,
     /// Whether the connection button was last drawn as Disconnect, so the window is
@@ -1132,6 +1144,10 @@ impl SettingsWindow {
             avatar_editor: None,
             auto_join: None,
             avatar_opening: false,
+            avatar_quick_open: false,
+            avatar_upload_registers: None,
+            avatar_setup_link: false,
+            avatar_return: None,
             _field_subscriptions: field_subscriptions,
             connected_shown: false,
             log_status_shown: None,
@@ -2073,6 +2089,7 @@ impl SettingsWindow {
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.avatar_feedback = None;
+        self.avatar_setup_link = false;
         self.avatar_editor = None;
         self.auto_join = None;
         let store = secrets::store(cx);
@@ -2142,6 +2159,10 @@ impl SettingsWindow {
         let server_fields = profile
             .as_ref()
             .map(|profile| self.render_server_fields(profile, cx));
+        let quick_avatar = profile
+            .as_ref()
+            .map(|profile| self.render_quick_avatar(profile, cx));
+        let reiwa_mode = self.reiwa_mode_row("connection-reiwa-mode", cx);
         let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
         let selected_label = if no_server {
@@ -2254,6 +2275,15 @@ impl SettingsWindow {
                             .child(self.i18n.text("destination")),
                     )
                     .child(server_selector.flex_1().min_w_0()),
+            )
+            .when_some(quick_avatar, |d, quick| d.child(quick))
+            // App-wide, so outside the icon section and its fold.
+            .child(reiwa_mode)
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("reiwa_mode_global_hint")),
             )
             .when_some(server_fields, |d, fields| d.child(fields))
             .when(no_server, |d| {
@@ -3482,6 +3512,7 @@ impl SettingsWindow {
         if self.tab != tab {
             self.feedback = None;
             self.avatar_feedback = None;
+            self.avatar_setup_link = false;
             // A key being recorded does not wait on another tab.
             self.shortcut_recording = None;
             // A picker open under a color row does not wait for a return.
@@ -3494,6 +3525,9 @@ impl SettingsWindow {
         self.settings.sync_shown_server(cx);
         // The system may have changed the registration since it was read.
         self.refresh_autostart(cx);
+        if tab == SettingsTab::Connection {
+            self.avatar_return = None;
+        }
         self.tab = tab;
     }
 

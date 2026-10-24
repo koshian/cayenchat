@@ -5,6 +5,7 @@ mod account_settings;
 mod application_settings;
 mod autostart;
 mod avatar_editor;
+mod avatar_quick_setup;
 mod avatars;
 mod button_order;
 mod channel_keys;

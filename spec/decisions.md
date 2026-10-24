@@ -742,6 +742,32 @@ Sources: [capability negotiation](https://ircv3.net/specs/extensions/capability-
   `ircv3.metadata` field load without it.
 - **Occupancy applies to metadata only** (D058): avatars from CTCP AVATAR
   (D025) are tied to a user mask and the name, not to occupancies.
+- **Quick icon setup on the Connection tab** (#593, 2026-10-24). Directly
+  under the server selector, "Set up an icon" unfolds a section that reuses
+  the IRCv3 tab's URL draft (`SettingsWindow::settings.avatar_url`), image
+  chooser, square selection and upload, so both tabs always show the same
+  value. The checkbox is only a fold (an unsaved view state, no stored
+  setting): unfolding or folding saves and sends nothing, and folding does
+  not remove or stop publishing anything. Folded, one line says whether an
+  icon is registered. The section has no "publish" checkbox; **Register /
+  Update** (and finishing an upload started in the section) is the explicit
+  act, and a notice before it says the URL goes to other users on IRC and
+  an uploaded image to the external image host. It writes the existing
+  fields only: `avatar_url`, `user_avatars = true` (of that server only; a
+  later switch-off is respected until the next registration),
+  `ircv3.peer_avatars = true` and `peer_avatar_url`, and tries the
+  Metadata publish on the current connection. Editing the field publishes
+  nothing. The footer keeps the ways apart: Metadata (published only when
+  the server confirmed that URL; "not connected", "unsupported" and
+  failures are shown as such) and CTCP AVATAR (needs Save; a reconnect is
+  asked for, never done; "sharing" only when the connection answers with
+  that URL, otherwise it says the old URL is still answered). The chooser is offered without an image host; its
+  setup and re-authentication guidance (the same as for chat attachments)
+  gets a button to the Image Upload tab, which has a way back to the same
+  server's section, and nothing is uploaded automatically. The Reiwa mode
+  checkbox under the section (outside the fold) edits the app-wide
+  `appearance.reiwa_mode` shared with the Application tab, and is never set
+  by registering.
 
 `user_avatars` was added without a settings version change (like batch),
 read as off when absent. On load, a file that still has `appearance.user_avatars`
