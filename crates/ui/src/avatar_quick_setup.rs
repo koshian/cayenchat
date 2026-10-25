@@ -179,25 +179,31 @@ impl SettingsWindow {
         let theme = settings_theme::palette(cx);
         let open = self.avatar_quick_open;
         let registered = !profile.avatar_url.is_empty();
-        // The row is a disclosure header, not a setting: the chevron shows the
-        // fold, the state and action words say what is registered.
-        // The header and the body are one bordered section; inside it only the
-        // URL row uses the label column, the texts start at the section edge.
+        // A flat disclosure item like the other settings: the whole header
+        // row toggles, the chevron shows the fold and the state word says what
+        // is registered. The content hangs one step in under the header; only
+        // the URL row uses the label column.
+        let text = theme.text;
+        let toggle = |this: &mut Self, cx: &mut Context<Self>| {
+            this.avatar_quick_open = !this.avatar_quick_open;
+            cx.notify();
+        };
         let section = div()
             .flex()
             .flex_col()
             .gap_2()
-            .p_2()
-            .border_1()
-            .border_color(theme.border)
             .child(
                 div()
                     .id("avatar-quick-toggle")
+                    .track_focus(&self.avatar_toggle_focus)
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .gap_x_2()
                     .cursor_pointer()
+                    .hover(|s| s.bg(theme.hover))
+                    .focus(move |s| s.border_b_1().border_color(text))
+                    .child(div().w_4().child(if open { "▾" } else { "▸" }))
                     .child(self.i18n.text("avatar_quick_toggle"))
                     .child(div().text_color(theme.text_secondary).child(self.i18n.text(
                         if registered {
@@ -206,24 +212,13 @@ impl SettingsWindow {
                             "avatar_quick_state_unset"
                         },
                     )))
-                    .child(div().flex_grow())
-                    .child(div().text_color(theme.text_secondary).child(self.i18n.text(
-                        if registered {
-                            "avatar_quick_action_change"
-                        } else {
-                            "avatar_quick_action_set"
-                        },
-                    )))
-                    .child(if open { "▴" } else { "▾" })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.avatar_quick_open = !this.avatar_quick_open;
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx))),
             )
             .child(
                 div()
                     .id("avatar-quick-summary")
                     .min_w_0()
+                    .pl_4()
                     .text_color(theme.text_secondary)
                     .child(self.quick_avatar_summary(profile)),
             );
@@ -251,11 +246,12 @@ impl SettingsWindow {
             settings_theme::button(id, primary, cx).child(self.i18n.text(key))
         };
         let buttons = div()
-            .ml(settings_theme::LABEL_INDENT)
             .flex()
             .flex_wrap()
             .items_center()
             .gap_2()
+            // Lined up under the URL input, which they act on.
+            .ml(settings_theme::LABEL_INDENT)
             // Choosing an image works without an image host; the missing
             // setup is explained when an image is chosen.
             .when(uploading.is_none(), |row| {
@@ -302,6 +298,7 @@ impl SettingsWindow {
                 .flex()
                 .flex_col()
                 .gap_2()
+                .pl_4()
                 .on_action(cx.listener(Self::paste_avatar_image))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -314,7 +311,6 @@ impl SettingsWindow {
                 )
                 .child(
                     div()
-                        .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.text_secondary)
                         .child(self.i18n.text("avatar_quick_local_note")),
                 )

@@ -928,6 +928,8 @@ pub(crate) struct SettingsWindow {
     /// The quick icon section at the top of the Connection tab is expanded.
     /// Only a view state: it is never saved and sends nothing.
     pub(crate) avatar_quick_open: bool,
+    /// Keyboard focus of that section's disclosure header.
+    pub(crate) avatar_toggle_focus: FocusHandle,
     /// Id of the running upload that was started in the quick
     /// section, so finishing it registers the icon.
     pub(crate) avatar_upload_registers: Option<u64>,
@@ -1149,6 +1151,7 @@ impl SettingsWindow {
             auto_join: None,
             avatar_opening: false,
             avatar_quick_open: false,
+            avatar_toggle_focus: cx.focus_handle().tab_stop(true),
             avatar_upload_registers: None,
             avatar_setup_link: false,
             avatar_return: None,
