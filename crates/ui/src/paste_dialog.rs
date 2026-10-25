@@ -2,8 +2,8 @@
 //! The question of a multi-line paste into a message draft (#605), drawn in the
 //! chat window when "confirm multi-line paste" is on.
 //!
-//! The pasted text is shown in one multi-line editor. Sending joins its
-//! non-empty lines with single spaces into one PRIVMSG, or one NOTICE when its
+//! The pasted text is shown in one multi-line editor. Sending sends each of its
+//! non-empty lines as its own PRIVMSG, or NOTICE when its
 //! box is ticked; it goes to the conversation the paste was made in and never
 //! through the draft, so a pasted `/command` is only text and the draft is not
 //! touched. One quote button puts the quote mark and a space before every
@@ -85,13 +85,14 @@ fn without_empty_lines(text: &str) -> String {
         .join("\n")
 }
 
-/// The message the lines make: the non-empty ones joined with one space.
-pub(crate) fn joined<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
+/// The messages the lines make: each non-empty line, without trailing blanks.
+pub(crate) fn message_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     lines
         .into_iter()
+        .map(str::trim_end)
         .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(crate) struct PastePrompt {
@@ -291,9 +292,8 @@ impl ChatWindow {
             return;
         }
         let (network, id, notice) = (prompt.network, prompt.conversation, prompt.notice);
-        let text = joined(prompt.body.read(cx).text().split('\n'));
-        let text = text.trim().to_owned();
-        if text.is_empty() {
+        let lines = message_lines(prompt.body.read(cx).text().split('\n'));
+        if lines.is_empty() {
             return;
         }
         let Some(conversation) = self.state.conversation(id) else {
@@ -304,15 +304,13 @@ impl ChatWindow {
         let result = self.registered_connection(network).and_then(|connection| {
             if !self.state.is_active_channel(id) {
                 Err(self.i18n.text("wait_join"))
-            } else if private {
-                connection.send_private_message(&name, &text, notice)
             } else {
-                connection.send_message(&name, &text, notice)
+                connection.send_lines(&name, &lines, notice, private)
             }
         });
         match result {
             Ok(()) => {
-                if notices::is_spoken(&text) {
+                if lines.iter().any(|line| notices::is_spoken(line)) {
                     self.note_spoken(network);
                 }
                 self.close_paste_prompt(window, cx);
@@ -472,7 +470,7 @@ impl ChatWindow {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: it brings in `gpui::test`, which shadows `#[test]`.
-    use super::{add_quote, joined, remove_quote, removes_quote, split_lines, toggle_quote};
+    use super::{add_quote, message_lines, remove_quote, removes_quote, split_lines, toggle_quote};
 
     #[test]
     fn lines_split_on_any_break_and_ignore_one_trailing_break() {
@@ -527,8 +525,8 @@ mod tests {
     }
 
     #[test]
-    fn lines_join_with_one_space_and_skip_empty_ones() {
-        assert_eq!(joined(["a", "", " ", "b"]), "a b");
-        assert_eq!(joined([""]), "");
+    fn each_non_empty_line_is_a_message() {
+        assert_eq!(message_lines(["a ", "", " ", " b"]), ["a", " b"]);
+        assert!(message_lines([""]).is_empty());
     }
 }

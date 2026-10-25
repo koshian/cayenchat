@@ -146,17 +146,6 @@ impl WrappedText {
         at
     }
 
-    /// The start of the row the caret at `offset` is on.
-    pub(crate) fn row_start(&self, offset: usize) -> usize {
-        self.rows[self.row_for_offset(offset)].start
-    }
-
-    /// The end of the row the caret at `offset` is on. On a wrapped row this
-    /// is the start of the next row, so the caret is drawn there.
-    pub(crate) fn row_end(&self, offset: usize) -> usize {
-        self.rows[self.row_for_offset(offset)].end
-    }
-
     /// One rectangle per row the range covers, with a small mark where it
     /// includes a line break.
     pub(crate) fn rects_for_range(&self, range: &std::ops::Range<usize>) -> Vec<Bounds<Pixels>> {

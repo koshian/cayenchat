@@ -250,7 +250,7 @@
   "confirm_multiline_paste": "メッセージ入力欄に複数行を貼り付けるとき確認する",
   "confirm_multiline_paste_hint": "オフ: 貼り付けた文章の各行を半角スペースでつないで入力欄に入れます。オン: 先に各行を示すダイアログを開き、編集、引用符の付加・削除をしたうえで、そのまま通常の発言または NOTICE として送信できます。",
   "paste_dialog_title": "貼り付けた複数行を {target} に送信",
-  "paste_dialog_hint": "各行を半角スペースでつないで 1 件のメッセージとして送ります（空行は送りません）。送る前にここで編集できます。Enter は改行、Ctrl+Enter で送信します。",
+  "paste_dialog_hint": "各行をそれぞれ 1 件のメッセージとして順に送ります（空行は送りません）。送る前にここで編集できます。Enter は改行、Ctrl+Enter で送信します。",
   "paste_dialog_quote": "引用符",
   "paste_dialog_add_quote": "引用符を追加",
   "paste_dialog_remove_quote": "引用符を削除",

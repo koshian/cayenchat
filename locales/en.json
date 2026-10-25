@@ -250,7 +250,7 @@
   "confirm_multiline_paste": "Confirm before pasting several lines into the message box",
   "confirm_multiline_paste_hint": "Off: the lines of a pasted text are joined with spaces and inserted into the message box. On: a dialog shows the lines first, where you can edit them, add or remove a quote mark, and send them at once as a message or a NOTICE.",
   "paste_dialog_title": "Send the pasted lines to {target}",
-  "paste_dialog_hint": "The text is sent as one message, its lines joined with spaces; empty lines are left out. Edit it here first. Enter starts a new line; Ctrl+Enter sends.",
+  "paste_dialog_hint": "Each line is sent as its own message, one after another; empty lines are left out. Edit it here first. Enter starts a new line; Ctrl+Enter sends.",
   "paste_dialog_quote": "Quote mark",
   "paste_dialog_add_quote": "Add quote",
   "paste_dialog_remove_quote": "Remove quote",

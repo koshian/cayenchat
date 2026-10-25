@@ -2142,6 +2142,43 @@ impl Connection {
         self.submit(outgoing, "private message")
     }
 
+    /// Sends each of `lines` as its own message to `target` (a channel, or a
+    /// nickname when `private`). Every line is checked before any is queued,
+    /// so a line the server would not take stops the whole send.
+    pub fn send_lines(
+        &self,
+        target: &str,
+        lines: &[String],
+        notice: bool,
+        private: bool,
+    ) -> Result<(), String> {
+        if private && !valid_nickname(target) {
+            return Err("Invalid message target.".into());
+        }
+        if !private && !valid_channel(target) {
+            return Err("Select a channel before sending.".into());
+        }
+        let mut outgoing = Vec::with_capacity(lines.len());
+        for text in lines {
+            validate_message_text(text)?;
+            let line = self.pinned(Outgoing::Message {
+                target: target.to_owned(),
+                text: text.clone(),
+                display_text: text.clone(),
+                notice,
+                encoder: None,
+            });
+            self.validate(&line)?;
+            outgoing.push(line);
+        }
+        for line in outgoing {
+            self.commands
+                .try_send(line)
+                .map_err(|error| format!("Could not queue IRC message: {error}"))?;
+        }
+        Ok(())
+    }
+
     pub fn send_member_command(&self, nickname: &str, action: MemberCommand) -> Result<(), String> {
         let outgoing = member_outgoing(nickname, action)?;
         self.submit(outgoing, "member command")

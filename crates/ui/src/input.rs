@@ -382,21 +382,27 @@ impl TextInput {
         self.select_to(self.content.len(), cx)
     }
 
-    /// Where Home goes: the start of the text, or of the row the caret is on
-    /// in a multi-line input.
+    /// Where Home goes: the start of the text, or of the line (up to a line
+    /// break, not of the wrapped row) the caret is on in a multi-line input.
+    /// A wrapped row's end has the same offset as the next row's start, so
+    /// stopping there would draw the caret on the wrong row.
     fn home_offset(&self) -> usize {
-        match &self.wrapped {
-            Some(wrapped) if self.multiline => wrapped.row_start(self.cursor_offset()),
-            _ => 0,
+        if !self.multiline {
+            return 0;
         }
+        let before = &self.content[..self.cursor_offset()];
+        before.rfind('\n').map_or(0, |at| at + 1)
     }
 
     /// Where End goes (see [`Self::home_offset`]).
     fn end_offset(&self) -> usize {
-        match &self.wrapped {
-            Some(wrapped) if self.multiline => wrapped.row_end(self.cursor_offset()),
-            _ => self.content.len(),
+        if !self.multiline {
+            return self.content.len();
         }
+        let cursor = self.cursor_offset();
+        self.content[cursor..]
+            .find('\n')
+            .map_or(self.content.len(), |at| cursor + at)
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
@@ -2488,7 +2494,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn end_on_a_wrapped_row_selects_its_last_character(cx: &mut gpui::TestAppContext) {
+    fn home_and_end_go_to_the_line_ends_not_the_wrapped_row_ends(cx: &mut gpui::TestAppContext) {
         let text = "abcdefghijklmnopqrstuvwxyz".repeat(4);
         let (input, cx) = multiline(&text, cx);
         input.update_in(cx, |input, window, cx| {
@@ -2498,8 +2504,10 @@ mod tests {
             assert!(second_row > 1 && second_row < text.len());
             input.move_to(0, cx);
             input.select_end(&SelectEnd, window, cx);
-            assert_eq!(input.selection(), 0..second_row);
-            assert_eq!(&input.text()[input.selection()], &text[..second_row]);
+            assert_eq!(&input.text()[input.selection()], text.as_str());
+            input.move_to(second_row + 1, cx);
+            input.home(&Home, window, cx);
+            assert_eq!(input.selection(), 0..0);
         });
     }
 
@@ -2536,11 +2544,6 @@ mod tests {
             input.down(&Down, window, cx);
             let second = input.selection().start;
             assert!(second > 0 && second < input.text().len());
-            // End stays on the row it was pressed on.
-            input.move_to(0, cx);
-            input.end(&End, window, cx);
-            let first_end = input.selection().start;
-            assert!(first_end < second + 1 && first_end > 0);
             input.up(&Up, window, cx);
             assert_eq!(input.selection(), 0..0);
         });
