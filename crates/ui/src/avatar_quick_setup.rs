@@ -184,8 +184,9 @@ impl SettingsWindow {
         // is registered. The label sits in the label column like any other
         // setting; the fold mark, state and all content use the right column.
         // The row does not change with hover or with the fold: only the
-        // chevron direction shows the state. A mouse click drops the focus
-        // again, so the keyboard focus underline never lingers after a click.
+        // chevron direction shows the state. A mouse press does not move the
+        // focus here (GPUI would focus it on mouse down), so the keyboard focus
+        // underline shows only when Tab reaches the header.
         let text = theme.text;
         let toggle = |this: &mut Self, cx: &mut Context<Self>| {
             this.avatar_quick_open = !this.avatar_quick_open;
@@ -194,6 +195,7 @@ impl SettingsWindow {
         let section = div().flex().flex_col().gap_2().child(
             div()
                 .id("avatar-quick-toggle")
+                .debug_selector(|| "avatar-quick-toggle".into())
                 .track_focus(&self.avatar_toggle_focus)
                 .flex()
                 .items_center()
@@ -225,12 +227,8 @@ impl SettingsWindow {
                             },
                         ))),
                 )
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    if !event.is_keyboard() {
-                        window.blur();
-                    }
-                    toggle(this, cx)
-                })),
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| toggle(this, cx))),
         );
         if !open {
             return section;
@@ -414,7 +412,7 @@ mod tests {
     use crate::session::PeerAvatarConnection;
     use crate::{SettingsTab, SettingsWindow};
     use cayenchat_storage::{ServerProfile, Settings, TextEncoding};
-    use gpui::{Entity, TestAppContext, VisualTestContext};
+    use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 
     const URL: &str = "https://img.example/me.png";
 
@@ -531,6 +529,21 @@ mod tests {
             form.read_with(cx, |form, _| form.settings.values.clone()),
             before
         );
+    }
+
+    #[gpui::test]
+    fn a_mouse_click_on_the_heading_toggles_without_focusing_it(cx: &mut TestAppContext) {
+        let (form, cx) = open(cx, two_servers());
+        let focus = form.read_with(cx, |form, _| form.avatar_toggle_focus.clone());
+        let at = cx.debug_bounds("avatar-quick-toggle").unwrap().center();
+        cx.simulate_mouse_move(at, None, Modifiers::default());
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        // Between press and release the heading must not show the focus mark.
+        assert!(!cx.update(|window, _| focus.is_focused(window)));
+        cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        assert!(form.read_with(cx, |form, _| form.avatar_quick_open));
+        assert!(!cx.update(|window, _| focus.is_focused(window)));
     }
 
     #[gpui::test]
