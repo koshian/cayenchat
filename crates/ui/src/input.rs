@@ -344,6 +344,7 @@ impl TextInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.completion = None;
+        self.goal_x = None;
         cx.notify();
     }
 
@@ -455,7 +456,7 @@ impl TextInput {
         } else if y >= wrapped.height() {
             self.content.len()
         } else {
-            wrapped.offset_for_point(point(x, y))
+            wrapped.offset_in_row(point(x, y))
         };
         if select {
             self.select_to(target, cx);
@@ -2445,6 +2446,44 @@ mod tests {
             assert_eq!(input.selection(), 20..20, "the column after the edit");
             input.select_to(18, cx);
             assert_eq!(&input.text()[input.selection()], "cd");
+        });
+    }
+
+    #[gpui::test]
+    fn up_and_down_leave_a_short_wrapped_row(cx: &mut gpui::TestAppContext) {
+        let text = "abc abcdefghijklmnopqrstuvwxyz ".repeat(4);
+        let (input, cx) = multiline(&text, cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(0, cx);
+            input.down(&Down, window, cx);
+            let second_row = input.selection().start;
+            for _ in 0..10 {
+                input.right(&Right, window, cx);
+            }
+            input.goal_x = None;
+            let mut at = input.selection().start;
+            let mut steps = 0;
+            while at > 0 {
+                input.up(&Up, window, cx);
+                let now = input.selection().start;
+                assert!(now < at, "Up stays at {at}");
+                at = now;
+                steps += 1;
+                assert!(steps < 10);
+            }
+            assert!(second_row > 0);
+            input.select_up(&SelectUp, window, cx);
+            input.move_to(second_row + 10, cx);
+            input.select_up(&SelectUp, window, cx);
+            assert!(!input.selection().is_empty());
+            input.move_to(0, cx);
+            let mut at = 0;
+            for _ in 0..3 {
+                input.down(&Down, window, cx);
+                let now = input.selection().start;
+                assert!(now > at, "Down stays at {at}");
+                at = now;
+            }
         });
     }
 

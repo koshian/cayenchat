@@ -107,6 +107,17 @@ impl WrappedText {
     /// The offset closest to `position`; outside the text it is the nearest
     /// row's start or end.
     pub(crate) fn offset_for_point(&self, position: Point<Pixels>) -> usize {
+        self.offset_at(position, false)
+    }
+
+    /// Like `offset_for_point`, but the offset stays on the row at `position`:
+    /// on a wrapped row it is at most the row's last character, since its end
+    /// belongs to the next row. Up and Down use it to really change rows.
+    pub(crate) fn offset_in_row(&self, position: Point<Pixels>) -> usize {
+        self.offset_at(position, true)
+    }
+
+    fn offset_at(&self, position: Point<Pixels>, stay_in_row: bool) -> usize {
         let ix = if position.y <= px(0.) {
             0
         } else {
@@ -120,7 +131,19 @@ impl WrappedText {
             .unwrapped_layout
             .closest_index_for_x(position.x + row.x0)
             + row.base;
-        at.clamp(row.start, row.end)
+        let at = at.clamp(row.start, row.end);
+        if stay_in_row && row.soft && at == row.end {
+            return self.lines[row.line]
+                .unwrapped_layout
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| row.base + glyph.index)
+                .filter(|&index| index < row.end)
+                .max()
+                .map_or(row.start, |last| last.max(row.start));
+        }
+        at
     }
 
     /// The start of the row the caret at `offset` is on.
