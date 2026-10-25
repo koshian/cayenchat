@@ -647,5 +647,18 @@ mod tests {
         );
         assert_eq!((cache.in_flight(), cache.ready_bytes()), (0, 10));
         assert_eq!(cache.stats().stale, 1);
+
+        // The new result arrives first, then the forgotten one (either way).
+        for old_result in [Err(LoadError::Cancelled), Ok(("old".into(), 99))] {
+            let mut cache = self::cache(CacheLimits::default());
+            let (old, new) = forgotten_and_reloaded(&mut cache);
+            assert!(cache.finish(new, Ok(("new".into(), 10)), now).applied);
+            assert!(!cache.finish(old, old_result, now).applied);
+            assert_eq!(
+                cache.request(&link(1), 3, now),
+                Lookup::Ready(&"new".to_string())
+            );
+            assert_eq!((cache.in_flight(), cache.ready_bytes()), (0, 10));
+        }
     }
 }

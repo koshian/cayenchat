@@ -1223,6 +1223,32 @@ mod tests {
     }
 
     #[gpui::test]
+    fn an_open_whois_of_ours_fetches_the_icon_again_on_refresh(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url = BOB.into();
+            chat.apply_servers(settings, cx);
+            let info = cayenchat_irc_core::WhoisInfo {
+                nickname: "me".into(),
+                username: Some("u".into()),
+                ..Default::default()
+            };
+            chat.show_whois(NetworkId(1), info, true, cx);
+        });
+        cx.run_until_parked();
+        let bob = || fetcher.calls().iter().filter(|u| u.contains("bob")).count();
+        assert_eq!(bob(), 1, "{:?}", fetcher.calls());
+        chat.read_with(cx, |chat, _| assert_eq!(chat.whois_windows.len(), 1));
+        // Nothing but the WHOIS shows us: no log row or member list entry.
+        let profile = chat.read_with(cx, |chat, _| chat.saved.servers[0].id.clone());
+        chat.update(cx, |chat, cx| chat.refresh_own_avatar(&profile, cx));
+        cx.run_until_parked();
+        assert_eq!(bob(), 2, "{:?}", fetcher.calls());
+    }
+
+    #[gpui::test]
     fn each_network_shows_its_own_saved_icon(cx: &mut TestAppContext) {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, false, &fetcher);

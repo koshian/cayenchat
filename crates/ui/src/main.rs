@@ -2141,6 +2141,9 @@ impl ChatWindow {
         };
         if profile.user_avatars && !profile.avatar_url.is_empty() {
             self.avatars.refresh(&profile.avatar_url);
+            // An open WHOIS holds its own copy of the image and starts the
+            // new load itself, even if no log or member list shows us.
+            self.refresh_whois_avatars(cx);
             cx.notify();
         }
     }
