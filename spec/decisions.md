@@ -1683,7 +1683,10 @@ IRCv3 metadata, need not be handled that strictly.
 - **Learning and using.** A CTCP AVATAR NOTICE updates its sender's mask
   (no picture removes it), as does a NICK for the new name and mask. Someone
   seen with a remembered mask — a JOIN, a live message — gets the picture
-  without a WHO or a query; otherwise discovery is as in D025. A lookup of
+  at once without a WHO, and is still queried once per connection (#612):
+  a sender tells only users who queried it of a change (D025), so skipping
+  the query left both sides on the old picture after any reconnect.
+  Otherwise discovery is as in D025. A lookup of
   ours finding no mark drops the name's and the mask's picture. "Get
   avatar" in the WHOIS window still queries.
 - **Display.** The worker reports `Event::PeerAvatar { nickname, url }`.

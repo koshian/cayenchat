@@ -68,8 +68,9 @@
 //! name) and remembered in a [`PeerAvatarCache`] under the mask
 //! `nick!user@host`, loosened as `avatar_mask` describes. The cache lives in
 //! memory across connections of a network. Whoever is seen with a
-//! remembered mask (a JOIN, a live message, ...) gets the picture
-//! without being looked up or asked; others are found as above. A NICK
+//! remembered mask (a JOIN, a live message, ...) gets the picture at once,
+//! without a lookup, and is still queried once: only a query makes the
+//! sender tell us of a later change. Others are found as above. A NICK
 //! carries the picture to the new name and mask, an answer without a
 //! picture (or a lookup of ours finding no mark) drops it, and QUIT or
 //! leaving ends only what this struct tracks about the user: the picture
@@ -704,8 +705,9 @@ impl PeerAvatars {
     }
 
     /// A user seen with `user`@`host` (a live speaker, or someone who
-    /// joined) whose mask has a remembered picture gets it without being
-    /// asked. With `presence` they must share a channel with us.
+    /// joined) whose mask has a remembered picture gets it at once, and is
+    /// still asked once: the query is what makes them tell us of a later
+    /// change (D025). With `presence` they must share a channel with us.
     pub(crate) fn remembered(
         &mut self,
         nick: &str,
@@ -729,9 +731,8 @@ impl PeerAvatars {
         let url = self
             .cache
             .get(&AvatarMask::new(self.casemapping, nick, user, host))?;
-        if self.stages.len() < MAX_PROBED_USERS {
-            self.stages.insert(key, Stage::Queried);
-        }
+        // A full queue only skips the query; the picture is shown anyway.
+        let _ = self.enqueue(ProbeKind::Query, nick, key);
         self.set_peer(nick, Some(url))
     }
 
@@ -2063,8 +2064,47 @@ mod tests {
         peers
     }
 
+    /// The probes waiting to be sent, as (kind, nickname).
+    fn queued(peers: &PeerAvatars) -> Vec<(ProbeKind, &str)> {
+        peers
+            .queue
+            .iter()
+            .map(|probe| (probe.kind, probe.nickname.as_str()))
+            .collect()
+    }
+
+    /// #612: after a reconnect the remembered picture used to stand in for
+    /// the query, so bob never counted us as an asker and never told us of
+    /// his change. The query goes out, and his notice replaces the picture.
     #[test]
-    fn the_same_mask_gets_its_picture_back_without_asking() {
+    fn a_remembered_picture_still_asks_so_a_later_change_is_told() {
+        let rosters = rosters();
+        let cache = PeerAvatarCache::default();
+        drop(bob_answered(&cache));
+        let mut again = PeerAvatars::with_cache(true, None, cache.clone());
+        let now = Instant::now();
+        let joined = line(":bob!~bob@host1.example.org JOIN #a");
+        assert!(again.joined(&joined, ME).is_some());
+        assert_eq!(
+            wire(&again.tick(now, ME, &rosters).send),
+            ["PRIVMSG bob \u{1}AVATAR\u{1}"]
+        );
+        let changed = "https://example.com/bob-new.png";
+        let notice =
+            format!(":bob!~bob@host1.example.org NOTICE alice :\u{1}AVATAR {changed}\u{1}");
+        let handled = observe(&mut again, &notice, now).unwrap();
+        assert_eq!(avatars(&handled.events), [format!("bob={changed}")]);
+        // Asked once per connection: nothing more goes out.
+        assert!(
+            again
+                .tick(now + PROBE_INTERVAL, ME, &rosters)
+                .send
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_same_mask_gets_its_picture_back_at_once_and_is_asked_once() {
         let rosters = rosters();
         let cache = PeerAvatarCache::default();
         let mut peers = bob_answered(&cache);
@@ -2072,7 +2112,8 @@ mod tests {
         peers.lifecycle(&line(":bob!~bob@host1.example.org QUIT :bye"), &rosters, ME);
         assert!(peers.avatars.is_empty());
         // Back with another host label and a different ident mark: the same
-        // mask, so the join brings the picture and nothing is asked.
+        // mask, so the join brings the picture, and one query (no WHO)
+        // makes bob tell us of later changes.
         let joined = line(":Bob!bob@host7.EXAMPLE.org JOIN #a");
         let event = peers.joined(&joined, ME).unwrap();
         assert_eq!(avatars(&[event]), [format!("Bob={BOB_PNG}")]);
@@ -2081,7 +2122,7 @@ mod tests {
             None,
             "nothing to look up"
         );
-        assert!(peers.queue.is_empty());
+        assert_eq!(queued(&peers), [(ProbeKind::Query, "Bob")]);
         // A reconnect: a new worker state with the shared cache is the same.
         let mut again = PeerAvatars::with_cache(true, None, cache.clone());
         let speaking = line(":bob!bob@host2.example.org PRIVMSG #a :hi");
@@ -2091,7 +2132,7 @@ mod tests {
             .unwrap();
         assert_eq!(avatars(&[event]), [format!("bob={BOB_PNG}")]);
         assert_eq!(again.speaker("bob", ME, &rosters), None);
-        assert!(again.queue.is_empty());
+        assert_eq!(queued(&again), [(ProbeKind::Query, "bob")]);
         // Nothing is repeated for someone already looked at.
         assert!(
             again
@@ -2101,12 +2142,12 @@ mod tests {
     }
 
     #[test]
-    fn a_who_reply_for_a_remembered_mask_restores_the_picture_without_asking() {
+    fn a_who_reply_for_a_remembered_mask_restores_the_picture_and_asks_once() {
         let rosters = rosters();
         let cache = PeerAvatarCache::default();
         drop(bob_answered(&cache));
         // A reconnect: bob is already in the channel and only the channel's
-        // WHO tells us his mask; it carries the mark, yet nothing is asked.
+        // WHO tells us his mask; the picture comes back and he is asked once.
         let mut again = PeerAvatars::with_cache(true, None, cache.clone());
         let who =
             line(":srv 352 alice #a ~bob host9.example.org srv bob H :0 \u{3}4\u{f}KVIrc user");
@@ -2117,7 +2158,7 @@ mod tests {
                 .observe(&who, ME, &rosters, false, Instant::now())
                 .is_none()
         );
-        assert!(again.queue.is_empty());
+        assert_eq!(queued(&again), [(ProbeKind::Query, "bob")]);
         // A reply for someone who left is ignored, and so is a mask nobody
         // remembers.
         let gone = line(":srv 352 alice #a ~bob host9.example.org srv ghost H :0 x");
