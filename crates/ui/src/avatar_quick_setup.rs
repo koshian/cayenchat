@@ -183,8 +183,10 @@ impl SettingsWindow {
         // row toggles, the chevron shows the fold and the state word says what
         // is registered. The label sits in the label column like any other
         // setting; the fold mark, state and all content use the right column.
-        // The row never changes colour or gets an underline: only the
-        // chevron direction shows the state.
+        // The row does not change with hover or with the fold: only the
+        // chevron direction shows the state. A mouse click drops the focus
+        // again, so the keyboard focus underline never lingers after a click.
+        let text = theme.text;
         let toggle = |this: &mut Self, cx: &mut Context<Self>| {
             this.avatar_quick_open = !this.avatar_quick_open;
             cx.notify();
@@ -199,6 +201,9 @@ impl SettingsWindow {
                 // As tall as a row with an input, so the item spacing matches.
                 .min_h(px(35.))
                 .cursor_pointer()
+                .border_b_1()
+                .border_color(gpui::transparent_black())
+                .focus(move |s| s.border_color(text))
                 .child(settings_theme::label_column().child(self.i18n.text("avatar_quick_toggle")))
                 .child(
                     div()
@@ -220,7 +225,12 @@ impl SettingsWindow {
                             },
                         ))),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx))),
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if !event.is_keyboard() {
+                        window.blur();
+                    }
+                    toggle(this, cx)
+                })),
         );
         if !open {
             return section;
