@@ -1,38 +1,82 @@
 name: Beta Release
 
 on:
-  workflow_run:
-    workflows: [CI]
-    branches: [master]
-    types: [completed]
+  # 05:00 and 17:00 JST. GitHub may start scheduled runs late.
+  schedule:
+    - cron: "0 20,8 * * *"
+  workflow_dispatch:
 
 # Build jobs run third-party build scripts, so only the publish job can write.
 permissions:
   contents: read
 
+# A running run is never cancelled, so it never replaces the beta half way;
+# a waiting run is replaced by a newer one. Each run picks the master HEAD
+# when it starts.
 concurrency:
   group: beta-release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Choose commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.choose.outputs.sha }}
+      publish: ${{ steps.choose.outputs.publish }}
+
+    steps:
+      # Only the latest master HEAD is ever published, never another ref. The
+      # beta tag moves last in `publish`, so it names the last complete beta.
+      - name: Choose commit to publish
+        id: choose
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/master" ]; then
+            echo "::error::Run this workflow on master, not ${REF}."
+            exit 1
+          fi
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq .object.sha)
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+
+          beta=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/beta" --jq .object.sha 2>/dev/null || true)
+          if [ "$beta" = "$sha" ]; then
+            echo "::notice::beta already points at ${sha}; nothing to publish."
+            exit 0
+          fi
+
+          # CI of this very commit must have passed; an unrelated success
+          # of another commit does not count.
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --branch master --event push --commit "$sha" \
+            --json status,conclusion)
+          echo "CI runs for ${sha}: ${runs}"
+          if [ "$(jq 'any(.conclusion == "success")' <<<"$runs")" != true ]; then
+            echo "::warning::CI has not succeeded for ${sha} (missing, running, failed or cancelled); not publishing."
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
   package:
     name: Package
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
     uses: ./.github/workflows/package.yml
     with:
-      ref: ${{ github.event.workflow_run.head_sha }}
+      ref: ${{ needs.prepare.outputs.sha }}
 
   publish:
     name: Publish rolling beta
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
-    needs: package
+    needs: [prepare, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,7 +85,7 @@ jobs:
       - name: Check out tested commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
 
       - name: Download packages
@@ -50,43 +94,31 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Point beta tag at tested commit
-        env:
-          SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f beta "$SHA"
-          git push origin refs/tags/beta --force
-
       - name: Set release metadata
         shell: bash
         env:
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           echo "BUILD_DATE=$(date -u +'%Y-%m-%d')" >> "$GITHUB_ENV"
           echo "SHORT_SHA=${SHA::7}" >> "$GITHUB_ENV"
 
-      - name: Create or update beta release
+      # The release must already exist: creating it here would create the beta
+      # tag before the upload, and a failed upload would then look published.
+      - name: Update beta release
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          if gh release view beta >/dev/null 2>&1; then
-            gh release edit beta \
-              --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
-              --target "$SHA" \
-              --prerelease \
-              --latest=false \
-              --notes "Rolling beta build from master (${SHA})."
-          else
-            gh release create beta \
-              --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
-              --target "$SHA" \
-              --prerelease \
-              --latest=false \
-              --notes "Rolling beta build from master (${SHA})."
+          if ! gh release view beta >/dev/null 2>&1; then
+            echo "::error::The beta release does not exist. Create it once by hand (a prerelease on the beta tag) and run this workflow again."
+            exit 1
           fi
+          gh release edit beta \
+            --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
+            --target "$SHA" \
+            --prerelease \
+            --latest=false \
+            --notes "Rolling beta build from master (${SHA})."
 
           # Upload first so a failed upload never leaves the release empty,
           # then drop assets from older builds whose names no longer exist.
@@ -98,3 +130,14 @@ jobs:
                 gh release delete-asset beta "$asset" --yes
               fi
             done
+
+      # Last, so a failed run leaves the tag on the previous beta and the
+      # next run publishes again.
+      - name: Point beta tag at tested commit
+        env:
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f beta "$SHA"
+          git push origin refs/tags/beta --force
