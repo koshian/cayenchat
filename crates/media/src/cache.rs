@@ -71,6 +71,7 @@ pub struct Job<K = MediaRef> {
     pub source: K,
     pub cancel: CancelFlag,
     generation: u64,
+    serial: u64,
 }
 
 /// The outcome of [`PreviewCache::finish`].
@@ -85,7 +86,7 @@ pub struct Finished<R> {
 #[derive(Debug)]
 enum State<T> {
     Queued,
-    Loading(CancelFlag),
+    Loading(CancelFlag, u64),
     Ready { value: T, bytes: usize },
     Failed { at: Instant, transient: bool },
 }
@@ -114,6 +115,8 @@ pub struct PreviewCache<T, R, K = MediaRef> {
     limits: CacheLimits,
     enabled: bool,
     generation: u64,
+    /// Numbers the jobs, so a result is only applied to the load it belongs to.
+    jobs: u64,
     records: HashMap<K, Record<T, R>>,
     /// Queued requests, oldest first.
     queue: VecDeque<K>,
@@ -132,6 +135,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             limits,
             enabled: false,
             generation: 0,
+            jobs: 0,
             records: HashMap::new(),
             queue: VecDeque::new(),
             in_flight: 0,
@@ -158,7 +162,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         self.queue = VecDeque::new();
         for (_, record) in std::mem::take(&mut self.records) {
             match record.state {
-                State::Loading(cancel) => cancel.cancel(),
+                State::Loading(cancel, _) => cancel.cancel(),
                 State::Ready { value, .. } => self.released.push(value),
                 State::Queued | State::Failed { .. } => {}
             }
@@ -181,7 +185,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
                 record.last_used = clock;
                 match &record.state {
                     State::Ready { .. } => false,
-                    State::Queued | State::Loading(_) => true,
+                    State::Queued | State::Loading(..) => true,
                     State::Failed { at, transient } => {
                         let retry = *transient
                             && record.attempts < limits.max_attempts
@@ -245,7 +249,9 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         let source = self.queue.pop_back()?;
         let record = self.records.get_mut(&source)?;
         let cancel = CancelFlag::default();
-        record.state = State::Loading(cancel.clone());
+        self.jobs += 1;
+        let serial = self.jobs;
+        record.state = State::Loading(cancel.clone(), serial);
         record.attempts = record.attempts.saturating_add(1);
         self.in_flight += 1;
         self.stats.jobs_started += 1;
@@ -253,6 +259,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             source,
             cancel,
             generation: self.generation,
+            serial,
         })
     }
 
@@ -267,10 +274,9 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
     ) -> Finished<R> {
         self.in_flight = self.in_flight.saturating_sub(1);
         let current = self.enabled && job.generation == self.generation;
-        let record = self
-            .records
-            .get_mut(&job.source)
-            .filter(|record| current && matches!(record.state, State::Loading(_)));
+        let record = self.records.get_mut(&job.source).filter(|record| {
+            current && matches!(record.state, State::Loading(_, serial) if serial == job.serial)
+        });
         let Some(record) = record else {
             self.stats.stale += 1;
             return Finished {
@@ -327,7 +333,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             .collect();
         for source in gone {
             match self.records.remove(&source).map(|record| record.state) {
-                Some(State::Loading(cancel)) => cancel.cancel(),
+                Some(State::Loading(cancel, _)) => cancel.cancel(),
                 Some(State::Ready { value, bytes }) => {
                     self.ready_bytes -= bytes;
                     self.released.push(value);
@@ -379,7 +385,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
                             State::Ready { .. } => true,
                             // Failures only count against the record limit.
                             State::Failed { .. } => self.records.len() > self.limits.max_records,
-                            State::Queued | State::Loading(_) => false,
+                            State::Queued | State::Loading(..) => false,
                         }
                 })
                 .min_by_key(|(_, record)| record.last_used)
@@ -595,5 +601,51 @@ mod tests {
         assert_eq!(cache.queued(), 2);
         assert_eq!(cache.next_job().unwrap().source, link(3));
         assert_eq!(cache.next_job().unwrap().source, link(2));
+    }
+
+    /// Start, forget, start again; then the forgotten load and the new one
+    /// finish in either order.
+    fn forgotten_and_reloaded(cache: &mut PreviewCache<String, u32>) -> (Job, Job) {
+        let now = Instant::now();
+        cache.request(&link(1), 1, now);
+        let old = cache.next_job().unwrap();
+        cache.forget(|source| *source == link(1));
+        assert!(old.cancel.is_cancelled());
+        cache.request(&link(1), 2, now);
+        let new = cache.next_job().unwrap();
+        assert_eq!(cache.in_flight(), 2);
+        (old, new)
+    }
+
+    #[test]
+    fn a_forgotten_load_never_touches_the_load_that_replaced_it() {
+        let now = Instant::now();
+        // The cancelled result arrives first.
+        let mut cache = cache(CacheLimits::default());
+        let (old, new) = forgotten_and_reloaded(&mut cache);
+        let stale = cache.finish(old, Err(LoadError::Cancelled), now);
+        assert!(!stale.applied);
+        let finished = cache.finish(new, Ok(("new".into(), 10)), now);
+        assert!(finished.applied);
+        assert_eq!(finished.waiters, [2]);
+        assert_eq!(
+            cache.request(&link(1), 3, now),
+            Lookup::Ready(&"new".to_string())
+        );
+        assert_eq!((cache.in_flight(), cache.ready_bytes()), (0, 10));
+
+        // A forgotten load that still succeeds must not leave its old image.
+        let mut cache = self::cache(CacheLimits::default());
+        let (old, new) = forgotten_and_reloaded(&mut cache);
+        let stale = cache.finish(old, Ok(("old".into(), 99)), now);
+        assert!(!stale.applied);
+        assert_eq!((cache.in_flight(), cache.ready_bytes()), (1, 0));
+        assert!(cache.finish(new, Ok(("new".into(), 10)), now).applied);
+        assert_eq!(
+            cache.request(&link(1), 3, now),
+            Lookup::Ready(&"new".to_string())
+        );
+        assert_eq!((cache.in_flight(), cache.ready_bytes()), (0, 10));
+        assert_eq!(cache.stats().stale, 1);
     }
 }

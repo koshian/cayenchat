@@ -92,6 +92,9 @@ impl SettingsWindow {
                 .avatar_url
                 .update(cx, |field, cx| field.set_text(url, cx));
         }
+        if !self.avatar_refresh.iter().any(|id| id == profile_id) {
+            self.avatar_refresh.push(profile_id.to_owned());
+        }
         let sent = self.owner.update(cx, |owner, _, _| {
             owner.request_own_avatar(profile_id, Some(url.to_owned()))
         });

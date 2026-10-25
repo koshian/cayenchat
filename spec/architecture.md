@@ -1153,10 +1153,15 @@ the subset avatars need:
   What the server confirmed (`app::own_avatar`) is publication state only and
   is never the source of our display; an empty icon shows the placeholder. The
   unsaved draft is never shown. Because the image may change behind the same
-  URL, each settings save forgets the cached image of the saved icon URL of
-  servers showing avatars (`Avatars::refresh`) and it is fetched once more;
-  redraws and other avatars keep their cache, so there is no refetch loop. The settings state in a standing note that
-  other users may see a change later, or not at all.
+  URL, the explicit register / update step forgets the cached image of that
+  icon (`Avatars::refresh`) once the servers are saved, and it is fetched once
+  more; it also does so when the same URL is registered again and nothing
+  else changed, and a failed save keeps it pending. Other settings saves,
+  redraws and other avatars keep their cache, so there is no refetch loop. A
+  load forgotten while under way is cancelled, and its result is never applied
+  to a later load of the same source (`PreviewCache` numbers its jobs). The
+  settings state in a standing note that other users may see a change later,
+  or not at all.
 - Later joiners: a live JOIN (not in a history batch) of someone who
   shares no other channel with us (judged from the rosters published
   before it) and has no known avatar is looked up with `METADATA <nick>

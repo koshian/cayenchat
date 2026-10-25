@@ -910,6 +910,9 @@ pub(crate) struct SettingsWindow {
     /// Why Publish or Remove could not be started for our own avatar, or
     /// how an avatar image upload went.
     pub(crate) avatar_feedback: Option<String>,
+    /// Servers whose icon was registered or updated and not yet saved; once
+    /// the servers are saved, the chat window fetches those icons again.
+    pub(crate) avatar_refresh: Vec<String>,
     /// The avatar image file being read off the UI thread; a newer drop or
     /// choice replaces it.
     pub(crate) avatar_file_read: Option<Task<()>>,
@@ -1139,6 +1142,7 @@ impl SettingsWindow {
             autosave: None,
             autosave_error: None,
             avatar_feedback: None,
+            avatar_refresh: Vec::new(),
             avatar_file_read: None,
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
@@ -1423,6 +1427,11 @@ impl SettingsWindow {
             settings.selected_server = self.saved.selected_server.clone();
         }
         if settings == self.saved && !(with_servers && self.servers_unsaved(cx)) {
+            // Nothing to write: registering the same URL again still asks
+            // for its image to be fetched again.
+            if with_servers {
+                self.refresh_registered_avatars(cx);
+            }
             return Ok(());
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
@@ -1440,7 +1449,21 @@ impl SettingsWindow {
         let servers_changed = previous.servers != self.saved.servers
             || previous.selected_server != self.saved.selected_server;
         self.apply_to_chat_window(&previous, saved, servers_changed, cx);
+        if with_servers {
+            self.refresh_registered_avatars(cx);
+        }
         Ok(())
+    }
+
+    /// After the servers were saved, has the chat window fetch again the
+    /// icons registered or updated since the last save. A failed save keeps
+    /// them pending.
+    fn refresh_registered_avatars(&mut self, cx: &mut Context<Self>) {
+        for id in std::mem::take(&mut self.avatar_refresh) {
+            let _ = self
+                .owner
+                .update(cx, |owner, _, cx| owner.refresh_own_avatar(&id, cx));
+        }
     }
 
     /// Applies what differs between `previous` and `saved` to the chat window:

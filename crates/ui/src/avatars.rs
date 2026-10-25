@@ -1136,52 +1136,90 @@ mod tests {
     }
 
     #[gpui::test]
-    fn saving_the_same_icon_url_again_fetches_it_once_and_only_ours(cx: &mut TestAppContext) {
+    fn registering_the_same_icon_url_again_fetches_it_once_and_only_ours(cx: &mut TestAppContext) {
+        const ICON: &str = "https://avatars.example.com/bob.png";
         let fetcher = Arc::new(FakeFetcher::default());
-        let (chat, cx) = open(cx, true, false, &fetcher);
-        let bob_fetches = || fetcher.calls().iter().filter(|u| u.contains("bob")).count();
-        let draw = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
-            chat.update(cx, |chat, cx| {
-                // Redraws repeat the lookups; only a missing image loads.
-                for _ in 0..3 {
-                    chat.avatars.lookup(BOB, 32);
-                    chat.avatars.lookup(CAROL, 32);
-                }
-                chat.pump_avatars(cx);
-            });
+        let mut settings = crate::settings_with_channels("#a");
+        settings.servers[0].user_avatars = true;
+        let file = crate::settings_file::TestFile::with(&settings);
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let owner = cx.add_window({
+            let (settings, fetcher) = (settings.clone(), fetcher.clone());
+            move |window, cx| {
+                let mut chat = ChatWindow::with_settings(settings, None, window, cx);
+                chat.avatars.use_fetcher(fetcher);
+                chat
+            }
+        });
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            crate::SettingsWindow::new(owner, settings.clone(), window, cx)
+        });
+        let profile = settings.selected_server.clone();
+        let fetches = |name: &str| fetcher.calls().iter().filter(|u| u.contains(name)).count();
+        let draw = |cx: &mut VisualTestContext| {
+            owner
+                .update(cx, |chat, _, cx| {
+                    // Redraws repeat the lookups; only a missing image loads.
+                    for _ in 0..3 {
+                        chat.avatars.lookup(ICON, 32);
+                        chat.avatars.lookup(CAROL, 32);
+                    }
+                    chat.pump_avatars(cx);
+                })
+                .unwrap();
             cx.run_until_parked();
         };
-        let save = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext, url: &str| {
-            chat.update(cx, |chat, cx| {
-                let mut settings = chat.saved.clone();
-                settings.servers[0].avatar_url = url.into();
-                chat.apply_servers(settings, cx);
+        let register = |cx: &mut VisualTestContext| {
+            form.update(cx, |form, cx| {
+                form.register_avatar(&profile, ICON, cx);
+                form.save_servers(cx);
             });
         };
-        save(&chat, cx, BOB);
-        draw(&chat, cx);
-        draw(&chat, cx);
-        assert_eq!(bob_fetches(), 1, "{:?}", fetcher.calls());
-        let carol_fetches = fetcher
-            .calls()
-            .iter()
-            .filter(|u| u.contains("carol"))
-            .count();
-        // The image may have changed behind the same URL: saving fetches it
-        // once more, redraws afterwards do not, and other avatars stay.
-        save(&chat, cx, BOB);
-        draw(&chat, cx);
-        draw(&chat, cx);
-        assert_eq!(bob_fetches(), 2, "{:?}", fetcher.calls());
-        let after = fetcher
-            .calls()
-            .iter()
-            .filter(|u| u.contains("carol"))
-            .count();
-        assert_eq!(after, carol_fetches);
-        chat.read_with(cx, |chat, _| {
-            assert_eq!(chat.avatars.cache().records(), 2);
+        register(cx);
+        draw(cx);
+        draw(cx);
+        assert_eq!(fetches("bob"), 1, "{:?}", fetcher.calls());
+        let carol = fetches("carol");
+
+        // The image may have changed behind the same URL. Registering it
+        // again saves nothing new, yet fetches it once more; redraws
+        // afterwards do not, and other avatars stay cached.
+        register(cx);
+        draw(cx);
+        draw(cx);
+        assert_eq!(fetches("bob"), 2, "{:?}", fetcher.calls());
+        assert_eq!(fetches("carol"), carol);
+
+        // A save that fails keeps the image and fetches nothing; the fetch
+        // follows the save that works.
+        form.update(cx, |form, cx| {
+            form.register_avatar(&profile, ICON, cx);
+            let layout = &mut form.settings.values.restore_window_layout;
+            *layout = !*layout;
         });
+        crate::settings_file::fail_saves(true);
+        form.update(cx, |form, cx| form.save_servers(cx));
+        draw(cx);
+        assert_eq!(fetches("bob"), 2, "{:?}", fetcher.calls());
+        crate::settings_file::fail_saves(false);
+        form.update(cx, |form, cx| form.save_servers(cx));
+        draw(cx);
+        draw(cx);
+        assert_eq!(fetches("bob"), 3, "{:?}", fetcher.calls());
+        assert_eq!(fetches("carol"), carol);
+        owner
+            .read_with(cx, |chat, _| {
+                assert_eq!(chat.avatars.cache().records(), 2);
+            })
+            .unwrap();
+        drop(file);
     }
 
     #[gpui::test]
