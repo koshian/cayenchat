@@ -92,6 +92,9 @@ impl SettingsWindow {
                 .avatar_url
                 .update(cx, |field, cx| field.set_text(url, cx));
         }
+        if !self.avatar_refresh.iter().any(|id| id == profile_id) {
+            self.avatar_refresh.push(profile_id.to_owned());
+        }
         let sent = self.owner.update(cx, |owner, _, _| {
             owner.request_own_avatar(profile_id, Some(url.to_owned()))
         });
@@ -308,6 +311,12 @@ impl SettingsWindow {
                     div()
                         .text_color(theme.warning)
                         .child(self.i18n.text("avatar_quick_notice")),
+                )
+                .child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("avatar_quick_local_note")),
                 )
                 .child(crate::settings_field(
                     &self.i18n.text("ircv3_avatar_url"),
