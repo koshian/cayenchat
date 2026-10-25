@@ -1329,7 +1329,10 @@ tab change never changes it. `register_in_profile` is the one place that sets `a
 `user_avatars`, `ircv3.peer_avatars` and `peer_avatar_url`; the Metadata
 publish goes through `ChatWindow::request_own_avatar`. The fold state, the
 way back from the Image Upload tab and the "open image upload settings"
-flag are window state, not settings.
+flag are window state, not settings. The section is one bordered block
+(#609): the header, summary, notices and status lines start at its inner
+edge, and only the URL row and the buttons under it use the label column
+(`LABEL_INDENT`), so the buttons line up with the input.
 
 Peer sharing (D025) is shown under the same field while the server's peer
 avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),
