@@ -171,10 +171,20 @@ impl ChatWindow {
         let text = lines.join("\n");
         let body = cx.new(|cx| TextInput::new_multiline(&text, BODY_ROWS, cx));
         let quote = cx.new(|cx| TextInput::new_field("", DEFAULT_QUOTE, false, cx).bordered());
+        let line_quote = body.clone();
         let observers = [
             cx.observe(&body, |_, _, cx| cx.notify()),
-            cx.observe(&quote, |_, _, cx| cx.notify()),
+            cx.observe(&quote, move |_, quote, cx| {
+                let quote = quote.read(cx).text().trim().to_owned();
+                line_quote.update(cx, |body, _| {
+                    body.set_line_quote((!quote.is_empty()).then_some(quote));
+                });
+                cx.notify();
+            }),
         ];
+        body.update(cx, |body, _| {
+            body.set_line_quote(Some(DEFAULT_QUOTE.to_owned()));
+        });
         self.server_menu = None;
         self.member_menu = None;
         self.channel_menu = None;

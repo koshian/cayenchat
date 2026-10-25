@@ -183,6 +183,9 @@ pub struct TextInput {
     /// A wrapped, vertically scrolling text of several lines; Enter is
     /// bound to a line break by the window that hosts it.
     multiline: bool,
+    /// A quote mark that a new line repeats (with a space) when the line the
+    /// caret is on starts with it (multi-line only).
+    line_quote: Option<String>,
     /// How many lines the box shows (multi-line only).
     rows: usize,
     wrapped: Option<WrappedText>,
@@ -489,7 +492,23 @@ impl TextInput {
     }
 
     fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
-        self.replace_text_in_range(None, "\n", window, cx);
+        let mut line = String::from("\n");
+        if let Some(quote) = self.line_quote.as_deref() {
+            let cursor = self.selected_range.start;
+            let start = self.content[..cursor].rfind('\n').map_or(0, |at| at + 1);
+            let prefix = quote.len() + 1;
+            // Only after the quote and its space; inside them a break just
+            // splits the line.
+            if cursor >= start + prefix
+                && self.content[start..cursor]
+                    .strip_prefix(quote)
+                    .is_some_and(|rest| rest.starts_with(' '))
+            {
+                line.push_str(quote);
+                line.push(' ');
+            }
+        }
+        self.replace_text_in_range(None, &line, window, cx);
     }
 
     /// The hard line (up to its line break) around `offset` in a multi-line
@@ -1828,6 +1847,7 @@ impl TextInput {
             native_settings_style: false,
             bordered: false,
             multiline: false,
+            line_quote: None,
             rows: 1,
             wrapped: None,
             scroll_y: px(0.),
@@ -1889,6 +1909,11 @@ impl TextInput {
         input.multiline = true;
         input.rows = rows.max(1);
         input
+    }
+
+    /// Makes Enter continue a quoted line with `quote` and a space.
+    pub fn set_line_quote(&mut self, quote: Option<String>) {
+        self.line_quote = quote;
     }
 }
 
@@ -2409,6 +2434,24 @@ mod tests {
         single.update_in(cx, |input, window, cx| {
             input.replace_text_in_range(None, "a\nb", window, cx);
             assert_eq!(input.text(), "a b");
+        });
+    }
+
+    #[gpui::test]
+    fn enter_continues_a_quoted_line(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("> a\nb\n> > c", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.set_line_quote(Some(">".to_owned()));
+            input.move_to(3, cx);
+            input.insert_newline(&InsertNewline, window, cx);
+            assert_eq!(input.text(), "> a\n> \nb\n> > c");
+            // An unquoted line, and a caret inside the quote, add nothing.
+            input.move_to(8, cx);
+            input.insert_newline(&InsertNewline, window, cx);
+            assert_eq!(input.text(), "> a\n> \nb\n\n> > c");
+            input.move_to(1, cx);
+            input.insert_newline(&InsertNewline, window, cx);
+            assert_eq!(input.text(), ">\n a\n> \nb\n\n> > c");
         });
     }
 
