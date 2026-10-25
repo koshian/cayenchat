@@ -155,11 +155,6 @@ pub(crate) fn check_row(
         .cursor_pointer()
         .child(crate::settings_theme::checkbox(checked, true, cx))
         .child(label)
-        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                on_toggle(this, window, cx);
-                cx.stop_propagation();
-            }
-        }))
+        // GPUI also calls on_click for Enter and Space on a focused element.
         .on_click(cx.listener(move |this, _, window, cx| on_toggle(this, window, cx)))
 }

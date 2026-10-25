@@ -2310,11 +2310,13 @@ impl ChatWindow {
             .is_some_and(|network| self.can_disconnect(network))
     }
 
-    fn disconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+    /// Whether the disconnect was requested without an error.
+    fn disconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) -> bool {
         self.server_menu = None;
         let Some(session) = self.sessions.get_mut(&network) else {
-            return;
+            return false;
         };
+        let mut requested = true;
         let cancelled_retry = session.retry_pending;
         session.manual_disconnect = true;
         session.asleep = false;
@@ -2322,6 +2324,7 @@ impl ChatWindow {
         session.retry_token += 1;
         if let Some(connection) = &session.irc {
             if let Err(error) = connection.disconnect() {
+                requested = false;
                 self.raise_error(Some(network), error, notices::Origin::User, cx);
             }
         } else if cancelled_retry {
@@ -2329,6 +2332,7 @@ impl ChatWindow {
             self.state.append_server_message(network, message);
         }
         cx.notify();
+        requested
     }
 
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
@@ -7160,7 +7164,7 @@ impl ChatWindow {
                                 d.cursor_pointer()
                                     .hover(|d| d.bg(theme.hover_strong))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.disconnect(network, cx)
+                                        this.disconnect(network, cx);
                                     }))
                             })
                             .when(!can_disconnect, |d| d.text_color(theme.text_muted)),

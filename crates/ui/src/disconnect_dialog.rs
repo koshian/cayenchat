@@ -123,15 +123,13 @@ impl ChatWindow {
         };
         let (network, dont_ask) = (prompt.network, prompt.dont_ask);
         self.close_disconnect_prompt(window, cx);
-        if dont_ask {
+        // Only a disconnect that was really requested remembers the choice.
+        if self.is_registered_status(network) && self.disconnect(network, cx) && dont_ask {
             self.confirm_server_dblclick_disconnect = false;
             self.save_view_setting(
                 |settings| settings.confirm_server_dblclick_disconnect = false,
                 cx,
             );
-        }
-        if self.is_registered_status(network) {
-            self.disconnect(network, cx);
         }
     }
 

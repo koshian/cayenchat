@@ -1648,7 +1648,7 @@ impl SettingsWindow {
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |owner, _, cx| {
             if let Some(network) = owner.selected_network_id() {
-                owner.disconnect(network, cx)
+                owner.disconnect(network, cx);
             }
         });
         cx.notify();

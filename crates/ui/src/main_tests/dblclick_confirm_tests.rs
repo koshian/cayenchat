@@ -163,3 +163,28 @@ fn the_channel_dont_ask_is_saved_only_when_leaving_is_confirmed(cx: &mut TestApp
         assert!(!chat.confirm_channel_dblclick_part);
     });
 }
+
+#[gpui::test]
+fn a_dont_ask_is_not_saved_when_nothing_was_disconnected(cx: &mut TestAppContext) {
+    install_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let _file = crate::settings_file::TestFile::with(&settings);
+    let (chat, cx, _listener) = registered(&settings, cx);
+    chat.update_in(cx, |chat, window, cx| {
+        chat.activate_server_row(NetworkId(1), window, cx);
+        chat.toggle_disconnect_dont_ask(cx);
+        // The server is lost while the question is open.
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::Disconnected("lost".into())],
+            Worker::Running,
+            cx,
+        );
+        chat.confirm_disconnect_prompt(window, cx);
+        assert!(chat.disconnect_prompt.is_none());
+        assert!(!chat.sessions[&NetworkId(1)].manual_disconnect);
+        assert!(chat.confirm_server_dblclick_disconnect);
+        let saved = crate::settings_file::load().unwrap().unwrap();
+        assert!(saved.confirm_server_dblclick_disconnect);
+    });
+}
