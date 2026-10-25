@@ -98,6 +98,21 @@ const ALIVE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// Commands held back during an alive check; further ones are refused so a
 /// check cannot grow the backlog.
 const MAX_HELD_COMMANDS: usize = COMMAND_CAPACITY;
+/// The most lines [`Connection::send_lines`] takes at once; the paste dialog
+/// opens for at most this many.
+pub const MAX_SEND_LINES: usize = 100;
+/// Lines of a multi-line paste the worker sends at once, then one every
+/// [`PACED_INTERVAL`], close to irssi's default (a few lines, then one per 2
+/// seconds). Servers that count flood (IRCnet's ircd, ratbox, hybrid) cut the
+/// link when many lines arrive together; fakelag servers delay everything.
+const PACED_BURST: usize = 4;
+#[cfg(not(test))]
+const PACED_INTERVAL: Duration = Duration::from_secs(2);
+/// Short in tests, which run against a real socket in real time.
+#[cfg(test)]
+const PACED_INTERVAL: Duration = Duration::from_millis(300);
+/// Lines waiting to be sent paced; further ones are refused.
+const MAX_PACED_LINES: usize = MAX_SEND_LINES + MAX_HELD_COMMANDS;
 const ALIVE_CHECK_FAILED: &str = "No response from the server after waking from sleep.";
 /// Limits on WHOIS replies that have not reached end-of-WHOIS (318), so a
 /// hostile server cannot grow memory by never finishing them.
@@ -1507,6 +1522,9 @@ enum Outgoing {
         encoder: Option<&'static encoding_rs::Encoding>,
     },
     Raw(IrcMessage),
+    /// Messages (all `Outgoing::Message`) from a multi-line paste; the worker
+    /// sends the first [`PACED_BURST`] at once and the rest spaced out.
+    Lines(Vec<Outgoing>),
     /// Our own CTCP request to a user (`/ctcp`, `/ping`); the worker adds the
     /// token of a timed PING and paces the requests.
     Ctcp {
@@ -1601,7 +1619,8 @@ fn validate_outgoing_relayed<'w>(
             // whole command by the worker; this is the lower bound.
             vec![base_realname(realname).to_owned()],
         )),
-        Outgoing::Quit | Outgoing::CheckAlive(_) => return Ok(()),
+        // Each line was checked on its own by `send_lines`.
+        Outgoing::Quit | Outgoing::CheckAlive(_) | Outgoing::Lines(_) => return Ok(()),
         Outgoing::QuitWith(reason) | Outgoing::SleepQuit(reason) => {
             IrcMessage::from(IrcCommand::QUIT(Some(reason.clone())))
         }
@@ -2144,7 +2163,9 @@ impl Connection {
 
     /// Sends each of `lines` as its own message to `target` (a channel, or a
     /// nickname when `private`). Every line is checked before any is queued,
-    /// so a line the server would not take stops the whole send.
+    /// so a line the server would not take stops the whole send. At most
+    /// [`MAX_SEND_LINES`] lines; the worker sends the first few at once and
+    /// the rest spaced out, and drops those still waiting if the link ends.
     pub fn send_lines(
         &self,
         target: &str,
@@ -2152,6 +2173,11 @@ impl Connection {
         notice: bool,
         private: bool,
     ) -> Result<(), String> {
+        if lines.len() > MAX_SEND_LINES {
+            return Err(format!(
+                "At most {MAX_SEND_LINES} lines can be sent at once."
+            ));
+        }
         if private && !valid_nickname(target) {
             return Err("Invalid message target.".into());
         }
@@ -2171,18 +2197,11 @@ impl Connection {
             self.validate(&line)?;
             outgoing.push(line);
         }
-        // Everything or nothing: this thread is the only sender, so room that
-        // exists now stays until the lines are queued. A partial send would
-        // be sent again whole when the user retries.
-        if self.commands.capacity() < outgoing.len() {
-            return Err("The connection is busy; try again in a moment.".into());
-        }
-        for line in outgoing {
-            self.commands
-                .try_send(line)
-                .map_err(|error| format!("Could not queue IRC message: {error}"))?;
-        }
-        Ok(())
+        // One command, so everything or nothing: a partial send would be
+        // sent again whole when the user retries.
+        self.commands
+            .try_send(Outgoing::Lines(outgoing))
+            .map_err(|error| format!("Could not queue IRC messages: {error}"))
     }
 
     pub fn send_member_command(&self, nickname: &str, action: MemberCommand) -> Result<(), String> {
@@ -2749,6 +2768,9 @@ async fn run_cancellable(
             .finish() as u32,
         alive_token: String::new(),
         held: VecDeque::new(),
+        paced: VecDeque::new(),
+        paced_burst: PACED_BURST,
+        paced_ready: tokio::time::Instant::now(),
     };
 
     loop {
@@ -2813,6 +2835,15 @@ async fn run_cancellable(
                 if worker.peer_deadline().is_some() =>
             {
                 if worker.on_peer_deadline().await.is_break() {
+                    break;
+                }
+            }
+            // The next pasted line waiting its turn; no timer runs while
+            // none waits.
+            _ = tokio::time::sleep_until(until(worker.paced_deadline())),
+                if worker.paced_deadline().is_some() =>
+            {
+                if worker.send_paced().await.is_break() {
                     break;
                 }
             }
@@ -2927,6 +2958,13 @@ struct Worker {
     alive_token: String,
     /// Commands received during the alive check, in order.
     held: VecDeque<Outgoing>,
+    /// Pasted lines (and messages typed meanwhile, to keep the order)
+    /// waiting to be sent; dropped with the worker.
+    paced: VecDeque<Outgoing>,
+    /// Lines that may still go at once.
+    paced_burst: usize,
+    /// When the next waiting line may go once the burst is used.
+    paced_ready: tokio::time::Instant,
 }
 
 /// The instant a `sleep_until` waits for; it is unused while the branch
@@ -3032,6 +3070,60 @@ impl Worker {
             .filter(|_| self.registered)
     }
 
+    /// When the next waiting paste line may go; `None` while none waits or
+    /// the link is not known to be usable.
+    fn paced_deadline(&self) -> Option<tokio::time::Instant> {
+        (!self.paced.is_empty() && self.registered && self.alive_check.is_none()).then(|| {
+            if self.paced_burst > 0 {
+                tokio::time::Instant::now()
+            } else {
+                self.paced_ready
+            }
+        })
+    }
+
+    /// Queues pasted lines behind any still waiting and sends those due.
+    async fn queue_lines(&mut self, lines: Vec<Outgoing>) -> Flow {
+        if self.paced.len() + lines.len() > MAX_PACED_LINES {
+            return self
+                .emit(Event::ServerLine(
+                    "Lines not sent: too many are waiting to be sent.".into(),
+                ))
+                .await;
+        }
+        let now = tokio::time::Instant::now();
+        if self.paced.is_empty() && now >= self.paced_ready {
+            self.paced_burst = PACED_BURST;
+        }
+        self.paced.extend(lines);
+        self.send_paced().await
+    }
+
+    /// Sends the waiting lines that are due: the burst at once, then one
+    /// each [`PACED_INTERVAL`].
+    async fn send_paced(&mut self) -> Flow {
+        while self
+            .paced_deadline()
+            .is_some_and(|due| self.paced_burst > 0 || tokio::time::Instant::now() >= due)
+        {
+            let Some(Outgoing::Message {
+                target,
+                text,
+                display_text,
+                notice,
+                encoder,
+            }) = self.paced.pop_front()
+            else {
+                continue;
+            };
+            self.paced_burst = self.paced_burst.saturating_sub(1);
+            self.paced_ready = tokio::time::Instant::now() + PACED_INTERVAL;
+            self.send_message(target, text, display_text, notice, encoder)
+                .await?;
+        }
+        ControlFlow::Continue(())
+    }
+
     async fn on_command(&mut self, command: Option<Outgoing>, stream: &mut ClientStream) -> Flow {
         let Some(command) = command else {
             return ControlFlow::Break(());
@@ -3054,6 +3146,11 @@ impl Worker {
             return ControlFlow::Continue(());
         }
         match command {
+            Outgoing::Lines(lines) => self.queue_lines(lines).await,
+            // Behind the waiting pasted lines, so the order is kept.
+            message @ Outgoing::Message { .. } if !self.paced.is_empty() => {
+                self.queue_lines(vec![message]).await
+            }
             Outgoing::Message {
                 target,
                 text,
