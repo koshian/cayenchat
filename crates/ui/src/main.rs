@@ -72,7 +72,7 @@ use cayenchat_app::{
     Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
-    own_avatar::{Confirmed, OwnAvatar},
+    own_avatar::OwnAvatar,
     timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
@@ -1590,18 +1590,22 @@ impl ChatWindow {
     }
 
     /// Our own avatar on `network`, shown for our nickname instead of asking
-    /// anyone for it: the one the server confirmed, else the one shared with
-    /// peers. Read at draw time, so every row follows a change at once.
-    fn own_avatar_for(&self, network: NetworkId, nickname: &str) -> Option<Arc<str>> {
+    /// anyone for it: the saved icon of this server's settings (#612), not
+    /// what the server confirmed, so a saved or removed icon shows at once
+    /// and offline. `None` is some other nickname, `Some(None)` is us
+    /// without an icon (the placeholder). Read at draw time, so every row
+    /// follows a change at once.
+    fn own_avatar_for(&self, network: NetworkId, nickname: &str) -> Option<Option<Arc<str>>> {
         if !self.is_own_nickname(network, nickname) {
             return None;
         }
         let session = self.sessions.get(&network)?;
-        if let Confirmed::Set(url) = session.own_avatar.confirmed() {
-            return Some(url.as_str().into());
-        }
-        let profile = self.saved.profile(&session.profile_id)?;
-        shared_peer_avatar(profile).map(|url| url.as_str().into())
+        let url = self
+            .saved
+            .profile(&session.profile_id)
+            .map(|profile| profile.avatar_url.trim())
+            .filter(|url| !url.is_empty());
+        Some(url.map(Into::into))
     }
 
     /// What the right-hand list shows for the selected conversation: a
@@ -2757,7 +2761,7 @@ impl ChatWindow {
                     .unwrap_or_else(|_| (key.clone(), whois::avatar_pixels(1.)));
                 // Ourselves first, as in the log: the confirmed or shared
                 // avatar, never a CTCP query to ourselves.
-                let avatar = self.own_avatar_for(*network, &nickname).or_else(|| {
+                let avatar = self.own_avatar_for(*network, &nickname).unwrap_or_else(|| {
                     self.state
                         .avatars()
                         .for_message(
@@ -8345,16 +8349,17 @@ impl ChatWindow {
         let avatar =
             (!message.activity && avatars_on && lead == reiwa_group::Lead::Header).then(|| {
                 self.avatar_slot(
-                    self.own_avatar_for(network, &message.sender).or_else(|| {
-                        self.state
-                            .avatars()
-                            .for_message(
-                                network,
-                                &cayenchat_irc_core::text::nickname_key(&message.sender),
-                                message.sequence,
-                            )
-                            .cloned()
-                    }),
+                    self.own_avatar_for(network, &message.sender)
+                        .unwrap_or_else(|| {
+                            self.state
+                                .avatars()
+                                .for_message(
+                                    network,
+                                    &cayenchat_irc_core::text::nickname_key(&message.sender),
+                                    message.sequence,
+                                )
+                                .cloned()
+                        }),
                     &message.sender,
                     if reiwa {
                         avatars::SLOT * 2.
@@ -8768,7 +8773,7 @@ impl ChatWindow {
                     .trim_start_matches(['~', '&', '@', '%', '+'])
                     .to_owned();
                 let avatar = avatars_shown.then(|| {
-                    self.own_avatar_for(network, &nickname).or_else(|| {
+                    self.own_avatar_for(network, &nickname).unwrap_or_else(|| {
                         self.state
                             .avatars()
                             .current(network, &cayenchat_irc_core::text::nickname_key(&nickname))

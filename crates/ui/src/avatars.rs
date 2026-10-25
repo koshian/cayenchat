@@ -1019,35 +1019,40 @@ mod tests {
     }
 
     #[gpui::test]
-    fn our_own_messages_use_our_own_avatar_without_a_lookup(cx: &mut TestAppContext) {
+    fn our_own_messages_use_the_saved_icon_without_a_lookup(cx: &mut TestAppContext) {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, false, &fetcher);
         chat.read_with(cx, |chat, _| {
-            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), None, "none set");
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), Some(None));
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "bob"), None);
         });
+        // What the server confirms is not what we show (#612).
         events(
             &chat,
             cx,
             vec![
                 Event::MetadataReady,
                 Event::OwnAvatar {
-                    url: Some(BOB.into()),
+                    url: Some(CAROL.into()),
                     request: None,
                 },
                 say("me", "hello"),
             ],
         );
-        chat.update(cx, |_, cx| cx.notify());
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), Some(None));
+        });
+        // Saving the settings shows the icon at once, with nothing sent.
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url = BOB.into();
+            chat.apply_servers(settings, cx);
+        });
         cx.run_until_parked();
         chat.read_with(cx, |chat, _| {
-            assert_eq!(
-                chat.own_avatar_for(NetworkId(1), "me").as_deref(),
-                Some(BOB)
-            );
-            assert_eq!(
-                chat.own_avatar_for(NetworkId(1), "ME").as_deref(),
-                Some(BOB)
-            );
+            let bob = Some(Some(Arc::<str>::from(BOB)));
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), bob);
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "ME"), bob);
             assert_eq!(chat.own_avatar_for(NetworkId(1), "bob"), None);
             assert!(chat.state.avatars().current(NetworkId(1), "me").is_none());
         });
@@ -1056,6 +1061,15 @@ mod tests {
             "{:?}",
             fetcher.calls()
         );
+        // Removing it shows the placeholder at once.
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url.clear();
+            chat.apply_servers(settings, cx);
+        });
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), Some(None));
+        });
     }
 
     #[gpui::test]

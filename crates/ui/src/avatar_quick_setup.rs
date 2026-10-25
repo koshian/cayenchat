@@ -308,6 +308,12 @@ impl SettingsWindow {
                         .text_color(theme.warning)
                         .child(self.i18n.text("avatar_quick_notice")),
                 )
+                .child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("avatar_quick_local_note")),
+                )
                 .child(crate::settings_field(
                     &self.i18n.text("ircv3_avatar_url"),
                     self.settings.avatar_url.clone(),
