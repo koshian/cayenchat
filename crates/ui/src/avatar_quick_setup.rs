@@ -250,6 +250,8 @@ impl SettingsWindow {
             .flex_wrap()
             .items_center()
             .gap_2()
+            // Lined up under the URL input, which they act on.
+            .ml(settings_theme::LABEL_INDENT)
             // Choosing an image works without an image host; the missing
             // setup is explained when an image is chosen.
             .when(uploading.is_none(), |row| {
