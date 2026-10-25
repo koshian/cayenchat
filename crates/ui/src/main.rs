@@ -33,6 +33,7 @@ mod log_list;
 mod log_search;
 mod member_selection;
 mod menu_bar;
+mod multiline;
 mod notices;
 mod notifier;
 mod os_text;
@@ -9315,6 +9316,7 @@ fn rebind_shortcuts(cx: &mut App) {
             Some("ChatWindow > TextInput"),
         )]);
     }
+    input::bind_multiline_keys(emacs, cx);
 }
 
 /// Whether the Emacs text key theme is in effect.
