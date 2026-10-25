@@ -19,6 +19,7 @@ mod default_avatar;
 mod desktop;
 mod diagnostics;
 mod dialog;
+mod disconnect_dialog;
 mod double_enter;
 mod experimental_settings;
 mod help_command;
@@ -725,6 +726,12 @@ struct ChatWindow {
     setup_wizard: setup_wizard::SetupWizard,
     /// The question a double click on a joined channel row opens (#451).
     part_prompt: Option<part_dialog::PartPrompt>,
+    /// The question a double click on a registered server row opens (#625).
+    disconnect_prompt: Option<disconnect_dialog::DisconnectPrompt>,
+    /// Ask before a double click disconnects a server / leaves a channel
+    /// (settings; switched off by "Don't ask again").
+    confirm_server_dblclick_disconnect: bool,
+    confirm_channel_dblclick_part: bool,
     paste_prompt: Option<paste_dialog::PastePrompt>,
     /// A multi-line paste waiting for the next frame, which has the window to
     /// ask about it in (the draft inputs are made without one).
@@ -1292,6 +1299,9 @@ impl ChatWindow {
             transfer_dialog: settings_transfer::TransferDialog::new(cx),
             setup_wizard: setup_wizard::SetupWizard::new(cx),
             part_prompt: None,
+            disconnect_prompt: None,
+            confirm_server_dblclick_disconnect: saved.confirm_server_dblclick_disconnect,
+            confirm_channel_dblclick_part: saved.confirm_channel_dblclick_part,
             paste_prompt: None,
             pending_paste: None,
             layout_file: None,
@@ -2111,6 +2121,13 @@ impl ChatWindow {
                 self.part_prompt = None;
             }
             if self
+                .disconnect_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.network() == id)
+            {
+                self.disconnect_prompt = None;
+            }
+            if self
                 .paste_prompt
                 .as_ref()
                 .is_some_and(|prompt| prompt.network() == id)
@@ -2219,6 +2236,13 @@ impl ChatWindow {
             .is_some_and(|prompt| prompt.network() == network)
         {
             self.part_prompt = None;
+        }
+        if self
+            .disconnect_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.network() == network)
+        {
+            self.disconnect_prompt = None;
         }
         if self
             .paste_prompt
@@ -2374,31 +2398,6 @@ impl ChatWindow {
                 .get(&network)
                 .is_some_and(|session| session.used() && session.irc.is_none())
         })
-    }
-
-    /// What a double click on a server row does to `network`: connect one not
-    /// used in this run, reconnect a dropped one, disconnect a registered
-    /// one, and leave one that is still connecting or waiting to retry.
-    fn toggle_connection(
-        &mut self,
-        network: NetworkId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.sessions.get(&network) else {
-            return;
-        };
-        if session.retry_pending {
-            return;
-        }
-        if session.irc.is_none() {
-            self.reconnect(network, window, cx);
-        } else if matches!(
-            self.state.status(network),
-            Some(ConnectionStatus::Registered)
-        ) {
-            self.disconnect(network, cx);
-        }
     }
 
     fn connect_action(&mut self, _: &Connect, window: &mut Window, cx: &mut Context<Self>) {
@@ -4193,6 +4192,8 @@ impl ChatWindow {
         }
         self.saved.show_toolbar = settings.show_toolbar;
         self.saved.menu_bar_auto_hide = settings.menu_bar_auto_hide;
+        self.saved.confirm_server_dblclick_disconnect = settings.confirm_server_dblclick_disconnect;
+        self.saved.confirm_channel_dblclick_part = settings.confirm_channel_dblclick_part;
     }
 
     fn set_toolbar_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
@@ -4426,6 +4427,7 @@ impl ChatWindow {
         // dialog drawn over the window has to be excluded here.
         if self.quit_prompt_open
             || self.part_prompt.is_some()
+            || self.disconnect_prompt.is_some()
             || self.paste_prompt.is_some()
             || self.member_prompt.is_some()
             || !self.nick_prompts.is_empty()
@@ -6507,7 +6509,7 @@ impl ChatWindow {
                         // The double click is one gesture: only its second
                         // click acts, so it cannot connect and then disconnect.
                         if event.click_count() == 2 {
-                            this.toggle_connection(server_id, window, cx);
+                            this.activate_server_row(server_id, window, cx);
                         }
                     }))
                     .into_any_element()
@@ -7672,6 +7674,7 @@ impl ChatWindow {
         let key_prompts = self.render_key_prompts(origin, window, cx);
         let quit_dialog = self.render_quit_dialog(window, cx);
         let part_prompt = self.render_part_prompt(window, cx);
+        let disconnect_prompt = self.render_disconnect_prompt(window, cx);
         if let Some((input, text)) = self.pending_paste.take() {
             self.open_paste_prompt(&input, &text, window, cx);
         }
@@ -7779,6 +7782,7 @@ impl ChatWindow {
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
+            .when_some(disconnect_prompt, |d, dialog| d.child(dialog))
             .when_some(paste_prompt, |d, dialog| d.child(dialog))
             .when_some(setup_wizard, |d, dialog| d.child(dialog))
             .when_some(transfer_dialog, |d, dialog| d.child(dialog))
@@ -9923,6 +9927,10 @@ mod join_switch_tests;
 #[cfg(test)]
 #[path = "main_tests/part_dialog_tests.rs"]
 mod part_dialog_tests;
+
+#[cfg(test)]
+#[path = "main_tests/dblclick_confirm_tests.rs"]
+mod dblclick_confirm_tests;
 
 #[cfg(test)]
 #[path = "main_tests/paste_dialog_tests.rs"]

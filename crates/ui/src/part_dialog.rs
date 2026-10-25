@@ -15,7 +15,8 @@ use cayenchat_model::{ConversationId, NetworkId, display::neutralize_bidi};
 use gpui::{prelude::*, *};
 
 use crate::{
-    ChatWindow, FocusNextField, FocusPreviousField, button_order, dialog, input::TextInput, theme,
+    ChatWindow, FocusNextField, FocusPreviousField, button_order, dialog, input::TextInput,
+    notices, theme,
 };
 
 const BOX_WIDTH: Pixels = px(340.);
@@ -33,6 +34,8 @@ pub(crate) struct PartPrompt {
     pub(crate) input: Entity<TextInput>,
     cancel: FocusHandle,
     confirm: FocusHandle,
+    dont_ask_box: FocusHandle,
+    pub(crate) dont_ask: bool,
     previous: Option<FocusHandle>,
     focus_pending: bool,
     pub(crate) error: Option<String>,
@@ -78,7 +81,11 @@ impl ChatWindow {
             return;
         }
         if self.state.is_active_channel(id) {
-            self.open_part_prompt(id, window, cx);
+            if self.confirm_channel_dblclick_part {
+                self.open_part_prompt(id, window, cx);
+            } else if let Err(error) = self.send_part(network, &name, None) {
+                self.raise_error(Some(network), error, notices::Origin::User, cx);
+            }
         } else if !session.pending_joins.contains(&folded) {
             self.join_or_part(network, &name, true, cx);
         }
@@ -132,6 +139,8 @@ impl ChatWindow {
             input,
             cancel: cx.focus_handle().tab_stop(true),
             confirm: cx.focus_handle().tab_stop(true),
+            dont_ask_box: cx.focus_handle().tab_stop(true),
+            dont_ask: false,
             previous: window.focused(cx),
             focus_pending: true,
             error: None,
@@ -166,21 +175,22 @@ impl ChatWindow {
             self.close_part_prompt(window, cx);
             return;
         }
-        let result = self.registered_connection(network).and_then(|connection| {
-            connection.part_channel(&channel, (!reason.is_empty()).then_some(reason.as_str()))
-        });
-        match result {
+        let dont_ask = prompt.dont_ask;
+        match self.send_part(
+            network,
+            &channel,
+            (!reason.is_empty()).then_some(reason.as_str()),
+        ) {
             Ok(()) => {
-                let folded = self.state.casemapping(network).fold(&channel);
-                if let Some(session) = self.sessions.get_mut(&network) {
-                    expire_pending(&mut session.pending_parts);
-                    if session.pending_parts.len() >= PENDING_PARTS_LIMIT {
-                        session.pending_parts.clear();
-                    }
-                    session.pending_parts.insert(folded, Instant::now());
-                }
                 self.prompt_feedback = None;
                 self.close_part_prompt(window, cx);
+                if dont_ask {
+                    self.confirm_channel_dblclick_part = false;
+                    self.save_view_setting(
+                        |settings| settings.confirm_channel_dblclick_part = false,
+                        cx,
+                    );
+                }
             }
             Err(error) => {
                 if let Some(prompt) = self.part_prompt.as_mut() {
@@ -191,13 +201,43 @@ impl ChatWindow {
         }
     }
 
-    /// Tab / Shift+Tab: only the field and the two buttons are reachable.
+    /// Sends a PART (`None`: the connection's part message) and marks the
+    /// channel as being left until the server answers.
+    fn send_part(
+        &mut self,
+        network: NetworkId,
+        channel: &str,
+        reason: Option<&str>,
+    ) -> Result<(), String> {
+        self.registered_connection(network)
+            .and_then(|connection| connection.part_channel(channel, reason))?;
+        let folded = self.state.casemapping(network).fold(channel);
+        if let Some(session) = self.sessions.get_mut(&network) {
+            expire_pending(&mut session.pending_parts);
+            if session.pending_parts.len() >= PENDING_PARTS_LIMIT {
+                session.pending_parts.clear();
+            }
+            session.pending_parts.insert(folded, Instant::now());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn toggle_part_dont_ask(&mut self, cx: &mut Context<Self>) {
+        if let Some(prompt) = self.part_prompt.as_mut() {
+            prompt.dont_ask = !prompt.dont_ask;
+            cx.notify();
+        }
+    }
+
+    /// Tab / Shift+Tab: only the field, the checkbox and the two buttons are
+    /// reachable.
     fn step_part_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.part_prompt.as_ref() else {
             return;
         };
         let order = [
             prompt.input.focus_handle(cx),
+            prompt.dont_ask_box.clone(),
             prompt.cancel.clone(),
             prompt.confirm.clone(),
         ];
@@ -243,6 +283,15 @@ impl ChatWindow {
             |this, window, cx| this.close_part_prompt(window, cx),
             cx,
         );
+        let dont_ask = dialog::check_row(
+            "part-dialog-dont-ask",
+            self.i18n.text("dont_ask_again"),
+            prompt.dont_ask,
+            &prompt.dont_ask_box,
+            &theme,
+            |this, _, cx| this.toggle_part_dont_ask(cx),
+            cx,
+        );
         Some(
             dialog::overlay("part-dialog", &theme)
                 // Only the keys handled here are consumed; typing reaches the field.
@@ -267,6 +316,7 @@ impl ChatWindow {
                         .child(div().child(server))
                         .child(div().child(self.i18n.text("part_dialog_reason")))
                         .child(prompt.input.clone())
+                        .child(dont_ask)
                         .when_some(prompt.error.clone(), |d, error| {
                             d.child(div().text_color(theme.warning).child(error))
                         })
