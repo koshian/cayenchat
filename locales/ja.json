@@ -236,6 +236,7 @@
   "copy_original_text": "元の表記をコピー",
   "char_ref_origin": "HTML 数値文字参照から変換",
   "reiwa_mode": "チャンネルログを令和モードで表示",
+  "reiwa_mode_hint": "アバター付きの現代的なチャット表示に切り替えます。",
   "restore_window_layout": "起動時にウィンドウの位置とサイズを復元する",
   "always_on_top": "CayenChat のウィンドウを常に最前面に表示する",
   "confirm_quit": "終了時に確認する",

@@ -236,6 +236,7 @@
   "copy_original_text": "Copy original text",
   "char_ref_origin": "Converted from HTML numeric character references",
   "reiwa_mode": "Show the channel log in Reiwa mode",
+  "reiwa_mode_hint": "Switches to a modern chat view with avatars.",
   "restore_window_layout": "Restore window position and size at startup",
   "always_on_top": "Keep CayenChat windows always on top",
   "confirm_quit": "Confirm before quitting",
