@@ -28,6 +28,10 @@ impl SettingsWindow {
                     && current.confirm_quit == defaults.confirm_quit
                     && current.shorten_amazon_urls == defaults.shorten_amazon_urls
                     && current.confirm_multiline_paste == defaults.confirm_multiline_paste
+                    && current.confirm_server_dblclick_disconnect
+                        == defaults.confirm_server_dblclick_disconnect
+                    && current.confirm_channel_dblclick_part
+                        == defaults.confirm_channel_dblclick_part
                     && current.unread_log_position == defaults.unread_log_position
                     && current.conversation_log == defaults.conversation_log
                     && (cfg!(target_os = "macos")
@@ -93,6 +97,9 @@ impl SettingsWindow {
                 values.confirm_quit = defaults.confirm_quit;
                 values.shorten_amazon_urls = defaults.shorten_amazon_urls;
                 values.confirm_multiline_paste = defaults.confirm_multiline_paste;
+                values.confirm_server_dblclick_disconnect =
+                    defaults.confirm_server_dblclick_disconnect;
+                values.confirm_channel_dblclick_part = defaults.confirm_channel_dblclick_part;
                 values.unread_log_position = defaults.unread_log_position;
                 values.conversation_log = defaults.conversation_log;
                 // Settings hidden on this platform keep their saved values.
@@ -399,6 +406,9 @@ mod tests {
                 values.confirm_quit = !values.confirm_quit;
                 values.shorten_amazon_urls = !values.shorten_amazon_urls;
                 values.confirm_multiline_paste = !values.confirm_multiline_paste;
+                values.confirm_server_dblclick_disconnect =
+                    !values.confirm_server_dblclick_disconnect;
+                values.confirm_channel_dblclick_part = !values.confirm_channel_dblclick_part;
                 values.unread_log_position = UnreadLogPosition::Latest;
                 values.conversation_log.channels = !values.conversation_log.channels;
                 values.menu_bar_auto_hide = !values.menu_bar_auto_hide;

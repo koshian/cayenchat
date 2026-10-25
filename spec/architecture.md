@@ -746,8 +746,16 @@ not offered even when another server is connected. The
 settings window's Connect and Disconnect act on the server being
 edited. A double click on a server row acts on that row's server (the
 single click still only selects): it connects a server not used in this
-run, reconnects a dropped one, disconnects a registered one without
-confirmation, and does nothing while it is connecting or waiting to retry.
+run, reconnects a dropped one, disconnects a registered one after a "Disconnect
+from <server>?" question (#625; `disconnect_dialog`), and does nothing while
+it is connecting or waiting to retry or while that question is open. The
+question is bound to the clicked row's server, starts with focus on Cancel,
+and has a "Don't ask again" checkbox; Cancel, Escape or closing disconnects
+nothing and saves nothing. Only a confirmed disconnect with the box ticked
+saves `confirm_server_dblclick_disconnect` as off (Application page: "Confirm
+before disconnecting a server by double-clicking it", on by default and for
+files without it), after which the double click disconnects at once. Menus,
+the toolbar and commands never ask.
 A double click on a channel row (#451) acts on that row's channel, not the
 selected one, and only on a registered server: a channel not joined is joined
 at once (with its saved key), a joined one opens the "Leave #channel?" question
@@ -761,6 +769,11 @@ reason)`, which shares the `/part` checks (control characters, encoding, line
 length) and the part message default but takes the reason as a plain string, so
 a leading `:` is kept; an error keeps the question open. An empty field uses
 the part message, a typed reason is used for that PART only and is not saved.
+The question also has a "Don't ask again" checkbox (#625), saved only when
+leaving is confirmed with it ticked: `confirm_channel_dblclick_part` (Application
+page, independent of the server one, on by default and for files without it)
+turns off, and the double click then sends PART with the connection's part
+message at once, with the same guards. `/part` and the menus never ask.
 A new server, blank or from a preset, starts with an empty
 nickname, `USER` username, auto-join channels and SASL account, SASL,
 password saving and startup connection off, IRCv3 options off, and the

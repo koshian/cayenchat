@@ -1519,6 +1519,8 @@ impl ChatWindow {
         {
             owner.image_provider = provider;
             owner.confirm_quit = confirm_quit;
+            owner.confirm_server_dblclick_disconnect = saved.confirm_server_dblclick_disconnect;
+            owner.confirm_channel_dblclick_part = saved.confirm_channel_dblclick_part;
             owner.set_send_key(saved.send_key, cx);
             owner.unread_log_position = saved.unread_log_position;
             owner.apply_conversation_log(&saved.conversation_log);
@@ -1646,7 +1648,7 @@ impl SettingsWindow {
     fn disconnect_action(&mut self, _: &Disconnect, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |owner, _, cx| {
             if let Some(network) = owner.selected_network_id() {
-                owner.disconnect(network, cx)
+                owner.disconnect(network, cx);
             }
         });
         cx.notify();

@@ -1218,6 +1218,14 @@ pub struct Settings {
     /// (the paste dialog, #605). Off by default: lines are joined with
     /// spaces. Also off for files saved before it existed.
     pub confirm_multiline_paste: bool,
+    /// Ask before a double click on a registered server row in the channel
+    /// list disconnects it (#625). On by default, also for files saved before
+    /// it existed. Menus, the toolbar and commands never ask.
+    pub confirm_server_dblclick_disconnect: bool,
+    /// Ask (with a part message field) before a double click on a joined
+    /// channel row in the channel list leaves it (#625). On by default, also
+    /// for files saved before it existed. Menus and `/part` never ask.
+    pub confirm_channel_dblclick_part: bool,
     /// Log position when an unread conversation is selected. Files saved
     /// before it existed keep the previous position.
     pub unread_log_position: UnreadLogPosition,
@@ -1273,6 +1281,8 @@ impl Default for Settings {
             confirm_quit: false,
             shorten_amazon_urls: true,
             confirm_multiline_paste: false,
+            confirm_server_dblclick_disconnect: true,
+            confirm_channel_dblclick_part: true,
             unread_log_position: UnreadLogPosition::Previous,
             credential_backend: CredentialBackendKind::System,
             image_upload: ImageUpload::default(),
@@ -3650,6 +3660,24 @@ mod tests {
         settings.confirm_multiline_paste = true;
         save_to(&path, &settings).unwrap();
         assert!(load_from(&path).unwrap().unwrap().confirm_multiline_paste);
+    }
+
+    #[test]
+    fn double_click_confirmations_default_on_and_are_independent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(
+            settings.confirm_server_dblclick_disconnect,
+            "absent reads as on"
+        );
+        assert!(settings.confirm_channel_dblclick_part, "absent reads as on");
+        settings.confirm_server_dblclick_disconnect = false;
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(!loaded.confirm_server_dblclick_disconnect);
+        assert!(loaded.confirm_channel_dblclick_part);
     }
 
     #[test]

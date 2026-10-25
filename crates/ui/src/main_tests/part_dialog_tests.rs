@@ -203,16 +203,18 @@ fn the_reason_is_typed_tabbed_and_sent_literally(cx: &mut TestAppContext) {
         })
     };
     open(cx);
-    // Focus starts on Cancel; Shift+Tab reaches the field, where typing works.
-    cx.simulate_keystrokes("shift-tab");
+    // Focus starts on Cancel; Shift+Tab passes the "Don't ask again" box to
+    // the field, where typing works.
+    cx.simulate_keystrokes("shift-tab shift-tab");
     assert_eq!(state(&chat, cx), (Some(String::new()), true));
     cx.simulate_input(":smile");
     assert_eq!(state(&chat, cx).0.as_deref(), Some(":smile"));
-    // Tab leaves the field for Cancel instead of completing; Shift+Tab returns.
+    // Tab leaves the field for the box instead of completing; Shift+Tab returns.
     cx.simulate_keystrokes("tab");
     assert!(!state(&chat, cx).1);
     cx.simulate_keystrokes("shift-tab");
     assert!(state(&chat, cx).1);
+    // Enter in the field leaves; the box was never ticked.
     cx.simulate_keystrokes("enter");
     assert!(chat.read_with(cx, |chat, _| chat.part_prompt.is_none()));
     assert_eq!(parts_received(&socket), vec!["PART #a ::smile".to_owned()]);

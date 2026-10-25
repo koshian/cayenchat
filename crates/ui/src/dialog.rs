@@ -129,3 +129,32 @@ pub(crate) fn cancel_button(
         .border_color(theme.border)
         .focus(move |s| s.border_color(text))
 }
+
+/// A labelled checkbox of a question, reachable by Tab: Enter, Space or a
+/// click toggles it.
+pub(crate) fn check_row(
+    id: &'static str,
+    label: String,
+    checked: bool,
+    focus: &FocusHandle,
+    theme: &Theme,
+    on_toggle: impl Fn(&mut ChatWindow, &mut Window, &mut Context<ChatWindow>) + Copy + 'static,
+    cx: &mut Context<ChatWindow>,
+) -> Stateful<Div> {
+    let text = theme.text;
+    div()
+        .id(id)
+        .debug_selector(|| id.into())
+        .track_focus(focus)
+        .flex()
+        .gap_2()
+        .px_1()
+        .border_1()
+        .border_color(theme.surface)
+        .focus(move |s| s.border_color(text))
+        .cursor_pointer()
+        .child(crate::settings_theme::checkbox(checked, true, cx))
+        .child(label)
+        // GPUI also calls on_click for Enter and Space on a focused element.
+        .on_click(cx.listener(move |this, _, window, cx| on_toggle(this, window, cx)))
+}

@@ -472,7 +472,7 @@ fn double_clicking_a_server_leaves_one_waiting_to_retry_alone(cx: &mut TestAppCo
         let session = chat.sessions.get_mut(&NetworkId(1)).unwrap();
         session.retry_pending = true;
         let token = session.retry_token;
-        chat.toggle_connection(NetworkId(1), window, cx);
+        chat.activate_server_row(NetworkId(1), window, cx);
         let session = &chat.sessions[&NetworkId(1)];
         assert!(session.retry_pending && !session.manual_disconnect);
         assert_eq!(session.retry_token, token);

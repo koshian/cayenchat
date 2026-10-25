@@ -266,6 +266,44 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("confirm_multiline_paste_hint")),
             )
+            .child(
+                div()
+                    .id("confirm-server-dblclick-disconnect")
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.confirm_server_dblclick_disconnect,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("confirm_server_dblclick_disconnect"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.confirm_server_dblclick_disconnect;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("confirm-channel-dblclick-part")
+                    .ml(settings_theme::LABEL_INDENT)
+                    .flex()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.values.confirm_channel_dblclick_part,
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("confirm_channel_dblclick_part"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let value = &mut this.settings.values.confirm_channel_dblclick_part;
+                        *value = !*value;
+                        cx.notify();
+                    })),
+            )
             .child(self.option_row(
                 "unread_log_position",
                 [
