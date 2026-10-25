@@ -309,6 +309,17 @@ asset GitHub stores under a different name.
 assets that are not in `dist/` (for example a previous version's `.deb`), so the
 release only holds the latest build and is never empty if an upload fails.
 
+The beta is not built on every merge. `beta-release.yml` runs at 05:00 and
+17:00 JST (cron `0 20,8 * * *`, which GitHub may delay) and on
+`workflow_dispatch`; scheduled and manual runs behave the same. The `prepare`
+job takes the current `master` HEAD (never another ref) and publishes only if
+the `beta` tag does not already point at it and the `CI` push run for that same
+commit has succeeded; otherwise it logs why and publishes nothing. So a manual
+run for an already published SHA is a no-op (re-publishing the same SHA is not
+supported). Runs queue (`cancel-in-progress: false`), and the SHA is fixed in
+`prepare` for the packages and the release. The `beta` tag moves last, so a
+failed run leaves it on the previous beta and the next run tries again.
+
 #### Versioned releases
 
 `release.yml` publishes an immutable release for every pushed `v*` tag; the
