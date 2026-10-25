@@ -1337,10 +1337,13 @@ tab change never changes it. `register_in_profile` is the one place that sets `a
 `user_avatars`, `ircv3.peer_avatars` and `peer_avatar_url`; the Metadata
 publish goes through `ChatWindow::request_own_avatar`. The fold state, the
 way back from the Image Upload tab and the "open image upload settings"
-flag are window state, not settings. The section is one bordered block
-(#609): the header, summary, notices and status lines start at its inner
-edge, and only the URL row and the buttons under it use the label column
-(`LABEL_INDENT`), so the buttons line up with the input.
+flag are window state, not settings. The section is a flat item with the
+other settings' two columns (#609): the header row puts "Avatar settings" in
+the label column and the fold mark and state in the right column; when
+unfolded, everything else (summary, notices, the small "Avatar URL" label,
+the input, buttons, status lines, crop editor) starts at the right column
+(`LABEL_INDENT`) and wraps within it. Folded, only the header row shows. No
+border, background or separator.
 
 Peer sharing (D025) is shown under the same field while the server's peer
 avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),
