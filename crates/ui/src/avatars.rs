@@ -121,6 +121,12 @@ impl Originals {
         }
     }
 
+    fn forget(&mut self, source: &MediaRef) {
+        if let Some(entry) = self.entries.remove(source) {
+            self.bytes -= entry.bytes;
+        }
+    }
+
     fn clear(&mut self) {
         self.entries.clear();
         self.bytes = 0;
@@ -285,6 +291,17 @@ impl Avatars {
             Lookup::Pending => Shown::Pending,
             Lookup::None => Shown::None,
         }
+    }
+
+    /// Forgets the fetched image of `avatar` at every size, so the next
+    /// lookup downloads it again. For our own saved icon, whose image may
+    /// have changed behind the same URL (#612); not for ordinary redraws.
+    pub fn refresh(&mut self, avatar: &str) {
+        let Some(source) = policy::avatar_url(avatar, ORIGINAL_PIXELS) else {
+            return;
+        };
+        self.cache.get_mut().forget(|key| key.source == source);
+        self.originals.get_mut().forget(&source);
     }
 
     pub fn in_flight(&self) -> usize {
@@ -1115,6 +1132,85 @@ mod tests {
         set_avatars(&chat, cx, false);
         chat.read_with(cx, |chat, _| {
             assert_eq!(chat.avatars.defaults_made(), 0, "released")
+        });
+    }
+
+    #[gpui::test]
+    fn saving_the_same_icon_url_again_fetches_it_once_and_only_ours(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        let bob_fetches = || fetcher.calls().iter().filter(|u| u.contains("bob")).count();
+        let draw = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext| {
+            chat.update(cx, |chat, cx| {
+                // Redraws repeat the lookups; only a missing image loads.
+                for _ in 0..3 {
+                    chat.avatars.lookup(BOB, 32);
+                    chat.avatars.lookup(CAROL, 32);
+                }
+                chat.pump_avatars(cx);
+            });
+            cx.run_until_parked();
+        };
+        let save = |chat: &Entity<ChatWindow>, cx: &mut VisualTestContext, url: &str| {
+            chat.update(cx, |chat, cx| {
+                let mut settings = chat.saved.clone();
+                settings.servers[0].avatar_url = url.into();
+                chat.apply_servers(settings, cx);
+            });
+        };
+        save(&chat, cx, BOB);
+        draw(&chat, cx);
+        draw(&chat, cx);
+        assert_eq!(bob_fetches(), 1, "{:?}", fetcher.calls());
+        let carol_fetches = fetcher
+            .calls()
+            .iter()
+            .filter(|u| u.contains("carol"))
+            .count();
+        // The image may have changed behind the same URL: saving fetches it
+        // once more, redraws afterwards do not, and other avatars stay.
+        save(&chat, cx, BOB);
+        draw(&chat, cx);
+        draw(&chat, cx);
+        assert_eq!(bob_fetches(), 2, "{:?}", fetcher.calls());
+        let after = fetcher
+            .calls()
+            .iter()
+            .filter(|u| u.contains("carol"))
+            .count();
+        assert_eq!(after, carol_fetches);
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.avatars.cache().records(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn each_network_shows_its_own_saved_icon(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url = BOB.into();
+            settings.add_server("b.example");
+            chat.apply_servers(settings, cx);
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(2),
+                vec![Event::Registered {
+                    nickname: "me".into(),
+                }],
+                Worker::Running,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(
+                chat.own_avatar_for(NetworkId(1), "me"),
+                Some(Some(Arc::<str>::from(BOB)))
+            );
+            assert_eq!(chat.own_avatar_for(NetworkId(2), "me"), Some(None));
         });
     }
 

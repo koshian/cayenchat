@@ -1152,7 +1152,10 @@ the subset avatars need:
   and saving or removing the icon shows on every row at once, offline too.
   What the server confirmed (`app::own_avatar`) is publication state only and
   is never the source of our display; an empty icon shows the placeholder. The
-  unsaved draft is never shown. The settings state in a standing note that
+  unsaved draft is never shown. Because the image may change behind the same
+  URL, each settings save forgets the cached image of the saved icon URL of
+  servers showing avatars (`Avatars::refresh`) and it is fetched once more;
+  redraws and other avatars keep their cache, so there is no refetch loop. The settings state in a standing note that
   other users may see a change later, or not at all.
 - Later joiners: a live JOIN (not in a history batch) of someone who
   shares no other channel with us (judged from the rosters published

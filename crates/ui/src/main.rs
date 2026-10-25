@@ -2101,6 +2101,14 @@ impl ChatWindow {
         // for the cache is shared by URL), and all off cancels everything.
         self.avatars
             .set_enabled(settings.servers.iter().any(|profile| profile.user_avatars));
+        // Saving is the one moment our own icon is fetched again: its image
+        // may have changed behind the same URL. Once per save and server,
+        // never on redraws, and other people's avatars stay cached.
+        for profile in settings.servers.iter().filter(|p| p.user_avatars) {
+            if !profile.avatar_url.is_empty() {
+                self.avatars.refresh(&profile.avatar_url);
+            }
+        }
         self.saved = settings;
         self.refresh_whois_avatars(cx);
         cx.notify();

@@ -316,6 +316,28 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         }
     }
 
+    /// Drops the records whose source `matches`, so the next request loads
+    /// them again. Loads under way are cancelled and their results ignored.
+    pub fn forget(&mut self, mut matches: impl FnMut(&K) -> bool) {
+        let gone: Vec<K> = self
+            .records
+            .keys()
+            .filter(|source| matches(source))
+            .cloned()
+            .collect();
+        for source in gone {
+            match self.records.remove(&source).map(|record| record.state) {
+                Some(State::Loading(cancel)) => cancel.cancel(),
+                Some(State::Ready { value, bytes }) => {
+                    self.ready_bytes -= bytes;
+                    self.released.push(value);
+                }
+                _ => {}
+            }
+            self.queue.retain(|queued| *queued != source);
+        }
+    }
+
     /// Ready images removed from the cache since the last call. The UI
     /// frees their GPU textures.
     pub fn take_released(&mut self) -> Vec<T> {
