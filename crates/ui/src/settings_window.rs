@@ -2311,6 +2311,12 @@ impl SettingsWindow {
                 div()
                     .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
+                    .child(self.i18n.text("reiwa_mode_hint")),
+            )
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
                     .child(self.i18n.text("reiwa_mode_global_hint")),
             )
             .when_some(server_fields, |d, fields| d.child(fields))
