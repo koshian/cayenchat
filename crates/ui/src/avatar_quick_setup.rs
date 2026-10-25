@@ -183,7 +183,8 @@ impl SettingsWindow {
         // row toggles, the chevron shows the fold and the state word says what
         // is registered. The label sits in the label column like any other
         // setting; the fold mark, state and all content use the right column.
-        let text = theme.text;
+        // The row never changes colour or gets an underline: only the
+        // chevron direction shows the state.
         let toggle = |this: &mut Self, cx: &mut Context<Self>| {
             this.avatar_quick_open = !this.avatar_quick_open;
             cx.notify();
@@ -198,8 +199,6 @@ impl SettingsWindow {
                 // As tall as a row with an input, so the item spacing matches.
                 .min_h(px(35.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.hover))
-                .focus(move |s| s.border_b_1().border_color(text))
                 .child(settings_theme::label_column().child(self.i18n.text("avatar_quick_toggle")))
                 .child(
                     div()
