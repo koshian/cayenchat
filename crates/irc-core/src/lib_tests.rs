@@ -604,13 +604,19 @@ fn send_lines_queues_every_line_in_order_or_none() {
         .send_lines("#t", &lines(&["one", "two", "three"]), true, false)
         .unwrap();
     let mut sent = Vec::new();
-    while let Ok(Outgoing::Message {
-        target,
-        text,
-        notice,
-        ..
-    }) = queued.try_recv()
-    {
+    let Ok(Outgoing::Lines(queued_lines)) = queued.try_recv() else {
+        panic!("the lines go as one command");
+    };
+    for line in queued_lines {
+        let Outgoing::Message {
+            target,
+            text,
+            notice,
+            ..
+        } = line
+        else {
+            panic!("only messages");
+        };
         sent.push((target, text, notice));
     }
     let expected = ["one", "two", "three"].map(|t| ("#t".to_owned(), t.to_owned(), true));
@@ -624,9 +630,20 @@ fn send_lines_queues_every_line_in_order_or_none() {
     assert!(error.contains("512"), "{error}");
     assert!(queued.try_recv().is_err(), "nothing queued on a bad line");
 
-    // Too little room (capacity 8, 6 taken) queues nothing, so a retry
-    // does not send the first lines twice.
-    for _ in 0..6 {
+    // More lines than the limit are refused whole, whatever the room.
+    let many = vec!["x".to_owned(); MAX_SEND_LINES + 1];
+    let error = connection
+        .send_lines("#t", &many, false, false)
+        .unwrap_err();
+    assert!(error.contains("100"), "{error}");
+    assert!(queued.try_recv().is_err(), "nothing queued over the limit");
+    connection
+        .send_lines("#t", &many[..MAX_SEND_LINES], false, false)
+        .unwrap();
+    assert!(matches!(queued.try_recv(), Ok(Outgoing::Lines(l)) if l.len() == MAX_SEND_LINES));
+
+    // No room in the queue queues nothing.
+    for _ in 0..8 {
         connection.send_message("#t", "busy", false).unwrap();
     }
     assert!(
@@ -634,11 +651,87 @@ fn send_lines_queues_every_line_in_order_or_none() {
             .send_lines("#t", &lines(&["a", "b", "c"]), false, false)
             .is_err()
     );
-    assert_eq!(queued_texts(&mut queued).len(), 6, "no part of it went");
-    connection
-        .send_lines("#t", &lines(&["a", "b", "c"]), false, false)
-        .unwrap();
-    assert_eq!(queued_texts(&mut queued).len(), 3);
+    assert_eq!(queued_texts(&mut queued).len(), 8, "no part of it went");
+}
+
+/// Reads `count` PRIVMSG lines from `reader`, with the time each arrived.
+fn timed_privmsgs(
+    reader: &mut BufReader<std::net::TcpStream>,
+    count: usize,
+) -> Vec<(String, Instant)> {
+    (0..count)
+        .map(|_| {
+            let line = read_line_starting(reader, b"PRIVMSG ");
+            let text = String::from_utf8(line).unwrap();
+            let text = text.trim_end().rsplit(' ').next().unwrap().to_owned();
+            (text, Instant::now())
+        })
+        .collect()
+}
+
+/// A pasted block goes out as a burst and then one line per interval; a line
+/// typed meanwhile waits behind it, in order.
+#[test]
+fn pasted_lines_are_spaced_out_and_keep_their_order() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        timed_privmsgs(&mut reader, 11)
+    });
+    let mut connection = alive_check_connection(port);
+    wait_for_event(&mut connection, "registration", |event| {
+        matches!(event, Event::Registered { .. }).then_some(())
+    });
+    let lines: Vec<String> = (0..10).map(|n| format!("l{n}")).collect();
+    connection.send_lines("#c", &lines, false, false).unwrap();
+    connection.send_message("#c", "typed", false).unwrap();
+    let received = server.join().unwrap();
+    let texts: Vec<_> = received.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "typed"
+        ]
+    );
+    let at = |n: usize| received[n].1;
+    assert!(at(PACED_BURST - 1) - at(0) < PACED_INTERVAL / 2, "burst");
+    for n in PACED_BURST..received.len() {
+        // A little less than the interval allows for timer rounding.
+        assert!(
+            at(n) - at(n - 1) >= PACED_INTERVAL * 8 / 10,
+            "line {n} came {:?} after the one before",
+            at(n) - at(n - 1)
+        );
+    }
+}
+
+/// Lines still waiting when the link ends are not sent. The queue belongs to
+/// the connection's worker, so a reconnection (a new worker) starts empty.
+#[test]
+fn waiting_pasted_lines_are_dropped_when_the_link_ends() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (burst_seen, wait_burst) = std_mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut reader = registered_server(listener, b"");
+        let first = timed_privmsgs(&mut reader, PACED_BURST);
+        burst_seen.send(()).unwrap();
+        let mut rest = Vec::new();
+        while reader.read_until(b'\n', &mut rest).unwrap() > 0 {}
+        let rest = String::from_utf8_lossy(&rest).into_owned();
+        assert!(!rest.contains("PRIVMSG"), "{rest:?}");
+        first.len()
+    });
+    let mut connection = alive_check_connection(port);
+    wait_for_event(&mut connection, "registration", |event| {
+        matches!(event, Event::Registered { .. }).then_some(())
+    });
+    let lines: Vec<String> = (0..10).map(|n| format!("l{n}")).collect();
+    connection.send_lines("#c", &lines, false, false).unwrap();
+    wait_burst.recv_timeout(Duration::from_secs(5)).unwrap();
+    connection.disconnect().unwrap();
+    assert_eq!(server.join().unwrap(), PACED_BURST);
 }
 
 #[test]

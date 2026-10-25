@@ -84,3 +84,26 @@ fn a_multiline_paste_opens_the_dialog_when_switched_on(cx: &mut TestAppContext) 
     chat.update_in(cx, paste_lines);
     chat.update_in(cx, drive_dialog);
 }
+
+/// Lines added in the editor after the dialog opened are checked again when
+/// sending, before any connection is asked.
+#[gpui::test]
+fn too_many_lines_cannot_be_sent(cx: &mut TestAppContext) {
+    install_globals(cx, true);
+    let mut settings = crate::settings_with_channels("#a");
+    settings.confirm_multiline_paste = true;
+    let (chat, cx) =
+        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    chat.update_in(cx, paste_lines);
+    chat.update_in(cx, |chat, window, cx| {
+        let many = vec!["x"; super::paste_dialog::MAX_LINES + 1].join("\n");
+        chat.paste_prompt
+            .as_ref()
+            .unwrap()
+            .body()
+            .update(cx, |body, cx| body.replace_text(&many, cx));
+        chat.confirm_paste_prompt(window, cx);
+        let error = chat.paste_prompt.as_ref().unwrap().error().unwrap();
+        assert!(error.contains("100") && error.contains("101"), "{error}");
+    });
+}

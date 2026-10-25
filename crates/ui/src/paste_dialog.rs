@@ -25,7 +25,7 @@ const BOX_WIDTH: Pixels = px(520.);
 const BODY_ROWS: usize = 8;
 /// Most lines the dialog edits; a longer paste is inserted as one line, as
 /// when the dialog is off, so the number of fields stays bounded.
-pub(crate) const MAX_LINES: usize = 100;
+pub(crate) const MAX_LINES: usize = cayenchat_irc_core::MAX_SEND_LINES;
 const DEFAULT_QUOTE: &str = ">";
 
 /// The lines of pasted text: CRLF, CR and LF all end a line, and one trailing
@@ -304,6 +304,21 @@ impl ChatWindow {
         let (network, id, notice) = (prompt.network, prompt.conversation, prompt.notice);
         let lines = message_lines(prompt.body.read(cx).text().split('\n'));
         if lines.is_empty() {
+            return;
+        }
+        // The editor can add lines after the dialog opened.
+        if lines.len() > MAX_LINES {
+            let error = self.i18n.format(
+                "paste_dialog_too_many",
+                &[
+                    ("max", &MAX_LINES.to_string()),
+                    ("count", &lines.len().to_string()),
+                ],
+            );
+            if let Some(prompt) = self.paste_prompt.as_mut() {
+                prompt.error = Some(error);
+            }
+            cx.notify();
             return;
         }
         let Some(conversation) = self.state.conversation(id) else {
