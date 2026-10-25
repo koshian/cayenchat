@@ -10,7 +10,6 @@
 //! where they look.
 
 use gpui::{App, Bounds, Pixels, Point, TextAlign, Window, WrappedLine, point, px, size};
-use unicode_segmentation::UnicodeSegmentation;
 
 /// Width of the mark that stands for a selected line break.
 const BREAK_MARK: Pixels = px(6.);
@@ -107,7 +106,7 @@ impl WrappedText {
 
     /// The offset closest to `position`; outside the text it is the nearest
     /// row's start or end.
-    pub(crate) fn offset_for_point(&self, position: Point<Pixels>, text: &str) -> usize {
+    pub(crate) fn offset_for_point(&self, position: Point<Pixels>) -> usize {
         let ix = if position.y <= px(0.) {
             0
         } else {
@@ -121,18 +120,7 @@ impl WrappedText {
             .unwrapped_layout
             .closest_index_for_x(position.x + row.x0)
             + row.base;
-        let at = at.clamp(row.start, row.end);
-        if row.soft && at >= row.end {
-            // The break belongs to the next row; stay at the end of this one.
-            return Self::before_last_grapheme(text, row);
-        }
-        at
-    }
-
-    fn before_last_grapheme(text: &str, row: &Row) -> usize {
-        text.get(row.start..row.end)
-            .and_then(|row_text| row_text.grapheme_indices(true).next_back())
-            .map_or(row.start, |(at, _)| row.start + at)
+        at.clamp(row.start, row.end)
     }
 
     /// The start of the row the caret at `offset` is on.
@@ -140,15 +128,10 @@ impl WrappedText {
         self.rows[self.row_for_offset(offset)].start
     }
 
-    /// The end of the row the caret at `offset` is on: before the break that
-    /// wrapped it, so the caret stays on that row.
-    pub(crate) fn row_end(&self, offset: usize, text: &str) -> usize {
-        let row = &self.rows[self.row_for_offset(offset)];
-        if row.soft {
-            Self::before_last_grapheme(text, row)
-        } else {
-            row.end
-        }
+    /// The end of the row the caret at `offset` is on. On a wrapped row this
+    /// is the start of the next row, so the caret is drawn there.
+    pub(crate) fn row_end(&self, offset: usize) -> usize {
+        self.rows[self.row_for_offset(offset)].end
     }
 
     /// One rectangle per row the range covers, with a small mark where it

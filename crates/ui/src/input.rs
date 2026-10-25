@@ -323,6 +323,7 @@ impl TextInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.completion = None;
+        self.goal_x = None;
         self.undo.clear();
         self.redo.clear();
         cx.notify();
@@ -392,7 +393,7 @@ impl TextInput {
     /// Where End goes (see [`Self::home_offset`]).
     fn end_offset(&self) -> usize {
         match &self.wrapped {
-            Some(wrapped) if self.multiline => wrapped.row_end(self.cursor_offset(), &self.content),
+            Some(wrapped) if self.multiline => wrapped.row_end(self.cursor_offset()),
             _ => self.content.len(),
         }
     }
@@ -454,7 +455,7 @@ impl TextInput {
         } else if y >= wrapped.height() {
             self.content.len()
         } else {
-            wrapped.offset_for_point(point(x, y), &self.content)
+            wrapped.offset_for_point(point(x, y))
         };
         if select {
             self.select_to(target, cx);
@@ -650,6 +651,7 @@ impl TextInput {
         self.selection_reversed = snapshot.reversed;
         self.marked_range = None;
         self.completion = None;
+        self.goal_x = None;
         cx.notify();
     }
 
@@ -934,10 +936,10 @@ impl TextInput {
                 return 0;
             };
             let y = position.y.clamp(bounds.top(), bounds.bottom());
-            return wrapped.offset_for_point(
-                point(position.x - bounds.left(), y - bounds.top() + self.scroll_y),
-                &self.content,
-            );
+            return wrapped.offset_for_point(point(
+                position.x - bounds.left(),
+                y - bounds.top() + self.scroll_y,
+            ));
         }
 
         let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
@@ -1158,6 +1160,7 @@ impl EntityInputHandler for TextInput {
             return;
         }
         self.completion = None;
+        self.goal_x = None;
         let new_text = self.single_line_or_normalized(new_text);
         let new_text = new_text.as_str();
         let range = range_utf16
@@ -1187,6 +1190,7 @@ impl EntityInputHandler for TextInput {
         cx: &mut Context<Self>,
     ) {
         self.completion = None;
+        self.goal_x = None;
         let new_text = self.single_line_or_normalized(new_text);
         let new_text = new_text.as_str();
         let range = range_utf16
@@ -1274,10 +1278,8 @@ impl EntityInputHandler for TextInput {
             return Some(0);
         }
         if let Some(wrapped) = self.wrapped.as_ref().filter(|_| self.multiline) {
-            let at = wrapped.offset_for_point(
-                gpui::point(line_point.x, line_point.y + self.scroll_y),
-                &self.content,
-            );
+            let at =
+                wrapped.offset_for_point(gpui::point(line_point.x, line_point.y + self.scroll_y));
             return Some(self.offset_to_utf16(at));
         }
         let last_layout = self.last_layout.as_ref()?;
@@ -2422,6 +2424,43 @@ mod tests {
             input.move_to(1, cx);
             input.up(&Up, window, cx);
             assert_eq!(input.selection(), 0..0, "above the first line: its start");
+        });
+    }
+
+    #[gpui::test]
+    fn an_edit_resets_the_column_up_and_down_keep(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("abcdef\nabcdef\nabcdef", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(2, cx);
+            input.down(&Down, window, cx);
+            assert_eq!(input.selection(), 9..9);
+            input.replace_text_in_range(None, "ZZ", window, cx);
+            assert_eq!(input.selection(), 11..11);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        input.update_in(cx, |input, window, cx| {
+            input.down(&Down, window, cx);
+            // Column 4 (after the typed ZZ) on the third line, not the old column 2.
+            assert_eq!(input.selection(), 20..20, "the column after the edit");
+            input.select_to(18, cx);
+            assert_eq!(&input.text()[input.selection()], "cd");
+        });
+    }
+
+    #[gpui::test]
+    fn end_on_a_wrapped_row_selects_its_last_character(cx: &mut gpui::TestAppContext) {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(4);
+        let (input, cx) = multiline(&text, cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(0, cx);
+            input.down(&Down, window, cx);
+            let second_row = input.selection().start;
+            assert!(second_row > 1 && second_row < text.len());
+            input.move_to(0, cx);
+            input.select_end(&SelectEnd, window, cx);
+            assert_eq!(input.selection(), 0..second_row);
+            assert_eq!(&input.text()[input.selection()], &text[..second_row]);
         });
     }
 
