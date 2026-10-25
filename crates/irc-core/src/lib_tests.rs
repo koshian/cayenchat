@@ -597,6 +597,51 @@ fn member_modes_are_not_sent_in_part_when_the_queue_is_nearly_full() {
 }
 
 #[test]
+fn send_lines_queues_every_line_in_order_or_none() {
+    let (connection, mut queued) = queueing_connection("UTF-8", true, &[]);
+    let lines = |list: &[&str]| list.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>();
+    connection
+        .send_lines("#t", &lines(&["one", "two", "three"]), true, false)
+        .unwrap();
+    let mut sent = Vec::new();
+    while let Ok(Outgoing::Message {
+        target,
+        text,
+        notice,
+        ..
+    }) = queued.try_recv()
+    {
+        sent.push((target, text, notice));
+    }
+    let expected = ["one", "two", "three"].map(|t| ("#t".to_owned(), t.to_owned(), true));
+    assert_eq!(sent, expected);
+
+    // A bad line behind good ones stops the whole send.
+    let too_long = "x".repeat(600);
+    let error = connection
+        .send_lines("#t", &lines(&["ok", &too_long]), false, false)
+        .unwrap_err();
+    assert!(error.contains("512"), "{error}");
+    assert!(queued.try_recv().is_err(), "nothing queued on a bad line");
+
+    // Too little room (capacity 8, 6 taken) queues nothing, so a retry
+    // does not send the first lines twice.
+    for _ in 0..6 {
+        connection.send_message("#t", "busy", false).unwrap();
+    }
+    assert!(
+        connection
+            .send_lines("#t", &lines(&["a", "b", "c"]), false, false)
+            .is_err()
+    );
+    assert_eq!(queued_texts(&mut queued).len(), 6, "no part of it went");
+    connection
+        .send_lines("#t", &lines(&["a", "b", "c"]), false, false)
+        .unwrap();
+    assert_eq!(queued_texts(&mut queued).len(), 3);
+}
+
+#[test]
 fn taken_events_can_be_awaited_until_the_worker_ends() {
     let (commands, _) = mpsc::channel(1);
     let (event_tx, events) = mpsc::channel(1);

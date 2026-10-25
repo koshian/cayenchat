@@ -2171,6 +2171,12 @@ impl Connection {
             self.validate(&line)?;
             outgoing.push(line);
         }
+        // Everything or nothing: this thread is the only sender, so room that
+        // exists now stays until the lines are queued. A partial send would
+        // be sent again whole when the user retries.
+        if self.commands.capacity() < outgoing.len() {
+            return Err("The connection is busy; try again in a moment.".into());
+        }
         for line in outgoing {
             self.commands
                 .try_send(line)
