@@ -181,50 +181,77 @@ impl SettingsWindow {
         let registered = !profile.avatar_url.is_empty();
         // A flat disclosure item like the other settings: the whole header
         // row toggles, the chevron shows the fold and the state word says what
-        // is registered. The content hangs one step in under the header; only
-        // the URL row uses the label column.
+        // is registered. The label sits in the label column like any other
+        // setting; the fold mark, state and all content use the right column.
+        // The row does not change with hover or with the fold: only the
+        // chevron direction shows the state. A mouse click drops the focus
+        // again, so the keyboard focus underline never lingers after a click.
         let text = theme.text;
         let toggle = |this: &mut Self, cx: &mut Context<Self>| {
             this.avatar_quick_open = !this.avatar_quick_open;
             cx.notify();
         };
-        let section = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .id("avatar-quick-toggle")
-                    .track_focus(&self.avatar_toggle_focus)
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_x_2()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.hover))
-                    .focus(move |s| s.border_b_1().border_color(text))
-                    .child(div().w_4().child(if open { "▾" } else { "▸" }))
-                    .child(self.i18n.text("avatar_quick_toggle"))
-                    .child(div().text_color(theme.text_secondary).child(self.i18n.text(
-                        if registered {
-                            "avatar_quick_state_set"
-                        } else {
-                            "avatar_quick_state_unset"
-                        },
-                    )))
-                    .on_click(cx.listener(move |this, _, _, cx| toggle(this, cx))),
-            )
-            .child(
-                div()
-                    .id("avatar-quick-summary")
-                    .min_w_0()
-                    .pl_4()
-                    .text_color(theme.text_secondary)
-                    .child(self.quick_avatar_summary(profile)),
-            );
+        let section = div().flex().flex_col().gap_2().child(
+            div()
+                .id("avatar-quick-toggle")
+                .track_focus(&self.avatar_toggle_focus)
+                .flex()
+                .items_center()
+                .gap_2()
+                // As tall as a row with an input, so the item spacing matches.
+                .min_h(px(35.))
+                .cursor_pointer()
+                .border_b_1()
+                .border_color(gpui::transparent_black())
+                .focus(move |s| s.border_color(text))
+                .child(settings_theme::label_column().child(self.i18n.text("avatar_quick_toggle")))
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w_4()
+                                .flex_shrink_0()
+                                .child(if open { "▾" } else { "▸" }),
+                        )
+                        .child(div().text_color(theme.text_secondary).child(self.i18n.text(
+                            if registered {
+                                "avatar_quick_state_set"
+                            } else {
+                                "avatar_quick_state_unset"
+                            },
+                        ))),
+                )
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if !event.is_keyboard() {
+                        window.blur();
+                    }
+                    toggle(this, cx)
+                })),
+        );
         if !open {
             return section;
         }
+        // Everything under the header starts in the right column.
+        let right = || {
+            div()
+                .ml(settings_theme::LABEL_INDENT)
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_2()
+        };
+        let section = section.child(
+            div()
+                .id("avatar-quick-summary")
+                .ml(settings_theme::LABEL_INDENT)
+                .min_w_0()
+                .text_color(theme.text_secondary)
+                .child(self.quick_avatar_summary(profile)),
+        );
 
         let status = self
             .owner
@@ -250,8 +277,6 @@ impl SettingsWindow {
             .flex_wrap()
             .items_center()
             .gap_2()
-            // Lined up under the URL input, which they act on.
-            .ml(settings_theme::LABEL_INDENT)
             // Choosing an image works without an image host; the missing
             // setup is explained when an image is chosen.
             .when(uploading.is_none(), |row| {
@@ -298,43 +323,54 @@ impl SettingsWindow {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .pl_4()
                 .on_action(cx.listener(Self::paste_avatar_image))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                     this.drop_avatar_image(paths.paths(), paths.keep_alive(), window, cx)
                 }))
                 .child(
-                    div()
-                        .text_color(theme.warning)
-                        .child(self.i18n.text("avatar_quick_notice")),
+                    right()
+                        .child(
+                            div()
+                                .text_color(theme.warning)
+                                .child(self.i18n.text("avatar_quick_notice")),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme.text_secondary)
+                                .child(self.i18n.text("avatar_quick_local_note")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_color(theme.text_secondary)
+                                        .child(self.i18n.text("ircv3_avatar_url")),
+                                )
+                                .child(self.settings.avatar_url.clone()),
+                        )
+                        .child(buttons)
+                        .children(lines.into_iter().map(|(text, failed)| {
+                            div()
+                                .when(failed, |d| d.text_color(theme.warning))
+                                .when(!failed, |d| d.text_color(theme.text_secondary))
+                                .child(text)
+                        }))
+                        .when_some(self.avatar_feedback.clone(), |d, feedback| {
+                            d.child(div().text_color(theme.warning).child(feedback))
+                        })
+                        .when(self.avatar_opening, |d| {
+                            d.child(
+                                div()
+                                    .text_color(theme.text_secondary)
+                                    .child(self.i18n.text("ircv3_avatar_edit_loading")),
+                            )
+                        }),
                 )
-                .child(
-                    div()
-                        .text_color(theme.text_secondary)
-                        .child(self.i18n.text("avatar_quick_local_note")),
-                )
-                .child(crate::settings_field(
-                    &self.i18n.text("ircv3_avatar_url"),
-                    self.settings.avatar_url.clone(),
-                ))
-                .child(buttons)
-                .children(lines.into_iter().map(|(text, failed)| {
-                    div()
-                        .when(failed, |d| d.text_color(theme.warning))
-                        .when(!failed, |d| d.text_color(theme.text_secondary))
-                        .child(text)
-                }))
-                .when_some(self.avatar_feedback.clone(), |d, feedback| {
-                    d.child(div().text_color(theme.warning).child(feedback))
-                })
-                .when(self.avatar_opening, |d| {
-                    d.child(
-                        div()
-                            .text_color(theme.text_secondary)
-                            .child(self.i18n.text("ircv3_avatar_edit_loading")),
-                    )
-                })
+                // The editor sets its own right-column margin.
                 .children(provider.and_then(|name| self.render_avatar_editor(name, true, cx))),
         )
     }
