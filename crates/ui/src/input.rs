@@ -13,6 +13,8 @@ use gpui::{
 };
 use unicode_segmentation::*;
 
+use crate::multiline::WrappedText;
+
 actions!(
     text_input,
     [
@@ -45,6 +47,16 @@ actions!(
         Cut,
         Copy,
         UploadImage,
+        // Only bound in a multi-line input (key context `MultilineInput`).
+        Up,
+        Down,
+        SelectUp,
+        SelectDown,
+        InsertNewline,
+        DocumentStart,
+        DocumentEnd,
+        SelectDocumentStart,
+        SelectDocumentEnd,
     ]
 );
 
@@ -166,6 +178,23 @@ pub struct TextInput {
     double_click_selects_all: bool,
     prefers_direct_input: bool,
     native_settings_style: bool,
+    /// Draws a frame around the field (the dialog's fields).
+    bordered: bool,
+    /// A wrapped, vertically scrolling text of several lines; Enter is
+    /// bound to a line break by the window that hosts it.
+    multiline: bool,
+    /// A quote mark that a new line repeats (with a space) when the line the
+    /// caret is on starts with it (multi-line only).
+    line_quote: Option<String>,
+    /// How many lines the box shows (multi-line only).
+    rows: usize,
+    wrapped: Option<WrappedText>,
+    /// How far the text is shifted up (multi-line only).
+    scroll_y: Pixels,
+    /// The cursor the view last followed, so a wheel scroll is not undone.
+    followed: Option<(usize, usize)>,
+    /// The x Up and Down aim for while the caret moves between lines.
+    goal_x: Option<Pixels>,
     menu: Option<InputMenu>,
 }
 
@@ -297,8 +326,28 @@ impl TextInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.completion = None;
+        self.goal_x = None;
         self.undo.clear();
         self.redo.clear();
+        cx.notify();
+    }
+
+    /// Replaces the whole text as one edit that can be undone. The caret stays
+    /// at its offset, or at the end of a shorter text.
+    pub fn replace_text(&mut self, value: &str, cx: &mut Context<Self>) {
+        if self.content != value {
+            self.record_edit();
+        }
+        let mut cursor = self.cursor_offset().min(value.len());
+        while !value.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        self.content = value.to_owned().into();
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.completion = None;
+        self.goal_x = None;
         cx.notify();
     }
 
@@ -336,20 +385,143 @@ impl TextInput {
         self.select_to(self.content.len(), cx)
     }
 
+    /// Where Home goes: the start of the text, or of the line (up to a line
+    /// break, not of the wrapped row) the caret is on in a multi-line input.
+    /// A wrapped row's end has the same offset as the next row's start, so
+    /// stopping there would draw the caret on the wrong row.
+    fn home_offset(&self) -> usize {
+        if !self.multiline {
+            return 0;
+        }
+        let before = &self.content[..self.cursor_offset()];
+        before.rfind('\n').map_or(0, |at| at + 1)
+    }
+
+    /// Where End goes (see [`Self::home_offset`]).
+    fn end_offset(&self) -> usize {
+        if !self.multiline {
+            return self.content.len();
+        }
+        let cursor = self.cursor_offset();
+        self.content[cursor..]
+            .find('\n')
+            .map_or(self.content.len(), |at| cursor + at)
+    }
+
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        self.move_to(self.home_offset(), cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        self.move_to(self.end_offset(), cx);
     }
 
     fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(0, cx);
+        self.select_to(self.home_offset(), cx);
     }
 
     fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.end_offset(), cx);
+    }
+
+    fn document_start(&mut self, _: &DocumentStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(0, cx);
+    }
+
+    fn document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.content.len(), cx);
+    }
+
+    fn select_document_start(
+        &mut self,
+        _: &SelectDocumentStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(0, cx);
+    }
+
+    fn select_document_end(
+        &mut self,
+        _: &SelectDocumentEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.select_to(self.content.len(), cx);
+    }
+
+    /// Moves the caret `rows` rows down (up when negative), keeping to the
+    /// same x; past the first or last row it goes to the start or end of the
+    /// text. Selects up to there when `select`.
+    fn move_rows(&mut self, rows: isize, select: bool, cx: &mut Context<Self>) {
+        let Some(wrapped) = self.wrapped.as_ref() else {
+            return;
+        };
+        let here = wrapped.point_for_offset(self.cursor_offset());
+        let x = self.goal_x.unwrap_or(here.x);
+        let y = here.y + wrapped.line_height() * rows as f32 + wrapped.line_height() / 2.;
+        let target = if y < px(0.) {
+            0
+        } else if y >= wrapped.height() {
+            self.content.len()
+        } else {
+            wrapped.offset_in_row(point(x, y))
+        };
+        if select {
+            self.select_to(target, cx);
+        } else {
+            self.move_to(target, cx);
+        }
+        self.goal_x = Some(x);
+    }
+
+    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_rows(-1, false, cx);
+    }
+
+    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_rows(1, false, cx);
+    }
+
+    fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_rows(-1, true, cx);
+    }
+
+    fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_rows(1, true, cx);
+    }
+
+    fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
+        let mut line = String::from("\n");
+        if let Some(quote) = self.line_quote.as_deref() {
+            let cursor = self.selected_range.start;
+            let start = self.content[..cursor].rfind('\n').map_or(0, |at| at + 1);
+            let prefix = quote.len() + 1;
+            // Only after the quote and its space; inside them a break just
+            // splits the line.
+            if cursor >= start + prefix
+                && self.content[start..cursor]
+                    .strip_prefix(quote)
+                    .is_some_and(|rest| rest.starts_with(' '))
+            {
+                line.push_str(quote);
+                line.push(' ');
+            }
+        }
+        self.replace_text_in_range(None, &line, window, cx);
+    }
+
+    /// The hard line (up to its line break) around `offset` in a multi-line
+    /// input; in a single-line input the whole text.
+    fn hard_line(&self, offset: usize) -> Range<usize> {
+        if !self.multiline {
+            return 0..self.content.len();
+        }
+        let start = self.content[..offset].rfind('\n').map_or(0, |at| at + 1);
+        let end = self.content[offset..]
+            .find('\n')
+            .map_or(self.content.len(), |at| offset + at);
+        start..end
     }
 
     fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -409,21 +581,31 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         if self.selected_range.is_empty() {
-            self.select_to(0, cx);
+            self.select_to(self.hard_line(self.cursor_offset()).start, cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
 
+    /// Deletes to the end of the line; at the end of a line of a multi-line
+    /// input it deletes the line break instead, as Emacs does.
     fn delete_to_end(&mut self, _: &DeleteToEnd, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
-            self.select_to(self.content.len(), cx);
+            let cursor = self.cursor_offset();
+            let end = self.hard_line(cursor).end;
+            let end = if end == cursor && cursor < self.content.len() {
+                self.next_boundary(cursor)
+            } else {
+                end
+            };
+            self.select_to(end, cx);
         }
         self.replace_text_in_range(None, "", window, cx);
     }
 
     fn delete_line(&mut self, _: &DeleteLine, window: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
-        self.select_to(self.content.len(), cx);
+        let line = self.hard_line(self.cursor_offset());
+        self.move_to(line.start, cx);
+        self.select_to(line.end, cx);
         self.replace_text_in_range(None, "", window, cx);
     }
 
@@ -495,6 +677,7 @@ impl TextInput {
         self.selection_reversed = snapshot.reversed;
         self.marked_range = None;
         self.completion = None;
+        self.goal_x = None;
         cx.notify();
     }
 
@@ -657,8 +840,28 @@ impl TextInput {
         crate::snapped_menu(menu.position, popup).into_any_element()
     }
 
+    /// Scrolls a multi-line input by `dy` (down when positive), within the
+    /// text.
+    fn scroll_by(&mut self, dy: Pixels, cx: &mut Context<Self>) {
+        let (Some(wrapped), Some(bounds)) = (self.wrapped.as_ref(), self.last_bounds) else {
+            return;
+        };
+        let most = (wrapped.height() - bounds.size.height).max(px(0.));
+        let scroll_y = (self.scroll_y + dy).clamp(px(0.), most);
+        if scroll_y != self.scroll_y {
+            self.scroll_y = scroll_y;
+            cx.notify();
+        }
+    }
+
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         if self.is_selecting {
+            if let Some(bounds) = self.last_bounds.filter(|_| self.multiline) {
+                // A drag past the top or bottom scrolls on.
+                let beyond =
+                    event.position.y - event.position.y.clamp(bounds.top(), bounds.bottom());
+                self.scroll_by(beyond, cx);
+            }
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
     }
@@ -679,7 +882,11 @@ impl TextInput {
             .then(|| cayenchat_app::amazon::shorten_pasted(text))
             .flatten();
         let start = self.selected_range.start;
-        self.replace_text_in_range(None, &join_pasted_lines(text), window, cx);
+        if self.multiline {
+            self.replace_text_in_range(None, text, window, cx);
+        } else {
+            self.replace_text_in_range(None, &join_pasted_lines(text), window, cx);
+        }
         if let Some(short) = short {
             // A separate edit, so one undo gives back the long link.
             self.selected_range = start..self.selected_range.end;
@@ -731,6 +938,7 @@ impl TextInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.completion = None;
+        self.goal_x = None;
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         cx.notify()
@@ -747,6 +955,17 @@ impl TextInput {
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
+        }
+        if self.multiline {
+            let (Some(bounds), Some(wrapped)) = (self.last_bounds.as_ref(), self.wrapped.as_ref())
+            else {
+                return 0;
+            };
+            let y = position.y.clamp(bounds.top(), bounds.bottom());
+            return wrapped.offset_for_point(point(
+                position.x - bounds.left(),
+                y - bounds.top() + self.scroll_y,
+            ));
         }
 
         let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
@@ -773,6 +992,7 @@ impl TextInput {
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.completion = None;
+        self.goal_x = None;
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -783,6 +1003,16 @@ impl TextInput {
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
         cx.notify()
+    }
+
+    /// Inserted text as the input keeps it: line breaks become spaces, or in
+    /// a multi-line input all become `\n`.
+    fn single_line_or_normalized(&self, text: &str) -> String {
+        if self.multiline {
+            text.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            text.replace(['\r', '\n'], " ")
+        }
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
@@ -952,11 +1182,12 @@ impl EntityInputHandler for TextInput {
         cx: &mut Context<Self>,
     ) {
         // Return is handled by an action and must not insert a stray space.
-        if new_text == "\n" || new_text == "\r" {
+        if !self.multiline && (new_text == "\n" || new_text == "\r") {
             return;
         }
         self.completion = None;
-        let new_text = new_text.replace(['\r', '\n'], " ");
+        self.goal_x = None;
+        let new_text = self.single_line_or_normalized(new_text);
         let new_text = new_text.as_str();
         let range = range_utf16
             .as_ref()
@@ -985,7 +1216,8 @@ impl EntityInputHandler for TextInput {
         cx: &mut Context<Self>,
     ) {
         self.completion = None;
-        let new_text = new_text.replace(['\r', '\n'], " ");
+        self.goal_x = None;
+        let new_text = self.single_line_or_normalized(new_text);
         let new_text = new_text.as_str();
         let range = range_utf16
             .as_ref()
@@ -1032,12 +1264,23 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
         // Another pane may stand in for this input (the log forwards its
         // input method here), so `bounds` can be that pane's; the painted
         // bounds are always this input's.
         let bounds = self.last_bounds.unwrap_or(bounds);
         let range = self.range_from_utf16(&range_utf16);
+        if let Some(wrapped) = self.wrapped.as_ref().filter(|_| self.multiline) {
+            // The candidate window goes under the range's first row.
+            let origin = bounds.origin - point(px(0.), self.scroll_y);
+            let start = origin + wrapped.point_for_offset(range.start);
+            let end = origin + wrapped.point_for_offset(range.end);
+            let right = if end.y == start.y { end.x } else { start.x };
+            return Some(Bounds::from_corners(
+                start,
+                point(right, start.y + wrapped.line_height()),
+            ));
+        }
+        let last_layout = self.last_layout.as_ref()?;
         Some(Bounds::from_corners(
             point(
                 bounds.left() + last_layout.x_for_index(range.start) - self.scroll_x,
@@ -1057,11 +1300,15 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
-        let last_layout = self.last_layout.as_ref()?;
-
         if self.content.is_empty() {
             return Some(0);
         }
+        if let Some(wrapped) = self.wrapped.as_ref().filter(|_| self.multiline) {
+            let at =
+                wrapped.offset_for_point(gpui::point(line_point.x, line_point.y + self.scroll_y));
+            return Some(self.offset_to_utf16(at));
+        }
+        let last_layout = self.last_layout.as_ref()?;
         let mut utf8_index = last_layout
             .index_for_x(line_point.x + self.scroll_x)?
             .min(self.content.len());
@@ -1081,6 +1328,12 @@ struct PrepaintState {
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
     scroll_x: Pixels,
+    /// A multi-line input's layout, the selection's rectangles and the
+    /// vertical scroll it was drawn with.
+    wrapped: Option<WrappedText>,
+    rects: Vec<PaintQuad>,
+    scroll_y: Pixels,
+    followed: Option<(usize, usize)>,
 }
 
 impl IntoElement for TextElement {
@@ -1088,6 +1341,90 @@ impl IntoElement for TextElement {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+impl TextElement {
+    /// The multi-line input: shapes the wrapped text, scrolls it to keep the
+    /// caret in view, and prepares the caret and the selection.
+    fn prepaint_multiline(
+        &self,
+        display_text: SharedString,
+        runs: &[TextRun],
+        font_size: Pixels,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> PrepaintState {
+        let input = self.input.read(cx);
+        let cursor = input.cursor_offset();
+        let followed = (cursor, input.content.len());
+        let line_height = window.line_height();
+        // Room for the caret after the last character of a row.
+        let caret_width = px(2.);
+        let wrap_width = (bounds.size.width - caret_width).max(px(1.));
+        let lines = window
+            .text_system()
+            .shape_text(display_text, font_size, runs, Some(wrap_width), None)
+            .unwrap_or_default();
+        let wrapped = WrappedText::new(lines, line_height);
+
+        // The view follows the caret when it or the text changed; otherwise a
+        // scroll by the wheel stays.
+        let mut scroll_y = input.scroll_y;
+        let caret = wrapped.point_for_offset(cursor);
+        if input.followed != Some(followed) {
+            if caret.y < scroll_y {
+                scroll_y = caret.y;
+            }
+            if caret.y + line_height > scroll_y + bounds.size.height {
+                scroll_y = caret.y + line_height - bounds.size.height;
+            }
+        }
+        let scroll_y = scroll_y
+            .min((wrapped.height() - bounds.size.height).max(px(0.)))
+            .max(px(0.));
+
+        let origin = bounds.origin - point(px(0.), scroll_y);
+        let (caret, rects) = if input.selected_range.is_empty() {
+            let quad = fill(
+                Bounds::new(origin + caret, size(caret_width, line_height)),
+                caret_color(
+                    input.palette(cx).dark,
+                    input.native_settings_style.then(|| {
+                        crate::settings_theme::current(cx)
+                            .map(|n| {
+                                gpui::Hsla::from(crate::settings_theme::color(n.input.caret_color))
+                            })
+                            .unwrap_or_else(gpui::blue)
+                    }),
+                    window.text_style().color,
+                ),
+            );
+            (Some(quad), Vec::new())
+        } else {
+            let rects = wrapped
+                .rects_for_range(&input.selected_range)
+                .into_iter()
+                .map(|rect| {
+                    fill(
+                        Bounds::new(origin + rect.origin, rect.size),
+                        input.palette(cx).text_selection,
+                    )
+                })
+                .collect();
+            (None, rects)
+        };
+        PrepaintState {
+            line: None,
+            cursor: caret,
+            selection: None,
+            scroll_x: px(0.),
+            wrapped: Some(wrapped),
+            rects,
+            scroll_y,
+            followed: Some(followed),
+        }
     }
 }
 
@@ -1112,7 +1449,11 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        style.size.height = if self.input.read(cx).multiline {
+            relative(1.).into()
+        } else {
+            window.line_height().into()
+        };
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1176,6 +1517,9 @@ impl Element for TextElement {
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
+        if input.multiline {
+            return self.prepaint_multiline(display_text, &runs, font_size, bounds, window, cx);
+        }
         let line = window
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
@@ -1240,6 +1584,10 @@ impl Element for TextElement {
             cursor,
             selection,
             scroll_x,
+            wrapped: None,
+            rects: Vec::new(),
+            scroll_y: px(0.),
+            followed: None,
         }
     }
 
@@ -1259,6 +1607,10 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
+        if let Some(wrapped) = prepaint.wrapped.take() {
+            self.paint_multiline(bounds, wrapped, prepaint, window, cx);
+            return;
+        }
         let scroll_x = prepaint.scroll_x;
         let line = prepaint.line.take().unwrap();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -1282,12 +1634,48 @@ impl Element for TextElement {
             input.scroll_x = scroll_x;
         });
 
-        // A drag keeps selecting after the pointer leaves the field (a div's
-        // own move handler only fires while hovered, which dropped the first
-        // characters when the pointer overshot the left edge) and ends on a
-        // release anywhere in the window. The release position is applied
-        // too: a fast drag coalesces move events, so the last one can stop
-        // short of where the button came up.
+        self.track_drag(window);
+    }
+}
+
+impl TextElement {
+    fn paint_multiline(
+        &self,
+        bounds: Bounds<Pixels>,
+        wrapped: WrappedText,
+        prepaint: &mut PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let focus_handle = self.input.read(cx).focus_handle.clone();
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for rect in prepaint.rects.drain(..) {
+                window.paint_quad(rect);
+            }
+            wrapped.paint(bounds.origin - point(px(0.), prepaint.scroll_y), window, cx);
+            if focus_handle.is_focused(window)
+                && let Some(caret) = prepaint.cursor.take()
+            {
+                window.paint_quad(caret);
+            }
+        });
+        let (scroll_y, followed) = (prepaint.scroll_y, prepaint.followed);
+        self.input.update(cx, |input, _cx| {
+            input.wrapped = Some(wrapped);
+            input.last_bounds = Some(bounds);
+            input.scroll_y = scroll_y;
+            input.followed = followed;
+        });
+        self.track_drag(window);
+    }
+
+    /// A drag keeps selecting after the pointer leaves the field (a div's
+    /// own move handler only fires while hovered, which dropped the first
+    /// characters when the pointer overshot the left edge) and ends on a
+    /// release anywhere in the window. The release position is applied
+    /// too: a fast drag coalesces move events, so the last one can stop
+    /// short of where the button came up.
+    fn track_drag(&self, window: &mut Window) {
         let input = self.input.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
             if phase == DispatchPhase::Capture {
@@ -1331,7 +1719,11 @@ impl Render for TextInput {
             .child(
                 div()
                     .flex()
-                    .key_context("TextInput")
+                    .key_context(if self.multiline {
+                        "TextInput MultilineInput"
+                    } else {
+                        "TextInput"
+                    })
                     .track_focus(&self.focus_handle(cx))
                     // Escape closes the menu before anything else sees the key.
                     .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -1367,6 +1759,24 @@ impl Render for TextInput {
                     .on_action(cx.listener(Self::undo))
                     .on_action(cx.listener(Self::redo))
                     .on_action(cx.listener(Self::show_character_palette))
+                    .on_action(cx.listener(Self::up))
+                    .on_action(cx.listener(Self::down))
+                    .on_action(cx.listener(Self::select_up))
+                    .on_action(cx.listener(Self::select_down))
+                    .on_action(cx.listener(Self::insert_newline))
+                    .on_action(cx.listener(Self::document_start))
+                    .on_action(cx.listener(Self::document_end))
+                    .on_action(cx.listener(Self::select_document_start))
+                    .on_action(cx.listener(Self::select_document_end))
+                    .on_scroll_wheel(cx.listener(
+                        |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                            if this.multiline {
+                                let delta = event.delta.pixel_delta(window.line_height());
+                                this.scroll_by(-delta.y, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
                     .on_action(cx.listener(Self::paste))
                     .on_action(cx.listener(Self::cut))
                     .on_action(cx.listener(Self::copy))
@@ -1380,12 +1790,15 @@ impl Render for TextInput {
                     .when_some(native, |d, n| d.font_family(n.input.font.family.clone()))
                     .child(
                         div()
-                            .h(px(native.map_or(28., |n| {
-                                n.input.min_height.max(line_height + 10.)
-                            })))
+                            .h(px(if self.multiline {
+                                line_height * self.rows as f32 + 10.
+                            } else {
+                                native.map_or(28., |n| n.input.min_height.max(line_height + 10.))
+                            }))
                             .w_full()
                             .p(px(4.))
                             .bg(theme.surface)
+                            .when(self.bordered, |d| d.border_1().border_color(theme.border))
                             .when_some(native, |d, n| {
                                 d.rounded(px(n.input.border.corner_radius))
                                     .border(px(n.input.border.line_width.max(1.)))
@@ -1432,6 +1845,14 @@ impl TextInput {
             double_click_selects_all: false,
             prefers_direct_input: false,
             native_settings_style: false,
+            bordered: false,
+            multiline: false,
+            line_quote: None,
+            rows: 1,
+            wrapped: None,
+            scroll_y: px(0.),
+            followed: None,
+            goal_x: None,
             menu: None,
         }
     }
@@ -1473,6 +1894,26 @@ impl TextInput {
         input.selected_range = value.len()..value.len();
         input.secret = secret;
         input
+    }
+
+    /// A field with a frame, so that it reads as an input.
+    pub fn bordered(mut self) -> Self {
+        self.bordered = true;
+        self
+    }
+
+    /// A framed text of several lines that wraps and scrolls inside a box of
+    /// `rows` lines.
+    pub fn new_multiline(value: &str, rows: usize, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new_field("", value, false, cx).bordered();
+        input.multiline = true;
+        input.rows = rows.max(1);
+        input
+    }
+
+    /// Makes Enter continue a quoted line with `quote` and a space.
+    pub fn set_line_quote(&mut self, quote: Option<String>) {
+        self.line_quote = quote;
     }
 }
 
@@ -1564,6 +2005,51 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
             KeyBinding::new("alt-\\", DeleteWhitespace, Some("TextInput")),
             KeyBinding::new("alt-space", CollapseWhitespace, Some("TextInput")),
             KeyBinding::new("ctrl-/", SelectAll, Some("TextInput")),
+        ]);
+    }
+}
+
+/// Binds the keys of a multi-line input. Called after every other binding, so
+/// that Enter, Up and Down win over the chat draft's (same depth, later wins).
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn bind_multiline_keys(emacs: bool, cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("enter", InsertNewline, Some("MultilineInput")),
+        KeyBinding::new("shift-enter", InsertNewline, Some("MultilineInput")),
+        KeyBinding::new("up", Up, Some("MultilineInput")),
+        KeyBinding::new("down", Down, Some("MultilineInput")),
+        KeyBinding::new("shift-up", SelectUp, Some("MultilineInput")),
+        KeyBinding::new("shift-down", SelectDown, Some("MultilineInput")),
+    ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-p", Up, Some("MultilineInput")),
+        KeyBinding::new("ctrl-n", Down, Some("MultilineInput")),
+        KeyBinding::new("ctrl-shift-p", SelectUp, Some("MultilineInput")),
+        KeyBinding::new("ctrl-shift-n", SelectDown, Some("MultilineInput")),
+        KeyBinding::new("cmd-up", DocumentStart, Some("MultilineInput")),
+        KeyBinding::new("cmd-down", DocumentEnd, Some("MultilineInput")),
+        KeyBinding::new("cmd-shift-up", SelectDocumentStart, Some("MultilineInput")),
+        KeyBinding::new("cmd-shift-down", SelectDocumentEnd, Some("MultilineInput")),
+    ]);
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-home", DocumentStart, Some("MultilineInput")),
+        KeyBinding::new("ctrl-end", DocumentEnd, Some("MultilineInput")),
+        KeyBinding::new(
+            "ctrl-shift-home",
+            SelectDocumentStart,
+            Some("MultilineInput"),
+        ),
+        KeyBinding::new("ctrl-shift-end", SelectDocumentEnd, Some("MultilineInput")),
+    ]);
+    #[cfg(target_os = "linux")]
+    if emacs {
+        cx.bind_keys([
+            KeyBinding::new("ctrl-p", Up, Some("MultilineInput")),
+            KeyBinding::new("ctrl-n", Down, Some("MultilineInput")),
+            KeyBinding::new("ctrl-shift-p", SelectUp, Some("MultilineInput")),
+            KeyBinding::new("ctrl-shift-n", SelectDown, Some("MultilineInput")),
         ]);
     }
 }
@@ -1903,6 +2389,207 @@ mod tests {
                 format!("a {LONG_AMAZON} b")
             );
         }
+    }
+
+    /// A drawn multi-line input of `text`, 200px wide, so that its layout
+    /// exists for the caret to move in.
+    fn multiline<'a>(
+        text: &str,
+        cx: &'a mut gpui::TestAppContext,
+    ) -> (Entity<TextInput>, &'a mut gpui::VisualTestContext) {
+        struct Host(Entity<TextInput>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(200.)).child(self.0.clone())
+            }
+        }
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let text = text.to_owned();
+        let input = cx.new(|cx| TextInput::new_multiline(&text, 4, cx));
+        let host = input.clone();
+        let (_, cx) = cx.add_window_view(|_, _| Host(host));
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        (input, cx)
+    }
+
+    #[gpui::test]
+    fn a_multiline_input_keeps_its_line_breaks(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("ab", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.insert_newline(&InsertNewline, window, cx);
+            input.replace_text_in_range(None, "c\r\nd\re", window, cx);
+            assert_eq!(input.text(), "ab\nc\nd\ne");
+            input.undo(&Undo, window, cx);
+            assert_eq!(input.text(), "ab\n");
+        });
+        // A single-line input still turns line breaks into spaces.
+        let (single, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "", false, cx));
+        single.update_in(cx, |input, window, cx| {
+            input.replace_text_in_range(None, "a\nb", window, cx);
+            assert_eq!(input.text(), "a b");
+        });
+    }
+
+    #[gpui::test]
+    fn enter_continues_a_quoted_line(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("> a\nb\n> > c", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.set_line_quote(Some(">".to_owned()));
+            input.move_to(3, cx);
+            input.insert_newline(&InsertNewline, window, cx);
+            assert_eq!(input.text(), "> a\n> \nb\n> > c");
+            // An unquoted line, and a caret inside the quote, add nothing.
+            input.move_to(8, cx);
+            input.insert_newline(&InsertNewline, window, cx);
+            assert_eq!(input.text(), "> a\n> \nb\n\n> > c");
+            input.move_to(1, cx);
+            input.insert_newline(&InsertNewline, window, cx);
+            assert_eq!(input.text(), ">\n a\n> \nb\n\n> > c");
+        });
+    }
+
+    #[gpui::test]
+    fn up_and_down_keep_the_column_across_lines(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("abcd\n\nef", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(3, cx);
+            input.down(&Down, window, cx);
+            assert_eq!(input.selection(), 5..5, "the empty line");
+            input.down(&Down, window, cx);
+            assert_eq!(input.selection(), 8..8, "back to the goal column, clamped");
+            input.down(&Down, window, cx);
+            assert_eq!(input.selection(), 8..8, "the last line's end");
+            input.up(&Up, window, cx);
+            input.up(&Up, window, cx);
+            assert_eq!(input.selection(), 3..3);
+            input.select_down(&SelectDown, window, cx);
+            assert_eq!(input.selection(), 3..5);
+            input.move_to(1, cx);
+            input.up(&Up, window, cx);
+            assert_eq!(input.selection(), 0..0, "above the first line: its start");
+        });
+    }
+
+    #[gpui::test]
+    fn an_edit_resets_the_column_up_and_down_keep(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("abcdef\nabcdef\nabcdef", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(2, cx);
+            input.down(&Down, window, cx);
+            assert_eq!(input.selection(), 9..9);
+            input.replace_text_in_range(None, "ZZ", window, cx);
+            assert_eq!(input.selection(), 11..11);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        input.update_in(cx, |input, window, cx| {
+            input.down(&Down, window, cx);
+            // Column 4 (after the typed ZZ) on the third line, not the old column 2.
+            assert_eq!(input.selection(), 20..20, "the column after the edit");
+            input.select_to(18, cx);
+            assert_eq!(&input.text()[input.selection()], "cd");
+        });
+    }
+
+    #[gpui::test]
+    fn up_and_down_leave_a_short_wrapped_row(cx: &mut gpui::TestAppContext) {
+        let text = "abc abcdefghijklmnopqrstuvwxyz ".repeat(4);
+        let (input, cx) = multiline(&text, cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(0, cx);
+            input.down(&Down, window, cx);
+            let second_row = input.selection().start;
+            for _ in 0..10 {
+                input.right(&Right, window, cx);
+            }
+            input.goal_x = None;
+            let mut at = input.selection().start;
+            let mut steps = 0;
+            while at > 0 {
+                input.up(&Up, window, cx);
+                let now = input.selection().start;
+                assert!(now < at, "Up stays at {at}");
+                at = now;
+                steps += 1;
+                assert!(steps < 10);
+            }
+            assert!(second_row > 0);
+            input.select_up(&SelectUp, window, cx);
+            input.move_to(second_row + 10, cx);
+            input.select_up(&SelectUp, window, cx);
+            assert!(!input.selection().is_empty());
+            input.move_to(0, cx);
+            let mut at = 0;
+            for _ in 0..3 {
+                input.down(&Down, window, cx);
+                let now = input.selection().start;
+                assert!(now > at, "Down stays at {at}");
+                at = now;
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn home_and_end_go_to_the_line_ends_not_the_wrapped_row_ends(cx: &mut gpui::TestAppContext) {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(4);
+        let (input, cx) = multiline(&text, cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(0, cx);
+            input.down(&Down, window, cx);
+            let second_row = input.selection().start;
+            assert!(second_row > 1 && second_row < text.len());
+            input.move_to(0, cx);
+            input.select_end(&SelectEnd, window, cx);
+            assert_eq!(&input.text()[input.selection()], text.as_str());
+            input.move_to(second_row + 1, cx);
+            input.home(&Home, window, cx);
+            assert_eq!(input.selection(), 0..0);
+        });
+    }
+
+    #[gpui::test]
+    fn home_and_end_stay_on_the_line_and_the_kill_keys_follow_emacs(cx: &mut gpui::TestAppContext) {
+        let (input, cx) = multiline("abc\ndef", cx);
+        input.update_in(cx, |input, window, cx| {
+            input.move_to(5, cx);
+            input.home(&Home, window, cx);
+            assert_eq!(input.selection(), 4..4);
+            input.end(&End, window, cx);
+            assert_eq!(input.selection(), 7..7);
+            input.document_start(&DocumentStart, window, cx);
+            assert_eq!(input.selection(), 0..0);
+            input.end(&End, window, cx);
+            assert_eq!(input.selection(), 3..3);
+            // Ctrl+K: to the end of the line, then the line break.
+            input.move_to(1, cx);
+            input.delete_to_end(&DeleteToEnd, window, cx);
+            assert_eq!(input.text(), "a\ndef");
+            input.delete_to_end(&DeleteToEnd, window, cx);
+            assert_eq!(input.text(), "adef");
+        });
+    }
+
+    #[gpui::test]
+    fn a_long_line_wraps_into_rows_the_caret_can_cross(cx: &mut gpui::TestAppContext) {
+        let words = "word ".repeat(30);
+        let (input, cx) = multiline(words.trim_end(), cx);
+        input.update_in(cx, |input, window, cx| {
+            let rows = input.wrapped.as_ref().unwrap().height() / px(20.);
+            assert!(rows > 3., "{rows} rows");
+            input.move_to(0, cx);
+            input.down(&Down, window, cx);
+            let second = input.selection().start;
+            assert!(second > 0 && second < input.text().len());
+            input.up(&Up, window, cx);
+            assert_eq!(input.selection(), 0..0);
+        });
     }
 
     #[gpui::test]

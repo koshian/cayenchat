@@ -2766,6 +2766,17 @@ box it scrolls horizontally (`scroll_x`, computed in `prepaint`) so the caret
 stays visible, i.e. the end of what is being typed; painting is clipped to the
 box, and mouse and IME positions add `scroll_x`.
 
+`TextInput::new_multiline` (#616, the multi-line paste dialog) is the one
+multi-line variant: the text is shaped as wrapped paragraphs (`multiline.rs`,
+GPUI `shape_text`), rows are drawn inside a box of fixed height and scroll
+vertically (`scroll_y`: it follows the caret when the caret or text changed,
+else the wheel's position stays; a drag past the top or bottom scrolls on).
+Up/Down keep a goal column, Home/End go to the start/end of the line up to a line break (not of the wrapped row, whose end and next start share an offset and would draw the caret on the wrong row), Ctrl+K at the end
+of a line deletes the line break. Enter, Up, Down and the document start/end
+keys are bound only under the key context `MultilineInput`, after all other
+bindings (`input::bind_multiline_keys`), so they win over the chat draft's
+Enter/Up/Down; every other editing key is the single-line input's.
+
 In the dark theme the caret uses the text color in every text input, including
 the native settings-style ones, because blue and the OS theme's caret color are
 hard to tell from the dark input backgrounds (issue #219). In the light theme

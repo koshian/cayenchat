@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::ChatWindow;
-use crate::paste_dialog::{add_quote, remove_quote};
 use gpui::{ClipboardItem, Context, TestAppContext, Window};
 
 fn install_globals(cx: &mut TestAppContext, confirm: bool) {
@@ -18,8 +17,11 @@ fn install_globals(cx: &mut TestAppContext, confirm: bool) {
 fn lines_shown(chat: &ChatWindow, cx: &gpui::App) -> Vec<String> {
     let prompt = chat.paste_prompt.as_ref().unwrap();
     prompt
-        .lines()
-        .map(|line| line.read(cx).text().to_owned())
+        .body()
+        .read(cx)
+        .text()
+        .split('\n')
+        .map(str::to_owned)
         .collect()
 }
 
@@ -57,9 +59,10 @@ fn drive_dialog(chat: &mut ChatWindow, window: &mut Window, cx: &mut Context<Cha
     assert_eq!(lines_shown(chat, cx), ["one", "two", "", "three"]);
     let quote = chat.paste_prompt.as_ref().unwrap().quote.clone();
     assert_eq!(quote.read(cx).text(), ">");
-    chat.edit_paste_lines(add_quote, cx);
+    // One button: it adds a level, then removes it again.
+    chat.toggle_paste_quote(cx);
     assert_eq!(lines_shown(chat, cx), ["> one", "> two", "", "> three"]);
-    chat.edit_paste_lines(remove_quote, cx);
+    chat.toggle_paste_quote(cx);
     assert_eq!(lines_shown(chat, cx), ["one", "two", "", "three"]);
     chat.remove_empty_paste_lines(cx);
     assert_eq!(lines_shown(chat, cx), ["one", "two", "three"]);

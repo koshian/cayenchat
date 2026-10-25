@@ -2,13 +2,15 @@
 //! The question of a multi-line paste into a message draft (#605), drawn in the
 //! chat window when "confirm multi-line paste" is on.
 //!
-//! The pasted lines are shown one editable field each. Sending joins the
-//! non-empty lines with single spaces into one PRIVMSG, or one NOTICE when its
+//! The pasted text is shown in one multi-line editor. Sending sends each of its
+//! non-empty lines as its own PRIVMSG, or NOTICE when its
 //! box is ticked; it goes to the conversation the paste was made in and never
 //! through the draft, so a pasted `/command` is only text and the draft is not
-//! touched. The quote buttons put the quote mark and a space before every
-//! non-empty line, or take that prefix off again. The keyboard focus starts on
-//! Send, so Enter sends and Escape cancels.
+//! touched. One quote button puts the quote mark and a space before every
+//! non-empty line, or, when every non-empty line already starts with them,
+//! takes one such prefix off each. The keyboard focus starts on Send, so Enter
+//! sends and Escape cancels; Enter in the editor is a line break and Ctrl+Enter
+//! sends.
 
 use cayenchat_model::{ConversationId, NetworkId, display::neutralize_bidi};
 use gpui::{prelude::*, *};
@@ -19,7 +21,8 @@ use crate::{
 };
 
 const BOX_WIDTH: Pixels = px(520.);
-const LINES_HEIGHT: Pixels = px(220.);
+/// Lines the editor shows before it scrolls.
+const BODY_ROWS: usize = 8;
 /// Most lines the dialog edits; a longer paste is inserted as one line, as
 /// when the dialog is off, so the number of fields stays bounded.
 pub(crate) const MAX_LINES: usize = 100;
@@ -42,32 +45,64 @@ pub(crate) fn add_quote(line: &str, quote: &str) -> String {
     }
 }
 
-/// `line` without a leading `quote` and space; other lines are unchanged.
+/// `line` without one leading `quote` and space; other lines are unchanged.
 pub(crate) fn remove_quote(line: &str, quote: &str) -> String {
-    line.strip_prefix(quote)
-        .and_then(|rest| rest.strip_prefix(' '))
-        .unwrap_or(line)
-        .to_owned()
+    unquoted(line, quote).unwrap_or(line).to_owned()
 }
 
-/// The message the lines make: the non-empty ones joined with one space.
-pub(crate) fn joined<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
-    lines
-        .into_iter()
+fn unquoted<'a>(line: &'a str, quote: &str) -> Option<&'a str> {
+    line.strip_prefix(quote)?.strip_prefix(' ')
+}
+
+/// Whether the quote button removes: there is a non-empty line and every
+/// non-empty line starts with `quote` and a space. Empty lines do not count.
+pub(crate) fn removes_quote(text: &str, quote: &str) -> bool {
+    let mut lines = text.split('\n').filter(|line| !line.trim().is_empty());
+    lines.next().is_some_and(|first| {
+        unquoted(first, quote).is_some() && lines.all(|line| unquoted(line, quote).is_some())
+    })
+}
+
+/// `text` after the quote button: one more level of quote on every non-empty
+/// line, or one level less when [`removes_quote`].
+pub(crate) fn toggle_quote(text: &str, quote: &str) -> String {
+    let edit = if removes_quote(text, quote) {
+        remove_quote
+    } else {
+        add_quote
+    };
+    text.split('\n')
+        .map(|line| edit(line, quote))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text` without its empty lines.
+fn without_empty_lines(text: &str) -> String {
+    text.split('\n')
         .filter(|line| !line.trim().is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("\n")
+}
+
+/// The messages the lines make: each non-empty line, without trailing blanks.
+pub(crate) fn message_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(crate) struct PastePrompt {
     network: NetworkId,
     conversation: ConversationId,
     target: String,
-    lines: Vec<Entity<TextInput>>,
+    body: Entity<TextInput>,
     pub(crate) quote: Entity<TextInput>,
     notice: bool,
-    add: FocusHandle,
-    remove: FocusHandle,
+    quote_button: FocusHandle,
     empty: FocusHandle,
     notice_box: FocusHandle,
     cancel: FocusHandle,
@@ -75,6 +110,8 @@ pub(crate) struct PastePrompt {
     previous: Option<FocusHandle>,
     focus_pending: bool,
     error: Option<String>,
+    /// Redraw when the text or the quote changes (the button's name follows).
+    _observers: [Subscription; 2],
 }
 
 impl PastePrompt {
@@ -82,10 +119,9 @@ impl PastePrompt {
         self.network
     }
 
-    /// Every input of the dialog, for the composition check.
     #[cfg(test)]
-    pub(crate) fn lines(&self) -> impl Iterator<Item = &Entity<TextInput>> {
-        self.lines.iter()
+    pub(crate) fn body(&self) -> &Entity<TextInput> {
+        &self.body
     }
 
     #[cfg(test)]
@@ -93,8 +129,9 @@ impl PastePrompt {
         self.error.as_deref()
     }
 
+    /// Every input of the dialog, for the composition check.
     pub(crate) fn inputs(&self) -> impl Iterator<Item = &Entity<TextInput>> {
-        self.lines.iter().chain(std::iter::once(&self.quote))
+        [&self.body, &self.quote].into_iter()
     }
 }
 
@@ -131,11 +168,23 @@ impl ChatWindow {
             input.update(cx, |input, cx| input.insert_pasted(text, window, cx));
             return;
         };
-        let lines = lines
-            .iter()
-            .map(|line| cx.new(|cx| TextInput::new_field("", line, false, cx)))
-            .collect();
-        let quote = cx.new(|cx| TextInput::new_field("", DEFAULT_QUOTE, false, cx));
+        let text = lines.join("\n");
+        let body = cx.new(|cx| TextInput::new_multiline(&text, BODY_ROWS, cx));
+        let quote = cx.new(|cx| TextInput::new_field("", DEFAULT_QUOTE, false, cx).bordered());
+        let line_quote = body.clone();
+        let observers = [
+            cx.observe(&body, |_, _, cx| cx.notify()),
+            cx.observe(&quote, move |_, quote, cx| {
+                let quote = quote.read(cx).text().trim().to_owned();
+                line_quote.update(cx, |body, _| {
+                    body.set_line_quote((!quote.is_empty()).then_some(quote));
+                });
+                cx.notify();
+            }),
+        ];
+        body.update(cx, |body, _| {
+            body.set_line_quote(Some(DEFAULT_QUOTE.to_owned()));
+        });
         self.server_menu = None;
         self.member_menu = None;
         self.channel_menu = None;
@@ -144,11 +193,10 @@ impl ChatWindow {
             network,
             conversation: id,
             target: name,
-            lines,
+            body,
             quote,
             notice: false,
-            add: cx.focus_handle().tab_stop(true),
-            remove: cx.focus_handle().tab_stop(true),
+            quote_button: cx.focus_handle().tab_stop(true),
             empty: cx.focus_handle().tab_stop(true),
             notice_box: cx.focus_handle().tab_stop(true),
             cancel: cx.focus_handle().tab_stop(true),
@@ -156,6 +204,7 @@ impl ChatWindow {
             previous: window.focused(cx),
             focus_pending: true,
             error: None,
+            _observers: observers,
         });
         cx.notify();
     }
@@ -170,8 +219,8 @@ impl ChatWindow {
         cx.notify();
     }
 
-    /// Enter in one of the dialog's fields: sends from a line, adds the quote
-    /// from the quote field. Whether a field of the dialog had the focus.
+    /// Enter in the quote field toggles the quote; Ctrl+Enter (or the NOTICE
+    /// key) in the editor sends. Whether a field of the dialog had the focus.
     pub(crate) fn submit_paste_prompt_field(
         &mut self,
         window: &mut Window,
@@ -181,13 +230,9 @@ impl ChatWindow {
             return false;
         };
         if prompt.quote.focus_handle(cx).is_focused(window) {
-            self.edit_paste_lines(add_quote, cx);
+            self.toggle_paste_quote(cx);
             true
-        } else if prompt
-            .lines
-            .iter()
-            .any(|line| line.focus_handle(cx).is_focused(window))
-        {
+        } else if prompt.body.focus_handle(cx).is_focused(window) {
             self.confirm_paste_prompt(window, cx);
             true
         } else {
@@ -207,32 +252,37 @@ impl ChatWindow {
         (!quote.is_empty()).then_some(quote)
     }
 
-    /// Rewrites every line with `edit(line, quote)`; nothing without a quote.
-    pub(crate) fn edit_paste_lines(
-        &mut self,
-        edit: impl Fn(&str, &str) -> String,
-        cx: &mut Context<Self>,
-    ) {
+    /// Whether the quote button would remove the quote now.
+    fn paste_removes_quote(&self, cx: &App) -> bool {
+        self.paste_prompt.as_ref().is_some_and(|prompt| {
+            self.paste_quote(cx)
+                .is_some_and(|quote| removes_quote(prompt.body.read(cx).text(), &quote))
+        })
+    }
+
+    /// The quote button: adds or removes one level of quote in the text;
+    /// nothing without a quote mark. The text change can be undone.
+    pub(crate) fn toggle_paste_quote(&mut self, cx: &mut Context<Self>) {
         let Some(quote) = self.paste_quote(cx) else {
             return;
         };
         let Some(prompt) = self.paste_prompt.as_ref() else {
             return;
         };
-        for line in &prompt.lines {
-            let edited = edit(line.read(cx).text(), &quote);
-            line.update(cx, |line, cx| line.set_text(&edited, cx));
-        }
+        let edited = toggle_quote(prompt.body.read(cx).text(), &quote);
+        prompt
+            .body
+            .update(cx, |body, cx| body.replace_text(&edited, cx));
     }
 
     pub(crate) fn remove_empty_paste_lines(&mut self, cx: &mut Context<Self>) {
-        let Some(prompt) = self.paste_prompt.as_mut() else {
+        let Some(prompt) = self.paste_prompt.as_ref() else {
             return;
         };
+        let edited = without_empty_lines(prompt.body.read(cx).text());
         prompt
-            .lines
-            .retain(|line| !line.read(cx).text().trim().is_empty());
-        cx.notify();
+            .body
+            .update(cx, |body, cx| body.replace_text(&edited, cx));
     }
 
     fn toggle_paste_notice(&mut self, cx: &mut Context<Self>) {
@@ -252,9 +302,8 @@ impl ChatWindow {
             return;
         }
         let (network, id, notice) = (prompt.network, prompt.conversation, prompt.notice);
-        let text = joined(prompt.lines.iter().map(|line| line.read(cx).text()));
-        let text = text.trim().to_owned();
-        if text.is_empty() {
+        let lines = message_lines(prompt.body.read(cx).text().split('\n'));
+        if lines.is_empty() {
             return;
         }
         let Some(conversation) = self.state.conversation(id) else {
@@ -265,15 +314,13 @@ impl ChatWindow {
         let result = self.registered_connection(network).and_then(|connection| {
             if !self.state.is_active_channel(id) {
                 Err(self.i18n.text("wait_join"))
-            } else if private {
-                connection.send_private_message(&name, &text, notice)
             } else {
-                connection.send_message(&name, &text, notice)
+                connection.send_lines(&name, &lines, notice, private)
             }
         });
         match result {
             Ok(()) => {
-                if notices::is_spoken(&text) {
+                if lines.iter().any(|line| notices::is_spoken(line)) {
                     self.note_spoken(network);
                 }
                 self.close_paste_prompt(window, cx);
@@ -287,25 +334,20 @@ impl ChatWindow {
         }
     }
 
-    /// Tab / Shift+Tab through the fields, the quote buttons and the box.
+    /// Tab / Shift+Tab through the fields, the buttons and the box.
     fn step_paste_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.paste_prompt.as_ref() else {
             return;
         };
-        let order: Vec<FocusHandle> = prompt
-            .lines
-            .iter()
-            .map(|line| line.focus_handle(cx))
-            .chain([
-                prompt.quote.focus_handle(cx),
-                prompt.add.clone(),
-                prompt.remove.clone(),
-                prompt.empty.clone(),
-                prompt.notice_box.clone(),
-                prompt.cancel.clone(),
-                prompt.confirm.clone(),
-            ])
-            .collect();
+        let order = [
+            prompt.body.focus_handle(cx),
+            prompt.quote.focus_handle(cx),
+            prompt.quote_button.clone(),
+            prompt.empty.clone(),
+            prompt.notice_box.clone(),
+            prompt.cancel.clone(),
+            prompt.confirm.clone(),
+        ];
         let step = if forward { 1 } else { order.len() - 1 };
         let at = order.iter().position(|handle| handle.is_focused(window));
         window.focus(&order[at.map_or(0, |at| (at + step) % order.len())]);
@@ -344,20 +386,17 @@ impl ChatWindow {
             |this, window, cx| this.close_paste_prompt(window, cx),
             cx,
         );
-        let add = dialog::cancel_button(
-            "paste-dialog-add-quote",
-            self.i18n.text("paste_dialog_add_quote"),
-            &prompt.add,
+        let quote_label = if self.paste_removes_quote(cx) {
+            "paste_dialog_remove_quote"
+        } else {
+            "paste_dialog_add_quote"
+        };
+        let quote_button = dialog::cancel_button(
+            "paste-dialog-quote",
+            self.i18n.text(quote_label),
+            &prompt.quote_button,
             &theme,
-            |this, _, cx| this.edit_paste_lines(add_quote, cx),
-            cx,
-        );
-        let remove = dialog::cancel_button(
-            "paste-dialog-remove-quote",
-            self.i18n.text("paste_dialog_remove_quote"),
-            &prompt.remove,
-            &theme,
-            |this, _, cx| this.edit_paste_lines(remove_quote, cx),
+            |this, _, cx| this.toggle_paste_quote(cx),
             cx,
         );
         let empty = dialog::cancel_button(
@@ -411,16 +450,7 @@ impl ChatWindow {
                         .w(box_width)
                         .child(div().font_weight(FontWeight::BOLD).child(title))
                         .child(div().child(self.i18n.text("paste_dialog_hint")))
-                        .child(
-                            div()
-                                .id("paste-dialog-lines")
-                                .max_h(LINES_HEIGHT)
-                                .overflow_y_scroll()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .children(prompt.lines.iter().cloned()),
-                        )
+                        .child(prompt.body.clone())
                         .child(
                             div()
                                 .flex()
@@ -428,9 +458,8 @@ impl ChatWindow {
                                 .items_center()
                                 .gap_2()
                                 .child(self.i18n.text("paste_dialog_quote"))
-                                .child(div().w(px(48.)).child(prompt.quote.clone()))
-                                .child(add)
-                                .child(remove)
+                                .child(div().w(px(64.)).child(prompt.quote.clone()))
+                                .child(quote_button)
                                 .child(empty),
                         )
                         .child(notice)
@@ -451,7 +480,7 @@ impl ChatWindow {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: it brings in `gpui::test`, which shadows `#[test]`.
-    use super::{add_quote, joined, remove_quote, split_lines};
+    use super::{add_quote, message_lines, remove_quote, removes_quote, split_lines, toggle_quote};
 
     #[test]
     fn lines_split_on_any_break_and_ignore_one_trailing_break() {
@@ -474,8 +503,40 @@ mod tests {
     }
 
     #[test]
-    fn lines_join_with_one_space_and_skip_empty_ones() {
-        assert_eq!(joined(["a", "", " ", "b"]), "a b");
-        assert_eq!(joined([""]), "");
+    fn the_button_removes_only_when_every_text_line_is_quoted() {
+        assert!(!removes_quote("a\nb", ">"));
+        assert!(removes_quote("> a\n> b", ">"));
+        // Empty lines do not count, quoted or not.
+        assert!(removes_quote("> a\n\n  \n> b", ">"));
+        assert!(!removes_quote("> a\nb", ">"));
+        assert!(!removes_quote("", ">"));
+        assert!(!removes_quote("\n \n", ">"));
+        // No space after the mark: not quoted.
+        assert!(!removes_quote(">a", ">"));
+        assert!(removes_quote("| a", "|"));
+        assert!(!removes_quote("> a", "|"));
+    }
+
+    #[test]
+    fn toggling_changes_one_level_and_a_partial_quote_gets_a_second() {
+        assert_eq!(toggle_quote("a\n\nb", ">"), "> a\n\n> b");
+        assert_eq!(toggle_quote("> a\n\n> b", ">"), "a\n\nb");
+        // Part quoted: every non-empty line gets one more level.
+        assert_eq!(toggle_quote("> a\nb", ">"), "> > a\n> b");
+        // Nested: one level at a time.
+        assert_eq!(toggle_quote("> > a", ">"), "> a");
+        assert_eq!(toggle_quote("> a", ">"), "a");
+        assert_eq!(toggle_quote("a", ">"), "> a");
+        // Empty lines are never touched; no text lines, nothing to quote.
+        assert_eq!(toggle_quote("\n  \n", ">"), "\n  \n");
+        // A changed quote mark follows the same rule.
+        assert_eq!(toggle_quote("> a", "|"), "| > a");
+        assert_eq!(toggle_quote("| > a", "|"), "> a");
+    }
+
+    #[test]
+    fn each_non_empty_line_is_a_message() {
+        assert_eq!(message_lines(["a ", "", " ", " b"]), ["a", " b"]);
+        assert!(message_lines([""]).is_empty());
     }
 }
