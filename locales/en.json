@@ -603,6 +603,7 @@
   "avatar_quick_summary_shown": "Registered: {url}",
   "avatar_quick_summary_hidden": "Registered: {url} (showing avatars is off on this server)",
   "avatar_quick_notice": "Registering publishes the image URL on IRC to other users. Uploading an image also sends it to an external image host. Unchecking this box does not change the registered URL or what is published; stop publishing or remove the icon on the IRCv3 tab.",
+  "avatar_quick_local_note": "Your own screen shows the saved icon at once. Other users may see it later, or not at all, depending on their client and server support and when they fetch it again.",
   "avatar_quick_register": "Register / Update",
   "avatar_quick_open_upload": "Open image upload settings",
   "avatar_quick_return": "Back to the icon section of the connection settings",

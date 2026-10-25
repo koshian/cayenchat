@@ -641,7 +641,7 @@ they must not read the chat window while rendering, because opening a window
 renders synchronously inside the chat window's update and re-entry aborts on
 macOS.
 The WHOIS icon slot shows the user's avatar image (for ourselves
-`own_avatar_for`: the server-confirmed avatar, then the shared URL), nothing
+`own_avatar_for`: the saved icon of the server's settings), nothing
 while it loads, and otherwise the nickname's default icon (the log's
 `default_for`). The chat window pushes both into the window; unmarked users and
 ourselves are never queried for it.
@@ -1147,10 +1147,21 @@ the subset avatars need:
   key. The value is checked again here (no controls or spaces, at most 400
   bytes, ASCII on legacy encodings).
 - Showing our own avatar: rows by our current nickname (main log and member
-  list) use the avatar the server confirmed on this connection, else the URL
-  shared with peers, read at draw time; no lookup or CTCP request to
-  ourselves is made, and a change shows on every row at once. The unpublished
-  draft is never shown.
+  list) use the saved icon of this server's settings (`ServerProfile::avatar_url`,
+  #612), read at draw time; no lookup or CTCP request to ourselves is made,
+  and saving or removing the icon shows on every row at once, offline too.
+  What the server confirmed (`app::own_avatar`) is publication state only and
+  is never the source of our display; an empty icon shows the placeholder. The
+  unsaved draft is never shown. Because the image may change behind the same
+  URL, the explicit register / update step forgets the cached image of that
+  icon (`Avatars::refresh`) once the servers are saved, and it is fetched once
+  more; it also does so when the same URL is registered again and nothing
+  else changed, and a failed save keeps it pending. Other settings saves,
+  redraws and other avatars keep their cache, so there is no refetch loop. A
+  load forgotten while under way is cancelled, and its result is never applied
+  to a later load of the same source (`PreviewCache` numbers its jobs). The
+  settings state in a standing note that other users may see a change later,
+  or not at all.
 - Later joiners: a live JOIN (not in a history batch) of someone who
   shares no other channel with us (judged from the rosters published
   before it) and has no known avatar is looked up with `METADATA <nick>
@@ -1326,7 +1337,10 @@ tab change never changes it. `register_in_profile` is the one place that sets `a
 `user_avatars`, `ircv3.peer_avatars` and `peer_avatar_url`; the Metadata
 publish goes through `ChatWindow::request_own_avatar`. The fold state, the
 way back from the Image Upload tab and the "open image upload settings"
-flag are window state, not settings.
+flag are window state, not settings. The section is one bordered block
+(#609): the header, summary, notices and status lines start at its inner
+edge, and only the URL row and the buttons under it use the label column
+(`LABEL_INDENT`), so the buttons line up with the input.
 
 Peer sharing (D025) is shown under the same field while the server's peer
 avatar option is on: the shared URL (`ServerProfile::peer_avatar_url`),

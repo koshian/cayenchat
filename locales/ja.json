@@ -603,6 +603,7 @@
   "avatar_quick_summary_shown": "登録済み: {url}",
   "avatar_quick_summary_hidden": "登録済み: {url} (このサーバーでのアバター表示はオフです)",
   "avatar_quick_notice": "登録すると画像 URL が IRC 上でほかの利用者に公開されます。画像をアップロードする場合は外部の画像ホストにも送信されます。このチェックを外しても、登録済みの URL や公開状態は変わりません。公開の停止や削除は IRCv3 タブで行います。",
+  "avatar_quick_local_note": "自分の画面には、保存したアイコンがすぐ反映されます。ほかのユーザーには、相手のクライアントやサーバーの対応、再取得のタイミングによって遅れる場合や、表示されない場合があります。",
   "avatar_quick_register": "登録・更新",
   "avatar_quick_open_upload": "画像アップロードの設定を開く",
   "avatar_quick_return": "接続設定のアイコン欄へ戻る",

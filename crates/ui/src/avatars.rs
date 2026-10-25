@@ -121,6 +121,12 @@ impl Originals {
         }
     }
 
+    fn forget(&mut self, source: &MediaRef) {
+        if let Some(entry) = self.entries.remove(source) {
+            self.bytes -= entry.bytes;
+        }
+    }
+
     fn clear(&mut self) {
         self.entries.clear();
         self.bytes = 0;
@@ -285,6 +291,17 @@ impl Avatars {
             Lookup::Pending => Shown::Pending,
             Lookup::None => Shown::None,
         }
+    }
+
+    /// Forgets the fetched image of `avatar` at every size, so the next
+    /// lookup downloads it again. For our own saved icon, whose image may
+    /// have changed behind the same URL (#612); not for ordinary redraws.
+    pub fn refresh(&mut self, avatar: &str) {
+        let Some(source) = policy::avatar_url(avatar, ORIGINAL_PIXELS) else {
+            return;
+        };
+        self.cache.get_mut().forget(|key| key.source == source);
+        self.originals.get_mut().forget(&source);
     }
 
     pub fn in_flight(&self) -> usize {
@@ -1019,35 +1036,40 @@ mod tests {
     }
 
     #[gpui::test]
-    fn our_own_messages_use_our_own_avatar_without_a_lookup(cx: &mut TestAppContext) {
+    fn our_own_messages_use_the_saved_icon_without_a_lookup(cx: &mut TestAppContext) {
         let fetcher = Arc::new(FakeFetcher::default());
         let (chat, cx) = open(cx, true, false, &fetcher);
         chat.read_with(cx, |chat, _| {
-            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), None, "none set");
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), Some(None));
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "bob"), None);
         });
+        // What the server confirms is not what we show (#612).
         events(
             &chat,
             cx,
             vec![
                 Event::MetadataReady,
                 Event::OwnAvatar {
-                    url: Some(BOB.into()),
+                    url: Some(CAROL.into()),
                     request: None,
                 },
                 say("me", "hello"),
             ],
         );
-        chat.update(cx, |_, cx| cx.notify());
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), Some(None));
+        });
+        // Saving the settings shows the icon at once, with nothing sent.
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url = BOB.into();
+            chat.apply_servers(settings, cx);
+        });
         cx.run_until_parked();
         chat.read_with(cx, |chat, _| {
-            assert_eq!(
-                chat.own_avatar_for(NetworkId(1), "me").as_deref(),
-                Some(BOB)
-            );
-            assert_eq!(
-                chat.own_avatar_for(NetworkId(1), "ME").as_deref(),
-                Some(BOB)
-            );
+            let bob = Some(Some(Arc::<str>::from(BOB)));
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), bob);
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "ME"), bob);
             assert_eq!(chat.own_avatar_for(NetworkId(1), "bob"), None);
             assert!(chat.state.avatars().current(NetworkId(1), "me").is_none());
         });
@@ -1056,6 +1078,15 @@ mod tests {
             "{:?}",
             fetcher.calls()
         );
+        // Removing it shows the placeholder at once.
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url.clear();
+            chat.apply_servers(settings, cx);
+        });
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.own_avatar_for(NetworkId(1), "me"), Some(None));
+        });
     }
 
     #[gpui::test]
@@ -1101,6 +1132,149 @@ mod tests {
         set_avatars(&chat, cx, false);
         chat.read_with(cx, |chat, _| {
             assert_eq!(chat.avatars.defaults_made(), 0, "released")
+        });
+    }
+
+    #[gpui::test]
+    fn registering_the_same_icon_url_again_fetches_it_once_and_only_ours(cx: &mut TestAppContext) {
+        const ICON: &str = "https://avatars.example.com/bob.png";
+        let fetcher = Arc::new(FakeFetcher::default());
+        let mut settings = crate::settings_with_channels("#a");
+        settings.servers[0].user_avatars = true;
+        let file = crate::settings_file::TestFile::with(&settings);
+        cx.update(|cx| {
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let owner = cx.add_window({
+            let (settings, fetcher) = (settings.clone(), fetcher.clone());
+            move |window, cx| {
+                let mut chat = ChatWindow::with_settings(settings, None, window, cx);
+                chat.avatars.use_fetcher(fetcher);
+                chat
+            }
+        });
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            crate::SettingsWindow::new(owner, settings.clone(), window, cx)
+        });
+        let profile = settings.selected_server.clone();
+        let fetches = |name: &str| fetcher.calls().iter().filter(|u| u.contains(name)).count();
+        let draw = |cx: &mut VisualTestContext| {
+            owner
+                .update(cx, |chat, _, cx| {
+                    // Redraws repeat the lookups; only a missing image loads.
+                    for _ in 0..3 {
+                        chat.avatars.lookup(ICON, 32);
+                        chat.avatars.lookup(CAROL, 32);
+                    }
+                    chat.pump_avatars(cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+        };
+        let register = |cx: &mut VisualTestContext| {
+            form.update(cx, |form, cx| {
+                form.register_avatar(&profile, ICON, cx);
+                form.save_servers(cx);
+            });
+        };
+        register(cx);
+        draw(cx);
+        draw(cx);
+        assert_eq!(fetches("bob"), 1, "{:?}", fetcher.calls());
+        let carol = fetches("carol");
+
+        // The image may have changed behind the same URL. Registering it
+        // again saves nothing new, yet fetches it once more; redraws
+        // afterwards do not, and other avatars stay cached.
+        register(cx);
+        draw(cx);
+        draw(cx);
+        assert_eq!(fetches("bob"), 2, "{:?}", fetcher.calls());
+        assert_eq!(fetches("carol"), carol);
+
+        // A save that fails keeps the image and fetches nothing; the fetch
+        // follows the save that works.
+        form.update(cx, |form, cx| {
+            form.register_avatar(&profile, ICON, cx);
+            let layout = &mut form.settings.values.restore_window_layout;
+            *layout = !*layout;
+        });
+        crate::settings_file::fail_saves(true);
+        form.update(cx, |form, cx| form.save_servers(cx));
+        draw(cx);
+        assert_eq!(fetches("bob"), 2, "{:?}", fetcher.calls());
+        crate::settings_file::fail_saves(false);
+        form.update(cx, |form, cx| form.save_servers(cx));
+        draw(cx);
+        draw(cx);
+        assert_eq!(fetches("bob"), 3, "{:?}", fetcher.calls());
+        assert_eq!(fetches("carol"), carol);
+        owner
+            .read_with(cx, |chat, _| {
+                assert_eq!(chat.avatars.cache().records(), 2);
+            })
+            .unwrap();
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_open_whois_of_ours_fetches_the_icon_again_on_refresh(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url = BOB.into();
+            chat.apply_servers(settings, cx);
+            let info = cayenchat_irc_core::WhoisInfo {
+                nickname: "me".into(),
+                username: Some("u".into()),
+                ..Default::default()
+            };
+            chat.show_whois(NetworkId(1), info, true, cx);
+        });
+        cx.run_until_parked();
+        let bob = || fetcher.calls().iter().filter(|u| u.contains("bob")).count();
+        assert_eq!(bob(), 1, "{:?}", fetcher.calls());
+        chat.read_with(cx, |chat, _| assert_eq!(chat.whois_windows.len(), 1));
+        // Nothing but the WHOIS shows us: no log row or member list entry.
+        let profile = chat.read_with(cx, |chat, _| chat.saved.servers[0].id.clone());
+        chat.update(cx, |chat, cx| chat.refresh_own_avatar(&profile, cx));
+        cx.run_until_parked();
+        assert_eq!(bob(), 2, "{:?}", fetcher.calls());
+    }
+
+    #[gpui::test]
+    fn each_network_shows_its_own_saved_icon(cx: &mut TestAppContext) {
+        let fetcher = Arc::new(FakeFetcher::default());
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        chat.update(cx, |chat, cx| {
+            let mut settings = chat.saved.clone();
+            settings.servers[0].avatar_url = BOB.into();
+            settings.add_server("b.example");
+            chat.apply_servers(settings, cx);
+        });
+        chat.update(cx, |chat, cx| {
+            chat.handle_events(
+                NetworkId(2),
+                vec![Event::Registered {
+                    nickname: "me".into(),
+                }],
+                Worker::Running,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(
+                chat.own_avatar_for(NetworkId(1), "me"),
+                Some(Some(Arc::<str>::from(BOB)))
+            );
+            assert_eq!(chat.own_avatar_for(NetworkId(2), "me"), Some(None));
         });
     }
 
