@@ -597,8 +597,6 @@
   "avatar_quick_toggle": "Avatar settings",
   "avatar_quick_state_unset": "No icon set",
   "avatar_quick_state_set": "Icon set",
-  "avatar_quick_action_set": "Set up",
-  "avatar_quick_action_change": "Change",
   "avatar_quick_summary_none": "No icon registered.",
   "avatar_quick_summary_shown": "Registered: {url}",
   "avatar_quick_summary_hidden": "Registered: {url} (showing avatars is off on this server)",

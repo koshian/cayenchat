@@ -597,8 +597,6 @@
   "avatar_quick_toggle": "アバター設定",
   "avatar_quick_state_unset": "アイコン未設定",
   "avatar_quick_state_set": "アイコン設定済み",
-  "avatar_quick_action_set": "設定する",
-  "avatar_quick_action_change": "変更する",
   "avatar_quick_summary_none": "アイコンは未登録です。",
   "avatar_quick_summary_shown": "登録済み: {url}",
   "avatar_quick_summary_hidden": "登録済み: {url} (このサーバーでのアバター表示はオフです)",
