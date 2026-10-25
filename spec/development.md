@@ -316,9 +316,13 @@ job takes the current `master` HEAD (never another ref) and publishes only if
 the `beta` tag does not already point at it and the `CI` push run for that same
 commit has succeeded; otherwise it logs why and publishes nothing. So a manual
 run for an already published SHA is a no-op (re-publishing the same SHA is not
-supported). Runs queue (`cancel-in-progress: false`), and the SHA is fixed in
-`prepare` for the packages and the release. The `beta` tag moves last, so a
-failed run leaves it on the previous beta and the next run tries again.
+supported). A running run is never cancelled (`cancel-in-progress: false`); a
+run still waiting is replaced by a newer one, which is fine because only the
+latest `master` matters. The SHA is fixed in `prepare` for the packages and the
+release. `publish` only updates the existing `beta` release and fails if it is
+missing (create it once by hand), so it never creates the tag early. The `beta`
+tag moves last, so a failed run leaves it on the previous beta and the next run
+tries again.
 
 #### Versioned releases
 

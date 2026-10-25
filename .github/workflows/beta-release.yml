@@ -10,8 +10,9 @@ on:
 permissions:
   contents: read
 
-# Runs queue instead of cancelling each other, so a run never replaces the
-# beta half way. Each run picks the master HEAD when it starts.
+# A running run is never cancelled, so it never replaces the beta half way;
+# a waiting run is replaced by a newer one. Each run picks the master HEAD
+# when it starts.
 concurrency:
   group: beta-release
   cancel-in-progress: false
@@ -101,26 +102,23 @@ jobs:
           echo "BUILD_DATE=$(date -u +'%Y-%m-%d')" >> "$GITHUB_ENV"
           echo "SHORT_SHA=${SHA::7}" >> "$GITHUB_ENV"
 
-      - name: Create or update beta release
+      # The release must already exist: creating it here would create the beta
+      # tag before the upload, and a failed upload would then look published.
+      - name: Update beta release
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          if gh release view beta >/dev/null 2>&1; then
-            gh release edit beta \
-              --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
-              --target "$SHA" \
-              --prerelease \
-              --latest=false \
-              --notes "Rolling beta build from master (${SHA})."
-          else
-            gh release create beta \
-              --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
-              --target "$SHA" \
-              --prerelease \
-              --latest=false \
-              --notes "Rolling beta build from master (${SHA})."
+          if ! gh release view beta >/dev/null 2>&1; then
+            echo "::error::The beta release does not exist. Create it once by hand (a prerelease on the beta tag) and run this workflow again."
+            exit 1
           fi
+          gh release edit beta \
+            --title "CayenChat Beta ${BUILD_DATE} (${SHORT_SHA})" \
+            --target "$SHA" \
+            --prerelease \
+            --latest=false \
+            --notes "Rolling beta build from master (${SHA})."
 
           # Upload first so a failed upload never leaves the release empty,
           # then drop assets from older builds whose names no longer exist.
