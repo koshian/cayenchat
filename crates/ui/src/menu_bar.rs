@@ -365,10 +365,21 @@ fn wrap_in_window<V: 'static>(
                 .px_2()
                 .h_full()
                 .cursor_pointer()
-                .hover(|d| d.bg(theme.hover_strong))
+                // While the bar is in use only the active heading is lit, so
+                // a hover highlight never adds a second one.
+                .when(!state.visible, |d| d.hover(|d| d.bg(theme.hover_strong)))
                 .when(state.visible && state.active == index, |d| {
                     d.bg(theme.selected)
                 })
+                // With a menu open, pointing at another heading moves to it.
+                .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                    let state = access(this);
+                    if state.open && state.active != index {
+                        state.active = index;
+                        state.selected = None;
+                        cx.notify();
+                    }
+                }))
                 .child(heading(
                     &menu.name,
                     access_keys.keys.get(index).copied().flatten(),
@@ -379,13 +390,19 @@ fn wrap_in_window<V: 'static>(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         let state = access(this);
-                        state.hover_reveal = false;
-                        // Using the bar by mouse also lets the keyboard
-                        // move around it, as when it was revealed.
-                        state.visible = true;
-                        state.open = state.active != index || !state.open;
-                        state.active = index;
-                        state.selected = None;
+                        if state.open && state.active == index {
+                            // Clicking the open menu again closes it and
+                            // leaves no heading selected.
+                            state.close();
+                        } else {
+                            state.hover_reveal = false;
+                            // Using the bar by mouse also lets the keyboard
+                            // move around it, as when it was revealed.
+                            state.visible = true;
+                            state.open = true;
+                            state.active = index;
+                            state.selected = None;
+                        }
                         cx.stop_propagation();
                         cx.notify();
                     }),
@@ -655,6 +672,15 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(state(cx), (true, true, true));
         cx.simulate_keystrokes("escape");
+        assert_eq!(state(cx), (true, false, false));
+
+        // A second click on the same heading closes it and leaves nothing
+        // selected (#645).
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(state(cx), (true, true, true));
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        cx.run_until_parked();
         assert_eq!(state(cx), (true, false, false));
 
         // Alt may underline access keys, but releasing it never opens menus.
