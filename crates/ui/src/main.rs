@@ -1413,6 +1413,9 @@ impl ChatWindow {
             // question on, nothing is touched until it is answered: asking
             // keeps the window open, and "Quit" goes through `cx.quit()`,
             // which runs the usual shutdown in `on_app_quit`.
+            if settings_block_quit(cx) {
+                return false;
+            }
             if view
                 .update(cx, |this, cx| this.ask_before_quit(window, cx))
                 .unwrap_or(false)
@@ -1443,20 +1446,7 @@ impl ChatWindow {
     /// main window). Quits at once unless the confirmation is on. Quits by
     /// the system or a signal call `cx.quit()` directly and never ask.
     fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Confirmed settings edits are written first; if that fails the
-        // settings window stays in front with the error and the app keeps
-        // running so the edits are not lost.
-        if let Some(handle) = self.settings_window
-            && handle
-                .update(cx, |settings, window, cx| {
-                    let saved = settings.save_before_leaving(cx);
-                    if !saved {
-                        window.activate_window();
-                    }
-                    saved
-                })
-                .is_ok_and(|saved| !saved)
-        {
+        if settings_block_quit(cx) {
             return;
         }
         if !self.ask_before_quit(window, cx) {
@@ -9085,7 +9075,33 @@ fn navigation_binding(key: &str, command: Command) -> KeyBinding {
 /// front and lives until the application quits, so the question cannot
 /// vanish with an auxiliary window that was closed before it was answered.
 fn request_quit_anywhere(cx: &mut App) {
-    request_quit_in_chat_window(cx, true);
+    // The action may be dispatched inside the settings window's own update,
+    // which would then fail to be updated for the save check below; run
+    // after the dispatch has finished.
+    cx.defer(|cx| request_quit_in_chat_window(cx, true));
+}
+
+/// Writes confirmed settings edits before an ordinary quit. Returns whether
+/// the quit must not go on: the save failed, or the settings window could not
+/// be asked (never treated as saved). On failure the settings window is
+/// brought to the front with the form and the error intact.
+fn settings_block_quit(cx: &mut App) -> bool {
+    let Some(settings) = cx
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<SettingsWindow>())
+    else {
+        return false;
+    };
+    settings
+        .update(cx, |settings, window, cx| {
+            let saved = settings.save_before_leaving(cx);
+            if !saved {
+                window.activate_window();
+            }
+            saved
+        })
+        .map_or(true, |saved| !saved)
 }
 
 /// The chat window cannot be updated while it is handling an event, which is
@@ -9098,6 +9114,9 @@ fn request_quit_in_chat_window(cx: &mut App, retry: bool) {
         .windows()
         .into_iter()
         .find_map(|w| w.downcast::<ChatWindow>());
+    if settings_block_quit(cx) {
+        return;
+    }
     let Some(chat) = chat else {
         cx.quit();
         return;
@@ -9595,6 +9614,9 @@ fn main() {
             // macOS Dock "Quit" is the user's request too; the system's own
             // shutdown and `cx.quit()` never reach this handler.
             cx.on_quit_request(|cx| {
+                if settings_block_quit(cx) {
+                    return false;
+                }
                 let Some(chat) = cx
                     .windows()
                     .into_iter()

@@ -649,7 +649,10 @@ only when validation and the write succeed (then Save gives way to Connect);
 on failure it stays a draft, and leaving the window drops it. Save and
 Connect register only the shown draft; other drafts are never written. If
 saving fails when the window is closed (close button, Escape, window frame)
-or the user quits the app (menu, shortcut), the close or quit is refused and
+or the user quits the app (menu, shortcut, main window close, macOS Dock;
+`settings_block_quit` is the one check, run after the dispatch of the action
+so the settings window can be updated, and a settings window that cannot be
+asked never counts as saved), the close or quit is refused and
 the form and the error stay for a retry; edits are never discarded without a
 successful save (so while the file cannot be written the window stays open).
 Quits by the system or a signal cannot be refused. A registered
