@@ -69,7 +69,10 @@ impl SettingsWindow {
             SettingsTab::Ircv3 => current
                 .selected_profile()
                 .is_none_or(|profile| profile.ircv3 == Ircv3Preferences::default()),
-            SettingsTab::ImageUpload => current.image_upload == defaults.image_upload,
+            // The notes of saved tokens are not a setting of the tab.
+            SettingsTab::ImageUpload => {
+                current.image_upload.provider == defaults.image_upload.provider
+            }
             SettingsTab::Experimental => current.experimental == defaults.experimental,
         }
     }

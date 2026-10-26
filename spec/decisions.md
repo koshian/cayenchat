@@ -1384,6 +1384,30 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D070 — Showing settings never reads the credential store; the upload token has a note (#642)
+
+2026-10-27. Reading the store can make the OS ask the user for a permission
+(the macOS Keychain), so it is read only when the settings file notes a
+secret as saved, or when the user acts on it (saving or deleting it, an
+actual upload). Showing it is never a reason. The same rule as D068
+(passwords) and the channel keys (#643).
+
+- **The note.** `image_upload.token_saved` lists the providers whose token
+  is noted as saved. Saving the token adds the provider, deleting removes it;
+  when the store call fails, the note stays as it was. The settings window
+  shows "connected" from the note alone (`refresh_upload_account` does not
+  call `contains`/`get`).
+- **A note that disagrees with the store is corrected where the store is
+  read anyway**, in `configured_uploader` at the next upload: no token for a
+  noted provider gives the usual "no account" guidance and removes the note;
+  a token for an unnoted provider is used and noted. There is no screen or
+  action only for repairing notes. An unnoted token the user does not
+  upload with only shows "not connected" until it is saved again, which
+  overwrites it.
+- **Older files.** A file without `token_saved` gets the configured
+  provider noted as saved on load, without asking the store; a wrong guess
+  is corrected by the first upload.
+
 ## D067 — Send key for normal messages is a setting; optional NOTICE key (#583)
 
 2026-10-24. Replaces the fixed Enter = `PRIVMSG` / Ctrl+Enter = `NOTICE` of
