@@ -419,8 +419,11 @@ impl ChatWindow {
             }
             first
         });
+        secrets::write_started(cx);
         cx.spawn(async move |this, cx| {
-            if let Err(error) = writing.await {
+            let result = writing.await;
+            let _ = cx.update(secrets::write_finished);
+            if let Err(error) = result {
                 let _ = this.update(cx, |this, cx| {
                     let text = this.i18n.format(
                         "credential_save_failed",

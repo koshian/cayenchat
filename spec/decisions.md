@@ -1344,7 +1344,9 @@ D021 that stored typed passwords with Save of the server.
   same server is shown. The store's lock is held while writing, so while a
   write runs the settings window refuses further writes, Connect, switching
   or removing a server and reloading the file, and says to try again, rather
-  than block the UI thread on a read. A saved password shown as saved is used as
+  than block the UI thread on a read. The count of running writes is
+  app-wide (it also covers the connect dialog's save), so closing the window
+  does not lose it: a settings window is not opened while one runs. A saved password shown as saved is used as
   saved: an unfinished change is dropped when another server is selected.
   Autosave and
   Save of the server never store a password; a typed one is used by Connect

@@ -886,9 +886,6 @@ pub(crate) struct SettingsWindow {
     pub(crate) owner: WindowHandle<ChatWindow>,
     pub(crate) settings: SettingsForm,
     pub(crate) feedback: Option<String>,
-    /// Password writes running off the UI thread. The store holds its lock
-    /// while writing, so anything that reads it waits until they are done.
-    pub(crate) credential_writes: usize,
     pub(crate) tab: SettingsTab,
     /// The category list on the left; Up and Down move through it.
     pub(crate) nav_focus: FocusHandle,
@@ -1133,7 +1130,6 @@ impl SettingsWindow {
             owner,
             settings,
             feedback: None,
-            credential_writes: 0,
             tab: SettingsTab::Connection,
             nav_focus: cx.focus_handle().tab_stop(true),
             nav_scroll: ScrollHandle::new(),
@@ -1245,7 +1241,7 @@ impl SettingsWindow {
         self.follow_saved_server_order();
         if self.autosave.is_some()
             || self.autosave_error.is_some()
-            || self.credential_writes > 0
+            || secrets::write_pending(cx)
             || self.servers_unsaved(cx)
         {
             return;
@@ -1697,11 +1693,12 @@ impl SettingsWindow {
         });
     }
 
-    /// Whether a password write is still running; then says so. Operations
-    /// that read the store (Connect, switching servers) or write it wait for
-    /// the write instead of blocking the UI thread on its lock.
+    /// Whether a password write is still running anywhere in the app; then
+    /// says so. Operations that read the store (Connect, switching servers,
+    /// opening this window) or write it wait for the write instead of
+    /// blocking the UI thread on its lock.
     fn credentials_busy(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.credential_writes == 0 {
+        if !secrets::write_pending(cx) {
             return false;
         }
         self.feedback = Some(self.i18n.text("credential_busy"));
@@ -1801,11 +1798,12 @@ impl SettingsWindow {
         let store = secrets::store(cx);
         let id = profile.to_owned();
         let writing = cx.background_spawn(async move { store.set(&key, &secret) });
-        self.credential_writes += 1;
+        secrets::write_started(cx);
         cx.spawn(async move |this, cx| {
             let result = writing.await;
+            // The window may be gone by now; the write still ends.
+            let _ = cx.update(secrets::write_finished);
             let _ = this.update(cx, |this, cx| {
-                this.credential_writes -= 1;
                 this.credential_done(which, &id, result, true, cx)
             });
         })
@@ -1880,11 +1878,11 @@ impl SettingsWindow {
         let key = which.key(&id);
         let store = secrets::store(cx);
         let deleting = cx.background_spawn(async move { store.delete(&key) });
-        self.credential_writes += 1;
+        secrets::write_started(cx);
         cx.spawn(async move |this, cx| {
             let result = deleting.await;
+            let _ = cx.update(secrets::write_finished);
             let _ = this.update(cx, |this, cx| {
-                this.credential_writes -= 1;
                 this.credential_done(which, &id, result, false, cx)
             });
         })

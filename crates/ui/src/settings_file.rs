@@ -660,18 +660,19 @@ mod tests {
                 .server_password
                 .update(cx, |field, cx| field.set_text("typed", cx));
             form.save_credential(Credential::Server, window, cx);
-            assert_eq!(form.credential_writes, 1);
+            assert!(secrets::write_pending(cx));
             // Connect and a second write wait instead of taking the lock.
             form.connect_from_settings(window, cx);
             form.delete_credential(Credential::Server, cx);
-            assert_eq!(form.credential_writes, 1);
             assert_eq!(
                 form.feedback.as_deref(),
                 Some(form.i18n.text("credential_busy").as_str())
             );
         });
+        // The write is counted app-wide, not per window, so a window opened
+        // after this one is closed still waits for it.
         cx.run_until_parked();
-        form.update(cx, |form, _| assert_eq!(form.credential_writes, 0));
+        cx.update(|_, cx| assert!(!secrets::write_pending(cx)));
         drop(file);
     }
 
