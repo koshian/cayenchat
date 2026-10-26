@@ -8,6 +8,7 @@
   "save_passwords": "保存する",
   "credential_saved": "保存済み",
   "credential_save": "保存",
+  "credential_remember": "パスワードを保存する",
   "credential_change": "変更",
   "credential_delete": "削除",
   "credential_new_placeholder": "新しいパスワード",

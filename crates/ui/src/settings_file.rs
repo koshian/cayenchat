@@ -863,14 +863,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn a_typed_password_is_stored_only_by_its_own_save(cx: &mut TestAppContext) {
+    fn a_typed_password_is_stored_only_when_its_box_is_checked(cx: &mut TestAppContext) {
         let settings = connectable("#a");
         let key = settings.selected_profile().unwrap().server_password_key();
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         let store = cx.update(|_, cx| secrets::store(cx));
 
-        // Typing, autosave and Save of the server never store it.
+        // Typing, autosave and Save of the server do not store it while the
+        // box is unchecked.
         form.update(cx, |form, cx| {
             form.settings
                 .server_password
@@ -891,10 +892,16 @@ mod tests {
             assert!(!missing.any());
         });
 
+        // Checking the box writes nothing by itself; the settings' save does.
         form.update_in(cx, |form, window, cx| {
-            form.save_credential(Credential::Server, window, cx)
+            form.toggle_remember(Credential::Server, window, cx)
         });
         cx.run_until_parked();
+        form.update(cx, |form, _| {
+            assert!(form.settings.remember(Credential::Server));
+        });
+        assert!(!store.contains(&key).unwrap());
+        form.update(cx, |form, cx| form.autosave_now(None, cx));
         assert_eq!(store.get(&key).unwrap().unwrap().expose(), "typed");
         form.update(cx, |form, cx| {
             assert!(form.settings.saved_server_password);
@@ -903,7 +910,105 @@ mod tests {
                 form.settings.credential_state(Credential::Server),
                 (true, false)
             );
+            assert!(!form.settings.remember(Credential::Server));
         });
+        // The note reached the file along with the save.
+        assert!(
+            super::load()
+                .unwrap()
+                .unwrap()
+                .selected_profile()
+                .unwrap()
+                .server_password_saved()
+        );
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_settings_save_writes_every_checked_password_and_a_failure_stops_it(
+        cx: &mut TestAppContext,
+    ) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let (a_id, key, sasl_key) = (
+            profile.id.clone(),
+            profile.server_password_key(),
+            profile.sasl_password_key(),
+        );
+        let b = settings.add_server("b.example");
+        b.nickname = "nick".into();
+        b.username = "user".into();
+        b.sasl_enabled = true;
+        let (b_id, b_key) = (b.id.clone(), b.server_password_key());
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let store = cx.update(|_, cx| secrets::store(cx));
+        form.update_in(cx, |form, window, cx| {
+            // B (not shown) keeps its checked, typed password in a draft.
+            form.select_server(b_id.clone(), cx);
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("b-pass", cx));
+            form.toggle_remember(Credential::Server, window, cx);
+            form.select_server(a_id.clone(), cx);
+            for which in [Credential::Server, Credential::Sasl] {
+                form.settings
+                    .credential_field(which)
+                    .update(cx, |field, cx| field.set_text("typed", cx));
+            }
+            // Only the SASL password is checked on A.
+            form.toggle_remember(Credential::Sasl, window, cx);
+        });
+        // A failing store stops the save and keeps what was typed.
+        let working = store.clone();
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update(cx, |form, cx| {
+            assert!(!form.save_before_leaving(cx));
+            assert!(form.autosave_error.is_some());
+            assert_eq!(
+                form.settings
+                    .credential_field(Credential::Sasl)
+                    .read(cx)
+                    .text(),
+                "typed"
+            );
+            assert!(!form.settings.credential_state(Credential::Sasl).0);
+        });
+        cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
+        form.update(cx, |form, cx| {
+            assert!(form.save_before_leaving(cx));
+            assert!(form.settings.credential_state(Credential::Sasl).0);
+            assert!(
+                !form.settings.saved_server_password,
+                "its box was not checked"
+            );
+            assert_eq!(form.settings.server_password.read(cx).text(), "typed");
+            assert!(!form.settings.drafts.contains_key(&b_id));
+        });
+        assert_eq!(working.get(&sasl_key).unwrap().unwrap().expose(), "typed");
+        assert!(!working.contains(&key).unwrap());
+        assert_eq!(working.get(&b_key).unwrap().unwrap().expose(), "b-pass");
+        let file_settings = super::load().unwrap().unwrap();
+        assert!(file_settings.profile(&a_id).unwrap().sasl_password_saved());
+        assert!(
+            !file_settings
+                .profile(&a_id)
+                .unwrap()
+                .server_password_saved()
+        );
+        assert!(
+            file_settings
+                .profile(&b_id)
+                .unwrap()
+                .server_password_saved()
+        );
         drop(file);
     }
 
@@ -1241,29 +1346,35 @@ mod tests {
     }
 
     #[gpui::test]
-    fn an_unsaved_server_cannot_save_a_password_yet(cx: &mut TestAppContext) {
+    fn an_unsaved_server_gets_its_checked_password_only_when_it_is_saved(cx: &mut TestAppContext) {
         let saved = settings_with_channels("#a");
         let file = TestFile::with(&saved);
         let (form, cx) = open(&saved, cx);
         let store = cx.update(|_, cx| secrets::store(cx));
-        let new_id = form.update(cx, |form, cx| {
-            let id = form.settings.values.add_server("b.example").id.clone();
+        let (_, new_key) = form.update(cx, |form, cx| {
+            let server = form.settings.values.add_server("b.example");
+            server.nickname = "nick".into();
+            server.username = "user".into();
+            let ids = (
+                server.id.clone(),
+                cayenchat_storage::SecretKey::server_password(&server.id),
+            );
             form.show_selected_server(cx);
-            id
+            ids
         });
         form.update_in(cx, |form, window, cx| {
             form.settings
                 .server_password
                 .update(cx, |field, cx| field.set_text("typed", cx));
-            form.save_credential(Credential::Server, window, cx);
-            assert!(form.feedback.is_some());
+            form.toggle_remember(Credential::Server, window, cx);
+            // A draft server is not saved by an autosave, nor its password.
+            form.autosave_now(None, cx);
         });
-        cx.run_until_parked();
-        assert!(
-            !store
-                .contains(&cayenchat_storage::SecretKey::server_password(&new_id))
-                .unwrap()
-        );
+        assert!(!store.contains(&new_key).unwrap());
+        // Its own Save registers it and stores the checked password.
+        form.update(cx, |form, cx| form.save_servers(cx));
+        assert_eq!(store.get(&new_key).unwrap().unwrap().expose(), "typed");
+        form.update(cx, |form, _| assert!(form.settings.saved_server_password));
         drop(file);
     }
 

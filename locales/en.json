@@ -8,6 +8,7 @@
   "save_passwords": "Save",
   "credential_saved": "Saved",
   "credential_save": "Save",
+  "credential_remember": "Save password",
   "credential_change": "Change",
   "credential_delete": "Delete",
   "credential_new_placeholder": "New password",

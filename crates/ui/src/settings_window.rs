@@ -20,6 +20,32 @@ use cayenchat_storage::{
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, time::Duration};
 
+/// What was typed for a server that is not shown: its unsaved passwords and
+/// whether each is to be saved with the settings.
+#[derive(Clone, Default)]
+pub(crate) struct Draft {
+    server: String,
+    sasl: String,
+    save_server: bool,
+    save_sasl: bool,
+}
+
+impl Draft {
+    fn text_mut(&mut self, which: Credential) -> &mut String {
+        match which {
+            Credential::Server => &mut self.server,
+            Credential::Sasl => &mut self.sasl,
+        }
+    }
+
+    fn save_mut(&mut self, which: Credential) -> &mut bool {
+        match which {
+            Credential::Server => &mut self.save_server,
+            Credential::Sasl => &mut self.save_sasl,
+        }
+    }
+}
+
 pub(crate) struct SettingsForm {
     pub(crate) values: Settings,
     server_list_open: bool,
@@ -46,10 +72,15 @@ pub(crate) struct SettingsForm {
     /// "Change" was pressed: the field takes the new value of a saved password.
     changing_server_password: bool,
     changing_sasl_password: bool,
-    /// Typed (server, SASL) passwords of servers not being shown, by server
-    /// ID. They are used by Connect only and stored only by the password's
-    /// own Save; closing the window drops them.
-    pub(crate) drafts: HashMap<String, (String, String)>,
+    /// The "save password" boxes of the shown server: a typed password is
+    /// written to the credential store when the settings are saved, only if
+    /// its box is checked (#635).
+    remember_server_password: bool,
+    remember_sasl_password: bool,
+    /// Typed passwords of servers not being shown, by server ID. They are
+    /// used by Connect, and stored at a save only where the box is checked;
+    /// closing the window drops them.
+    pub(crate) drafts: HashMap<String, Draft>,
     pub(crate) member_list_background: Entity<TextInput>,
     pub(crate) main_log_background: Entity<TextInput>,
     pub(crate) main_log_alternate: Entity<TextInput>,
@@ -180,6 +211,8 @@ impl SettingsForm {
             saved_sasl_password,
             changing_server_password: false,
             changing_sasl_password: false,
+            remember_server_password: false,
+            remember_sasl_password: false,
             drafts: HashMap::new(),
             member_list_background: field(
                 "#FFFFFF",
@@ -691,21 +724,18 @@ impl SettingsForm {
         else {
             return;
         };
-        let text = |field: &Entity<TextInput>, saved: bool| {
-            if saved {
-                String::new()
-            } else {
-                field.read(cx).text().to_owned()
+        let mut draft = Draft::default();
+        for which in [Credential::Server, Credential::Sasl] {
+            let (saved, _) = self.credential_state(which);
+            if !saved {
+                *draft.text_mut(which) = self.credential_field(which).read(cx).text().to_owned();
+                *draft.save_mut(which) = self.remember(which);
             }
-        };
-        let typed = (
-            text(&self.server_password, self.saved_server_password),
-            text(&self.sasl_password, self.saved_sasl_password),
-        );
-        if typed.0.is_empty() && typed.1.is_empty() {
+        }
+        if draft.server.is_empty() && draft.sasl.is_empty() {
             self.drafts.remove(&id);
         } else {
-            self.drafts.insert(id, typed);
+            self.drafts.insert(id, draft);
         }
     }
 }
@@ -757,15 +787,22 @@ impl SettingsForm {
         self.saved_sasl_password = saved_sasl;
         self.changing_server_password = false;
         self.changing_sasl_password = false;
-        let (mut draft_server, mut draft_sasl) =
-            self.drafts.get(&profile.id).cloned().unwrap_or_default();
+        let draft = self.drafts.get(&profile.id).cloned().unwrap_or_default();
         // An unfinished change of a saved password is dropped on a switch.
-        if saved_server {
-            draft_server.clear();
-        }
-        if saved_sasl {
-            draft_sasl.clear();
-        }
+        let (draft_server, draft_sasl) = (
+            if saved_server {
+                String::new()
+            } else {
+                draft.server
+            },
+            if saved_sasl {
+                String::new()
+            } else {
+                draft.sasl
+            },
+        );
+        self.remember_server_password = !saved_server && draft.save_server;
+        self.remember_sasl_password = !saved_sasl && draft.save_sasl;
         for (field, saved, key, draft) in [
             (
                 &self.server_password,
@@ -854,6 +891,14 @@ impl Credential {
         }
     }
 
+    /// Whether the profile notes this password as saved.
+    fn noted(self, profile: &ServerProfile) -> bool {
+        match self {
+            Self::Server => profile.server_password_saved(),
+            Self::Sasl => profile.sasl_password_saved(),
+        }
+    }
+
     fn key(self, profile: &str) -> SecretKey {
         match self {
             Self::Server => SecretKey::server_password(profile),
@@ -878,11 +923,27 @@ impl SettingsForm {
     }
 
     /// Whether the password is shown as saved (Change, Delete), as being
-    /// changed, or neither (a field and Save).
+    /// changed (a field, Save and Cancel), or neither (a field and the
+    /// "save password" box).
     pub(crate) fn credential_state(&self, which: Credential) -> (bool, bool) {
         match which {
             Credential::Server => (self.saved_server_password, self.changing_server_password),
             Credential::Sasl => (self.saved_sasl_password, self.changing_sasl_password),
+        }
+    }
+
+    /// Whether the unsaved password is to be saved with the settings.
+    pub(crate) fn remember(&self, which: Credential) -> bool {
+        match which {
+            Credential::Server => self.remember_server_password,
+            Credential::Sasl => self.remember_sasl_password,
+        }
+    }
+
+    pub(crate) fn set_remember(&mut self, which: Credential, remember: bool) {
+        match which {
+            Credential::Server => self.remember_server_password = remember,
+            Credential::Sasl => self.remember_sasl_password = remember,
         }
     }
 
@@ -893,6 +954,7 @@ impl SettingsForm {
             Credential::Server => self.saved_server_password = saved,
             Credential::Sasl => self.saved_sasl_password = saved,
         }
+        self.set_remember(which, false);
         *self.changing_mut(which) = false;
         let placeholder = i18n.text(match (which, saved) {
             (_, true) => "credential_new_placeholder",
@@ -1438,6 +1500,7 @@ impl SettingsWindow {
                 &self.i18n,
                 cx,
             )?;
+            self.store_marked_passwords(&mut settings, cx)?;
             self.autosave = None;
             // `saved` follows only once the file is written, so a failed
             // Connect leaves the draft unsaved.
@@ -1638,6 +1701,7 @@ impl SettingsWindow {
                     .unwrap_or_default();
             }
         }
+        self.store_marked_passwords(&mut settings, cx)?;
         if settings == self.saved && !(explicit && self.servers_unsaved(cx)) {
             // Nothing to write: registering the same URL again still asks
             // for its image to be fetched again.
@@ -1941,21 +2005,7 @@ impl SettingsWindow {
             self.store_credential(which, &profile.id, Secret::new(text), cx);
             return;
         }
-        // The local file holds the password unencrypted; the choice of that
-        // storage was the user's, but each password asks once more.
-        let answer = window.os_prompt(
-            PromptLevel::Warning,
-            &self.i18n.text("password_warning_title"),
-            Some(&self.i18n.format(
-                "password_warning_detail",
-                &[("path", &secrets::local_path_text())],
-            )),
-            &[
-                PromptButton::ok(self.i18n.text("save_passwords")),
-                PromptButton::cancel(self.i18n.text("cancel")),
-            ],
-            cx,
-        );
+        let answer = self.ask_plaintext_storage(window, cx);
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update(cx, |this, cx| {
@@ -1976,6 +2026,149 @@ impl SettingsWindow {
             }
         })
         .detach();
+    }
+
+    /// The local file holds a password unencrypted; the choice of that
+    /// storage was the user's, but each password asks once more.
+    fn ask_plaintext_storage(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> futures_channel::oneshot::Receiver<usize> {
+        window.os_prompt(
+            PromptLevel::Warning,
+            &self.i18n.text("password_warning_title"),
+            Some(&self.i18n.format(
+                "password_warning_detail",
+                &[("path", &secrets::local_path_text())],
+            )),
+            &[
+                PromptButton::ok(self.i18n.text("save_passwords")),
+                PromptButton::cancel(self.i18n.text("cancel")),
+            ],
+            cx,
+        )
+    }
+
+    /// The "save password" box of an unsaved password. Checking it only
+    /// marks the password: the settings' save writes it (#635). With the
+    /// local file as the storage, checking asks for confirmation first.
+    pub(crate) fn toggle_remember(
+        &mut self,
+        which: Credential,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.remember(which) {
+            self.settings.set_remember(which, false);
+        } else if secrets::store(cx).kind() == CredentialBackendKind::System {
+            self.settings.set_remember(which, true);
+            self.schedule_autosave(cx);
+        } else {
+            let profile = self.settings.values.selected_server.clone();
+            let answer = self.ask_plaintext_storage(window, cx);
+            cx.spawn(async move |this, cx| {
+                if answer.await == Ok(0) {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.settings.values.selected_server == profile {
+                            this.settings.set_remember(which, true);
+                            this.schedule_autosave(cx);
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Writes the passwords whose box is checked, for the servers `settings`
+    /// is about to save, and notes them saved there. A failure stops the
+    /// save and keeps what was typed. The shown server's passwords come from
+    /// its fields, the other servers' from `drafts`.
+    fn store_marked_passwords(
+        &mut self,
+        settings: &mut Settings,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let store = secrets::store(cx);
+        let both = [Credential::Server, Credential::Sasl];
+        let failed = |this: &Self, error: cayenchat_storage::CredentialError| {
+            this.i18n.format(
+                "credential_save_failed",
+                &[("error", &secrets::error_text(&this.i18n, &error))],
+            )
+        };
+        let shown = self.settings.values.selected_server.clone();
+        for which in both {
+            let (saved, changing) = self.settings.credential_state(which);
+            let text = self
+                .settings
+                .credential_field(which)
+                .read(cx)
+                .text()
+                .to_owned();
+            if saved || changing || text.is_empty() || !self.settings.remember(which) {
+                continue;
+            }
+            let Some(profile) = settings.profile_mut(&shown) else {
+                continue;
+            };
+            if which == Credential::Sasl && !profile.sasl_enabled {
+                continue;
+            }
+            store
+                .set(&which.key(&shown), &Secret::new(text))
+                .map_err(|error| failed(self, error))?;
+            which.note(profile, true);
+            if let Some(profile) = self.settings.values.profile_mut(&shown) {
+                which.note(profile, true);
+            }
+            self.settings.set_saved(which, true, &self.i18n, cx);
+        }
+        let others: Vec<String> = self.settings.drafts.keys().cloned().collect();
+        for id in others {
+            let Some(profile) = settings.profile_mut(&id) else {
+                continue;
+            };
+            for which in both {
+                let Some(draft) = self.settings.drafts.get(&id) else {
+                    break;
+                };
+                let (text, remember) = match which {
+                    Credential::Server => (draft.server.clone(), draft.save_server),
+                    Credential::Sasl => (draft.sasl.clone(), draft.save_sasl),
+                };
+                if !remember
+                    || text.is_empty()
+                    || which.noted(profile)
+                    || (which == Credential::Sasl && !profile.sasl_enabled)
+                {
+                    continue;
+                }
+                store
+                    .set(&which.key(&id), &Secret::new(text))
+                    .map_err(|error| failed(self, error))?;
+                which.note(profile, true);
+                if let Some(profile) = self.settings.values.profile_mut(&id) {
+                    which.note(profile, true);
+                }
+                if let Some(draft) = self.settings.drafts.get_mut(&id) {
+                    draft.text_mut(which).clear();
+                    *draft.save_mut(which) = false;
+                }
+            }
+            if self
+                .settings
+                .drafts
+                .get(&id)
+                .is_some_and(|draft| draft.server.is_empty() && draft.sasl.is_empty())
+            {
+                self.settings.drafts.remove(&id);
+            }
+        }
+        Ok(())
     }
 
     /// Writes the password. A failure is reported and leaves a saved
@@ -3229,28 +3422,46 @@ impl SettingsWindow {
                         ),
                 );
         }
-        row.child(
+        let row = row.child(
             div()
                 .flex_1()
                 .min_w_0()
                 .child(self.settings.credential_field(which).clone()),
-        )
-        .child(
+        );
+        if !changing {
+            // Not saved yet: the box makes the settings' save write it.
+            return row.child(
+                div()
+                    .id(("credential-remember", slot))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(
+                        self.settings.remember(which),
+                        true,
+                        cx,
+                    ))
+                    .child(self.i18n.text("credential_remember"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_remember(which, window, cx)
+                    })),
+            );
+        }
+        row.child(
             settings_theme::button(("credential-save", slot), true, cx)
                 .child(self.i18n.text("credential_save"))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.save_credential(which, window, cx)),
                 ),
         )
-        .when(changing, |d| {
-            d.child(
-                settings_theme::button(("credential-cancel", slot), false, cx)
-                    .child(self.i18n.text("cancel"))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.cancel_credential_change(which, cx)),
-                    ),
-            )
-        })
+        .child(
+            settings_theme::button(("credential-cancel", slot), false, cx)
+                .child(self.i18n.text("cancel"))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.cancel_credential_change(which, cx)),
+                ),
+        )
     }
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
