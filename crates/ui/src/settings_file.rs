@@ -198,6 +198,143 @@ mod tests {
     }
 
     #[gpui::test]
+    fn tab_in_the_auto_join_dialog_scrolls_its_list_to_the_focused_row(cx: &mut TestAppContext) {
+        let names: Vec<String> = (0..14).map(|i| format!("#c{i}")).collect();
+        let settings = settings_with_channels(&names.join(","));
+        let file = TestFile::with(&settings);
+        // The production Tab bindings, which `open` does not install.
+        cx.update(|cx| {
+            crate::input::bind_keys(false, cx);
+            cx.bind_keys(crate::shortcut_bindings(
+                cayenchat_storage::ChannelNumberModifier::Ctrl,
+                &Default::default(),
+            ));
+        });
+        let (form, cx) = open(&settings, cx);
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        cx.run_until_parked();
+        let state = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
+            form.update_in(cx, |form, window, cx| {
+                let dialog = form.auto_join.as_ref().unwrap();
+                let focused = crate::focus_reveal::focused_bounds(window, cx);
+                (
+                    dialog.scroll.offset().y,
+                    dialog.scroll.bounds(),
+                    focused,
+                    form.pane_scroll.offset().y,
+                )
+            })
+        };
+        let (_, _, _, pane_before) = state(&form, cx);
+        assert!(form.read_with(cx, |form, _| {
+            form.auto_join.as_ref().unwrap().scroll.max_offset().height > gpui::px(0.)
+        }));
+
+        let row_focused = |form: &gpui::Entity<SettingsWindow>,
+                           cx: &mut gpui::VisualTestContext,
+                           index: usize| {
+            form.update_in(cx, |form, window, cx| {
+                let rows = &form.auto_join.as_ref().unwrap().rows;
+                rows[index].name.focus_handle(cx).is_focused(window)
+            })
+        };
+        let visible = |(_, viewport, focused, _): (_, gpui::Bounds<gpui::Pixels>, Option<_>, _)| {
+            let focused: gpui::Bounds<gpui::Pixels> = focused.expect("a row has the focus");
+            focused.top() >= viewport.top() && focused.bottom() <= viewport.bottom()
+        };
+
+        // Tab from the dialog itself leaves the list; start from the first row.
+        form.update_in(cx, |form, window, cx| {
+            let first = form.auto_join.as_ref().unwrap().rows[0]
+                .name
+                .focus_handle(cx);
+            window.focus(&first);
+        });
+        cx.run_until_parked();
+        // Forward to the last row: it is shown, and the pane behind stays.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 13) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 13));
+        cx.run_until_parked();
+        let last = state(&form, cx);
+        assert!(last.0 < gpui::px(0.), "the list did not follow Tab");
+        assert_eq!(last.3, pane_before);
+        assert!(visible(last));
+        let offset = last.0;
+
+        // Back to the first row: the list returns.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("shift-tab");
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        let first = state(&form, cx);
+        assert!(first.0 > offset, "the list did not follow Shift+Tab");
+        assert_eq!(first.3, pane_before);
+        assert!(visible(first));
+
+        // A target already in view leaves the list where it is.
+        let at = first.0;
+        for _ in 0..100 {
+            if row_focused(&form, cx, 1) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 1));
+        assert_eq!(state(&form, cx).0, at);
+
+        // Leaving a row and coming back to it after the list was scrolled
+        // away must not reuse the place the row painted earlier.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("shift-tab");
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(!row_focused(&form, cx, 0), "Shift+Tab stayed on the row");
+        form.update(cx, |form, _| {
+            let scroll = &form.auto_join.as_ref().unwrap().scroll;
+            let max = scroll.max_offset().height;
+            scroll.set_offset(gpui::point(scroll.offset().x, -max));
+        });
+        for _ in 0..3 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        let back = state(&form, cx);
+        assert!(visible(back), "the list kept the returned row out of view");
+        assert_eq!(back.3, pane_before);
+        drop(file);
+    }
+
+    #[gpui::test]
     fn another_processs_change_is_read_back_instead_of_overwritten(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
