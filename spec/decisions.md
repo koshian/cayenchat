@@ -656,8 +656,8 @@ that calls `cx.quit()` for them and first runs `settings_block_quit`, so
 edits made while the question was open are saved too; the action is
 deferred until its dispatch has finished so the settings window can be
 updated, and a settings window that cannot be asked never counts as saved.
-The window close and Dock handlers must return the answer themselves and run
-the same check), the close or quit is refused and
+The main window close and Dock handlers always refuse at once and hand the
+request to the same deferred path, so no entry runs its own check), the close or quit is refused and
 the form and the error stay for a retry; edits are never discarded without a
 successful save (so while the file cannot be written the window stays open).
 Quits by the system or a signal cannot be refused. A registered

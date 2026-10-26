@@ -3782,9 +3782,13 @@ fn quitting_asks_first_only_when_switched_on(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    // Off: closing the window goes straight on, with no question.
-    assert!(cx.simulate_close());
+    // Off: closing the window opens no question. The callback itself always
+    // refuses; the deferred ordinary quit ends the app (`cx.quit()` cannot be
+    // observed in the test context, and the test window stays).
+    assert!(!cx.simulate_close());
+    cx.run_until_parked();
     assert!(!cx.has_pending_prompt());
+    chat.read_with(cx, |chat, _| assert!(!chat.quit_prompt_open));
 
     chat.update(cx, |chat, _| chat.confirm_quit = true);
     let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());

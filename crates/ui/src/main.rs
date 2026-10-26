@@ -1407,27 +1407,13 @@ impl ChatWindow {
             this.schedule_layout_save(cx);
         })
         .detach();
-        let view = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
-            // Closing the main window quits the application. With the
-            // question on, nothing is touched until it is answered: asking
-            // keeps the window open, and "Quit" goes through `cx.quit()`,
-            // which runs the usual shutdown in `on_app_quit`.
-            if settings_block_quit(cx) {
-                return false;
-            }
-            if view
-                .update(cx, |this, cx| this.ask_before_quit(window, cx))
-                .unwrap_or(false)
-            {
-                return false;
-            }
-            let _ = view.update(cx, |this, _| {
-                this.note_window_bounds(window);
-                this.save_layout_now();
-                this.quit_connections();
-            });
-            true
+        window.on_window_should_close(cx, move |_, cx| {
+            // Closing the main window quits the application. The window is
+            // never closed here: the request is handed to the ordinary quit
+            // path after this callback, which asks if the question is on and
+            // ends in `quit_app`; the usual shutdown runs in `on_app_quit`.
+            request_quit_anywhere(cx);
+            false
         });
         cx.on_app_quit(|this, _| {
             this.save_layout_now();
@@ -9618,19 +9604,8 @@ fn main() {
             // macOS Dock "Quit" is the user's request too; the system's own
             // shutdown and `cx.quit()` never reach this handler.
             cx.on_quit_request(|cx| {
-                if settings_block_quit(cx) {
-                    return false;
-                }
-                let Some(chat) = cx
-                    .windows()
-                    .into_iter()
-                    .find_map(|w| w.downcast::<ChatWindow>())
-                else {
-                    return true;
-                };
-                !chat
-                    .update(cx, |this, window, cx| this.ask_before_quit(window, cx))
-                    .unwrap_or(false)
+                request_quit_anywhere(cx);
+                false
             });
             // Global actions run inside the active window's update, so updating
             // that window again here fails; do it once the dispatch has finished.
@@ -9650,7 +9625,7 @@ fn main() {
             });
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
-                    cx.quit();
+                    quit_app(cx);
                 }
             })
             .detach();
