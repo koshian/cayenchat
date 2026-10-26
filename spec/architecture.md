@@ -1920,7 +1920,17 @@ Saving settings deletes the secrets of removed profiles. `Secret` redacts
 its `Debug` output and zeroes its buffer on drop (best effort). Credential
 errors are mapped to sanitized text; keyring payloads, which may contain secret
 bytes, are dropped. The settings file records only the backend choice
-(`credential_backend`) and per-profile `remember_passwords`.
+(`credential_backend`) and per-profile `remember_passwords`, plus, for channel
+keys, `keyed_channels`, the channels with a saved key.
+
+The store is touched only when the settings file notes that a secret is saved,
+or when the user acts on it, because reading any entry can ask for the login
+password on macOS (#643). Saving settings, or connecting a server that has no
+noted channel key, therefore never reads it. For channel keys the note is
+`ServerProfile::keyed_channels`: connecting and the refresh after an auto-join
+change read only the noted channels, the refresh runs only when a noted channel
+was added to the list, and the note is corrected from what the store returned
+(D052).
 
 The system backend reads each store entry at most once per process and keeps
 the values in memory, so reconnecting or opening settings does not touch the

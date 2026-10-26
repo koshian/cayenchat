@@ -501,6 +501,9 @@ pub struct ChannelCharset {
 /// Overrides kept per server. A settings file can hold more, but the extra
 /// entries are dropped when it is read.
 pub const MAX_CHANNEL_CHARSETS: usize = 256;
+/// Channels noted per server as having a saved key (#643). A settings file
+/// can hold more, but the extra entries are dropped when it is read.
+pub const MAX_KEYED_CHANNELS: usize = 256;
 /// The longest channel name an override is kept for, in bytes.
 const MAX_CHARSET_CHANNEL_BYTES: usize = 200;
 
@@ -860,6 +863,15 @@ pub struct ServerProfile {
     /// without it read as empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channel_charsets: Vec<ChannelCharset>,
+    /// Channels whose key is noted as saved in the credential store (#643).
+    /// Only a note: the store is read for these channels alone, so a server
+    /// without a saved key never touches it (which can ask the user for a
+    /// permission). The store decides when connecting, and the note is
+    /// corrected then. `None` is a file from before the note existed: the
+    /// first connection reads every auto-join channel once and writes down
+    /// what it finds. Added without a version change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyed_channels: Option<Vec<String>>,
     /// Plaintext passwords saved by version 10 and earlier. Read only for
     /// migration into the credential store; never written back.
     #[serde(rename = "server_password", default, skip_serializing)]
@@ -904,6 +916,7 @@ impl ServerProfile {
             avatar_url: String::new(),
             peer_avatar_url: String::new(),
             channel_charsets: Vec::new(),
+            keyed_channels: Some(Vec::new()),
             legacy_server_password: None,
             legacy_sasl_password: None,
         }
@@ -996,6 +1009,65 @@ impl ServerProfile {
         self.channel_charsets.truncate(MAX_CHANNEL_CHARSETS);
     }
 
+    /// The channels whose key is read from the credential store when
+    /// connecting: the enabled auto-join channels noted as keyed, or all of
+    /// them once for a file from before the note existed.
+    pub fn channels_to_read_keys_for(&self) -> Vec<String> {
+        self.channels()
+            .into_iter()
+            .filter(|channel| self.channel_key_noted(channel))
+            .collect()
+    }
+
+    /// Whether the first connection must still look for saved keys.
+    pub fn channel_key_scan_pending(&self) -> bool {
+        self.keyed_channels.is_none()
+    }
+
+    /// Whether the store is read for `channel`'s key: it is noted as keyed,
+    /// or the first scan is still to come.
+    pub fn channel_key_noted(&self, channel: &str) -> bool {
+        match &self.keyed_channels {
+            None => true,
+            Some(noted) => noted.iter().any(|name| name.eq_ignore_ascii_case(channel)),
+        }
+    }
+
+    /// Notes `channel` as keyed or not. False when nothing changed, when
+    /// there is no room for one more, or while the first scan is pending: the
+    /// scan reads this channel too, and a note made before it would hide the
+    /// other saved keys from it.
+    pub fn note_channel_key(&mut self, channel: &str, saved: bool) -> bool {
+        let Some(noted) = &mut self.keyed_channels else {
+            return false;
+        };
+        let at = noted
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(channel));
+        match (at, saved) {
+            (Some(at), false) => {
+                noted.remove(at);
+                true
+            }
+            (None, true) if noted.len() < MAX_KEYED_CHANNELS => {
+                noted.push(channel.to_owned());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Drops notes a settings file should not hold: an unusable name, a
+    /// repeated name or more than the limit.
+    fn clean_keyed_channels(&mut self) {
+        let Some(noted) = &mut self.keyed_channels else {
+            return;
+        };
+        let mut seen = HashSet::new();
+        noted.retain(|name| valid_note_name(name) && seen.insert(name.to_ascii_lowercase()));
+        noted.truncate(MAX_KEYED_CHANNELS);
+    }
+
     pub fn server_password_key(&self) -> SecretKey {
         SecretKey::server_password(&self.id)
     }
@@ -1003,6 +1075,12 @@ impl ServerProfile {
     pub fn sasl_password_key(&self) -> SecretKey {
         SecretKey::sasl_password(&self.id)
     }
+}
+
+fn valid_note_name(name: &str) -> bool {
+    name.len() <= MAX_CHARSET_CHANNEL_BYTES
+        && name.starts_with(['#', '&', '!', '+'])
+        && !name.contains(|ch: char| ch.is_control() || ch.is_whitespace() || ch == ',')
 }
 
 /// One auto-join channel of a server. A disabled entry stays configured but
@@ -1481,6 +1559,7 @@ impl Settings {
                 server.verify_tls_certificates = true;
             }
             server.clean_channel_charsets();
+            server.clean_keyed_channels();
             if !server.remember_passwords {
                 server.legacy_server_password = None;
                 server.legacy_sasl_password = None;
@@ -1938,6 +2017,76 @@ mod tests {
         profile.set_auto_join_entries(&entries);
         assert_eq!(profile.channels, "#c,-#xyz,#a");
         assert_eq!(profile.channels(), ["#c", "#a"]);
+    }
+
+    #[test]
+    fn channel_key_notes_limit_the_channels_read_from_the_store() {
+        let mut profile = ServerProfile {
+            channels: "#a,#b,-#c".into(),
+            ..Default::default()
+        };
+        assert!(!profile.channel_key_scan_pending());
+        assert!(profile.channels_to_read_keys_for().is_empty());
+        assert!(profile.note_channel_key("#B", true));
+        assert!(!profile.note_channel_key("#b", true), "no change");
+        assert!(profile.note_channel_key("#c", true));
+        // A disabled entry is not joined, so not read.
+        assert_eq!(profile.channels_to_read_keys_for(), ["#b"]);
+        assert!(profile.note_channel_key("#b", false));
+        assert!(!profile.note_channel_key("#b", false), "no change");
+        assert!(profile.channels_to_read_keys_for().is_empty());
+        // A file from before the note reads everything once.
+        profile.keyed_channels = None;
+        assert!(profile.channel_key_scan_pending());
+        assert!(
+            !profile.note_channel_key("#a", true),
+            "ignored before the scan"
+        );
+        assert!(profile.channel_key_scan_pending());
+        assert_eq!(profile.channels_to_read_keys_for(), ["#a", "#b"]);
+    }
+
+    #[test]
+    fn channel_key_notes_round_trip_and_are_cleaned_on_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        let server = settings.add_server("irc.example.net");
+        server.note_channel_key("#a", true);
+        let id = server.id.clone();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded.profile(&id).unwrap().keyed_channels,
+            Some(vec!["#a".into()])
+        );
+
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let server = value["servers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|server| server["id"] == id.as_str())
+            .unwrap();
+        server["keyed_channels"] = serde_json::json!(["#a", "#A", "bad name", "#x y", "#ok"]);
+        fs::write(&path, value.to_string()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded.profile(&id).unwrap().keyed_channels,
+            Some(vec!["#a".into(), "#ok".into()])
+        );
+
+        let server = value["servers"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|server| server["id"] == id.as_str())
+            .unwrap();
+        server.as_object_mut().unwrap().remove("keyed_channels");
+        fs::write(&path, value.to_string()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert!(loaded.profile(&id).unwrap().channel_key_scan_pending());
     }
 
     #[test]

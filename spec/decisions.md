@@ -1994,6 +1994,35 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
 - **Limits.** Keys are not enumerable, so removing a server profile or switching
   the credential backend does not remove or move them; a missing key is
   asked for again. The auto-join manager has no key field.
+- **The store is touched only for a noted key (#643).** Reading any entry
+  opens the one macOS Keychain item, which can ask for the login password
+  after an update, so the store is not read to find out whether a key exists.
+  `ServerProfile::keyed_channels` in the settings file lists the channels whose
+  key is saved (at most 256; added without a version
+  change). It is set when a key is saved after our JOIN and
+  removed when a refused saved key is deleted. Connecting, and refreshing the
+  running connection's keys, read only the enabled auto-join channels on the
+  list; with none, the store is not touched. A settings save refreshes only when
+  the auto-join list gained a noted channel, so editing a display name, a quit
+  message or the IRCv3 choices never reads. The note is a hint: what the
+  connection was configured with is written back as the note for the channels
+  that were read, so a key that vanished from the store is dropped from the
+  list, and a missing note is recovered by the 475 dialog. A file from before
+  the note (`keyed_channels` absent) is read in full by its first connection
+  (every enabled auto-join channel, as before) and the keys found become the
+  note, so no saved key is lost. A note made before that scan is ignored, as it
+  would hide the other keys from it. A manual JOIN (`/join`, the menus) reads
+  the store only for a channel the note lists (or while the first scan is
+  pending); any other channel is sent without a key, and a 475 asks for it. The
+  rule for every secret (D010, and #638 for the passwords) is: the store is
+  touched only when the settings file notes a saved secret, or the user acts on
+  it (saving or deleting).
+- **The 475 is not logged when the dialog asks.** The dialog is the notice of
+  the refusal; also writing "Cannot join (+k)" in the channel log would stay
+  there after the JOIN worked with the typed key. Other refusals are logged as
+  before. Saving a key is one read and one write of the one macOS Keychain item
+  (it is read once per process), which the system may ask for separately; this
+  cannot be reduced without keeping the keys elsewhere.
 
 ## D051 — Channel modes in the window title (#413)
 
