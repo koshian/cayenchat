@@ -96,12 +96,23 @@ fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, S
     }
 }
 
+/// Whether `profile`'s auto-join list gained a channel the store is read for,
+/// compared with the list `before`. Only then do keys need reading again.
+pub fn keyed_channel_added(before: &[String], profile: &ServerProfile) -> bool {
+    profile
+        .channels_to_read_keys_for()
+        .iter()
+        .any(|channel| !before.iter().any(|name| name.eq_ignore_ascii_case(channel)))
+}
+
+/// The saved keys of the channels `profile` notes as keyed. The store is not
+/// touched when there are none (#643).
 fn stored_channel_keys(
     profile: &ServerProfile,
     store: &CredentialStore,
 ) -> BTreeMap<String, String> {
     profile
-        .channels()
+        .channels_to_read_keys_for()
         .into_iter()
         .filter_map(|channel| {
             let key = store
@@ -216,9 +227,18 @@ impl ChatWindow {
             .iter()
             .map(|channel| KeyJoin::untyped(channel, config.channel_keys.contains_key(channel)))
             .collect();
+        let (profile_id, read, found) = (
+            session.profile_id.clone(),
+            config.channels.clone(),
+            config.channel_keys.clone(),
+        );
         for join in joins {
             track(session, join);
         }
+        // What the connection was configured with is what the store held for
+        // the channels it was read for: correct the notes to it, and finish
+        // the first scan of a file without notes.
+        self.correct_key_notes(&profile_id, &read, &found);
     }
 
     /// The connection ended: its JOINs will never be answered.
@@ -353,6 +373,9 @@ impl ChatWindow {
     ) {
         match result {
             Ok(()) => {
+                // The store holds the key now (or no longer): note it, so
+                // the next connection reads it (or leaves the store alone).
+                self.update_profile_note(profile, |p| p.note_channel_key(channel, key.is_some()));
                 // Only the connection the key was confirmed on is updated.
                 if self
                     .sessions
@@ -389,6 +412,10 @@ impl ChatWindow {
         profile: &ServerProfile,
         cx: &mut Context<Self>,
     ) {
+        let read = profile.channels_to_read_keys_for();
+        if read.is_empty() {
+            return;
+        }
         let store = secrets::store(cx);
         let profile = profile.clone();
         let reading = cx.background_spawn({
@@ -405,11 +432,65 @@ impl ChatWindow {
                     return;
                 }
                 if let Some(config) = session.active_config.as_mut() {
-                    replace_keys_if_valid(config, keys);
+                    replace_keys_if_valid(config, keys.clone());
                 }
+                this.correct_key_notes(&profile.id, &read, &keys);
             });
         })
         .detach();
+    }
+
+    /// Writes down in the settings file which of `read` (channels whose key
+    /// was looked up) have one in `found`, when that differs from the note;
+    /// the first scan of a file without notes ends here too. Failing to write
+    /// is harmless: the note is corrected at the next connection.
+    pub(crate) fn correct_key_notes(
+        &mut self,
+        profile_id: &str,
+        read: &[String],
+        found: &BTreeMap<String, String>,
+    ) {
+        self.update_profile_note(profile_id, |profile| {
+            let scanning = profile.channel_key_scan_pending();
+            if scanning {
+                profile.keyed_channels = Some(Vec::new());
+            }
+            let mut changed = scanning;
+            for channel in read {
+                if scanning || profile.channel_key_noted(channel) {
+                    let saved = found.keys().any(|name| name.eq_ignore_ascii_case(channel));
+                    changed |= profile.note_channel_key(channel, saved);
+                }
+            }
+            changed
+        });
+    }
+
+    /// Applies `change` to the profile in the settings file (and in the copy
+    /// this window keeps) and saves when it says it changed something.
+    fn update_profile_note(
+        &mut self,
+        profile_id: &str,
+        change: impl FnOnce(&mut ServerProfile) -> bool,
+    ) {
+        let mut settings = match crate::settings_file::load() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => self.saved.clone(),
+            // Saving over a file that cannot be read could destroy it.
+            Err(_) => return,
+        };
+        let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
+            return;
+        };
+        if !change(profile) {
+            return;
+        }
+        let notes = profile.keyed_channels.clone();
+        if crate::settings_file::save(&settings).is_ok()
+            && let Some(saved) = self.saved.servers.iter_mut().find(|p| p.id == profile_id)
+        {
+            saved.keyed_channels = notes;
+        }
     }
 
     /// Keeps the configuration reconnects reuse in step with the store.

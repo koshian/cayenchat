@@ -2030,7 +2030,7 @@ impl ChatWindow {
                     config.char_refs_for_iso2022jp = profile.iso2022jp_char_refs;
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
-                    config.channels = profile.channels();
+                    let before = std::mem::replace(&mut config.channels, profile.channels());
                     // The sleep QUIT reads these when the machine sleeps, so
                     // saved changes count for the current connection too.
                     // Settings saving does not validate them, and a bad one
@@ -2042,7 +2042,11 @@ impl ChatWindow {
                     if config.quit_reason_fits(&profile.sleep_quit_message) {
                         config.sleep_quit_message = profile.sleep_quit_message.clone();
                     }
-                    key_refreshes.push((id, profile.clone()));
+                    // The store is read again only when the list gained a
+                    // channel with a saved key; other changes leave it alone.
+                    if channel_keys::keyed_channel_added(&before, profile) {
+                        key_refreshes.push((id, profile.clone()));
+                    }
                     config.channel_encodings = channel_encodings(profile);
                     // A new realname is sent at once with SETNAME when the
                     // connection has it; the server's answer says otherwise.
@@ -3275,8 +3279,10 @@ impl ChatWindow {
                         .and_then(|session| session.active_config.as_mut()),
                     settings.servers.iter().find(|p| p.id == profile_id),
                 ) {
-                    config.channels = profile.channels();
-                    self.refresh_stored_keys(menu.network, profile, cx);
+                    let before = std::mem::replace(&mut config.channels, profile.channels());
+                    if channel_keys::keyed_channel_added(&before, profile) {
+                        self.refresh_stored_keys(menu.network, profile, cx);
+                    }
                 }
                 None
             }
@@ -9949,6 +9955,10 @@ mod latest_button_tests;
 #[cfg(test)]
 #[path = "main_tests/channel_key_tests.rs"]
 mod channel_key_tests;
+
+#[cfg(test)]
+#[path = "main_tests/key_note_tests.rs"]
+mod key_note_tests;
 
 #[cfg(test)]
 #[path = "main_tests/join_switch_tests.rs"]
