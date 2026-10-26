@@ -492,6 +492,35 @@ mod disconnect_tests {
     }
 
     #[gpui::test]
+    fn a_failed_automatic_retry_raises_no_notice_and_retries_again(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        chat.update(cx, |chat, cx| {
+            // Port 0 makes `Connection::connect` fail at validation.
+            let mut config =
+                cayenchat_irc_core::ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec![]);
+            config.port = 0;
+            chat.sessions.get_mut(&NetworkId(1)).unwrap().active_config = Some(config);
+            chat.start_reconnect(NetworkId(1), cx);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |chat, _| {
+            assert!(chat.notices.all().is_empty());
+            assert!(chat.sessions[&NetworkId(1)].retry_pending);
+        });
+    }
+
+    #[gpui::test]
     fn a_refused_connection_still_raises_a_notice(cx: &mut TestAppContext) {
         assert_eq!(notices_after(Event::Refused("SASL failed".into()), cx), 1);
     }
