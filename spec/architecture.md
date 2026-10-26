@@ -530,7 +530,7 @@ use. Items inside menus have no access keys yet (after #337); selecting
 queried only while a menu is open: GPUI has no rendered dispatch tree during
 the first frame, so querying it while the bar renders (now always, unless
 auto-hidden) would panic on startup. macOS retains native menus.
-Passwords persist only when the user saves one (the "save password" box, taking effect when the settings are saved, a saved password's Save button after Change, or the box
+Passwords persist only when the user saves one (the "save password" box of a draft server, taking effect at its Save, the Save button of a registered server's password, or the box
 in the password dialog) and only through the credential store (see Credentials
 below); Delete removes it at once (D068). TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
@@ -791,8 +791,8 @@ draft that only Save registers (no Connect until then); a registered server
 has no Save button: its choices are saved with the autosave pause and its
 text fields when they lose focus (`SettingsForm::commit_server_text`, valid
 values only), and the autosave (`SaveMode::Committed`) never writes a draft
-or text still being typed. They store a typed password only if its "save password"
-box is checked (`store_marked_passwords`, D068). Save (`SaveMode::Explicit`)
+or text still being typed. They store no password: only the Save or Connect that
+registers a draft writes its checked "save password" boxes (`store_marked_passwords`, D068). Save (`SaveMode::Explicit`)
 or Connect deletes the secrets of removed servers. Saving adds,
 renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
@@ -1949,7 +1949,7 @@ startup, plaintext passwords read from version 10 and earlier move into the
 store before any window opens; only if the system store is unavailable do they
 go to the local file, because the user had already accepted plaintext storage
 for them. The settings form never shows saved passwords: an unsaved password
-has a field and a "save password" box, a saved one "Saved" with Change and Delete, and Change
+of a draft server has a field and a "save password" box (written by the server's own Save), one of a registered server a field with Save, a saved one "Saved" with Change and Delete, and Change
 shows an empty field with Save and Cancel. A value typed and not saved wins
 for the connection started from that form and is dropped with the window.
 

@@ -891,14 +891,6 @@ impl Credential {
         }
     }
 
-    /// Whether the profile notes this password as saved.
-    fn noted(self, profile: &ServerProfile) -> bool {
-        match self {
-            Self::Server => profile.server_password_saved(),
-            Self::Sasl => profile.sasl_password_saved(),
-        }
-    }
-
     fn key(self, profile: &str) -> SecretKey {
         match self {
             Self::Server => SecretKey::server_password(profile),
@@ -2083,10 +2075,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Writes the passwords whose box is checked, for the servers `settings`
-    /// is about to save, and notes them saved there. A failure stops the
-    /// save and keeps what was typed. The shown server's passwords come from
-    /// its fields, the other servers' from `drafts`.
+    /// Writes the passwords whose box is checked on the shown server when
+    /// it is a draft that `settings` is about to register (its own Save or
+    /// Connect), and notes them saved there. A registered server has no box:
+    /// its passwords are written by the Save button only, never by an
+    /// autosave. A failure stops the save and keeps what was typed.
     fn store_marked_passwords(
         &mut self,
         settings: &mut Settings,
@@ -2101,6 +2094,9 @@ impl SettingsWindow {
             )
         };
         let shown = self.settings.values.selected_server.clone();
+        if self.shown_server_registered() {
+            return Ok(());
+        }
         for which in both {
             let (saved, changing) = self.settings.credential_state(which);
             let text = self
@@ -2126,47 +2122,6 @@ impl SettingsWindow {
                 which.note(profile, true);
             }
             self.settings.set_saved(which, true, &self.i18n, cx);
-        }
-        let others: Vec<String> = self.settings.drafts.keys().cloned().collect();
-        for id in others {
-            let Some(profile) = settings.profile_mut(&id) else {
-                continue;
-            };
-            for which in both {
-                let Some(draft) = self.settings.drafts.get(&id) else {
-                    break;
-                };
-                let (text, remember) = match which {
-                    Credential::Server => (draft.server.clone(), draft.save_server),
-                    Credential::Sasl => (draft.sasl.clone(), draft.save_sasl),
-                };
-                if !remember
-                    || text.is_empty()
-                    || which.noted(profile)
-                    || (which == Credential::Sasl && !profile.sasl_enabled)
-                {
-                    continue;
-                }
-                store
-                    .set(&which.key(&id), &Secret::new(text))
-                    .map_err(|error| failed(self, error))?;
-                which.note(profile, true);
-                if let Some(profile) = self.settings.values.profile_mut(&id) {
-                    which.note(profile, true);
-                }
-                if let Some(draft) = self.settings.drafts.get_mut(&id) {
-                    draft.text_mut(which).clear();
-                    *draft.save_mut(which) = false;
-                }
-            }
-            if self
-                .settings
-                .drafts
-                .get(&id)
-                .is_some_and(|draft| draft.server.is_empty() && draft.sasl.is_empty())
-            {
-                self.settings.drafts.remove(&id);
-            }
         }
         Ok(())
     }
@@ -3383,9 +3338,11 @@ impl SettingsWindow {
             })
     }
 
-    /// A password: Save beside an empty field while none is saved; Change and
-    /// Delete beside "Saved" once one is; Save and Cancel beside a field
-    /// while it is being changed. A saved value is never shown.
+    /// A password of a draft server: a "save password" box beside the field
+    /// (its own Save writes it). Of a registered server: Save beside an empty
+    /// field while none is saved; Change and Delete beside "Saved" once one
+    /// is; Save and Cancel beside a field while it is being changed. A saved
+    /// value is never shown.
     fn credential_row(
         &self,
         which: Credential,
@@ -3428,8 +3385,8 @@ impl SettingsWindow {
                 .min_w_0()
                 .child(self.settings.credential_field(which).clone()),
         );
-        if !changing {
-            // Not saved yet: the box makes the settings' save write it.
+        if !changing && !self.shown_server_registered() {
+            // A draft server: the box makes its own Save write the password.
             return row.child(
                 div()
                     .id(("credential-remember", slot))
@@ -3455,13 +3412,15 @@ impl SettingsWindow {
                     cx.listener(move |this, _, window, cx| this.save_credential(which, window, cx)),
                 ),
         )
-        .child(
-            settings_theme::button(("credential-cancel", slot), false, cx)
-                .child(self.i18n.text("cancel"))
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.cancel_credential_change(which, cx)),
-                ),
-        )
+        .when(changing, |row| {
+            row.child(
+                settings_theme::button(("credential-cancel", slot), false, cx)
+                    .child(self.i18n.text("cancel"))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.cancel_credential_change(which, cx)),
+                    ),
+            )
+        })
     }
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {

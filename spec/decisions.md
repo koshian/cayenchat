@@ -636,7 +636,7 @@ only when **Save** on the Connection tab is pressed (Connect also saves), so
 an accidentally chosen server is never kept. Everything else keeps autosaving
 and leaves the saved server list and the selected server as it is (an invalid
 unsaved port does not stop it). Typed passwords are kept in memory per server
-and are stored only at a save where their "save password" box is checked (D068); removing a server deletes the
+and are stored only by the Save of a draft server whose "save password" box is checked, or by a registered server's password Save button (D068); removing a server deletes the
 stored secrets only on Save. Save stays available after the last server was removed,
 and the IRCv3 tab shows it with the note whenever server changes are
 unsaved. A note says server changes are unsaved;
@@ -1391,27 +1391,28 @@ future work. Details in `architecture.md` (Channel history).
 Replaces the per-server "save passwords" checkbox and the part of D010 and
 D021 that stored typed passwords with Save of the server.
 
-- **Settings.** The server password and the SASL password each show a field
-  and a **Save password** box (off) while not saved; **Saved**, **Change** and
-  **Delete** once saved; and an empty field with **Save** and **Cancel** while
-  changing. A saved value is never shown again. A checked box writes nothing
-  by itself: the save of the settings (the autosave of a registered server,
-  Save of a new one, or Connect) writes the typed password of each checked
+- **Settings.** The screen follows whether the server is registered (saved
+  in the settings), not whether the password is saved. A **draft** server
+  (new, not yet saved) shows each password as a field and a **Save password**
+  box (off). A checked box writes nothing by itself: the server's own Save
+  or Connect, which registers it, writes the typed password of each checked
   box to the credential store that is currently selected (D014), notes it
   saved and empties the field. With the local file, checking the box asks
-  once because the file is unencrypted. A new server that is still a draft
-  keeps its checked password in memory until its own Save registers it, so a
-  discarded server leaves nothing behind; the other servers' typed passwords
-  and boxes are kept per server like the fields. **Save** (while changing) and
-  **Delete** act at once. A failed save or delete is reported, stops the
+  once because the file is unencrypted. A discarded draft leaves nothing
+  behind. A **registered** server shows a field with **Save** while the
+  password is not saved, **Saved** with **Change** and **Delete** once saved,
+  and an empty field with **Save** and **Cancel** while changing. Its
+  autosave never writes a password. A saved value is never shown again.
+  The typed passwords of the other servers are kept per server like the
+  fields. **Save** and **Delete** of a registered server act at once. A failed save or delete is reported, stops the
   save, and leaves what was stored and what was typed. The store is
   read and written on the UI thread at the moment of the action, like the
   upload tokens (a slow store can stall the UI as it does there; moving the
   store off the UI thread is one app-wide design, #640). A saved password
   shown as saved is used as saved: an unfinished change is dropped, from the
   field and the draft, when another server is selected. A save of the
-  settings writes only the passwords whose box is checked and never reads the
-  store; an unchecked typed password is used by Connect from that form and
+  settings writes only the checked passwords of a draft it registers and
+  never reads the store; an unsaved typed password is used by Connect from that form and
   dropped with the window. Whether a password is shown as
   saved comes from a note in the settings file (`server_saved`, `sasl_saved`
   of the profile; the old `remember_passwords` counts as both until one is
