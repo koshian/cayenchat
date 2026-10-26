@@ -296,6 +296,39 @@ mod tests {
         }
         assert!(row_focused(&form, cx, 1));
         assert_eq!(state(&form, cx).0, at);
+
+        // Leaving a row and coming back to it after the list was scrolled
+        // away must not reuse the place the row painted earlier.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("shift-tab");
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(!row_focused(&form, cx, 0), "Shift+Tab stayed on the row");
+        form.update(cx, |form, _| {
+            let scroll = &form.auto_join.as_ref().unwrap().scroll;
+            let max = scroll.max_offset().height;
+            scroll.set_offset(gpui::point(scroll.offset().x, -max));
+        });
+        for _ in 0..3 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        let back = state(&form, cx);
+        assert!(visible(back), "the list kept the returned row out of view");
+        assert_eq!(back.3, pane_before);
         drop(file);
     }
 

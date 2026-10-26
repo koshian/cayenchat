@@ -2070,6 +2070,7 @@ impl SettingsWindow {
             window.focus(&dialog.focus);
         }
         // Only the dialog's own list follows; the panes behind stay put.
+        focus_reveal::clear(cx);
         self.reveal_focus = REVEAL_FRAMES;
         cx.notify();
     }
@@ -2087,6 +2088,7 @@ impl SettingsWindow {
             if self.nav_focus.is_focused(window) {
                 self.reveal_selected_tab();
             }
+            focus_reveal::clear(cx);
             self.reveal_focus = REVEAL_FRAMES;
             cx.notify();
         }

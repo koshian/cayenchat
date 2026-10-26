@@ -27,6 +27,18 @@ pub(crate) fn note(handle: &FocusHandle, bounds: Bounds<Pixels>, window: &Window
     }
 }
 
+/// Forgets the recorded bounds, so that only bounds painted after this call
+/// can be used. A field the focus left and came back to would otherwise
+/// still report where it was painted before.
+pub(crate) fn clear(cx: &mut App) {
+    if cx
+        .try_global::<FocusedBounds>()
+        .is_some_and(|slot| slot.0.is_some())
+    {
+        cx.set_global(FocusedBounds(None));
+    }
+}
+
 /// The painted bounds of the focused field, when it is the one with the focus.
 pub(crate) fn focused_bounds(window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
     let (handle, bounds) = cx.try_global::<FocusedBounds>()?.0.as_ref()?;
