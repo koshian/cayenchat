@@ -491,8 +491,9 @@ mod disconnect_tests {
         );
     }
 
-    #[gpui::test]
-    fn a_failed_automatic_retry_raises_no_notice_and_retries_again(cx: &mut TestAppContext) {
+    /// Notices raised after a reconnect attempt that fails to start, and
+    /// whether a retry was scheduled.
+    fn notices_after_failed_reconnect(announce: bool, cx: &mut TestAppContext) -> (usize, bool) {
         cx.update(|cx| {
             crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
             crate::secrets::install_memory(cx);
@@ -511,13 +512,25 @@ mod disconnect_tests {
                 cayenchat_irc_core::ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec![]);
             config.port = 0;
             chat.sessions.get_mut(&NetworkId(1)).unwrap().active_config = Some(config);
-            chat.start_reconnect(NetworkId(1), cx);
+            chat.start_reconnect(NetworkId(1), announce, cx);
         });
         cx.run_until_parked();
         chat.update(cx, |chat, _| {
-            assert!(chat.notices.all().is_empty());
-            assert!(chat.sessions[&NetworkId(1)].retry_pending);
-        });
+            (
+                chat.notices.all().len(),
+                chat.sessions[&NetworkId(1)].retry_pending,
+            )
+        })
+    }
+
+    #[gpui::test]
+    fn a_failed_automatic_retry_raises_no_notice_and_retries_again(cx: &mut TestAppContext) {
+        assert_eq!(notices_after_failed_reconnect(false, cx), (0, true));
+    }
+
+    #[gpui::test]
+    fn a_failed_reconnect_the_user_asked_for_raises_a_notice(cx: &mut TestAppContext) {
+        assert_eq!(notices_after_failed_reconnect(true, cx), (1, true));
     }
 
     #[gpui::test]

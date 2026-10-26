@@ -2448,10 +2448,10 @@ impl ChatWindow {
         session.retry_pending = false;
         session.retry_attempt = 0;
         session.retry_token += 1;
-        self.start_reconnect(network, cx);
+        self.start_reconnect(network, true, cx);
     }
 
-    fn start_reconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+    fn start_reconnect(&mut self, network: NetworkId, announce: bool, cx: &mut Context<Self>) {
         let Some(config) = self.reconnect_config(network) else {
             return;
         };
@@ -2481,8 +2481,9 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                // An automatic retry that fails is only logged.
-                self.record_disconnect(network, error, false, cx);
+                // An automatic retry that fails is only logged; one the user
+                // asked for is announced.
+                self.record_disconnect(network, error, announce, cx);
                 self.schedule_retry(network, cx);
             }
         }
@@ -2541,7 +2542,7 @@ impl ChatWindow {
                         && session.irc.is_none()
                 });
                 if due {
-                    this.start_reconnect(network, cx);
+                    this.start_reconnect(network, false, cx);
                 }
             });
         })
@@ -2722,7 +2723,7 @@ impl ChatWindow {
                 // Retries restart from the shortest wait if this fails.
                 session.retry_attempt = 0;
                 session.retry_token += 1;
-                self.start_reconnect(network, cx);
+                self.start_reconnect(network, false, cx);
                 continue;
             }
             if let Ok(connection) = self.registered_connection(network)
@@ -3836,7 +3837,7 @@ impl ChatWindow {
                 .format("event_nick_retry", &[("nickname", &nickname)]),
         );
         if closed {
-            self.start_reconnect(network, cx);
+            self.start_reconnect(network, false, cx);
         }
         Ok(())
     }

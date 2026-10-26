@@ -1452,8 +1452,9 @@ with a Close button (`window.prompt`, `notices.rs`).
   ERROR, network loss) and a failed automatic reconnect are reconnected or
   retried on their own, so they only go to the server log, the network
   activity and the tree row. `Event::Refused` (authentication, SASL, UTF8ONLY;
-  no automatic reconnect) and a failed connect from a connection command or
-  start-up open a dialog. `Event::Closed` (the user disconnected) opens none.
+  no automatic reconnect) and a failed connect from a connection command,
+  start-up or the user's Reconnect open a dialog. `Event::Closed` (the user
+  disconnected) opens none.
 - **Closing changes nothing.** The draft, caret, selection and undo history are
   untouched, nothing is sent, retried or selected. When nothing has the focus
   afterwards, the draft of the selected conversation gets it; a form the user
