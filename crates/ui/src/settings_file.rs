@@ -125,7 +125,9 @@ mod tests {
         &'a mut gpui::VisualTestContext,
     ) {
         cx.update(|cx| {
-            secrets::install_memory(cx);
+            if !cx.has_global::<secrets::Credentials>() {
+                secrets::install_memory(cx);
+            }
             cx.set_global(crate::theme::Theme::new(
                 ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -168,9 +170,11 @@ mod tests {
             name.update(cx, |name, cx| name.set_text("#renamed", cx));
         });
         cx.run_until_parked();
-        form.update(cx, |form, cx| {
+        // Done saves the list without the Connection tab's Save button.
+        form.update_in(cx, |form, window, cx| {
             assert_eq!(channels(form, cx), "#renamed,-#a");
-            form.save_servers(cx);
+            form.close_auto_join(window, cx);
+            assert!(!form.servers_unsaved(cx));
         });
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#renamed,-#a");
@@ -202,6 +206,143 @@ mod tests {
             assert!(inside, "{keys} left the dialog");
         }
         assert_eq!(cx.update(|_, cx| text(cx)), before);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn tab_in_the_auto_join_dialog_scrolls_its_list_to_the_focused_row(cx: &mut TestAppContext) {
+        let names: Vec<String> = (0..14).map(|i| format!("#c{i}")).collect();
+        let settings = settings_with_channels(&names.join(","));
+        let file = TestFile::with(&settings);
+        // The production Tab bindings, which `open` does not install.
+        cx.update(|cx| {
+            crate::input::bind_keys(false, cx);
+            cx.bind_keys(crate::shortcut_bindings(
+                cayenchat_storage::ChannelNumberModifier::Ctrl,
+                &Default::default(),
+            ));
+        });
+        let (form, cx) = open(&settings, cx);
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        cx.run_until_parked();
+        let state = |form: &gpui::Entity<SettingsWindow>, cx: &mut gpui::VisualTestContext| {
+            form.update_in(cx, |form, window, cx| {
+                let dialog = form.auto_join.as_ref().unwrap();
+                let focused = crate::focus_reveal::focused_bounds(window, cx);
+                (
+                    dialog.scroll.offset().y,
+                    dialog.scroll.bounds(),
+                    focused,
+                    form.pane_scroll.offset().y,
+                )
+            })
+        };
+        let (_, _, _, pane_before) = state(&form, cx);
+        assert!(form.read_with(cx, |form, _| {
+            form.auto_join.as_ref().unwrap().scroll.max_offset().height > gpui::px(0.)
+        }));
+
+        let row_focused = |form: &gpui::Entity<SettingsWindow>,
+                           cx: &mut gpui::VisualTestContext,
+                           index: usize| {
+            form.update_in(cx, |form, window, cx| {
+                let rows = &form.auto_join.as_ref().unwrap().rows;
+                rows[index].name.focus_handle(cx).is_focused(window)
+            })
+        };
+        let visible = |(_, viewport, focused, _): (_, gpui::Bounds<gpui::Pixels>, Option<_>, _)| {
+            let focused: gpui::Bounds<gpui::Pixels> = focused.expect("a row has the focus");
+            focused.top() >= viewport.top() && focused.bottom() <= viewport.bottom()
+        };
+
+        // Tab from the dialog itself leaves the list; start from the first row.
+        form.update_in(cx, |form, window, cx| {
+            let first = form.auto_join.as_ref().unwrap().rows[0]
+                .name
+                .focus_handle(cx);
+            window.focus(&first);
+        });
+        cx.run_until_parked();
+        // Forward to the last row: it is shown, and the pane behind stays.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 13) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 13));
+        cx.run_until_parked();
+        let last = state(&form, cx);
+        assert!(last.0 < gpui::px(0.), "the list did not follow Tab");
+        assert_eq!(last.3, pane_before);
+        assert!(visible(last));
+        let offset = last.0;
+
+        // Back to the first row: the list returns.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("shift-tab");
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        let first = state(&form, cx);
+        assert!(first.0 > offset, "the list did not follow Shift+Tab");
+        assert_eq!(first.3, pane_before);
+        assert!(visible(first));
+
+        // A target already in view leaves the list where it is.
+        let at = first.0;
+        for _ in 0..100 {
+            if row_focused(&form, cx, 1) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            // The test platform asks for no further frame; the app does.
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 1));
+        assert_eq!(state(&form, cx).0, at);
+
+        // Leaving a row and coming back to it after the list was scrolled
+        // away must not reuse the place the row painted earlier.
+        for _ in 0..100 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("shift-tab");
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(!row_focused(&form, cx, 0), "Shift+Tab stayed on the row");
+        form.update(cx, |form, _| {
+            let scroll = &form.auto_join.as_ref().unwrap().scroll;
+            let max = scroll.max_offset().height;
+            scroll.set_offset(gpui::point(scroll.offset().x, -max));
+        });
+        for _ in 0..3 {
+            if row_focused(&form, cx, 0) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+        }
+        assert!(row_focused(&form, cx, 0));
+        let back = state(&form, cx);
+        assert!(visible(back), "the list kept the returned row out of view");
+        assert_eq!(back.3, pane_before);
         drop(file);
     }
 
@@ -300,7 +441,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn server_edits_wait_for_save_while_other_settings_autosave(cx: &mut TestAppContext) {
+    fn a_registered_servers_text_is_saved_when_committed_not_while_typing(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
@@ -309,17 +450,17 @@ mod tests {
             form.settings
                 .channels
                 .update(cx, |field, cx| field.set_text("#b", cx));
-            form.settings.values.notifications.private_messages = false;
-            form.autosave_now(None, cx);
-            assert!(form.servers_unsaved(cx));
+            // The pause after typing leaves the field alone.
+            form.autosave_pause_elapsed(cx);
         });
         let saved = super::load().unwrap().unwrap();
-        assert!(!saved.notifications.private_messages);
         assert_eq!(saved.selected_profile().unwrap().channels, "#a");
 
+        // Leaving the field (or the window) commits it, with no Save.
         form.update(cx, |form, cx| {
-            form.save_servers(cx);
+            form.autosave_now(None, cx);
             assert!(!form.servers_unsaved(cx));
+            assert!(form.status_message().is_none());
         });
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().channels, "#b");
@@ -327,30 +468,127 @@ mod tests {
     }
 
     #[gpui::test]
-    fn an_unfinished_port_does_not_stop_other_settings_from_autosaving(cx: &mut TestAppContext) {
+    fn a_choice_on_a_registered_server_is_saved_without_save(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            let profile = form.settings.values.selected_profile_mut().unwrap();
+            profile.connect_on_startup = !profile.connect_on_startup;
+            form.autosave_pause_elapsed(cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(
+            saved.selected_profile().unwrap().connect_on_startup,
+            !settings.selected_profile().unwrap().connect_on_startup
+        );
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn invalid_server_text_keeps_the_saved_server_and_the_typed_text(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let host = settings.selected_profile().unwrap().host.clone();
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         form.update(cx, |form, cx| {
             form.settings
                 .port
                 .update(cx, |field, cx| field.set_text("bad", cx));
+            form.settings
+                .channels
+                .update(cx, |field, cx| field.set_text("#b", cx));
             form.settings.values.notifications.private_messages = false;
             form.autosave_now(None, cx);
+            // The bad port is reported, the text stays, nothing of the
+            // server was written; other settings still were.
+            assert!(form.field_error.is_some());
+            assert!(form.status_message().is_some());
+            assert_eq!(form.settings.port.read(cx).text(), "bad");
             assert!(form.autosave_error.is_none());
         });
-        assert!(
-            !super::load()
-                .unwrap()
-                .unwrap()
-                .notifications
-                .private_messages
-        );
+        let saved = super::load().unwrap().unwrap();
+        assert!(!saved.notifications.private_messages);
+        assert_eq!(saved.selected_profile().unwrap().channels, "#a");
+
+        // An empty hostname is invalid too and never drops the server.
+        form.update(cx, |form, cx| {
+            form.settings
+                .port
+                .update(cx, |field, cx| field.set_text("6667", cx));
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text("", cx));
+            form.autosave_now(None, cx);
+            assert!(form.field_error.is_some());
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().host, host);
+
+        // A hostname the connection would refuse is not saved either.
+        form.update(cx, |form, cx| {
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text("bad host", cx));
+            form.autosave_now(None, cx);
+            assert!(form.field_error.is_some());
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().host, host);
+
+        // Fixing the text saves it and clears the error.
+        form.update(cx, |form, cx| {
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text("fixed.example", cx));
+            form.autosave_now(None, cx);
+            assert!(form.field_error.is_none());
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().host, "fixed.example");
+        assert_eq!(saved.selected_profile().unwrap().channels, "#b");
         drop(file);
     }
 
     #[gpui::test]
-    fn an_unsaved_selection_is_not_saved_by_a_readback(cx: &mut TestAppContext) {
+    fn a_new_server_is_a_draft_until_save_succeeds(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings.values.add_server("new.example");
+            form.show_selected_server(cx);
+            assert!(!form.shown_server_registered());
+            // Leaving the window or any autosave does not register it.
+            form.settings.values.notifications.private_messages = false;
+            form.autosave_now(None, cx);
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.servers.len(), 1);
+        assert!(!saved.notifications.private_messages);
+
+        // A failed save leaves it a draft.
+        super::fail_saves(true);
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(form.feedback.is_some());
+            assert!(!form.shown_server_registered());
+        });
+        super::fail_saves(false);
+        assert_eq!(super::load().unwrap().unwrap().servers.len(), 1);
+
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(form.feedback.is_none());
+            assert!(form.shown_server_registered());
+            assert!(!form.servers_unsaved(cx));
+        });
+        assert_eq!(super::load().unwrap().unwrap().servers.len(), 2);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn choosing_a_registered_server_is_saved_but_a_draft_selection_is_not(cx: &mut TestAppContext) {
         let mut settings = settings_with_channels("#a");
         let a_id = settings.selected_server.clone();
         let b_id = settings.add_server("b.example").id.clone();
@@ -359,28 +597,30 @@ mod tests {
         let (form, cx) = open(&settings, cx);
         form.update(cx, |form, cx| {
             form.select_server(b_id.clone(), cx);
-            assert!(form.servers_unsaved(cx));
-            form.settings.values.notifications.private_messages = false;
             form.autosave_now(None, cx);
-            assert!(form.servers_unsaved(cx));
+        });
+        assert_eq!(super::load().unwrap().unwrap().selected_server, b_id);
+
+        form.update(cx, |form, cx| {
+            form.settings.values.add_server("draft.example");
+            form.show_selected_server(cx);
+            form.autosave_now(None, cx);
         });
         let saved = super::load().unwrap().unwrap();
-        assert_eq!(saved.selected_server, a_id);
-        assert!(!saved.notifications.private_messages);
+        assert_eq!(saved.selected_server, b_id);
+        assert_eq!(saved.servers.len(), 2);
         drop(file);
     }
 
     #[gpui::test]
-    fn removing_the_last_server_is_saved_explicitly(cx: &mut TestAppContext) {
+    fn removing_the_last_server_is_saved(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         form.update(cx, |form, cx| {
             form.settings.values.remove_selected_server();
-            form.settings
-                .show_selected(&crate::secrets::store(cx), &form.i18n, cx);
-            assert!(form.servers_unsaved(cx));
-            form.save_servers(cx);
+            form.show_selected_server(cx);
+            form.autosave_now(None, cx);
             assert!(!form.servers_unsaved(cx));
         });
         assert!(super::load().unwrap().unwrap().servers.is_empty());
@@ -413,6 +653,65 @@ mod tests {
     }
 
     #[gpui::test]
+    fn saving_a_draft_does_not_register_other_drafts(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let first = settings.selected_server.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings.values.add_server("b.example");
+            form.show_selected_server(cx);
+            // Back to the registered server, then a second draft.
+            form.settings.values.selected_server = first;
+            form.show_selected_server(cx);
+            form.settings.values.add_server("c.example");
+            form.show_selected_server(cx);
+            form.save_servers(cx);
+            assert!(form.feedback.is_none());
+        });
+        let hosts: Vec<_> = super::load()
+            .unwrap()
+            .unwrap()
+            .servers
+            .into_iter()
+            .map(|server| server.host)
+            .collect();
+        assert_eq!(hosts.len(), 2);
+        assert!(hosts.contains(&"c.example".to_owned()));
+        assert!(!hosts.contains(&"b.example".to_owned()));
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn leaving_after_a_failed_save_is_refused_until_it_succeeds(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        super::fail_saves(true);
+        form.update(cx, |form, cx| {
+            form.settings.values.notifications.private_messages = false;
+            // Asking again never discards the edits.
+            for _ in 0..3 {
+                assert!(!form.save_before_leaving(cx));
+                assert!(form.autosave_error.is_some());
+            }
+        });
+        super::fail_saves(false);
+        form.update(cx, |form, cx| {
+            assert!(form.save_before_leaving(cx));
+            assert!(form.autosave_error.is_none());
+        });
+        assert!(
+            !super::load()
+                .unwrap()
+                .unwrap()
+                .notifications
+                .private_messages
+        );
+        drop(file);
+    }
+
+    #[gpui::test]
     fn a_failed_connect_save_leaves_the_draft_unsaved(cx: &mut TestAppContext) {
         // Valid identity, so Connect gets as far as saving.
         let mut settings = settings_with_channels("#a");
@@ -441,10 +740,10 @@ mod tests {
             assert!(form.servers_unsaved(cx));
             assert_eq!(form.saved.selected_profile().unwrap().channels, "#a");
 
-            // Another setting autosaves without the draft.
+            // Another setting autosaves without the text still pending.
             super::fail_saves(false);
             form.settings.values.notifications.private_messages = false;
-            form.autosave_now(None, cx);
+            form.autosave_pause_elapsed(cx);
         });
         let saved = super::load().unwrap().unwrap();
         assert!(!saved.notifications.private_messages);
@@ -481,10 +780,10 @@ mod tests {
         assert!(!store.contains(&key).unwrap());
         // Connect would still use it, for that connection alone.
         form.update(cx, |form, cx| {
-            let settings = form.settings.snapshot(cx).unwrap();
+            let mut settings = form.settings.snapshot(cx).unwrap();
             let (config, missing) = form
                 .settings
-                .connection_config(&settings, &store, &form.i18n, cx)
+                .connection_config(&mut settings, &store, &form.i18n, cx)
                 .unwrap();
             assert_eq!(config.server_password.as_deref(), Some("typed"));
             assert!(!missing.any());
@@ -515,7 +814,13 @@ mod tests {
         let store = cx.update(|_, cx| secrets::store(cx));
         store.set(&key, &Secret::new("old")).unwrap();
         form.update(cx, |form, cx| {
-            form.settings.show_selected(&store, &form.i18n, cx);
+            // The settings file notes the saved password.
+            form.settings
+                .values
+                .selected_profile_mut()
+                .unwrap()
+                .set_server_password_saved(true);
+            form.settings.show_selected(&form.i18n, cx);
             assert_eq!(
                 form.settings.credential_state(Credential::Server),
                 (true, false)
@@ -598,6 +903,9 @@ mod tests {
         store.set(&key, &Secret::new("old")).unwrap();
         store.set(&sasl_key, &Secret::new("old-sasl")).unwrap();
         form.update_in(cx, |form, window, cx| {
+            let profile = form.settings.values.selected_profile_mut().unwrap();
+            profile.set_server_password_saved(true);
+            profile.set_sasl_password_saved(true);
             form.show_selected_server(cx);
             for which in [Credential::Server, Credential::Sasl] {
                 form.change_credential(which, window, cx);
@@ -615,10 +923,10 @@ mod tests {
                 assert_eq!(field.read(cx).text(), "");
             }
             assert_eq!(form.settings.values.selected_server, a_id);
-            let settings = form.settings.snapshot(cx).unwrap();
+            let mut settings = form.settings.snapshot(cx).unwrap();
             let (config, _) = form
                 .settings
-                .connection_config(&settings, &store, &form.i18n, cx)
+                .connection_config(&mut settings, &store, &form.i18n, cx)
                 .unwrap();
             assert_eq!(config.server_password.as_deref(), Some("old"));
             assert_eq!(
@@ -626,6 +934,84 @@ mod tests {
                 Some("old-sasl")
             );
         });
+        drop(file);
+    }
+
+    /// A store that counts the reads, which is what can make the operating
+    /// system ask the user for permission.
+    struct CountingBackend {
+        inner: MemoryBackend,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl cayenchat_storage::credentials::CredentialBackend for CountingBackend {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+
+        fn is_memory(&self) -> bool {
+            true
+        }
+
+        fn get(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get(key)
+        }
+
+        fn set(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+            value: &Secret,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            self.inner.set(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[gpui::test]
+    fn showing_servers_never_reads_the_credential_store(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        let a_id = settings.selected_server.clone();
+        settings
+            .selected_profile_mut()
+            .unwrap()
+            .set_server_password_saved(true);
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let backend = Arc::new(CountingBackend {
+            inner: MemoryBackend::new(CredentialBackendKind::System),
+            reads: Default::default(),
+        });
+        cx.update(|cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                backend.clone(),
+            )));
+        });
+        let reads = || backend.reads.load(std::sync::atomic::Ordering::SeqCst);
+        let file = TestFile::with(&settings);
+        // Opening the window, picking servers and adding one are no use of
+        // a password, so the operating system must not be asked about one.
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            assert!(form.settings.saved_server_password, "shown from the note");
+            form.select_server(b_id.clone(), cx);
+            assert!(!form.settings.saved_server_password);
+            form.select_server(a_id.clone(), cx);
+            assert!(form.settings.saved_server_password);
+            form.settings.values.add_server("c.example");
+            form.show_selected_server(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(reads(), 0);
         drop(file);
     }
 
@@ -665,7 +1051,12 @@ mod tests {
         let working = cx.update(|_, cx| secrets::store(cx));
         working.set(&key, &Secret::new("secret")).unwrap();
         form.update(cx, |form, cx| {
-            form.settings.show_selected(&working, &form.i18n, cx)
+            form.settings
+                .values
+                .selected_profile_mut()
+                .unwrap()
+                .set_server_password_saved(true);
+            form.settings.show_selected(&form.i18n, cx)
         });
 
         cx.update(|_, cx| {

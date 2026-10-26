@@ -778,6 +778,15 @@ pub struct ServerProfile {
     /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
+    /// The credential store holds this profile's server password. Only a
+    /// note for the settings window, so it can show the state without
+    /// reading the store (which can ask the user for permission); the store
+    /// decides when connecting, and the note is corrected then.
+    #[serde(default)]
+    pub server_saved: bool,
+    /// Same for the SASL password.
+    #[serde(default)]
+    pub sasl_saved: bool,
     /// Send the server password even without TLS, after the user accepted a
     /// warning; for bouncers such as ZNC on a trusted network.
     #[serde(default)]
@@ -886,6 +895,8 @@ impl ServerProfile {
             encoding: TextEncoding::Utf8,
             iso2022jp_char_refs: true,
             remember_passwords: false,
+            server_saved: false,
+            sasl_saved: false,
             allow_plaintext_pass: false,
             nickname: String::new(),
             username: String::new(),
@@ -994,6 +1005,36 @@ impl ServerProfile {
                 && seen.insert(entry.channel.to_ascii_lowercase())
         });
         self.channel_charsets.truncate(MAX_CHANNEL_CHARSETS);
+    }
+
+    /// Whether the server password is noted as saved. A profile of the old
+    /// "remember passwords" choice counts as holding both.
+    pub fn server_password_saved(&self) -> bool {
+        self.server_saved || self.remember_passwords
+    }
+
+    pub fn sasl_password_saved(&self) -> bool {
+        self.sasl_saved || self.remember_passwords
+    }
+
+    /// Notes that the server password was saved or removed.
+    pub fn set_server_password_saved(&mut self, saved: bool) {
+        self.fold_remember_passwords();
+        self.server_saved = saved;
+    }
+
+    pub fn set_sasl_password_saved(&mut self, saved: bool) {
+        self.fold_remember_passwords();
+        self.sasl_saved = saved;
+    }
+
+    /// Moves the old choice into the two notes, so one can change alone.
+    fn fold_remember_passwords(&mut self) {
+        if self.remember_passwords {
+            self.server_saved = true;
+            self.sasl_saved = true;
+            self.remember_passwords = false;
+        }
     }
 
     pub fn server_password_key(&self) -> SecretKey {
@@ -1359,6 +1400,10 @@ impl Settings {
         self.servers.iter().find(|server| server.id == id)
     }
 
+    pub fn profile_mut(&mut self, id: &str) -> Option<&mut ServerProfile> {
+        self.servers.iter_mut().find(|server| server.id == id)
+    }
+
     pub fn remove_selected_server(&mut self) {
         self.servers.retain(|s| s.id != self.selected_server);
         self.selected_server = self
@@ -1412,8 +1457,12 @@ impl Settings {
             }
             let selected = self.selected_server.clone();
             let is_preset = |s: &ServerProfile| s.id == IRCNET_ID || s.id == IRCNET_IPV6_ID;
-            self.servers
-                .retain(|s| !is_preset(s) || s.id == selected || s.remember_passwords);
+            self.servers.retain(|s| {
+                !is_preset(s)
+                    || s.id == selected
+                    || s.server_password_saved()
+                    || s.sasl_password_saved()
+            });
             self.servers.sort_by_key(is_preset);
         }
         self.servers.retain(|s| !s.host.trim().is_empty());

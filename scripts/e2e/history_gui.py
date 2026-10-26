@@ -330,18 +330,18 @@ def older_pages(display, proxy):
 def reconnect_gap(display, proxy, peer):
     display.wheel(False, 400)
     peer.say("A last before the cut")
-    display.settle("before_cut")
+    before = display.settle("before_cut")
     proxy.cut()
     log("link cut")
     peer.say("B sent while away")
     peer.say("C also missed")
     time.sleep(1)
-    notice = display.settle("disconnected")
-    # The disconnect opens a notice that blocks the window until it is closed;
-    # a real Escape closes it, which the screen shows.
+    after = display.settle("disconnected")
+    # The disconnect raises no notice (the window stays usable); only the
+    # server log gains the disconnect line, which changes the screen.
+    check(after[2] != before[2], "the log shows the disconnect line")
     display.xdo("key", "Escape")
-    closed = display.settle("notice_closed")
-    check(closed[2] != notice[2], "Escape closes the disconnect notice")
+    check(display.grab()[2] == after[2], "no notice is open: Escape changes nothing")
     proxy.accepting = True
     resumed = proxy.wait_for("gap recovery",
                              lambda l: l.startswith(f"CHATHISTORY LATEST {CHANNEL} msgid="), timeout=40)

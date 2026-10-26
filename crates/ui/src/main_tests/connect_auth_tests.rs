@@ -77,7 +77,7 @@ fn stop(chat: &mut ChatWindow) {
 #[gpui::test]
 fn a_reconnect_without_a_saved_sasl_password_asks_and_cancel_stops_it(cx: &mut TestAppContext) {
     let (chat, _store, cx) = open_chat(cx);
-    chat.update(cx, |chat, cx| chat.start_reconnect(NET, cx));
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
         assert_eq!(chat.credential_prompts.len(), 1);
@@ -105,7 +105,7 @@ fn a_reconnect_without_a_saved_sasl_password_asks_and_cancel_stops_it(cx: &mut T
 fn a_password_typed_in_the_dialog_is_used_but_not_saved_or_kept(cx: &mut TestAppContext) {
     let (chat, store, cx) = open_chat(cx);
     let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
-    chat.update(cx, |chat, cx| chat.start_reconnect(NET, cx));
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
     cx.run_until_parked();
     chat.update_in(cx, |chat, window, cx| {
         // Empty is refused and the dialog stays.
@@ -137,7 +137,7 @@ fn a_password_typed_in_the_dialog_is_used_but_not_saved_or_kept(cx: &mut TestApp
 fn a_checked_password_is_saved_and_then_not_asked_for_again(cx: &mut TestAppContext) {
     let (chat, store, cx) = open_chat(cx);
     let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
-    chat.update(cx, |chat, cx| chat.start_reconnect(NET, cx));
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
     cx.run_until_parked();
     chat.update_in(cx, |chat, window, cx| {
         chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
@@ -148,7 +148,7 @@ fn a_checked_password_is_saved_and_then_not_asked_for_again(cx: &mut TestAppCont
     assert_eq!(store.get(&key).unwrap().unwrap().expose(), "typed");
     chat.update(cx, |chat, cx| {
         stop(chat);
-        chat.start_reconnect(NET, cx);
+        chat.start_reconnect(NET, false, cx);
     });
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
@@ -171,7 +171,7 @@ fn a_connection_that_needs_nothing_shows_no_dialog(cx: &mut TestAppContext) {
     chat.update(cx, |chat, cx| {
         // The server password was never used, so it is not asked for.
         assert!(!chat.sessions[&NET].server_password_used);
-        chat.start_reconnect(NET, cx);
+        chat.start_reconnect(NET, false, cx);
     });
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
@@ -189,7 +189,7 @@ fn a_server_password_used_before_is_asked_for_when_it_is_not_saved(cx: &mut Test
     store.set(&sasl_key, &Secret::new("saved")).unwrap();
     chat.update(cx, |chat, cx| {
         chat.sessions.get_mut(&NET).unwrap().server_password_used = true;
-        chat.start_reconnect(NET, cx);
+        chat.start_reconnect(NET, false, cx);
     });
     cx.run_until_parked();
     chat.update(cx, |chat, _| {

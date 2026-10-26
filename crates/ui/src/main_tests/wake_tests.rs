@@ -201,7 +201,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
         assert!(!chat.sessions[&NetworkId(3)].retry_pending);
         // The retry timer fires: the lost network connects again.
         let generation = chat.sessions[&NetworkId(1)].generation;
-        chat.start_reconnect(NetworkId(1), cx);
+        chat.start_reconnect(NetworkId(1), false, cx);
         generation
     });
     // The reconnect reads its passwords first.

@@ -133,6 +133,10 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         .collect::<Vec<_>>();
     for (server, (_, id)) in settings.servers.iter_mut().zip(&ids) {
         server.id = id.clone();
+        // The passwords stay on the machine they were saved on.
+        server.remember_passwords = false;
+        server.server_saved = false;
+        server.sasl_saved = false;
     }
     if let Some((_, id)) = ids.iter().find(|(old, _)| *old == settings.selected_server) {
         settings.selected_server = id.clone();
@@ -287,6 +291,7 @@ mod tests {
         assert_eq!(imported.selected_server, after.id);
         let mut expected = original.clone();
         expected.servers[0].id = after.id.clone();
+        expected.servers[0].remember_passwords = false;
         expected.selected_server = after.id.clone();
         assert_eq!(imported, expected);
         fs::remove_dir_all(directory).unwrap();

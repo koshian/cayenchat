@@ -20,7 +20,10 @@ use cayenchat_model::NetworkId;
 use cayenchat_storage::{Secret, SecretKey, ServerProfile};
 use gpui::{prelude::*, *};
 
-use crate::{ChatWindow, button_order, dialog, input::TextInput, secrets, settings_theme, theme};
+use crate::{
+    ChatWindow, button_order, dialog, input::TextInput, secrets, settings_file, settings_theme,
+    theme,
+};
 
 /// Which passwords a configuration still lacks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -94,8 +97,9 @@ pub(crate) fn while_incomplete<R>(
 pub(crate) enum Resume {
     /// A connection that did not exist in this run: a fresh session.
     Fresh,
-    /// The server's last connection, again.
-    Reconnect,
+    /// The server's last connection, again. `announce`: a failure to start
+    /// it is shown, because the user asked for it.
+    Reconnect { announce: bool },
 }
 
 pub(crate) struct PasswordField {
@@ -156,6 +160,7 @@ impl ChatWindow {
         network: NetworkId,
         config: ConnectionConfig,
         refused: Option<bool>,
+        announce: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.sessions.get_mut(&network) else {
@@ -180,18 +185,47 @@ impl ChatWindow {
                 } else {
                     Ok(None)
                 };
+                let found =
+                    |result: &Result<Option<Secret>, _>| result.as_ref().ok().map(Option::is_some);
+                let noted = (
+                    found(&server).filter(|_| refused.is_none()),
+                    found(&sasl).filter(|_| profile.sasl_enabled),
+                );
+                self.note_stored_passwords(&profile.id, noted.0, noted.1);
                 (server, sasl)
             }
         };
-        self.stored_secrets_read(network, token, config, refused, read, cx);
+        self.stored_secrets_read(network, token, config, refused, announce, read, cx);
     }
 
+    /// A read of the credential store showed which passwords of the profile
+    /// it holds (`None`: not read). The note in the settings file, which
+    /// lets the settings window show the state without reading the store,
+    /// is corrected when it differs. A failed write leaves it: it is only a
+    /// note, and the next read corrects it again.
+    pub(crate) fn note_stored_passwords(
+        &mut self,
+        profile_id: &str,
+        server: Option<bool>,
+        sasl: Option<bool>,
+    ) {
+        let mut settings = self.saved.clone();
+        let Some(profile) = settings.profile_mut(profile_id) else {
+            return;
+        };
+        if note_found(profile, server, sasl) && settings_file::save(&settings).is_ok() {
+            self.saved = settings;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)] // One attempt's state and the read result.
     fn stored_secrets_read(
         &mut self,
         network: NetworkId,
         token: u64,
         mut config: ConnectionConfig,
         refused: Option<bool>,
+        announce: bool,
         (server, sasl): (
             Result<Option<Secret>, cayenchat_storage::CredentialError>,
             Result<Option<Secret>, cayenchat_storage::CredentialError>,
@@ -224,9 +258,10 @@ impl ChatWindow {
         let missing = fill(&mut config, server.as_ref(), sasl.as_ref(), server_needed);
         if missing.any() {
             let rejected = refused == Some(true);
-            self.open_credential_prompt(network, config, Resume::Reconnect, missing, rejected, cx);
+            let resume = Resume::Reconnect { announce };
+            self.open_credential_prompt(network, config, resume, missing, rejected, cx);
         } else {
-            self.start_reconnect_with(network, config, cx);
+            self.start_reconnect_with(network, config, announce, cx);
         }
     }
 
@@ -240,7 +275,7 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) {
         if let Some(config) = self.reconnect_config(network) {
-            self.reconnect_with_stored_secrets(network, config, Some(rejected), cx);
+            self.reconnect_with_stored_secrets(network, config, Some(rejected), false, cx);
         }
     }
 
@@ -378,7 +413,9 @@ impl ChatWindow {
                     self.raise_error(Some(network), error, crate::notices::Origin::User, cx);
                 }
             }
-            Resume::Reconnect => self.start_reconnect_with(network, config, cx),
+            Resume::Reconnect { announce } => {
+                self.start_reconnect_with(network, config, announce, cx);
+            }
         }
     }
 
@@ -405,11 +442,21 @@ impl ChatWindow {
         };
         let store = secrets::store(cx);
         let mut first = Ok(());
+        let mut saved = (None, None);
         for (key, secret) in saved_keys(&profile, server, sasl) {
-            if let Err(error) = store.set(&key, &secret) {
+            let written = store.set(&key, &secret);
+            if written.is_ok() {
+                if key == profile.server_password_key() {
+                    saved.0 = Some(true);
+                } else {
+                    saved.1 = Some(true);
+                }
+            }
+            if let Err(error) = written {
                 first = first.and(Err(error));
             }
         }
+        self.note_stored_passwords(&profile.id, saved.0, saved.1);
         if let Err(error) = first {
             let text = self.i18n.format(
                 "credential_save_failed",
@@ -609,6 +656,30 @@ impl ChatWindow {
 }
 
 /// The store keys and values to write for the checked boxes.
+/// Sets the profile's notes of stored passwords to what a read found.
+/// Returns whether anything changed.
+pub(crate) fn note_found(
+    profile: &mut ServerProfile,
+    server: Option<bool>,
+    sasl: Option<bool>,
+) -> bool {
+    let before = (
+        profile.server_password_saved(),
+        profile.sasl_password_saved(),
+    );
+    if let Some(found) = server.filter(|found| *found != before.0) {
+        profile.set_server_password_saved(found);
+    }
+    if let Some(found) = sasl.filter(|found| *found != before.1) {
+        profile.set_sasl_password_saved(found);
+    }
+    before
+        != (
+            profile.server_password_saved(),
+            profile.sasl_password_saved(),
+        )
+}
+
 fn saved_keys(
     profile: &ServerProfile,
     server: Option<Secret>,
@@ -626,7 +697,7 @@ fn saved_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{Missing, apply_secrets, fill, while_incomplete};
+    use super::{Missing, apply_secrets, fill, note_found, while_incomplete};
     use cayenchat_irc_core::{ConnectionConfig, SaslCredentials};
     use cayenchat_storage::Secret;
 
@@ -703,5 +774,26 @@ mod tests {
             (sasl.username.as_str(), sasl.password.as_str()),
             ("acct", "")
         );
+    }
+
+    #[test]
+    fn a_read_corrects_the_note_of_stored_passwords() {
+        let mut settings = cayenchat_storage::Settings::default();
+        let mut profile = settings.add_server("irc.example").clone();
+        // Nothing read, nothing changed.
+        assert!(!note_found(&mut profile, None, None));
+        // The store holds a password the note lacks.
+        assert!(note_found(&mut profile, Some(true), Some(false)));
+        assert!(profile.server_password_saved() && !profile.sasl_password_saved());
+        // Reading the same again changes nothing.
+        assert!(!note_found(&mut profile, Some(true), Some(false)));
+        // A noted password that is gone is cleared; the other stays.
+        assert!(note_found(&mut profile, Some(false), None));
+        assert!(!profile.server_password_saved());
+        // The old choice counts as both and changes one at a time.
+        profile.remember_passwords = true;
+        assert!(profile.server_password_saved() && profile.sasl_password_saved());
+        assert!(note_found(&mut profile, None, Some(false)));
+        assert!(profile.server_password_saved() && !profile.sasl_password_saved());
     }
 }

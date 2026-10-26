@@ -581,6 +581,17 @@ order follows paint order (top to bottom) and wraps, with no manual indices.
 Only text fields are tab stops; buttons, checkboxes and selectors still have
 no keyboard focus (see D019).
 
+2026-10-26 (#633): the pane follows the focus. Each focused tab stop (text
+field, avatar section header) reports its painted bounds through
+`focus_reveal`; `SettingsWindow` handles Tab/Shift+Tab itself and, in the
+render after the field has been painted at its new place (at most two frames
+after the key), moves `pane_scroll` by the least amount that shows the target
+(8 px margin, nothing when it is already visible). Landing on the category list
+scrolls `nav_scroll` to the selected category the same way. Nothing is
+watched per frame. While the auto-join dialog (an overlay) is open, the same
+step moves the dialog's own list (`AutoJoinDialog::scroll`) and never the
+panes behind it.
+
 ## D021 — Settings save as they change
 
 **Status:** Accepted
@@ -640,6 +651,53 @@ A failed save (settings file, or deleting a stored secret) leaves the edits
 unsaved, for Connect too, so a later Save retries and nothing unsaved reaches
 the autosave.
 
+**New servers wait for Save, registered ones autosave (#634).** This
+replaces the #209 rule above for servers that are already saved. A server
+that is not in the saved list is a *draft*: it shows **Save** only (no
+**Connect**), is never autosaved, and is registered, with its typed passwords,
+only when validation and the write succeed (then Save gives way to Connect);
+on failure it stays a draft, and leaving the window drops it. Save and
+Connect register only the shown draft; other drafts are never written. If
+saving fails when the window is closed (close button, Escape, window frame)
+or the user quits the app (menu, shortcut, main window close, macOS Dock;
+asking and quitting are separate: every entry only asks, and the confirmed
+quit, including "Quit" in the question, ends in `quit_app`, the one place
+that calls `cx.quit()` for them and first runs `settings_block_quit`, so
+edits made while the question was open are saved too; the action is
+deferred until its dispatch has finished so the settings window can be
+updated, and a settings window that cannot be asked never counts as saved.
+The main window close and Dock handlers always refuse at once and hand the
+request to the same deferred path, so no entry runs its own check), the close or quit is refused and
+the form and the error stay for a retry; edits are never discarded without a
+successful save (so while the file cannot be written the window stays open).
+Quits by the system or a signal cannot be refused. A registered
+server shows no Save button and saves its changes itself, including its
+auto-join channels (add, delete, enable, reorder; **Done** saves at once),
+IRCv3 options, the selected server and a confirmed removal:
+
+- Choices and checkboxes are saved with the usual 500 ms autosave.
+- Text fields are *committed* when the field loses focus, the settings tab
+  changes, another server is chosen, the window is deactivated or closed, the
+  app quits, or Connect is pressed — not while typing, so a half-typed
+  hostname is never applied. Only valid text is committed (the port is a
+  number, the hostname is not empty and has no whitespace or control
+  characters, as the connection requires); otherwise the saved server is left as it
+  was, the text stays in its field and the reason is shown
+  (`field_error`) until it is valid. A hostless registered server is never
+  written (that would drop it and its passwords). A failed write is shown
+  (`autosave_error`) and retried on the next edit.
+- Nothing connects or reconnects: a connected server keeps its connection and
+  the Connection tab says changes apply from the next connection.
+- Passwords stay out of the autosave: typed passwords are kept in memory and
+  stored by Save (draft) or Connect, as before; an existing stored secret is
+  never overwritten by an autosave. Turning password saving off for a server
+  that has stored passwords asks first, since the registered server saves the
+  change, and deleting them, at once. Passwords get their own save / change /
+  delete controls in a later issue.
+- Another process's changes and the #147 protection are unchanged: the file is
+  read back on activation unless something here is pending or failing, and a
+  window never writes servers it did not itself save or load.
+
 ## D022 — Opt-in IRCv3 features and shared CAP negotiation
 
 **Status:** Accepted
@@ -649,7 +707,7 @@ server and are off for new and migrated settings (settings version 15). The
 IRCv3 settings tab is their current home and names the server being
 configured. This milestone exposes message tags and server timestamps
 (server-time); server-time does not require message-tags, as the protocol
-allows. Per-server changes are saved with Save (D021) and take effect on
+allows. Per-server changes are saved as they are made (D021) and take effect on
 the next connection, including reconnects and retries; nothing reconnects.
 
 CAP negotiation is shared infrastructure, not a user-facing feature: SASL
@@ -1346,9 +1404,18 @@ D021 that stored typed passwords with Save of the server.
   shown as saved is used as saved: an unfinished change is dropped, from the
   field and the draft, when another server is selected. Autosave and
   Save of the server never store a password; a typed one is used by Connect
-  from that form and dropped with the window. Whether a password is saved is
-  whether the store holds it; `remember_passwords` in the file is no longer
-  read. Removing a server still deletes its passwords.
+  from that form and dropped with the window. Whether a password is shown as
+  saved comes from a note in the settings file (`server_saved`, `sasl_saved`
+  of the profile; the old `remember_passwords` counts as both until one is
+  changed), never from reading the store: opening settings, picking a server
+  or adding one must not read the credential store, since a system store may
+  ask the user for permission then. The note is set by Save and Delete and by
+  the dialog's save box, and corrected whenever a connection reads the store
+  (a stored value the note lacks, or a noted one that is gone). An import
+  clears the notes, as the passwords do not travel. Until a connection
+  corrects it, a note can differ from the store (a store emptied elsewhere);
+  Connect then asks for the password. Removing a server still deletes its
+  passwords.
 - **Connection time.** A reconnect, a connection started at launch or from
   the tree, and a registration refused with 464 read the saved passwords and
   open one dialog per server for the ones the connection needs and the store
@@ -1476,7 +1543,7 @@ added without a version change, so older files read as `previous`.
 A long error in the draft row took the room of the text field, so the draft
 could not be edited. Nothing is drawn in the draft row now besides the field
 and the upload progress. Every error and warning that used to be there (a
-failed or refused send, connection, disconnect, WHOIS, join/part, member
+failed or refused send, connection, refused connection, WHOIS, join/part, member
 command, settings and order saving, start-up notices) opens a modal dialog
 with a Close button (`window.prompt`, `notices.rs`).
 
@@ -1487,9 +1554,18 @@ with a Close button (`window.prompt`, `notices.rs`).
   dropped; other notices wait (at most 8, then dropped and logged) and open one
   after another. Any other dialog of the chat window (upload confirmation,
   disconnect-all) counts as open too, so it is never replaced. A notice a
-  background process raised (the selected server's connection ending) is also
-  dropped for 30 seconds after the same text was closed, so failing retries do
-  not reopen it; what the user triggered is shown every time.
+  background process raised (the selected server refusing the connection) is
+  also dropped for 30 seconds after the same text was closed; what the user
+  triggered is shown every time.
+- **Disconnects (#639).** A dialog is for the result of something the user did
+  or for what needs the user. A connection that ends by itself
+  (`Event::Disconnected`: PING timeout, failed check after sleep, server
+  ERROR, network loss) and a failed automatic reconnect are reconnected or
+  retried on their own, so they only go to the server log, the network
+  activity and the tree row. `Event::Refused` (authentication, SASL, UTF8ONLY;
+  no automatic reconnect) and a failed connect from a connection command,
+  start-up, the user's Reconnect or a nickname re-entered in the prompt open a
+  dialog. `Event::Closed` (the user disconnected) opens none.
 - **Closing changes nothing.** The draft, caret, selection and undo history are
   untouched, nothing is sent, retried or selected. When nothing has the focus
   afterwards, the draft of the selected conversation gets it; a form the user

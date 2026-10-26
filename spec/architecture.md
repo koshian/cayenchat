@@ -783,11 +783,14 @@ IRCv3 tab (`SettingsForm::switch_server`) first keeps the shown server's
 edits in the form's values and its typed passwords in memory (`drafts`, by
 server ID; nothing is written), then fills every server field from the chosen
 profile alone, so a pending autosave can only see each server's own values.
-Settings save automatically as they change, server settings when Save is
-pressed (D021): autosave neither reads nor validates the shown server's
-fields and keeps the saved server list and selection, and Save (or Connect)
-deletes the secrets of removed servers. It never stores a typed password: that
-is the password's own Save button (D068). Saving adds,
+Settings save automatically as they change (D021, #634). A new server is a
+draft that only Save registers (no Connect until then); a registered server
+has no Save button: its choices are saved with the autosave pause and its
+text fields when they lose focus (`SettingsForm::commit_server_text`, valid
+values only), and the autosave (`SaveMode::Committed`) never writes a draft
+or text still being typed. Neither autosave nor Save stores a typed password:
+that is the password's own Save button (D068). Save (`SaveMode::Explicit`)
+or Connect deletes the secrets of removed servers. Saving adds,
 renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
 Connecting a server replaces only that server's conversations with its
@@ -1914,10 +1917,11 @@ Saving settings deletes the secrets of removed profiles. `Secret` redacts
 its `Debug` output and zeroes its buffer on drop (best effort). Credential
 errors are mapped to sanitized text; keyring payloads, which may contain secret
 bytes, are dropped. The settings file records only the backend choice
-(`credential_backend`). The per-profile `remember_passwords` flag stays in
-the file for older versions and the migration of plaintext passwords, but
-since D068 nothing reads it: whether a password is saved is whether the store
-holds it.
+(`credential_backend`) and, per profile, a note of which passwords are in the
+store (`server_saved`, `sasl_saved`; the old `remember_passwords` counts as
+both). Settings shows the saved state from the note, so opening it, picking or
+adding a server never reads the store (D068); a connection reads the store and
+corrects the note.
 
 The system backend reads each store entry at most once per process and keeps
 the values in memory, so reconnecting or opening settings does not touch the

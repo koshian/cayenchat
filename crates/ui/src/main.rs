@@ -23,6 +23,7 @@ mod dialog;
 mod disconnect_dialog;
 mod double_enter;
 mod experimental_settings;
+mod focus_reveal;
 mod help_command;
 mod image_upload;
 mod input;
@@ -1429,24 +1430,13 @@ impl ChatWindow {
             this.schedule_layout_save(cx);
         })
         .detach();
-        let view = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
-            // Closing the main window quits the application. With the
-            // question on, nothing is touched until it is answered: asking
-            // keeps the window open, and "Quit" goes through `cx.quit()`,
-            // which runs the usual shutdown in `on_app_quit`.
-            if view
-                .update(cx, |this, cx| this.ask_before_quit(window, cx))
-                .unwrap_or(false)
-            {
-                return false;
-            }
-            let _ = view.update(cx, |this, _| {
-                this.note_window_bounds(window);
-                this.save_layout_now();
-                this.quit_connections();
-            });
-            true
+        window.on_window_should_close(cx, move |_, cx| {
+            // Closing the main window quits the application. The window is
+            // never closed here: the request is handed to the ordinary quit
+            // path after this callback, which asks if the question is on and
+            // ends in `quit_app`; the usual shutdown runs in `on_app_quit`.
+            request_quit_anywhere(cx);
+            false
         });
         cx.on_app_quit(|this, _| {
             this.save_layout_now();
@@ -1466,7 +1456,7 @@ impl ChatWindow {
     /// the system or a signal call `cx.quit()` directly and never ask.
     fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ask_before_quit(window, cx) {
-            cx.quit();
+            quit_app(cx);
         }
     }
 
@@ -2468,6 +2458,15 @@ impl ChatWindow {
                 });
             match config {
                 Ok((config, missing)) => {
+                    let sasl = self
+                        .saved
+                        .profile(&profile_id)
+                        .is_some_and(|profile| profile.sasl_enabled);
+                    self.note_stored_passwords(
+                        &profile_id,
+                        Some(config.server_password.is_some()),
+                        sasl.then_some(!missing.sasl),
+                    );
                     let _ = self.connect_fresh(network, config, missing, window, cx);
                 }
                 Err(error) => {
@@ -2481,16 +2480,16 @@ impl ChatWindow {
         session.retry_pending = false;
         session.retry_attempt = 0;
         session.retry_token += 1;
-        self.start_reconnect(network, cx);
+        self.start_reconnect(network, true, cx);
     }
 
     /// Connects `network` again. The passwords come from the credential
     /// store; the ones it lacks are asked for (see `connect_auth`).
-    fn start_reconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+    fn start_reconnect(&mut self, network: NetworkId, announce: bool, cx: &mut Context<Self>) {
         let Some(config) = self.reconnect_config(network) else {
             return;
         };
-        self.reconnect_with_stored_secrets(network, config, None, cx);
+        self.reconnect_with_stored_secrets(network, config, None, announce, cx);
     }
 
     /// The reconnect of `start_reconnect` once `config` has its passwords.
@@ -2498,6 +2497,7 @@ impl ChatWindow {
         &mut self,
         network: NetworkId,
         config: ConnectionConfig,
+        announce: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.sessions.get_mut(&network) else {
@@ -2527,7 +2527,9 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                self.record_disconnect(network, error, true, cx);
+                // An automatic retry that fails is only logged; one the user
+                // asked for is announced.
+                self.record_disconnect(network, error, announce, cx);
                 self.schedule_retry(network, cx);
             }
         }
@@ -2586,7 +2588,7 @@ impl ChatWindow {
                         && session.irc.is_none()
                 });
                 if due {
-                    this.start_reconnect(network, cx);
+                    this.start_reconnect(network, false, cx);
                 }
             });
         })
@@ -2595,8 +2597,9 @@ impl ChatWindow {
     }
 
     /// Records that `network`'s connection ended. `announce` raises the
-    /// selected server's end as a notice; an end the user asked for is only
-    /// logged.
+    /// selected server's end as a notice; it is set for a refusal and a
+    /// failed user-made connect. A connection that ended by itself, a failed
+    /// automatic retry and an end the user asked for are only logged.
     fn record_disconnect(
         &mut self,
         network: NetworkId,
@@ -2766,7 +2769,7 @@ impl ChatWindow {
                 // Retries restart from the shortest wait if this fails.
                 session.retry_attempt = 0;
                 session.retry_token += 1;
-                self.start_reconnect(network, cx);
+                self.start_reconnect(network, false, cx);
                 continue;
             }
             if let Ok(connection) = self.registered_connection(network)
@@ -3885,7 +3888,8 @@ impl ChatWindow {
                 .format("event_nick_retry", &[("nickname", &nickname)]),
         );
         if closed {
-            self.start_reconnect(network, cx);
+            // The user submitted this nickname, so a failure is announced.
+            self.start_reconnect(network, true, cx);
         }
         Ok(())
     }
@@ -4901,7 +4905,7 @@ impl ChatWindow {
     }
 
     fn handle_event(&mut self, network: NetworkId, event: Event, cx: &mut Context<Self>) {
-        let closed = matches!(event, Event::Closed(_));
+        let refused = matches!(event, Event::Refused(_));
         let replayed = matches!(event, Event::JoinedReplayed { .. });
         match event {
             Event::Diagnostic { elapsed, message } => {
@@ -5559,8 +5563,9 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
-                // Closed is the end the user (or sleep) asked for, not a failure.
-                let announce = !closed;
+                // Only a refusal (no automatic reconnect) needs the user; a
+                // connection that ended by itself is reconnected and logged.
+                let announce = refused;
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self
@@ -9135,7 +9140,43 @@ fn navigation_binding(key: &str, command: Command) -> KeyBinding {
 /// front and lives until the application quits, so the question cannot
 /// vanish with an auxiliary window that was closed before it was answered.
 fn request_quit_anywhere(cx: &mut App) {
-    request_quit_in_chat_window(cx, true);
+    // The action may be dispatched inside the settings window's own update,
+    // which would then fail to be updated for the save check below; run
+    // after the dispatch has finished.
+    cx.defer(|cx| request_quit_in_chat_window(cx, true));
+}
+
+/// Writes confirmed settings edits before an ordinary quit. Returns whether
+/// the quit must not go on: the save failed, or the settings window could not
+/// be asked (never treated as saved). On failure the settings window is
+/// brought to the front with the form and the error intact.
+fn settings_block_quit(cx: &mut App) -> bool {
+    let Some(settings) = cx
+        .windows()
+        .into_iter()
+        .find_map(|w| w.downcast::<SettingsWindow>())
+    else {
+        return false;
+    };
+    settings
+        .update(cx, |settings, window, cx| {
+            let saved = settings.save_before_leaving(cx);
+            if !saved {
+                window.activate_window();
+            }
+            saved
+        })
+        .map_or(true, |saved| !saved)
+}
+
+/// The one place where a confirmed, ordinary quit ends the application:
+/// asking (menu, shortcut, window close, Dock, the question) only leads here.
+/// Quits unless the settings save check blocks it. The system's shutdown and
+/// signals call `cx.quit()` themselves and never reach this.
+pub(crate) fn quit_app(cx: &mut App) {
+    if !settings_block_quit(cx) {
+        cx.quit();
+    }
 }
 
 /// The chat window cannot be updated while it is handling an event, which is
@@ -9149,7 +9190,7 @@ fn request_quit_in_chat_window(cx: &mut App, retry: bool) {
         .into_iter()
         .find_map(|w| w.downcast::<ChatWindow>());
     let Some(chat) = chat else {
-        cx.quit();
+        quit_app(cx);
         return;
     };
     if chat
@@ -9433,6 +9474,9 @@ fn themed_bindings(
 }
 
 /// Standard Tab / Shift+Tab movement between settings fields (tab stops).
+/// The settings window has its own handlers that also scroll; this is the
+/// plain movement the tests exercise.
+#[cfg(test)]
 fn field_traversal<E: InteractiveElement>(element: E) -> E {
     element
         .on_action(|_: &FocusNextField, window, _| window.focus_next())
@@ -9645,16 +9689,8 @@ fn main() {
             // macOS Dock "Quit" is the user's request too; the system's own
             // shutdown and `cx.quit()` never reach this handler.
             cx.on_quit_request(|cx| {
-                let Some(chat) = cx
-                    .windows()
-                    .into_iter()
-                    .find_map(|w| w.downcast::<ChatWindow>())
-                else {
-                    return true;
-                };
-                !chat
-                    .update(cx, |this, window, cx| this.ask_before_quit(window, cx))
-                    .unwrap_or(false)
+                request_quit_anywhere(cx);
+                false
             });
             // Global actions run inside the active window's update, so updating
             // that window again here fails; do it once the dispatch has finished.
@@ -9674,7 +9710,7 @@ fn main() {
             });
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
-                    cx.quit();
+                    quit_app(cx);
                 }
             })
             .detach();

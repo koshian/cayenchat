@@ -5,7 +5,7 @@ use crate::os_text::WindowOsText;
 use crate::{
     ChatWindow, Connect, CopyDiagnostics, Disconnect, FocusNextField, FocusPreviousField,
     OpenSettings, Reconnect, ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts,
-    autostart, avatar_editor, color_picker, decorations, diagnostics, field_traversal,
+    autostart, avatar_editor, color_picker, decorations, diagnostics, focus_reveal,
     forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings, localization::Localizer,
     notification_rules, saved_connection_secrets, scrollbar, secrets, settings_file,
     settings_theme, shortcut_settings, theme,
@@ -95,15 +95,10 @@ pub(crate) struct SettingsForm {
 }
 
 impl SettingsForm {
-    pub(crate) fn new(
-        values: Settings,
-        i18n: &Localizer,
-        store: &CredentialStore,
-        cx: &mut App,
-    ) -> Self {
+    pub(crate) fn new(values: Settings, i18n: &Localizer, cx: &mut App) -> Self {
         let (saved_server_password, saved_sasl_password) = values
             .selected_profile()
-            .map_or((false, false), |profile| saved_passwords(profile, store));
+            .map_or((false, false), saved_passwords);
         let empty = ServerProfile::default();
         let profile = values.selected_profile().unwrap_or(&empty);
         let field = |placeholder: &str, value: &str, secret: bool, cx: &mut App| {
@@ -452,29 +447,7 @@ impl SettingsForm {
         let mut settings = self.values.clone();
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         if with_servers {
-            let host = value(&self.custom_host);
-            // Without a server the host and port fields are hidden and unused.
-            let port = match self.port.read(cx).text().trim().parse() {
-                Ok(port) if port != 0 => port,
-                _ if settings.servers.is_empty() => 6667,
-                _ => return Err(i18n_error(settings.language, "port_invalid")),
-            };
-            if let Some(profile) = settings.selected_profile_mut() {
-                profile.host = host;
-                profile.port = port;
-                profile.nickname = value(&self.nickname);
-                profile.username = value(&self.username);
-                profile.realname = value(&self.realname);
-                profile.quit_message = value(&self.quit_message);
-                profile.sleep_quit_message = value(&self.sleep_quit_message);
-                profile.part_message = value(&self.part_message);
-                profile.display_name = value(&self.display_name);
-                profile.channels = value(&self.channels);
-                profile.sasl_username = value(&self.sasl_username);
-                let avatar = value(&self.avatar_url);
-                crate::ircv3_settings::stop_sharing_if_avatar_differs(profile, &avatar);
-                profile.avatar_url = avatar;
-            }
+            self.read_server_text(&mut settings, cx)?;
         }
         settings.appearance = Appearance {
             member_list_background: value(&self.member_list_background),
@@ -533,10 +506,86 @@ impl SettingsForm {
         Ok(settings)
     }
 
+    /// Reads the shown server's text fields into `settings`. A port that is
+    /// not a number leaves `settings` untouched.
+    fn read_server_text(&self, settings: &mut Settings, cx: &App) -> Result<(), String> {
+        let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
+        let host = value(&self.custom_host);
+        // An empty host is left to `commit_server_text`, which knows whether
+        // the server is a draft.
+        if !host.is_empty() && !ConnectionConfig::host_is_valid(&host) {
+            return Err(i18n_error(settings.language, "host_invalid"));
+        }
+        // Without a server the host and port fields are hidden and unused.
+        let port = match self.port.read(cx).text().trim().parse() {
+            Ok(port) if port != 0 => port,
+            _ if settings.servers.is_empty() => 6667,
+            _ => return Err(i18n_error(settings.language, "port_invalid")),
+        };
+        if let Some(profile) = settings.selected_profile_mut() {
+            profile.host = host;
+            profile.port = port;
+            profile.nickname = value(&self.nickname);
+            profile.username = value(&self.username);
+            profile.realname = value(&self.realname);
+            profile.quit_message = value(&self.quit_message);
+            profile.sleep_quit_message = value(&self.sleep_quit_message);
+            profile.part_message = value(&self.part_message);
+            profile.display_name = value(&self.display_name);
+            profile.channels = value(&self.channels);
+            profile.sasl_username = value(&self.sasl_username);
+            let avatar = value(&self.avatar_url);
+            crate::ircv3_settings::stop_sharing_if_avatar_differs(profile, &avatar);
+            profile.avatar_url = avatar;
+        }
+        Ok(())
+    }
+
+    /// Takes the shown server's text fields into `values` when they are
+    /// valid; otherwise `values` (and so the saved server) stays as it was
+    /// and the fields keep what was typed. With `require_host` an empty
+    /// hostname is invalid too, since saving it would drop the server.
+    pub(crate) fn commit_server_text(
+        &mut self,
+        require_host: bool,
+        cx: &App,
+    ) -> Result<(), String> {
+        let mut settings = self.values.clone();
+        self.read_server_text(&mut settings, cx)?;
+        if require_host
+            && settings
+                .selected_profile()
+                .is_some_and(|profile| profile.host.is_empty())
+        {
+            return Err(i18n_error(settings.language, "server_required"));
+        }
+        self.values.servers = settings.servers;
+        Ok(())
+    }
+
+    /// The text fields of a server profile. Edits to them are committed when
+    /// the field loses focus, not while typing.
+    fn server_text_fields(&self) -> [&Entity<TextInput>; 12] {
+        [
+            &self.custom_host,
+            &self.port,
+            &self.nickname,
+            &self.username,
+            &self.realname,
+            &self.quit_message,
+            &self.sleep_quit_message,
+            &self.part_message,
+            &self.display_name,
+            &self.channels,
+            &self.sasl_username,
+            &self.avatar_url,
+        ]
+    }
+
     /// Typed passwords win; otherwise the saved ones are used.
     pub(crate) fn connection_config(
         &self,
-        settings: &Settings,
+        settings: &mut Settings,
         store: &CredentialStore,
         i18n: &Localizer,
         cx: &App,
@@ -552,6 +601,8 @@ impl SettingsForm {
             .selected_profile()
             .ok_or_else(|| i18n.text("server_required"))?;
         let (saved_server, saved_sasl) = saved_connection_secrets(profile, store, i18n)?;
+        let sasl_found = profile.sasl_enabled.then(|| saved_sasl.is_some());
+        let found = (saved_server.is_some(), sasl_found);
         let mut config = crate::connection_config_without_secrets(profile, settings.language)?;
         let missing = crate::connect_auth::fill(
             &mut config,
@@ -567,6 +618,11 @@ impl SettingsForm {
             crate::channel_keys::use_stored_keys(config, profile, store);
             config.validate()
         })?;
+        // What the read found corrects the note of stored passwords; the
+        // settings are written along with Connect.
+        if let Some(profile) = settings.selected_profile_mut() {
+            crate::connect_auth::note_found(profile, Some(found.0), found.1);
+        }
         Ok((config, missing))
     }
 
@@ -662,7 +718,6 @@ impl SettingsForm {
     fn switch_server(
         &mut self,
         change: impl FnOnce(&mut Settings),
-        store: &CredentialStore,
         i18n: &Localizer,
         cx: &mut App,
     ) -> Result<(), String> {
@@ -670,18 +725,13 @@ impl SettingsForm {
         self.stash_typed_passwords(cx);
         change(&mut settings);
         self.values = settings;
-        self.show_selected(store, i18n, cx);
+        self.show_selected(i18n, cx);
         Ok(())
     }
 
     /// Fills the server fields from the selected profile alone; password
     /// fields are emptied and say whether that server has saved passwords.
-    pub(crate) fn show_selected(
-        &mut self,
-        store: &CredentialStore,
-        i18n: &Localizer,
-        cx: &mut App,
-    ) {
+    pub(crate) fn show_selected(&mut self, i18n: &Localizer, cx: &mut App) {
         let profile = self.values.selected_profile().cloned().unwrap_or_default();
         self.custom_host
             .update(cx, |field, cx| field.set_text(&profile.host, cx));
@@ -702,7 +752,7 @@ impl SettingsForm {
         ] {
             field.update(cx, |field, cx| field.set_text(value, cx));
         }
-        let (saved_server, saved_sasl) = saved_passwords(&profile, store);
+        let (saved_server, saved_sasl) = saved_passwords(&profile);
         self.saved_server_password = saved_server;
         self.saved_sasl_password = saved_sasl;
         self.changing_server_password = false;
@@ -783,6 +833,14 @@ pub(crate) enum Credential {
 }
 
 impl Credential {
+    /// Notes in the profile that this password is saved or gone.
+    pub(crate) fn note(self, profile: &mut ServerProfile, saved: bool) {
+        match self {
+            Self::Server => profile.set_server_password_saved(saved),
+            Self::Sasl => profile.set_sasl_password_saved(saved),
+        }
+    }
+
     fn key(self, profile: &str) -> SecretKey {
         match self {
             Self::Server => SecretKey::server_password(profile),
@@ -835,12 +893,13 @@ impl SettingsForm {
     }
 }
 
-/// Whether the profile has saved server and SASL passwords.
-fn saved_passwords(profile: &ServerProfile, store: &CredentialStore) -> (bool, bool) {
-    let has = |key: SecretKey| store.contains(&key).unwrap_or(false);
+/// Whether the profile is noted as having saved server and SASL passwords.
+/// Showing a server never reads the credential store, which can ask the user
+/// for permission; the note is corrected when a connection reads the store.
+fn saved_passwords(profile: &ServerProfile) -> (bool, bool) {
     (
-        has(profile.server_password_key()),
-        has(profile.sasl_password_key()),
+        profile.server_password_saved(),
+        profile.sasl_password_saved(),
     )
 }
 
@@ -874,6 +933,8 @@ pub(crate) struct AutoJoinDialog {
     /// Holds the keyboard focus while no row is being edited, so typing and
     /// Tab never reach the form behind the dialog.
     pub(crate) focus: FocusHandle,
+    /// Scroll position of the row list, which follows Tab like the pane does.
+    pub(crate) scroll: ScrollHandle,
 }
 
 pub(crate) struct AutoJoinRow {
@@ -901,6 +962,9 @@ pub(crate) struct SettingsWindow {
     pub(crate) nav_focus: FocusHandle,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) pane_scroll: ScrollHandle,
+    /// Frames still allowed to scroll to the field Tab moved to: the first
+    /// renders before the field is painted at its new place, the second after.
+    reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
@@ -921,6 +985,10 @@ pub(crate) struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
+    /// Why the shown server's typed text was not taken over (a bad port, no
+    /// hostname). The text stays in its fields and the saved server is left
+    /// as it was, until the text is valid.
+    pub(crate) field_error: Option<String>,
     /// Why Publish or Remove could not be started for our own avatar, or
     /// how an avatar image upload went.
     pub(crate) avatar_feedback: Option<String>,
@@ -971,6 +1039,19 @@ pub(crate) struct SettingsWindow {
     autostart_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
+
+/// What a save writes of the server list (#634).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveMode {
+    /// The registered servers as committed so far. A draft and text still
+    /// being typed are left out, and no password is stored.
+    Committed,
+    /// The servers as shown, including a draft, and the typed passwords.
+    Explicit,
+}
+
+/// See `SettingsWindow::reveal_focus`.
+const REVEAL_FRAMES: u8 = 2;
 
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
@@ -1090,7 +1171,7 @@ impl SettingsWindow {
         let i18n = Localizer::new(values.language);
         window.os_set_title(&i18n.text("settings_title"));
         settings_theme::refresh(cx);
-        let settings = SettingsForm::new(values, &i18n, &secrets::store(cx), cx);
+        let settings = SettingsForm::new(values, &i18n, cx);
         window.focus(&settings.nickname.focus_handle(cx));
         let upload_token = cx.new(|cx| {
             TextInput::new_settings_field(&i18n.text("image_token_placeholder"), "", true, cx)
@@ -1128,8 +1209,8 @@ impl SettingsWindow {
         // has focus.
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            let _ = view.update(cx, |this, cx| this.autosave_now(None, cx));
-            true
+            view.update(cx, |this, cx| this.save_before_leaving(cx))
+                .unwrap_or(true)
         });
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.autosave_now(None, cx);
@@ -1144,6 +1225,7 @@ impl SettingsWindow {
             nav_focus: cx.focus_handle().tab_stop(true),
             nav_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
+            reveal_focus: 0,
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -1157,6 +1239,7 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             autosave_error: None,
+            field_error: None,
             avatar_feedback: None,
             avatar_refresh: Vec::new(),
             avatar_file_read: None,
@@ -1188,14 +1271,22 @@ impl SettingsWindow {
         this
     }
 
-    /// Schedules the autosave after an edit to any text field (it leaves the
-    /// server fields to Save) and refreshes the unsaved-changes note.
+    /// Schedules the autosave after an edit to any text field and refreshes
+    /// the pending-changes notes. A server field is only saved once it loses
+    /// focus (or the window is left or the server is connected), so a value
+    /// still being typed is never applied.
     fn observe_fields(
         settings: &SettingsForm,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<Subscription> {
         let mut subscriptions = Vec::new();
+        for field in settings.server_text_fields() {
+            let handle = field.focus_handle(cx);
+            subscriptions.push(cx.on_blur(&handle, window, |this, window, cx| {
+                this.autosave_now(Some(window), cx)
+            }));
+        }
         for field in settings.text_fields() {
             subscriptions.push(cx.observe(field, |this, _, cx| {
                 this.schedule_autosave(cx);
@@ -1269,7 +1360,7 @@ impl SettingsWindow {
             self.i18n = Localizer::new(loaded.language);
             window.os_set_title(&self.i18n.text("settings_title"));
         }
-        self.settings = SettingsForm::new(loaded.clone(), &self.i18n, &secrets::store(cx), cx);
+        self.settings = SettingsForm::new(loaded.clone(), &self.i18n, cx);
         self._field_subscriptions = Self::observe_fields(&self.settings, window, cx);
         let servers_changed = previous.servers != loaded.servers
             || previous.selected_server != loaded.selected_server;
@@ -1312,10 +1403,14 @@ impl SettingsWindow {
     pub(crate) fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.follow_saved_server_order();
         let result = (|| {
-            let settings = self.settings.snapshot(cx)?;
-            let (config, missing) =
-                self.settings
-                    .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
+            let mut settings = self.settings.snapshot(cx)?;
+            self.drop_other_drafts(&mut settings);
+            let (config, missing) = self.settings.connection_config(
+                &mut settings,
+                &secrets::store(cx),
+                &self.i18n,
+                cx,
+            )?;
             self.autosave = None;
             // `saved` follows only once the file is written, so a failed
             // Connect leaves the draft unsaved.
@@ -1363,6 +1458,7 @@ impl SettingsWindow {
     pub(crate) fn status_message(&self) -> Option<String> {
         self.feedback
             .clone()
+            .or_else(|| self.field_error.clone())
             .or_else(|| self.autosave_error.clone())
     }
 
@@ -1371,33 +1467,82 @@ impl SettingsWindow {
         let window = self.window;
         self.autosave = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DELAY).await;
-            let _ = cx.update_window(window, |_, window, cx| {
-                this.update(cx, |this, cx| this.autosave_now(Some(window), cx))
+            let _ = cx.update_window(window, |_, _, cx| {
+                this.update(cx, |this, cx| this.autosave_pause_elapsed(cx))
             });
         }));
     }
 
-    /// Writes everything except the server list when the form differs from
-    /// what was last saved and applies the changes to the chat window. The
-    /// servers (and typed passwords) wait for Save (D021).
+    /// Whether the shown server is in the saved list. One that is not is a
+    /// draft: it is saved by the Save button only and cannot be connected.
+    pub(crate) fn shown_server_registered(&self) -> bool {
+        self.saved
+            .profile(&self.settings.values.selected_server)
+            .is_some()
+    }
+
+    /// Takes the shown server's typed text over once it is valid. While it
+    /// is not, the fields keep what was typed, the saved server stays as it
+    /// was and the reason is shown.
+    fn commit_shown_server(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let result = self
+            .settings
+            .commit_server_text(self.shown_server_registered(), cx);
+        let error = result.clone().err();
+        if self.field_error != error {
+            self.field_error = error;
+            cx.notify();
+        }
+        result
+    }
+
+    /// The pause after the last edit is over: saves the settings, with the
+    /// servers as already committed. Server text still being typed waits
+    /// until its field loses focus.
+    pub(crate) fn autosave_pause_elapsed(&mut self, cx: &mut Context<Self>) {
+        self.autosave = None;
+        self.autosave_committed(cx);
+    }
+
+    /// A text field was left, the window loses activation or is closed, or
+    /// the app quits: commits the shown server's text and saves everything
+    /// that is pending.
     pub(crate) fn autosave_now(&mut self, _window: Option<&Window>, cx: &mut Context<Self>) {
         self.autosave = None;
-        match self.save_settings(false, cx) {
+        let _ = self.commit_shown_server(cx);
+        self.autosave_committed(cx);
+    }
+
+    /// Saves before the window closes or the app quits. Returns whether
+    /// that may go on: when saving fails, the form and the error stay so the
+    /// edits can be retried; nothing is discarded without a successful save.
+    pub(crate) fn save_before_leaving(&mut self, cx: &mut Context<Self>) -> bool {
+        self.autosave = None;
+        let _ = self.commit_shown_server(cx);
+        self.autosave_committed(cx)
+    }
+
+    fn autosave_committed(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.save_settings(SaveMode::Committed, cx) {
             Ok(()) => {
                 if self.autosave_error.take().is_some() {
                     cx.notify();
                 }
+                true
             }
             Err(error) => {
                 if self.autosave_error.as_ref() != Some(&error) {
                     self.autosave_error = Some(error);
                     cx.notify();
                 }
+                false
             }
         }
     }
 
-    /// Whether the server list has edits that Save has not written yet.
+    /// Whether a draft server has not been written yet. Edits to a
+    /// registered server are saved as they are made, so they are never
+    /// pending for long.
     pub(crate) fn servers_unsaved(&self, cx: &App) -> bool {
         let Ok(settings) = self.settings.snapshot(cx) else {
             return true;
@@ -1406,12 +1551,15 @@ impl SettingsWindow {
             || settings.selected_server != self.saved.selected_server
     }
 
-    /// The Save button: writes the servers along with everything else.
+    /// The Save button of a new server: writes the servers along with everything else. A draft
+    /// becomes a registered server once this succeeds; if it fails, it stays
+    /// a draft.
     pub(crate) fn save_servers(&mut self, cx: &mut Context<Self>) {
         self.autosave = None;
-        match self.save_settings(true, cx) {
+        match self.save_settings(SaveMode::Explicit, cx) {
             Ok(()) => {
                 self.autosave_error = None;
+                self.field_error = None;
                 self.feedback = None;
             }
             Err(error) => self.feedback = Some(error),
@@ -1419,13 +1567,24 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Writes the form, with the servers only when `with_servers`; without,
-    /// the saved server list stays as it is. A server without a host cannot
-    /// be saved.
-    fn save_settings(&mut self, with_servers: bool, cx: &mut Context<Self>) -> Result<(), String> {
+    /// Removes the drafts other than the shown server from `settings`: the
+    /// Save button registers the server it belongs to and nothing else.
+    fn drop_other_drafts(&self, settings: &mut Settings) {
+        let shown = settings.selected_server.clone();
+        settings
+            .servers
+            .retain(|server| server.id == shown || self.saved.profile(&server.id).is_some());
+    }
+
+    /// Writes the form. `Committed` leaves out the shown draft server and
+    /// whatever is only typed into the server fields, and stores no
+    /// passwords; `Explicit` writes the servers as shown.
+    fn save_settings(&mut self, mode: SaveMode, cx: &mut Context<Self>) -> Result<(), String> {
         self.follow_saved_server_order();
-        let mut settings = self.settings.snapshot_with(cx, with_servers)?;
-        if with_servers {
+        let explicit = mode == SaveMode::Explicit;
+        let mut settings = self.settings.snapshot_with(cx, explicit)?;
+        if explicit {
+            self.drop_other_drafts(&mut settings);
             if settings
                 .selected_profile()
                 .is_some_and(|profile| profile.host.is_empty())
@@ -1433,15 +1592,29 @@ impl SettingsWindow {
                 return Err(self.i18n.text("server_required"));
             }
         } else {
-            settings.servers = self.saved.servers.clone();
-            settings.selected_server = self.saved.selected_server.clone();
+            // Registered servers as committed, with the removals and
+            // choices made since; a draft is not among them. A hostless
+            // server would be dropped from the file along with its
+            // passwords, so it is never written.
+            settings
+                .servers
+                .retain(|server| self.saved.profile(&server.id).is_some());
+            if settings.servers.iter().any(|server| server.host.is_empty()) {
+                return Err(self.i18n.text("server_required"));
+            }
+            if settings.profile(&settings.selected_server).is_none() {
+                let kept = &self.saved.selected_server;
+                settings.selected_server = settings
+                    .profile(kept)
+                    .or(settings.servers.first())
+                    .map(|server| server.id.clone())
+                    .unwrap_or_default();
+            }
         }
-        if settings == self.saved && !(with_servers && self.servers_unsaved(cx)) {
+        if settings == self.saved && !(explicit && self.servers_unsaved(cx)) {
             // Nothing to write: registering the same URL again still asks
             // for its image to be fetched again.
-            if with_servers {
-                self.refresh_registered_avatars(cx);
-            }
+            self.refresh_registered_avatars(cx);
             return Ok(());
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
@@ -1453,23 +1626,25 @@ impl SettingsWindow {
                 return Err(error);
             }
         };
-        if with_servers {
+        if explicit {
             self.saved = saved.clone();
         }
         let servers_changed = previous.servers != self.saved.servers
             || previous.selected_server != self.saved.selected_server;
         self.apply_to_chat_window(&previous, saved, servers_changed, cx);
-        if with_servers {
-            self.refresh_registered_avatars(cx);
-        }
+        self.refresh_registered_avatars(cx);
         Ok(())
     }
 
     /// After the servers were saved, has the chat window fetch again the
-    /// icons registered or updated since the last save. A failed save keeps
-    /// them pending.
+    /// icons registered or updated since the last save. A failed save, or a
+    /// server that is still a draft, keeps them pending.
     fn refresh_registered_avatars(&mut self, cx: &mut Context<Self>) {
-        for id in std::mem::take(&mut self.avatar_refresh) {
+        let (ready, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.avatar_refresh)
+            .into_iter()
+            .partition(|id| self.saved.profile(id).is_some());
+        self.avatar_refresh = pending;
+        for id in ready {
             let _ = self
                 .owner
                 .update(cx, |owner, _, cx| owner.refresh_own_avatar(&id, cx));
@@ -1573,9 +1748,13 @@ impl ChatWindow {
 }
 
 impl SettingsWindow {
-    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.autosave_now(None, cx);
-        window.remove_window();
+    /// Closes the window once everything is saved; returns whether it did.
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let saved = self.save_before_leaving(cx);
+        if saved {
+            window.remove_window();
+        }
+        saved
     }
 
     /// Whether any field holds uncommitted IME text. GPUI never marks an
@@ -1635,11 +1814,13 @@ impl SettingsWindow {
             self.settings.language_list_open = false;
             cx.notify();
         } else {
-            self.close_settings(window, cx);
-            // The chat window takes the keyboard back.
-            let _ = self
-                .owner
-                .update(cx, |_, chat_window, _| chat_window.activate_window());
+            // When saving failed the window stays, with its error in front.
+            if self.close_settings(window, cx) {
+                // The chat window takes the keyboard back.
+                let _ = self
+                    .owner
+                    .update(cx, |_, chat_window, _| chat_window.activate_window());
+            }
         }
     }
 
@@ -1802,6 +1983,12 @@ impl SettingsWindow {
                 if self.settings.values.selected_server == profile {
                     self.settings.set_saved(which, saved, &self.i18n, cx);
                 }
+                // The settings file notes it, so showing the server later
+                // needs no read of the store.
+                if let Some(server) = self.settings.values.profile_mut(profile) {
+                    which.note(server, saved);
+                }
+                self.schedule_autosave(cx);
                 self.feedback = Some(self.i18n.text(done));
             }
             Err(error) => {
@@ -1900,14 +2087,19 @@ impl SettingsWindow {
         }
         self.feedback = None;
         let port = self.settings.port.read(cx).text().to_owned();
-        if port == "6667" && use_tls {
+        let swapped = match (port.as_str(), use_tls) {
+            ("6667", true) => Some(6697),
+            ("6697", false) => Some(6667),
+            _ => None,
+        };
+        if let Some(swapped) = swapped {
+            // The port follows the choice, so it is committed with it.
+            if let Some(profile) = self.settings.values.selected_profile_mut() {
+                profile.port = swapped;
+            }
             self.settings
                 .port
-                .update(cx, |field, cx| field.set_text("6697", cx));
-        } else if port == "6697" && !use_tls {
-            self.settings
-                .port
-                .update(cx, |field, cx| field.set_text("6667", cx));
+                .update(cx, |field, cx| field.set_text(&swapped.to_string(), cx));
         }
         cx.notify();
     }
@@ -1934,9 +2126,9 @@ impl SettingsWindow {
     }
 
     pub(crate) fn show_selected_server(&mut self, cx: &mut Context<Self>) {
-        self.settings
-            .show_selected(&secrets::store(cx), &self.i18n, cx);
+        self.settings.show_selected(&self.i18n, cx);
         self.feedback = None;
+        self.field_error = None;
         cx.notify();
     }
 
@@ -2070,6 +2262,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("auto-join-list")
+                    .track_scroll(&dialog.scroll)
                     .flex_1()
                     .min_h_0()
                     .max_h(px(360.))
@@ -2119,13 +2312,20 @@ impl SettingsWindow {
             .collect();
         let focus = cx.focus_handle();
         window.focus(&focus);
-        self.auto_join = Some(AutoJoinDialog { rows, focus });
+        self.auto_join = Some(AutoJoinDialog {
+            rows,
+            focus,
+            scroll: ScrollHandle::new(),
+        });
         cx.notify();
     }
 
-    fn close_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Done: the channels are saved now, with no Save button of the
+    /// Connection tab needed.
+    pub(crate) fn close_auto_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.auto_join = None;
         window.focus(&self.nav_focus);
+        self.autosave_now(None, cx);
         cx.notify();
     }
 
@@ -2143,9 +2343,80 @@ impl SettingsWindow {
         if !dialog.focus.contains_focused(window, cx) {
             window.focus(&dialog.focus);
         }
+        // Only the dialog's own list follows; the panes behind stay put.
+        focus_reveal::clear(cx);
+        self.reveal_focus = REVEAL_FRAMES;
+        cx.notify();
     }
 
-    /// Stores the dialog's rows in the `channels` field, which is saved with Save.
+    /// Tab / Shift+Tab on the settings screen: moves the focus, then scrolls
+    /// whichever pane holds the new target by the least amount that shows it.
+    fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if forward {
+            window.focus_next();
+        } else {
+            window.focus_prev();
+        }
+        // The dialog covers the panes; nothing behind it needs to follow.
+        if self.auto_join.is_none() {
+            if self.nav_focus.is_focused(window) {
+                self.reveal_selected_tab();
+            }
+            focus_reveal::clear(cx);
+            self.reveal_focus = REVEAL_FRAMES;
+            cx.notify();
+        }
+    }
+
+    /// Scrolls the category list just enough to show the selected category.
+    fn reveal_selected_tab(&self) {
+        let tabs = Self::settings_tabs();
+        let Some(index) = tabs.iter().position(|(tab, ..)| *tab == self.tab) else {
+            return;
+        };
+        // The last category (Experimental) follows a spacer child.
+        let spacer = usize::from(index + 1 == tabs.len());
+        self.nav_scroll.scroll_to_item(index + spacer);
+    }
+
+    /// While a Tab is being followed, scrolls the pane (or the dialog's list)
+    /// to the field that has the focus unless it is already in view. The
+    /// bounds are those the field painted at its new place, so the frame
+    /// right after the Tab finds none and asks for one more.
+    fn reveal_focused(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.reveal_focus == 0 {
+            return;
+        }
+        self.reveal_focus -= 1;
+        let Some(target) = focus_reveal::focused_bounds(window, cx) else {
+            if self.reveal_focus > 0 {
+                // Notifying while drawing does not schedule another frame.
+                let this = cx.entity();
+                window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+            }
+            return;
+        };
+        self.reveal_focus = 0;
+        // With the dialog open, the scrolling region is its list.
+        let scroll = match &self.auto_join {
+            Some(dialog) => &dialog.scroll,
+            None => &self.pane_scroll,
+        };
+        let offset = scroll.offset();
+        let y = focus_reveal::offset_to_reveal(
+            scroll.bounds(),
+            target,
+            offset.y,
+            scroll.max_offset().height,
+        );
+        if y != offset.y {
+            scroll.set_offset(point(offset.x, y));
+        }
+    }
+
+    /// Stores the dialog's rows in the `channels` field and in the shown
+    /// server, so the autosave of a registered server writes them without
+    /// the field having to lose focus; a draft keeps them until Save.
     fn sync_auto_join(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = &self.auto_join else {
             return;
@@ -2159,6 +2430,9 @@ impl SettingsWindow {
             })
             .collect();
         let text = cayenchat_storage::format_auto_join(&entries);
+        if let Some(profile) = self.settings.values.selected_profile_mut() {
+            profile.channels = text.trim().to_owned();
+        }
         self.settings
             .channels
             .update(cx, |field, cx| field.set_text(&text, cx));
@@ -2206,12 +2480,18 @@ impl SettingsWindow {
     }
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        // Leaving a registered server takes its typed text over first; text
+        // that is not valid keeps the form where it is.
+        if let Err(error) = self.commit_shown_server(cx) {
+            self.feedback = Some(error);
+            cx.notify();
+            return;
+        }
         self.avatar_feedback = None;
         self.avatar_setup_link = false;
         self.avatar_editor = None;
         self.auto_join = None;
-        let store = secrets::store(cx);
-        match self.settings.switch_server(change, &store, &self.i18n, cx) {
+        match self.settings.switch_server(change, &self.i18n, cx) {
             Ok(()) => self.feedback = None,
             Err(error) => self.feedback = Some(error),
         }
@@ -2245,6 +2525,9 @@ impl SettingsWindow {
                     if this.settings.values.selected_server == id {
                         this.settings.values.remove_selected_server();
                         this.show_selected_server(cx);
+                        // Confirmed, so it is saved at once like any
+                        // other change to a registered server.
+                        this.autosave_now(None, cx);
                     }
                 });
             }
@@ -2268,11 +2551,12 @@ impl SettingsWindow {
         self.connected_shown = connected;
         let profile = self.settings.values.selected_profile().cloned();
         let no_server = profile.is_none();
-        // A server not in the saved list is being added; it is saved with Save.
+        // A server not in the saved list is a draft being added: only Save
+        // registers it, and only a registered server can be connected. A
+        // registered server's changes are saved as they are made (#634).
         let adding = profile
             .as_ref()
             .is_some_and(|profile| self.saved.profile(&profile.id).is_none());
-        let unsaved = self.servers_unsaved(cx);
         let selected_id = profile.as_ref().map(|profile| profile.id.clone());
         let server_fields = profile
             .as_ref()
@@ -2421,11 +2705,11 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
-            .when(unsaved, |d| {
+            .when(connected && !adding, |d| {
                 d.child(
                     div()
                         .text_color(theme.text_secondary)
-                        .child(self.i18n.text("unsaved_server_changes")),
+                        .child(self.i18n.text("ircv3_next_connection")),
                 )
             })
             .child(
@@ -2438,13 +2722,12 @@ impl SettingsWindow {
                         settings_theme::button("back-button", false, cx)
                             .debug_selector(|| "back-button".into())
                             .child(self.i18n.text("back"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.close_settings(window, cx);
+                            })),
                     )
                     .child(div().flex_1())
-                    // Removing the last server needs Save to take effect.
-                    .when(!no_server || unsaved, |d| {
+                    .when(adding, |d| {
                         d.child(
                             settings_theme::button("save-button", false, cx)
                                 .debug_selector(|| "save-button".into())
@@ -2452,7 +2735,7 @@ impl SettingsWindow {
                                 .on_click(cx.listener(|this, _, _, cx| this.save_servers(cx))),
                         )
                     })
-                    .when(!no_server, |d| {
+                    .when(!no_server && !adding, |d| {
                         // One button in one place: Disconnect while the server
                         // being edited is connected, being connected or
                         // waiting to retry, Connect otherwise.
@@ -3684,8 +3967,14 @@ impl SettingsWindow {
             let offset = self.pane_scroll.offset();
             self.pane_scroll.set_offset(point(offset.x, px(0.)));
         }
-        // Server names on other tabs follow the connection tab's fields.
-        self.settings.sync_shown_server(cx);
+        // Server names on other tabs follow the connection tab's fields: a
+        // registered server's text is committed (valid values only), a
+        // draft's is only shown.
+        if self.shown_server_registered() {
+            self.autosave_now(None, cx);
+        } else {
+            self.settings.sync_shown_server(cx);
+        }
         // The system may have changed the registration since it was read.
         self.refresh_autostart(cx);
         if tab == SettingsTab::Connection {
@@ -3860,7 +4149,15 @@ impl SettingsWindow {
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         let auto_join = self.render_auto_join_dialog(cx);
-        field_traversal(div().id("settings-screen"))
+        self.reveal_focused(window, cx);
+        div()
+            .id("settings-screen")
+            .on_action(
+                cx.listener(|this, _: &FocusNextField, window, cx| this.traverse(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                this.traverse(false, window, cx)
+            }))
             .key_context("SettingsWindow")
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.escape_key_down(event, window, cx)),
@@ -3989,7 +4286,6 @@ mod server_settings_tests {
         a.channels = "#a1,#a2".into();
         a.sasl_enabled = true;
         a.sasl_username = "account-a".into();
-        a.remember_passwords = true;
         a.connect_on_startup = true;
         a.ircv3 = Ircv3Preferences {
             message_tags: true,
@@ -4011,9 +4307,9 @@ mod server_settings_tests {
         cx.update(|cx| field.update(cx, |field, cx| field.set_text(value, cx)));
     }
 
-    fn form(settings: Settings, store: &CredentialStore, cx: &mut TestAppContext) -> SettingsForm {
+    fn form(settings: Settings, cx: &mut TestAppContext) -> SettingsForm {
         let i18n = Localizer::new(Language::English);
-        cx.update(|cx| SettingsForm::new(settings, &i18n, store, cx))
+        cx.update(|cx| SettingsForm::new(settings, &i18n, cx))
     }
 
     fn click(field: &Entity<TextInput>, click_count: usize, cx: &mut gpui::VisualTestContext) {
@@ -4031,8 +4327,7 @@ mod server_settings_tests {
 
     #[gpui::test]
     fn double_click_selects_a_whole_color_code_only(cx: &mut TestAppContext) {
-        let store = memory_store();
-        let form = form(configured_a(), &store, cx);
+        let form = form(configured_a(), cx);
         let (color, other) = (form.dark_link_color.clone(), form.nickname.clone());
         let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
         for field in [&color, &other] {
@@ -4048,8 +4343,7 @@ mod server_settings_tests {
 
     #[gpui::test]
     fn every_color_field_selects_on_double_click(cx: &mut TestAppContext) {
-        let store = memory_store();
-        let form = form(configured_a(), &store, cx);
+        let form = form(configured_a(), cx);
         let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
         for field in form.color_inputs() {
             field.update(cx, |field, cx| field.set_text("#12", cx));
@@ -4061,8 +4355,7 @@ mod server_settings_tests {
     #[gpui::test]
     fn only_ascii_oriented_fields_prefer_direct_input(cx: &mut TestAppContext) {
         use gpui::EntityInputHandler as _;
-        let store = memory_store();
-        let form = form(configured_a(), &store, cx);
+        let form = form(configured_a(), cx);
         let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
         let direct = |field: &Entity<TextInput>, cx: &mut gpui::VisualTestContext| {
             field.update_in(cx, |field, window, cx| {
@@ -4096,12 +4389,11 @@ mod server_settings_tests {
 
     fn switch(
         form: &mut SettingsForm,
-        store: &CredentialStore,
         cx: &mut TestAppContext,
         change: impl FnOnce(&mut Settings),
     ) {
         let i18n = Localizer::new(Language::English);
-        cx.update(|cx| form.switch_server(change, store, &i18n, cx))
+        cx.update(|cx| form.switch_server(change, &i18n, cx))
             .unwrap();
     }
 
@@ -4128,11 +4420,11 @@ mod server_settings_tests {
                 &Secret::new("a-secret"),
             )
             .unwrap();
-        let mut form = form(settings, &store, cx);
+        let mut form = form(settings, cx);
         // An edit to A that autosave has not written yet.
         type_into(&form.channels, "#a1,#a2,#a3", cx);
 
-        switch(&mut form, &store, cx, |settings| {
+        switch(&mut form, cx, |settings| {
             settings.add_server("");
         });
         assert_eq!(
@@ -4152,8 +4444,8 @@ mod server_settings_tests {
         assert_eq!(settings.profile(&a_id).unwrap().channels, "#a1,#a2,#a3");
 
         // A preset fills only its documented host.
-        let mut form = self::form(configured_a(), &store, cx);
-        switch(&mut form, &store, cx, |settings| {
+        let mut form = self::form(configured_a(), cx);
+        switch(&mut form, cx, |settings| {
             settings.add_server(cayenchat_storage::PRESETS[0].host);
         });
         assert_eq!(
@@ -4168,9 +4460,8 @@ mod server_settings_tests {
 
     #[gpui::test]
     fn typed_host_and_display_name_reach_the_values_before_saving(cx: &mut TestAppContext) {
-        let store = memory_store();
-        let mut form = form(Settings::default(), &store, cx);
-        switch(&mut form, &store, cx, |settings| {
+        let mut form = form(Settings::default(), cx);
+        switch(&mut form, cx, |settings| {
             settings.add_server(cayenchat_storage::PRESETS[0].host);
         });
         type_into(&form.custom_host, "tiarra.example", cx);
@@ -4186,8 +4477,7 @@ mod server_settings_tests {
 
     #[gpui::test]
     fn an_unfinished_connection_entry_does_not_block_other_settings(cx: &mut TestAppContext) {
-        let store = memory_store();
-        let form = form(configured_a(), &store, cx);
+        let form = form(configured_a(), cx);
         type_into(&form.port, "bad", cx);
         assert!(cx.read(|cx| form.snapshot(cx)).is_err());
         let settings = cx.read(|cx| form.snapshot_with(cx, false)).unwrap();
@@ -4201,16 +4491,16 @@ mod server_settings_tests {
         let a_id = settings.selected_server.clone();
         let b_id = settings.add_server("b.example").id.clone();
         settings.selected_server = a_id.clone();
-        let mut form = form(settings, &store, cx);
+        let mut form = form(settings, cx);
         type_into(&form.server_password, "a-typed", cx);
-        switch(&mut form, &store, cx, |settings| {
+        switch(&mut form, cx, |settings| {
             settings.selected_server = b_id.clone()
         });
         // Not shown for the other server, and nothing was written.
         assert_eq!(text(&form.server_password, cx), "");
         let key = form.values.profile(&a_id).unwrap().server_password_key();
         assert!(store.get(&key).unwrap().is_none());
-        switch(&mut form, &store, cx, |settings| {
+        switch(&mut form, cx, |settings| {
             settings.selected_server = a_id.clone()
         });
         assert_eq!(text(&form.server_password, cx), "a-typed");
@@ -4232,13 +4522,13 @@ mod server_settings_tests {
             settings.profile(&a_id).unwrap().server_password_key(),
             settings.profile(&b_id).unwrap().server_password_key(),
         );
-        let mut form = form(settings, &store, cx);
+        let mut form = form(settings, cx);
 
         // Edits and a typed password for A, then B is picked before the
         // delayed autosave runs.
         type_into(&form.channels, "#a-edited", cx);
         type_into(&form.server_password, "a-typed", cx);
-        switch(&mut form, &store, cx, |settings| {
+        switch(&mut form, cx, |settings| {
             settings.selected_server = b_id.clone()
         });
         assert_eq!(
@@ -4281,7 +4571,7 @@ mod server_settings_tests {
         // Edit B, switch back: A shows its own values and the password
         // typed for it, which was never stored.
         type_into(&form.channels, "#b-edited", cx);
-        switch(&mut form, &store, cx, |settings| {
+        switch(&mut form, cx, |settings| {
             settings.selected_server = a_id.clone()
         });
         assert_eq!(
@@ -4361,8 +4651,8 @@ mod server_settings_tests {
         a.username = "ident-a".into();
         a.channels = "#a1,#a2".into();
         let a_id = a.id.clone();
-        let mut form = form(settings, &store, cx);
-        switch(&mut form, &store, cx, |settings| {
+        let mut form = form(settings, cx);
+        switch(&mut form, cx, |settings| {
             settings.add_server("");
         });
         assert_eq!(text(&form.channels, cx), "");

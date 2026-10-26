@@ -366,6 +366,7 @@
   "about_close": "閉じる",
   "startup_invalid": "自動接続の設定を確認してください: {error}",
   "port_invalid": "ポートは 1～65535 の数字で入力してください。",
+  "host_invalid": "サーバー名に空白や制御文字は使えません。",
   "status_connecting": "接続中…",
   "status_registering": "接続済み・登録中…",
   "status_connected": "接続済み",
