@@ -493,6 +493,64 @@ mod tests {
     }
 
     #[gpui::test]
+    fn saving_a_draft_does_not_register_other_drafts(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let first = settings.selected_server.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            form.settings.values.add_server("b.example");
+            form.show_selected_server(cx);
+            // Back to the registered server, then a second draft.
+            form.settings.values.selected_server = first;
+            form.show_selected_server(cx);
+            form.settings.values.add_server("c.example");
+            form.show_selected_server(cx);
+            form.save_servers(cx);
+            assert!(form.feedback.is_none());
+        });
+        let hosts: Vec<_> = super::load()
+            .unwrap()
+            .unwrap()
+            .servers
+            .into_iter()
+            .map(|server| server.host)
+            .collect();
+        assert_eq!(hosts.len(), 2);
+        assert!(hosts.contains(&"c.example".to_owned()));
+        assert!(!hosts.contains(&"b.example".to_owned()));
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn leaving_after_a_failed_save_is_refused_once(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        super::fail_saves(true);
+        form.update(cx, |form, cx| {
+            form.settings.values.notifications.private_messages = false;
+            assert!(!form.save_before_leaving(cx));
+            assert!(form.autosave_error.is_some());
+            // Asking again is the choice to discard.
+            assert!(form.save_before_leaving(cx));
+        });
+        super::fail_saves(false);
+        form.update(cx, |form, cx| {
+            assert!(form.save_before_leaving(cx));
+            assert!(form.autosave_error.is_none());
+        });
+        assert!(
+            !super::load()
+                .unwrap()
+                .unwrap()
+                .notifications
+                .private_messages
+        );
+        drop(file);
+    }
+
+    #[gpui::test]
     fn a_failed_connect_save_leaves_the_draft_unsaved(cx: &mut TestAppContext) {
         // Valid identity, so Connect gets as far as saving.
         let mut settings = settings_with_channels("#a");

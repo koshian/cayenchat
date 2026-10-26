@@ -956,6 +956,9 @@ pub(crate) struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
+    /// Leaving was refused once because saving failed; leaving again
+    /// discards the unsaved edits.
+    leave_refused: bool,
     /// Why the shown server's typed text was not taken over (a bad port, no
     /// hostname). The text stays in its fields and the saved server is left
     /// as it was, until the text is valid.
@@ -1177,8 +1180,8 @@ impl SettingsWindow {
         // has focus.
         let view = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            let _ = view.update(cx, |this, cx| this.autosave_now(None, cx));
-            true
+            view.update(cx, |this, cx| this.save_before_leaving(cx))
+                .unwrap_or(true)
         });
         subscriptions.push(cx.on_app_quit(|this, cx| {
             this.autosave_now(None, cx);
@@ -1206,6 +1209,7 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             autosave_error: None,
+            leave_refused: false,
             field_error: None,
             avatar_feedback: None,
             avatar_refresh: Vec::new(),
@@ -1375,7 +1379,8 @@ impl SettingsWindow {
     pub(crate) fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.follow_saved_server_order();
         let result = (|| {
-            let settings = self.settings.snapshot(cx)?;
+            let mut settings = self.settings.snapshot(cx)?;
+            self.drop_other_drafts(&mut settings);
             let config =
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
@@ -1481,18 +1486,34 @@ impl SettingsWindow {
         self.autosave_committed(cx);
     }
 
-    fn autosave_committed(&mut self, cx: &mut Context<Self>) {
+    /// Saves before the window closes. Returns whether it may close: when
+    /// saving fails, the first attempt is refused so that the form and the
+    /// error stay for a retry, and asking again discards the edits.
+    pub(crate) fn save_before_leaving(&mut self, cx: &mut Context<Self>) -> bool {
+        self.autosave = None;
+        let _ = self.commit_shown_server(cx);
+        if self.autosave_committed(cx) || self.leave_refused {
+            return true;
+        }
+        self.leave_refused = true;
+        false
+    }
+
+    fn autosave_committed(&mut self, cx: &mut Context<Self>) -> bool {
         match self.save_settings(SaveMode::Committed, cx) {
             Ok(()) => {
+                self.leave_refused = false;
                 if self.autosave_error.take().is_some() {
                     cx.notify();
                 }
+                true
             }
             Err(error) => {
                 if self.autosave_error.as_ref() != Some(&error) {
                     self.autosave_error = Some(error);
                     cx.notify();
                 }
+                false
             }
         }
     }
@@ -1526,6 +1547,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Removes the drafts other than the shown server from `settings`: the
+    /// Save button registers the server it belongs to and nothing else.
+    fn drop_other_drafts(&self, settings: &mut Settings) {
+        let shown = settings.selected_server.clone();
+        settings
+            .servers
+            .retain(|server| server.id == shown || self.saved.profile(&server.id).is_some());
+    }
+
     /// Writes the form. `Committed` leaves out the shown draft server and
     /// whatever is only typed into the server fields, and stores no
     /// passwords; `Explicit` writes the servers as shown.
@@ -1534,6 +1564,7 @@ impl SettingsWindow {
         let explicit = mode == SaveMode::Explicit;
         let mut settings = self.settings.snapshot_with(cx, explicit)?;
         if explicit {
+            self.drop_other_drafts(&mut settings);
             if settings
                 .selected_profile()
                 .is_some_and(|profile| profile.host.is_empty())
@@ -1698,8 +1729,9 @@ impl ChatWindow {
 
 impl SettingsWindow {
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.autosave_now(None, cx);
-        window.remove_window();
+        if self.save_before_leaving(cx) {
+            window.remove_window();
+        }
     }
 
     /// Whether any field holds uncommitted IME text. GPUI never marks an

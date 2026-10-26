@@ -646,7 +646,11 @@ replaces the #209 rule above for servers that are already saved. A server
 that is not in the saved list is a *draft*: it shows **Save** only (no
 **Connect**), is never autosaved, and is registered, with its typed passwords,
 only when validation and the write succeed (then Save gives way to Connect);
-on failure it stays a draft, and leaving the window drops it. A registered
+on failure it stays a draft, and leaving the window drops it. Save and
+Connect register only the shown draft; other drafts are never written. If
+saving fails when the window is closed (close button, Escape, window frame),
+the first attempt is refused and the form and the error stay for a retry;
+closing again discards the edits. (App quit cannot be refused.) A registered
 server shows no Save button and saves its changes itself, including its
 auto-join channels (add, delete, enable, reorder; **Done** saves at once),
 IRCv3 options, the selected server and a confirmed removal:
