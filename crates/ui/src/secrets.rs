@@ -19,31 +19,6 @@ pub struct Credentials(pub CredentialStore);
 
 impl Global for Credentials {}
 
-/// How many store writes run off the UI thread, over all windows. The
-/// backends hold their lock while writing, so anything on the UI thread that
-/// reads the store waits until this is zero instead of blocking on the lock.
-#[derive(Default)]
-struct PendingWrites(usize);
-
-impl Global for PendingWrites {}
-
-/// Counts a write that was just handed to a background task.
-pub fn write_started(cx: &mut App) {
-    cx.default_global::<PendingWrites>().0 += 1;
-}
-
-/// Counts a write whose background task is done.
-pub fn write_finished(cx: &mut App) {
-    let pending = cx.default_global::<PendingWrites>();
-    pending.0 = pending.0.saturating_sub(1);
-}
-
-/// Whether a store write is still running.
-pub fn write_pending(cx: &App) -> bool {
-    cx.try_global::<PendingWrites>()
-        .is_some_and(|pending| pending.0 > 0)
-}
-
 pub fn install(kind: CredentialBackendKind, cx: &mut App) {
     cx.set_global(Credentials(CredentialStore::open(kind)));
 }

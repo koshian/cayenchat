@@ -651,32 +651,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn nothing_reads_the_store_while_a_password_write_runs(cx: &mut TestAppContext) {
-        let settings = connectable("#a");
-        let file = TestFile::with(&settings);
-        let (form, cx) = open(&settings, cx);
-        form.update_in(cx, |form, window, cx| {
-            form.settings
-                .server_password
-                .update(cx, |field, cx| field.set_text("typed", cx));
-            form.save_credential(Credential::Server, window, cx);
-            assert!(secrets::write_pending(cx));
-            // Connect and a second write wait instead of taking the lock.
-            form.connect_from_settings(window, cx);
-            form.delete_credential(Credential::Server, cx);
-            assert_eq!(
-                form.feedback.as_deref(),
-                Some(form.i18n.text("credential_busy").as_str())
-            );
-        });
-        // The write is counted app-wide, not per window, so a window opened
-        // after this one is closed still waits for it.
-        cx.run_until_parked();
-        cx.update(|_, cx| assert!(!secrets::write_pending(cx)));
-        drop(file);
-    }
-
-    #[gpui::test]
     fn delete_removes_a_saved_password_and_a_failure_keeps_it(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let key = settings.selected_profile().unwrap().server_password_key();

@@ -4117,13 +4117,6 @@ impl ChatWindow {
         {
             return;
         }
-        // A new window reads the store, which a running password write holds
-        // the lock of.
-        if secrets::write_pending(cx) {
-            self.report(Some(self.i18n.text("credential_busy")), cx);
-            cx.notify();
-            return;
-        }
         let mut settings = match settings_file::load() {
             Ok(value) => value.unwrap_or_default(),
             Err(error) => {

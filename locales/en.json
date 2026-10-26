@@ -17,7 +17,6 @@
   "credential_server_unsaved": "Save the server first, then save its password.",
   "credential_save_failed": "Could not save the password: {error}",
   "credential_delete_failed": "Could not delete the saved password: {error}",
-  "credential_busy": "A password is being saved or deleted. Try again in a moment.",
   "credential_prompt_title": "A password is needed to connect",
   "credential_prompt_sasl": "SASL password (account: {account})",
   "credential_prompt_save": "Save this password",

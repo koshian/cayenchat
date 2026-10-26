@@ -1949,7 +1949,7 @@ for the connection started from that form and is dropped with the window.
 A connection never keeps an unsaved password (D068). `ServerSession::active_config`,
 which reconnects start from, is stored with `ConnectionConfig::forget_secrets`;
 a reconnect, a launch connection and a connection refused with 464 read the
-store off the UI thread and ask for what is missing in `connect_auth`'s dialog.
+store when the connection starts and ask for what is missing in `connect_auth`'s dialog.
 The IRC library keeps its copy of the server password in its own `Config` for
 as long as the connection lives and cannot be wiped from outside; the worker keeps
 no copy of its own beyond the `PASS` command it sends, and the SASL handshake

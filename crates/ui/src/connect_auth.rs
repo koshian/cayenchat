@@ -167,29 +167,23 @@ impl ChatWindow {
         let token = session.retry_token;
         let profile = self.saved.profile(&session.profile_id).cloned();
         let store = secrets::store(cx);
-        let reading = cx.background_spawn(async move {
-            let Some(profile) = profile else {
-                return (Ok(None), Ok(None));
-            };
-            let server = if refused.is_some() {
-                Ok(None)
-            } else {
-                store.get(&profile.server_password_key())
-            };
-            let sasl = if profile.sasl_enabled {
-                store.get(&profile.sasl_password_key())
-            } else {
-                Ok(None)
-            };
-            (server, sasl)
-        });
-        cx.spawn(async move |this, cx| {
-            let (server, sasl) = reading.await;
-            let _ = this.update(cx, |this, cx| {
-                this.stored_secrets_read(network, token, config, refused, (server, sasl), cx)
-            });
-        })
-        .detach();
+        let read = match profile {
+            None => (Ok(None), Ok(None)),
+            Some(profile) => {
+                let server = if refused.is_some() {
+                    Ok(None)
+                } else {
+                    store.get(&profile.server_password_key())
+                };
+                let sasl = if profile.sasl_enabled {
+                    store.get(&profile.sasl_password_key())
+                } else {
+                    Ok(None)
+                };
+                (server, sasl)
+            }
+        };
+        self.stored_secrets_read(network, token, config, refused, read, cx);
     }
 
     fn stored_secrets_read(
@@ -410,31 +404,20 @@ impl ChatWindow {
             return;
         };
         let store = secrets::store(cx);
-        let writing = cx.background_spawn(async move {
-            let mut first = Ok(());
-            for (key, secret) in saved_keys(&profile, server, sasl) {
-                if let Err(error) = store.set(&key, &secret) {
-                    first = first.and(Err(error));
-                }
+        let mut first = Ok(());
+        for (key, secret) in saved_keys(&profile, server, sasl) {
+            if let Err(error) = store.set(&key, &secret) {
+                first = first.and(Err(error));
             }
-            first
-        });
-        secrets::write_started(cx);
-        cx.spawn(async move |this, cx| {
-            let result = writing.await;
-            let _ = cx.update(secrets::write_finished);
-            if let Err(error) = result {
-                let _ = this.update(cx, |this, cx| {
-                    let text = this.i18n.format(
-                        "credential_save_failed",
-                        &[("error", &secrets::error_text(&this.i18n, &error))],
-                    );
-                    this.state.append_server_message(network, text.clone());
-                    this.raise_error(Some(network), text, crate::notices::Origin::User, cx);
-                });
-            }
-        })
-        .detach();
+        }
+        if let Err(error) = first {
+            let text = self.i18n.format(
+                "credential_save_failed",
+                &[("error", &secrets::error_text(&self.i18n, &error))],
+            );
+            self.state.append_server_message(network, text.clone());
+            self.raise_error(Some(network), text, crate::notices::Origin::User, cx);
+        }
     }
 
     /// Gives up: the attempt is dropped and the server does not try again

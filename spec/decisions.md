@@ -1340,15 +1340,11 @@ D021 that stored typed passwords with Save of the server.
   because the file is unencrypted. Only a server that is already saved can
   have a password saved, so a discarded new server leaves nothing behind. A
   failed save or delete is reported and leaves what was stored. The store is
-  written off the UI thread, and the form follows the result only while the
-  same server is shown. The store's lock is held while writing, so while a
-  write runs the settings window refuses further writes, Connect, switching
-  or removing a server and reloading the file, and says to try again, rather
-  than block the UI thread on a read. The count of running writes is
-  app-wide (it also covers the connect dialog's save), so closing the window
-  does not lose it: a settings window is not opened while one runs. A saved password shown as saved is used as
-  saved: an unfinished change is dropped when another server is selected.
-  Autosave and
+  read and written on the UI thread at the moment of the action, like the
+  upload tokens (a slow store can stall the UI as it does there; moving the
+  store off the UI thread is one app-wide design, #640). A saved password
+  shown as saved is used as saved: an unfinished change is dropped, from the
+  field and the draft, when another server is selected. Autosave and
   Save of the server never store a password; a typed one is used by Connect
   from that form and dropped with the window. Whether a password is saved is
   whether the store holds it; `remember_passwords` in the file is no longer
