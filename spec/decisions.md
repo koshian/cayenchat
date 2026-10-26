@@ -1416,6 +1416,18 @@ D021 that stored typed passwords with Save of the server.
   corrects it, a note can differ from the store (a store emptied elsewhere);
   Connect then asks for the password. Removing a server still deletes its
   passwords.
+- **The store is touched only when the note says saved, or on request.**
+  A connection (launch, tree, reconnect, Connect in settings) reads the server
+  password only if `server_password_saved()` and the SASL password only if
+  SASL is on and `sasl_password_saved()`; otherwise it does not call the
+  store and treats the password as not saved (SASL is asked for in the
+  dialog). Removing a server deletes only the passwords noted as saved. The
+  other touches are the user's own: Save and Delete in settings and the
+  dialog's save box. On macOS every secret sits in one Keychain item, so any
+  read can make the system ask for the login password. A note that is wrong
+  (false while a password is stored) is not repaired by reading; 464, a SASL
+  failure or the dialog recover from it. The old `remember_passwords` counts
+  as noted.
 - **Connection time.** A reconnect, a connection started at launch or from
   the tree, and a registration refused with 464 read the saved passwords and
   open one dialog per server for the ones the connection needs and the store
@@ -1436,6 +1448,30 @@ D021 that stored typed passwords with Save of the server.
 - **Not covered.** A SASL failure (904) is not turned into a dialog: the
   server does not say that the password is missing, and retrying would risk a
   lockout. It is reported and the settings are the place to correct it.
+
+## D070 — Showing settings never reads the credential store; the upload token has a note (#642)
+
+2026-10-27. Reading the store can make the OS ask the user for a permission
+(the macOS Keychain), so it is read only when the settings file notes a
+secret as saved, or when the user acts on it (saving or deleting it, an
+actual upload). Showing it is never a reason. The same rule as D068
+(passwords) and the channel keys (#643).
+
+- **The note.** `image_upload.token_saved` lists the providers whose token
+  is noted as saved. Saving the token adds the provider, deleting removes it;
+  when the store call fails, the note stays as it was. The settings window
+  shows "connected" from the note alone (`refresh_upload_account` does not
+  call `contains`/`get`).
+- **A note that disagrees with the store is corrected where the store is
+  read anyway**, in `configured_uploader` at the next upload: no token for a
+  noted provider gives the usual "no account" guidance and removes the note;
+  a token for an unnoted provider is used and noted. There is no screen or
+  action only for repairing notes. An unnoted token the user does not
+  upload with only shows "not connected" until it is saved again, which
+  overwrites it.
+- **Older files.** A file without `token_saved` gets the configured
+  provider noted as saved on load, without asking the store; a wrong guess
+  is corrected by the first upload.
 
 ## D067 — Send key for normal messages is a setting; optional NOTICE key (#583)
 

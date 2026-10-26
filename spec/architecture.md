@@ -500,6 +500,9 @@ toolbar button works on the first click, #569) and leaves a merely shown bar
 alone: closing it on the press would move the content before the release and
 cancel the click (#578). Only when a menu is open does the click just dismiss
 that menu and the bar.
+While a menu is open, pointing at another heading switches to its menu, and only
+the active heading is highlighted (no extra hover highlight). Clicking the open
+menu's heading again closes it and the bar's selection (#645).
 View → Hide/Show Menu Bar (Windows/Linux only; macOS's bar is the system's, #391)
 flips the same `menu_bar_auto_hide` setting and saves it, independently of
 the toolbar item; its label follows the setting, and an open settings window

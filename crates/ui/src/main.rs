@@ -281,7 +281,8 @@ struct Navigate {
 }
 
 /// The passwords saved for the profile with Save in its settings or in the
-/// password dialog. The SASL one is read only while SASL is on.
+/// password dialog. The store is touched only for a password the profile
+/// notes as saved (D068); the SASL one also only while SASL is on.
 fn saved_connection_secrets(
     profile: &ServerProfile,
     store: &CredentialStore,
@@ -292,8 +293,12 @@ fn saved_connection_secrets(
             .get(&key)
             .map_err(|error| secrets::error_text(i18n, &error))
     };
-    let server = get(profile.server_password_key())?;
-    let sasl = if profile.sasl_enabled {
+    let server = if profile.server_password_saved() {
+        get(profile.server_password_key())?
+    } else {
+        None
+    };
+    let sasl = if profile.sasl_enabled && profile.sasl_password_saved() {
         get(profile.sasl_password_key())?
     } else {
         None
@@ -451,7 +456,15 @@ fn forget_removed_profiles(
     for server in &previous.servers {
         let kept = next.servers.iter().find(|kept| kept.id == server.id);
         if kept.is_none() {
-            for key in [server.server_password_key(), server.sasl_password_key()] {
+            // Only passwords noted as saved: deleting touches the store too.
+            let noted = [
+                (server.server_password_saved(), server.server_password_key()),
+                (server.sasl_password_saved(), server.sasl_password_key()),
+            ];
+            for key in noted
+                .into_iter()
+                .filter_map(|(saved, key)| saved.then_some(key))
+            {
                 if let Err(error) = store.delete(&key) {
                     first_error.get_or_insert(error);
                 }

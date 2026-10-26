@@ -175,12 +175,13 @@ impl ChatWindow {
         let read = match profile {
             None => (Ok(None), Ok(None)),
             Some(profile) => {
-                let server = if refused.is_some() {
+                // The store is read only for what the profile notes as saved.
+                let server = if refused.is_some() || !profile.server_password_saved() {
                     Ok(None)
                 } else {
                     store.get(&profile.server_password_key())
                 };
-                let sasl = if profile.sasl_enabled {
+                let sasl = if profile.sasl_enabled && profile.sasl_password_saved() {
                     store.get(&profile.sasl_password_key())
                 } else {
                     Ok(None)

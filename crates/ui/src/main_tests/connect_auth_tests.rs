@@ -169,6 +169,7 @@ fn a_connection_that_needs_nothing_shows_no_dialog(cx: &mut TestAppContext) {
     });
     store.set(&sasl_key, &Secret::new("saved")).unwrap();
     chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
         // The server password was never used, so it is not asked for.
         assert!(!chat.sessions[&NET].server_password_used);
         chat.start_reconnect(NET, false, cx);
@@ -188,6 +189,7 @@ fn a_server_password_used_before_is_asked_for_when_it_is_not_saved(cx: &mut Test
     let sasl_key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
     store.set(&sasl_key, &Secret::new("saved")).unwrap();
     chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
         chat.sessions.get_mut(&NET).unwrap().server_password_used = true;
         chat.start_reconnect(NET, false, cx);
     });

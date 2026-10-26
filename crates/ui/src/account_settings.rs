@@ -211,21 +211,30 @@ impl SettingsWindow {
 }
 
 impl SettingsWindow {
-    /// Re-reads whether the selected provider has a saved account credential.
+    /// Shows whether the selected provider is noted as having a saved
+    /// account credential. The store is not read for this (#642): an upload
+    /// corrects the note when the store disagrees.
     pub(crate) fn refresh_upload_account(&mut self, cx: &mut Context<Self>) {
-        self.upload_connected = self
-            .settings
-            .values
-            .image_upload
+        let upload = &self.settings.values.image_upload;
+        self.upload_connected = upload
             .provider
             .as_deref()
-            .is_some_and(|id| {
-                secrets::store(cx)
-                    .contains(&SecretKey::uploader_token(id))
-                    .unwrap_or(false)
-            });
+            .is_some_and(|id| upload.token_noted(id));
         self.upload_token_open = false;
         cx.notify();
+    }
+
+    /// Writes the note for `provider`'s token to the settings file and, once
+    /// that worked, to the form and the copy this window saved.
+    fn note_upload_token(&mut self, provider: &str, saved: bool) -> Result<(), String> {
+        let mut file = settings_file::load()?.unwrap_or_else(|| self.settings.values.clone());
+        if file.image_upload.note_token(provider, saved) {
+            settings_file::save(&file)?;
+        }
+        let notes = file.image_upload.token_saved;
+        self.settings.values.image_upload.token_saved = notes.clone();
+        self.saved.image_upload.token_saved = notes;
+        Ok(())
     }
 
     /// Applies a provider choice at once, like the account buttons do.
@@ -256,7 +265,7 @@ impl SettingsWindow {
         }
     }
 
-    fn connect_upload_account(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn connect_upload_account(&mut self, cx: &mut Context<Self>) {
         let Some(provider) = self.settings.values.image_upload.provider.clone() else {
             return;
         };
@@ -270,22 +279,30 @@ impl SettingsWindow {
             Ok(()) => {
                 self.upload_token
                     .update(cx, |field, cx| field.set_text("", cx));
+                let noted = self.note_upload_token(&provider, true);
                 self.refresh_upload_account(cx);
-                self.feedback = Some(self.i18n.text("image_account_saved"));
+                self.feedback = Some(match noted {
+                    Ok(()) => self.i18n.text("image_account_saved"),
+                    Err(error) => error,
+                });
             }
             Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
         }
         cx.notify();
     }
 
-    fn disconnect_upload_account(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn disconnect_upload_account(&mut self, cx: &mut Context<Self>) {
         let Some(provider) = self.settings.values.image_upload.provider.clone() else {
             return;
         };
         match secrets::store(cx).delete(&SecretKey::uploader_token(&provider)) {
             Ok(()) => {
+                let noted = self.note_upload_token(&provider, false);
                 self.refresh_upload_account(cx);
-                self.feedback = Some(self.i18n.text("image_account_disconnected"));
+                self.feedback = Some(match noted {
+                    Ok(()) => self.i18n.text("image_account_disconnected"),
+                    Err(error) => error,
+                });
             }
             Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
         }
