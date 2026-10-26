@@ -654,7 +654,8 @@ the autosave.
 **New servers wait for Save, registered ones autosave (#634).** This
 replaces the #209 rule above for servers that are already saved. A server
 that is not in the saved list is a *draft*: it shows **Save** only (no
-**Connect**), is never autosaved, and is registered, with its typed passwords,
+**Connect**), is never autosaved, and is registered (its passwords are
+stored only by their own Save, D068)
 only when validation and the write succeed (then Save gives way to Connect);
 on failure it stays a draft, and leaving the window drops it. Save and
 Connect register only the shown draft; other drafts are never written. If
@@ -1410,12 +1411,14 @@ D021 that stored typed passwords with Save of the server.
   changed), never from reading the store: opening settings, picking a server
   or adding one must not read the credential store, since a system store may
   ask the user for permission then. The note is set by Save and Delete and by
-  the dialog's save box, and corrected whenever a connection reads the store
-  (a stored value the note lacks, or a noted one that is gone). An import
-  clears the notes, as the passwords do not travel. Until a connection
-  corrects it, a note can differ from the store (a store emptied elsewhere);
-  Connect then asks for the password. Removing a server still deletes its
-  passwords.
+  the dialog's save box, and corrected when a connection reads a noted
+  password and finds it gone. A stored value the note lacks is not looked
+  for (see the next rule). An open settings window takes over the notes in
+  the file before it saves, so a save made there never writes back a note a
+  connection changed meanwhile. An import clears the notes, as the passwords
+  do not travel. A note can differ from the store (a store emptied
+  elsewhere); Connect then asks for the password. Removing a server deletes
+  the passwords noted as saved.
 - **The store is touched only when the note says saved, or on request.**
   A connection (launch, tree, reconnect, Connect in settings) reads the server
   password only if `server_password_saved()` and the SASL password only if

@@ -98,6 +98,75 @@ pub fn system_store_key() -> &'static str {
         "credential_system_linux"
     }
 }
+/// A test store that counts the reads and deletions of passwords, which is
+/// what can make the operating system ask the user for permission. Channel
+/// keys and tokens are not counted: other paths own them.
+#[cfg(test)]
+pub struct PasswordWatch {
+    inner: MemoryBackend,
+    touches: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl PasswordWatch {
+    /// Installs the store; the returned handle counts.
+    pub fn install(cx: &mut App) -> (Arc<Self>, CredentialStore) {
+        let watch = Arc::new(Self {
+            inner: MemoryBackend::new(CredentialBackendKind::System),
+            touches: Default::default(),
+        });
+        let store = CredentialStore::with_backend(watch.clone());
+        cx.set_global(Credentials(store.clone()));
+        (watch, store)
+    }
+
+    pub fn touches(&self) -> usize {
+        self.touches.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn count(&self, key: &cayenchat_storage::SecretKey) {
+        use cayenchat_storage::SecretKey;
+        if matches!(
+            key,
+            SecretKey::ServerPassword { .. } | SecretKey::SaslPassword { .. }
+        ) {
+            self.touches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(test)]
+impl cayenchat_storage::credentials::CredentialBackend for PasswordWatch {
+    fn kind(&self) -> CredentialBackendKind {
+        self.inner.kind()
+    }
+
+    fn is_memory(&self) -> bool {
+        true
+    }
+
+    fn get(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+    ) -> Result<Option<cayenchat_storage::Secret>, CredentialError> {
+        self.count(key);
+        self.inner.get(key)
+    }
+
+    fn set(
+        &self,
+        key: &cayenchat_storage::SecretKey,
+        value: &cayenchat_storage::Secret,
+    ) -> Result<(), CredentialError> {
+        self.inner.set(key, value)
+    }
+
+    fn delete(&self, key: &cayenchat_storage::SecretKey) -> Result<(), CredentialError> {
+        self.count(key);
+        self.inner.delete(key)
+    }
+}
 
 #[cfg(test)]
 mod tests {

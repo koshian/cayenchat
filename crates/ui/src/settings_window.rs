@@ -825,6 +825,19 @@ pub(crate) fn follow_server_order(servers: &mut [ServerProfile], file: &[ServerP
     true
 }
 
+/// Takes over the notes of saved passwords the file holds for the servers
+/// both have. Only an explicit save or a connection changes them, and both
+/// write the file at once, so the file is the newer one.
+fn follow_password_notes(servers: &mut [ServerProfile], file: &[ServerProfile]) {
+    for server in servers {
+        if let Some(theirs) = file.iter().find(|p| p.id == server.id) {
+            server.server_saved = theirs.server_saved;
+            server.sasl_saved = theirs.sasl_saved;
+            server.remember_passwords = theirs.remember_passwords;
+        }
+    }
+}
+
 /// Which of a server's two passwords.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Credential {
@@ -1307,10 +1320,24 @@ impl SettingsWindow {
     /// in the form, so that saving cannot put back an older order.
     /// The toolbar's and the menu bar's visibility, which the chat window's
     /// View menu changes without this window, are taken over the same way.
-    fn follow_saved_server_order(&mut self) {
+    /// The notes of saved passwords are taken over too: a connection that
+    /// saved one (D068) wrote the file, and a save from this window must not
+    /// write the older note back.
+    fn follow_saved_server_order(&mut self, cx: &mut Context<Self>) {
         let Ok(Some(file)) = settings_file::load() else {
             return;
         };
+        follow_password_notes(&mut self.saved.servers, &file.servers);
+        follow_password_notes(&mut self.settings.values.servers, &file.servers);
+        if let Some(profile) = self.settings.values.selected_profile() {
+            let (server, sasl) = saved_passwords(profile);
+            for (which, saved) in [(Credential::Server, server), (Credential::Sasl, sasl)] {
+                let (shown, changing) = self.settings.credential_state(which);
+                if shown != saved && !changing {
+                    self.settings.set_saved(which, saved, &self.i18n, cx);
+                }
+            }
+        }
         follow_file_flag(
             &mut self.settings.values.show_toolbar,
             &mut self.saved.show_toolbar,
@@ -1339,7 +1366,7 @@ impl SettingsWindow {
     }
 
     fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.follow_saved_server_order();
+        self.follow_saved_server_order(cx);
         if self.autosave.is_some() || self.autosave_error.is_some() || self.servers_unsaved(cx) {
             return;
         }
@@ -1401,7 +1428,7 @@ impl SettingsWindow {
     }
 
     pub(crate) fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.follow_saved_server_order();
+        self.follow_saved_server_order(cx);
         let result = (|| {
             let mut settings = self.settings.snapshot(cx)?;
             self.drop_other_drafts(&mut settings);
@@ -1580,7 +1607,7 @@ impl SettingsWindow {
     /// whatever is only typed into the server fields, and stores no
     /// passwords; `Explicit` writes the servers as shown.
     fn save_settings(&mut self, mode: SaveMode, cx: &mut Context<Self>) -> Result<(), String> {
-        self.follow_saved_server_order();
+        self.follow_saved_server_order(cx);
         let explicit = mode == SaveMode::Explicit;
         let mut settings = self.settings.snapshot_with(cx, explicit)?;
         if explicit {

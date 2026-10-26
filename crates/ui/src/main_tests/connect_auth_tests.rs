@@ -238,3 +238,45 @@ fn a_connection_keeps_no_password_in_the_session(cx: &mut TestAppContext) {
         stop(chat);
     });
 }
+
+#[gpui::test]
+fn a_reconnect_reads_only_the_passwords_noted_as_saved(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    let (watch, store) = cx.update(|_, cx| crate::secrets::PasswordWatch::install(cx));
+    let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
+    store.set(&key, &Secret::new("stored")).unwrap();
+
+    // Not noted: the store is left alone and the dialog asks.
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert_eq!(chat.credential_prompts.len(), 1);
+        chat.credential_prompts.clear();
+    });
+    assert_eq!(watch.touches(), 0);
+
+    // Noted, but SASL is off: still not read.
+    chat.update(cx, |chat, cx| {
+        let profile = &mut chat.saved.servers[0];
+        profile.set_sasl_password_saved(true);
+        profile.sasl_enabled = false;
+        chat.sessions.get_mut(&NET).unwrap().active_config = Some(config(false));
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(watch.touches(), 0);
+    chat.update(cx, |chat, _| stop(chat));
+
+    // Noted and SASL on: read and used, with no dialog.
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].sasl_enabled = true;
+        chat.sessions.get_mut(&NET).unwrap().active_config = Some(config(true));
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(watch.touches(), 1);
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty());
+        stop(chat);
+    });
+}

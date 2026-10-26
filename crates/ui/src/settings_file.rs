@@ -1118,6 +1118,98 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_save_keeps_the_note_a_connection_wrote_meanwhile(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let a_id = profile.id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            // A draft keeps the window from reloading the file.
+            form.settings.values.add_server("b.example");
+            form.show_selected_server(cx);
+            assert_eq!(
+                form.settings.credential_state(Credential::Sasl),
+                (false, false)
+            );
+        });
+        // A connection saved both passwords and noted it in the file.
+        let mut noted = settings.clone();
+        let profile = noted.profile_mut(&a_id).unwrap();
+        profile.set_server_password_saved(true);
+        profile.set_sasl_password_saved(true);
+        super::save(&noted).unwrap();
+        form.update(cx, |form, cx| {
+            form.settings.values.appearance.alternate_rows ^= true;
+            assert!(form.save_before_leaving(cx));
+        });
+        let written = super::load().unwrap().unwrap();
+        let profile = written.profile(&a_id).unwrap();
+        assert!(profile.server_password_saved() && profile.sasl_password_saved());
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_settings_window_reads_a_password_only_when_it_is_noted_as_saved(
+        cx: &mut TestAppContext,
+    ) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let (a_id, key, sasl_key) = (
+            profile.id.clone(),
+            profile.server_password_key(),
+            profile.sasl_password_key(),
+        );
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (watch, store) = cx.update(|cx| {
+            secrets::install_memory(cx);
+            secrets::PasswordWatch::install(cx)
+        });
+        store.set(&key, &Secret::new("stored")).unwrap();
+        store.set(&sasl_key, &Secret::new("stored-sasl")).unwrap();
+        let (form, cx) = open(&settings, cx);
+        form.update_in(cx, |form, _, cx| {
+            // Saving, connecting and removing a server touch nothing that is
+            // not noted as saved.
+            form.settings.values.appearance.alternate_rows ^= true;
+            assert!(form.save_before_leaving(cx));
+            let mut snapshot = form.settings.snapshot(cx).unwrap();
+            let (config, missing) = form
+                .settings
+                .connection_config(&mut snapshot, &store, &form.i18n, cx)
+                .unwrap();
+            assert!(config.server_password.is_none() && missing.sasl);
+            form.select_server(b_id.clone(), cx);
+            form.settings.values.remove_selected_server();
+            form.show_selected_server(cx);
+            assert!(form.save_before_leaving(cx));
+        });
+        assert_eq!(watch.touches(), 0);
+
+        // Noted: read and used, and deleted with the server.
+        form.update_in(cx, |form, _, cx| {
+            let profile = form.settings.values.profile_mut(&a_id).unwrap();
+            profile.set_server_password_saved(true);
+            profile.set_sasl_password_saved(true);
+            form.settings.show_selected(&form.i18n, cx);
+            let mut snapshot = form.settings.snapshot(cx).unwrap();
+            let (config, _) = form
+                .settings
+                .connection_config(&mut snapshot, &store, &form.i18n, cx)
+                .unwrap();
+            assert_eq!(config.server_password.as_deref(), Some("stored"));
+        });
+        assert_eq!(watch.touches(), 2);
+        drop(file);
+    }
+
+    #[gpui::test]
     fn an_unsaved_server_cannot_save_a_password_yet(cx: &mut TestAppContext) {
         let saved = settings_with_channels("#a");
         let file = TestFile::with(&saved);
