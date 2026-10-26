@@ -3837,7 +3837,8 @@ impl ChatWindow {
                 .format("event_nick_retry", &[("nickname", &nickname)]),
         );
         if closed {
-            self.start_reconnect(network, false, cx);
+            // The user submitted this nickname, so a failure is announced.
+            self.start_reconnect(network, true, cx);
         }
         Ok(())
     }

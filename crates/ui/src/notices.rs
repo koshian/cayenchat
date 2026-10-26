@@ -12,7 +12,7 @@
 //!   `MAX_PENDING`; further ones are dropped and logged.
 //! - A notice a background process raised (not an answer to something the
 //!   user just did) is also dropped for `COOLDOWN` after the same notice was
-//!   closed, so a failing automatic retry cannot reopen the dialog forever.
+//!   closed, so a repeated refusal cannot reopen the dialog forever.
 //!   What the user triggers is always shown again.
 
 use std::{
@@ -531,6 +531,32 @@ mod disconnect_tests {
     #[gpui::test]
     fn a_failed_reconnect_the_user_asked_for_raises_a_notice(cx: &mut TestAppContext) {
         assert_eq!(notices_after_failed_reconnect(true, cx), (1, true));
+    }
+
+    #[gpui::test]
+    fn a_failed_nickname_retry_after_the_link_closed_raises_a_notice(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+            crate::secrets::install_memory(cx);
+            cx.set_global(crate::theme::Theme::new(
+                cayenchat_storage::ThemeMode::Light,
+                gpui::WindowAppearance::Light,
+                &cayenchat_storage::Appearance::default(),
+            ));
+        });
+        let settings = crate::settings_with_channels("#a");
+        let (chat, cx) =
+            cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+        let result = chat.update(cx, |chat, cx| {
+            let config =
+                cayenchat_irc_core::ConnectionConfig::tls("127.0.0.1".into(), "me".into(), vec![]);
+            chat.sessions.get_mut(&NetworkId(1)).unwrap().active_config = Some(config);
+            // A nickname with a space fails validation when reconnecting.
+            chat.retry_nickname(NetworkId(1), "bad nick".into(), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(result, Ok(()));
+        assert_eq!(chat.update(cx, |chat, _| chat.notices.all().len()), 1);
     }
 
     #[gpui::test]
