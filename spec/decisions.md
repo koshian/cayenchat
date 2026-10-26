@@ -650,9 +650,14 @@ on failure it stays a draft, and leaving the window drops it. Save and
 Connect register only the shown draft; other drafts are never written. If
 saving fails when the window is closed (close button, Escape, window frame)
 or the user quits the app (menu, shortcut, main window close, macOS Dock;
-`settings_block_quit` is the one check, run after the dispatch of the action
-so the settings window can be updated, and a settings window that cannot be
-asked never counts as saved), the close or quit is refused and
+asking and quitting are separate: every entry only asks, and the confirmed
+quit, including "Quit" in the question, ends in `quit_app`, the one place
+that calls `cx.quit()` for them and first runs `settings_block_quit`, so
+edits made while the question was open are saved too; the action is
+deferred until its dispatch has finished so the settings window can be
+updated, and a settings window that cannot be asked never counts as saved.
+The window close and Dock handlers must return the answer themselves and run
+the same check), the close or quit is refused and
 the form and the error stay for a retry; edits are never discarded without a
 successful save (so while the file cannot be written the window stays open).
 Quits by the system or a signal cannot be refused. A registered

@@ -45,14 +45,19 @@ impl ChatWindow {
 
     /// Closes the question; `quit` is whether "Quit" was chosen. Cancelling
     /// puts the focus back where the user was typing.
-    fn answer_quit_dialog(&mut self, quit: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn answer_quit_dialog(
+        &mut self,
+        quit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.quit_prompt_open {
             return;
         }
         self.quit_prompt_open = false;
         let previous = self.quit_dialog.previous.take();
         if quit {
-            cx.quit();
+            crate::quit_app(cx);
         } else if let Some(handle) = previous {
             window.focus(&handle);
         }

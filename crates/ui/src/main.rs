@@ -1446,11 +1446,8 @@ impl ChatWindow {
     /// main window). Quits at once unless the confirmation is on. Quits by
     /// the system or a signal call `cx.quit()` directly and never ask.
     fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if settings_block_quit(cx) {
-            return;
-        }
         if !self.ask_before_quit(window, cx) {
-            cx.quit();
+            quit_app(cx);
         }
     }
 
@@ -9104,6 +9101,16 @@ fn settings_block_quit(cx: &mut App) -> bool {
         .map_or(true, |saved| !saved)
 }
 
+/// The one place where a confirmed, ordinary quit ends the application:
+/// asking (menu, shortcut, window close, Dock, the question) only leads here.
+/// Quits unless the settings save check blocks it. The system's shutdown and
+/// signals call `cx.quit()` themselves and never reach this.
+pub(crate) fn quit_app(cx: &mut App) {
+    if !settings_block_quit(cx) {
+        cx.quit();
+    }
+}
+
 /// The chat window cannot be updated while it is handling an event, which is
 /// the case when the action reached the global handler from the focused
 /// fallback prompt. That is not a reason to skip the question, so the request
@@ -9114,11 +9121,8 @@ fn request_quit_in_chat_window(cx: &mut App, retry: bool) {
         .windows()
         .into_iter()
         .find_map(|w| w.downcast::<ChatWindow>());
-    if settings_block_quit(cx) {
-        return;
-    }
     let Some(chat) = chat else {
-        cx.quit();
+        quit_app(cx);
         return;
     };
     if chat
