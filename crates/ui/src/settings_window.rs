@@ -509,6 +509,11 @@ impl SettingsForm {
     fn read_server_text(&self, settings: &mut Settings, cx: &App) -> Result<(), String> {
         let value = |field: &Entity<TextInput>| field.read(cx).text().trim().to_owned();
         let host = value(&self.custom_host);
+        // An empty host is left to `commit_server_text`, which knows whether
+        // the server is a draft.
+        if !host.is_empty() && !ConnectionConfig::host_is_valid(&host) {
+            return Err(i18n_error(settings.language, "host_invalid"));
+        }
         // Without a server the host and port fields are hidden and unused.
         let port = match self.port.read(cx).text().trim().parse() {
             Ok(port) if port != 0 => port,
@@ -956,9 +961,6 @@ pub(crate) struct SettingsWindow {
     autosave: Option<Task<()>>,
     /// Why the latest edits could not be saved, shown until they can be.
     pub(crate) autosave_error: Option<String>,
-    /// Leaving was refused once because saving failed; leaving again
-    /// discards the unsaved edits.
-    leave_refused: bool,
     /// Why the shown server's typed text was not taken over (a bad port, no
     /// hostname). The text stays in its fields and the saved server is left
     /// as it was, until the text is valid.
@@ -1209,7 +1211,6 @@ impl SettingsWindow {
             window: window.window_handle(),
             autosave: None,
             autosave_error: None,
-            leave_refused: false,
             field_error: None,
             avatar_feedback: None,
             avatar_refresh: Vec::new(),
@@ -1486,23 +1487,18 @@ impl SettingsWindow {
         self.autosave_committed(cx);
     }
 
-    /// Saves before the window closes. Returns whether it may close: when
-    /// saving fails, the first attempt is refused so that the form and the
-    /// error stay for a retry, and asking again discards the edits.
+    /// Saves before the window closes or the app quits. Returns whether
+    /// that may go on: when saving fails, the form and the error stay so the
+    /// edits can be retried; nothing is discarded without a successful save.
     pub(crate) fn save_before_leaving(&mut self, cx: &mut Context<Self>) -> bool {
         self.autosave = None;
         let _ = self.commit_shown_server(cx);
-        if self.autosave_committed(cx) || self.leave_refused {
-            return true;
-        }
-        self.leave_refused = true;
-        false
+        self.autosave_committed(cx)
     }
 
     fn autosave_committed(&mut self, cx: &mut Context<Self>) -> bool {
         match self.save_settings(SaveMode::Committed, cx) {
             Ok(()) => {
-                self.leave_refused = false;
                 if self.autosave_error.take().is_some() {
                     cx.notify();
                 }
@@ -1728,10 +1724,13 @@ impl ChatWindow {
 }
 
 impl SettingsWindow {
-    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.save_before_leaving(cx) {
+    /// Closes the window once everything is saved; returns whether it did.
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let saved = self.save_before_leaving(cx);
+        if saved {
             window.remove_window();
         }
+        saved
     }
 
     /// Whether any field holds uncommitted IME text. GPUI never marks an
@@ -1791,11 +1790,13 @@ impl SettingsWindow {
             self.settings.language_list_open = false;
             cx.notify();
         } else {
-            self.close_settings(window, cx);
-            // The chat window takes the keyboard back.
-            let _ = self
-                .owner
-                .update(cx, |_, chat_window, _| chat_window.activate_window());
+            // When saving failed the window stays, with its error in front.
+            if self.close_settings(window, cx) {
+                // The chat window takes the keyboard back.
+                let _ = self
+                    .owner
+                    .update(cx, |_, chat_window, _| chat_window.activate_window());
+            }
         }
     }
 
@@ -2574,9 +2575,9 @@ impl SettingsWindow {
                         settings_theme::button("back-button", false, cx)
                             .debug_selector(|| "back-button".into())
                             .child(self.i18n.text("back"))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_settings(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.close_settings(window, cx);
+                            })),
                     )
                     .child(div().flex_1())
                     .when(adding, |d| {

@@ -648,9 +648,11 @@ that is not in the saved list is a *draft*: it shows **Save** only (no
 only when validation and the write succeed (then Save gives way to Connect);
 on failure it stays a draft, and leaving the window drops it. Save and
 Connect register only the shown draft; other drafts are never written. If
-saving fails when the window is closed (close button, Escape, window frame),
-the first attempt is refused and the form and the error stay for a retry;
-closing again discards the edits. (App quit cannot be refused.) A registered
+saving fails when the window is closed (close button, Escape, window frame)
+or the user quits the app (menu, shortcut), the close or quit is refused and
+the form and the error stay for a retry; edits are never discarded without a
+successful save (so while the file cannot be written the window stays open).
+Quits by the system or a signal cannot be refused. A registered
 server shows no Save button and saves its changes itself, including its
 auto-join channels (add, delete, enable, reorder; **Done** saves at once),
 IRCv3 options, the selected server and a confirmed removal:
@@ -660,7 +662,8 @@ IRCv3 options, the selected server and a confirmed removal:
   changes, another server is chosen, the window is deactivated or closed, the
   app quits, or Connect is pressed — not while typing, so a half-typed
   hostname is never applied. Only valid text is committed (the port is a
-  number, the hostname is not empty); otherwise the saved server is left as it
+  number, the hostname is not empty and has no whitespace or control
+  characters, as the connection requires); otherwise the saved server is left as it
   was, the text stays in its field and the reason is shown
   (`field_error`) until it is valid. A hostless registered server is never
   written (that would drop it and its passwords). A failed write is shown

@@ -376,6 +376,17 @@ mod tests {
         let saved = super::load().unwrap().unwrap();
         assert_eq!(saved.selected_profile().unwrap().host, host);
 
+        // A hostname the connection would refuse is not saved either.
+        form.update(cx, |form, cx| {
+            form.settings
+                .custom_host
+                .update(cx, |field, cx| field.set_text("bad host", cx));
+            form.autosave_now(None, cx);
+            assert!(form.field_error.is_some());
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.selected_profile().unwrap().host, host);
+
         // Fixing the text saves it and clears the error.
         form.update(cx, |form, cx| {
             form.settings
@@ -523,17 +534,18 @@ mod tests {
     }
 
     #[gpui::test]
-    fn leaving_after_a_failed_save_is_refused_once(cx: &mut TestAppContext) {
+    fn leaving_after_a_failed_save_is_refused_until_it_succeeds(cx: &mut TestAppContext) {
         let settings = settings_with_channels("#a");
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         super::fail_saves(true);
         form.update(cx, |form, cx| {
             form.settings.values.notifications.private_messages = false;
-            assert!(!form.save_before_leaving(cx));
-            assert!(form.autosave_error.is_some());
-            // Asking again is the choice to discard.
-            assert!(form.save_before_leaving(cx));
+            // Asking again never discards the edits.
+            for _ in 0..3 {
+                assert!(!form.save_before_leaving(cx));
+                assert!(form.autosave_error.is_some());
+            }
         });
         super::fail_saves(false);
         form.update(cx, |form, cx| {

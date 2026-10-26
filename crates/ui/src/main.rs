@@ -1443,6 +1443,22 @@ impl ChatWindow {
     /// main window). Quits at once unless the confirmation is on. Quits by
     /// the system or a signal call `cx.quit()` directly and never ask.
     fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Confirmed settings edits are written first; if that fails the
+        // settings window stays in front with the error and the app keeps
+        // running so the edits are not lost.
+        if let Some(handle) = self.settings_window
+            && handle
+                .update(cx, |settings, window, cx| {
+                    let saved = settings.save_before_leaving(cx);
+                    if !saved {
+                        window.activate_window();
+                    }
+                    saved
+                })
+                .is_ok_and(|saved| !saved)
+        {
+            return;
+        }
         if !self.ask_before_quit(window, cx) {
             cx.quit();
         }
