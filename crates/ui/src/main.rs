@@ -2438,10 +2438,10 @@ impl ChatWindow {
         session.retry_pending = false;
         session.retry_attempt = 0;
         session.retry_token += 1;
-        self.start_reconnect(network, cx);
+        self.start_reconnect(network, true, cx);
     }
 
-    fn start_reconnect(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+    fn start_reconnect(&mut self, network: NetworkId, announce: bool, cx: &mut Context<Self>) {
         let Some(config) = self.reconnect_config(network) else {
             return;
         };
@@ -2471,7 +2471,9 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
-                self.record_disconnect(network, error, true, cx);
+                // An automatic retry that fails is only logged; one the user
+                // asked for is announced.
+                self.record_disconnect(network, error, announce, cx);
                 self.schedule_retry(network, cx);
             }
         }
@@ -2530,7 +2532,7 @@ impl ChatWindow {
                         && session.irc.is_none()
                 });
                 if due {
-                    this.start_reconnect(network, cx);
+                    this.start_reconnect(network, false, cx);
                 }
             });
         })
@@ -2539,8 +2541,9 @@ impl ChatWindow {
     }
 
     /// Records that `network`'s connection ended. `announce` raises the
-    /// selected server's end as a notice; an end the user asked for is only
-    /// logged.
+    /// selected server's end as a notice; it is set for a refusal and a
+    /// failed user-made connect. A connection that ended by itself, a failed
+    /// automatic retry and an end the user asked for are only logged.
     fn record_disconnect(
         &mut self,
         network: NetworkId,
@@ -2710,7 +2713,7 @@ impl ChatWindow {
                 // Retries restart from the shortest wait if this fails.
                 session.retry_attempt = 0;
                 session.retry_token += 1;
-                self.start_reconnect(network, cx);
+                self.start_reconnect(network, false, cx);
                 continue;
             }
             if let Ok(connection) = self.registered_connection(network)
@@ -3824,7 +3827,8 @@ impl ChatWindow {
                 .format("event_nick_retry", &[("nickname", &nickname)]),
         );
         if closed {
-            self.start_reconnect(network, cx);
+            // The user submitted this nickname, so a failure is announced.
+            self.start_reconnect(network, true, cx);
         }
         Ok(())
     }
@@ -4829,7 +4833,7 @@ impl ChatWindow {
     }
 
     fn handle_event(&mut self, network: NetworkId, event: Event, cx: &mut Context<Self>) {
-        let closed = matches!(event, Event::Closed(_));
+        let refused = matches!(event, Event::Refused(_));
         let replayed = matches!(event, Event::JoinedReplayed { .. });
         match event {
             Event::Diagnostic { elapsed, message } => {
@@ -5487,8 +5491,9 @@ impl ChatWindow {
                 );
             }
             Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
-                // Closed is the end the user (or sleep) asked for, not a failure.
-                let announce = !closed;
+                // Only a refusal (no automatic reconnect) needs the user; a
+                // connection that ended by itself is reconnected and logged.
+                let announce = refused;
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self
