@@ -1091,11 +1091,69 @@ pub struct Ircv3Preferences {
 }
 
 /// External image hosting for IRC. Disabled until the user picks a provider.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ImageUpload {
     /// Provider ID from the uploader registry, or `None` when disabled.
     pub provider: Option<String>,
+    /// Providers whose upload token is noted as saved in the credential
+    /// store (#642). Only a note, so that showing the settings never reads
+    /// the store (which can ask the user for a permission). Saving or
+    /// deleting the token changes it, and an upload corrects it when the
+    /// store disagrees. A file from before the note (`None`) is read as
+    /// "saved" for the configured provider, without asking the store.
+    /// Added without a version change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_saved: Option<Vec<String>>,
+}
+
+impl Default for ImageUpload {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            token_saved: Some(Vec::new()),
+        }
+    }
+}
+
+impl ImageUpload {
+    /// Whether the token of `provider` is noted as saved.
+    pub fn token_noted(&self, provider: &str) -> bool {
+        match &self.token_saved {
+            Some(noted) => noted.iter().any(|id| id == provider),
+            None => self.provider.as_deref() == Some(provider),
+        }
+    }
+
+    /// Notes the token of `provider` as saved or not. False when the note
+    /// already said so.
+    pub fn note_token(&mut self, provider: &str, saved: bool) -> bool {
+        if self.token_noted(provider) == saved {
+            return false;
+        }
+        let mut noted = self.token_saved.take().unwrap_or_else(|| {
+            // A file from before the note: only the configured provider.
+            self.provider.iter().cloned().collect()
+        });
+        noted.retain(|id| id != provider);
+        if saved {
+            noted.push(provider.to_owned());
+        }
+        self.token_saved = Some(noted);
+        true
+    }
+
+    /// Settings files only ever hold provider IDs of the registry's size;
+    /// drop anything else and repeats.
+    fn clean_notes(&mut self) {
+        let provider = self.provider.clone();
+        let noted = self
+            .token_saved
+            .get_or_insert_with(|| provider.into_iter().collect());
+        let mut seen = HashSet::new();
+        noted.retain(|id| id.len() <= 64 && seen.insert(id.clone()));
+        noted.truncate(64);
+    }
 }
 
 /// Desktop notifications (version 12). Older settings get the defaults.
@@ -1417,6 +1475,7 @@ impl Settings {
             self.servers.sort_by_key(is_preset);
         }
         self.servers.retain(|s| !s.host.trim().is_empty());
+        self.image_upload.clean_notes();
         for server in &mut self.servers {
             if !server.use_tls {
                 server.verify_tls_certificates = true;
@@ -2759,6 +2818,36 @@ mod tests {
         assert_eq!(load_from(&path).unwrap(), Some(settings));
         assert_eq!(color_value("#123ABC"), Some(0x123abc));
         assert!(color_value("#123ABZ").is_none());
+    }
+
+    #[test]
+    fn upload_token_notes_change_and_migrate_without_the_store() {
+        let mut upload = ImageUpload::default();
+        assert!(!upload.token_noted("imgbb"));
+        assert!(upload.note_token("imgbb", true));
+        assert!(!upload.note_token("imgbb", true), "no change");
+        assert!(upload.token_noted("imgbb"));
+        assert!(upload.note_token("imgbb", false));
+        assert!(!upload.note_token("imgbb", false), "no change");
+
+        // A file from before the note: the configured provider counts as
+        // saved, and the note is written down on load.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value["image_upload"] = serde_json::json!({ "provider": "imgbb" });
+        fs::write(&path, value.to_string()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.image_upload.token_saved, Some(vec!["imgbb".into()]));
+        value["image_upload"] = serde_json::json!({});
+        fs::write(&path, value.to_string()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.image_upload.token_saved, Some(Vec::new()));
+
+        let mut settings = Settings::default();
+        settings.image_upload.note_token("imgbb", true);
+        save_to(&path, &settings).unwrap();
+        assert_eq!(load_from(&path).unwrap(), Some(settings));
     }
 
     #[test]

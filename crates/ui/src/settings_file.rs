@@ -71,6 +71,22 @@ pub(crate) fn replace(settings: &Settings) -> Result<Option<std::path::PathBuf>,
     save(settings).map(|()| backup)
 }
 
+/// Notes in the settings file whether the upload token of `provider` is
+/// saved, and returns the note as it is then (#642). Nothing is written when
+/// the note already says so; a file that cannot be read is left alone.
+pub(crate) fn note_upload_token(
+    provider: &str,
+    saved: bool,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(mut settings) = load()? else {
+        return Ok(None);
+    };
+    if settings.image_upload.note_token(provider, saved) {
+        save(&settings)?;
+    }
+    Ok(settings.image_upload.token_saved)
+}
+
 /// The in-memory file of the running test, gone again when dropped.
 #[cfg(test)]
 pub(crate) struct TestFile;
@@ -397,6 +413,92 @@ mod tests {
         });
         assert_eq!(mode, ThemeMode::Dark);
         assert_eq!(provider.as_deref(), Some("elsewhere"));
+        drop(file);
+    }
+
+    fn upload_settings(provider: &str, saved: bool) -> Settings {
+        let mut settings = settings_with_channels("#a");
+        settings.image_upload.provider = Some(provider.into());
+        settings.image_upload.note_token(provider, saved);
+        settings
+    }
+
+    #[gpui::test]
+    fn showing_the_settings_does_not_read_the_credential_store(cx: &mut TestAppContext) {
+        // The store is empty: a read would show "not connected", the note
+        // says it is, and a store that fails changes nothing either.
+        let settings = upload_settings("imgbb", true);
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update(cx, |form, cx| {
+            form.refresh_upload_account(cx);
+            assert!(form.upload_connected);
+        });
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn a_settings_file_without_the_note_reads_the_provider_as_saved(cx: &mut TestAppContext) {
+        let mut settings = upload_settings("imgbb", false);
+        settings.image_upload.token_saved = None;
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        assert!(form.read_with(cx, |form, _| form.upload_connected));
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_upload_token_note_follows_saving_and_deleting(cx: &mut TestAppContext) {
+        let settings = upload_settings("imgbb", false);
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let noted = || {
+            super::load()
+                .unwrap()
+                .unwrap()
+                .image_upload
+                .token_noted("imgbb")
+        };
+        assert!(!form.read_with(cx, |form, _| form.upload_connected));
+
+        form.update(cx, |form, cx| {
+            form.upload_token
+                .update(cx, |field, cx| field.set_text("token", cx));
+            form.connect_upload_account(cx);
+            assert!(form.upload_connected);
+        });
+        assert!(noted());
+        let store = cx.update(|_, cx| secrets::store(cx));
+        assert!(
+            store
+                .contains(&cayenchat_storage::SecretKey::uploader_token("imgbb"))
+                .unwrap()
+        );
+
+        // A deletion the store refuses leaves the note as it was.
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update(cx, |form, cx| {
+            form.disconnect_upload_account(cx);
+            assert!(form.upload_connected);
+        });
+        assert!(noted());
+        cx.update(|_, cx| cx.set_global(secrets::Credentials(store)));
+
+        form.update(cx, |form, cx| {
+            form.disconnect_upload_account(cx);
+            assert!(!form.upload_connected);
+        });
+        assert!(!noted());
         drop(file);
     }
 

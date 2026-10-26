@@ -22,7 +22,7 @@ use crate::{
     ChatWindow, SettingsTab, input,
     localization::Localizer,
     notices::{Notice, Origin},
-    secrets,
+    secrets, settings_file,
 };
 
 /// The uploader for `provider` (a provider ID from settings) and what the
@@ -45,12 +45,20 @@ pub(crate) fn configured_uploader(
         return Ok((UploaderReadiness::NotConfigured, None));
     };
     let provider = info.name.to_owned();
+    // The store decides here; the settings' note of a saved token follows it
+    // (#642). A note that cannot be written is corrected at the next upload.
     match secrets::store(cx).get(&SecretKey::uploader_token(info.id)) {
-        Ok(Some(token)) => Ok((
-            UploaderReadiness::Ready { provider },
-            cayenchat_upload::connect(info.id, token),
-        )),
-        Ok(None) => Ok((UploaderReadiness::NeedsAccount { provider }, None)),
+        Ok(Some(token)) => {
+            let _ = settings_file::note_upload_token(info.id, true);
+            Ok((
+                UploaderReadiness::Ready { provider },
+                cayenchat_upload::connect(info.id, token),
+            ))
+        }
+        Ok(None) => {
+            let _ = settings_file::note_upload_token(info.id, false);
+            Ok((UploaderReadiness::NeedsAccount { provider }, None))
+        }
         Err(error) => Err(secrets::error_text(i18n, &error)),
     }
 }
@@ -719,6 +727,45 @@ mod tests {
         cx.simulate_prompt_answer("Cancel");
         cx.run_until_parked();
         assert!(chat.read_with(cx, |chat, _| chat.attachments.uploading().is_none()));
+    }
+
+    #[gpui::test]
+    fn an_upload_corrects_the_note_of_a_saved_token(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        settings.image_upload.provider = Some("imgbb".into());
+        settings.image_upload.note_token("imgbb", true);
+        let file = crate::settings_file::TestFile::with(&settings);
+        let noted = || {
+            crate::settings_file::load()
+                .unwrap()
+                .unwrap()
+                .image_upload
+                .token_noted("imgbb")
+        };
+        let (_, _, store, cx) = open_chat(cx, None, Some("imgbb"));
+
+        // Noted as saved, but the store has no token: the guidance appears
+        // and the note goes.
+        cx.write_to_clipboard(image_clipboard());
+        cx.dispatch_action(crate::input::Paste);
+        cx.run_until_parked();
+        assert!(cx.pending_prompt().is_some());
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert!(!noted());
+
+        // Noted as not saved, but the store has one: the upload goes on and
+        // the note comes back.
+        store
+            .set(&SecretKey::uploader_token("imgbb"), &Secret::new("token"))
+            .unwrap();
+        cx.dispatch_action(crate::input::Paste);
+        cx.run_until_parked();
+        let (title, _) = cx.pending_prompt().expect("confirmation");
+        assert!(title.starts_with("Upload this image to ImgBB"), "{title}");
+        cx.simulate_prompt_answer("Cancel");
+        assert!(noted());
+        drop(file);
     }
 
     #[gpui::test]
