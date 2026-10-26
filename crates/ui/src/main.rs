@@ -22,6 +22,7 @@ mod dialog;
 mod disconnect_dialog;
 mod double_enter;
 mod experimental_settings;
+mod focus_reveal;
 mod help_command;
 mod image_upload;
 mod input;
@@ -9372,6 +9373,9 @@ fn themed_bindings(
 }
 
 /// Standard Tab / Shift+Tab movement between settings fields (tab stops).
+/// The settings window has its own handlers that also scroll; this is the
+/// plain movement the tests exercise.
+#[cfg(test)]
 fn field_traversal<E: InteractiveElement>(element: E) -> E {
     element
         .on_action(|_: &FocusNextField, window, _| window.focus_next())

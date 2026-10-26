@@ -6,7 +6,7 @@ use crate::{
     ChatWindow, Connect, CopyDiagnostics, Disconnect, FocusNextField, FocusPreviousField,
     OpenSettings, Reconnect, ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts,
     autostart, avatar_editor, color_picker, connection_config, decorations, diagnostics,
-    field_traversal, forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings,
+    focus_reveal, forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings,
     localization::Localizer, notification_rules, saved_connection_secrets, scrollbar, secrets,
     settings_file, settings_theme, shortcut_settings, theme,
 };
@@ -860,6 +860,8 @@ pub(crate) struct AutoJoinDialog {
     /// Holds the keyboard focus while no row is being edited, so typing and
     /// Tab never reach the form behind the dialog.
     pub(crate) focus: FocusHandle,
+    /// Scroll position of the row list, which follows Tab like the pane does.
+    pub(crate) scroll: ScrollHandle,
 }
 
 pub(crate) struct AutoJoinRow {
@@ -887,6 +889,9 @@ pub(crate) struct SettingsWindow {
     pub(crate) nav_focus: FocusHandle,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) pane_scroll: ScrollHandle,
+    /// Frames still allowed to scroll to the field Tab moved to: the first
+    /// renders before the field is painted at its new place, the second after.
+    reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
@@ -957,6 +962,9 @@ pub(crate) struct SettingsWindow {
     autostart_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
+
+/// See `SettingsWindow::reveal_focus`.
+const REVEAL_FRAMES: u8 = 2;
 
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
@@ -1130,6 +1138,7 @@ impl SettingsWindow {
             nav_focus: cx.focus_handle().tab_stop(true),
             nav_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
+            reveal_focus: 0,
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -1982,6 +1991,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("auto-join-list")
+                    .track_scroll(&dialog.scroll)
                     .flex_1()
                     .min_h_0()
                     .max_h(px(360.))
@@ -2031,7 +2041,11 @@ impl SettingsWindow {
             .collect();
         let focus = cx.focus_handle();
         window.focus(&focus);
-        self.auto_join = Some(AutoJoinDialog { rows, focus });
+        self.auto_join = Some(AutoJoinDialog {
+            rows,
+            focus,
+            scroll: ScrollHandle::new(),
+        });
         cx.notify();
     }
 
@@ -2054,6 +2068,75 @@ impl SettingsWindow {
         }
         if !dialog.focus.contains_focused(window, cx) {
             window.focus(&dialog.focus);
+        }
+        // Only the dialog's own list follows; the panes behind stay put.
+        focus_reveal::clear(cx);
+        self.reveal_focus = REVEAL_FRAMES;
+        cx.notify();
+    }
+
+    /// Tab / Shift+Tab on the settings screen: moves the focus, then scrolls
+    /// whichever pane holds the new target by the least amount that shows it.
+    fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if forward {
+            window.focus_next();
+        } else {
+            window.focus_prev();
+        }
+        // The dialog covers the panes; nothing behind it needs to follow.
+        if self.auto_join.is_none() {
+            if self.nav_focus.is_focused(window) {
+                self.reveal_selected_tab();
+            }
+            focus_reveal::clear(cx);
+            self.reveal_focus = REVEAL_FRAMES;
+            cx.notify();
+        }
+    }
+
+    /// Scrolls the category list just enough to show the selected category.
+    fn reveal_selected_tab(&self) {
+        let tabs = Self::settings_tabs();
+        let Some(index) = tabs.iter().position(|(tab, ..)| *tab == self.tab) else {
+            return;
+        };
+        // The last category (Experimental) follows a spacer child.
+        let spacer = usize::from(index + 1 == tabs.len());
+        self.nav_scroll.scroll_to_item(index + spacer);
+    }
+
+    /// While a Tab is being followed, scrolls the pane (or the dialog's list)
+    /// to the field that has the focus unless it is already in view. The
+    /// bounds are those the field painted at its new place, so the frame
+    /// right after the Tab finds none and asks for one more.
+    fn reveal_focused(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.reveal_focus == 0 {
+            return;
+        }
+        self.reveal_focus -= 1;
+        let Some(target) = focus_reveal::focused_bounds(window, cx) else {
+            if self.reveal_focus > 0 {
+                // Notifying while drawing does not schedule another frame.
+                let this = cx.entity();
+                window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+            }
+            return;
+        };
+        self.reveal_focus = 0;
+        // With the dialog open, the scrolling region is its list.
+        let scroll = match &self.auto_join {
+            Some(dialog) => &dialog.scroll,
+            None => &self.pane_scroll,
+        };
+        let offset = scroll.offset();
+        let y = focus_reveal::offset_to_reveal(
+            scroll.bounds(),
+            target,
+            offset.y,
+            scroll.max_offset().height,
+        );
+        if y != offset.y {
+            scroll.set_offset(point(offset.x, y));
         }
     }
 
@@ -3733,7 +3816,15 @@ impl SettingsWindow {
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         let auto_join = self.render_auto_join_dialog(cx);
-        field_traversal(div().id("settings-screen"))
+        self.reveal_focused(window, cx);
+        div()
+            .id("settings-screen")
+            .on_action(
+                cx.listener(|this, _: &FocusNextField, window, cx| this.traverse(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                this.traverse(false, window, cx)
+            }))
             .key_context("SettingsWindow")
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.escape_key_down(event, window, cx)),
