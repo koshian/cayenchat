@@ -1340,8 +1340,11 @@ D021 that stored typed passwords with Save of the server.
   because the file is unencrypted. Only a server that is already saved can
   have a password saved, so a discarded new server leaves nothing behind. A
   failed save or delete is reported and leaves what was stored. The store is
-  read and written off the UI thread, and the form follows the result only
-  while the same server is shown. A saved password shown as saved is used as
+  written off the UI thread, and the form follows the result only while the
+  same server is shown. The store's lock is held while writing, so while a
+  write runs the settings window refuses further writes, Connect, switching
+  or removing a server and reloading the file, and says to try again, rather
+  than block the UI thread on a read. A saved password shown as saved is used as
   saved: an unfinished change is dropped when another server is selected.
   Autosave and
   Save of the server never store a password; a typed one is used by Connect

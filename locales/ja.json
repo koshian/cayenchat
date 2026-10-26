@@ -17,6 +17,7 @@
   "credential_server_unsaved": "先にサーバーを保存してから、パスワードを保存してください。",
   "credential_save_failed": "パスワードを保存できませんでした: {error}",
   "credential_delete_failed": "保存済みのパスワードを削除できませんでした: {error}",
+  "credential_busy": "パスワードを保存または削除しています。しばらく待ってからもう一度操作してください。",
   "credential_prompt_title": "接続にはパスワードが必要です",
   "credential_prompt_sasl": "SASL パスワード（アカウント: {account}）",
   "credential_prompt_save": "このパスワードを保存する",

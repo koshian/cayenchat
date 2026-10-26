@@ -107,6 +107,16 @@ mod tests {
     use super::TestFile;
     use crate::{SettingsWindow, secrets, settings_window::Credential, settings_with_channels};
 
+    /// A server whose identity is complete, so Connect gets past validation.
+    fn connectable(channels: &str) -> Settings {
+        let mut settings = settings_with_channels(channels);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "nick".into();
+        profile.username = "user".into();
+        profile.use_tls = true;
+        settings
+    }
+
     fn open<'a>(
         settings: &Settings,
         cx: &'a mut TestAppContext,
@@ -453,7 +463,7 @@ mod tests {
 
     #[gpui::test]
     fn a_typed_password_is_stored_only_by_its_own_save(cx: &mut TestAppContext) {
-        let settings = settings_with_channels("#a");
+        let settings = connectable("#a");
         let key = settings.selected_profile().unwrap().server_password_key();
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
@@ -570,16 +580,25 @@ mod tests {
 
     #[gpui::test]
     fn an_unfinished_change_is_dropped_when_the_server_is_left(cx: &mut TestAppContext) {
-        let settings = settings_with_channels("#a");
-        let key = settings.selected_profile().unwrap().server_password_key();
-        let sasl_key = settings.selected_profile().unwrap().sasl_password_key();
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.use_tls = true;
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let (a_id, key, sasl_key) = (
+            profile.id.clone(),
+            profile.server_password_key(),
+            profile.sasl_password_key(),
+        );
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
         let store = cx.update(|_, cx| secrets::store(cx));
         store.set(&key, &Secret::new("old")).unwrap();
         store.set(&sasl_key, &Secret::new("old-sasl")).unwrap();
         form.update_in(cx, |form, window, cx| {
-            form.settings.show_selected(&store, &form.i18n, cx);
+            form.show_selected_server(cx);
             for which in [Credential::Server, Credential::Sasl] {
                 form.change_credential(which, window, cx);
                 form.settings
@@ -587,19 +606,18 @@ mod tests {
                     .update(cx, |field, cx| field.set_text("half", cx));
             }
             // Leaving the server and coming back.
-            form.settings.stash_typed_passwords(cx);
-            form.settings.show_selected(&store, &form.i18n, cx);
+            form.select_server(b_id.clone(), cx);
+            form.select_server(a_id.clone(), cx);
+            assert_eq!(form.settings.values.selected_server, a_id);
             let settings = form.settings.snapshot(cx).unwrap();
             let (config, _) = form
                 .settings
                 .connection_config(&settings, &store, &form.i18n, cx)
                 .unwrap();
             assert_eq!(config.server_password.as_deref(), Some("old"));
-            assert!(
-                config
-                    .sasl
-                    .as_ref()
-                    .is_none_or(|sasl| sasl.password == "old-sasl")
+            assert_eq!(
+                config.sasl.as_ref().map(|sasl| sasl.password.as_str()),
+                Some("old-sasl")
             );
         });
         drop(file);
@@ -607,11 +625,15 @@ mod tests {
 
     #[gpui::test]
     fn an_unsaved_server_cannot_save_a_password_yet(cx: &mut TestAppContext) {
-        let mut settings = settings_with_channels("#a");
-        let new_id = settings.add_server("b.example").id.clone();
-        let file = TestFile::with(&settings_with_channels("#a"));
-        let (form, cx) = open(&settings, cx);
+        let saved = settings_with_channels("#a");
+        let file = TestFile::with(&saved);
+        let (form, cx) = open(&saved, cx);
         let store = cx.update(|_, cx| secrets::store(cx));
+        let new_id = form.update(cx, |form, cx| {
+            let id = form.settings.values.add_server("b.example").id.clone();
+            form.show_selected_server(cx);
+            id
+        });
         form.update_in(cx, |form, window, cx| {
             form.settings
                 .server_password
@@ -619,11 +641,37 @@ mod tests {
             form.save_credential(Credential::Server, window, cx);
             assert!(form.feedback.is_some());
         });
+        cx.run_until_parked();
         assert!(
             !store
                 .contains(&cayenchat_storage::SecretKey::server_password(&new_id))
                 .unwrap()
         );
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn nothing_reads_the_store_while_a_password_write_runs(cx: &mut TestAppContext) {
+        let settings = connectable("#a");
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update_in(cx, |form, window, cx| {
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("typed", cx));
+            form.save_credential(Credential::Server, window, cx);
+            assert_eq!(form.credential_writes, 1);
+            // Connect and a second write wait instead of taking the lock.
+            form.connect_from_settings(window, cx);
+            form.delete_credential(Credential::Server, cx);
+            assert_eq!(form.credential_writes, 1);
+            assert_eq!(
+                form.feedback.as_deref(),
+                Some(form.i18n.text("credential_busy").as_str())
+            );
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| assert_eq!(form.credential_writes, 0));
         drop(file);
     }
 

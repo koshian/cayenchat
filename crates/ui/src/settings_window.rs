@@ -886,6 +886,9 @@ pub(crate) struct SettingsWindow {
     pub(crate) owner: WindowHandle<ChatWindow>,
     pub(crate) settings: SettingsForm,
     pub(crate) feedback: Option<String>,
+    /// Password writes running off the UI thread. The store holds its lock
+    /// while writing, so anything that reads it waits until they are done.
+    pub(crate) credential_writes: usize,
     pub(crate) tab: SettingsTab,
     /// The category list on the left; Up and Down move through it.
     pub(crate) nav_focus: FocusHandle,
@@ -1130,6 +1133,7 @@ impl SettingsWindow {
             owner,
             settings,
             feedback: None,
+            credential_writes: 0,
             tab: SettingsTab::Connection,
             nav_focus: cx.focus_handle().tab_stop(true),
             nav_scroll: ScrollHandle::new(),
@@ -1239,7 +1243,11 @@ impl SettingsWindow {
 
     fn reload_changed_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.follow_saved_server_order();
-        if self.autosave.is_some() || self.autosave_error.is_some() || self.servers_unsaved(cx) {
+        if self.autosave.is_some()
+            || self.autosave_error.is_some()
+            || self.credential_writes > 0
+            || self.servers_unsaved(cx)
+        {
             return;
         }
         let Ok(Some(mut loaded)) = settings_file::load() else {
@@ -1300,6 +1308,9 @@ impl SettingsWindow {
     }
 
     pub(crate) fn connect_from_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.credentials_busy(cx) {
+            return;
+        }
         self.follow_saved_server_order();
         let result = (|| {
             let settings = self.settings.snapshot(cx)?;
@@ -1686,6 +1697,18 @@ impl SettingsWindow {
         });
     }
 
+    /// Whether a password write is still running; then says so. Operations
+    /// that read the store (Connect, switching servers) or write it wait for
+    /// the write instead of blocking the UI thread on its lock.
+    fn credentials_busy(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.credential_writes == 0 {
+            return false;
+        }
+        self.feedback = Some(self.i18n.text("credential_busy"));
+        cx.notify();
+        true
+    }
+
     /// The Save button of a password: the only way (besides the same choice
     /// in the dialog that asks for it at connect time) a password reaches
     /// the credential store. Autosave and Save of the server never do.
@@ -1695,6 +1718,9 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.credentials_busy(cx) {
+            return;
+        }
         let text = self
             .settings
             .credential_field(which)
@@ -1743,7 +1769,9 @@ impl SettingsWindow {
                 let _ = this.update(cx, |this, cx| {
                     // What is typed now is what was agreed to only if the
                     // same server is still shown.
-                    if this.settings.values.selected_server == profile.id {
+                    if this.settings.values.selected_server == profile.id
+                        && !this.credentials_busy(cx)
+                    {
                         let text = this
                             .settings
                             .credential_field(which)
@@ -1773,9 +1801,11 @@ impl SettingsWindow {
         let store = secrets::store(cx);
         let id = profile.to_owned();
         let writing = cx.background_spawn(async move { store.set(&key, &secret) });
+        self.credential_writes += 1;
         cx.spawn(async move |this, cx| {
             let result = writing.await;
             let _ = this.update(cx, |this, cx| {
+                this.credential_writes -= 1;
                 this.credential_done(which, &id, result, true, cx)
             });
         })
@@ -1836,6 +1866,9 @@ impl SettingsWindow {
 
     /// Delete: removes the saved password. A failure keeps it.
     pub(crate) fn delete_credential(&mut self, which: Credential, cx: &mut Context<Self>) {
+        if self.credentials_busy(cx) {
+            return;
+        }
         let Some(id) = self
             .settings
             .values
@@ -1847,9 +1880,11 @@ impl SettingsWindow {
         let key = which.key(&id);
         let store = secrets::store(cx);
         let deleting = cx.background_spawn(async move { store.delete(&key) });
+        self.credential_writes += 1;
         cx.spawn(async move |this, cx| {
             let result = deleting.await;
             let _ = this.update(cx, |this, cx| {
+                this.credential_writes -= 1;
                 this.credential_done(which, &id, result, false, cx)
             });
         })
@@ -2214,6 +2249,9 @@ impl SettingsWindow {
     }
 
     fn switch_server(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        if self.credentials_busy(cx) {
+            return;
+        }
         self.avatar_feedback = None;
         self.avatar_setup_link = false;
         self.avatar_editor = None;
@@ -2229,6 +2267,9 @@ impl SettingsWindow {
     /// Removes the selected server. Saving the removal disconnects it and
     /// forgets its passwords, so a saved server asks first.
     fn remove_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.credentials_busy(cx) {
+            return;
+        }
         let id = self.settings.values.selected_server.clone();
         let Some(profile) = self.saved.profile(&id).filter(|p| !p.host.is_empty()) else {
             self.settings.values.remove_selected_server();
