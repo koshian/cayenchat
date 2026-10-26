@@ -197,6 +197,20 @@ impl SettingsWindow {
                 .id("avatar-quick-toggle")
                 .debug_selector(|| "avatar-quick-toggle".into())
                 .track_focus(&self.avatar_toggle_focus)
+                .relative()
+                .child({
+                    // Tells the settings pane where the header is, so Tab can
+                    // scroll it into view.
+                    let focus = self.avatar_toggle_focus.clone();
+                    canvas(
+                        move |bounds, window, cx| {
+                            crate::focus_reveal::note(&focus, bounds, window, cx)
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full()
+                })
                 .flex()
                 .items_center()
                 .gap_2()
