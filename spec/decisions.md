@@ -1339,7 +1339,11 @@ D021 that stored typed passwords with Save of the server.
   is currently selected (D014) at once; with the local file it asks once more
   because the file is unencrypted. Only a server that is already saved can
   have a password saved, so a discarded new server leaves nothing behind. A
-  failed save or delete is reported and leaves what was stored. Autosave and
+  failed save or delete is reported and leaves what was stored. The store is
+  read and written off the UI thread, and the form follows the result only
+  while the same server is shown. A saved password shown as saved is used as
+  saved: an unfinished change is dropped when another server is selected.
+  Autosave and
   Save of the server never store a password; a typed one is used by Connect
   from that form and dropped with the window. Whether a password is saved is
   whether the store holds it; `remember_passwords` in the file is no longer

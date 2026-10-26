@@ -541,9 +541,12 @@ impl SettingsForm {
         i18n: &Localizer,
         cx: &App,
     ) -> Result<(ConnectionConfig, crate::connect_auth::Missing), String> {
-        let typed = |field: &Entity<TextInput>| {
+        // A saved password shown as such is used as saved: what the hidden
+        // field holds counts only while it is being changed.
+        let typed = |field: &Entity<TextInput>, which: Credential| {
+            let (saved, changing) = self.credential_state(which);
             let text = field.read(cx).text();
-            (!text.is_empty()).then(|| Secret::new(text))
+            (!text.is_empty() && (!saved || changing)).then(|| Secret::new(text))
         };
         let profile = settings
             .selected_profile()
@@ -552,8 +555,12 @@ impl SettingsForm {
         let mut config = crate::connection_config_without_secrets(profile, settings.language)?;
         let missing = crate::connect_auth::fill(
             &mut config,
-            typed(&self.server_password).or(saved_server).as_ref(),
-            typed(&self.sasl_password).or(saved_sasl).as_ref(),
+            typed(&self.server_password, Credential::Server)
+                .or(saved_server)
+                .as_ref(),
+            typed(&self.sasl_password, Credential::Sasl)
+                .or(saved_sasl)
+                .as_ref(),
             false,
         );
         crate::connect_auth::while_incomplete(&mut config, |config| {
@@ -619,7 +626,7 @@ impl SettingsForm {
     }
 
     /// Moves the typed passwords of the shown server into `drafts`.
-    fn stash_typed_passwords(&mut self, cx: &App) {
+    pub(crate) fn stash_typed_passwords(&mut self, cx: &App) {
         let Some(id) = self
             .values
             .selected_profile()
@@ -690,7 +697,15 @@ impl SettingsForm {
         self.saved_sasl_password = saved_sasl;
         self.changing_server_password = false;
         self.changing_sasl_password = false;
-        let (draft_server, draft_sasl) = self.drafts.get(&profile.id).cloned().unwrap_or_default();
+        let (mut draft_server, mut draft_sasl) =
+            self.drafts.get(&profile.id).cloned().unwrap_or_default();
+        // An unfinished change of a saved password is dropped on a switch.
+        if saved_server {
+            draft_server.clear();
+        }
+        if saved_sasl {
+            draft_sasl.clear();
+        }
         for (field, saved, key, draft) in [
             (
                 &self.server_password,
@@ -767,7 +782,7 @@ impl Credential {
 }
 
 impl SettingsForm {
-    fn credential_field(&self, which: Credential) -> &Entity<TextInput> {
+    pub(crate) fn credential_field(&self, which: Credential) -> &Entity<TextInput> {
         match which {
             Credential::Server => &self.server_password,
             Credential::Sasl => &self.sasl_password,
@@ -1755,14 +1770,43 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         let key = which.key(profile);
-        match secrets::store(cx).set(&key, &secret) {
+        let store = secrets::store(cx);
+        let id = profile.to_owned();
+        let writing = cx.background_spawn(async move { store.set(&key, &secret) });
+        cx.spawn(async move |this, cx| {
+            let result = writing.await;
+            let _ = this.update(cx, |this, cx| {
+                this.credential_done(which, &id, result, true, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// Shows the outcome of a store write that ran off the UI thread. The
+    /// form only follows it while the server it was for is still shown.
+    fn credential_done(
+        &mut self,
+        which: Credential,
+        profile: &str,
+        result: Result<(), cayenchat_storage::CredentialError>,
+        saved: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (done, failed) = if saved {
+            ("credential_saved_done", "credential_save_failed")
+        } else {
+            ("credential_deleted_done", "credential_delete_failed")
+        };
+        match result {
             Ok(()) => {
-                self.settings.set_saved(which, true, &self.i18n, cx);
-                self.feedback = Some(self.i18n.text("credential_saved_done"));
+                if self.settings.values.selected_server == profile {
+                    self.settings.set_saved(which, saved, &self.i18n, cx);
+                }
+                self.feedback = Some(self.i18n.text(done));
             }
             Err(error) => {
                 self.feedback = Some(self.i18n.format(
-                    "credential_save_failed",
+                    failed,
                     &[("error", &secrets::error_text(&self.i18n, &error))],
                 ));
             }
@@ -1800,19 +1844,16 @@ impl SettingsWindow {
         else {
             return;
         };
-        match secrets::store(cx).delete(&which.key(&id)) {
-            Ok(()) => {
-                self.settings.set_saved(which, false, &self.i18n, cx);
-                self.feedback = Some(self.i18n.text("credential_deleted_done"));
-            }
-            Err(error) => {
-                self.feedback = Some(self.i18n.format(
-                    "credential_delete_failed",
-                    &[("error", &secrets::error_text(&self.i18n, &error))],
-                ));
-            }
-        }
-        cx.notify();
+        let key = which.key(&id);
+        let store = secrets::store(cx);
+        let deleting = cx.background_spawn(async move { store.delete(&key) });
+        cx.spawn(async move |this, cx| {
+            let result = deleting.await;
+            let _ = this.update(cx, |this, cx| {
+                this.credential_done(which, &id, result, false, cx)
+            });
+        })
+        .detach();
     }
 
     /// Sending PASS without TLS is never turned on without a confirmation.

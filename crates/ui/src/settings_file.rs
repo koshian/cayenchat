@@ -483,6 +483,7 @@ mod tests {
         form.update_in(cx, |form, window, cx| {
             form.save_credential(Credential::Server, window, cx)
         });
+        cx.run_until_parked();
         assert_eq!(store.get(&key).unwrap().unwrap().expose(), "typed");
         form.update(cx, |form, cx| {
             assert!(form.settings.saved_server_password);
@@ -536,6 +537,7 @@ mod tests {
                 .update(cx, |field, cx| field.set_text("new", cx));
             form.save_credential(Credential::Server, window, cx);
         });
+        cx.run_until_parked();
         assert_eq!(store.get(&key).unwrap().unwrap().expose(), "new");
 
         // A failed Save keeps what was saved and says so.
@@ -552,6 +554,9 @@ mod tests {
         });
         form.update_in(cx, |form, window, cx| {
             form.save_credential(Credential::Server, window, cx);
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
             assert!(form.feedback.is_some());
             assert_eq!(
                 form.settings.credential_state(Credential::Server),
@@ -560,6 +565,43 @@ mod tests {
             );
         });
         assert_eq!(store.get(&key).unwrap().unwrap().expose(), "new");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unfinished_change_is_dropped_when_the_server_is_left(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let key = settings.selected_profile().unwrap().server_password_key();
+        let sasl_key = settings.selected_profile().unwrap().sasl_password_key();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let store = cx.update(|_, cx| secrets::store(cx));
+        store.set(&key, &Secret::new("old")).unwrap();
+        store.set(&sasl_key, &Secret::new("old-sasl")).unwrap();
+        form.update_in(cx, |form, window, cx| {
+            form.settings.show_selected(&store, &form.i18n, cx);
+            for which in [Credential::Server, Credential::Sasl] {
+                form.change_credential(which, window, cx);
+                form.settings
+                    .credential_field(which)
+                    .update(cx, |field, cx| field.set_text("half", cx));
+            }
+            // Leaving the server and coming back.
+            form.settings.stash_typed_passwords(cx);
+            form.settings.show_selected(&store, &form.i18n, cx);
+            let settings = form.settings.snapshot(cx).unwrap();
+            let (config, _) = form
+                .settings
+                .connection_config(&settings, &store, &form.i18n, cx)
+                .unwrap();
+            assert_eq!(config.server_password.as_deref(), Some("old"));
+            assert!(
+                config
+                    .sasl
+                    .as_ref()
+                    .is_none_or(|sasl| sasl.password == "old-sasl")
+            );
+        });
         drop(file);
     }
 
@@ -604,6 +646,9 @@ mod tests {
         });
         form.update(cx, |form, cx| {
             form.delete_credential(Credential::Server, cx);
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
             assert!(form.feedback.is_some(), "the failed deletion is shown");
             assert!(form.settings.saved_server_password, "still shown as saved");
         });
@@ -612,6 +657,10 @@ mod tests {
         cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
         form.update(cx, |form, cx| {
             form.delete_credential(Credential::Server, cx);
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, cx| {
+            let _ = cx;
             assert!(!form.settings.saved_server_password);
             assert_eq!(
                 form.settings.credential_state(Credential::Server),
