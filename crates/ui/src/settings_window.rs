@@ -5,10 +5,10 @@ use crate::os_text::WindowOsText;
 use crate::{
     ChatWindow, Connect, CopyDiagnostics, Disconnect, FocusNextField, FocusPreviousField,
     OpenSettings, Reconnect, ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts,
-    autostart, avatar_editor, color_picker, connection_config, decorations, diagnostics,
-    field_traversal, forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings,
-    localization::Localizer, notification_rules, saved_connection_secrets, scrollbar, secrets,
-    settings_file, settings_theme, shortcut_settings, theme,
+    autostart, avatar_editor, color_picker, decorations, diagnostics, field_traversal,
+    forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings, localization::Localizer,
+    notification_rules, saved_connection_secrets, scrollbar, secrets, settings_file,
+    settings_theme, shortcut_settings, theme,
 };
 use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::ConnectionConfig;
@@ -36,14 +36,19 @@ pub(crate) struct SettingsForm {
     part_message: Entity<TextInput>,
     display_name: Entity<TextInput>,
     pub(crate) channels: Entity<TextInput>,
-    /// Password fields start empty; typing replaces a saved value.
-    server_password: Entity<TextInput>,
+    /// Password fields start empty and are shown while the password is not
+    /// saved or is being changed; a saved value is never shown again (#635).
+    pub(crate) server_password: Entity<TextInput>,
     sasl_username: Entity<TextInput>,
     sasl_password: Entity<TextInput>,
-    saved_server_password: bool,
+    pub(crate) saved_server_password: bool,
     saved_sasl_password: bool,
+    /// "Change" was pressed: the field takes the new value of a saved password.
+    changing_server_password: bool,
+    changing_sasl_password: bool,
     /// Typed (server, SASL) passwords of servers not being shown, by server
-    /// ID. They stay in memory until Save stores them (D021).
+    /// ID. They are used by Connect only and stored only by the password's
+    /// own Save; closing the window drops them.
     drafts: HashMap<String, (String, String)>,
     pub(crate) member_list_background: Entity<TextInput>,
     pub(crate) main_log_background: Entity<TextInput>,
@@ -152,7 +157,7 @@ impl SettingsForm {
             channels: field("#first,#second", &profile.channels, false, cx),
             server_password: field(
                 &i18n.text(if saved_server_password {
-                    "password_saved_placeholder"
+                    "credential_new_placeholder"
                 } else {
                     "server_password_placeholder"
                 }),
@@ -168,7 +173,7 @@ impl SettingsForm {
             ),
             sasl_password: field(
                 &i18n.text(if saved_sasl_password {
-                    "password_saved_placeholder"
+                    "credential_new_placeholder"
                 } else {
                     "sasl_password"
                 }),
@@ -178,6 +183,8 @@ impl SettingsForm {
             ),
             saved_server_password,
             saved_sasl_password,
+            changing_server_password: false,
+            changing_sasl_password: false,
             drafts: HashMap::new(),
             member_list_background: field(
                 "#FFFFFF",
@@ -526,14 +533,14 @@ impl SettingsForm {
         Ok(settings)
     }
 
-    /// Typed passwords win; otherwise saved ones are used when saving is on.
-    fn connection_config(
+    /// Typed passwords win; otherwise the saved ones are used.
+    pub(crate) fn connection_config(
         &self,
         settings: &Settings,
         store: &CredentialStore,
         i18n: &Localizer,
         cx: &App,
-    ) -> Result<ConnectionConfig, String> {
+    ) -> Result<(ConnectionConfig, crate::connect_auth::Missing), String> {
         let typed = |field: &Entity<TextInput>| {
             let text = field.read(cx).text();
             (!text.is_empty()).then(|| Secret::new(text))
@@ -542,14 +549,18 @@ impl SettingsForm {
             .selected_profile()
             .ok_or_else(|| i18n.text("server_required"))?;
         let (saved_server, saved_sasl) = saved_connection_secrets(profile, store, i18n)?;
-        let mut config = connection_config(
-            profile,
-            settings.language,
-            typed(&self.server_password).or(saved_server),
-            typed(&self.sasl_password).or(saved_sasl),
-        )?;
-        crate::channel_keys::use_stored_keys(&mut config, profile, store);
-        Ok(config)
+        let mut config = crate::connection_config_without_secrets(profile, settings.language)?;
+        let missing = crate::connect_auth::fill(
+            &mut config,
+            typed(&self.server_password).or(saved_server).as_ref(),
+            typed(&self.sasl_password).or(saved_sasl).as_ref(),
+            false,
+        );
+        crate::connect_auth::while_incomplete(&mut config, |config| {
+            crate::channel_keys::use_stored_keys(config, profile, store);
+            config.validate()
+        })?;
+        Ok((config, missing))
     }
 
     /// Every text field, so edits to any of them can trigger an autosave.
@@ -624,87 +635,6 @@ impl SettingsForm {
             self.drafts.insert(id, typed);
         }
     }
-
-    /// Whether a typed password of a server that stores its passwords is
-    /// waiting for Save.
-    fn pending_passwords(&self, cx: &App) -> bool {
-        let remembers = |id: &str| {
-            self.values
-                .servers
-                .iter()
-                .any(|profile| profile.id == id && profile.remember_passwords)
-        };
-        let shown = self.values.selected_profile().is_some_and(|profile| {
-            profile.remember_passwords
-                && [&self.server_password, &self.sasl_password]
-                    .into_iter()
-                    .any(|field| !field.read(cx).text().is_empty())
-        });
-        shown
-            || self.drafts.iter().any(|(id, (server, sasl))| {
-                remembers(id) && !(server.is_empty() && sasl.is_empty())
-            })
-    }
-
-    /// Stores the typed passwords of the servers in `settings` that keep
-    /// them, then empties the shown fields so plaintext does not stay in the
-    /// form. Nothing is stored before this (D021).
-    fn persist_passwords(
-        &mut self,
-        settings: &Settings,
-        store: &CredentialStore,
-        i18n: &Localizer,
-        cx: &mut App,
-    ) -> Result<(), String> {
-        self.stash_typed_passwords(cx);
-        let shown = self.values.selected_server.clone();
-        for profile in &settings.servers {
-            if !profile.remember_passwords || profile.host.is_empty() {
-                continue;
-            }
-            let Some((server, sasl)) = self.drafts.get(&profile.id).cloned() else {
-                continue;
-            };
-            for (text, key, saved) in [
-                (
-                    server,
-                    profile.server_password_key(),
-                    &mut self.saved_server_password,
-                ),
-                (
-                    sasl,
-                    profile.sasl_password_key(),
-                    &mut self.saved_sasl_password,
-                ),
-            ] {
-                if text.is_empty() {
-                    continue;
-                }
-                store
-                    .set(&key, &Secret::new(text))
-                    .map_err(|error| secrets::error_text(i18n, &error))?;
-                if profile.id == shown {
-                    *saved = true;
-                }
-            }
-            self.drafts.remove(&profile.id);
-            if profile.id == shown {
-                let hint = i18n.text("password_saved_placeholder");
-                for (field, saved) in [
-                    (&self.server_password, self.saved_server_password),
-                    (&self.sasl_password, self.saved_sasl_password),
-                ] {
-                    if saved {
-                        field.update(cx, |field, cx| {
-                            field.set_text("", cx);
-                            field.set_placeholder(&hint, cx);
-                        });
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 impl SettingsForm {
@@ -758,6 +688,8 @@ impl SettingsForm {
         let (saved_server, saved_sasl) = saved_passwords(&profile, store);
         self.saved_server_password = saved_server;
         self.saved_sasl_password = saved_sasl;
+        self.changing_server_password = false;
+        self.changing_sasl_password = false;
         let (draft_server, draft_sasl) = self.drafts.get(&profile.id).cloned().unwrap_or_default();
         for (field, saved, key, draft) in [
             (
@@ -769,7 +701,7 @@ impl SettingsForm {
             (&self.sasl_password, saved_sasl, "sasl_password", draft_sasl),
         ] {
             let placeholder = i18n.text(if saved {
-                "password_saved_placeholder"
+                "credential_new_placeholder"
             } else {
                 key
             });
@@ -818,11 +750,68 @@ pub(crate) fn follow_server_order(servers: &mut [ServerProfile], file: &[ServerP
     true
 }
 
+/// Which of a server's two passwords.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Credential {
+    Server,
+    Sasl,
+}
+
+impl Credential {
+    fn key(self, profile: &str) -> SecretKey {
+        match self {
+            Self::Server => SecretKey::server_password(profile),
+            Self::Sasl => SecretKey::sasl_password(profile),
+        }
+    }
+}
+
+impl SettingsForm {
+    fn credential_field(&self, which: Credential) -> &Entity<TextInput> {
+        match which {
+            Credential::Server => &self.server_password,
+            Credential::Sasl => &self.sasl_password,
+        }
+    }
+
+    fn changing_mut(&mut self, which: Credential) -> &mut bool {
+        match which {
+            Credential::Server => &mut self.changing_server_password,
+            Credential::Sasl => &mut self.changing_sasl_password,
+        }
+    }
+
+    /// Whether the password is shown as saved (Change, Delete), as being
+    /// changed, or neither (a field and Save).
+    pub(crate) fn credential_state(&self, which: Credential) -> (bool, bool) {
+        match which {
+            Credential::Server => (self.saved_server_password, self.changing_server_password),
+            Credential::Sasl => (self.saved_sasl_password, self.changing_sasl_password),
+        }
+    }
+
+    /// Records that the password is now saved or gone, and empties its field
+    /// so what was typed does not stay in the form.
+    fn set_saved(&mut self, which: Credential, saved: bool, i18n: &Localizer, cx: &mut App) {
+        match which {
+            Credential::Server => self.saved_server_password = saved,
+            Credential::Sasl => self.saved_sasl_password = saved,
+        }
+        *self.changing_mut(which) = false;
+        let placeholder = i18n.text(match (which, saved) {
+            (_, true) => "credential_new_placeholder",
+            (Credential::Server, false) => "server_password_placeholder",
+            (Credential::Sasl, false) => "sasl_password",
+        });
+        self.credential_field(which).update(cx, |field, cx| {
+            field.set_text("", cx);
+            field.set_placeholder(&placeholder, cx);
+        });
+    }
+}
+
 /// Whether the profile has saved server and SASL passwords.
 fn saved_passwords(profile: &ServerProfile, store: &CredentialStore) -> (bool, bool) {
-    if !profile.remember_passwords {
-        return (false, false);
-    }
     let has = |key: SecretKey| store.contains(&key).unwrap_or(false);
     (
         has(profile.server_password_key()),
@@ -1037,7 +1026,7 @@ impl SettingsWindow {
             (
                 &self.settings.server_password,
                 if self.settings.saved_server_password {
-                    "password_saved_placeholder"
+                    "credential_new_placeholder"
                 } else {
                     "server_password_placeholder"
                 },
@@ -1046,7 +1035,7 @@ impl SettingsWindow {
             (
                 &self.settings.sasl_password,
                 if self.settings.saved_sasl_password {
-                    "password_saved_placeholder"
+                    "credential_new_placeholder"
                 } else {
                     "sasl_password"
                 },
@@ -1271,23 +1260,18 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Saves typed passwords to the credential store, forgets the passwords
-    /// of profiles removed since `previous` (what this window last saved, not
-    /// the file, which another process may have added servers to), and
-    /// writes the settings file.
+    /// Forgets the passwords of profiles removed since `previous` (what this
+    /// window last saved, not the file, which another process may have added
+    /// servers to), and writes the settings file. Passwords are stored only
+    /// by their own Save (#635), never here.
     fn commit_settings(
         &mut self,
         previous: &Settings,
         mut settings: Settings,
-        with_servers: bool,
         cx: &mut Context<Self>,
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
-        if with_servers {
-            self.settings
-                .persist_passwords(&settings, &store, &self.i18n, cx)?;
-        }
         forget_removed_profiles(previous, &settings, &store)
             .map_err(|error| secrets::error_text(&self.i18n, &error))?;
         let previous_logging = diagnostics::configuration();
@@ -1304,20 +1288,20 @@ impl SettingsWindow {
         self.follow_saved_server_order();
         let result = (|| {
             let settings = self.settings.snapshot(cx)?;
-            let config =
+            let (config, missing) =
                 self.settings
                     .connection_config(&settings, &secrets::store(cx), &self.i18n, cx)?;
             self.autosave = None;
             // `saved` follows only once the file is written, so a failed
             // Connect leaves the draft unsaved.
             let previous = self.saved.clone();
-            let settings = self.commit_settings(&previous, settings, true, cx)?;
+            let settings = self.commit_settings(&previous, settings, cx)?;
             self.saved = settings.clone();
             self.settings.values = settings.clone();
-            Ok::<_, String>((config, settings, previous))
+            Ok::<_, String>((config, missing, settings, previous))
         })();
         self.feedback = match result {
-            Ok((config, settings, previous)) => {
+            Ok((config, missing, settings, previous)) => {
                 // Connecting may have taken over a pending autosave, so what
                 // it saved, such as always-on-top, is applied here whether or
                 // not the connection succeeds.
@@ -1332,7 +1316,7 @@ impl SettingsWindow {
                     owner.apply_appearance(appearance, mode, cx);
                     owner.apply_language(language, chat_window, cx);
                     owner.apply_servers(settings, cx);
-                    owner.connect_profile(&profile, config, chat_window, cx)
+                    owner.connect_profile(&profile, config, missing, chat_window, cx)
                 }) {
                     Ok(Ok(())) => {
                         window.remove_window();
@@ -1388,15 +1372,13 @@ impl SettingsWindow {
         }
     }
 
-    /// Whether the server list or a typed password has edits that Save has
-    /// not written yet.
+    /// Whether the server list has edits that Save has not written yet.
     pub(crate) fn servers_unsaved(&self, cx: &App) -> bool {
         let Ok(settings) = self.settings.snapshot(cx) else {
             return true;
         };
         settings.servers != self.saved.servers
             || settings.selected_server != self.saved.selected_server
-            || self.settings.pending_passwords(cx)
     }
 
     /// The Save button: writes the servers along with everything else.
@@ -1438,7 +1420,7 @@ impl SettingsWindow {
             return Ok(());
         }
         let previous = std::mem::replace(&mut self.saved, settings.clone());
-        let saved = match self.commit_settings(&previous, settings, with_servers, cx) {
+        let saved = match self.commit_settings(&previous, settings, cx) {
             Ok(saved) => saved,
             Err(error) => {
                 // Try again on the next edit.
@@ -1689,50 +1671,45 @@ impl SettingsWindow {
         });
     }
 
-    pub(crate) fn toggle_remember_passwords(
+    /// The Save button of a password: the only way (besides the same choice
+    /// in the dialog that asks for it at connect time) a password reaches
+    /// the credential store. Autosave and Save of the server never do.
+    pub(crate) fn save_credential(
         &mut self,
+        which: Credential,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let store = secrets::store(cx);
-        let Some(profile) = self.settings.values.selected_profile().cloned() else {
+        let text = self
+            .settings
+            .credential_field(which)
+            .read(cx)
+            .text()
+            .to_owned();
+        if text.is_empty() {
+            self.feedback = Some(self.i18n.text("credential_enter"));
+            cx.notify();
+            return;
+        }
+        // The password belongs to a saved server: a server that is not
+        // saved yet may never be, which would leave the password behind.
+        let Some(profile) = self
+            .settings
+            .values
+            .selected_profile()
+            .filter(|profile| self.saved.profile(&profile.id).is_some())
+            .cloned()
+        else {
+            self.feedback = Some(self.i18n.text("credential_server_unsaved"));
+            cx.notify();
             return;
         };
-        if profile.remember_passwords {
-            // The stored secrets are deleted when the change is saved. Take
-            // the typed connection fields into `values` first so rebuilding
-            // the fields does not bring back older text.
-            match self.settings.snapshot(cx) {
-                Ok(settings) => self.settings.values = settings,
-                Err(error) => {
-                    self.feedback = Some(error);
-                    cx.notify();
-                    return;
-                }
-            }
-            if let Some(profile) = self.settings.values.selected_profile_mut() {
-                profile.remember_passwords = false;
-            }
-            self.settings.drafts.remove(&profile.id);
-            self.show_selected_server(cx);
-            self.feedback = Some(self.i18n.text("passwords_removed"));
-            cx.notify();
+        if secrets::store(cx).kind() == CredentialBackendKind::System {
+            self.store_credential(which, &profile.id, Secret::new(text), cx);
             return;
         }
-        if store.kind() == CredentialBackendKind::System {
-            // Secure storage needs no plaintext warning, but it must work.
-            match secrets::system_probe(cx)() {
-                Ok(()) => {
-                    if let Some(profile) = self.settings.values.selected_profile_mut() {
-                        profile.remember_passwords = true;
-                    }
-                    self.feedback = None;
-                }
-                Err(error) => self.feedback = Some(secrets::error_text(&self.i18n, &error)),
-            }
-            cx.notify();
-            return;
-        }
+        // The local file holds the password unencrypted; the choice of that
+        // storage was the user's, but each password asks once more.
         let answer = window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text("password_warning_title"),
@@ -1749,15 +1726,93 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(profile) = this.settings.values.selected_profile_mut() {
-                        profile.remember_passwords = true;
+                    // What is typed now is what was agreed to only if the
+                    // same server is still shown.
+                    if this.settings.values.selected_server == profile.id {
+                        let text = this
+                            .settings
+                            .credential_field(which)
+                            .read(cx)
+                            .text()
+                            .to_owned();
+                        if !text.is_empty() {
+                            this.store_credential(which, &profile.id, Secret::new(text), cx);
+                        }
                     }
-                    this.feedback = None;
-                    cx.notify();
                 });
             }
         })
         .detach();
+    }
+
+    /// Writes the password. A failure is reported and leaves a saved
+    /// password as it was.
+    fn store_credential(
+        &mut self,
+        which: Credential,
+        profile: &str,
+        secret: Secret,
+        cx: &mut Context<Self>,
+    ) {
+        let key = which.key(profile);
+        match secrets::store(cx).set(&key, &secret) {
+            Ok(()) => {
+                self.settings.set_saved(which, true, &self.i18n, cx);
+                self.feedback = Some(self.i18n.text("credential_saved_done"));
+            }
+            Err(error) => {
+                self.feedback = Some(self.i18n.format(
+                    "credential_save_failed",
+                    &[("error", &secrets::error_text(&self.i18n, &error))],
+                ));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Change: the field takes the new password; the saved one is kept
+    /// until Save succeeds and is never shown.
+    pub(crate) fn change_credential(
+        &mut self,
+        which: Credential,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        *self.settings.changing_mut(which) = true;
+        window.focus(&self.settings.credential_field(which).focus_handle(cx));
+        self.feedback = None;
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_credential_change(&mut self, which: Credential, cx: &mut Context<Self>) {
+        self.settings.set_saved(which, true, &self.i18n, cx);
+        self.feedback = None;
+        cx.notify();
+    }
+
+    /// Delete: removes the saved password. A failure keeps it.
+    pub(crate) fn delete_credential(&mut self, which: Credential, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .settings
+            .values
+            .selected_profile()
+            .map(|profile| profile.id.clone())
+        else {
+            return;
+        };
+        match secrets::store(cx).delete(&which.key(&id)) {
+            Ok(()) => {
+                self.settings.set_saved(which, false, &self.i18n, cx);
+                self.feedback = Some(self.i18n.text("credential_deleted_done"));
+            }
+            Err(error) => {
+                self.feedback = Some(self.i18n.format(
+                    "credential_delete_failed",
+                    &[("error", &secrets::error_text(&self.i18n, &error))],
+                ));
+            }
+        }
+        cx.notify();
     }
 
     /// Sending PASS without TLS is never turned on without a confirmation.
@@ -2713,10 +2768,7 @@ impl SettingsWindow {
                     .font_weight(FontWeight::BOLD)
                     .child(self.i18n.text("server_auth_heading")),
             )
-            .child(settings_field(
-                &self.i18n.text("server_password"),
-                self.settings.server_password.clone(),
-            ))
+            .child(self.credential_row(Credential::Server, "server_password", cx))
             .child(
                 div()
                     .ml(settings_theme::LABEL_INDENT)
@@ -2753,24 +2805,6 @@ impl SettingsWindow {
             })
             .child(
                 div()
-                    .id("remember-passwords")
-                    .ml(settings_theme::LABEL_INDENT)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        profile.remember_passwords,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("remember_passwords"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_remember_passwords(window, cx)
-                    })),
-            )
-            .child(
-                div()
                     .pt_2()
                     .font_weight(FontWeight::BOLD)
                     .child(self.i18n.text("sasl_heading")),
@@ -2798,11 +2832,71 @@ impl SettingsWindow {
                     &self.i18n.text("sasl_account"),
                     self.settings.sasl_username.clone(),
                 ))
-                .child(settings_field(
-                    &self.i18n.text("sasl_password"),
-                    self.settings.sasl_password.clone(),
-                ))
+                .child(self.credential_row(Credential::Sasl, "sasl_password", cx))
             })
+    }
+
+    /// A password: Save beside an empty field while none is saved; Change and
+    /// Delete beside "Saved" once one is; Save and Cancel beside a field
+    /// while it is being changed. A saved value is never shown.
+    fn credential_row(
+        &self,
+        which: Credential,
+        label_key: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (saved, changing) = self.settings.credential_state(which);
+        let slot = which as usize;
+        let row = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(settings_theme::label_column().child(self.i18n.text(label_key)));
+        if saved && !changing {
+            return row
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(self.i18n.text("credential_saved")),
+                )
+                .child(
+                    settings_theme::button(("credential-change", slot), false, cx)
+                        .child(self.i18n.text("credential_change"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.change_credential(which, window, cx)
+                        })),
+                )
+                .child(
+                    settings_theme::button(("credential-delete", slot), false, cx)
+                        .child(self.i18n.text("credential_delete"))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.delete_credential(which, cx)),
+                        ),
+                );
+        }
+        row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(self.settings.credential_field(which).clone()),
+        )
+        .child(
+            settings_theme::button(("credential-save", slot), true, cx)
+                .child(self.i18n.text("credential_save"))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.save_credential(which, window, cx)),
+                ),
+        )
+        .when(changing, |d| {
+            d.child(
+                settings_theme::button(("credential-cancel", slot), false, cx)
+                    .child(self.i18n.text("cancel"))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.cancel_credential_change(which, cx)),
+                    ),
+            )
+        })
     }
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
@@ -4068,23 +4162,19 @@ mod server_settings_tests {
     }
 
     #[gpui::test]
-    fn typed_passwords_wait_for_save_and_are_kept_per_server(cx: &mut TestAppContext) {
+    fn typed_passwords_are_not_stored_and_are_kept_per_server(cx: &mut TestAppContext) {
         let store = memory_store();
         let mut settings = configured_a();
-        settings.selected_profile_mut().unwrap().remember_passwords = true;
         let a_id = settings.selected_server.clone();
         let b_id = settings.add_server("b.example").id.clone();
         settings.selected_server = a_id.clone();
         let mut form = form(settings, &store, cx);
-        assert!(!cx.read(|cx| form.pending_passwords(cx)));
         type_into(&form.server_password, "a-typed", cx);
-        assert!(cx.read(|cx| form.pending_passwords(cx)));
         switch(&mut form, &store, cx, |settings| {
             settings.selected_server = b_id.clone()
         });
-        // Not shown, but still waiting, and nothing was written.
+        // Not shown for the other server, and nothing was written.
         assert_eq!(text(&form.server_password, cx), "");
-        assert!(cx.read(|cx| form.pending_passwords(cx)));
         let key = form.values.profile(&a_id).unwrap().server_password_key();
         assert!(store.get(&key).unwrap().is_none());
         switch(&mut form, &store, cx, |settings| {
@@ -4103,7 +4193,6 @@ mod server_settings_tests {
         b.nickname = "bob".into();
         b.username = "ident-b".into();
         b.channels = "#b1".into();
-        b.remember_passwords = true;
         let b_id = b.id.clone();
         settings.selected_server = a_id.clone();
         let (a_key, b_key) = (
@@ -4129,19 +4218,6 @@ mod server_settings_tests {
         );
         assert!(store.get(&b_key).unwrap().is_none());
         assert!(!form.saved_server_password, "B has no saved password");
-
-        // Save stores the draft under the server it was typed for.
-        let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
-        cx.update(|cx| {
-            form.persist_passwords(&settings, &store, &Localizer::new(Language::English), cx)
-        })
-        .unwrap();
-        assert_eq!(
-            store.get(&a_key).unwrap().map(|s| s.expose().to_owned()),
-            Some("a-typed".to_owned()),
-            "the password went to the server it was typed for"
-        );
-        assert!(store.get(&b_key).unwrap().is_none());
 
         // The pending autosave now snapshots the form showing B.
         let directory = tempfile::tempdir().unwrap();
@@ -4169,7 +4245,8 @@ mod server_settings_tests {
         assert!(a.connect_on_startup && !b.connect_on_startup);
         assert!(a.ircv3.batch && !b.ircv3.batch);
 
-        // Edit B, switch back: A shows its own values and saved password.
+        // Edit B, switch back: A shows its own values and the password
+        // typed for it, which was never stored.
         type_into(&form.channels, "#b-edited", cx);
         switch(&mut form, &store, cx, |settings| {
             settings.selected_server = a_id.clone()
@@ -4183,11 +4260,12 @@ mod server_settings_tests {
                 "ident-a",
                 "#a-edited",
                 "account-a",
-                ""
+                "a-typed"
             ]
             .map(str::to_owned)
         );
-        assert!(form.saved_server_password);
+        assert!(!form.saved_server_password);
+        assert!(store.get(&a_key).unwrap().is_none());
         let settings = cx.read(|cx| form.snapshot(cx)).unwrap();
         assert_eq!(settings.profile(&b_id).unwrap().channels, "#b-edited");
         assert_eq!(settings.profile(&a_id).unwrap().channels, "#a-edited");
@@ -4270,6 +4348,7 @@ mod server_settings_tests {
         let config = |id: &str| {
             saved_connection_config(reloaded.profile(id).unwrap(), Language::English, &store)
                 .unwrap()
+                .0
         };
         let (config_a, config_b) = (config(&a_id), config(&b_id));
         assert_eq!(config_a.channels, ["#a1", "#a2"]);

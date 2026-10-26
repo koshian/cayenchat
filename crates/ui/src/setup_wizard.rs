@@ -267,7 +267,7 @@ impl ChatWindow {
             .and_then(|profile| {
                 crate::saved_connection_config(profile, settings.language, &secrets::store(cx))
             })
-            .and_then(|config| self.connect_profile(&id, config, window, cx));
+            .and_then(|(config, missing)| self.connect_profile(&id, config, missing, window, cx));
         match connected {
             Ok(()) => {
                 self.setup_wizard.open = false;

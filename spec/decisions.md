@@ -169,8 +169,8 @@ window at startup and from the menu. Persist versioned preferences in `CayenChat
 platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
 TLS, `irc6.ircnet.ne.jp` and `dev.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
 (since D017 the server list starts empty).
-Password saving is per server and off by default; switching it off
-immediately removes those stored values. (Where passwords are stored is now
+Passwords are saved only on request and deleted on request (D068 replaced
+the per-server "save passwords" switch). (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. (Since D024 a server password may
@@ -620,14 +620,13 @@ single-instance locks were not added.
 
 **Server settings wait for Save (#209).** The exception to the above: the
 server list and everything stored in a server profile (hostname, port,
-nickname, channels, SASL, IRCv3 options, password saving, removal) are written
+nickname, channels, SASL, IRCv3 options, removal) are written
 only when **Save** on the Connection tab is pressed (Connect also saves), so
 an accidentally chosen server is never kept. Everything else keeps autosaving
 and leaves the saved server list and the selected server as it is (an invalid
 unsaved port does not stop it). Typed passwords are kept in memory per server
-and stored by Save too, not when their field loses focus or another server is
-chosen; turning password saving off or removing a server deletes the stored
-secrets only on Save. Save stays available after the last server was removed,
+and are stored by their own Save only (D068); removing a server deletes the
+stored secrets only on Save. Save stays available after the last server was removed,
 and the IRCv3 tab shows it with the note whenever server changes are
 unsaved. A note says server changes are unsaved;
 leaving the window with them discards them, and a file written by another
@@ -1325,6 +1324,46 @@ insertion (its sync gap handling decides what is missing); the resume
 point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
+
+## D068 — Passwords are saved on request; unsaved ones are asked for, never kept (#635)
+
+**Status:** Accepted
+
+Replaces the per-server "save passwords" checkbox and the part of D010 and
+D021 that stored typed passwords with Save of the server.
+
+- **Settings.** The server password and the SASL password each show a field
+  and **Save** while not saved; **Saved**, **Change** and **Delete** once
+  saved; and an empty field with **Save** and **Cancel** while changing. A
+  saved value is never shown again. Save writes to the credential store that
+  is currently selected (D014) at once; with the local file it asks once more
+  because the file is unencrypted. Only a server that is already saved can
+  have a password saved, so a discarded new server leaves nothing behind. A
+  failed save or delete is reported and leaves what was stored. Autosave and
+  Save of the server never store a password; a typed one is used by Connect
+  from that form and dropped with the window. Whether a password is saved is
+  whether the store holds it; `remember_passwords` in the file is no longer
+  read. Removing a server still deletes its passwords.
+- **Connection time.** A reconnect, a connection started at launch or from
+  the tree, and a registration refused with 464 read the saved passwords and
+  open one dialog per server for the ones the connection needs and the store
+  lacks: the SASL password when SASL is on; the server password when the last
+  connection sent one, or when the server answers 464 (so a server is never
+  asked for one without a reason, and a wrong saved one is asked for again).
+  Each field has "Save this password", off by default; only the checked ones
+  are stored. Cancel drops the attempt and sets the server as ended by the
+  user, so the retry timer and wake-up leave it alone until Connect; a
+  reconnect loop never reopens the dialog. A connection that needs nothing
+  gets no dialog.
+- **Memory.** `ServerSession::active_config` is kept without passwords
+  (`ConnectionConfig::forget_secrets`, `zeroize`); only the fact that a server
+  password was used is remembered. Typed dialog fields are emptied when the
+  dialog closes. A `String` drop does not guarantee erasure and the IRC
+  library keeps its copy of the server password in its `Config` while the
+  connection lives; that remains, and is the accepted limit.
+- **Not covered.** A SASL failure (904) is not turned into a dialog: the
+  server does not say that the password is missing, and retrying would risk a
+  lockout. It is reported and the settings are the place to correct it.
 
 ## D067 — Send key for normal messages is a setting; optional NOTICE key (#583)
 

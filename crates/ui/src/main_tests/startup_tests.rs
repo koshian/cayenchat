@@ -10,7 +10,7 @@ fn memory_store() -> CredentialStore {
 }
 
 #[test]
-fn startup_uses_only_saved_credentials_when_enabled() {
+fn startup_uses_only_saved_credentials() {
     let store = memory_store();
     let mut settings = Settings::default();
     settings.add_server(cayenchat_storage::PRESETS[0].host);
@@ -23,7 +23,11 @@ fn startup_uses_only_saved_credentials_when_enabled() {
     profile.sasl_enabled = true;
     profile.sasl_username = "account".into();
     profile.use_tls = true;
-    assert!(startup_connections(&settings, &store)[0].1.is_err());
+    // No saved SASL password: the connection is asked for it, not refused.
+    let (config, missing) = startup_connections(&settings, &store).remove(0).1.unwrap();
+    assert!(missing.sasl && !missing.server);
+    assert!(config.server_password.is_none());
+    assert_eq!(config.sasl.unwrap().password, "");
 
     let profile = settings.selected_profile().unwrap().clone();
     store
@@ -35,13 +39,11 @@ fn startup_uses_only_saved_credentials_when_enabled() {
             &Secret::new("server-secret"),
         )
         .unwrap();
-    // Saved secrets are ignored until password saving is on.
-    assert!(startup_connections(&settings, &store)[0].1.is_err());
-    settings.selected_profile_mut().unwrap().remember_passwords = true;
     let startup = startup_connections(&settings, &store);
     assert_eq!(startup.len(), 1);
     assert_eq!(startup[0].0, settings.selected_server);
-    let config = startup.into_iter().next().unwrap().1.unwrap();
+    let (config, missing) = startup.into_iter().next().unwrap().1.unwrap();
+    assert!(!missing.any());
     assert_eq!(config.host, "irc.ircnet.com");
     assert_eq!(config.nickname, "alice");
     assert_eq!(config.username, "ident");
@@ -72,7 +74,7 @@ fn every_server_marked_for_startup_connects_with_its_own_identity() {
     let hosts: Vec<_> = startup
         .iter()
         .map(|(_, config)| {
-            let config = config.as_ref().unwrap();
+            let (config, _) = config.as_ref().unwrap();
             (
                 config.host.as_str(),
                 config.nickname.as_str(),
@@ -211,7 +213,6 @@ fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
         let mut previous = Settings::default();
         previous.add_server("");
         previous.selected_profile_mut().unwrap().host = "old.example.org".into();
-        previous.selected_profile_mut().unwrap().remember_passwords = true;
         if legacy {
             previous.selected_profile_mut().unwrap().id = "custom-1".into();
             previous.selected_server = "custom-1".into();
@@ -225,7 +226,6 @@ fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
         next.remove_selected_server();
         next.add_server("");
         next.selected_profile_mut().unwrap().host = "new.example.org".into();
-        next.selected_profile_mut().unwrap().remember_passwords = true;
         next.selected_profile_mut().unwrap().sasl_enabled = true;
 
         // Connecting reads saved credentials before committing settings.
@@ -263,23 +263,21 @@ fn removed_profiles_lose_their_saved_passwords() {
 }
 
 #[test]
-fn turning_password_saving_off_deletes_them_when_saved() {
+fn saving_settings_keeps_the_saved_passwords_of_a_kept_server() {
     let store = memory_store();
     let mut previous = Settings::default();
     previous.add_server("");
     previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
-    previous.selected_profile_mut().unwrap().remember_passwords = true;
     let profile = previous.selected_profile().unwrap().clone();
     store
         .set(&profile.server_password_key(), &Secret::new("x"))
         .unwrap();
-    // Still on: the secret stays.
+    // Neither an unchanged save nor an edited, kept server touches them.
     forget_removed_profiles(&previous, &previous, &store).unwrap();
-    assert!(store.get(&profile.server_password_key()).unwrap().is_some());
     let mut next = previous.clone();
-    next.selected_profile_mut().unwrap().remember_passwords = false;
+    next.selected_profile_mut().unwrap().nickname = "other".into();
     forget_removed_profiles(&previous, &next, &store).unwrap();
-    assert!(store.get(&profile.server_password_key()).unwrap().is_none());
+    assert!(store.get(&profile.server_password_key()).unwrap().is_some());
 }
 
 #[test]
@@ -289,9 +287,8 @@ fn a_failed_deletion_is_reported_so_save_can_retry() {
     )));
     let mut previous = Settings::default();
     previous.add_server("irc.example.org");
-    previous.selected_profile_mut().unwrap().remember_passwords = true;
     let mut next = previous.clone();
-    next.selected_profile_mut().unwrap().remember_passwords = false;
+    next.remove_selected_server();
     assert!(forget_removed_profiles(&previous, &next, &unavailable).is_err());
     // Nothing to forget once nothing changed.
     assert!(forget_removed_profiles(&previous, &previous, &unavailable).is_ok());

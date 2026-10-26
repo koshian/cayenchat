@@ -61,6 +61,7 @@ use irc::{
     },
 };
 use tokio::sync::{Notify, mpsc};
+use zeroize::Zeroize as _;
 
 const COMMAND_CAPACITY: usize = 128;
 const EVENT_CAPACITY: usize = 512;
@@ -283,6 +284,18 @@ impl ConnectionConfig {
             channel_encodings: Vec::new(),
             regain_ops: false,
             char_refs_for_iso2022jp: true,
+        }
+    }
+
+    /// Overwrites and drops the server and SASL passwords, keeping the SASL
+    /// account name. For a copy kept only to reconnect with: the passwords
+    /// are asked for or read again from the credential store then.
+    pub fn forget_secrets(&mut self) {
+        if let Some(mut password) = self.server_password.take() {
+            password.zeroize();
+        }
+        if let Some(sasl) = self.sasl.as_mut() {
+            sasl.password.zeroize();
         }
     }
 
@@ -2476,7 +2489,7 @@ async fn run(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_cancellable(
-    config: ConnectionConfig,
+    mut config: ConnectionConfig,
     mut commands: mpsc::Receiver<Outgoing>,
     events: EventSender,
     cancel: Arc<Notify>,
@@ -2543,12 +2556,14 @@ async fn run_cancellable(
         }
     }
     let wire_encoding = config.encoding.clone();
-    let server_password = config.server_password.clone();
     let registration_nick = config.nickname.clone();
     let targets_since = config.history_targets_since;
     let registration_user = config.username.clone();
     let auto_join_channels = config.channels.clone();
     let mut irc_config = library_config(&config);
+    // The one copy of the password this worker keeps besides the library's
+    // (`irc_config`, which lives as long as its client).
+    let server_password = config.server_password.take();
     irc_config.body_charsets = Some(irc::proto::charsets::BodyCharsetsHandle(charsets.clone()));
     let realname_mark = config.realname_mark();
     let registration_realname = config.wire_realname();
@@ -4447,13 +4462,16 @@ async fn send_all(
     Ok(())
 }
 
+/// The reason of [`Event::Refused`] when the server answered registration
+/// with 464 (password missing or wrong), so a caller can ask for the server
+/// password instead of showing an error.
+pub const PASSWORD_REFUSED: &str = "Server rejected the password (464).";
+
 /// Registration replies after which the server closes the link and an
 /// identical reconnect would be refused again.
 fn registration_refusal(message: &IrcMessage) -> Option<String> {
     match &message.command {
-        IrcCommand::Response(Response::ERR_PASSWDMISMATCH, _) => {
-            Some("Server rejected the password (464).".into())
-        }
+        IrcCommand::Response(Response::ERR_PASSWDMISMATCH, _) => Some(PASSWORD_REFUSED.into()),
         IrcCommand::Response(Response::ERR_YOUREBANNEDCREEP, _) => {
             Some("Server refused the connection because this client is banned (465).".into())
         }
