@@ -299,3 +299,22 @@ fn saving_a_key_notes_it_and_forgetting_it_removes_the_note(cx: &mut TestAppCont
         assert_eq!(noted(chat), Some(Vec::new()));
     });
 }
+
+#[gpui::test]
+fn renaming_a_channel_only_in_case_keeps_its_key_without_reading(cx: &mut TestAppContext) {
+    let (opened, cx) = open_chat(settings("#a", Some(&["#a"])), &[("#a", "secret")], cx);
+    opened.chat.update(cx, |chat, _| {
+        let config = chat.sessions.get_mut(&NET).unwrap().active_config.as_mut();
+        config
+            .unwrap()
+            .channel_keys
+            .insert("#a".into(), "secret".into());
+    });
+    apply(&opened, |p| p.channels = "#A".into(), cx);
+    assert_eq!(opened.reads.load(Ordering::SeqCst), 0);
+    opened.chat.update(cx, |chat, _| {
+        let config = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(config.channel_keys.len(), 1);
+        assert_eq!(config.channel_keys["#A"], "secret");
+    });
+}

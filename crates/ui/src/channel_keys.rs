@@ -96,6 +96,29 @@ fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, S
     }
 }
 
+/// Gives the keys `config` holds the spelling the auto-join list now has, so
+/// that renaming `#a` to `#A` keeps the key without reading the store: the
+/// connection looks keys up by exact name.
+pub fn follow_channel_spelling(config: &mut ConnectionConfig) {
+    let renamed: Vec<(String, String)> = config
+        .channel_keys
+        .keys()
+        .filter(|held| !config.channels.contains(held))
+        .filter_map(|held| {
+            let now = config
+                .channels
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(held))?;
+            Some((held.clone(), now.clone()))
+        })
+        .collect();
+    for (held, now) in renamed {
+        if let Some(key) = config.channel_keys.remove(&held) {
+            config.channel_keys.insert(now, key);
+        }
+    }
+}
+
 /// Whether `profile`'s auto-join list gained a channel the store is read for,
 /// compared with the list `before`. Only then do keys need reading again.
 pub fn keyed_channel_added(before: &[String], profile: &ServerProfile) -> bool {

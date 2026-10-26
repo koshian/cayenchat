@@ -2044,6 +2044,7 @@ impl ChatWindow {
                     }
                     // The store is read again only when the list gained a
                     // channel with a saved key; other changes leave it alone.
+                    channel_keys::follow_channel_spelling(config);
                     if channel_keys::keyed_channel_added(&before, profile) {
                         key_refreshes.push((id, profile.clone()));
                     }
@@ -3280,6 +3281,7 @@ impl ChatWindow {
                     settings.servers.iter().find(|p| p.id == profile_id),
                 ) {
                     let before = std::mem::replace(&mut config.channels, profile.channels());
+                    channel_keys::follow_channel_spelling(config);
                     if channel_keys::keyed_channel_added(&before, profile) {
                         self.refresh_stored_keys(menu.network, profile, cx);
                     }
