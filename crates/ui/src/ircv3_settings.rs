@@ -259,7 +259,9 @@ impl SettingsWindow {
             .when_some(self.status_message(), |d, feedback| {
                 d.child(div().text_color(theme.warning).child(feedback))
             })
-            .when(self.servers_unsaved(cx), |d| {
+            // Only a new server waits for Save; a registered one saves as
+            // it is edited (#634).
+            .when(!self.shown_server_registered(), |d| {
                 d.child(
                     div()
                         .flex()

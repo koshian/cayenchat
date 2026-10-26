@@ -3782,9 +3782,13 @@ fn quitting_asks_first_only_when_switched_on(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    // Off: closing the window goes straight on, with no question.
-    assert!(cx.simulate_close());
+    // Off: closing the window opens no question. The callback itself always
+    // refuses; the deferred ordinary quit ends the app (`cx.quit()` cannot be
+    // observed in the test context, and the test window stays).
+    assert!(!cx.simulate_close());
+    cx.run_until_parked();
     assert!(!cx.has_pending_prompt());
+    chat.read_with(cx, |chat, _| assert!(!chat.quit_prompt_open));
 
     chat.update(cx, |chat, _| chat.confirm_quit = true);
     let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());
@@ -4446,4 +4450,69 @@ fn the_regain_setting_reaches_an_automatic_reconnect(cx: &mut TestAppContext) {
         let config = chat.reconnect_config(NetworkId(1)).unwrap();
         assert!(config.regain_ops);
     });
+}
+
+#[gpui::test]
+fn quit_question_answered_after_a_failed_settings_save_keeps_the_app_open(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a");
+    settings.language = cayenchat_storage::Language::English;
+    settings.confirm_quit = true;
+    let file = crate::settings_file::TestFile::with(&settings);
+    let app = cx.clone();
+    let owner =
+        cx.add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
+    let chat = owner.root(cx).unwrap();
+    let (form, cx) = cx.add_window_view(|window, cx| {
+        super::SettingsWindow::new(owner, settings.clone(), window, cx)
+    });
+    cx.run_until_parked();
+
+    // The question opens, then a setting is changed and cannot be written.
+    app.update(crate::request_quit_anywhere);
+    cx.run_until_parked();
+    chat.read_with(cx, |chat, _| assert!(chat.quit_prompt_open));
+    crate::settings_file::fail_saves(true);
+    form.update(cx, |form, _| {
+        form.settings.values.notifications.private_messages = false;
+    });
+
+    // "Quit" neither quits nor loses the form and the error.
+    owner
+        .update(&mut app.clone(), |chat, window, cx| {
+            chat.answer_quit_dialog(true, window, cx)
+        })
+        .unwrap();
+    form.read_with(cx, |form, _| {
+        assert!(form.autosave_error.is_some());
+        assert!(!form.settings.values.notifications.private_messages);
+    });
+    assert_eq!(app.update(|cx| cx.windows().len()), 2);
+
+    // With the file writable again, quitting saves first.
+    crate::settings_file::fail_saves(false);
+    app.update(crate::request_quit_anywhere);
+    cx.run_until_parked();
+    chat.read_with(cx, |chat, _| assert!(chat.quit_prompt_open));
+    owner
+        .update(&mut app.clone(), |chat, window, cx| {
+            chat.answer_quit_dialog(true, window, cx)
+        })
+        .unwrap();
+    assert!(
+        !crate::settings_file::load()
+            .unwrap()
+            .unwrap()
+            .notifications
+            .private_messages
+    );
+    drop(file);
 }

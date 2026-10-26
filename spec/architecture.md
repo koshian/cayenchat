@@ -783,11 +783,14 @@ IRCv3 tab (`SettingsForm::switch_server`) first keeps the shown server's
 edits in the form's values and its typed passwords in memory (`drafts`, by
 server ID; nothing is written), then fills every server field from the chosen
 profile alone, so a pending autosave can only see each server's own values.
-Settings save automatically as they change, server settings when Save is
-pressed (D021): autosave neither reads nor validates the shown server's
-fields and keeps the saved server list and selection, and Save (or Connect)
-alone stores the drafts and deletes the secrets of removed servers or servers
-that stopped saving passwords. Saving adds,
+Settings save automatically as they change (D021, #634). A new server is a
+draft that only Save registers (no Connect until then); a registered server
+has no Save button: its choices are saved with the autosave pause and its
+text fields when they lose focus (`SettingsForm::commit_server_text`, valid
+values only), and the autosave (`SaveMode::Committed`) never writes a draft,
+text still being typed or typed passwords. Save (`SaveMode::Explicit`) or
+Connect alone stores the typed passwords; stored secrets are deleted for
+removed servers or servers that stopped saving passwords. Saving adds,
 renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
 Connecting a server replaces only that server's conversations with its

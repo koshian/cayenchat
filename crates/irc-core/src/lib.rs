@@ -374,11 +374,15 @@ impl ConnectionConfig {
         (!configured.is_empty()).then(|| configured.to_owned())
     }
 
+    /// Whether `host` can be connected to as written: not empty, with no
+    /// whitespace or control characters. Settings use it to keep a bad
+    /// hostname out of the saved file.
+    pub fn host_is_valid(host: &str) -> bool {
+        !host.is_empty() && !host.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.host.is_empty()
-            || self.host.chars().any(char::is_whitespace)
-            || self.host.chars().any(char::is_control)
-        {
+        if !Self::host_is_valid(&self.host) {
             return Err("Server hostname must not be empty or contain whitespace.".into());
         }
         if self.port == 0 {

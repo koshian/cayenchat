@@ -652,6 +652,53 @@ A failed save (settings file, or deleting a stored secret) leaves the edits
 unsaved, for Connect too, so a later Save retries and nothing unsaved reaches
 the autosave.
 
+**New servers wait for Save, registered ones autosave (#634).** This
+replaces the #209 rule above for servers that are already saved. A server
+that is not in the saved list is a *draft*: it shows **Save** only (no
+**Connect**), is never autosaved, and is registered, with its typed passwords,
+only when validation and the write succeed (then Save gives way to Connect);
+on failure it stays a draft, and leaving the window drops it. Save and
+Connect register only the shown draft; other drafts are never written. If
+saving fails when the window is closed (close button, Escape, window frame)
+or the user quits the app (menu, shortcut, main window close, macOS Dock;
+asking and quitting are separate: every entry only asks, and the confirmed
+quit, including "Quit" in the question, ends in `quit_app`, the one place
+that calls `cx.quit()` for them and first runs `settings_block_quit`, so
+edits made while the question was open are saved too; the action is
+deferred until its dispatch has finished so the settings window can be
+updated, and a settings window that cannot be asked never counts as saved.
+The main window close and Dock handlers always refuse at once and hand the
+request to the same deferred path, so no entry runs its own check), the close or quit is refused and
+the form and the error stay for a retry; edits are never discarded without a
+successful save (so while the file cannot be written the window stays open).
+Quits by the system or a signal cannot be refused. A registered
+server shows no Save button and saves its changes itself, including its
+auto-join channels (add, delete, enable, reorder; **Done** saves at once),
+IRCv3 options, the selected server and a confirmed removal:
+
+- Choices and checkboxes are saved with the usual 500 ms autosave.
+- Text fields are *committed* when the field loses focus, the settings tab
+  changes, another server is chosen, the window is deactivated or closed, the
+  app quits, or Connect is pressed — not while typing, so a half-typed
+  hostname is never applied. Only valid text is committed (the port is a
+  number, the hostname is not empty and has no whitespace or control
+  characters, as the connection requires); otherwise the saved server is left as it
+  was, the text stays in its field and the reason is shown
+  (`field_error`) until it is valid. A hostless registered server is never
+  written (that would drop it and its passwords). A failed write is shown
+  (`autosave_error`) and retried on the next edit.
+- Nothing connects or reconnects: a connected server keeps its connection and
+  the Connection tab says changes apply from the next connection.
+- Passwords stay out of the autosave: typed passwords are kept in memory and
+  stored by Save (draft) or Connect, as before; an existing stored secret is
+  never overwritten by an autosave. Turning password saving off for a server
+  that has stored passwords asks first, since the registered server saves the
+  change, and deleting them, at once. Passwords get their own save / change /
+  delete controls in a later issue.
+- Another process's changes and the #147 protection are unchanged: the file is
+  read back on activation unless something here is pending or failing, and a
+  window never writes servers it did not itself save or load.
+
 ## D022 — Opt-in IRCv3 features and shared CAP negotiation
 
 **Status:** Accepted
@@ -661,7 +708,7 @@ server and are off for new and migrated settings (settings version 15). The
 IRCv3 settings tab is their current home and names the server being
 configured. This milestone exposes message tags and server timestamps
 (server-time); server-time does not require message-tags, as the protocol
-allows. Per-server changes are saved with Save (D021) and take effect on
+allows. Per-server changes are saved as they are made (D021) and take effect on
 the next connection, including reconnects and retries; nothing reconnects.
 
 CAP negotiation is shared infrastructure, not a user-facing feature: SASL
