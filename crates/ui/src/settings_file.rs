@@ -1152,6 +1152,37 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_save_keeps_the_note_this_window_wrote_by_saving_or_deleting(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let a_id = profile.id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        for which in [Credential::Server, Credential::Sasl] {
+            for saved in [true, false] {
+                form.update(cx, |form, cx| {
+                    // Saving or deleting a password, then an ordinary change
+                    // that autosaves.
+                    form.credential_done(which, &a_id, Ok(()), saved, cx);
+                    form.settings.values.appearance.alternate_rows ^= true;
+                    assert!(form.save_before_leaving(cx));
+                    assert_eq!(form.settings.credential_state(which), (saved, false));
+                });
+                let written = super::load().unwrap().unwrap();
+                let profile = written.profile(&a_id).unwrap();
+                let noted = match which {
+                    Credential::Server => profile.server_password_saved(),
+                    Credential::Sasl => profile.sasl_password_saved(),
+                };
+                assert_eq!(noted, saved);
+            }
+        }
+        drop(file);
+    }
+
+    #[gpui::test]
     fn the_settings_window_reads_a_password_only_when_it_is_noted_as_saved(
         cx: &mut TestAppContext,
     ) {

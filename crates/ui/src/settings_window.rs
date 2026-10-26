@@ -1992,7 +1992,7 @@ impl SettingsWindow {
     }
 
     /// Shows the outcome of a store write.
-    fn credential_done(
+    pub(crate) fn credential_done(
         &mut self,
         which: Credential,
         profile: &str,
@@ -2014,6 +2014,17 @@ impl SettingsWindow {
                 // needs no read of the store.
                 if let Some(server) = self.settings.values.profile_mut(profile) {
                     which.note(server, saved);
+                }
+                if let Some(server) = self.saved.profile_mut(profile) {
+                    which.note(server, saved);
+                }
+                // Written at once, like a connection's note, so that the
+                // file is the newer one when a save follows its notes.
+                if let Ok(Some(mut file)) = settings_file::load()
+                    && let Some(server) = file.profile_mut(profile)
+                {
+                    which.note(server, saved);
+                    let _ = settings_file::save(&file);
                 }
                 self.schedule_autosave(cx);
                 self.feedback = Some(self.i18n.text(done));
