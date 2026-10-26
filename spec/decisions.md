@@ -581,6 +581,15 @@ order follows paint order (top to bottom) and wraps, with no manual indices.
 Only text fields are tab stops; buttons, checkboxes and selectors still have
 no keyboard focus (see D019).
 
+2026-10-26 (#633): the pane follows the focus. Each focused tab stop (text
+field, avatar section header) reports its painted bounds through
+`focus_reveal`; `SettingsWindow` handles Tab/Shift+Tab itself and, after the
+next frame, moves `pane_scroll` by the least amount that shows the target (8 px
+margin, nothing when it is already visible). Landing on the category list
+scrolls `nav_scroll` to the selected category the same way. Nothing is
+watched per frame, and the auto-join dialog (an overlay) does not scroll the
+panes behind it.
+
 ## D021 — Settings save as they change
 
 **Status:** Accepted

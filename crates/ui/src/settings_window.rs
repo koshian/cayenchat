@@ -6,7 +6,7 @@ use crate::{
     ChatWindow, Connect, CopyDiagnostics, Disconnect, FocusNextField, FocusPreviousField,
     OpenSettings, Reconnect, ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts,
     autostart, avatar_editor, color_picker, connection_config, decorations, diagnostics,
-    field_traversal, forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings,
+    focus_reveal, forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings,
     localization::Localizer, notification_rules, saved_connection_secrets, scrollbar, secrets,
     settings_file, settings_theme, shortcut_settings, theme,
 };
@@ -887,6 +887,8 @@ pub(crate) struct SettingsWindow {
     pub(crate) nav_focus: FocusHandle,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) pane_scroll: ScrollHandle,
+    /// Tab or Shift+Tab moved the focus; the pane scrolls to it once painted.
+    reveal_focus: bool,
     pub(crate) font_picker: Option<FontTarget>,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
@@ -1130,6 +1132,7 @@ impl SettingsWindow {
             nav_focus: cx.focus_handle().tab_stop(true),
             nav_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
+            reveal_focus: false,
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -2054,6 +2057,54 @@ impl SettingsWindow {
         }
         if !dialog.focus.contains_focused(window, cx) {
             window.focus(&dialog.focus);
+        }
+    }
+
+    /// Tab / Shift+Tab on the settings screen: moves the focus, then scrolls
+    /// whichever pane holds the new target by the least amount that shows it.
+    fn traverse(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if forward {
+            window.focus_next();
+        } else {
+            window.focus_prev();
+        }
+        // The dialog covers the panes; nothing behind it needs to follow.
+        if self.auto_join.is_none() {
+            if self.nav_focus.is_focused(window) {
+                self.reveal_selected_tab();
+            }
+            self.reveal_focus = true;
+            cx.notify();
+        }
+    }
+
+    /// Scrolls the category list just enough to show the selected category.
+    fn reveal_selected_tab(&self) {
+        let tabs = Self::settings_tabs();
+        let Some(index) = tabs.iter().position(|(tab, ..)| *tab == self.tab) else {
+            return;
+        };
+        // The last category (Experimental) follows a spacer child.
+        let spacer = usize::from(index + 1 == tabs.len());
+        self.nav_scroll.scroll_to_item(index + spacer);
+    }
+
+    /// Runs after the frame that painted the new focus target: scrolls the
+    /// pane to it unless it is already in view.
+    fn reveal_focused(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(target) = focus_reveal::focused_bounds(window, cx) else {
+            return;
+        };
+        let offset = self.pane_scroll.offset();
+        let y = focus_reveal::offset_to_reveal(
+            self.pane_scroll.bounds(),
+            target,
+            offset.y,
+            self.pane_scroll.max_offset().height,
+        );
+        if y != offset.y {
+            self.pane_scroll.set_offset(point(offset.x, y));
+            cx.notify();
         }
     }
 
@@ -3733,7 +3784,21 @@ impl SettingsWindow {
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         let auto_join = self.render_auto_join_dialog(cx);
-        field_traversal(div().id("settings-screen"))
+        if std::mem::take(&mut self.reveal_focus) {
+            let this = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                this.update(cx, |this, cx| this.reveal_focused(window, cx))
+                    .ok();
+            });
+        }
+        div()
+            .id("settings-screen")
+            .on_action(
+                cx.listener(|this, _: &FocusNextField, window, cx| this.traverse(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                this.traverse(false, window, cx)
+            }))
             .key_context("SettingsWindow")
             .on_key_down(
                 cx.listener(|this, event, window, cx| this.escape_key_down(event, window, cx)),

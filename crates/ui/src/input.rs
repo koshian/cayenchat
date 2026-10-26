@@ -1607,6 +1607,7 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
+        crate::focus_reveal::note(&focus_handle, bounds, window, cx);
         if let Some(wrapped) = prepaint.wrapped.take() {
             self.paint_multiline(bounds, wrapped, prepaint, window, cx);
             return;
