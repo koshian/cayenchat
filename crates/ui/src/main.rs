@@ -919,7 +919,8 @@ struct LogMenu {
     channel: String,
     private: bool,
     sender: Option<String>,
-    /// The clipboard held text when the menu opened.
+    /// The selected conversation's input exists and is not composing. The
+    /// clipboard is not read to open the menu.
     can_paste: bool,
 }
 
@@ -2928,15 +2929,13 @@ impl ChatWindow {
             .any(|input| input.read(cx).is_composing())
     }
 
-    /// Whether the clipboard has text and the selected conversation's input
-    /// is not composing (a paste would replace the composition).
+    /// Whether the selected conversation's input is not composing (a paste
+    /// would replace the composition). The clipboard is read only by the
+    /// paste itself.
     fn can_paste_into_input(&self, cx: &App) -> bool {
-        cx.read_from_clipboard()
-            .is_some_and(|item| item.text().is_some())
-            && self
-                .inputs
-                .get(&self.state.selection())
-                .is_some_and(|input| !input.read(cx).is_composing())
+        self.inputs
+            .get(&self.state.selection())
+            .is_some_and(|input| !input.read(cx).is_composing())
     }
 
     fn log_menu_choice(
@@ -2959,7 +2958,9 @@ impl ChatWindow {
             LogMenuChoice::Paste => {
                 if let Some(input) = self.inputs.get(&self.state.selection()).cloned() {
                     window.focus(&input.focus_handle(cx));
-                    input.update(cx, |input, cx| input.paste_clipboard(window, cx));
+                    // The shortcut's path, so an image-only clipboard reaches
+                    // the attachment flow too.
+                    window.dispatch_action(Box::new(input::Paste), cx);
                 }
             }
             LogMenuChoice::Mode | LogMenuChoice::Topic => {

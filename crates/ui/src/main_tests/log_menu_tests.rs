@@ -206,26 +206,28 @@ fn pasting_waits_for_a_finished_composition(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn pasting_replaces_the_selection_and_needs_text(cx: &mut TestAppContext) {
+fn pasting_replaces_the_selection_and_ignores_a_bare_image(cx: &mut TestAppContext) {
     let (chat, cx) = open_chat(cx);
-    chat.update_in(cx, |chat, window, cx| {
-        let input = chat.inputs[&chat.state.selection()].clone();
-        input.update(cx, |input, cx| {
-            input.set_text("keep SEL end", cx);
-            input.select_everything(cx);
-        });
-        let at = point(px(10.), px(10.));
-        cx.write_to_clipboard(ClipboardItem::new_string("new".into()));
-        chat.open_log_menu(at, None, window, cx);
-        assert!(chat.log_menu.as_ref().unwrap().can_paste);
-        chat.log_menu_choice(LogMenuChoice::Paste, window, cx);
-        assert_eq!(input.read(cx).text(), "new");
-        cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image::empty()));
-        chat.open_log_menu(at, None, window, cx);
-        assert!(!chat.log_menu.as_ref().unwrap().can_paste);
-        chat.log_menu_choice(LogMenuChoice::Paste, window, cx);
-        assert_eq!(input.read(cx).text(), "new");
+    let input = chat.read_with(cx, |chat, _| chat.inputs[&chat.state.selection()].clone());
+    input.update(cx, |input, cx| {
+        input.set_text("keep SEL end", cx);
+        input.select_everything(cx);
     });
+    // The menu opens, and Paste is chosen, with the clipboard as it is.
+    let paste = |cx: &mut gpui::VisualTestContext| {
+        chat.update_in(cx, |chat, window, cx| {
+            chat.open_log_menu(point(px(10.), px(10.)), None, window, cx);
+            assert!(chat.log_menu.as_ref().unwrap().can_paste);
+            chat.log_menu_choice(LogMenuChoice::Paste, window, cx);
+        });
+        cx.run_until_parked();
+    };
+    cx.write_to_clipboard(ClipboardItem::new_string("new".into()));
+    paste(cx);
+    input.read_with(cx, |input, _| assert_eq!(input.text(), "new"));
+    cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image::empty()));
+    paste(cx);
+    input.read_with(cx, |input, _| assert_eq!(input.text(), "new"));
 }
 
 #[gpui::test]

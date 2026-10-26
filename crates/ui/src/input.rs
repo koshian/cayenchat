@@ -93,12 +93,10 @@ impl MenuLabels {
 
 impl gpui::Global for MenuLabels {}
 
-/// An open right-click menu: where it was opened and what the clipboard held
-/// at that moment (reading it on every frame would be wasteful).
+/// An open right-click menu: where it was opened. The clipboard is not read
+/// to open it; Paste is always offered and reads it when chosen.
 struct InputMenu {
     position: Point<Pixels>,
-    clipboard_text: bool,
-    clipboard_image: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -205,6 +203,7 @@ impl TextInput {
 
     /// Pastes the clipboard at the caret, replacing the selection, exactly as
     /// the Paste shortcut does. Nothing is sent.
+    #[cfg(test)]
     pub fn paste_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.paste(&Paste, window, cx);
     }
@@ -721,13 +720,8 @@ impl TextInput {
     /// selection stays, so a selected text can be cut or copied from it.
     fn open_menu(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle);
-        let item = cx.read_from_clipboard();
         self.menu = Some(InputMenu {
             position: event.position,
-            clipboard_text: item.as_ref().is_some_and(|item| item.text().is_some()),
-            clipboard_image: item
-                .as_ref()
-                .is_some_and(|item| clipboard_image(item).is_some()),
         });
         cx.notify();
     }
@@ -753,15 +747,10 @@ impl TextInput {
     }
 
     /// The menu's entries in groups, each with whether it can be used now.
-    fn menu_entries(
-        &self,
-        menu: &InputMenu,
-        labels: &MenuLabels,
-    ) -> Vec<Vec<(MenuChoice, String, bool)>> {
+    fn menu_entries(&self, labels: &MenuLabels) -> Vec<Vec<(MenuChoice, String, bool)>> {
         let selected = !self.selected_range.is_empty();
         // A secret never reaches the clipboard (see `copy`).
         let may_copy = selected && !self.secret;
-        let can_paste = menu.clipboard_text || (self.attachments && menu.clipboard_image);
         let mut groups = vec![
             vec![
                 (MenuChoice::Undo, labels.undo.clone(), !self.undo.is_empty()),
@@ -770,7 +759,7 @@ impl TextInput {
             vec![
                 (MenuChoice::Cut, labels.cut.clone(), may_copy),
                 (MenuChoice::Copy, labels.copy.clone(), may_copy),
-                (MenuChoice::Paste, labels.paste.clone(), can_paste),
+                (MenuChoice::Paste, labels.paste.clone(), true),
                 (MenuChoice::Delete, labels.delete.clone(), selected),
             ],
             vec![(
@@ -815,7 +804,7 @@ impl TextInput {
                 this.menu = None;
                 cx.notify();
             }));
-        for (group, entries) in self.menu_entries(menu, &labels).into_iter().enumerate() {
+        for (group, entries) in self.menu_entries(&labels).into_iter().enumerate() {
             if group > 0 {
                 popup = popup.child(div().my_1().border_t_1().border_color(theme.separator));
             }
@@ -2648,16 +2637,11 @@ mod tests {
         cx: &mut gpui::VisualTestContext,
     ) -> Vec<(String, bool)> {
         input.read_with(cx, |input, _| {
-            let menu = InputMenu {
-                position: point(px(0.), px(0.)),
-                clipboard_text: true,
-                clipboard_image: false,
-            };
             let labels = MenuLabels::new(&crate::localization::Localizer::new(
                 cayenchat_storage::Language::English,
             ));
             input
-                .menu_entries(&menu, &labels)
+                .menu_entries(&labels)
                 .into_iter()
                 .flatten()
                 .map(|(_, label, enabled)| (label, enabled))
@@ -2741,6 +2725,25 @@ mod tests {
         input.read_with(cx, |input, _| assert_eq!(input.selection(), 0..5));
         choose(MenuChoice::Delete, cx);
         input.read_with(cx, |input, _| assert_eq!(input.text(), ""));
+    }
+
+    #[gpui::test]
+    fn pasting_a_bare_image_from_the_menu_does_nothing_in_a_plain_field(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        set_theme(cx);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new_field("", "hello", false, cx));
+        let paste = |cx: &mut gpui::VisualTestContext| {
+            input.update_in(cx, |input, window, cx| {
+                input.choose(MenuChoice::Paste, window, cx)
+            });
+            cx.run_until_parked();
+            input.read_with(cx, |input, _| assert_eq!(input.text(), "hello"));
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string("x".into()));
+        cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image::empty()));
+        // An image no field takes is ignored.
+        paste(cx);
     }
 
     #[gpui::test]
