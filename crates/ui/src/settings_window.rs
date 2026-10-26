@@ -860,6 +860,8 @@ pub(crate) struct AutoJoinDialog {
     /// Holds the keyboard focus while no row is being edited, so typing and
     /// Tab never reach the form behind the dialog.
     pub(crate) focus: FocusHandle,
+    /// Scroll position of the row list, which follows Tab like the pane does.
+    pub(crate) scroll: ScrollHandle,
 }
 
 pub(crate) struct AutoJoinRow {
@@ -887,8 +889,9 @@ pub(crate) struct SettingsWindow {
     pub(crate) nav_focus: FocusHandle,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) pane_scroll: ScrollHandle,
-    /// Tab or Shift+Tab moved the focus; the pane scrolls to it once painted.
-    reveal_focus: bool,
+    /// Frames still allowed to scroll to the field Tab moved to: the first
+    /// renders before the field is painted at its new place, the second after.
+    reveal_focus: u8,
     pub(crate) font_picker: Option<FontTarget>,
     pub(crate) color_picker: Option<OpenColorPicker>,
     /// A key being recorded for a shortcut (the Keyboard tab).
@@ -959,6 +962,9 @@ pub(crate) struct SettingsWindow {
     autostart_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
+
+/// See `SettingsWindow::reveal_focus`.
+const REVEAL_FRAMES: u8 = 2;
 
 /// Pause after the last edit before settings are written.
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
@@ -1132,7 +1138,7 @@ impl SettingsWindow {
             nav_focus: cx.focus_handle().tab_stop(true),
             nav_scroll: ScrollHandle::new(),
             pane_scroll: ScrollHandle::new(),
-            reveal_focus: false,
+            reveal_focus: 0,
             font_picker: None,
             color_picker: None,
             shortcut_recording: None,
@@ -1985,6 +1991,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("auto-join-list")
+                    .track_scroll(&dialog.scroll)
                     .flex_1()
                     .min_h_0()
                     .max_h(px(360.))
@@ -2034,7 +2041,11 @@ impl SettingsWindow {
             .collect();
         let focus = cx.focus_handle();
         window.focus(&focus);
-        self.auto_join = Some(AutoJoinDialog { rows, focus });
+        self.auto_join = Some(AutoJoinDialog {
+            rows,
+            focus,
+            scroll: ScrollHandle::new(),
+        });
         cx.notify();
     }
 
@@ -2058,6 +2069,9 @@ impl SettingsWindow {
         if !dialog.focus.contains_focused(window, cx) {
             window.focus(&dialog.focus);
         }
+        // Only the dialog's own list follows; the panes behind stay put.
+        self.reveal_focus = REVEAL_FRAMES;
+        cx.notify();
     }
 
     /// Tab / Shift+Tab on the settings screen: moves the focus, then scrolls
@@ -2073,7 +2087,7 @@ impl SettingsWindow {
             if self.nav_focus.is_focused(window) {
                 self.reveal_selected_tab();
             }
-            self.reveal_focus = true;
+            self.reveal_focus = REVEAL_FRAMES;
             cx.notify();
         }
     }
@@ -2089,22 +2103,38 @@ impl SettingsWindow {
         self.nav_scroll.scroll_to_item(index + spacer);
     }
 
-    /// Runs after the frame that painted the new focus target: scrolls the
-    /// pane to it unless it is already in view.
+    /// While a Tab is being followed, scrolls the pane (or the dialog's list)
+    /// to the field that has the focus unless it is already in view. The
+    /// bounds are those the field painted at its new place, so the frame
+    /// right after the Tab finds none and asks for one more.
     fn reveal_focused(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.reveal_focus == 0 {
+            return;
+        }
+        self.reveal_focus -= 1;
         let Some(target) = focus_reveal::focused_bounds(window, cx) else {
+            if self.reveal_focus > 0 {
+                // Notifying while drawing does not schedule another frame.
+                let this = cx.entity();
+                window.on_next_frame(move |_, cx| cx.notify(this.entity_id()));
+            }
             return;
         };
-        let offset = self.pane_scroll.offset();
+        self.reveal_focus = 0;
+        // With the dialog open, the scrolling region is its list.
+        let scroll = match &self.auto_join {
+            Some(dialog) => &dialog.scroll,
+            None => &self.pane_scroll,
+        };
+        let offset = scroll.offset();
         let y = focus_reveal::offset_to_reveal(
-            self.pane_scroll.bounds(),
+            scroll.bounds(),
             target,
             offset.y,
-            self.pane_scroll.max_offset().height,
+            scroll.max_offset().height,
         );
         if y != offset.y {
-            self.pane_scroll.set_offset(point(offset.x, y));
-            cx.notify();
+            scroll.set_offset(point(offset.x, y));
         }
     }
 
@@ -3784,13 +3814,7 @@ impl SettingsWindow {
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         let auto_join = self.render_auto_join_dialog(cx);
-        if std::mem::take(&mut self.reveal_focus) {
-            let this = cx.entity().downgrade();
-            window.on_next_frame(move |window, cx| {
-                this.update(cx, |this, cx| this.reveal_focused(window, cx))
-                    .ok();
-            });
-        }
+        self.reveal_focused(window, cx);
         div()
             .id("settings-screen")
             .on_action(

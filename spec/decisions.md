@@ -583,11 +583,13 @@ no keyboard focus (see D019).
 
 2026-10-26 (#633): the pane follows the focus. Each focused tab stop (text
 field, avatar section header) reports its painted bounds through
-`focus_reveal`; `SettingsWindow` handles Tab/Shift+Tab itself and, after the
-next frame, moves `pane_scroll` by the least amount that shows the target (8 px
-margin, nothing when it is already visible). Landing on the category list
+`focus_reveal`; `SettingsWindow` handles Tab/Shift+Tab itself and, in the
+render after the field has been painted at its new place (at most two frames
+after the key), moves `pane_scroll` by the least amount that shows the target
+(8 px margin, nothing when it is already visible). Landing on the category list
 scrolls `nav_scroll` to the selected category the same way. Nothing is
-watched per frame, and the auto-join dialog (an overlay) does not scroll the
+watched per frame. While the auto-join dialog (an overlay) is open, the same
+step moves the dialog's own list (`AutoJoinDialog::scroll`) and never the
 panes behind it.
 
 ## D021 — Settings save as they change
