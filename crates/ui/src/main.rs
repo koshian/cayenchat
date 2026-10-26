@@ -4774,7 +4774,16 @@ impl ChatWindow {
                     channel,
                     kind: ChannelActivityKind::JoinFailed { bad_key, .. },
                     ..
-                } => self.key_join_refused(network, channel, *bad_key, cx),
+                } if self.key_join_refused(network, channel, *bad_key, cx) => {
+                    // The key dialog is the notice; the refusal is not
+                    // logged, as the JOIN usually works with the key.
+                    self.join_refused_switch(network, channel);
+                    let folded = self.state.casemapping(network).fold(channel);
+                    if let Some(session) = self.sessions.get_mut(&network) {
+                        session.pending_joins.remove(&folded);
+                    }
+                    continue;
+                }
                 _ => {}
             }
             self.handle_event(network, event, cx);

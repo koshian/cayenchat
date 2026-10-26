@@ -1987,10 +1987,18 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   the note (`keyed_channels` absent) is read in full by its first connection
   (every enabled auto-join channel, as before) and the keys found become the
   note, so no saved key is lost. A note made before that scan is ignored, as it
-  would hide the other keys from it. The manual `/join` of a channel still reads
-  the store: it is the user's own action. The rule for every secret (D010,
-  and #638 for the passwords) is: the store is touched only when the settings
-  file notes a saved secret, or the user acts on it.
+  would hide the other keys from it. A manual JOIN (`/join`, the menus) reads
+  the store only for a channel the note lists (or while the first scan is
+  pending); any other channel is sent without a key, and a 475 asks for it. The
+  rule for every secret (D010, and #638 for the passwords) is: the store is
+  touched only when the settings file notes a saved secret, or the user acts on
+  it (saving or deleting).
+- **The 475 is not logged when the dialog asks.** The dialog is the notice of
+  the refusal; also writing "Cannot join (+k)" in the channel log would stay
+  there after the JOIN worked with the typed key. Other refusals are logged as
+  before. Saving a key is one read and one write of the one macOS Keychain item
+  (it is read once per process), which the system may ask for separately; this
+  cannot be reduced without keeping the keys elsewhere.
 
 ## D051 — Channel modes in the window title (#413)
 

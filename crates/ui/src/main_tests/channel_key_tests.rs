@@ -378,3 +378,28 @@ fn prompt_headings_use_the_display_name_without_bidi_controls(cx: &mut TestAppCo
         assert_eq!(chat.prompt_server_label(NET), "Home\u{200b}Net");
     });
 }
+
+#[gpui::test]
+fn a_475_that_opens_the_dialog_is_not_logged_in_the_channel(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        event(chat, registered(), cx);
+        chat.note_join(NET, "#Other", false);
+        event(chat, refused("#Other", true), cx);
+        assert_eq!(chat.key_prompts.len(), 1);
+        assert!(chat.state.channel_id(NET, "#Other").is_none());
+        assert!(chat.sessions[&NET].pending_joins.is_empty());
+    });
+}
+
+#[gpui::test]
+fn a_refusal_that_a_key_cannot_cure_is_still_logged(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(None, cx);
+    chat.update(cx, |chat, cx| {
+        event(chat, registered(), cx);
+        chat.note_join(NET, "#Other", false);
+        event(chat, refused("#Other", false), cx);
+        assert!(chat.key_prompts.is_empty());
+        assert!(chat.state.channel_id(NET, "#Other").is_some());
+    });
+}

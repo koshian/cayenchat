@@ -146,6 +146,26 @@ fn stored_channel_keys(
         .collect()
 }
 
+/// The saved key of each channel flagged as noted; the store is not read for
+/// the others.
+pub(crate) fn join_keys(
+    store: &CredentialStore,
+    profile: &str,
+    channels: Vec<(String, bool)>,
+) -> Vec<(String, Option<Secret>)> {
+    channels
+        .into_iter()
+        .map(|(channel, noted)| {
+            let saved = noted
+                .then(|| store.get(&SecretKey::channel_key(profile, &channel)))
+                .and_then(Result::ok)
+                .flatten()
+                .filter(|key| valid_channel_key(key.expose()));
+            (channel, saved)
+        })
+        .collect()
+}
+
 impl ChatWindow {
     /// Sends `JOIN` for each channel with its saved key, if there is one.
     /// The keys are read off the UI thread; the JOINs go out when they are in.
@@ -162,22 +182,21 @@ impl ChatWindow {
             .ok_or_else(|| self.i18n.text("not_connected"))?;
         self.registered_connection(network)?;
         let store = secrets::store(cx);
-        let channels = channels.to_vec();
+        // The store is read only for channels noted as keyed (#643); a JOIN
+        // of any other channel that a key refuses asks for it (475).
+        let channels: Vec<(String, bool)> = channels
+            .iter()
+            .map(|channel| {
+                let noted = self
+                    .saved
+                    .profile(&profile)
+                    .is_some_and(|saved| saved.channel_key_noted(channel));
+                (channel.clone(), noted)
+            })
+            .collect();
         let reading = cx.background_spawn({
             let profile = profile.clone();
-            async move {
-                channels
-                    .into_iter()
-                    .map(|channel| {
-                        let saved = store
-                            .get(&SecretKey::channel_key(&profile, &channel))
-                            .ok()
-                            .flatten()
-                            .filter(|key| valid_channel_key(key.expose()));
-                        (channel, saved)
-                    })
-                    .collect::<Vec<_>>()
-            }
+            async move { join_keys(&store, &profile, channels) }
         });
         cx.spawn(async move |this, cx| {
             let keyed = reading.await;
@@ -293,18 +312,21 @@ impl ChatWindow {
 
     /// The server refused our JOIN of `channel`. Only 475 for a JOIN we
     /// sent asks for a key; 471, 473, 474 and the like cannot be cured by one.
+    /// Returns whether the key dialog now asks for this channel, which is the
+    /// notice of the refusal: it is not logged as well, since the JOIN
+    /// usually works with the key typed.
     pub(crate) fn key_join_refused(
         &mut self,
         network: NetworkId,
         channel: &str,
         bad_key: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(join) = self.take_key_join(network, channel) else {
-            return;
+            return false;
         };
         if !bad_key {
-            return;
+            return false;
         }
         let rejected = join.typed.is_some();
         if let Some(index) = self.key_prompt_index(network, channel) {
@@ -312,7 +334,7 @@ impl ChatWindow {
             prompt.stale |= join.stale;
             prompt.rejected = rejected;
             prompt.focus_pending = true;
-            return;
+            return true;
         }
         let placeholder = self.i18n.text("key_prompt_placeholder");
         let input = cx.new(|cx| TextInput::new_field(&placeholder, "", true, cx));
@@ -332,6 +354,7 @@ impl ChatWindow {
         self.channel_menu = None;
         self.log_menu = None;
         cx.notify();
+        true
     }
 
     /// We are in `channel`: the JOIN worked, so the key typed for it may now

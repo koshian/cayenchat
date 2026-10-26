@@ -318,3 +318,19 @@ fn renaming_a_channel_only_in_case_keeps_its_key_without_reading(cx: &mut TestAp
         assert_eq!(config.channel_keys["#A"], "secret");
     });
 }
+
+#[test]
+fn a_join_reads_the_store_only_for_a_noted_channel() {
+    let (store, reads) = counting_store();
+    let settings = settings("#a", Some(&["#a"]));
+    save_key(&store, &settings, "#a", "secret");
+    save_key(&store, &settings, "#b", "unnoted");
+    reads.store(0, Ordering::SeqCst);
+    let id = &settings.selected_profile().unwrap().id;
+    let found = crate::channel_keys::join_keys(&store, id, vec![("#b".into(), false)]);
+    assert!(found[0].1.is_none());
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let found = crate::channel_keys::join_keys(&store, id, vec![("#a".into(), true)]);
+    assert_eq!(found[0].1.as_ref().map(|k| k.expose()), Some("secret"));
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+}
