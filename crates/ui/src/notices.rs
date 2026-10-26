@@ -484,10 +484,15 @@ mod disconnect_tests {
     }
 
     #[gpui::test]
-    fn a_lost_connection_still_raises_a_notice(cx: &mut TestAppContext) {
+    fn a_lost_connection_raises_no_notice(cx: &mut TestAppContext) {
         assert_eq!(
             notices_after(Event::Disconnected("Connection reset".into()), cx),
-            1
+            0
         );
+    }
+
+    #[gpui::test]
+    fn a_refused_connection_still_raises_a_notice(cx: &mut TestAppContext) {
+        assert_eq!(notices_after(Event::Refused("SASL failed".into()), cx), 1);
     }
 }

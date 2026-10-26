@@ -1432,7 +1432,7 @@ added without a version change, so older files read as `previous`.
 A long error in the draft row took the room of the text field, so the draft
 could not be edited. Nothing is drawn in the draft row now besides the field
 and the upload progress. Every error and warning that used to be there (a
-failed or refused send, connection, disconnect, WHOIS, join/part, member
+failed or refused send, connection, refused connection, WHOIS, join/part, member
 command, settings and order saving, start-up notices) opens a modal dialog
 with a Close button (`window.prompt`, `notices.rs`).
 
@@ -1443,9 +1443,17 @@ with a Close button (`window.prompt`, `notices.rs`).
   dropped; other notices wait (at most 8, then dropped and logged) and open one
   after another. Any other dialog of the chat window (upload confirmation,
   disconnect-all) counts as open too, so it is never replaced. A notice a
-  background process raised (the selected server's connection ending) is also
-  dropped for 30 seconds after the same text was closed, so failing retries do
-  not reopen it; what the user triggered is shown every time.
+  background process raised (the selected server refusing the connection) is
+  also dropped for 30 seconds after the same text was closed; what the user
+  triggered is shown every time.
+- **Disconnects (#639).** A dialog is for the result of something the user did
+  or for what needs the user. A connection that ends by itself
+  (`Event::Disconnected`: PING timeout, failed check after sleep, server
+  ERROR, network loss) and a failed automatic reconnect are reconnected or
+  retried on their own, so they only go to the server log, the network
+  activity and the tree row. `Event::Refused` (authentication, SASL, UTF8ONLY;
+  no automatic reconnect) and a failed connect from a connection command or
+  start-up open a dialog. `Event::Closed` (the user disconnected) opens none.
 - **Closing changes nothing.** The draft, caret, selection and undo history are
   untouched, nothing is sent, retried or selected. When nothing has the focus
   afterwards, the draft of the selected conversation gets it; a form the user
