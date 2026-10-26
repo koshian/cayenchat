@@ -607,7 +607,13 @@ mod tests {
             }
             // Leaving the server and coming back.
             form.select_server(b_id.clone(), cx);
+            assert!(!form.settings.drafts.contains_key(&a_id));
             form.select_server(a_id.clone(), cx);
+            assert!(!form.settings.drafts.contains_key(&a_id));
+            for which in [Credential::Server, Credential::Sasl] {
+                let field = form.settings.credential_field(which);
+                assert_eq!(field.read(cx).text(), "");
+            }
             assert_eq!(form.settings.values.selected_server, a_id);
             let settings = form.settings.snapshot(cx).unwrap();
             let (config, _) = form

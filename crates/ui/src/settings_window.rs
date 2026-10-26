@@ -49,7 +49,7 @@ pub(crate) struct SettingsForm {
     /// Typed (server, SASL) passwords of servers not being shown, by server
     /// ID. They are used by Connect only and stored only by the password's
     /// own Save; closing the window drops them.
-    drafts: HashMap<String, (String, String)>,
+    pub(crate) drafts: HashMap<String, (String, String)>,
     pub(crate) member_list_background: Entity<TextInput>,
     pub(crate) main_log_background: Entity<TextInput>,
     pub(crate) main_log_alternate: Entity<TextInput>,
@@ -625,7 +625,8 @@ impl SettingsForm {
         ]
     }
 
-    /// Moves the typed passwords of the shown server into `drafts`.
+    /// Moves the typed passwords of the shown server into `drafts`. A value
+    /// typed to change a saved password is dropped instead of kept.
     pub(crate) fn stash_typed_passwords(&mut self, cx: &App) {
         let Some(id) = self
             .values
@@ -634,8 +635,17 @@ impl SettingsForm {
         else {
             return;
         };
-        let text = |field: &Entity<TextInput>| field.read(cx).text().to_owned();
-        let typed = (text(&self.server_password), text(&self.sasl_password));
+        let text = |field: &Entity<TextInput>, saved: bool| {
+            if saved {
+                String::new()
+            } else {
+                field.read(cx).text().to_owned()
+            }
+        };
+        let typed = (
+            text(&self.server_password, self.saved_server_password),
+            text(&self.sasl_password, self.saved_sasl_password),
+        );
         if typed.0.is_empty() && typed.1.is_empty() {
             self.drafts.remove(&id);
         } else {

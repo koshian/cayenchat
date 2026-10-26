@@ -146,7 +146,7 @@ impl ChatWindow {
     }
 
     /// Starts the reconnect of `network` with the passwords the store has,
-    /// read off the UI thread, and asks for the rest.
+    /// read when the connection starts, and asks for the rest.
     ///
     /// `refused`: the server rejected registration with 464 (`Some(true)`
     /// when a password had been sent, `Some(false)` when none was). The
@@ -382,7 +382,7 @@ impl ChatWindow {
         }
     }
 
-    /// Saves the passwords whose box was checked, off the UI thread. A
+    /// Saves the passwords whose box was checked. A
     /// failure is reported; the connection goes on, and a saved password
     /// that was there is not touched by a failed write.
     fn save_prompted_secrets(

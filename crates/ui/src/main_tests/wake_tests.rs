@@ -204,7 +204,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
         chat.start_reconnect(NetworkId(1), cx);
         generation
     });
-    // The reconnect reads its passwords off the UI thread first.
+    // The reconnect reads its passwords first.
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
         assert_eq!(chat.sessions[&NetworkId(1)].generation, generation + 1);
@@ -384,7 +384,7 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
         chat.check_connections_after_wake(cx);
         generations
     });
-    // The reconnects read their passwords off the UI thread first.
+    // The reconnects read their passwords first.
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
         assert_eq!(chat.sessions[&NetworkId(1)].generation, generations[0] + 1);
