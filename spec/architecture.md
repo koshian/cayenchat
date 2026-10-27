@@ -245,7 +245,9 @@ continues it (`reiwa_group::lead`): in the same minute it shows the text
 alone, in another minute the time in the avatar's column, and the text starts
 at the same x in every case (the column is as wide as a time, `TIME_WIDTH`,
 with or without avatars).
-Activity, NOTICE, action and failed lines end a group. This is derived from
+A NOTICE continues a NOTICE of the same sender in the same way (same rules,
+same NOTICE colour); a plain message and a NOTICE never join, in either
+direction. Activity, action and failed lines end a group. This is derived from
 the line above at draw time, never stored; `LogList::sync_shaped` gets the
 lead of each row, so a kept row whose lead changed (older history inserted
 above or in the middle, a trimmed head, an updated time) has its measured

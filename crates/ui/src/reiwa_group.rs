@@ -30,10 +30,11 @@ pub enum Lead {
     Time = 2,
 }
 
-/// A plain message of a speaker, as opposed to activity, a NOTICE, an action
-/// or a failed send, which end a group and keep their own look.
-fn plain(message: &Message) -> bool {
-    !(message.activity || message.notice || message.action || message.delivery_failed)
+/// Whether `message` is a plain message of a speaker or a NOTICE, the two
+/// kinds that continue a line of their own kind. Activity, actions and failed
+/// sends always end a group and keep their own look.
+fn groupable(message: &Message) -> bool {
+    !(message.activity || message.action || message.delivery_failed)
 }
 
 /// The lead of `message`, which is shown right below `above` (`None` for the
@@ -43,7 +44,11 @@ pub fn lead(above: Option<&Message>, message: &Message, mapping: CaseMapping) ->
     let Some(above) = above else {
         return Lead::Header;
     };
-    if !plain(above) || !plain(message) || !mapping.same(&above.sender, &message.sender) {
+    if !groupable(above)
+        || !groupable(message)
+        || above.notice != message.notice
+        || !mapping.same(&above.sender, &message.sender)
+    {
         return Lead::Header;
     }
     if let (Some(a), Some(b)) = (above.timestamp, message.timestamp)
@@ -109,7 +114,6 @@ mod tests {
         let first = said("Alice", 1, 10);
         for change in [
             (|m: &mut Message| m.activity = true) as fn(&mut Message),
-            |m| m.notice = true,
             |m| m.action = true,
             |m| m.delivery_failed = true,
         ] {
@@ -118,6 +122,56 @@ mod tests {
             assert_eq!(lead(Some(&first), &other, MAP), Lead::Header);
             assert_eq!(lead(Some(&other), &first, MAP), Lead::Header);
         }
+    }
+
+    fn noticed(sender: &str, hour: u8, minute: u8) -> Message {
+        Message {
+            notice: true,
+            ..said(sender, hour, minute)
+        }
+    }
+
+    #[test]
+    fn a_notice_continues_a_notice_of_the_same_sender() {
+        let first = noticed("Alice", 1, 10);
+        assert_eq!(
+            lead(Some(&first), &noticed("alice", 1, 10), MAP),
+            Lead::Text
+        );
+        assert_eq!(
+            lead(Some(&first), &noticed("Alice", 1, 11), MAP),
+            Lead::Time
+        );
+        assert_eq!(
+            lead(Some(&first), &noticed("Bob", 1, 10), MAP),
+            Lead::Header
+        );
+    }
+
+    #[test]
+    fn a_notice_and_a_plain_message_do_not_join() {
+        let plain = said("Alice", 1, 10);
+        let notice = noticed("Alice", 1, 10);
+        assert_eq!(lead(Some(&plain), &notice, MAP), Lead::Header);
+        assert_eq!(lead(Some(&notice), &plain, MAP), Lead::Header);
+    }
+
+    #[test]
+    fn a_notice_does_not_join_across_midnight() {
+        let at = |day, hour, minute| Message {
+            timestamp: Some(Timestamp::from_millis(
+                Local
+                    .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
+                    .earliest()
+                    .unwrap()
+                    .timestamp_millis() as u64,
+            )),
+            ..noticed("Alice", 1, 10)
+        };
+        assert_eq!(
+            lead(Some(&at(24, 23, 59)), &at(25, 0, 0), MAP),
+            Lead::Header
+        );
     }
 
     #[test]
