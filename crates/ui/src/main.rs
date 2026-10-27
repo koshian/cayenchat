@@ -139,10 +139,6 @@ const LOG_SPLIT_LIMITS: (f32, f32) = (0.1, 0.9);
 /// Height of the draft row including its borders.
 const DRAFT_ROW_HEIGHT: f32 = 38.;
 
-/// How long the startup connections wait for the first frame before they
-/// go on without it.
-const STARTUP_FRAME_WAIT: Duration = Duration::from_secs(2);
-
 const RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(3),
     Duration::from_secs(6),
@@ -2531,41 +2527,46 @@ impl ChatWindow {
     /// any failure to connect. The first server that cannot start gets its
     /// settings opened, unless they are open already.
     fn connect_at_startup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The status line and the tree show the start even when a channel is
+        // selected and the server log is not.
         for network in &self.startup_connections {
             self.state
                 .append_server_message(*network, self.i18n.text("event_connecting"));
+            self.state
+                .set_status(*network, ConnectionStatus::Connecting);
+            if let Some(session) = self.sessions.get_mut(network) {
+                session.starting = true;
+            }
         }
         cx.notify();
         // Callbacks run at the start of a frame, before it is drawn: the
-        // second one is after the first frame was.
+        // second one is after the first frame was. A window that gets no
+        // frames reads nothing.
         cx.on_next_frame(window, |_, window, cx| {
             cx.on_next_frame(window, |this, window, cx| {
                 this.connect_startup_servers(window, cx)
             });
         });
-        // A window that is not shown gets no frames: do not wait for one
-        // for ever. Whichever comes first connects; the other finds nothing.
-        cx.spawn_in(window, async |this, cx| {
-            Timer::after(STARTUP_FRAME_WAIT).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.connect_startup_servers(window, cx)
-            });
-        })
-        .detach();
     }
 
     /// The reading half of `connect_at_startup`.
     fn connect_startup_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut settings_for = None;
         for network in std::mem::take(&mut self.startup_connections) {
+            let Some(session) = self.sessions.get_mut(&network) else {
+                continue;
+            };
+            session.starting = false;
             // Connected or tried by hand in the meantime.
-            if self.sessions.get(&network).is_none_or(ServerSession::used) {
+            if session.used() {
                 continue;
             }
             let failed = match self.connect_saved(network, window, cx) {
                 Ok(failed) => failed,
                 Err(error) => {
                     let message = self.i18n.format("startup_invalid", &[("error", &error)]);
+                    self.state
+                        .set_status(network, ConnectionStatus::Disconnected(error));
                     self.raise_error(Some(network), message, notices::Origin::User, cx);
                     cx.notify();
                     true
@@ -6657,7 +6658,7 @@ impl ChatWindow {
                 let used = self
                     .sessions
                     .get(&server_id)
-                    .is_some_and(ServerSession::used);
+                    .is_some_and(|session| session.used() || session.starting);
                 let status_mark = match self.state.status(server_id) {
                     // Servers not connected in this run show no mark.
                     _ if !used => "",

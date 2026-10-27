@@ -3,6 +3,7 @@
 //! and for a server that does not connect at startup, only when the user
 //! connects it (#648).
 use super::ChatWindow;
+use cayenchat_app::ConnectionStatus;
 use cayenchat_model::NetworkId;
 use cayenchat_storage::{Secret, Settings};
 use gpui::TestAppContext;
@@ -99,8 +100,16 @@ fn a_startup_server_is_read_after_the_window_is_drawn(cx: &mut TestAppContext) {
         let connecting = chat.i18n.text("event_connecting");
         assert!(log_has(chat, &connecting), "the log says it is starting");
     });
+    chat.read_with(cx, |chat, _| {
+        // Visible although a channel may be selected: status line and tree.
+        assert_eq!(chat.state.status(NET), Some(&ConnectionStatus::Connecting));
+        assert!(chat.sessions[&NET].starting);
+    });
+    // The test platform draws no frames, and nothing else reads: not even
+    // after a long wait.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(10));
     cx.run_until_parked();
-    // The test platform draws no frames, and the fallback timer is far off.
     assert_eq!(watch.touches() + watch.key_touches(), 0, "before a frame");
 
     // What the frame after the first one runs.

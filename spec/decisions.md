@@ -1454,9 +1454,9 @@ D021 that stored typed passwords with Save of the server.
   window is drawn: creating the window only lists the servers marked
   `connect_on_startup`. A server not marked is read when the user connects it
   (tree, Connect, settings). A marked one gets a "Connecting…" line in its
-  server log first; after the first frame has been drawn (or 2 seconds, for a
-  window that is not shown and gets no frames) the same path as the Connect
-  button reads the server and SASL passwords and the channel keys. A read that
+  server log first, its status shows "connecting" (status line, and "…" in
+  the tree), and only after the first frame has been drawn the same path as
+  the Connect button reads the server and SASL passwords and the channel keys. A read that
   fails is treated like any failed connection (an unreadable store counts as
   empty, so the dialog asks); a configuration that is unusable raises the
   error and opens that server's settings. The one-time migration of
