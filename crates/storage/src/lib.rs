@@ -300,6 +300,37 @@ pub enum TextEncoding {
     Big5,
 }
 
+/// The SASL mechanism of a server (used while `sasl_enabled`). Files from
+/// before the choice existed read as PLAIN, the only one then.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaslMechanism {
+    #[default]
+    Plain,
+    ScramSha1,
+    ScramSha256,
+    ScramSha512,
+}
+
+impl SaslMechanism {
+    pub const ALL: [Self; 4] = [
+        Self::Plain,
+        Self::ScramSha1,
+        Self::ScramSha256,
+        Self::ScramSha512,
+    ];
+
+    /// The name on the wire, shown in the settings.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "PLAIN",
+            Self::ScramSha1 => "SCRAM-SHA-1",
+            Self::ScramSha256 => "SCRAM-SHA-256",
+            Self::ScramSha512 => "SCRAM-SHA-512",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeMode {
@@ -830,6 +861,10 @@ pub struct ServerProfile {
     pub channels: String,
     #[serde(default)]
     pub sasl_enabled: bool,
+    /// Used while `sasl_enabled`; the SASL password and its saved note are
+    /// shared by every mechanism. Added without a version change.
+    #[serde(default)]
+    pub sasl_mechanism: SaslMechanism,
     /// SASL account name; independent of both nickname and username.
     #[serde(default)]
     pub sasl_username: String,
@@ -919,6 +954,7 @@ impl ServerProfile {
             display_name: String::new(),
             channels: String::new(),
             sasl_enabled: false,
+            sasl_mechanism: SaslMechanism::Plain,
             sasl_username: String::new(),
             connect_on_startup: false,
             user_avatars: false,
@@ -2517,6 +2553,7 @@ mod tests {
             assert_eq!(profile.username, "ident");
             assert_eq!(profile.channels, "#test");
             assert!(profile.sasl_enabled);
+            assert_eq!(profile.sasl_mechanism, SaslMechanism::Plain);
             assert_eq!(profile.sasl_username, "account");
             assert_eq!(settings.notifications, Notifications::default());
             assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -2597,6 +2634,37 @@ mod tests {
         assert_eq!(loaded.profile("custom-1").unwrap().nickname, "alice");
         assert_eq!(loaded.profile("custom-2").unwrap().nickname, "bob");
         assert_eq!(loaded.profile("custom-2").unwrap().channels(), ["#c"]);
+    }
+
+    #[test]
+    fn sasl_mechanism_is_kept_per_server_and_defaults_to_plain() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("irc.example.net");
+        let profile = settings.selected_profile_mut().unwrap();
+        assert_eq!(profile.sasl_mechanism, SaslMechanism::Plain);
+        profile.use_tls = true;
+        profile.sasl_enabled = true;
+        profile.sasl_mechanism = SaslMechanism::ScramSha256;
+        save_to(&path, &settings).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(r#""sasl_mechanism": "scram_sha256""#),
+            "{text}"
+        );
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded.selected_profile().unwrap().sasl_mechanism,
+            SaslMechanism::ScramSha256
+        );
+        for mechanism in SaslMechanism::ALL {
+            let json = serde_json::to_string(&mechanism).unwrap();
+            assert_eq!(
+                serde_json::from_str::<SaslMechanism>(&json).unwrap(),
+                mechanism
+            );
+        }
     }
 
     #[test]
