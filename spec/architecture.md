@@ -664,7 +664,11 @@ a server, and every profile is editable and removable in the order added.
 Host/port/TLS/certificate verification/encoding are per
 profile; version 13 moves the nickname, `USER` username, auto-join channels,
 SASL account and startup connection into each profile too (see Servers and
-sessions below). Versions 1–3
+sessions below). The Connection tab lists a profile's fields in this order
+(#651): server and port, with TLS indented under the port and certificate
+verification under TLS; authentication (server password, SASL, with each
+password's saved-state widgets beside it); nickname and username; encoding;
+then the rest (real name, quit/part messages, auto-join, ...). Versions 1–3
 are migrated on load, as are version 4 settings. `irc-core` passes the profile's encoding to the `irc` line
 codec so protocol parameters, including channel names, and message text use the
 same wire charset. It strictly validates outgoing encoding and wire length before
