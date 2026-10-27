@@ -2315,6 +2315,10 @@ impl ChatWindow {
                 Ok(())
             }
             Err(error) => {
+                // Nothing was sent, so nothing is left to send again.
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.sent_secrets = (None, None);
+                }
                 self.record_disconnect(network, error.clone(), true, cx);
                 self.schedule_retry(network, cx);
                 Err(error)
@@ -2363,6 +2367,7 @@ impl ChatWindow {
         let mut requested = true;
         let cancelled_retry = session.retry_pending;
         session.manual_disconnect = true;
+        session.sent_secrets = (None, None);
         session.asleep = false;
         session.retry_pending = false;
         session.retry_token += 1;
@@ -2550,6 +2555,10 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
+                // Nothing was sent, so nothing is left to send again.
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.sent_secrets = (None, None);
+                }
                 // An automatic retry that fails is only logged; one the user
                 // asked for is announced.
                 self.record_disconnect(network, error, announce, cx);

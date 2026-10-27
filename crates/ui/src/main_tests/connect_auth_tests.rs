@@ -520,3 +520,32 @@ fn cancelling_the_dialog_drops_the_carried_password(cx: &mut TestAppContext) {
         assert!(chat.sessions[&NET].manual_disconnect);
     });
 }
+
+#[gpui::test]
+fn a_connection_that_cannot_start_does_not_keep_the_sent_passwords(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        // An empty nickname fails the synchronous check of the connection.
+        let mut bad = config(true);
+        bad.nickname = String::new();
+        bad.server_password = Some("server".into());
+        bad.sasl.as_mut().unwrap().password = "typed".into();
+        chat.start_reconnect_with(NET, bad, false, cx);
+        let session = &chat.sessions[&NET];
+        assert!(session.irc.is_none());
+        assert!(session.retry_pending, "the failure waits for a retry");
+        assert_eq!(sent(chat), (None, None));
+    });
+}
+
+#[gpui::test]
+fn stopping_a_pending_retry_drops_the_sent_passwords(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.sent_secrets = (Some(Secret::new("a")), Some(Secret::new("b")));
+        session.retry_pending = true;
+        chat.disconnect(NET, cx);
+        assert_eq!(sent(chat), (None, None));
+    });
+}
