@@ -154,6 +154,18 @@ pub(crate) struct CredentialPrompt {
 }
 
 impl CredentialPrompt {
+    /// The line saying what is wanted: a refused password, the server
+    /// password (alone or beside the SASL one), or passwords in general.
+    pub(crate) fn title_key(&self) -> &'static str {
+        if self.rejected {
+            "credential_prompt_rejected"
+        } else if self.server.is_some() {
+            "credential_prompt_server"
+        } else {
+            "credential_prompt_title"
+        }
+    }
+
     pub(crate) fn inputs(&self) -> impl Iterator<Item = &Entity<TextInput>> {
         self.server
             .iter()
@@ -577,13 +589,7 @@ impl ChatWindow {
             let server = self.prompt_server_label(network);
             // One line says what is wanted: a refused password, the server
             // password alone, or passwords in general.
-            let title = self.i18n.text(if prompt.rejected {
-                "credential_prompt_rejected"
-            } else if prompt.sasl.is_none() {
-                "credential_prompt_server"
-            } else {
-                "credential_prompt_title"
-            });
+            let title = self.i18n.text(prompt.title_key());
             let mut fields = div().flex().flex_col().gap_1();
             for (slot, field, label) in [
                 (

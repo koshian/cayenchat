@@ -218,6 +218,8 @@ fn a_464_asks_for_the_server_password_and_does_not_retry(cx: &mut TestAppContext
         let prompt = &chat.credential_prompts[0];
         assert!(prompt.server.is_some());
         assert!(!prompt.rejected, "none had been sent");
+        assert!(prompt.sasl.is_some(), "the SASL password is missing too");
+        assert_eq!(prompt.title_key(), "credential_prompt_server");
         assert!(chat.notices.all().is_empty(), "the dialog is the notice");
         let log = chat.state.server_messages(NET);
         assert!(log.iter().any(|m| m.text.contains("464")), "still logged");
@@ -239,6 +241,10 @@ fn a_464_after_sending_a_password_says_it_seems_wrong(cx: &mut TestAppContext) {
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
         assert!(chat.credential_prompts[0].rejected);
+        assert_eq!(
+            chat.credential_prompts[0].title_key(),
+            "credential_prompt_rejected"
+        );
         assert!(chat.credential_prompts[0].server.is_some());
         assert!(chat.notices.all().is_empty());
     });
