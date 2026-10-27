@@ -530,9 +530,9 @@ use. Items inside menus have no access keys yet (after #337); selecting
 queried only while a menu is open: GPUI has no rendered dispatch tree during
 the first frame, so querying it while the bar renders (now always, unless
 auto-hidden) would panic on startup. macOS retains native menus.
-Passwords persist per server only when password saving is on for that server,
-and only through the credential store (see Credentials below); turning saving
-off immediately removes stored values. TLS certificate verification
+Passwords persist only when the user saves one (the "save password" box of a draft server, taking effect at its Save, the Save button of a registered server's password, or the box
+in the password dialog) and only through the credential store (see Credentials
+below); Delete removes it at once (D068). TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
 requires TLS before sending SASL PLAIN credentials, and before sending server
 PASS unless the server's profile explicitly allows it without TLS (D024). The nickname (`NICK`), the `USER` username and the SASL account are separate
@@ -778,8 +778,8 @@ page, independent of the server one, on by default and for files without it)
 turns off, and the double click then sends PART with the connection's part
 message at once, with the same guards. `/part` and the menus never ask.
 A new server, blank or from a preset, starts with an empty
-nickname, `USER` username, auto-join channels and SASL account, SASL,
-password saving and startup connection off, IRCv3 options off, and the
+nickname, `USER` username, auto-join channels and SASL account, SASL
+and startup connection off, IRCv3 options off, and the
 transport defaults (port 6667, no TLS, certificate verification on, UTF-8);
 a preset fills only its host. Choosing another server in the Connection or
 IRCv3 tab (`SettingsForm::switch_server`) first keeps the shown server's
@@ -790,10 +790,10 @@ Settings save automatically as they change (D021, #634). A new server is a
 draft that only Save registers (no Connect until then); a registered server
 has no Save button: its choices are saved with the autosave pause and its
 text fields when they lose focus (`SettingsForm::commit_server_text`, valid
-values only), and the autosave (`SaveMode::Committed`) never writes a draft,
-text still being typed or typed passwords. Save (`SaveMode::Explicit`) or
-Connect alone stores the typed passwords; stored secrets are deleted for
-removed servers or servers that stopped saving passwords. Saving adds,
+values only), and the autosave (`SaveMode::Committed`) never writes a draft
+or text still being typed. They store no password: only the Save or Connect that
+registers a draft writes its checked "save password" boxes (`store_marked_passwords`, D068). Save (`SaveMode::Explicit`)
+or Connect deletes the secrets of removed servers. Saving adds,
 renames or removes networks: a removed server is
 disconnected and its conversations, drafts and scroll state are dropped.
 Connecting a server replaces only that server's conversations with its
@@ -1920,8 +1920,11 @@ Saving settings deletes the secrets of removed profiles. `Secret` redacts
 its `Debug` output and zeroes its buffer on drop (best effort). Credential
 errors are mapped to sanitized text; keyring payloads, which may contain secret
 bytes, are dropped. The settings file records only the backend choice
-(`credential_backend`) and per-profile `remember_passwords`, plus, for channel
-keys, `keyed_channels`, the channels with a saved key.
+(`credential_backend`) and, per profile, a note of which passwords are in the
+store (`server_saved`, `sasl_saved`; the old `remember_passwords` counts as
+both). Settings shows the saved state from the note, so opening it, picking or
+adding a server never reads the store (D068); a connection reads the store and
+corrects the note.
 
 The store is touched only when the settings file notes that a secret is saved,
 or when the user acts on it, because reading any entry can ask for the login
@@ -1946,6 +1949,12 @@ secret also removes its separate item. Other platforms keep one entry per
 secret, because Credential Manager limits entry size and Secret Service
 unlocks a whole collection at once.
 
+The vault is written with one `SecItemAdd`/`SecItemUpdate` call
+(`security_framework::passwords::set_generic_password`), not through `keyring`,
+whose `set_password` first looks the item up with its data and so asked once
+more: saving a password into an existing vault asks for at most the read and
+the write (#635).
+
 The backend is chosen explicitly (settings version 11, default System). Opening
 never falls back to another backend. The Credential Storage tab probes the
 system store on a background task (D-Bus may be slow) and offers the local file
@@ -1954,8 +1963,24 @@ moves known secrets (`migrate` copies all, then deletes the originals). On
 startup, plaintext passwords read from version 10 and earlier move into the
 store before any window opens; only if the system store is unavailable do they
 go to the local file, because the user had already accepted plaintext storage
-for them. The settings form never shows saved passwords: fields start empty,
-typing replaces the saved value, and a typed value wins for the connection.
+for them. The settings form never shows saved passwords: an unsaved password
+of a draft server has a field and a "save password" box (written by the server's own Save), one of a registered server a field with Save, a saved one "Saved" with Change and Delete, and Change
+shows an empty field with Save and Cancel. A value typed and not saved wins
+for the connection started from that form and is dropped with the window.
+
+A connection never keeps an unsaved password (D068). `ServerSession::active_config`,
+which reconnects start from, is stored with `ConnectionConfig::forget_secrets`;
+a reconnect, a launch connection and a connection refused with 464 or by SASL read the
+store when the connection starts (not the password that was refused) and ask for what is
+missing in `connect_auth`'s dialog, which then replaces the error notice. The dialog asks
+only for the refused side (the SASL side with an editable account name, written to the
+profile's `sasl_username`). The one exception to keeping no unsaved password: the unsaved
+passwords a connection sent are held in `ServerSession::sent_secrets` until it registers or
+ends, so a refusal can send the other one again; every other end and Cancel drop them.
+The IRC library keeps its copy of the server password in its own `Config` for
+as long as the connection lives and cannot be wiped from outside; the worker keeps
+no copy of its own beyond the `PASS` command it sends, and the SASL handshake
+clears its password after use.
 
 The UI's stderr logger keeps `irc`, `ureq`, `rustls` and keyring crates at warning
 level even under `RUST_LOG=trace`, including the IRC library's raw PASS and

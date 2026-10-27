@@ -169,8 +169,8 @@ window at startup and from the menu. Persist versioned preferences in `CayenChat
 platform user configuration directory. Offer `irc.ircnet.ne.jp:6667` without
 TLS, `irc6.ircnet.ne.jp` and `dev.ircnet.ne.jp` as suggestions, and allow custom host/port and TLS
 (since D017 the server list starts empty).
-Password saving is per server and off by default; switching it off
-immediately removes those stored values. (Where passwords are stored is now
+Passwords are saved only on request and deleted on request (D068 replaced
+the per-server "save passwords" switch). (Where passwords are stored is now
 D014; the original plaintext-in-settings storage is superseded.) Require TLS whenever sending
 either password; unverified TLS remains possible only after the user switches
 off certificate verification for that server. (Since D024 a server password may
@@ -631,14 +631,13 @@ single-instance locks were not added.
 
 **Server settings wait for Save (#209).** The exception to the above: the
 server list and everything stored in a server profile (hostname, port,
-nickname, channels, SASL, IRCv3 options, password saving, removal) are written
+nickname, channels, SASL, IRCv3 options, removal) are written
 only when **Save** on the Connection tab is pressed (Connect also saves), so
 an accidentally chosen server is never kept. Everything else keeps autosaving
 and leaves the saved server list and the selected server as it is (an invalid
 unsaved port does not stop it). Typed passwords are kept in memory per server
-and stored by Save too, not when their field loses focus or another server is
-chosen; turning password saving off or removing a server deletes the stored
-secrets only on Save. Save stays available after the last server was removed,
+and are stored only by the Save of a draft server whose "save password" box is checked, or by a registered server's password Save button (D068); removing a server deletes the
+stored secrets only on Save. Save stays available after the last server was removed,
 and the IRCv3 tab shows it with the note whenever server changes are
 unsaved. A note says server changes are unsaved;
 leaving the window with them discards them, and a file written by another
@@ -655,7 +654,8 @@ the autosave.
 **New servers wait for Save, registered ones autosave (#634).** This
 replaces the #209 rule above for servers that are already saved. A server
 that is not in the saved list is a *draft*: it shows **Save** only (no
-**Connect**), is never autosaved, and is registered, with its typed passwords,
+**Connect**), is never autosaved, and is registered (its passwords are
+stored only at that Save and only if their box is checked, D068)
 only when validation and the write succeed (then Save gives way to Connect);
 on failure it stays a draft, and leaving the window drops it. Save and
 Connect register only the shown draft; other drafts are never written. If
@@ -1384,6 +1384,109 @@ point's reference is IRC's concern and is not a generic sync token.
 Private-message recovery, persistence and echo-message reconciliation are
 future work. Details in `architecture.md` (Channel history).
 
+## D068 — Passwords are saved on request; unsaved ones are asked for, never kept (#635)
+
+**Status:** Accepted
+
+Replaces the per-server "save passwords" checkbox and the part of D010 and
+D021 that stored typed passwords with Save of the server.
+
+- **Settings.** The screen follows whether the server is registered (saved
+  in the settings), not whether the password is saved. A **draft** server
+  (new, not yet saved) shows each password as a field and a **Save password**
+  box (off). A checked box writes nothing by itself: the server's own Save
+  or Connect, which registers it, writes the typed password of each checked
+  box to the credential store that is currently selected (D014), notes it
+  saved and empties the field. With the local file, checking the box asks
+  once because the file is unencrypted. A discarded draft leaves nothing
+  behind. A **registered** server shows a field with **Save** while the
+  password is not saved, **Saved** with **Change** and **Delete** once saved,
+  and an empty field with **Save** and **Cancel** while changing. Its
+  autosave never writes a password. A saved value is never shown again.
+  The typed passwords of the other servers are kept per server like the
+  fields. **Save** and **Delete** of a registered server act at once. A failed save or delete is reported, stops the
+  save, and leaves what was stored and what was typed. The store is
+  read and written on the UI thread at the moment of the action, like the
+  upload tokens (a slow store can stall the UI as it does there; moving the
+  store off the UI thread is one app-wide design, #640). A saved password
+  shown as saved is used as saved: an unfinished change is dropped, from the
+  field and the draft, when another server is selected. A save of the
+  settings writes only the checked passwords of a draft it registers and
+  never reads the store; an unsaved typed password is used by Connect from that form and
+  dropped with the window. Whether a password is shown as
+  saved comes from a note in the settings file (`server_saved`, `sasl_saved`
+  of the profile; the old `remember_passwords` counts as both until one is
+  changed), never from reading the store: opening settings, picking a server
+  or adding one must not read the credential store, since a system store may
+  ask the user for permission then. The note is set by Save and Delete and by
+  the dialog's save box, and corrected when a connection reads a noted
+  password and finds it gone. A stored value the note lacks is not looked
+  for (see the next rule). An open settings window takes over the notes in
+  the file before it saves, so a save made there never writes back a note a
+  connection changed meanwhile. An import clears the notes, as the passwords
+  do not travel. A note can differ from the store (a store emptied
+  elsewhere); Connect then asks for the password. Removing a server deletes
+  the passwords noted as saved.
+- **The store is touched only when the note says saved, or on request.**
+  A connection (launch, tree, reconnect, Connect in settings) reads the server
+  password only if `server_password_saved()` and the SASL password only if
+  SASL is on and `sasl_password_saved()`; otherwise it does not call the
+  store and treats the password as not saved (SASL is asked for in the
+  dialog). Removing a server deletes only the passwords noted as saved. The
+  other touches are the user's own: Save and Delete in settings and the
+  dialog's save box. On macOS every secret sits in one Keychain item, so any
+  read can make the system ask for the login password. A note that is wrong
+  (false while a password is stored) is not repaired by reading; 464, a SASL
+  failure or the dialog recover from it. The old `remember_passwords` counts
+  as noted.
+- **Connection time.** A reconnect, a connection started at launch or from
+  the tree, and a registration refused with 464 read the saved passwords and
+  open one dialog per server for the ones the connection needs and the store
+  lacks: the SASL password when SASL is on; the server password when the last
+  connection sent one, or when the server answers 464 (so a server is never
+  asked for one without a reason, and a wrong saved one is asked for again).
+  Each field has "Save this password", off by default; only the checked ones
+  are stored. Cancel drops the attempt and sets the server as ended by the
+  user, so the retry timer and wake-up leave it alone until Connect; a
+  reconnect loop never reopens the dialog. A connection that needs nothing
+  gets no dialog.
+- **Memory.** `ServerSession::active_config` is kept without passwords
+  (`ConnectionConfig::forget_secrets`, `zeroize`); only the fact that a server
+  password was used is remembered. Typed dialog fields are emptied when the
+  dialog closes. A `String` drop does not guarantee erasure and the IRC
+  library keeps its copy of the server password in its `Config` while the
+  connection lives; that remains, and is the accepted limit.
+- **Refusals.** A 464 and a SASL failure (902, 904 and the like,
+  `SASL_FAILED`) open the dialog instead of the error notice (D063); the
+  refusal stays in the server log and nothing reconnects by itself, so only
+  the user's answer tries again. The password that was refused is not read
+  from the store again: the server password for 464, the SASL password for a
+  SASL failure. Only the refused side is asked for: a 464 shows the server
+  password field alone, a SASL failure the SASL fields alone. The line says
+  what is wanted: "The password seems to be wrong" when a server password was
+  sent and refused (saved or typed), "Enter the server password" when none
+  was sent, "The SASL account or password seems to be wrong" for a SASL
+  failure, and the general line when only the SASL password is wanted before
+  a failure. Cancel is the usual Cancel. Other refusals (UTF8ONLY, a ban,
+  465) keep the error notice.
+- **The other password after a refusal (the one exception to "no unsaved
+  password is kept").** The other side is read from the store if it is noted
+  as saved. If it is not saved, the value the refused connection sent is
+  used, so the user is not asked again for what was already typed.
+  `ServerSession::sent_secrets` holds the unsaved server and SASL passwords
+  a connection sends, from its start until it registers or ends. A
+  refusal hands them to the dialog's configuration; every other end drops
+  them: registration, a disconnect or refusal that is not answered by the
+  dialog, a manual disconnect, and Cancel (which also clears the dialog's
+  configuration). Ordinary reconnects still start from `forget_secrets`.
+- **The SASL account.** Every dialog with a SASL password field (before a
+  failure too) also has an account field, filled with the profile's
+  `sasl_username` and checked like the settings window's (the connection
+  configuration's validation). The account is no secret: the corrected name
+  is written to the profile's `sasl_username` and to the session's
+  configuration at once when the dialog is answered, and an open settings
+  window takes it over unless it edited the field itself.
+
 ## D070 — Showing settings never reads the credential store; the upload token has a note (#642)
 
 2026-10-27. Reading the store can make the OS ask the user for a permission
@@ -1534,9 +1637,10 @@ with a Close button (`window.prompt`, `notices.rs`).
   ERROR, network loss) and a failed automatic reconnect are reconnected or
   retried on their own, so they only go to the server log, the network
   activity and the tree row. `Event::Refused` (authentication, SASL, UTF8ONLY;
-  no automatic reconnect) and a failed connect from a connection command,
-  start-up, the user's Reconnect or a nickname re-entered in the prompt open a
-  dialog. `Event::Closed` (the user disconnected) opens none.
+  no automatic reconnect) opens a dialog, except 464 and a SASL failure, whose
+  password dialog is the notice (D068). A failed connect from a connection
+  command, start-up, the user's Reconnect or a nickname re-entered in the
+  prompt opens a dialog too. `Event::Closed` (the user disconnected) opens none.
 - **Closing changes nothing.** The draft, caret, selection and undo history are
   untouched, nothing is sent, retried or selected. When nothing has the focus
   afterwards, the draft of the selected conversation gets it; a form the user

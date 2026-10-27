@@ -528,7 +528,7 @@ impl SaslHandshake {
                     | Response::ERR_SASLALREADY,
                     _,
                 ),
-            ) => return Err("SASL authentication failed.".into()),
+            ) => return Err(crate::SASL_FAILED.into()),
             _ => {}
         }
         Ok(send)

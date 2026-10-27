@@ -10,7 +10,7 @@ fn memory_store() -> CredentialStore {
 }
 
 #[test]
-fn startup_uses_only_saved_credentials_when_enabled() {
+fn startup_uses_only_saved_credentials() {
     let store = memory_store();
     let mut settings = Settings::default();
     settings.add_server(cayenchat_storage::PRESETS[0].host);
@@ -23,8 +23,13 @@ fn startup_uses_only_saved_credentials_when_enabled() {
     profile.sasl_enabled = true;
     profile.sasl_username = "account".into();
     profile.use_tls = true;
-    assert!(startup_connections(&settings, &store)[0].1.is_err());
+    // No saved SASL password: the connection is asked for it, not refused.
+    let (config, missing) = startup_connections(&settings, &store).remove(0).1.unwrap();
+    assert!(missing.sasl && !missing.server);
+    assert!(config.server_password.is_none());
+    assert_eq!(config.sasl.unwrap().password, "");
 
+    // Stored but not noted as saved: the store is not read.
     let profile = settings.selected_profile().unwrap().clone();
     store
         .set(&profile.sasl_password_key(), &Secret::new("secret"))
@@ -35,13 +40,16 @@ fn startup_uses_only_saved_credentials_when_enabled() {
             &Secret::new("server-secret"),
         )
         .unwrap();
-    // Saved secrets are ignored until password saving is on.
-    assert!(startup_connections(&settings, &store)[0].1.is_err());
-    settings.selected_profile_mut().unwrap().remember_passwords = true;
+    let (_, missing) = startup_connections(&settings, &store).remove(0).1.unwrap();
+    assert!(missing.sasl, "not read without the note");
+    let profile = settings.selected_profile_mut().unwrap();
+    profile.set_server_password_saved(true);
+    profile.set_sasl_password_saved(true);
     let startup = startup_connections(&settings, &store);
     assert_eq!(startup.len(), 1);
     assert_eq!(startup[0].0, settings.selected_server);
-    let config = startup.into_iter().next().unwrap().1.unwrap();
+    let (config, missing) = startup.into_iter().next().unwrap().1.unwrap();
+    assert!(!missing.any());
     assert_eq!(config.host, "irc.ircnet.com");
     assert_eq!(config.nickname, "alice");
     assert_eq!(config.username, "ident");
@@ -72,7 +80,7 @@ fn every_server_marked_for_startup_connects_with_its_own_identity() {
     let hosts: Vec<_> = startup
         .iter()
         .map(|(_, config)| {
-            let config = config.as_ref().unwrap();
+            let (config, _) = config.as_ref().unwrap();
             (
                 config.host.as_str(),
                 config.nickname.as_str(),
@@ -211,11 +219,18 @@ fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
         let mut previous = Settings::default();
         previous.add_server("");
         previous.selected_profile_mut().unwrap().host = "old.example.org".into();
-        previous.selected_profile_mut().unwrap().remember_passwords = true;
         if legacy {
             previous.selected_profile_mut().unwrap().id = "custom-1".into();
             previous.selected_server = "custom-1".into();
         }
+        previous
+            .selected_profile_mut()
+            .unwrap()
+            .set_server_password_saved(true);
+        previous
+            .selected_profile_mut()
+            .unwrap()
+            .set_sasl_password_saved(true);
         let removed = previous.selected_profile().unwrap().clone();
         for key in [removed.server_password_key(), removed.sasl_password_key()] {
             store.set(&key, &Secret::new("old-password")).unwrap();
@@ -225,7 +240,6 @@ fn replacing_a_profile_before_saving_never_inherits_its_passwords() {
         next.remove_selected_server();
         next.add_server("");
         next.selected_profile_mut().unwrap().host = "new.example.org".into();
-        next.selected_profile_mut().unwrap().remember_passwords = true;
         next.selected_profile_mut().unwrap().sasl_enabled = true;
 
         // Connecting reads saved credentials before committing settings.
@@ -249,6 +263,10 @@ fn removed_profiles_lose_their_saved_passwords() {
     let mut previous = Settings::default();
     previous.add_server("");
     previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
+    previous
+        .selected_profile_mut()
+        .unwrap()
+        .set_server_password_saved(true);
     let removed = previous.selected_profile().unwrap().clone();
     let kept = SecretKey::server_password(cayenchat_storage::IRCNET_ID);
     store
@@ -263,23 +281,21 @@ fn removed_profiles_lose_their_saved_passwords() {
 }
 
 #[test]
-fn turning_password_saving_off_deletes_them_when_saved() {
+fn saving_settings_keeps_the_saved_passwords_of_a_kept_server() {
     let store = memory_store();
     let mut previous = Settings::default();
     previous.add_server("");
     previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
-    previous.selected_profile_mut().unwrap().remember_passwords = true;
     let profile = previous.selected_profile().unwrap().clone();
     store
         .set(&profile.server_password_key(), &Secret::new("x"))
         .unwrap();
-    // Still on: the secret stays.
+    // Neither an unchanged save nor an edited, kept server touches them.
     forget_removed_profiles(&previous, &previous, &store).unwrap();
-    assert!(store.get(&profile.server_password_key()).unwrap().is_some());
     let mut next = previous.clone();
-    next.selected_profile_mut().unwrap().remember_passwords = false;
+    next.selected_profile_mut().unwrap().nickname = "other".into();
     forget_removed_profiles(&previous, &next, &store).unwrap();
-    assert!(store.get(&profile.server_password_key()).unwrap().is_none());
+    assert!(store.get(&profile.server_password_key()).unwrap().is_some());
 }
 
 #[test]
@@ -289,10 +305,102 @@ fn a_failed_deletion_is_reported_so_save_can_retry() {
     )));
     let mut previous = Settings::default();
     previous.add_server("irc.example.org");
-    previous.selected_profile_mut().unwrap().remember_passwords = true;
+    previous
+        .selected_profile_mut()
+        .unwrap()
+        .set_server_password_saved(true);
     let mut next = previous.clone();
-    next.selected_profile_mut().unwrap().remember_passwords = false;
+    next.remove_selected_server();
     assert!(forget_removed_profiles(&previous, &next, &unavailable).is_err());
     // Nothing to forget once nothing changed.
     assert!(forget_removed_profiles(&previous, &previous, &unavailable).is_ok());
+}
+
+/// A store that counts every read and delete, which is what can make the
+/// operating system ask the user for permission.
+struct CountingBackend {
+    inner: MemoryBackend,
+    touches: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingBackend {
+    fn touch(&self) {
+        self.touches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl cayenchat_storage::credentials::CredentialBackend for CountingBackend {
+    fn kind(&self) -> CredentialBackendKind {
+        self.inner.kind()
+    }
+
+    fn is_memory(&self) -> bool {
+        true
+    }
+
+    fn get(&self, key: &SecretKey) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+        self.touch();
+        self.inner.get(key)
+    }
+
+    fn set(
+        &self,
+        key: &SecretKey,
+        value: &Secret,
+    ) -> Result<(), cayenchat_storage::CredentialError> {
+        self.inner.set(key, value)
+    }
+
+    fn delete(&self, key: &SecretKey) -> Result<(), cayenchat_storage::CredentialError> {
+        self.touch();
+        self.inner.delete(key)
+    }
+}
+
+#[test]
+fn the_store_is_touched_only_for_passwords_noted_as_saved() {
+    let backend = Arc::new(CountingBackend {
+        inner: MemoryBackend::new(CredentialBackendKind::System),
+        touches: Default::default(),
+    });
+    let store = CredentialStore::with_backend(backend.clone());
+    let touches = || backend.touches.load(std::sync::atomic::Ordering::SeqCst);
+    let mut previous = Settings::default();
+    previous.add_server("irc.example.org");
+    let profile = previous.selected_profile_mut().unwrap();
+    profile.nickname = "alice".into();
+    profile.username = "ident".into();
+    profile.sasl_enabled = true;
+    profile.sasl_username = "account".into();
+    profile.use_tls = true;
+    profile.connect_on_startup = true;
+    let profile = previous.selected_profile().unwrap().clone();
+    for key in [profile.server_password_key(), profile.sasl_password_key()] {
+        store.set(&key, &Secret::new("stored")).unwrap();
+    }
+    let i18n = super::Localizer::new(previous.language);
+
+    // Nothing noted: connecting at startup reads nothing, and asks for SASL.
+    let (_, missing) = startup_connections(&previous, &store).remove(0).1.unwrap();
+    assert!(missing.sasl);
+    let (server, sasl) = super::saved_connection_secrets(&profile, &store, &i18n).unwrap();
+    assert!(server.is_none() && sasl.is_none());
+    // Neither does removing the server delete anything.
+    let mut next = previous.clone();
+    next.remove_selected_server();
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    assert_eq!(touches(), 0);
+
+    // Noted: the password is read and used, and deleted with the server.
+    let mut noted = profile.clone();
+    noted.set_server_password_saved(true);
+    noted.set_sasl_password_saved(true);
+    let (server, sasl) = super::saved_connection_secrets(&noted, &store, &i18n).unwrap();
+    assert!(server.is_some() && sasl.is_some());
+    assert_eq!(touches(), 2);
+    let mut previous = previous.clone();
+    *previous.selected_profile_mut().unwrap() = noted;
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    assert_eq!(touches(), 4);
 }

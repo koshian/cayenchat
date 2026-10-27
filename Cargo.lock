@@ -890,6 +890,7 @@ dependencies = [
  "irc-proto",
  "rustls",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -918,6 +919,7 @@ dependencies = [
  "dirs 5.0.1",
  "keyring",
  "libc",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2 0.10.9",

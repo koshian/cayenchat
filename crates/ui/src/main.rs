@@ -13,6 +13,7 @@ mod char_refs;
 mod charset_command;
 mod color_picker;
 mod compact_urls;
+mod connect_auth;
 mod conversation_log;
 mod decorations;
 mod default_avatar;
@@ -279,22 +280,25 @@ struct Navigate {
     command: Command,
 }
 
-/// Saved passwords for the profile, when password saving is on.
+/// The passwords saved for the profile with Save in its settings or in the
+/// password dialog. The store is touched only for a password the profile
+/// notes as saved (D068); the SASL one also only while SASL is on.
 fn saved_connection_secrets(
     profile: &ServerProfile,
     store: &CredentialStore,
     i18n: &Localizer,
 ) -> Result<(Option<Secret>, Option<Secret>), String> {
-    if !profile.remember_passwords {
-        return Ok((None, None));
-    }
     let get = |key: SecretKey| {
         store
             .get(&key)
             .map_err(|error| secrets::error_text(i18n, &error))
     };
-    let server = get(profile.server_password_key())?;
-    let sasl = if profile.sasl_enabled {
+    let server = if profile.server_password_saved() {
+        get(profile.server_password_key())?
+    } else {
+        None
+    };
+    let sasl = if profile.sasl_enabled && profile.sasl_password_saved() {
         get(profile.sasl_password_key())?
     } else {
         None
@@ -302,11 +306,28 @@ fn saved_connection_secrets(
     Ok((server, sasl))
 }
 
+#[cfg(test)]
 fn connection_config(
     profile: &ServerProfile,
     language: Language,
     server_password: Option<Secret>,
     sasl_password: Option<Secret>,
+) -> Result<ConnectionConfig, String> {
+    let mut config = connection_config_without_secrets(profile, language)?;
+    connect_auth::apply_secrets(
+        &mut config,
+        server_password.as_ref(),
+        sasl_password.as_ref(),
+    );
+    config.validate()?;
+    Ok(config)
+}
+
+/// The configuration of `profile` before any password is added. With SASL
+/// on it holds the account and an empty password, which does not validate.
+fn connection_config_without_secrets(
+    profile: &ServerProfile,
+    language: Language,
 ) -> Result<ConnectionConfig, String> {
     let mut config = ConnectionConfig::tls(
         profile.host.clone(),
@@ -331,18 +352,12 @@ fn connection_config(
     config.channel_encodings = channel_encodings(profile);
     config.ircv3 = ircv3_options(profile.ircv3);
     config.shared_avatar = shared_peer_avatar(profile);
-    if let Some(password) = server_password.filter(|value| !value.is_empty()) {
-        config.server_password = Some(password.expose().to_owned());
-    }
     if profile.sasl_enabled {
         config.sasl = Some(SaslCredentials {
             username: profile.sasl_username.clone(),
-            password: sasl_password
-                .map(|value| value.expose().to_owned())
-                .unwrap_or_default(),
+            password: String::new(),
         });
     }
-    config.validate()?;
     Ok(config)
 }
 
@@ -386,25 +401,36 @@ pub(crate) fn shared_peer_avatar(profile: &ServerProfile) -> Option<String> {
         .then(|| url.to_owned())
 }
 
+/// A configuration and the passwords it still lacks, or why it is unusable.
+type OpenConfig = Result<(ConnectionConfig, connect_auth::Missing), String>;
+
 /// A connection from saved settings alone (at startup or from the channel
-/// tree) uses only passwords saved in the credential store.
+/// tree) uses only passwords saved in the credential store. A SASL password
+/// that is not saved is reported as missing, to be asked for; a server
+/// password is not, since nothing says the server wants one.
 fn saved_connection_config(
     profile: &ServerProfile,
     language: Language,
     store: &CredentialStore,
-) -> Result<ConnectionConfig, String> {
+) -> OpenConfig {
     let i18n = Localizer::new(language);
     let (server_password, sasl_password) = saved_connection_secrets(profile, store, &i18n)?;
-    let mut config = connection_config(profile, language, server_password, sasl_password)?;
-    channel_keys::use_stored_keys(&mut config, profile, store);
-    Ok(config)
+    let mut config = connection_config_without_secrets(profile, language)?;
+    let missing = connect_auth::fill(
+        &mut config,
+        server_password.as_ref(),
+        sasl_password.as_ref(),
+        false,
+    );
+    connect_auth::while_incomplete(&mut config, |config| {
+        channel_keys::use_stored_keys(config, profile, store);
+        config.validate()
+    })?;
+    Ok((config, missing))
 }
 
 /// Servers marked to connect at startup, in tree order, with their configs.
-fn startup_connections(
-    settings: &Settings,
-    store: &CredentialStore,
-) -> Vec<(String, Result<ConnectionConfig, String>)> {
+fn startup_connections(settings: &Settings, store: &CredentialStore) -> Vec<(String, OpenConfig)> {
     settings
         .ordered_servers()
         .filter(|profile| profile.connect_on_startup)
@@ -417,10 +443,10 @@ fn startup_connections(
         .collect()
 }
 
-/// Deletes the saved passwords of profiles that no longer exist or no longer
-/// keep them. New profiles have fresh IDs even if cleanup fails or a removal
-/// has not been saved yet. Every deletion is tried; the first failure is
-/// returned so the save stays pending and a later Save retries.
+/// Deletes the saved passwords of profiles that no longer exist. New
+/// profiles have fresh IDs even if cleanup fails or a removal has not been
+/// saved yet. Every deletion is tried; the first failure is returned so the
+/// save stays pending and a later Save retries.
 fn forget_removed_profiles(
     previous: &Settings,
     next: &Settings,
@@ -429,10 +455,16 @@ fn forget_removed_profiles(
     let mut first_error = None;
     for server in &previous.servers {
         let kept = next.servers.iter().find(|kept| kept.id == server.id);
-        let stopped_keeping =
-            server.remember_passwords && kept.is_some_and(|kept| !kept.remember_passwords);
-        if kept.is_none() || stopped_keeping {
-            for key in [server.server_password_key(), server.sasl_password_key()] {
+        if kept.is_none() {
+            // Only passwords noted as saved: deleting touches the store too.
+            let noted = [
+                (server.server_password_saved(), server.server_password_key()),
+                (server.sasl_password_saved(), server.sasl_password_key()),
+            ];
+            for key in noted
+                .into_iter()
+                .filter_map(|(saved, key)| saved.then_some(key))
+            {
                 if let Err(error) = store.delete(&key) {
                     first_error.get_or_insert(error);
                 }
@@ -701,9 +733,11 @@ struct ChatWindow {
     /// One row per server whose nickname was rejected during registration,
     /// in the order the rejections arrived.
     nick_prompts: Vec<NickPrompt>,
+    /// One block per server waiting for passwords the store does not hold.
+    credential_prompts: Vec<connect_auth::CredentialPrompt>,
     /// One row per channel whose JOIN a server refused for want of a key.
     key_prompts: Vec<channel_keys::KeyPrompt>,
-    startup_connections: Vec<(NetworkId, Result<ConnectionConfig, String>)>,
+    startup_connections: Vec<(NetworkId, OpenConfig)>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
     /// Remember where the window and its panes were left (a setting), and
@@ -1285,6 +1319,7 @@ impl ChatWindow {
             input_history: Default::default(),
             nick_prompts: Vec::new(),
             key_prompts: Vec::new(),
+            credential_prompts: Vec::new(),
             startup_connections,
             settings_window: None,
             #[cfg(target_os = "windows")]
@@ -2102,6 +2137,8 @@ impl ChatWindow {
             self.whois_windows.retain(|(network, _), _| *network != id);
             self.nick_prompts.retain(|prompt| prompt.network != id);
             self.key_prompts.retain(|prompt| prompt.network != id);
+            self.credential_prompts
+                .retain(|prompt| prompt.network != id);
             if self
                 .member_prompt
                 .as_ref()
@@ -2168,13 +2205,14 @@ impl ChatWindow {
         &mut self,
         profile_id: &str,
         config: ConnectionConfig,
+        missing: connect_auth::Missing,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let network = self
             .network_of_profile(profile_id)
             .ok_or_else(|| self.i18n.text("not_connected"))?;
-        let outcome = self.apply_connection(network, config, window, cx);
+        let outcome = self.connect_fresh(network, config, missing, window, cx);
         let target = self
             .state
             .conversations()
@@ -2207,7 +2245,15 @@ impl ChatWindow {
         if let Some(previous) = &session.active_config {
             config.peer_avatar_cache = previous.peer_avatar_cache.clone();
         }
-        session.active_config = Some(config.clone());
+        // The copy reconnects start from never holds a password: the saved
+        // ones are read from the store again, and an unsaved one is asked
+        // for again (#635).
+        let mut kept = config.clone();
+        kept.forget_secrets();
+        session.active_config = Some(kept);
+        session.server_password_used = config.server_password.is_some();
+        session.sent_secrets =
+            connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.connection_starting(&config);
         session.diagnostics.clear();
         session.pending_whois.clear();
@@ -2251,6 +2297,8 @@ impl ChatWindow {
             session.pending_parts.clear();
         }
         self.nick_prompts.retain(|prompt| prompt.network != network);
+        self.credential_prompts
+            .retain(|prompt| prompt.network != network);
         let removed = self.state.reset_network(network, config.channels.clone());
         self.forget_conversations(&removed);
         self.main_lists.remove(&Selection::Server(network));
@@ -2267,6 +2315,10 @@ impl ChatWindow {
                 Ok(())
             }
             Err(error) => {
+                // Nothing was sent, so nothing is left to send again.
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.sent_secrets = (None, None);
+                }
                 self.record_disconnect(network, error.clone(), true, cx);
                 self.schedule_retry(network, cx);
                 Err(error)
@@ -2315,6 +2367,7 @@ impl ChatWindow {
         let mut requested = true;
         let cancelled_retry = session.retry_pending;
         session.manual_disconnect = true;
+        session.sent_secrets = (None, None);
         session.asleep = false;
         session.retry_pending = false;
         session.retry_token += 1;
@@ -2430,8 +2483,17 @@ impl ChatWindow {
                     saved_connection_config(profile, self.saved.language, &secrets::store(cx))
                 });
             match config {
-                Ok(config) => {
-                    let _ = self.apply_connection(network, config, window, cx);
+                Ok((config, missing)) => {
+                    let sasl = self
+                        .saved
+                        .profile(&profile_id)
+                        .is_some_and(|profile| profile.sasl_enabled);
+                    self.note_stored_passwords(
+                        &profile_id,
+                        Some(config.server_password.is_some()),
+                        sasl.then_some(!missing.sasl),
+                    );
+                    let _ = self.connect_fresh(network, config, missing, window, cx);
                 }
                 Err(error) => {
                     self.raise_error(Some(network), error, notices::Origin::User, cx);
@@ -2447,13 +2509,29 @@ impl ChatWindow {
         self.start_reconnect(network, true, cx);
     }
 
+    /// Connects `network` again. The passwords come from the credential
+    /// store; the ones it lacks are asked for (see `connect_auth`).
     fn start_reconnect(&mut self, network: NetworkId, announce: bool, cx: &mut Context<Self>) {
         let Some(config) = self.reconnect_config(network) else {
             return;
         };
+        self.reconnect_with_stored_secrets(network, config, None, announce, cx);
+    }
+
+    /// The reconnect of `start_reconnect` once `config` has its passwords.
+    fn start_reconnect_with(
+        &mut self,
+        network: NetworkId,
+        config: ConnectionConfig,
+        announce: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.sessions.get_mut(&network) else {
             return;
         };
+        session.server_password_used = config.server_password.is_some();
+        session.sent_secrets =
+            connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.retry_pending = false;
         session.asleep = false;
         if let Some(connection) = session.irc.take() {
@@ -2477,6 +2555,10 @@ impl ChatWindow {
                 self.spawn_event_pump(network, cx);
             }
             Err(error) => {
+                // Nothing was sent, so nothing is left to send again.
+                if let Some(session) = self.sessions.get_mut(&network) {
+                    session.sent_secrets = (None, None);
+                }
                 // An automatic retry that fails is only logged; one the user
                 // asked for is announced.
                 self.record_disconnect(network, error, announce, cx);
@@ -2930,6 +3012,11 @@ impl ChatWindow {
             .chain(self.paste_prompt.iter().flat_map(|prompt| prompt.inputs()))
             .chain(self.nick_prompts.iter().map(|prompt| &prompt.input))
             .chain(self.key_prompts.iter().map(|prompt| prompt.input()))
+            .chain(
+                self.credential_prompts
+                    .iter()
+                    .flat_map(|prompt| prompt.inputs()),
+            )
             .chain(std::iter::once(self.setup_wizard.nickname()))
             .any(|input| input.read(cx).is_composing())
     }
@@ -4439,6 +4526,7 @@ impl ChatWindow {
             || self.member_prompt.is_some()
             || !self.nick_prompts.is_empty()
             || !self.key_prompts.is_empty()
+            || !self.credential_prompts.is_empty()
             || !self.transfer_dialog.is_idle()
             || self.setup_wizard_visible()
         {
@@ -4683,6 +4771,7 @@ impl ChatWindow {
             .is_some_and(|prompt| prompt.input.read(cx).focus_handle(cx).is_focused(window))
             || self.focused_nick_prompt(window, cx).is_some()
             || self.focused_key_prompt(window, cx).is_some()
+            || self.focused_credential_prompt(window, cx).is_some()
         {
             return;
         }
@@ -4713,6 +4802,7 @@ impl ChatWindow {
         self.announce_conversation_log();
         let mut disconnected = false;
         let mut refused = false;
+        let mut password_refusal = None;
         // The IRCv3 settings tab shows our own avatar and whether it can
         // be published; it is redrawn only when that may have changed.
         let own_avatar_changed = batch.iter().any(|event| {
@@ -4753,9 +4843,14 @@ impl ChatWindow {
                         session.manual_disconnect = true;
                     }
                 }
-                Event::Refused(_) => {
+                Event::Refused(reason) => {
                     disconnected = true;
                     refused = true;
+                    let sent = self
+                        .sessions
+                        .get(&network)
+                        .is_some_and(|session| session.server_password_used);
+                    password_refusal = connect_auth::Refusal::of(reason, sent);
                 }
                 Event::NicknameRejected { nickname } => {
                     self.show_nick_prompt(network, nickname.clone(), cx)
@@ -4764,6 +4859,9 @@ impl ChatWindow {
                     // Joins answered on a new connection are not typed ones.
                     if let Some(session) = self.sessions.get_mut(&network) {
                         session.join_switch = None;
+                        // Registered: no refusal can follow, so the sent
+                        // passwords are not needed again.
+                        session.sent_secrets = (None, None);
                     }
                     self.nick_prompts.retain(|prompt| prompt.network != network);
                     self.start_key_tracking(network);
@@ -4836,9 +4934,16 @@ impl ChatWindow {
             if let Some(session) = self.sessions.get_mut(&network) {
                 session.irc = None;
                 session.join_switch = None;
+                // Only a refused password uses them again (taken there).
+                if password_refusal.is_none() {
+                    session.sent_secrets = (None, None);
+                }
             }
             self.end_key_tracking(network);
-            if refused {
+            if let Some(refusal) = password_refusal {
+                // Not retried by itself, but the user can give the password.
+                self.password_refused(network, refusal, cx);
+            } else if refused {
                 // Retrying rejected credentials risks account lockout or a ban.
                 self.state
                     .append_server_message(network, self.i18n.text("event_retry_refused"));
@@ -5511,7 +5616,8 @@ impl ChatWindow {
             Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
                 // Only a refusal (no automatic reconnect) needs the user; a
                 // connection that ended by itself is reconnected and logged.
-                let announce = refused;
+                // A refused password is answered by its dialog instead.
+                let announce = refused && connect_auth::Refusal::of(&reason, false).is_none();
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self
@@ -5747,6 +5853,8 @@ impl ChatWindow {
             self.submit_nick_prompt(network, window, cx);
         } else if let Some((network, channel)) = self.focused_key_prompt(window, cx) {
             self.submit_key_prompt(network, &channel, window, cx);
+        } else if let Some(network) = self.focused_credential_prompt(window, cx) {
+            self.enter_credential_prompt(network, window, cx);
         } else if self
             .member_prompt
             .as_ref()
@@ -7689,6 +7797,7 @@ impl ChatWindow {
         });
         let nick_prompts = self.render_nick_prompts(origin, window, cx);
         let key_prompts = self.render_key_prompts(origin, window, cx);
+        let credential_prompts = self.render_credential_prompts(origin, window, cx);
         let quit_dialog = self.render_quit_dialog(window, cx);
         let part_prompt = self.render_part_prompt(window, cx);
         let disconnect_prompt = self.render_disconnect_prompt(window, cx);
@@ -7798,6 +7907,7 @@ impl ChatWindow {
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
+            .when_some(credential_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
             .when_some(disconnect_prompt, |d, dialog| d.child(dialog))
             .when_some(paste_prompt, |d, dialog| d.child(dialog))
@@ -9768,9 +9878,9 @@ fn main() {
                         (startup.is_empty() && !wizard).then(|| chat.selected_profile_id());
                     for (network, config) in startup {
                         let failed = match config {
-                            Ok(config) => {
-                                chat.apply_connection(network, config, window, cx).is_err()
-                            }
+                            Ok((config, missing)) => chat
+                                .connect_fresh(network, config, missing, window, cx)
+                                .is_err(),
                             Err(error) => {
                                 let message =
                                     chat.i18n.format("startup_invalid", &[("error", &error)]);
@@ -9967,6 +10077,10 @@ mod latest_button_tests;
 #[cfg(test)]
 #[path = "main_tests/channel_key_tests.rs"]
 mod channel_key_tests;
+
+#[cfg(test)]
+#[path = "main_tests/connect_auth_tests.rs"]
+mod connect_auth_tests;
 
 #[cfg(test)]
 #[path = "main_tests/key_note_tests.rs"]

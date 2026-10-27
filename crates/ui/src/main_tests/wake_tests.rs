@@ -187,7 +187,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
         thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(disconnected, [NetworkId(1)]);
-    chat.update(cx, |chat, cx| {
+    let generation = chat.update(cx, |chat, cx| {
         assert!(matches!(
             chat.state.status(NetworkId(1)),
             Some(ConnectionStatus::Disconnected(_))
@@ -202,6 +202,11 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
         // The retry timer fires: the lost network connects again.
         let generation = chat.sessions[&NetworkId(1)].generation;
         chat.start_reconnect(NetworkId(1), false, cx);
+        generation
+    });
+    // The reconnect reads its passwords first.
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
         assert_eq!(chat.sessions[&NetworkId(1)].generation, generation + 1);
     });
     wait_reconnected
@@ -372,11 +377,16 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
     });
 
     // The wake: the networks ended for sleep connect again, the other not.
-    chat.update(cx, |chat, cx| {
+    let generations = chat.update(cx, |chat, cx| {
         let generations = [NetworkId(1), NetworkId(2)].map(|n| chat.sessions[&n].generation);
         chat.check_connections_after_wake(cx);
         // A duplicate notice reconnects nothing more.
         chat.check_connections_after_wake(cx);
+        generations
+    });
+    // The reconnects read their passwords first.
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
         assert_eq!(chat.sessions[&NetworkId(1)].generation, generations[0] + 1);
         assert_eq!(chat.sessions[&NetworkId(2)].generation, generations[1] + 1);
         assert_eq!(chat.sessions[&NetworkId(3)].generation, 0);
@@ -418,7 +428,7 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
     });
     let network = NetworkId(1);
-    chat.update(cx, |chat, cx| {
+    let generation = chat.update(cx, |chat, cx| {
         let session = chat.sessions.get_mut(&network).unwrap();
         session.active_config = Some(config(1));
         session.retry_pending = true;
@@ -433,6 +443,10 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
         // The wake reconnects it, as it does the connections quit for sleep.
         let generation = session.generation;
         chat.check_connections_after_wake(cx);
+        generation
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
         assert_eq!(chat.sessions[&network].generation, generation + 1);
         assert!(!chat.sessions[&network].asleep);
         if let Some(connection) = chat.sessions.get_mut(&network).and_then(|s| s.irc.take()) {

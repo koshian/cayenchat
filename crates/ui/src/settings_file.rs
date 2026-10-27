@@ -121,7 +121,17 @@ mod tests {
     use gpui::{Focusable, TestAppContext};
 
     use super::TestFile;
-    use crate::{SettingsWindow, secrets, settings_with_channels};
+    use crate::{SettingsWindow, secrets, settings_window::Credential, settings_with_channels};
+
+    /// A server whose identity is complete, so Connect gets past validation.
+    fn connectable(channels: &str) -> Settings {
+        let mut settings = settings_with_channels(channels);
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.nickname = "nick".into();
+        profile.username = "user".into();
+        profile.use_tls = true;
+        settings
+    }
 
     fn open<'a>(
         settings: &Settings,
@@ -131,7 +141,9 @@ mod tests {
         &'a mut gpui::VisualTestContext,
     ) {
         cx.update(|cx| {
-            secrets::install_memory(cx);
+            if !cx.has_global::<secrets::Credentials>() {
+                secrets::install_memory(cx);
+            }
             cx.set_global(crate::theme::Theme::new(
                 ThemeMode::Light,
                 gpui::WindowAppearance::Light,
@@ -851,64 +863,48 @@ mod tests {
     }
 
     #[gpui::test]
-    fn turning_password_saving_off_keeps_the_typed_connection_fields(cx: &mut TestAppContext) {
-        let mut settings = settings_with_channels("#a");
-        settings.selected_profile_mut().unwrap().remember_passwords = true;
-        let file = TestFile::with(&settings);
-        let (form, cx) = open(&settings, cx);
-        let host = |form: &SettingsWindow, cx: &gpui::App| {
-            form.settings.custom_host.read(cx).text().to_owned()
-        };
-
-        // A saved edit, then an unsaved one, survive the switch.
-        form.update(cx, |form, cx| {
-            form.settings
-                .custom_host
-                .update(cx, |field, cx| field.set_text("changed.example", cx));
-            form.save_servers(cx);
-            form.settings
-                .channels
-                .update(cx, |field, cx| field.set_text("#draft", cx));
-        });
-        form.update_in(cx, |form, window, cx| {
-            form.toggle_remember_passwords(window, cx)
-        });
-        form.update(cx, |form, cx| {
-            assert_eq!(host(form, cx), "changed.example");
-            assert_eq!(form.settings.channels.read(cx).text(), "#draft");
-            assert!(form.servers_unsaved(cx));
-            form.save_servers(cx);
-        });
-        let saved = super::load().unwrap().unwrap();
-        let profile = saved.selected_profile().unwrap();
-        assert_eq!(profile.host, "changed.example");
-        assert_eq!(profile.channels, "#draft");
-        assert!(!profile.remember_passwords);
-        drop(file);
-    }
-
-    #[gpui::test]
-    fn a_failed_password_deletion_stays_unsaved_until_a_save_succeeds(cx: &mut TestAppContext) {
-        let mut settings = settings_with_channels("#a");
-        settings.selected_profile_mut().unwrap().remember_passwords = true;
+    fn a_registered_servers_password_is_stored_only_by_its_save_button(cx: &mut TestAppContext) {
+        let settings = connectable("#a");
         let key = settings.selected_profile().unwrap().server_password_key();
         let file = TestFile::with(&settings);
         let (form, cx) = open(&settings, cx);
-        let working = cx.update(|_, cx| secrets::store(cx));
-        working.set(&key, &Secret::new("secret")).unwrap();
+        let store = cx.update(|_, cx| secrets::store(cx));
 
-        form.update_in(cx, |form, window, cx| {
-            form.toggle_remember_passwords(window, cx)
-        });
-        cx.update(|_, cx| {
-            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
-                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
-            )));
-        });
+        // Typing, autosave, Save of the server and leaving do not store it.
         form.update(cx, |form, cx| {
+            assert!(form.shown_server_registered());
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("typed", cx));
+            form.autosave_now(None, cx);
             form.save_servers(cx);
-            assert!(form.feedback.is_some(), "the failed deletion is shown");
-            assert!(form.servers_unsaved(cx));
+            assert!(!form.servers_unsaved(cx), "a typed password is not an edit");
+            assert!(form.save_before_leaving(cx));
+        });
+        assert!(!store.contains(&key).unwrap());
+        // Connect would still use it, for that connection alone.
+        form.update(cx, |form, cx| {
+            let mut settings = form.settings.snapshot(cx).unwrap();
+            let (config, missing) = form
+                .settings
+                .connection_config(&mut settings, &store, &form.i18n, cx)
+                .unwrap();
+            assert_eq!(config.server_password.as_deref(), Some("typed"));
+            assert!(!missing.any());
+        });
+
+        // The Save button writes it, and the note reaches the file.
+        form.update_in(cx, |form, window, cx| {
+            form.save_credential(Credential::Server, window, cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(store.get(&key).unwrap().unwrap().expose(), "typed");
+        form.update(cx, |form, cx| {
+            assert_eq!(
+                form.settings.credential_state(Credential::Server),
+                (true, false)
+            );
+            assert_eq!(form.settings.server_password.read(cx).text(), "");
         });
         assert!(
             super::load()
@@ -916,26 +912,495 @@ mod tests {
                 .unwrap()
                 .selected_profile()
                 .unwrap()
-                .remember_passwords
+                .server_password_saved()
         );
-        assert!(working.contains(&key).unwrap());
+        drop(file);
+    }
 
-        // Once the store works again, Save deletes the secret.
+    #[gpui::test]
+    fn a_draft_server_gets_only_its_checked_passwords_when_it_is_saved(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        settings.selected_profile_mut().unwrap().sasl_enabled = true;
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let store = cx.update(|_, cx| secrets::store(cx));
+        let (id, key, sasl_key) = form.update(cx, |form, cx| {
+            let server = form.settings.values.add_server("b.example");
+            server.nickname = "nick".into();
+            server.username = "user".into();
+            server.sasl_enabled = true;
+            server.sasl_username = "account".into();
+            let ids = (
+                server.id.clone(),
+                server.server_password_key(),
+                server.sasl_password_key(),
+            );
+            form.show_selected_server(cx);
+            ids
+        });
+        form.update_in(cx, |form, window, cx| {
+            for which in [Credential::Server, Credential::Sasl] {
+                form.settings
+                    .credential_field(which)
+                    .update(cx, |field, cx| field.set_text("typed", cx));
+            }
+            // Only the SASL password is checked.
+            form.toggle_remember(Credential::Sasl, window, cx);
+            // An autosave registers no draft and writes no password.
+            form.autosave_now(None, cx);
+        });
+        assert!(!store.contains(&sasl_key).unwrap());
+
+        // A failing store stops the save and keeps what was typed.
+        let working = store.clone();
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update(cx, |form, cx| {
+            form.save_servers(cx);
+            assert!(form.feedback.is_some());
+            assert!(!form.saved.profile(&id).is_some());
+            assert_eq!(
+                form.settings
+                    .credential_field(Credential::Sasl)
+                    .read(cx)
+                    .text(),
+                "typed"
+            );
+        });
         cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
         form.update(cx, |form, cx| {
             form.save_servers(cx);
-            assert!(form.feedback.is_none());
-            assert!(!form.servers_unsaved(cx));
+            assert!(form.saved.profile(&id).is_some());
+            assert!(form.settings.credential_state(Credential::Sasl).0);
+            assert!(
+                !form.settings.saved_server_password,
+                "its box was not checked"
+            );
+            assert_eq!(form.settings.server_password.read(cx).text(), "typed");
+        });
+        assert_eq!(working.get(&sasl_key).unwrap().unwrap().expose(), "typed");
+        assert!(!working.contains(&key).unwrap());
+        let file_settings = super::load().unwrap().unwrap();
+        assert!(file_settings.profile(&id).unwrap().sasl_password_saved());
+        assert!(!file_settings.profile(&id).unwrap().server_password_saved());
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn changing_a_saved_password_keeps_it_until_the_new_one_is_saved(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let key = settings.selected_profile().unwrap().server_password_key();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let store = cx.update(|_, cx| secrets::store(cx));
+        store.set(&key, &Secret::new("old")).unwrap();
+        form.update(cx, |form, cx| {
+            // The settings file notes the saved password.
+            form.settings
+                .values
+                .selected_profile_mut()
+                .unwrap()
+                .set_server_password_saved(true);
+            form.settings.show_selected(&form.i18n, cx);
+            assert_eq!(
+                form.settings.credential_state(Credential::Server),
+                (true, false)
+            );
+        });
+
+        // Change, then Cancel: nothing happened to the saved value.
+        form.update_in(cx, |form, window, cx| {
+            form.change_credential(Credential::Server, window, cx)
+        });
+        form.update(cx, |form, cx| {
+            assert_eq!(
+                form.settings.credential_state(Credential::Server),
+                (true, true)
+            );
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("half", cx));
+            form.cancel_credential_change(Credential::Server, cx);
+            assert_eq!(form.settings.server_password.read(cx).text(), "");
+        });
+        assert_eq!(store.get(&key).unwrap().unwrap().expose(), "old");
+
+        // Change and Save replaces it.
+        form.update_in(cx, |form, window, cx| {
+            form.change_credential(Credential::Server, window, cx);
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("new", cx));
+            form.save_credential(Credential::Server, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(store.get(&key).unwrap().unwrap().expose(), "new");
+
+        // A failed Save keeps what was saved and says so.
+        form.update_in(cx, |form, window, cx| {
+            form.change_credential(Credential::Server, window, cx);
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("lost", cx));
+        });
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update_in(cx, |form, window, cx| {
+            form.save_credential(Credential::Server, window, cx);
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
+            assert!(form.feedback.is_some());
+            assert_eq!(
+                form.settings.credential_state(Credential::Server),
+                (true, true),
+                "still being changed"
+            );
+        });
+        assert_eq!(store.get(&key).unwrap().unwrap().expose(), "new");
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unfinished_change_is_dropped_when_the_server_is_left(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.use_tls = true;
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let (a_id, key, sasl_key) = (
+            profile.id.clone(),
+            profile.server_password_key(),
+            profile.sasl_password_key(),
+        );
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let store = cx.update(|_, cx| secrets::store(cx));
+        store.set(&key, &Secret::new("old")).unwrap();
+        store.set(&sasl_key, &Secret::new("old-sasl")).unwrap();
+        form.update_in(cx, |form, window, cx| {
+            let profile = form.settings.values.selected_profile_mut().unwrap();
+            profile.set_server_password_saved(true);
+            profile.set_sasl_password_saved(true);
+            form.show_selected_server(cx);
+            for which in [Credential::Server, Credential::Sasl] {
+                form.change_credential(which, window, cx);
+                form.settings
+                    .credential_field(which)
+                    .update(cx, |field, cx| field.set_text("half", cx));
+            }
+            // Leaving the server and coming back.
+            form.select_server(b_id.clone(), cx);
+            assert!(!form.settings.drafts.contains_key(&a_id));
+            form.select_server(a_id.clone(), cx);
+            assert!(!form.settings.drafts.contains_key(&a_id));
+            for which in [Credential::Server, Credential::Sasl] {
+                let field = form.settings.credential_field(which);
+                assert_eq!(field.read(cx).text(), "");
+            }
+            assert_eq!(form.settings.values.selected_server, a_id);
+            let mut settings = form.settings.snapshot(cx).unwrap();
+            let (config, _) = form
+                .settings
+                .connection_config(&mut settings, &store, &form.i18n, cx)
+                .unwrap();
+            assert_eq!(config.server_password.as_deref(), Some("old"));
+            assert_eq!(
+                config.sasl.as_ref().map(|sasl| sasl.password.as_str()),
+                Some("old-sasl")
+            );
+        });
+        drop(file);
+    }
+
+    /// A store that counts the reads, which is what can make the operating
+    /// system ask the user for permission.
+    struct CountingBackend {
+        inner: MemoryBackend,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl cayenchat_storage::credentials::CredentialBackend for CountingBackend {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+
+        fn is_memory(&self) -> bool {
+            true
+        }
+
+        fn get(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<Option<Secret>, cayenchat_storage::CredentialError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get(key)
+        }
+
+        fn set(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+            value: &Secret,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            self.inner.set(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &cayenchat_storage::SecretKey,
+        ) -> Result<(), cayenchat_storage::CredentialError> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[gpui::test]
+    fn showing_servers_never_reads_the_credential_store(cx: &mut TestAppContext) {
+        let mut settings = settings_with_channels("#a");
+        let a_id = settings.selected_server.clone();
+        settings
+            .selected_profile_mut()
+            .unwrap()
+            .set_server_password_saved(true);
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let backend = Arc::new(CountingBackend {
+            inner: MemoryBackend::new(CredentialBackendKind::System),
+            reads: Default::default(),
+        });
+        cx.update(|cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                backend.clone(),
+            )));
+        });
+        let reads = || backend.reads.load(std::sync::atomic::Ordering::SeqCst);
+        let file = TestFile::with(&settings);
+        // Opening the window, picking servers and adding one are no use of
+        // a password, so the operating system must not be asked about one.
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            assert!(form.settings.saved_server_password, "shown from the note");
+            form.select_server(b_id.clone(), cx);
+            assert!(!form.settings.saved_server_password);
+            form.select_server(a_id.clone(), cx);
+            assert!(form.settings.saved_server_password);
+            form.settings.values.add_server("c.example");
+            form.show_selected_server(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(reads(), 0);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn a_save_keeps_the_note_a_connection_wrote_meanwhile(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let a_id = profile.id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        form.update(cx, |form, cx| {
+            // A draft keeps the window from reloading the file.
+            form.settings.values.add_server("b.example");
+            form.show_selected_server(cx);
+            assert_eq!(
+                form.settings.credential_state(Credential::Sasl),
+                (false, false)
+            );
+        });
+        // A connection saved both passwords and noted it in the file.
+        let mut noted = settings.clone();
+        let profile = noted.profile_mut(&a_id).unwrap();
+        profile.set_server_password_saved(true);
+        profile.set_sasl_password_saved(true);
+        super::save(&noted).unwrap();
+        form.update(cx, |form, cx| {
+            form.settings.values.appearance.alternate_rows ^= true;
+            assert!(form.save_before_leaving(cx));
+        });
+        let written = super::load().unwrap().unwrap();
+        let profile = written.profile(&a_id).unwrap();
+        assert!(profile.server_password_saved() && profile.sasl_password_saved());
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn a_save_keeps_the_note_this_window_wrote_by_saving_or_deleting(cx: &mut TestAppContext) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let a_id = profile.id.clone();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        for which in [Credential::Server, Credential::Sasl] {
+            for saved in [true, false] {
+                form.update(cx, |form, cx| {
+                    // Saving or deleting a password, then an ordinary change
+                    // that autosaves.
+                    form.credential_done(which, &a_id, Ok(()), saved, cx);
+                    form.settings.values.appearance.alternate_rows ^= true;
+                    assert!(form.save_before_leaving(cx));
+                    assert_eq!(form.settings.credential_state(which), (saved, false));
+                });
+                let written = super::load().unwrap().unwrap();
+                let profile = written.profile(&a_id).unwrap();
+                let noted = match which {
+                    Credential::Server => profile.server_password_saved(),
+                    Credential::Sasl => profile.sasl_password_saved(),
+                };
+                assert_eq!(noted, saved);
+            }
+        }
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn the_settings_window_reads_a_password_only_when_it_is_noted_as_saved(
+        cx: &mut TestAppContext,
+    ) {
+        let mut settings = connectable("#a");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile.sasl_enabled = true;
+        profile.sasl_username = "account".into();
+        let (a_id, key, sasl_key) = (
+            profile.id.clone(),
+            profile.server_password_key(),
+            profile.sasl_password_key(),
+        );
+        let b_id = settings.add_server("b.example").id.clone();
+        settings.selected_server = a_id.clone();
+        let file = TestFile::with(&settings);
+        let (watch, store) = cx.update(|cx| {
+            secrets::install_memory(cx);
+            secrets::PasswordWatch::install(cx)
+        });
+        store.set(&key, &Secret::new("stored")).unwrap();
+        store.set(&sasl_key, &Secret::new("stored-sasl")).unwrap();
+        let (form, cx) = open(&settings, cx);
+        form.update_in(cx, |form, _, cx| {
+            // Saving, connecting and removing a server touch nothing that is
+            // not noted as saved.
+            form.settings.values.appearance.alternate_rows ^= true;
+            assert!(form.save_before_leaving(cx));
+            let mut snapshot = form.settings.snapshot(cx).unwrap();
+            let (config, missing) = form
+                .settings
+                .connection_config(&mut snapshot, &store, &form.i18n, cx)
+                .unwrap();
+            assert!(config.server_password.is_none() && missing.sasl);
+            form.select_server(b_id.clone(), cx);
+            form.settings.values.remove_selected_server();
+            form.show_selected_server(cx);
+            assert!(form.save_before_leaving(cx));
+        });
+        assert_eq!(watch.touches(), 0);
+
+        // Noted: read and used, and deleted with the server.
+        form.update_in(cx, |form, _, cx| {
+            let profile = form.settings.values.profile_mut(&a_id).unwrap();
+            profile.set_server_password_saved(true);
+            profile.set_sasl_password_saved(true);
+            form.settings.show_selected(&form.i18n, cx);
+            let mut snapshot = form.settings.snapshot(cx).unwrap();
+            let (config, _) = form
+                .settings
+                .connection_config(&mut snapshot, &store, &form.i18n, cx)
+                .unwrap();
+            assert_eq!(config.server_password.as_deref(), Some("stored"));
+        });
+        assert_eq!(watch.touches(), 2);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn an_unsaved_server_gets_its_checked_password_only_when_it_is_saved(cx: &mut TestAppContext) {
+        let saved = settings_with_channels("#a");
+        let file = TestFile::with(&saved);
+        let (form, cx) = open(&saved, cx);
+        let store = cx.update(|_, cx| secrets::store(cx));
+        let (_, new_key) = form.update(cx, |form, cx| {
+            let server = form.settings.values.add_server("b.example");
+            server.nickname = "nick".into();
+            server.username = "user".into();
+            let ids = (
+                server.id.clone(),
+                cayenchat_storage::SecretKey::server_password(&server.id),
+            );
+            form.show_selected_server(cx);
+            ids
+        });
+        form.update_in(cx, |form, window, cx| {
+            form.settings
+                .server_password
+                .update(cx, |field, cx| field.set_text("typed", cx));
+            form.toggle_remember(Credential::Server, window, cx);
+            // A draft server is not saved by an autosave, nor its password.
+            form.autosave_now(None, cx);
+        });
+        assert!(!store.contains(&new_key).unwrap());
+        // Its own Save registers it and stores the checked password.
+        form.update(cx, |form, cx| form.save_servers(cx));
+        assert_eq!(store.get(&new_key).unwrap().unwrap().expose(), "typed");
+        form.update(cx, |form, _| assert!(form.settings.saved_server_password));
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn delete_removes_a_saved_password_and_a_failure_keeps_it(cx: &mut TestAppContext) {
+        let settings = settings_with_channels("#a");
+        let key = settings.selected_profile().unwrap().server_password_key();
+        let file = TestFile::with(&settings);
+        let (form, cx) = open(&settings, cx);
+        let working = cx.update(|_, cx| secrets::store(cx));
+        working.set(&key, &Secret::new("secret")).unwrap();
+        form.update(cx, |form, cx| {
+            form.settings
+                .values
+                .selected_profile_mut()
+                .unwrap()
+                .set_server_password_saved(true);
+            form.settings.show_selected(&form.i18n, cx)
+        });
+
+        cx.update(|_, cx| {
+            cx.set_global(secrets::Credentials(CredentialStore::with_backend(
+                Arc::new(MemoryBackend::unavailable(CredentialBackendKind::System)),
+            )));
+        });
+        form.update(cx, |form, cx| {
+            form.delete_credential(Credential::Server, cx);
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, _| {
+            assert!(form.feedback.is_some(), "the failed deletion is shown");
+            assert!(form.settings.saved_server_password, "still shown as saved");
+        });
+        assert!(working.contains(&key).unwrap());
+
+        cx.update(|_, cx| cx.set_global(secrets::Credentials(working.clone())));
+        form.update(cx, |form, cx| {
+            form.delete_credential(Credential::Server, cx);
+        });
+        cx.run_until_parked();
+        form.update(cx, |form, cx| {
+            let _ = cx;
+            assert!(!form.settings.saved_server_password);
+            assert_eq!(
+                form.settings.credential_state(Credential::Server),
+                (false, false)
+            );
         });
         assert!(!working.contains(&key).unwrap());
-        assert!(
-            !super::load()
-                .unwrap()
-                .unwrap()
-                .selected_profile()
-                .unwrap()
-                .remember_passwords
-        );
         drop(file);
     }
 }

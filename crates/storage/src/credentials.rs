@@ -309,6 +309,16 @@ impl EntryStore for KeyringEntries {
         }
     }
 
+    /// On macOS this adds the item, or updates it when it exists, in one
+    /// call. `keyring` would first look the item up with its data, which asks
+    /// for the login password once more before the write itself does.
+    #[cfg(target_os = "macos")]
+    fn write(&self, name: &str, value: &str) -> Result<(), CredentialError> {
+        security_framework::passwords::set_generic_password(SERVICE, name, value.as_bytes())
+            .map_err(|error| CredentialError::Access(error.to_string()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn write(&self, name: &str, value: &str) -> Result<(), CredentialError> {
         system_entry(name)?
             .set_password(value)

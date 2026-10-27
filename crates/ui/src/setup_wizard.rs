@@ -267,7 +267,7 @@ impl ChatWindow {
             .and_then(|profile| {
                 crate::saved_connection_config(profile, settings.language, &secrets::store(cx))
             })
-            .and_then(|config| self.connect_profile(&id, config, window, cx));
+            .and_then(|(config, missing)| self.connect_profile(&id, config, missing, window, cx));
         match connected {
             Ok(()) => {
                 self.setup_wizard.open = false;
@@ -791,6 +791,34 @@ mod tests {
             assert!(session.irc.is_some(), "the connection was started");
         });
         assert!(!visible(&chat, cx));
+        drop(listener);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn quick_setup_never_reads_a_password_from_the_store(cx: &mut TestAppContext) {
+        let file = TestFile::with(&english());
+        let (chat, cx) = window(&english(), cx);
+        let (watch, _store) = cx.update(|_, cx| crate::secrets::PasswordWatch::install(cx));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        chat.update(cx, |chat, cx| {
+            chat.setup_wizard.redirect = Some(("127.0.0.1".into(), port));
+            chat.open_setup_wizard(cx);
+        });
+        chat.update_in(cx, |chat, window, cx| chat.wizard_choose_easy(window, cx));
+        chat.update(cx, |chat, cx| {
+            chat.setup_wizard
+                .nickname
+                .update(cx, |input, cx| input.set_text("tester", cx))
+        });
+        // The input check and the connection both build the configuration.
+        chat.update_in(cx, |chat, window, cx| chat.wizard_connect(window, cx));
+        cx.run_until_parked();
+        chat.read_with(cx, |chat, _| {
+            assert_eq!(chat.saved.servers.len(), 1, "the wizard went through");
+        });
+        assert_eq!(watch.touches(), 0);
         drop(listener);
         drop(file);
     }

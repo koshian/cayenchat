@@ -75,6 +75,7 @@ fn connect(settings: &Settings, store: &CredentialStore) -> ConnectionConfig {
         store,
     )
     .unwrap()
+    .0
 }
 
 #[test]
