@@ -729,7 +729,7 @@ the transcript was turned on.
 Every server profile in the settings is a network in the channel tree,
 connected or not, in the order added. With no servers the selection is
 `Selection::None`: the tree is empty, the main log explains how to add one
-and settings open at startup. `ui::session::ServerSession`
+and the first run shows the setup wizard (settings do not open at startup). `ui::session::ServerSession`
 holds everything per connection: the `Connection`, the configuration reused by
 reconnects, retry state, the current nickname, pending WHOIS nicknames and a
 bounded transcript (1,000 lines per server). The chat window keys sessions by

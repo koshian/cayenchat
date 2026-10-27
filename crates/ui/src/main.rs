@@ -9942,9 +9942,10 @@ fn main() {
                     chat.apply_always_on_top(true, window, cx)
                 });
             }
-            // Settings open when nothing connects at startup; a saved server
-            // that cannot start opens them later, in `connect_at_startup`.
-            let settings_for = chat_window
+            // Settings do not open at startup, even when nothing connects: a
+            // server is connected from the tree too. A saved server that cannot
+            // start opens them later, in `connect_at_startup`.
+            chat_window
                 .update(cx, |chat, window, cx| {
                     chat.layout_file = cayenchat_storage::layout::layout_path().ok();
                     chat.order_file = cayenchat_storage::order::order_path().ok();
@@ -9966,22 +9967,12 @@ fn main() {
                     if wizard {
                         chat.open_setup_wizard(cx);
                     }
-                    let settings_for = (no_startup && !wizard).then(|| chat.selected_profile_id());
                     // The credential store is read after the first frame.
                     if !no_startup {
                         chat.connect_at_startup(window, cx);
                     }
-                    settings_for
                 })
                 .expect("could not initialize the chat window");
-            let settings_opened = settings_for.is_some();
-            if let Some(profile) = settings_for {
-                chat_window
-                    .update(cx, |chat, window, cx| {
-                        chat.open_settings_for(profile, window, cx)
-                    })
-                    .expect("could not open the initial settings window");
-            }
             // GPUI's `activate` does nothing on Windows, so a window opened by
             // hand can land behind others (#259). `activate_window` is queued and
             // runs after this callback, so it goes last and to the topmost window;
@@ -9989,9 +9980,7 @@ fn main() {
             // fronted even when settings open on top of it (#354), or it would
             // stay behind other apps.
             #[cfg(target_os = "windows")]
-            for front in
-                autostart::startup_front(autostart::launched_by_registration(), settings_opened)
-            {
+            for front in autostart::startup_front(autostart::launched_by_registration(), false) {
                 match front {
                     autostart::StartupFront::Settings => {
                         let settings = chat_window
@@ -10007,8 +9996,6 @@ fn main() {
                     }
                 }
             }
-            #[cfg(not(target_os = "windows"))]
-            let _ = settings_opened;
         });
 }
 
