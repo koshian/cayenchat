@@ -1457,8 +1457,9 @@ D021 that stored typed passwords with Save of the server.
   server log first, its status shows "connecting" (status line, and "…" in
   the tree), and only after the first frame has been drawn the same path as
   the Connect button reads the server and SASL passwords and the channel keys. A read that
-  fails is treated like any failed connection (an unreadable store counts as
-  empty, so the dialog asks); a configuration that is unusable raises the
+  fails is treated like an empty store: the dialog asks, and the saved
+  passwords and their notes are left alone. Cancelling the dialog ends the
+  "connecting" status (the server shows as disconnected); a configuration that is unusable raises the
   error and opens that server's settings. The one-time migration of
   pre-version-11 plaintext passwords (`migrate_legacy_secrets`) is the only
   write at launch, and only when such passwords exist.

@@ -413,8 +413,22 @@ fn saved_connection_config(
     language: Language,
     store: &CredentialStore,
 ) -> OpenConfig {
+    saved_connection_config_read(profile, language, store)
+        .map(|(config, missing, _)| (config, missing))
+}
+
+/// `saved_connection_config` that also says whether the store could be read.
+/// A store that cannot be read (or refuses) counts as holding nothing, so
+/// the passwords are asked for; the saved ones are left alone.
+fn saved_connection_config_read(
+    profile: &ServerProfile,
+    language: Language,
+    store: &CredentialStore,
+) -> Result<(ConnectionConfig, connect_auth::Missing, bool), String> {
     let i18n = Localizer::new(language);
-    let (server_password, sasl_password) = saved_connection_secrets(profile, store, &i18n)?;
+    let secrets = saved_connection_secrets(profile, store, &i18n);
+    let readable = secrets.is_ok();
+    let (server_password, sasl_password) = secrets.unwrap_or_default();
     let mut config = connection_config_without_secrets(profile, language)?;
     let missing = connect_auth::fill(
         &mut config,
@@ -426,7 +440,7 @@ fn saved_connection_config(
         channel_keys::use_stored_keys(config, profile, store);
         config.validate()
     })?;
-    Ok((config, missing))
+    Ok((config, missing, readable))
 }
 
 /// The IDs of the servers marked to connect at startup, in tree order. The
@@ -2507,13 +2521,15 @@ impl ChatWindow {
             .profile(&profile_id)
             .ok_or_else(|| self.i18n.text("not_connected"))?;
         let sasl = profile.sasl_enabled;
-        let (config, missing) =
-            saved_connection_config(profile, self.saved.language, &secrets::store(cx))?;
-        self.note_stored_passwords(
-            &profile_id,
-            Some(config.server_password.is_some()),
-            sasl.then_some(!missing.sasl),
-        );
+        let (config, missing, readable) =
+            saved_connection_config_read(profile, self.saved.language, &secrets::store(cx))?;
+        if readable {
+            self.note_stored_passwords(
+                &profile_id,
+                Some(config.server_password.is_some()),
+                sasl.then_some(!missing.sasl),
+            );
+        }
         Ok(self
             .connect_fresh(network, config, missing, window, cx)
             .is_err())

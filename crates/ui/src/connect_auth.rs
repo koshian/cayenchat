@@ -15,6 +15,7 @@
 //! connection used one or the server refused registration with 464, never
 //! unconditionally.
 
+use cayenchat_app::ConnectionStatus;
 use cayenchat_irc_core::ConnectionConfig;
 use cayenchat_model::NetworkId;
 use cayenchat_storage::{Secret, SecretKey, ServerProfile};
@@ -636,8 +637,17 @@ impl ChatWindow {
                 session.retry_pending = false;
                 session.retry_token += 1;
             }
-            self.state
-                .append_server_message(network, self.i18n.text("event_password_cancelled"));
+            let cancelled = self.i18n.text("event_password_cancelled");
+            // A start shown as connecting (D068, Launch) ends here.
+            let waiting = self
+                .sessions
+                .get(&network)
+                .is_some_and(|session| session.irc.is_none());
+            if waiting && self.state.status(network) == Some(&ConnectionStatus::Connecting) {
+                self.state
+                    .set_status(network, ConnectionStatus::Disconnected(cancelled.clone()));
+            }
+            self.state.append_server_message(network, cancelled);
         }
         cx.notify();
     }

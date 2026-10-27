@@ -139,3 +139,30 @@ fn a_server_connected_by_hand_before_the_start_is_left_alone(cx: &mut TestAppCon
     assert_eq!(watch.touches(), by_hand, "not read a second time");
     chat.update(cx, |chat, _| stop(chat));
 }
+
+#[gpui::test]
+fn an_unreadable_store_asks_and_cancelling_ends_the_start(cx: &mut TestAppContext) {
+    let (chat, watch, cx) = open_chat(cx, settings(true));
+    watch.refuse_reads();
+    chat.update_in(cx, |chat, window, cx| {
+        chat.connect_at_startup(window, cx);
+        chat.connect_startup_servers(window, cx);
+    });
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(chat.credential_prompts.len(), 1, "asked, not an error");
+        assert!(chat.settings_window.is_none());
+        assert!(chat.sessions[&NET].irc.is_none(), "not connected yet");
+        let profile = &chat.saved.profile(&chat.sessions[&NET].profile_id).unwrap();
+        assert!(profile.sasl_password_saved(), "the note is left alone");
+    });
+    chat.update_in(cx, |chat, window, cx| {
+        chat.cancel_credential_prompt(NET, window, cx)
+    });
+    chat.read_with(cx, |chat, _| {
+        assert!(matches!(
+            chat.state.status(NET),
+            Some(ConnectionStatus::Disconnected(_))
+        ));
+        assert!(chat.sessions[&NET].irc.is_none());
+    });
+}
