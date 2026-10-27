@@ -8873,6 +8873,7 @@ impl ChatWindow {
         let Some(message) = conversation.messages.get(index) else {
             return div().into_any_element();
         };
+        let sequence = message.sequence;
         let network = self
             .state
             .networks()
@@ -8958,6 +8959,18 @@ impl ChatWindow {
                 // A single click is too easy to hit while reading the combined log.
                 if event.click_count() == 2 {
                     this.dispatch(Command::SelectChannel(id), window, cx);
+                    // The line is found by its sequence, not by the row's
+                    // index, which may have moved since this row was drawn.
+                    if this.state.selected_channel().map(|channel| channel.id) == Some(id)
+                        && this.state.conversation(id).is_some_and(|conversation| {
+                            conversation
+                                .messages
+                                .binary_search_by_key(&sequence, |message| message.sequence)
+                                .is_ok()
+                        })
+                    {
+                        this.reveal_message(id, sequence, cx);
+                    }
                 }
             }))
             .into_any_element()
@@ -9941,6 +9954,10 @@ fn main() {
 #[cfg(test)]
 #[path = "main_tests/combined_log_tests.rs"]
 mod combined_log_tests;
+
+#[cfg(test)]
+#[path = "main_tests/combined_jump_tests.rs"]
+mod combined_jump_tests;
 
 #[cfg(test)]
 #[path = "main_tests/link_icon_tests.rs"]
