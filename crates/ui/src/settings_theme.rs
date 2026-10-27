@@ -12,6 +12,10 @@ pub const LABEL_WIDTH: Pixels = px(150.);
 /// Left margin that lines a hint or control up under the row's input: the
 /// label column plus the row's `gap_2` (8 px).
 pub const LABEL_INDENT: Pixels = px(150. + 8.);
+/// One step of indent for an option that belongs to the row above (TLS under
+/// the port); the label column shrinks by the same amount, so the controls
+/// stay in the input column.
+pub const OPTION_INDENT: Pixels = px(16.);
 
 /// The label column of a settings row.
 pub fn label_column() -> Div {
