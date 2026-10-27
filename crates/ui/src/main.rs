@@ -4789,7 +4789,7 @@ impl ChatWindow {
         self.announce_conversation_log();
         let mut disconnected = false;
         let mut refused = false;
-        let mut password_refused = false;
+        let mut password_refusal = None;
         // The IRCv3 settings tab shows our own avatar and whether it can
         // be published; it is redrawn only when that may have changed.
         let own_avatar_changed = batch.iter().any(|event| {
@@ -4833,7 +4833,11 @@ impl ChatWindow {
                 Event::Refused(reason) => {
                     disconnected = true;
                     refused = true;
-                    password_refused = reason.as_str() == cayenchat_irc_core::PASSWORD_REFUSED;
+                    let sent = self
+                        .sessions
+                        .get(&network)
+                        .is_some_and(|session| session.server_password_used);
+                    password_refusal = connect_auth::Refusal::of(reason, sent);
                 }
                 Event::NicknameRejected { nickname } => {
                     self.show_nick_prompt(network, nickname.clone(), cx)
@@ -4916,13 +4920,9 @@ impl ChatWindow {
                 session.join_switch = None;
             }
             self.end_key_tracking(network);
-            if password_refused {
+            if let Some(refusal) = password_refusal {
                 // Not retried by itself, but the user can give the password.
-                let sent = self
-                    .sessions
-                    .get(&network)
-                    .is_some_and(|session| session.server_password_used);
-                self.password_refused(network, sent, cx);
+                self.password_refused(network, refusal, cx);
             } else if refused {
                 // Retrying rejected credentials risks account lockout or a ban.
                 self.state
@@ -5596,7 +5596,8 @@ impl ChatWindow {
             Event::Disconnected(reason) | Event::Closed(reason) | Event::Refused(reason) => {
                 // Only a refusal (no automatic reconnect) needs the user; a
                 // connection that ended by itself is reconnected and logged.
-                let announce = refused;
+                // A refused password is answered by its dialog instead.
+                let announce = refused && connect_auth::Refusal::of(&reason, false).is_none();
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self

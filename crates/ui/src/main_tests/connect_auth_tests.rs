@@ -218,6 +218,72 @@ fn a_464_asks_for_the_server_password_and_does_not_retry(cx: &mut TestAppContext
         let prompt = &chat.credential_prompts[0];
         assert!(prompt.server.is_some());
         assert!(!prompt.rejected, "none had been sent");
+        assert!(chat.notices.all().is_empty(), "the dialog is the notice");
+        let log = chat.state.server_messages(NET);
+        assert!(log.iter().any(|m| m.text.contains("464")), "still logged");
+    });
+}
+
+#[gpui::test]
+fn a_464_after_sending_a_password_says_it_seems_wrong(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        chat.sessions.get_mut(&NET).unwrap().server_password_used = true;
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(PASSWORD_REFUSED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts[0].rejected);
+        assert!(chat.credential_prompts[0].server.is_some());
+        assert!(chat.notices.all().is_empty());
+    });
+}
+
+#[gpui::test]
+fn a_sasl_failure_asks_for_the_sasl_password_without_reading_the_store(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    let sasl_key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
+    store.set(&sasl_key, &Secret::new("saved")).unwrap();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(cayenchat_irc_core::SASL_FAILED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(!chat.sessions[&NET].retry_pending, "no automatic retry");
+        let prompt = &chat.credential_prompts[0];
+        assert!(prompt.sasl.is_some(), "the saved password is not reused");
+        assert!(prompt.server.is_none());
+        assert!(prompt.rejected);
+        assert!(chat.notices.all().is_empty(), "the dialog is the notice");
+    });
+}
+
+#[gpui::test]
+fn another_refusal_still_raises_the_error_dialog(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NET,
+            vec![Event::Refused("Server requires UTF-8.".into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty());
+        assert!(!chat.notices.all().is_empty());
     });
 }
 

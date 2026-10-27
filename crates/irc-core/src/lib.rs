@@ -4471,6 +4471,10 @@ async fn send_all(
 /// password instead of showing an error.
 pub const PASSWORD_REFUSED: &str = "Server rejected the password (464).";
 
+/// The reason of [`Event::Refused`] when SASL authentication failed (902,
+/// 904 and the like), so a caller can ask for the SASL password again.
+pub const SASL_FAILED: &str = "SASL authentication failed.";
+
 /// Registration replies after which the server closes the link and an
 /// identical reconnect would be refused again.
 fn registration_refusal(message: &IrcMessage) -> Option<String> {

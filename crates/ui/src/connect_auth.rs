@@ -92,6 +92,37 @@ pub(crate) fn while_incomplete<R>(
     result
 }
 
+/// Why the last connection ended in a refusal the dialog answers (instead of
+/// an error notice).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// 464. `sent`: a server password had been sent, so it was wrong.
+    Server { sent: bool },
+    /// SASL authentication failed; the SASL password was wrong.
+    Sasl,
+}
+
+impl Refusal {
+    /// The refusal a `Refused` event's reason stands for, if the dialog
+    /// answers it. `server_password_sent`: the connection sent a password.
+    pub(crate) fn of(reason: &str, server_password_sent: bool) -> Option<Self> {
+        if reason == cayenchat_irc_core::PASSWORD_REFUSED {
+            Some(Self::Server {
+                sent: server_password_sent,
+            })
+        } else if reason == cayenchat_irc_core::SASL_FAILED {
+            Some(Self::Sasl)
+        } else {
+            None
+        }
+    }
+
+    /// The password of the refusal was given and wrong.
+    fn rejected(self) -> bool {
+        matches!(self, Self::Server { sent: true } | Self::Sasl)
+    }
+}
+
 /// How the connection continues once the dialog is answered.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Resume {
@@ -152,14 +183,15 @@ impl ChatWindow {
     /// Starts the reconnect of `network` with the passwords the store has,
     /// read when the connection starts, and asks for the rest.
     ///
-    /// `refused`: the server rejected registration with 464 (`Some(true)`
-    /// when a password had been sent, `Some(false)` when none was). The
-    /// stored server password is then not used again; the dialog asks for it.
+    /// `refused`: why the last connection ended in a refusal the dialog
+    /// answers. The stored password that was refused (the server password
+    /// for 464, the SASL password for a SASL failure) is not used again; the
+    /// dialog asks for it.
     pub(crate) fn reconnect_with_stored_secrets(
         &mut self,
         network: NetworkId,
         config: ConnectionConfig,
-        refused: Option<bool>,
+        refused: Option<Refusal>,
         announce: bool,
         cx: &mut Context<Self>,
     ) {
@@ -176,12 +208,15 @@ impl ChatWindow {
             None => (Ok(None), Ok(None)),
             Some(profile) => {
                 // The store is read only for what the profile notes as saved.
-                let server = if refused.is_some() || !profile.server_password_saved() {
+                let server_refused = matches!(refused, Some(Refusal::Server { .. }));
+                let sasl_refused = refused == Some(Refusal::Sasl);
+                let server = if server_refused || !profile.server_password_saved() {
                     Ok(None)
                 } else {
                     store.get(&profile.server_password_key())
                 };
-                let sasl = if profile.sasl_enabled && profile.sasl_password_saved() {
+                let sasl = if profile.sasl_enabled && profile.sasl_password_saved() && !sasl_refused
+                {
                     store.get(&profile.sasl_password_key())
                 } else {
                     Ok(None)
@@ -189,8 +224,8 @@ impl ChatWindow {
                 let found =
                     |result: &Result<Option<Secret>, _>| result.as_ref().ok().map(Option::is_some);
                 let noted = (
-                    found(&server).filter(|_| refused.is_none()),
-                    found(&sasl).filter(|_| profile.sasl_enabled),
+                    found(&server).filter(|_| !server_refused),
+                    found(&sasl).filter(|_| profile.sasl_enabled && !sasl_refused),
                 );
                 self.note_stored_passwords(&profile.id, noted.0, noted.1);
                 (server, sasl)
@@ -225,7 +260,7 @@ impl ChatWindow {
         network: NetworkId,
         token: u64,
         mut config: ConnectionConfig,
-        refused: Option<bool>,
+        refused: Option<Refusal>,
         announce: bool,
         (server, sasl): (
             Result<Option<Secret>, cayenchat_storage::CredentialError>,
@@ -251,14 +286,14 @@ impl ChatWindow {
             }
         };
         let (server, sasl) = (read(server), read(sasl));
-        let server_needed = refused.is_some()
+        let server_needed = matches!(refused, Some(Refusal::Server { .. }))
             || self
                 .sessions
                 .get(&network)
                 .is_some_and(|session| session.server_password_used);
         let missing = fill(&mut config, server.as_ref(), sasl.as_ref(), server_needed);
         if missing.any() {
-            let rejected = refused == Some(true);
+            let rejected = refused.is_some_and(Refusal::rejected);
             let resume = Resume::Reconnect { announce };
             self.open_credential_prompt(network, config, resume, missing, rejected, cx);
         } else {
@@ -266,17 +301,17 @@ impl ChatWindow {
         }
     }
 
-    /// The server refused registration with 464. The server password is
-    /// asked for, so a server that wants one need not be told in advance;
-    /// `rejected` says the one that was sent was wrong.
+    /// The server refused registration with 464 or SASL failed. The dialog
+    /// is the notice: the password is asked for, so a server that wants one
+    /// need not be told in advance. The refusal stays in the server log.
     pub(crate) fn password_refused(
         &mut self,
         network: NetworkId,
-        rejected: bool,
+        refusal: Refusal,
         cx: &mut Context<Self>,
     ) {
         if let Some(config) = self.reconnect_config(network) {
-            self.reconnect_with_stored_secrets(network, config, Some(rejected), false, cx);
+            self.reconnect_with_stored_secrets(network, config, Some(refusal), false, cx);
         }
     }
 
@@ -540,9 +575,15 @@ impl ChatWindow {
         for (index, prompt) in self.credential_prompts.iter().enumerate() {
             let network = prompt.network;
             let server = self.prompt_server_label(network);
-            let hint = prompt
-                .rejected
-                .then(|| self.i18n.text("credential_prompt_rejected"));
+            // One line says what is wanted: a refused password, the server
+            // password alone, or passwords in general.
+            let title = self.i18n.text(if prompt.rejected {
+                "credential_prompt_rejected"
+            } else if prompt.sasl.is_none() {
+                "credential_prompt_server"
+            } else {
+                "credential_prompt_title"
+            });
             let mut fields = div().flex().flex_col().gap_1();
             for (slot, field, label) in [
                 (
@@ -614,10 +655,11 @@ impl ChatWindow {
                         .flex_col()
                         .gap_1()
                         .child(div().font_weight(FontWeight::BOLD).child(server))
-                        .child(self.i18n.text("credential_prompt_title"))
-                        .when_some(hint, |d, hint| {
-                            d.child(div().text_color(theme.warning).child(hint))
-                        })
+                        .child(
+                            div()
+                                .when(prompt.rejected, |d| d.text_color(theme.warning))
+                                .child(title),
+                        )
                         .child(fields)
                         .when_some(prompt.error.clone(), |d, error| {
                             d.child(div().text_color(theme.warning).child(error))

@@ -1456,9 +1456,17 @@ D021 that stored typed passwords with Save of the server.
   dialog closes. A `String` drop does not guarantee erasure and the IRC
   library keeps its copy of the server password in its `Config` while the
   connection lives; that remains, and is the accepted limit.
-- **Not covered.** A SASL failure (904) is not turned into a dialog: the
-  server does not say that the password is missing, and retrying would risk a
-  lockout. It is reported and the settings are the place to correct it.
+- **Refusals.** A 464 and a SASL failure (902, 904 and the like,
+  `SASL_FAILED`) open the dialog instead of the error notice (D063); the
+  refusal stays in the server log and nothing reconnects by itself, so only
+  the user's answer tries again. The password that was refused is not read
+  from the store again: the server password for 464, the SASL password for a
+  SASL failure. The line says what is wanted: "The password seems to be wrong"
+  when a password was sent and refused (saved or typed, either way; always for
+  SASL), "Enter the server password" when none was sent, and the general line
+  when the SASL password is wanted. The SASL account name is the one in the
+  settings; the dialog only shows it. Cancel is the usual Cancel. Other
+  refusals (UTF8ONLY, a ban, 465) keep the error notice.
 
 ## D070 — Showing settings never reads the credential store; the upload token has a note (#642)
 
@@ -1610,9 +1618,10 @@ with a Close button (`window.prompt`, `notices.rs`).
   ERROR, network loss) and a failed automatic reconnect are reconnected or
   retried on their own, so they only go to the server log, the network
   activity and the tree row. `Event::Refused` (authentication, SASL, UTF8ONLY;
-  no automatic reconnect) and a failed connect from a connection command,
-  start-up, the user's Reconnect or a nickname re-entered in the prompt open a
-  dialog. `Event::Closed` (the user disconnected) opens none.
+  no automatic reconnect) opens a dialog, except 464 and a SASL failure, whose
+  password dialog is the notice (D068). A failed connect from a connection
+  command, start-up, the user's Reconnect or a nickname re-entered in the
+  prompt opens a dialog too. `Event::Closed` (the user disconnected) opens none.
 - **Closing changes nothing.** The draft, caret, selection and undo history are
   untouched, nothing is sent, retried or selected. When nothing has the focus
   afterwards, the draft of the selected conversation gets it; a form the user
