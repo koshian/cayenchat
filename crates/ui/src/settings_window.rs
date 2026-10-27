@@ -3067,6 +3067,163 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex()
+                    .items_center()
+                    .gap_2()
+                    .pl(settings_theme::OPTION_INDENT)
+                    .child(
+                        div()
+                            .w(settings_theme::LABEL_WIDTH - settings_theme::OPTION_INDENT)
+                            .flex_shrink_0()
+                            .child("TLS/SSL"),
+                    )
+                    .child(
+                        div()
+                            .id("tls-toggle")
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .child(settings_theme::checkbox(tls, true, cx))
+                            .child(self.i18n.text(if tls { "on" } else { "off" }))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
+                    ),
+            )
+            .when(tls, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .pl(settings_theme::OPTION_INDENT * 2.)
+                        .child(
+                            div()
+                                .w(
+                                    settings_theme::LABEL_WIDTH
+                                        - settings_theme::OPTION_INDENT * 2.,
+                                )
+                                .flex_shrink_0()
+                                .child(self.i18n.text("verify_certificates")),
+                        )
+                        .child(
+                            div()
+                                .id("certificate-verification-toggle")
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .cursor_pointer()
+                                .child(settings_theme::checkbox(
+                                    profile.verify_tls_certificates,
+                                    true,
+                                    cx,
+                                ))
+                                .child(self.i18n.text(if profile.verify_tls_certificates {
+                                    "on"
+                                } else {
+                                    "off"
+                                }))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_certificate_verification(cx)
+                                })),
+                        ),
+                )
+                .when(!profile.verify_tls_certificates, |d| {
+                    d.child(
+                        div()
+                            .ml(settings_theme::LABEL_INDENT)
+                            .text_color(theme.warning)
+                            .child(self.i18n.text("certificate_warning")),
+                    )
+                })
+            })
+            .child(
+                div()
+                    .pt_2()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("server_auth_heading")),
+            )
+            .child(self.credential_row(Credential::Server, "server_password", cx))
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("server_password_hint")),
+            )
+            .when(!tls, |d| {
+                d.child(
+                    div()
+                        .id("plaintext-pass")
+                        .ml(settings_theme::LABEL_INDENT)
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .child(settings_theme::checkbox(
+                            profile.allow_plaintext_pass,
+                            true,
+                            cx,
+                        ))
+                        .child(self.i18n.text("plaintext_pass"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_plaintext_pass(window, cx)
+                        })),
+                )
+                .when(profile.allow_plaintext_pass, |d| {
+                    d.child(
+                        div()
+                            .ml(settings_theme::LABEL_INDENT)
+                            .text_color(theme.warning)
+                            .child(self.i18n.text("plaintext_pass_warning")),
+                    )
+                })
+            })
+            .child(
+                div()
+                    .pt_2()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("sasl_heading")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(settings_theme::LABEL_WIDTH).child("SASL PLAIN"))
+                    .child(
+                        div()
+                            .id("sasl-toggle")
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .child(settings_theme::checkbox(sasl, true, cx))
+                            .child(self.i18n.text(if sasl { "on" } else { "off" }))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
+                    ),
+            )
+            .when(sasl, |d| {
+                d.child(settings_field(
+                    &self.i18n.text("sasl_account"),
+                    self.settings.sasl_username.clone(),
+                ))
+                .child(self.credential_row(Credential::Sasl, "sasl_password", cx))
+            })
+            .child(settings_field(
+                &self.i18n.text("nickname"),
+                self.settings.nickname.clone(),
+            ))
+            .child(settings_field(
+                &self.i18n.text("username"),
+                self.settings.username.clone(),
+            ))
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("username_hint")),
+            )
+            .child(
+                div()
+                    .flex()
                     .items_start()
                     .gap_2()
                     .child(
@@ -3109,80 +3266,6 @@ impl SettingsWindow {
                     .ml(settings_theme::LABEL_INDENT)
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("iso2022jp_char_refs_hint")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().w(settings_theme::LABEL_WIDTH).child("TLS/SSL"))
-                    .child(
-                        div()
-                            .id("tls-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(settings_theme::checkbox(tls, true, cx))
-                            .child(self.i18n.text(if tls { "on" } else { "off" }))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_tls(cx))),
-                    ),
-            )
-            .when(tls, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .w(settings_theme::LABEL_WIDTH)
-                                .child(self.i18n.text("verify_certificates")),
-                        )
-                        .child(
-                            div()
-                                .id("certificate-verification-toggle")
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .child(settings_theme::checkbox(
-                                    profile.verify_tls_certificates,
-                                    true,
-                                    cx,
-                                ))
-                                .child(self.i18n.text(if profile.verify_tls_certificates {
-                                    "on"
-                                } else {
-                                    "off"
-                                }))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_certificate_verification(cx)
-                                })),
-                        ),
-                )
-                .when(!profile.verify_tls_certificates, |d| {
-                    d.child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.warning)
-                            .child(self.i18n.text("certificate_warning")),
-                    )
-                })
-            })
-            .child(settings_field(
-                &self.i18n.text("nickname"),
-                self.settings.nickname.clone(),
-            ))
-            .child(settings_field(
-                &self.i18n.text("username"),
-                self.settings.username.clone(),
-            ))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("username_hint")),
             )
             .child(settings_field(
                 &self.i18n.text("realname"),
@@ -3294,78 +3377,6 @@ impl SettingsWindow {
                     .text_color(theme.text_secondary)
                     .child(self.i18n.text("regain_ops_hint")),
             )
-            .child(
-                div()
-                    .pt_2()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("server_auth_heading")),
-            )
-            .child(self.credential_row(Credential::Server, "server_password", cx))
-            .child(
-                div()
-                    .ml(settings_theme::LABEL_INDENT)
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("server_password_hint")),
-            )
-            .when(!tls, |d| {
-                d.child(
-                    div()
-                        .id("plaintext-pass")
-                        .ml(settings_theme::LABEL_INDENT)
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .cursor_pointer()
-                        .child(settings_theme::checkbox(
-                            profile.allow_plaintext_pass,
-                            true,
-                            cx,
-                        ))
-                        .child(self.i18n.text("plaintext_pass"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_plaintext_pass(window, cx)
-                        })),
-                )
-                .when(profile.allow_plaintext_pass, |d| {
-                    d.child(
-                        div()
-                            .ml(settings_theme::LABEL_INDENT)
-                            .text_color(theme.warning)
-                            .child(self.i18n.text("plaintext_pass_warning")),
-                    )
-                })
-            })
-            .child(
-                div()
-                    .pt_2()
-                    .font_weight(FontWeight::BOLD)
-                    .child(self.i18n.text("sasl_heading")),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().w(settings_theme::LABEL_WIDTH).child("SASL PLAIN"))
-                    .child(
-                        div()
-                            .id("sasl-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(settings_theme::checkbox(sasl, true, cx))
-                            .child(self.i18n.text(if sasl { "on" } else { "off" }))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
-                    ),
-            )
-            .when(sasl, |d| {
-                d.child(settings_field(
-                    &self.i18n.text("sasl_account"),
-                    self.settings.sasl_username.clone(),
-                ))
-                .child(self.credential_row(Credential::Sasl, "sasl_password", cx))
-            })
     }
 
     /// A password of a draft server: a "save password" box beside the field
