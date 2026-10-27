@@ -16,7 +16,14 @@ fn startup_uses_only_saved_credentials() {
     settings.add_server(cayenchat_storage::PRESETS[0].host);
     settings.selected_profile_mut().unwrap().nickname = "alice".into();
     settings.selected_profile_mut().unwrap().username = "ident".into();
-    assert!(startup_connections(&settings, &store).is_empty());
+    assert!(startup_connections(&settings).is_empty());
+    let config_of = |settings: &Settings| {
+        super::saved_connection_config(
+            settings.selected_profile().unwrap(),
+            settings.language,
+            &store,
+        )
+    };
 
     let profile = settings.selected_profile_mut().unwrap();
     profile.connect_on_startup = true;
@@ -24,7 +31,7 @@ fn startup_uses_only_saved_credentials() {
     profile.sasl_username = "account".into();
     profile.use_tls = true;
     // No saved SASL password: the connection is asked for it, not refused.
-    let (config, missing) = startup_connections(&settings, &store).remove(0).1.unwrap();
+    let (config, missing) = config_of(&settings).unwrap();
     assert!(missing.sasl && !missing.server);
     assert!(config.server_password.is_none());
     assert_eq!(config.sasl.unwrap().password, "");
@@ -40,15 +47,16 @@ fn startup_uses_only_saved_credentials() {
             &Secret::new("server-secret"),
         )
         .unwrap();
-    let (_, missing) = startup_connections(&settings, &store).remove(0).1.unwrap();
+    let (_, missing) = config_of(&settings).unwrap();
     assert!(missing.sasl, "not read without the note");
     let profile = settings.selected_profile_mut().unwrap();
     profile.set_server_password_saved(true);
     profile.set_sasl_password_saved(true);
-    let startup = startup_connections(&settings, &store);
-    assert_eq!(startup.len(), 1);
-    assert_eq!(startup[0].0, settings.selected_server);
-    let (config, missing) = startup.into_iter().next().unwrap().1.unwrap();
+    assert_eq!(
+        startup_connections(&settings),
+        [settings.selected_server.clone()]
+    );
+    let (config, missing) = config_of(&settings).unwrap();
     assert!(!missing.any());
     assert_eq!(config.host, "irc.ircnet.com");
     assert_eq!(config.nickname, "alice");
@@ -61,7 +69,6 @@ fn startup_uses_only_saved_credentials() {
 
 #[test]
 fn every_server_marked_for_startup_connects_with_its_own_identity() {
-    let store = memory_store();
     let mut settings = Settings::default();
     settings.add_server("");
     let custom = settings.selected_profile_mut().unwrap();
@@ -75,24 +82,30 @@ fn every_server_marked_for_startup_connects_with_its_own_identity() {
     preset.username = "alice".into();
     preset.channels = "#a".into();
     preset.connect_on_startup = true;
-    let startup = startup_connections(&settings, &store);
+    let store = memory_store();
     // Tree order: the order the servers were added.
-    let hosts: Vec<_> = startup
+    let hosts: Vec<_> = startup_connections(&settings)
         .iter()
-        .map(|(_, config)| {
-            let (config, _) = config.as_ref().unwrap();
-            (
-                config.host.as_str(),
-                config.nickname.as_str(),
-                config.channels.clone(),
-            )
+        .map(|id| {
+            let profile = settings.profile(id).unwrap();
+            let (config, _) =
+                super::saved_connection_config(profile, settings.language, &store).unwrap();
+            (config.host, config.nickname, config.channels)
         })
         .collect();
     assert_eq!(
         hosts,
         [
-            ("irc.example.org", "bob", vec!["#b".to_owned()]),
-            ("irc.ircnet.com", "alice", vec!["#a".to_owned()]),
+            (
+                "irc.example.org".to_owned(),
+                "bob".to_owned(),
+                vec!["#b".to_owned()]
+            ),
+            (
+                "irc.ircnet.com".to_owned(),
+                "alice".to_owned(),
+                vec!["#a".to_owned()]
+            ),
         ]
     );
 }
@@ -382,7 +395,7 @@ fn the_store_is_touched_only_for_passwords_noted_as_saved() {
     let i18n = super::Localizer::new(previous.language);
 
     // Nothing noted: connecting at startup reads nothing, and asks for SASL.
-    let (_, missing) = startup_connections(&previous, &store).remove(0).1.unwrap();
+    let (_, missing) = super::saved_connection_config(&profile, previous.language, &store).unwrap();
     assert!(missing.sasl);
     let (server, sasl) = super::saved_connection_secrets(&profile, &store, &i18n).unwrap();
     assert!(server.is_none() && sasl.is_none());

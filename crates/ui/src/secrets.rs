@@ -105,6 +105,7 @@ pub fn system_store_key() -> &'static str {
 pub struct PasswordWatch {
     inner: MemoryBackend,
     touches: std::sync::atomic::AtomicUsize,
+    key_touches: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(test)]
@@ -114,6 +115,7 @@ impl PasswordWatch {
         let watch = Arc::new(Self {
             inner: MemoryBackend::new(CredentialBackendKind::System),
             touches: Default::default(),
+            key_touches: Default::default(),
         });
         let store = CredentialStore::with_backend(watch.clone());
         cx.set_global(Credentials(store.clone()));
@@ -124,8 +126,17 @@ impl PasswordWatch {
         self.touches.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// The reads and deletions of channel keys, which `touches` leaves out.
+    pub fn key_touches(&self) -> usize {
+        self.key_touches.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn count(&self, key: &cayenchat_storage::SecretKey) {
         use cayenchat_storage::SecretKey;
+        if matches!(key, SecretKey::ChannelKey { .. }) {
+            self.key_touches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if matches!(
             key,
             SecretKey::ServerPassword { .. } | SecretKey::SaslPassword { .. }
