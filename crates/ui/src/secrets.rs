@@ -105,6 +105,8 @@ pub fn system_store_key() -> &'static str {
 pub struct PasswordWatch {
     inner: MemoryBackend,
     touches: std::sync::atomic::AtomicUsize,
+    key_touches: std::sync::atomic::AtomicUsize,
+    refuse_reads: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -114,6 +116,8 @@ impl PasswordWatch {
         let watch = Arc::new(Self {
             inner: MemoryBackend::new(CredentialBackendKind::System),
             touches: Default::default(),
+            key_touches: Default::default(),
+            refuse_reads: Default::default(),
         });
         let store = CredentialStore::with_backend(watch.clone());
         cx.set_global(Credentials(store.clone()));
@@ -124,8 +128,23 @@ impl PasswordWatch {
         self.touches.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// The reads and deletions of channel keys, which `touches` leaves out.
+    pub fn key_touches(&self) -> usize {
+        self.key_touches.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Makes every read fail, as when the system store denies access.
+    pub fn refuse_reads(&self) {
+        self.refuse_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn count(&self, key: &cayenchat_storage::SecretKey) {
         use cayenchat_storage::SecretKey;
+        if matches!(key, SecretKey::ChannelKey { .. }) {
+            self.key_touches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if matches!(
             key,
             SecretKey::ServerPassword { .. } | SecretKey::SaslPassword { .. }
@@ -151,6 +170,9 @@ impl cayenchat_storage::credentials::CredentialBackend for PasswordWatch {
         key: &cayenchat_storage::SecretKey,
     ) -> Result<Option<cayenchat_storage::Secret>, CredentialError> {
         self.count(key);
+        if self.refuse_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CredentialError::Access("denied".into()));
+        }
         self.inner.get(key)
     }
 

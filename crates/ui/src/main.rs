@@ -413,8 +413,22 @@ fn saved_connection_config(
     language: Language,
     store: &CredentialStore,
 ) -> OpenConfig {
+    saved_connection_config_read(profile, language, store)
+        .map(|(config, missing, _)| (config, missing))
+}
+
+/// `saved_connection_config` that also says whether the store could be read.
+/// A store that cannot be read (or refuses) counts as holding nothing, so
+/// the passwords are asked for; the saved ones are left alone.
+fn saved_connection_config_read(
+    profile: &ServerProfile,
+    language: Language,
+    store: &CredentialStore,
+) -> Result<(ConnectionConfig, connect_auth::Missing, bool), String> {
     let i18n = Localizer::new(language);
-    let (server_password, sasl_password) = saved_connection_secrets(profile, store, &i18n)?;
+    let secrets = saved_connection_secrets(profile, store, &i18n);
+    let readable = secrets.is_ok();
+    let (server_password, sasl_password) = secrets.unwrap_or_default();
     let mut config = connection_config_without_secrets(profile, language)?;
     let missing = connect_auth::fill(
         &mut config,
@@ -426,20 +440,17 @@ fn saved_connection_config(
         channel_keys::use_stored_keys(config, profile, store);
         config.validate()
     })?;
-    Ok((config, missing))
+    Ok((config, missing, readable))
 }
 
-/// Servers marked to connect at startup, in tree order, with their configs.
-fn startup_connections(settings: &Settings, store: &CredentialStore) -> Vec<(String, OpenConfig)> {
+/// The IDs of the servers marked to connect at startup, in tree order. The
+/// credential store is not read here: that waits until the window has been
+/// drawn (`connect_at_startup`).
+fn startup_connections(settings: &Settings) -> Vec<String> {
     settings
         .ordered_servers()
         .filter(|profile| profile.connect_on_startup)
-        .map(|profile| {
-            (
-                profile.id.clone(),
-                saved_connection_config(profile, settings.language, store),
-            )
-        })
+        .map(|profile| profile.id.clone())
         .collect()
 }
 
@@ -737,7 +748,8 @@ struct ChatWindow {
     credential_prompts: Vec<connect_auth::CredentialPrompt>,
     /// One row per channel whose JOIN a server refused for want of a key.
     key_prompts: Vec<channel_keys::KeyPrompt>,
-    startup_connections: Vec<(NetworkId, OpenConfig)>,
+    /// The servers to connect once the window is drawn, in tree order.
+    startup_connections: Vec<NetworkId>,
     settings_window: Option<WindowHandle<SettingsWindow>>,
     window_handle: Option<WindowHandle<ChatWindow>>,
     /// Remember where the window and its panes were left (a setting), and
@@ -1246,9 +1258,9 @@ impl ChatWindow {
                 .find(|(_, session)| session.profile_id == profile_id)
                 .map(|(id, _)| *id)
         };
-        let startup_connections = startup_connections(&saved, &secrets::store(cx))
+        let startup_connections = startup_connections(&saved)
             .into_iter()
-            .filter_map(|(profile, config)| Some((network_of(&profile)?, config)))
+            .filter_map(|profile| network_of(&profile))
             .collect();
         let state = AppState::with_networks(networks);
         let mut inputs = HashMap::new();
@@ -2475,30 +2487,9 @@ impl ChatWindow {
         };
         if session.active_config.is_none() {
             let profile_id = session.profile_id.clone();
-            let config = self
-                .saved
-                .profile(&profile_id)
-                .ok_or_else(|| self.i18n.text("not_connected"))
-                .and_then(|profile| {
-                    saved_connection_config(profile, self.saved.language, &secrets::store(cx))
-                });
-            match config {
-                Ok((config, missing)) => {
-                    let sasl = self
-                        .saved
-                        .profile(&profile_id)
-                        .is_some_and(|profile| profile.sasl_enabled);
-                    self.note_stored_passwords(
-                        &profile_id,
-                        Some(config.server_password.is_some()),
-                        sasl.then_some(!missing.sasl),
-                    );
-                    let _ = self.connect_fresh(network, config, missing, window, cx);
-                }
-                Err(error) => {
-                    self.raise_error(Some(network), error, notices::Origin::User, cx);
-                    self.open_settings_for(Some(profile_id), window, cx);
-                }
+            if let Err(error) = self.connect_saved(network, window, cx) {
+                self.raise_error(Some(network), error, notices::Origin::User, cx);
+                self.open_settings_for(Some(profile_id), window, cx);
             }
             return;
         }
@@ -2507,6 +2498,108 @@ impl ChatWindow {
         session.retry_attempt = 0;
         session.retry_token += 1;
         self.start_reconnect(network, true, cx);
+    }
+
+    /// Connects a server that has no connection in this run from its saved
+    /// settings. This is where the credential store is first read for it
+    /// (passwords and channel keys); the ones missing are asked for. `Err`:
+    /// the settings do not make a usable configuration. `Ok(true)`: the
+    /// connection could not start.
+    fn connect_saved(
+        &mut self,
+        network: NetworkId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        let profile_id = self
+            .sessions
+            .get(&network)
+            .map(|session| session.profile_id.clone())
+            .ok_or_else(|| self.i18n.text("not_connected"))?;
+        let profile = self
+            .saved
+            .profile(&profile_id)
+            .ok_or_else(|| self.i18n.text("not_connected"))?;
+        let sasl = profile.sasl_enabled;
+        let (config, missing, readable) =
+            saved_connection_config_read(profile, self.saved.language, &secrets::store(cx))?;
+        if readable {
+            self.note_stored_passwords(
+                &profile_id,
+                Some(config.server_password.is_some()),
+                sasl.then_some(!missing.sasl),
+            );
+        }
+        Ok(self
+            .connect_fresh(network, config, missing, window, cx)
+            .is_err())
+    }
+
+    /// Connects the servers marked for startup. The window is drawn first,
+    /// with a line in each server's log saying the connection is starting;
+    /// only after a frame has been presented is the credential store read
+    /// (the system store may ask the user for permission), then the same
+    /// path as the Connect button runs. A read that fails is handled like
+    /// any failure to connect. The first server that cannot start gets its
+    /// settings opened, unless they are open already.
+    fn connect_at_startup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The status line and the tree show the start even when a channel is
+        // selected and the server log is not.
+        for network in &self.startup_connections {
+            self.state
+                .append_server_message(*network, self.i18n.text("event_connecting"));
+            self.state
+                .set_status(*network, ConnectionStatus::Connecting);
+            if let Some(session) = self.sessions.get_mut(network) {
+                session.starting = true;
+            }
+        }
+        cx.notify();
+        // Callbacks run at the start of a frame, before it is drawn: the
+        // second one is after the first frame was. A window that gets no
+        // frames reads nothing.
+        cx.on_next_frame(window, |_, window, cx| {
+            cx.on_next_frame(window, |this, window, cx| {
+                this.connect_startup_servers(window, cx)
+            });
+        });
+    }
+
+    /// The reading half of `connect_at_startup`.
+    fn connect_startup_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut settings_for = None;
+        for network in std::mem::take(&mut self.startup_connections) {
+            let Some(session) = self.sessions.get_mut(&network) else {
+                continue;
+            };
+            session.starting = false;
+            // Connected or tried by hand in the meantime.
+            if session.used() {
+                continue;
+            }
+            let failed = match self.connect_saved(network, window, cx) {
+                Ok(failed) => failed,
+                Err(error) => {
+                    let message = self.i18n.format("startup_invalid", &[("error", &error)]);
+                    self.state
+                        .set_status(network, ConnectionStatus::Disconnected(error));
+                    self.raise_error(Some(network), message, notices::Origin::User, cx);
+                    cx.notify();
+                    true
+                }
+            };
+            if failed && settings_for.is_none() {
+                settings_for = self
+                    .sessions
+                    .get(&network)
+                    .map(|session| session.profile_id.clone());
+            }
+        }
+        if let Some(profile) = settings_for
+            && self.settings_window.is_none()
+        {
+            self.open_settings_for(Some(profile), window, cx);
+        }
     }
 
     /// Connects `network` again. The passwords come from the credential
@@ -6581,7 +6674,7 @@ impl ChatWindow {
                 let used = self
                     .sessions
                     .get(&server_id)
-                    .is_some_and(ServerSession::used);
+                    .is_some_and(|session| session.used() || session.starting);
                 let status_mark = match self.state.status(server_id) {
                     // Servers not connected in this run show no mark.
                     _ if !used => "",
@@ -9862,10 +9955,10 @@ fn main() {
                     chat.apply_always_on_top(true, window, cx)
                 });
             }
-            // Settings open when nothing connects at startup or a saved server
-            // cannot start, showing the first such server; valid servers still
-            // connect.
-            let settings_for = chat_window
+            // Settings do not open at startup, even when nothing connects: a
+            // server is connected from the tree too. A saved server that cannot
+            // start opens them later, in `connect_at_startup`.
+            chat_window
                 .update(cx, |chat, window, cx| {
                     chat.layout_file = cayenchat_storage::layout::layout_path().ok();
                     chat.order_file = cayenchat_storage::order::order_path().ok();
@@ -9880,47 +9973,19 @@ fn main() {
                     ));
                     // What startup reported while the settings were read.
                     chat.open_next_notice(window, cx);
-                    let startup = std::mem::take(&mut chat.startup_connections);
+                    let no_startup = chat.startup_connections.is_empty();
                     // With no saved server the setup wizard stands in for
                     // the settings window; it writes nothing unless asked.
-                    let wizard = first_run && startup.is_empty();
+                    let wizard = first_run && no_startup;
                     if wizard {
                         chat.open_setup_wizard(cx);
                     }
-                    let mut settings_for =
-                        (startup.is_empty() && !wizard).then(|| chat.selected_profile_id());
-                    for (network, config) in startup {
-                        let failed = match config {
-                            Ok((config, missing)) => chat
-                                .connect_fresh(network, config, missing, window, cx)
-                                .is_err(),
-                            Err(error) => {
-                                let message =
-                                    chat.i18n.format("startup_invalid", &[("error", &error)]);
-                                chat.raise_error(Some(network), message, notices::Origin::User, cx);
-                                cx.notify();
-                                true
-                            }
-                        };
-                        if failed && settings_for.is_none() {
-                            settings_for = Some(
-                                chat.sessions
-                                    .get(&network)
-                                    .map(|session| session.profile_id.clone()),
-                            );
-                        }
+                    // The credential store is read after the first frame.
+                    if !no_startup {
+                        chat.connect_at_startup(window, cx);
                     }
-                    settings_for
                 })
                 .expect("could not initialize the chat window");
-            let settings_opened = settings_for.is_some();
-            if let Some(profile) = settings_for {
-                chat_window
-                    .update(cx, |chat, window, cx| {
-                        chat.open_settings_for(profile, window, cx)
-                    })
-                    .expect("could not open the initial settings window");
-            }
             // GPUI's `activate` does nothing on Windows, so a window opened by
             // hand can land behind others (#259). `activate_window` is queued and
             // runs after this callback, so it goes last and to the topmost window;
@@ -9928,9 +9993,7 @@ fn main() {
             // fronted even when settings open on top of it (#354), or it would
             // stay behind other apps.
             #[cfg(target_os = "windows")]
-            for front in
-                autostart::startup_front(autostart::launched_by_registration(), settings_opened)
-            {
+            for front in autostart::startup_front(autostart::launched_by_registration(), false) {
                 match front {
                     autostart::StartupFront::Settings => {
                         let settings = chat_window
@@ -9946,8 +10009,6 @@ fn main() {
                     }
                 }
             }
-            #[cfg(not(target_os = "windows"))]
-            let _ = settings_opened;
         });
 }
 
@@ -9978,6 +10039,10 @@ mod log_tests;
 #[cfg(test)]
 #[path = "main_tests/startup_tests.rs"]
 mod startup_tests;
+
+#[cfg(test)]
+#[path = "main_tests/startup_read_tests.rs"]
+mod startup_read_tests;
 
 #[cfg(test)]
 #[path = "main_tests/notice_tests.rs"]

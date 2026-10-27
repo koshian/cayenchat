@@ -162,6 +162,7 @@
   "connect": "接続",
   "reconnect": "再接続",
   "event_reconnecting": "再接続しています…",
+  "event_connecting": "接続しています…",
   "event_retry_scheduled": "{seconds} 秒後に再接続します。",
   "event_retry_cancelled": "自動再接続を停止しました。",
   "event_retry_refused": "サーバーが認証または設定を拒否したため、自動再接続は行いません。設定を確認してから再接続してください。",

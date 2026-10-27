@@ -1450,6 +1450,19 @@ D021 that stored typed passwords with Save of the server.
   user, so the retry timer and wake-up leave it alone until Connect; a
   reconnect loop never reopens the dialog. A connection that needs nothing
   gets no dialog.
+- **Launch (#648).** Nothing reads the credential store before the chat
+  window is drawn: creating the window only lists the servers marked
+  `connect_on_startup`. A server not marked is read when the user connects it
+  (tree, Connect, settings). A marked one gets a "Connecting…" line in its
+  server log first, its status shows "connecting" (status line, and "…" in
+  the tree), and only after the first frame has been drawn the same path as
+  the Connect button reads the server and SASL passwords and the channel keys. A read that
+  fails is treated like an empty store: the dialog asks, and the saved
+  passwords and their notes are left alone. Cancelling the dialog ends the
+  "connecting" status (the server shows as disconnected); a configuration that is unusable raises the
+  error and opens that server's settings. The one-time migration of
+  pre-version-11 plaintext passwords (`migrate_legacy_secrets`) is the only
+  write at launch, and only when such passwords exist.
 - **Memory.** `ServerSession::active_config` is kept without passwords
   (`ConnectionConfig::forget_secrets`, `zeroize`); only the fact that a server
   password was used is remembered. Typed dialog fields are emptied when the

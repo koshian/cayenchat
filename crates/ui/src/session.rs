@@ -46,6 +46,9 @@ pub struct ServerSession {
     /// drops them.
     pub sent_secrets: (Option<Secret>, Option<Secret>),
     pub manual_disconnect: bool,
+    /// A startup connection waits for the first frame (D068, Launch): the
+    /// tree shows it as connecting before the credential store is read.
+    pub starting: bool,
     /// The connection was ended just before the machine slept: no retry
     /// is scheduled, and the wake-up reconnects it unless the user took
     /// over meanwhile.
@@ -116,6 +119,7 @@ impl ServerSession {
             server_password_used: false,
             sent_secrets: (None, None),
             manual_disconnect: false,
+            starting: false,
             asleep: false,
             retry_pending: false,
             retry_attempt: 0,
