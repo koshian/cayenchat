@@ -46,6 +46,7 @@ fn config(sasl: bool) -> ConnectionConfig {
     config.port = 1;
     if sasl {
         config.sasl = Some(SaslCredentials {
+            mechanism: Default::default(),
             username: "acct".into(),
             password: String::new(),
         });

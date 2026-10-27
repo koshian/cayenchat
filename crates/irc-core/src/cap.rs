@@ -15,8 +15,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use base64::Engine;
-use irc::proto::{CapSubCommand, Command as IrcCommand, Message as IrcMessage, Response};
+use irc::proto::{CapSubCommand, Command as IrcCommand, Message as IrcMessage};
+
+use crate::sasl::{Out, SaslHandshake};
+use crate::scram;
 
 pub const SASL: &str = "sasl";
 pub const MESSAGE_TAGS: &str = "message-tags";
@@ -98,10 +100,21 @@ enum Phase {
 }
 
 /// Commands to send and diagnostics to show after one incoming message.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub struct CapStep {
     pub send: Vec<IrcCommand>,
     pub notes: Vec<String>,
+    /// SCRAM key derivation the caller runs off the async runtime and
+    /// answers with [`CapNegotiation::derived`].
+    pub(crate) derive: Option<scram::Job>,
+}
+
+impl CapStep {
+    fn take(&mut self, out: Out) {
+        self.send.extend(out.send);
+        self.notes.extend(out.notes);
+        self.derive = out.derive.or(self.derive.take());
+    }
 }
 
 pub struct CapNegotiation {
@@ -257,7 +270,7 @@ impl CapNegotiation {
                         .extend(list.split_whitespace().map(str::to_owned));
                     if !continued {
                         let acknowledged = std::mem::take(&mut self.ack_lines);
-                        self.acknowledge(&acknowledged, &mut step);
+                        self.acknowledge(&acknowledged, &mut step)?;
                     }
                 }
                 "NAK" => {
@@ -294,7 +307,7 @@ impl CapNegotiation {
                 _ => {}
             }
         } else if let Some(sasl) = self.sasl.as_mut() {
-            step.send.extend(sasl.observe(message)?);
+            step.take(sasl.observe(message)?);
         }
         self.enforce_dependencies(&mut step);
         self.end_if_settled(&mut step);
@@ -326,18 +339,21 @@ impl CapNegotiation {
 
     fn request_after_listing(&mut self, step: &mut CapStep) -> Result<(), String> {
         self.phase = Phase::Requesting;
-        if self.sasl.is_some() {
-            let plain = match self.offered.get(SASL) {
+        if let Some(sasl) = &self.sasl {
+            let wanted = sasl.mechanism().name();
+            let offered = match self.offered.get(SASL) {
                 // CAP 3.1 servers list `sasl` without mechanisms.
                 Some(None) => true,
                 Some(Some(mechanisms)) => mechanisms
                     .split(',')
-                    .any(|name| name.eq_ignore_ascii_case("PLAIN")),
+                    .any(|name| name.eq_ignore_ascii_case(wanted)),
                 None => false,
             };
-            if !plain {
-                return Err("Server does not offer SASL PLAIN.".into());
+            if !offered {
+                return Err(format!("Server does not offer SASL {wanted}."));
             }
+            step.notes
+                .push(format!("SASL {wanted} is offered; requesting sasl."));
             step.send.push(request(SASL));
             self.pending.push(SASL);
         }
@@ -363,7 +379,7 @@ impl CapNegotiation {
         }
     }
 
-    fn acknowledge(&mut self, acknowledged: &[String], step: &mut CapStep) {
+    fn acknowledge(&mut self, acknowledged: &[String], step: &mut CapStep) -> Result<(), String> {
         for token in acknowledged {
             if let Some(name) = token.strip_prefix('-') {
                 self.enabled.retain(|cap| *cap != name);
@@ -375,8 +391,9 @@ impl CapNegotiation {
             let name = self.pending.remove(index);
             self.enabled.insert(name);
             if name == SASL {
+                step.notes.push("Capability sasl enabled.".into());
                 if let Some(sasl) = self.sasl.as_mut() {
-                    step.send.extend(sasl.begin());
+                    step.take(sasl.begin()?);
                 }
             } else {
                 step.notes.push(format!("Capability {name} enabled."));
@@ -386,6 +403,22 @@ impl CapNegotiation {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// The finished SCRAM derivation (see [`CapStep::derive`]).
+    pub(crate) fn derived(&mut self, derived: scram::Derived) -> Result<CapStep, String> {
+        let mut step = CapStep::default();
+        let sasl = self.sasl.as_mut().ok_or("Unexpected SCRAM result.")?;
+        step.take(sasl.derived(derived)?);
+        Ok(step)
+    }
+
+    /// Where SASL stands, for the diagnostics of a registration timeout.
+    pub fn sasl_stage(&self) -> Option<String> {
+        self.sasl
+            .as_ref()
+            .map(|sasl| format!("{}, {}", sasl.mechanism().name(), sasl.stage()))
     }
 
     /// draft/metadata-2 and draft/chathistory must not outlive batch (a DEL
@@ -464,81 +497,10 @@ fn cap_reply(command: &IrcCommand) -> Option<(String, bool, String)> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SaslPhase {
-    Idle,
-    Challenging,
-    WaitingForResult,
-    Complete,
-}
-
-/// SASL PLAIN once the `sasl` capability is acknowledged.
-struct SaslHandshake {
-    credentials: crate::SaslCredentials,
-    phase: SaslPhase,
-}
-
-impl SaslHandshake {
-    fn new(credentials: crate::SaslCredentials) -> Self {
-        Self {
-            credentials,
-            phase: SaslPhase::Idle,
-        }
-    }
-
-    fn complete(&self) -> bool {
-        self.phase == SaslPhase::Complete
-    }
-
-    fn begin(&mut self) -> Vec<IrcCommand> {
-        self.phase = SaslPhase::Challenging;
-        vec![IrcCommand::AUTHENTICATE("PLAIN".into())]
-    }
-
-    fn observe(&mut self, message: &IrcMessage) -> Result<Vec<IrcCommand>, String> {
-        let mut send = Vec::new();
-        match (self.phase, &message.command) {
-            (SaslPhase::Challenging, IrcCommand::AUTHENTICATE(challenge)) if challenge == "+" => {
-                let payload = format!(
-                    "\0{}\0{}",
-                    self.credentials.username, self.credentials.password
-                );
-                let encoded = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
-                for chunk in encoded.as_bytes().chunks(400) {
-                    send.push(IrcCommand::AUTHENTICATE(
-                        std::str::from_utf8(chunk).expect("base64 is ASCII").into(),
-                    ));
-                }
-                if encoded.len() % 400 == 0 {
-                    send.push(IrcCommand::AUTHENTICATE("+".into()));
-                }
-                self.credentials.password.clear();
-                self.phase = SaslPhase::WaitingForResult;
-            }
-            (SaslPhase::WaitingForResult, IrcCommand::Response(Response::RPL_SASLSUCCESS, _)) => {
-                self.phase = SaslPhase::Complete;
-            }
-            (
-                _,
-                IrcCommand::Response(
-                    Response::ERR_NICKLOCKED
-                    | Response::ERR_SASLFAIL
-                    | Response::ERR_SASLTOOLONG
-                    | Response::ERR_SASLABORT
-                    | Response::ERR_SASLALREADY,
-                    _,
-                ),
-            ) => return Err(crate::SASL_FAILED.into()),
-            _ => {}
-        }
-        Ok(send)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SaslCredentials;
+    use crate::{SaslCredentials, SaslMechanism};
 
     fn line(text: &str) -> IrcMessage {
         text.parse().unwrap()
@@ -579,6 +541,7 @@ mod tests {
 
     fn credentials() -> SaslCredentials {
         SaslCredentials {
+            mechanism: Default::default(),
             username: "account".into(),
             password: "secret".into(),
         }
@@ -592,9 +555,9 @@ mod tests {
         let step = cap
             .observe(&line(":s CAP * LS :sasl server-time message-tags"))
             .unwrap();
-        assert_eq!(step, CapStep::default());
+        assert!(step.send.is_empty() && step.notes.is_empty());
         let step = cap.observe(&line(":s CAP me NEW :server-time")).unwrap();
-        assert_eq!(step, CapStep::default());
+        assert!(step.send.is_empty() && step.notes.is_empty());
         assert!(!cap.enabled(SERVER_TIME));
     }
 
@@ -671,12 +634,54 @@ mod tests {
     }
 
     #[test]
+    fn the_chosen_mechanism_must_be_offered_and_is_never_replaced() {
+        let with = |mechanism| SaslCredentials {
+            mechanism,
+            ..credentials()
+        };
+        for (mechanism, offered, name) in [
+            (
+                SaslMechanism::ScramSha1,
+                "sasl=PLAIN,SCRAM-SHA-256",
+                "SCRAM-SHA-1",
+            ),
+            (SaslMechanism::ScramSha256, "sasl=PLAIN", "SCRAM-SHA-256"),
+            (
+                SaslMechanism::ScramSha512,
+                "sasl=SCRAM-SHA-256",
+                "SCRAM-SHA-512",
+            ),
+            (SaslMechanism::Plain, "sasl=SCRAM-SHA-256", "PLAIN"),
+        ] {
+            let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(with(mechanism)), true);
+            cap.start();
+            cap.observe(&line(":s CAP * LS * :server-time")).unwrap();
+            let error = cap
+                .observe(&line(&format!(":s CAP * LS :{offered}")))
+                .unwrap_err();
+            assert_eq!(error, format!("Server does not offer SASL {name}."));
+        }
+        // The list may span lines, and names compare case-insensitively.
+        let mut cap = CapNegotiation::new(
+            Ircv3Options::default(),
+            Some(with(SaslMechanism::ScramSha256)),
+            true,
+        );
+        cap.start();
+        cap.observe(&line(":s CAP * LS * :server-time")).unwrap();
+        let step = cap
+            .observe(&line(":s CAP * LS :sasl=plain,scram-sha-256"))
+            .unwrap();
+        assert_eq!(sent(&step), ["CAP REQ sasl"]);
+    }
+
+    #[test]
     fn sasl_failures_remain_refusals() {
         let mut cap = CapNegotiation::new(options(true, true), Some(credentials()), true);
         cap.start();
         assert_eq!(
-            cap.observe(&line(":s CAP * LS :server-time")),
-            Err("Server does not offer SASL PLAIN.".into())
+            cap.observe(&line(":s CAP * LS :server-time")).unwrap_err(),
+            "Server does not offer SASL PLAIN."
         );
 
         let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
@@ -687,8 +692,8 @@ mod tests {
         cap.start();
         cap.observe(&line(":s CAP * LS :sasl")).unwrap();
         assert_eq!(
-            cap.observe(&line(":s CAP * NAK :sasl")),
-            Err("Server rejected SASL capability.".into())
+            cap.observe(&line(":s CAP * NAK :sasl")).unwrap_err(),
+            "Server rejected SASL capability."
         );
 
         let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
@@ -1019,6 +1024,7 @@ mod tests {
         let mut cap = CapNegotiation::new(
             Ircv3Options::default(),
             Some(SaslCredentials {
+                mechanism: Default::default(),
                 username: "a".into(),
                 password: "p".repeat(password_len),
             }),
