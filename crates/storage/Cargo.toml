@@ -17,6 +17,10 @@ uuid = { version = "1", features = ["v4"] }
 # Tells apart the long names that are cut to fit a file name.
 sha2 = "0.10"
 
+# Writes the macOS Keychain item with one call (see `KeyringEntries::write`).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

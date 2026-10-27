@@ -96,18 +96,72 @@ fn replace_keys_if_valid(config: &mut ConnectionConfig, keys: BTreeMap<String, S
     }
 }
 
+/// Gives the keys `config` holds the spelling the auto-join list now has, so
+/// that renaming `#a` to `#A` keeps the key without reading the store: the
+/// connection looks keys up by exact name.
+pub fn follow_channel_spelling(config: &mut ConnectionConfig) {
+    let renamed: Vec<(String, String)> = config
+        .channel_keys
+        .keys()
+        .filter(|held| !config.channels.contains(held))
+        .filter_map(|held| {
+            let now = config
+                .channels
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(held))?;
+            Some((held.clone(), now.clone()))
+        })
+        .collect();
+    for (held, now) in renamed {
+        if let Some(key) = config.channel_keys.remove(&held) {
+            config.channel_keys.insert(now, key);
+        }
+    }
+}
+
+/// Whether `profile`'s auto-join list gained a channel the store is read for,
+/// compared with the list `before`. Only then do keys need reading again.
+pub fn keyed_channel_added(before: &[String], profile: &ServerProfile) -> bool {
+    profile
+        .channels_to_read_keys_for()
+        .iter()
+        .any(|channel| !before.iter().any(|name| name.eq_ignore_ascii_case(channel)))
+}
+
+/// The saved keys of the channels `profile` notes as keyed. The store is not
+/// touched when there are none (#643).
 fn stored_channel_keys(
     profile: &ServerProfile,
     store: &CredentialStore,
 ) -> BTreeMap<String, String> {
     profile
-        .channels()
+        .channels_to_read_keys_for()
         .into_iter()
         .filter_map(|channel| {
             let key = store
                 .get(&SecretKey::channel_key(&profile.id, &channel))
                 .ok()??;
             valid_channel_key(key.expose()).then(|| (channel, key.expose().to_owned()))
+        })
+        .collect()
+}
+
+/// The saved key of each channel flagged as noted; the store is not read for
+/// the others.
+pub(crate) fn join_keys(
+    store: &CredentialStore,
+    profile: &str,
+    channels: Vec<(String, bool)>,
+) -> Vec<(String, Option<Secret>)> {
+    channels
+        .into_iter()
+        .map(|(channel, noted)| {
+            let saved = noted
+                .then(|| store.get(&SecretKey::channel_key(profile, &channel)))
+                .and_then(Result::ok)
+                .flatten()
+                .filter(|key| valid_channel_key(key.expose()));
+            (channel, saved)
         })
         .collect()
 }
@@ -128,22 +182,21 @@ impl ChatWindow {
             .ok_or_else(|| self.i18n.text("not_connected"))?;
         self.registered_connection(network)?;
         let store = secrets::store(cx);
-        let channels = channels.to_vec();
+        // The store is read only for channels noted as keyed (#643); a JOIN
+        // of any other channel that a key refuses asks for it (475).
+        let channels: Vec<(String, bool)> = channels
+            .iter()
+            .map(|channel| {
+                let noted = self
+                    .saved
+                    .profile(&profile)
+                    .is_some_and(|saved| saved.channel_key_noted(channel));
+                (channel.clone(), noted)
+            })
+            .collect();
         let reading = cx.background_spawn({
             let profile = profile.clone();
-            async move {
-                channels
-                    .into_iter()
-                    .map(|channel| {
-                        let saved = store
-                            .get(&SecretKey::channel_key(&profile, &channel))
-                            .ok()
-                            .flatten()
-                            .filter(|key| valid_channel_key(key.expose()));
-                        (channel, saved)
-                    })
-                    .collect::<Vec<_>>()
-            }
+            async move { join_keys(&store, &profile, channels) }
         });
         cx.spawn(async move |this, cx| {
             let keyed = reading.await;
@@ -216,9 +269,18 @@ impl ChatWindow {
             .iter()
             .map(|channel| KeyJoin::untyped(channel, config.channel_keys.contains_key(channel)))
             .collect();
+        let (profile_id, read, found) = (
+            session.profile_id.clone(),
+            config.channels.clone(),
+            config.channel_keys.clone(),
+        );
         for join in joins {
             track(session, join);
         }
+        // What the connection was configured with is what the store held for
+        // the channels it was read for: correct the notes to it, and finish
+        // the first scan of a file without notes.
+        self.correct_key_notes(&profile_id, &read, &found);
     }
 
     /// The connection ended: its JOINs will never be answered.
@@ -250,18 +312,21 @@ impl ChatWindow {
 
     /// The server refused our JOIN of `channel`. Only 475 for a JOIN we
     /// sent asks for a key; 471, 473, 474 and the like cannot be cured by one.
+    /// Returns whether the key dialog now asks for this channel, which is the
+    /// notice of the refusal: it is not logged as well, since the JOIN
+    /// usually works with the key typed.
     pub(crate) fn key_join_refused(
         &mut self,
         network: NetworkId,
         channel: &str,
         bad_key: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(join) = self.take_key_join(network, channel) else {
-            return;
+            return false;
         };
         if !bad_key {
-            return;
+            return false;
         }
         let rejected = join.typed.is_some();
         if let Some(index) = self.key_prompt_index(network, channel) {
@@ -269,7 +334,7 @@ impl ChatWindow {
             prompt.stale |= join.stale;
             prompt.rejected = rejected;
             prompt.focus_pending = true;
-            return;
+            return true;
         }
         let placeholder = self.i18n.text("key_prompt_placeholder");
         let input = cx.new(|cx| TextInput::new_field(&placeholder, "", true, cx));
@@ -289,6 +354,7 @@ impl ChatWindow {
         self.channel_menu = None;
         self.log_menu = None;
         cx.notify();
+        true
     }
 
     /// We are in `channel`: the JOIN worked, so the key typed for it may now
@@ -353,6 +419,9 @@ impl ChatWindow {
     ) {
         match result {
             Ok(()) => {
+                // The store holds the key now (or no longer): note it, so
+                // the next connection reads it (or leaves the store alone).
+                self.update_profile_note(profile, |p| p.note_channel_key(channel, key.is_some()));
                 // Only the connection the key was confirmed on is updated.
                 if self
                     .sessions
@@ -389,6 +458,10 @@ impl ChatWindow {
         profile: &ServerProfile,
         cx: &mut Context<Self>,
     ) {
+        let read = profile.channels_to_read_keys_for();
+        if read.is_empty() {
+            return;
+        }
         let store = secrets::store(cx);
         let profile = profile.clone();
         let reading = cx.background_spawn({
@@ -405,11 +478,65 @@ impl ChatWindow {
                     return;
                 }
                 if let Some(config) = session.active_config.as_mut() {
-                    replace_keys_if_valid(config, keys);
+                    replace_keys_if_valid(config, keys.clone());
                 }
+                this.correct_key_notes(&profile.id, &read, &keys);
             });
         })
         .detach();
+    }
+
+    /// Writes down in the settings file which of `read` (channels whose key
+    /// was looked up) have one in `found`, when that differs from the note;
+    /// the first scan of a file without notes ends here too. Failing to write
+    /// is harmless: the note is corrected at the next connection.
+    pub(crate) fn correct_key_notes(
+        &mut self,
+        profile_id: &str,
+        read: &[String],
+        found: &BTreeMap<String, String>,
+    ) {
+        self.update_profile_note(profile_id, |profile| {
+            let scanning = profile.channel_key_scan_pending();
+            if scanning {
+                profile.keyed_channels = Some(Vec::new());
+            }
+            let mut changed = scanning;
+            for channel in read {
+                if scanning || profile.channel_key_noted(channel) {
+                    let saved = found.keys().any(|name| name.eq_ignore_ascii_case(channel));
+                    changed |= profile.note_channel_key(channel, saved);
+                }
+            }
+            changed
+        });
+    }
+
+    /// Applies `change` to the profile in the settings file (and in the copy
+    /// this window keeps) and saves when it says it changed something.
+    fn update_profile_note(
+        &mut self,
+        profile_id: &str,
+        change: impl FnOnce(&mut ServerProfile) -> bool,
+    ) {
+        let mut settings = match crate::settings_file::load() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => self.saved.clone(),
+            // Saving over a file that cannot be read could destroy it.
+            Err(_) => return,
+        };
+        let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
+            return;
+        };
+        if !change(profile) {
+            return;
+        }
+        let notes = profile.keyed_channels.clone();
+        if crate::settings_file::save(&settings).is_ok()
+            && let Some(saved) = self.saved.servers.iter_mut().find(|p| p.id == profile_id)
+        {
+            saved.keyed_channels = notes;
+        }
     }
 
     /// Keeps the configuration reconnects reuse in step with the store.

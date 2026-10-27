@@ -1926,6 +1926,15 @@ both). Settings shows the saved state from the note, so opening it, picking or
 adding a server never reads the store (D068); a connection reads the store and
 corrects the note.
 
+The store is touched only when the settings file notes that a secret is saved,
+or when the user acts on it, because reading any entry can ask for the login
+password on macOS (#643). Saving settings, or connecting a server that has no
+noted channel key, therefore never reads it. For channel keys the note is
+`ServerProfile::keyed_channels`: connecting and the refresh after an auto-join
+change read only the noted channels, the refresh runs only when a noted channel
+was added to the list, and the note is corrected from what the store returned
+(D052).
+
 The system backend reads each store entry at most once per process and keeps
 the values in memory, so reconnecting or opening settings does not touch the
 store again; unchanged values are not written back, and failed reads are not
@@ -1939,6 +1948,12 @@ read (a missing item is looked up without a prompt), and setting or deleting a
 secret also removes its separate item. Other platforms keep one entry per
 secret, because Credential Manager limits entry size and Secret Service
 unlocks a whole collection at once.
+
+The vault is written with one `SecItemAdd`/`SecItemUpdate` call
+(`security_framework::passwords::set_generic_password`), not through `keyring`,
+whose `set_password` first looks the item up with its data and so asked once
+more: saving a password into an existing vault asks for at most the read and
+the write (#635).
 
 The backend is chosen explicitly (settings version 11, default System). Opening
 never falls back to another backend. The Credential Storage tab probes the
