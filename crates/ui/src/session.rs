@@ -14,6 +14,7 @@ use std::{
 use cayenchat_app::{Kind, Selection, own_avatar::OwnAvatar};
 use cayenchat_irc_core::{Connection, ConnectionConfig};
 use cayenchat_model::ConversationId;
+use cayenchat_storage::Secret;
 
 /// Newest transcript lines kept per server.
 pub const DIAGNOSTIC_LIMIT: usize = 1000;
@@ -39,6 +40,11 @@ pub struct ServerSession {
     /// The last connection sent a server password, so a reconnect that finds
     /// none in the credential store asks for it. Only the fact is kept.
     pub server_password_used: bool,
+    /// The unsaved server and SASL passwords the connection in progress
+    /// sent, kept until it registers or ends. A refusal of one password
+    /// sends the other again without asking for it (D068); every other end
+    /// drops them.
+    pub sent_secrets: (Option<Secret>, Option<Secret>),
     pub manual_disconnect: bool,
     /// The connection was ended just before the machine slept: no retry
     /// is scheduled, and the wake-up reconnects it unless the user took
@@ -108,6 +114,7 @@ impl ServerSession {
             irc: None,
             active_config: None,
             server_password_used: false,
+            sent_secrets: (None, None),
             manual_disconnect: false,
             asleep: false,
             retry_pending: false,
@@ -166,6 +173,7 @@ impl ServerSession {
     /// the flush.
     pub fn close(&mut self) -> Option<Connection> {
         self.manual_disconnect = true;
+        self.sent_secrets = (None, None);
         self.asleep = false;
         self.retry_pending = false;
         self.retry_token += 1;

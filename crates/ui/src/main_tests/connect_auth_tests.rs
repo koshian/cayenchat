@@ -352,3 +352,171 @@ fn a_reconnect_reads_only_the_passwords_noted_as_saved(cx: &mut TestAppContext) 
         stop(chat);
     });
 }
+
+/// Types into the SASL account field of the first dialog.
+fn type_account(chat: &mut ChatWindow, text: &str, cx: &mut gpui::Context<ChatWindow>) {
+    chat.credential_prompts[0]
+        .account
+        .as_ref()
+        .unwrap()
+        .update(cx, |input, cx| input.set_text(text, cx));
+}
+
+fn sent(chat: &ChatWindow) -> (Option<String>, Option<String>) {
+    let (server, sasl) = &chat.sessions[&NET].sent_secrets;
+    let text = |secret: &Option<Secret>| secret.as_ref().map(|s| s.expose().to_owned());
+    (text(server), text(sasl))
+}
+
+#[gpui::test]
+fn a_464_asks_only_for_the_server_password_and_sends_the_typed_sasl_password_again(
+    cx: &mut TestAppContext,
+) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, true, "typed", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert_eq!(
+            sent(chat),
+            (None, Some("typed".into())),
+            "kept while it runs"
+        );
+        stop(chat);
+    });
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(PASSWORD_REFUSED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        let prompt = &chat.credential_prompts[0];
+        assert!(prompt.server.is_some(), "the refused password is asked for");
+        assert!(prompt.sasl.is_none() && prompt.account.is_none());
+        assert_eq!(sent(chat), (None, None), "handed to the dialog");
+        type_password(chat, false, "server", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty());
+        assert_eq!(
+            sent(chat),
+            (Some("server".into()), Some("typed".into())),
+            "the SASL password went along"
+        );
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn a_sasl_failure_asks_for_the_account_and_password_and_sends_the_server_password_again(
+    cx: &mut TestAppContext,
+) {
+    let (chat, _store, cx) = open_chat(cx);
+    let _file =
+        crate::settings_file::TestFile::with(&chat.read_with(cx, |chat, _| chat.saved.clone()));
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.server_password_used = true;
+        session.sent_secrets = (Some(Secret::new("server")), Some(Secret::new("wrong")));
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(cayenchat_irc_core::SASL_FAILED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        let prompt = &chat.credential_prompts[0];
+        assert!(prompt.server.is_none(), "the server password is carried");
+        assert!(prompt.sasl.is_some());
+        assert_eq!(prompt.title_key(), "credential_prompt_sasl_rejected");
+        let account = prompt.account.as_ref().unwrap().read(cx).text();
+        assert_eq!(account, "acct", "the configured account is filled in");
+        // An empty account is refused.
+        type_account(chat, " ", cx);
+        type_password(chat, true, "right", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+        assert_eq!(chat.credential_prompts.len(), 1);
+        type_account(chat, "other", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty());
+        assert_eq!(sent(chat), (Some("server".into()), Some("right".into())));
+        assert_eq!(chat.saved.servers[0].sasl_username, "other");
+        let kept = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(kept.sasl.as_ref().unwrap().username, "other");
+        stop(chat);
+    });
+    let file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(
+        file.servers[0].sasl_username, "other",
+        "written to the profile"
+    );
+}
+
+#[gpui::test]
+fn sent_passwords_are_dropped_unless_a_refusal_uses_them(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    let hold = |chat: &mut ChatWindow| {
+        chat.sessions.get_mut(&NET).unwrap().sent_secrets =
+            (Some(Secret::new("a")), Some(Secret::new("b")));
+    };
+    for events in [
+        vec![Event::Registered {
+            nickname: "me".into(),
+        }],
+        vec![Event::Disconnected("lost".into())],
+        vec![Event::Refused("Server requires UTF-8.".into())],
+        vec![Event::Closed("bye".into())],
+    ] {
+        chat.update(cx, |chat, cx| {
+            hold(chat);
+            chat.handle_events(NET, events, Worker::Running, cx);
+            assert_eq!(sent(chat), (None, None));
+            chat.credential_prompts.clear();
+            stop(chat);
+        });
+        cx.run_until_parked();
+    }
+    chat.update(cx, |chat, _| {
+        hold(chat);
+        chat.sessions.get_mut(&NET).unwrap().close();
+        assert_eq!(sent(chat), (None, None), "a manual disconnect");
+    });
+}
+
+#[gpui::test]
+fn cancelling_the_dialog_drops_the_carried_password(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.sent_secrets = (None, Some(Secret::new("typed")));
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(PASSWORD_REFUSED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        assert!(chat.credential_prompts[0].sasl.is_none());
+        chat.cancel_credential_prompt(NET, window, cx);
+        assert!(chat.credential_prompts.is_empty());
+        assert_eq!(sent(chat), (None, None));
+        assert!(chat.sessions[&NET].manual_disconnect);
+    });
+}

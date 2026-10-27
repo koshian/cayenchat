@@ -1461,12 +1461,31 @@ D021 that stored typed passwords with Save of the server.
   refusal stays in the server log and nothing reconnects by itself, so only
   the user's answer tries again. The password that was refused is not read
   from the store again: the server password for 464, the SASL password for a
-  SASL failure. The line says what is wanted: "The password seems to be wrong"
-  when a password was sent and refused (saved or typed, either way; always for
-  SASL), "Enter the server password" when none was sent, and the general line
-  when the SASL password is wanted. The SASL account name is the one in the
-  settings; the dialog only shows it. Cancel is the usual Cancel. Other
-  refusals (UTF8ONLY, a ban, 465) keep the error notice.
+  SASL failure. Only the refused side is asked for: a 464 shows the server
+  password field alone, a SASL failure the SASL fields alone. The line says
+  what is wanted: "The password seems to be wrong" when a server password was
+  sent and refused (saved or typed), "Enter the server password" when none
+  was sent, "The SASL account or password seems to be wrong" for a SASL
+  failure, and the general line when only the SASL password is wanted before
+  a failure. Cancel is the usual Cancel. Other refusals (UTF8ONLY, a ban,
+  465) keep the error notice.
+- **The other password after a refusal (the one exception to "no unsaved
+  password is kept").** The other side is read from the store if it is noted
+  as saved. If it is not saved, the value the refused connection sent is
+  used, so the user is not asked again for what was already typed.
+  `ServerSession::sent_secrets` holds the unsaved server and SASL passwords
+  a connection sends, from its start until it registers or ends. A
+  refusal hands them to the dialog's configuration; every other end drops
+  them: registration, a disconnect or refusal that is not answered by the
+  dialog, a manual disconnect, and Cancel (which also clears the dialog's
+  configuration). Ordinary reconnects still start from `forget_secrets`.
+- **The SASL account.** Every dialog with a SASL password field (before a
+  failure too) also has an account field, filled with the profile's
+  `sasl_username` and checked like the settings window's (the connection
+  configuration's validation). The account is no secret: the corrected name
+  is written to the profile's `sasl_username` and to the session's
+  configuration at once when the dialog is answered, and an open settings
+  window takes it over unless it edited the field itself.
 
 ## D070 — Showing settings never reads the credential store; the upload token has a note (#642)
 

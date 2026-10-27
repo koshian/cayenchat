@@ -1972,7 +1972,11 @@ A connection never keeps an unsaved password (D068). `ServerSession::active_conf
 which reconnects start from, is stored with `ConnectionConfig::forget_secrets`;
 a reconnect, a launch connection and a connection refused with 464 or by SASL read the
 store when the connection starts (not the password that was refused) and ask for what is
-missing in `connect_auth`'s dialog, which then replaces the error notice.
+missing in `connect_auth`'s dialog, which then replaces the error notice. The dialog asks
+only for the refused side (the SASL side with an editable account name, written to the
+profile's `sasl_username`). The one exception to keeping no unsaved password: the unsaved
+passwords a connection sent are held in `ServerSession::sent_secrets` until it registers or
+ends, so a refusal can send the other one again; every other end and Cancel drop them.
 The IRC library keeps its copy of the server password in its own `Config` for
 as long as the connection lives and cannot be wiped from outside; the worker keeps
 no copy of its own beyond the `PASS` command it sends, and the SASL handshake

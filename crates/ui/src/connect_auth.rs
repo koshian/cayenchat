@@ -72,6 +72,28 @@ pub(crate) fn fill(
     }
 }
 
+/// The passwords `config` sends that the profile does not note as saved:
+/// the ones a refusal of the other password would otherwise lose.
+pub(crate) fn unsaved_secrets(
+    profile: Option<&ServerProfile>,
+    config: &ConnectionConfig,
+) -> (Option<Secret>, Option<Secret>) {
+    let server = config
+        .server_password
+        .as_deref()
+        .filter(|password| !password.is_empty())
+        .filter(|_| !profile.is_some_and(ServerProfile::server_password_saved))
+        .map(Secret::new);
+    let sasl = config
+        .sasl
+        .as_ref()
+        .map(|credentials| credentials.password.as_str())
+        .filter(|password| !password.is_empty())
+        .filter(|_| !profile.is_some_and(ServerProfile::sasl_password_saved))
+        .map(Secret::new);
+    (server, sasl)
+}
+
 /// Runs `check` on `config` as if the SASL password it lacks were there, so
 /// a validation that needs a complete configuration can run before the
 /// dialog. The placeholder is removed again.
@@ -147,17 +169,24 @@ pub(crate) struct CredentialPrompt {
     resume: Resume,
     pub(crate) server: Option<PasswordField>,
     pub(crate) sasl: Option<PasswordField>,
+    /// The SASL account, beside the SASL password, to be corrected with it.
+    pub(crate) account: Option<Entity<TextInput>>,
     /// The server refused the password given before.
     pub(crate) rejected: bool,
+    /// SASL authentication failed: the account or its password is wrong.
+    sasl_failed: bool,
     pub(crate) error: Option<String>,
     focus_pending: bool,
 }
 
 impl CredentialPrompt {
-    /// The line saying what is wanted: a refused password, the server
-    /// password (alone or beside the SASL one), or passwords in general.
+    /// The line saying what is wanted: a refused password or SASL login, the
+    /// server password (alone or beside the SASL one), or passwords in
+    /// general.
     pub(crate) fn title_key(&self) -> &'static str {
-        if self.rejected {
+        if self.sasl_failed {
+            "credential_prompt_sasl_rejected"
+        } else if self.rejected {
             "credential_prompt_rejected"
         } else if self.server.is_some() {
             "credential_prompt_server"
@@ -166,11 +195,13 @@ impl CredentialPrompt {
         }
     }
 
+    /// The fields in the order they are filled in.
     pub(crate) fn inputs(&self) -> impl Iterator<Item = &Entity<TextInput>> {
         self.server
             .iter()
-            .chain(self.sasl.iter())
             .map(|field| &field.input)
+            .chain(self.account.iter())
+            .chain(self.sasl.iter().map(|field| &field.input))
     }
 }
 
@@ -186,7 +217,7 @@ impl ChatWindow {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         if missing.any() {
-            self.open_credential_prompt(network, config, Resume::Fresh, missing, false, cx);
+            self.open_credential_prompt(network, config, Resume::Fresh, missing, None, cx);
             return Ok(());
         }
         self.apply_connection(network, config, window, cx)
@@ -305,9 +336,8 @@ impl ChatWindow {
                 .is_some_and(|session| session.server_password_used);
         let missing = fill(&mut config, server.as_ref(), sasl.as_ref(), server_needed);
         if missing.any() {
-            let rejected = refused.is_some_and(Refusal::rejected);
             let resume = Resume::Reconnect { announce };
-            self.open_credential_prompt(network, config, resume, missing, rejected, cx);
+            self.open_credential_prompt(network, config, resume, missing, refused, cx);
         } else {
             self.start_reconnect_with(network, config, announce, cx);
         }
@@ -316,13 +346,27 @@ impl ChatWindow {
     /// The server refused registration with 464 or SASL failed. The dialog
     /// is the notice: the password is asked for, so a server that wants one
     /// need not be told in advance. The refusal stays in the server log.
+    ///
+    /// Only the refused password is asked for. The other one is read from
+    /// the store if it is saved there; an unsaved one is the value the
+    /// refused connection sent, kept until now and handed on to the dialog's
+    /// configuration, which drops it when the dialog closes.
     pub(crate) fn password_refused(
         &mut self,
         network: NetworkId,
         refusal: Refusal,
         cx: &mut Context<Self>,
     ) {
-        if let Some(config) = self.reconnect_config(network) {
+        let (server, sasl) = self
+            .sessions
+            .get_mut(&network)
+            .map(|session| std::mem::take(&mut session.sent_secrets))
+            .unwrap_or_default();
+        if let Some(mut config) = self.reconnect_config(network) {
+            match refusal {
+                Refusal::Server { .. } => apply_secrets(&mut config, None, sasl.as_ref()),
+                Refusal::Sasl => apply_secrets(&mut config, server.as_ref(), None),
+            }
             self.reconnect_with_stored_secrets(network, config, Some(refusal), false, cx);
         }
     }
@@ -333,7 +377,7 @@ impl ChatWindow {
         config: ConnectionConfig,
         resume: Resume,
         missing: Missing,
-        rejected: bool,
+        refused: Option<Refusal>,
         cx: &mut Context<Self>,
     ) {
         self.credential_prompts
@@ -348,13 +392,32 @@ impl ChatWindow {
         let sasl = missing
             .sasl
             .then(|| field(&self.i18n.text("sasl_password"), cx));
+        // The account is shown with its configured name, to be corrected
+        // with the password (it is no secret).
+        let account = missing.sasl.then(|| {
+            let name = config
+                .sasl
+                .as_ref()
+                .map(|credentials| credentials.username.clone())
+                .unwrap_or_default();
+            cx.new(|cx| {
+                TextInput::new_field(
+                    &self.i18n.text("sasl_account_placeholder"),
+                    &name,
+                    false,
+                    cx,
+                )
+            })
+        });
         self.credential_prompts.push(CredentialPrompt {
             network,
             config,
             resume,
             server,
             sasl,
-            rejected,
+            account,
+            rejected: refused.is_some_and(Refusal::rejected),
+            sasl_failed: refused == Some(Refusal::Sasl),
             error: None,
             focus_pending: true,
         });
@@ -395,12 +458,18 @@ impl ChatWindow {
         if let Some(prompt) = self
             .credential_prompt_index(network)
             .map(|index| &self.credential_prompts[index])
-            && let [first, second] = prompt.inputs().collect::<Vec<_>>()[..]
-            && first.read(cx).focus_handle(cx).is_focused(window)
-            && second.read(cx).text().is_empty()
         {
-            window.focus(&second.focus_handle(cx));
-            return;
+            let inputs: Vec<_> = prompt.inputs().collect();
+            if let Some(at) = inputs
+                .iter()
+                .position(|input| input.read(cx).focus_handle(cx).is_focused(window))
+                && let Some(next) = inputs[at + 1..]
+                    .iter()
+                    .find(|input| input.read(cx).text().is_empty())
+            {
+                window.focus(&next.focus_handle(cx));
+                return;
+            }
         }
         self.submit_credential_prompt(network, window, cx);
     }
@@ -424,10 +493,15 @@ impl ChatWindow {
                 .map(|field| Secret::new(field.input.read(cx).text()))
         };
         let (server, sasl) = (typed(&prompt.server), typed(&prompt.sasl));
+        let account = prompt
+            .account
+            .as_ref()
+            .map(|input| input.read(cx).text().trim().to_owned());
         if [&server, &sasl]
             .into_iter()
             .flatten()
             .any(|secret| secret.is_empty())
+            || account.as_ref().is_some_and(String::is_empty)
         {
             self.credential_prompts[index].error =
                 Some(self.i18n.text("credential_prompt_required"));
@@ -440,6 +514,9 @@ impl ChatWindow {
         // by the reconnect that follows; here the fields cover the rest.
         let mut config = prompt.config.clone();
         apply_secrets(&mut config, server.as_ref(), sasl.as_ref());
+        if let (Some(account), Some(credentials)) = (&account, config.sasl.as_mut()) {
+            credentials.username.clone_from(account);
+        }
         let remember = |field: &Option<PasswordField>| field.as_ref().is_some_and(|f| f.remember);
         let saves = (
             remember(&prompt.server).then(|| server.clone()).flatten(),
@@ -454,6 +531,9 @@ impl ChatWindow {
             return;
         }
         self.close_credential_prompt(index, window, cx);
+        if let Some(account) = &account {
+            self.save_sasl_account(network, account);
+        }
         self.save_prompted_secrets(network, saves, cx);
         match resume {
             Resume::Fresh => {
@@ -463,6 +543,32 @@ impl ChatWindow {
             }
             Resume::Reconnect { announce } => {
                 self.start_reconnect_with(network, config, announce, cx);
+            }
+        }
+    }
+
+    /// The SASL account corrected in the dialog is written to the profile
+    /// (and the copy reconnects start from), as if it had been changed in the
+    /// settings window, which follows the file. It is no secret.
+    fn save_sasl_account(&mut self, network: NetworkId, account: &str) {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return;
+        };
+        if let Some(credentials) = session
+            .active_config
+            .as_mut()
+            .and_then(|config| config.sasl.as_mut())
+        {
+            credentials.username = account.to_owned();
+        }
+        let mut settings = self.saved.clone();
+        let Some(profile) = settings.profile_mut(&session.profile_id) else {
+            return;
+        };
+        if profile.sasl_username != account {
+            profile.sasl_username = account.to_owned();
+            if settings_file::save(&settings).is_ok() {
+                self.saved = settings;
             }
         }
     }
@@ -542,8 +648,10 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let prompt = self.credential_prompts.remove(index);
-        // What was typed does not stay in the field.
+        let mut prompt = self.credential_prompts.remove(index);
+        // Neither what was typed nor a password carried over from the
+        // refused connection stays.
+        prompt.config.forget_secrets();
         for input in prompt.inputs() {
             input.update(cx, |input, cx| input.set_text("", cx));
         }
@@ -575,9 +683,13 @@ impl ChatWindow {
         for prompt in &mut self.credential_prompts {
             prompt.focus_pending = false;
         }
+        // The first field still empty gets the focus: the account is filled in.
         if let Some(index) = pending
             && !typing
-            && let Some(input) = self.credential_prompts[index].inputs().next()
+            && let Some(input) = self.credential_prompts[index]
+                .inputs()
+                .find(|input| input.read(cx).text().is_empty())
+                .or_else(|| self.credential_prompts[index].inputs().next())
         {
             window.focus(&input.focus_handle(cx));
         }
@@ -604,26 +716,16 @@ impl ChatWindow {
                 ),
             ] {
                 let Some(field) = field else { continue };
-                let heading = if slot == 1 {
-                    let account = prompt
-                        .config
-                        .sasl
-                        .as_ref()
-                        .map(|credentials| credentials.username.as_str())
-                        .unwrap_or_default();
-                    self.i18n.format(
-                        "credential_prompt_sasl",
-                        &[(
-                            "account",
-                            &cayenchat_model::display::neutralize_bidi(account),
-                        )],
-                    )
-                } else {
-                    label
-                };
+                if slot == 1
+                    && let Some(account) = &prompt.account
+                {
+                    fields = fields
+                        .child(div().child(self.i18n.text("credential_prompt_account")))
+                        .child(account.clone());
+                }
                 let remember = field.remember;
                 fields = fields
-                    .child(div().child(heading))
+                    .child(div().child(label))
                     .child(field.input.clone())
                     .child(
                         div()

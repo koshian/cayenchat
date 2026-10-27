@@ -2252,6 +2252,8 @@ impl ChatWindow {
         kept.forget_secrets();
         session.active_config = Some(kept);
         session.server_password_used = config.server_password.is_some();
+        session.sent_secrets =
+            connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.connection_starting(&config);
         session.diagnostics.clear();
         session.pending_whois.clear();
@@ -2523,6 +2525,8 @@ impl ChatWindow {
             return;
         };
         session.server_password_used = config.server_password.is_some();
+        session.sent_secrets =
+            connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.retry_pending = false;
         session.asleep = false;
         if let Some(connection) = session.irc.take() {
@@ -4846,6 +4850,9 @@ impl ChatWindow {
                     // Joins answered on a new connection are not typed ones.
                     if let Some(session) = self.sessions.get_mut(&network) {
                         session.join_switch = None;
+                        // Registered: no refusal can follow, so the sent
+                        // passwords are not needed again.
+                        session.sent_secrets = (None, None);
                     }
                     self.nick_prompts.retain(|prompt| prompt.network != network);
                     self.start_key_tracking(network);
@@ -4918,6 +4925,10 @@ impl ChatWindow {
             if let Some(session) = self.sessions.get_mut(&network) {
                 session.irc = None;
                 session.join_switch = None;
+                // Only a refused password uses them again (taken there).
+                if password_refusal.is_none() {
+                    session.sent_secrets = (None, None);
+                }
             }
             self.end_key_tracking(network);
             if let Some(refusal) = password_refusal {

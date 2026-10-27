@@ -1383,6 +1383,36 @@ impl SettingsWindow {
         };
         follow_password_notes(&mut self.saved.servers, &file.servers);
         follow_password_notes(&mut self.settings.values.servers, &file.servers);
+        // A SASL account corrected in the connection dialog (D068) is taken
+        // over unless this window edited it too.
+        let shown = self
+            .settings
+            .values
+            .selected_profile()
+            .map(|p| p.id.clone());
+        for theirs in &file.servers {
+            let Some(old) = self
+                .saved
+                .profile(&theirs.id)
+                .map(|profile| profile.sasl_username.clone())
+                .filter(|old| *old != theirs.sasl_username)
+            else {
+                continue;
+            };
+            if let Some(profile) = self.saved.profile_mut(&theirs.id) {
+                profile.sasl_username.clone_from(&theirs.sasl_username);
+            }
+            if let Some(profile) = self.settings.values.profile_mut(&theirs.id)
+                && profile.sasl_username == old
+            {
+                profile.sasl_username.clone_from(&theirs.sasl_username);
+                if shown.as_deref() == Some(theirs.id.as_str()) {
+                    self.settings
+                        .sasl_username
+                        .update(cx, |field, cx| field.set_text(&theirs.sasl_username, cx));
+                }
+            }
+        }
         if let Some(profile) = self.settings.values.selected_profile() {
             let (server, sasl) = saved_passwords(profile);
             for (which, saved) in [(Credential::Server, server), (Credential::Sasl, sasl)] {
