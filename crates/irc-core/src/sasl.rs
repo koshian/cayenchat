@@ -112,16 +112,16 @@ impl SaslHandshake {
         let mut out = Out::default();
         match &message.command {
             IrcCommand::AUTHENTICATE(chunk) => {
-                if let Some(payload) = self.receive(chunk)? {
-                    if let Err(error) = self.handle(&payload, &mut out) {
-                        // A refusal carries the same reason as a 904, so the
-                        // UI asks for the account and password again.
-                        return Err(if error == crate::scram::REJECTED {
-                            crate::SASL_FAILED.into()
-                        } else {
-                            error
-                        });
-                    }
+                if let Some(payload) = self.receive(chunk)?
+                    && let Err(error) = self.handle(&payload, &mut out)
+                {
+                    // A refusal carries the same reason as a 904, so the
+                    // UI asks for the account and password again.
+                    return Err(if error == crate::scram::REJECTED {
+                        crate::SASL_FAILED.into()
+                    } else {
+                        error
+                    });
                 }
             }
             IrcCommand::Response(Response::RPL_SASLSUCCESS, _) => match self.phase {
