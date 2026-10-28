@@ -117,7 +117,7 @@ fn a_double_click_scrolls_to_the_line_and_flashes_it_without_following(cx: &mut 
     draw(cx);
     chat.read_with(cx, |chat, _| {
         assert_eq!(chat.state.selected_channel().map(|c| c.id), Some(b));
-        assert_eq!(chat.reveal_flash, Some((b, sequence)));
+        assert!(matches!(chat.reveal_flash, Some((id, s, _)) if id == b && s == sequence));
         let list = &chat.main_lists[&chat.state.selection()];
         assert_eq!(
             list.message_rows_above(list.state.logical_scroll_top().item_ix),

@@ -1290,7 +1290,13 @@ line only, one conversation lookup and one `VecDeque` push (the lookup is
 the same one `note_attention` does for the newest line). A trimmed log scans
 the queue (at most 200 entries) once per trim, and removing a network or a
 private conversation filters it. No timer, thread or per-frame work was
-added; the 2-second highlight is a single one-shot timer started by a jump.
+added; the highlight is one task started by a jump: it sleeps 1 s, then repaints
+every 16 ms for the 0.8 s fade and stops (#665). Each repaint invalidates
+only the cached main log pane (not the window, so not the all-log, members or
+channel tree), and only while that conversation is selected; the fade itself
+adds no per-row cost beyond one colour mix for the emphasized line. The
+baseline does not exercise a jump, so no before/after table applies; the
+repaint scope is the measure.
 Same Linux container, release build, headless
 `perf_baseline::perf_baseline` (10 channels × 2,000 lines), three runs each
 alternated, medians in µs; parent `f722f6f` built from `git archive` in a
