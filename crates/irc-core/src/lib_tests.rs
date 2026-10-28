@@ -7682,7 +7682,7 @@ fn sasl_ecdsa_logs_in_with_a_verifiable_signature_and_leaks_nothing() {
 #[test]
 fn sasl_ecdsa_refusal_is_a_sasl_failure_without_leaks() {
     let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::Refuses);
-    assert_eq!(refusal.as_deref(), Some(SASL_FAILED), "{reported}");
+    assert_eq!(refusal.as_deref(), Some(SASL_KEY_REFUSED), "{reported}");
     assert!(reported.contains("refused ECDSA-NIST256P-CHALLENGE with 904"));
     assert_no_ecdsa_secret(&reported, &secrets);
 }

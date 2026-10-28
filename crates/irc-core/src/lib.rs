@@ -4581,6 +4581,11 @@ pub const PASSWORD_REFUSED: &str = "Server rejected the password (464).";
 /// 904 and the like), so a caller can ask for the SASL password again.
 pub const SASL_FAILED: &str = "SASL authentication failed.";
 
+/// The reason of [`Event::Refused`] when the server refused the SASL key of
+/// `ECDSA-NIST256P-CHALLENGE`. There is no password to ask for again, so
+/// this is shown as an error and the connection is not retried.
+pub const SASL_KEY_REFUSED: &str = "SASL authentication failed: the server refused the key. Check that the key is registered for this account.";
+
 /// Registration replies after which the server closes the link and an
 /// identical reconnect would be refused again.
 fn registration_refusal(message: &IrcMessage) -> Option<String> {

@@ -198,7 +198,12 @@ impl SaslHandshake {
                     self.stage(),
                     safe_text(args.last().map_or("", String::as_str))
                 ));
-                return Err(crate::SASL_FAILED.into());
+                return Err(if self.mechanism == SaslMechanism::EcdsaNist256pChallenge {
+                    crate::SASL_KEY_REFUSED
+                } else {
+                    crate::SASL_FAILED
+                }
+                .into());
             }
             _ => {}
         }

@@ -11,7 +11,7 @@ use crate::{
     settings_theme, shortcut_settings, theme,
 };
 use cayenchat_app::{attachments::AttachmentFlow, notifications};
-use cayenchat_irc_core::ConnectionConfig;
+use cayenchat_irc_core::{ConnectionConfig, KeyError};
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
     DarkColors, Language, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey,
@@ -78,6 +78,10 @@ pub(crate) struct SettingsForm {
     /// its box is checked (#635).
     remember_server_password: bool,
     remember_sasl_password: bool,
+    /// The public key of the shown server's SASL key, once the user made,
+    /// loaded or asked for it. It is no secret; the private key is never in
+    /// the form.
+    sasl_public_key: Option<String>,
     /// Typed passwords of servers not being shown, by server ID. They are
     /// used by Connect, and stored at a save only where the box is checked;
     /// closing the window drops them.
@@ -214,6 +218,7 @@ impl SettingsForm {
             changing_sasl_password: false,
             remember_server_password: false,
             remember_sasl_password: false,
+            sasl_public_key: None,
             drafts: HashMap::new(),
             member_list_background: field(
                 "#FFFFFF",
@@ -644,7 +649,9 @@ impl SettingsForm {
             typed(&self.server_password, Credential::Server)
                 .or(saved_server)
                 .as_ref(),
+            // A key is never typed; what the password field holds is not it.
             typed(&self.sasl_password, Credential::Sasl)
+                .filter(|_| !profile.sasl_mechanism.uses_key())
                 .or(saved_sasl)
                 .as_ref(),
             false,
@@ -789,6 +796,7 @@ impl SettingsForm {
         self.saved_sasl_password = saved_sasl;
         self.changing_server_password = false;
         self.changing_sasl_password = false;
+        self.sasl_public_key = None;
         let draft = self.drafts.get(&profile.id).cloned().unwrap_or_default();
         // An unfinished change of a saved password is dropped on a switch.
         let (draft_server, draft_sasl) = (
@@ -832,6 +840,32 @@ impl SettingsForm {
     }
 }
 
+/// Why a key file could not be used.
+enum KeyFileError {
+    /// The file was read but is not an unencrypted P-256 PEM key.
+    Key(KeyError),
+    /// The file could not be read (the system's wording).
+    Io(String),
+}
+
+/// The most of a key file that is read; a P-256 PEM key is a few hundred
+/// bytes, so anything near this size is not one.
+const MAX_KEY_FILE_BYTES: u64 = 16 * 1024;
+
+/// Reads `path` as an unencrypted PKCS#8 or SEC1 PEM key. Only the first
+/// [`MAX_KEY_FILE_BYTES`] + 1 bytes are read, so a huge file is refused
+/// without being loaded.
+fn read_key_file(path: &std::path::Path) -> Result<cayenchat_irc_core::SecretText, KeyFileError> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|error| KeyFileError::Io(error.to_string()))?;
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    file.take(MAX_KEY_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| KeyFileError::Io(error.to_string()))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| KeyFileError::Key(KeyError::NotPem))?;
+    cayenchat_irc_core::import_sasl_key_pem(text).map_err(KeyFileError::Key)
+}
+
 /// Takes over a flag the settings file holds, unless the form value differs
 /// from the last saved one: that is an edit of this window, which a save
 /// right after must not lose.
@@ -873,6 +907,7 @@ fn follow_password_notes(servers: &mut [ServerProfile], file: &[ServerProfile]) 
         if let Some(theirs) = file.iter().find(|p| p.id == server.id) {
             server.server_saved = theirs.server_saved;
             server.sasl_saved = theirs.sasl_saved;
+            server.sasl_key_saved = theirs.sasl_key_saved;
             server.remember_passwords = theirs.remember_passwords;
         }
     }
@@ -2256,6 +2291,278 @@ impl SettingsWindow {
         self.credential_done(which, &id, result, false, cx);
     }
 
+    /// The saved server the key buttons act on. A server that is not saved
+    /// yet may never be, which would leave its key behind.
+    fn key_profile(&mut self, cx: &mut Context<Self>) -> Option<ServerProfile> {
+        let profile = self
+            .settings
+            .values
+            .selected_profile()
+            .filter(|profile| self.saved.profile(&profile.id).is_some())
+            .cloned();
+        if profile.is_none() {
+            self.feedback = Some(self.i18n.text("sasl_key_server_unsaved"));
+            cx.notify();
+        }
+        profile
+    }
+
+    /// The text for a key that could not be made or read.
+    fn key_error_text(&self, error: KeyError) -> String {
+        self.i18n.text(match error {
+            KeyError::Random => "sasl_key_error_random",
+            KeyError::NotPem => "sasl_key_error_not_pem",
+            KeyError::Encrypted => "sasl_key_error_encrypted",
+            KeyError::OpenSsh => "sasl_key_error_openssh",
+            KeyError::Rsa => "sasl_key_error_rsa",
+            KeyError::PublicOnly => "sasl_key_error_public_only",
+            KeyError::UnsupportedBlock => "sasl_key_error_unsupported",
+            KeyError::NotP256 => "sasl_key_error_not_p256",
+            KeyError::Stored => "sasl_key_error_stored",
+        })
+    }
+
+    /// Generate: a new key from the operating system's random numbers.
+    fn generate_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.feedback = None;
+        match cayenchat_irc_core::generate_sasl_key() {
+            Ok(secret) => self.offer_key(secret, window, cx),
+            Err(error) => {
+                self.feedback = Some(self.key_error_text(error));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Import: an unencrypted PEM file chosen by the user. The file is read
+    /// off the UI thread and only its first 16 KiB; what it holds is never
+    /// shown, only why it was refused.
+    fn import_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.feedback = None;
+        if self.key_profile(cx).is_none() {
+            return;
+        }
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(self.i18n.text("sasl_key_import_prompt").into()),
+            filter: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else {
+                return;
+            };
+            let result = cx
+                .background_spawn(async move { read_key_file(&path) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| this.imported_key(result, window, cx));
+        })
+        .detach();
+    }
+
+    fn imported_key(
+        &mut self,
+        result: Result<cayenchat_irc_core::SecretText, KeyFileError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(secret) => self.offer_key(secret, window, cx),
+            Err(KeyFileError::Key(error)) => {
+                self.feedback = Some(self.key_error_text(error));
+                cx.notify();
+            }
+            Err(KeyFileError::Io(error)) => {
+                self.feedback = Some(
+                    self.i18n
+                        .format("sasl_key_file_failed", &[("error", &error)]),
+                );
+                cx.notify();
+            }
+        }
+    }
+
+    /// Stores a new key for the shown server. Replacing a key asks first (the
+    /// old one cannot be got back, and its public key is registered with the
+    /// network); so does the local file as storage, as for a password.
+    fn offer_key(
+        &mut self,
+        secret: cayenchat_irc_core::SecretText,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self.key_profile(cx) else {
+            return;
+        };
+        let answer = if profile.sasl_key_saved {
+            self.confirm(
+                window,
+                "sasl_key_replace_title",
+                "sasl_key_replace_detail",
+                "sasl_key_replace_confirm",
+                cx,
+            )
+        } else if secrets::store(cx).kind() != CredentialBackendKind::System {
+            self.ask_plaintext_storage(window, cx)
+        } else {
+            self.store_key(&profile.id, &secret, cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| this.store_key(&profile.id, &secret, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn confirm(
+        &self,
+        window: &mut Window,
+        title: &str,
+        detail: &str,
+        confirm: &str,
+        cx: &mut Context<Self>,
+    ) -> futures_channel::oneshot::Receiver<usize> {
+        window.os_prompt(
+            PromptLevel::Warning,
+            &self.i18n.text(title),
+            Some(&self.i18n.text(detail)),
+            &[
+                PromptButton::ok(self.i18n.text(confirm)),
+                PromptButton::cancel(self.i18n.text("cancel")),
+            ],
+            cx,
+        )
+    }
+
+    pub(crate) fn store_key(
+        &mut self,
+        profile: &str,
+        secret: &cayenchat_irc_core::SecretText,
+        cx: &mut Context<Self>,
+    ) {
+        let result =
+            secrets::store(cx).set(&SecretKey::sasl_key(profile), &Secret::new(secret.as_str()));
+        let public = cayenchat_irc_core::sasl_public_key(secret).ok();
+        if self.key_done(profile, result, true, cx)
+            && self.settings.values.selected_server == profile
+        {
+            self.settings.sasl_public_key = public;
+        }
+        cx.notify();
+    }
+
+    /// Delete: removes the key from the store, after a confirmation.
+    fn delete_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.feedback = None;
+        let Some(profile) = self.key_profile(cx) else {
+            return;
+        };
+        let answer = self.confirm(
+            window,
+            "sasl_key_delete_title",
+            "sasl_key_delete_detail",
+            "sasl_key_delete_confirm",
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                let _ = this.update(cx, |this, cx| {
+                    let result = secrets::store(cx).delete(&SecretKey::sasl_key(&profile.id));
+                    this.key_done(&profile.id, result, false, cx);
+                    if this.settings.values.selected_server == profile.id {
+                        this.settings.sasl_public_key = None;
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Notes the outcome of a store write or delete of a key like a
+    /// password's: in the form, the saved settings and the file, so showing
+    /// the server later needs no read of the store.
+    fn key_done(
+        &mut self,
+        profile: &str,
+        result: Result<(), cayenchat_storage::CredentialError>,
+        saved: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let succeeded = result.is_ok();
+        match result {
+            Ok(()) => {
+                if let Some(server) = self.settings.values.profile_mut(profile) {
+                    server.sasl_key_saved = saved;
+                }
+                if let Some(server) = self.saved.profile_mut(profile) {
+                    server.sasl_key_saved = saved;
+                }
+                if let Ok(Some(mut file)) = settings_file::load()
+                    && let Some(server) = file.profile_mut(profile)
+                {
+                    server.sasl_key_saved = saved;
+                    let _ = settings_file::save(&file);
+                }
+                self.schedule_autosave(cx);
+                self.feedback = Some(self.i18n.text(if saved {
+                    "sasl_key_saved_done"
+                } else {
+                    "sasl_key_deleted_done"
+                }));
+            }
+            Err(error) => {
+                self.feedback = Some(self.i18n.format(
+                    if saved {
+                        "sasl_key_save_failed"
+                    } else {
+                        "sasl_key_delete_failed"
+                    },
+                    &[("error", &secrets::error_text(&self.i18n, &error))],
+                ));
+            }
+        }
+        succeeded
+    }
+
+    /// Reads the stored key (the user asked) and shows its public key.
+    fn show_public_key(&mut self, cx: &mut Context<Self>) {
+        self.feedback = None;
+        let Some(profile) = self.key_profile(cx) else {
+            return;
+        };
+        let stored = secrets::store(cx).get(&SecretKey::sasl_key(&profile.id));
+        let public = match stored {
+            Ok(Some(secret)) => cayenchat_irc_core::sasl_public_key(secret.expose())
+                .map_err(|error| self.key_error_text(error)),
+            Ok(None) => Err(self.i18n.text("sasl_key_missing")),
+            Err(error) => Err(self.i18n.format(
+                "sasl_key_read_failed",
+                &[("error", &secrets::error_text(&self.i18n, &error))],
+            )),
+        };
+        match public {
+            Ok(public) => self.settings.sasl_public_key = Some(public),
+            Err(text) => self.feedback = Some(text),
+        }
+        cx.notify();
+    }
+
+    /// Copy: the public key only.
+    fn copy_public_key(&mut self, cx: &mut Context<Self>) {
+        if let Some(public) = self.settings.sasl_public_key.clone() {
+            cx.write_to_clipboard(ClipboardItem::new_string(public));
+            self.feedback = Some(self.i18n.text("sasl_key_copied"));
+            cx.notify();
+        }
+    }
+
     /// Sending PASS without TLS is never turned on without a confirmation.
     fn toggle_plaintext_pass(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(profile) = self.settings.values.selected_profile_mut() else {
@@ -3289,7 +3596,11 @@ impl SettingsWindow {
                     &self.i18n.text("sasl_account"),
                     self.settings.sasl_username.clone(),
                 ))
-                .child(self.credential_row(Credential::Sasl, "sasl_password", cx))
+                .child(if profile.sasl_mechanism.uses_key() {
+                    self.sasl_key_section(profile.sasl_key_saved, cx)
+                } else {
+                    self.credential_row(Credential::Sasl, "sasl_password", cx)
+                })
             })
             .child(settings_field(
                 &self.i18n.text("nickname"),
@@ -3546,6 +3857,79 @@ impl SettingsWindow {
                     ),
             )
         })
+    }
+
+    /// The key management that takes the place of the password row for
+    /// ECDSA-NIST256P-CHALLENGE: make, load, show and delete. The private key
+    /// is never shown, copied or exported.
+    fn sasl_key_section(&self, saved: bool, cx: &mut Context<Self>) -> Div {
+        let button = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
+            settings_theme::button(id, false, cx).child(self.i18n.text(label))
+        };
+        let mut actions = div().flex().flex_wrap().items_center().gap_2().child(
+            button("sasl-key-generate", "sasl_key_generate", cx)
+                .on_click(cx.listener(|this, _, window, cx| this.generate_key(window, cx))),
+        );
+        actions = actions.child(
+            button("sasl-key-import", "sasl_key_import", cx)
+                .on_click(cx.listener(|this, _, window, cx| this.import_key(window, cx))),
+        );
+        if saved {
+            actions = actions
+                .child(
+                    button("sasl-key-show", "sasl_key_show_public", cx)
+                        .on_click(cx.listener(|this, _, _, cx| this.show_public_key(cx))),
+                )
+                .child(
+                    button("sasl-key-delete", "credential_delete", cx)
+                        .on_click(cx.listener(|this, _, window, cx| this.delete_key(window, cx))),
+                );
+        }
+        let theme = theme::current(cx);
+        let mut section = div().flex().flex_col().gap_2().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(settings_theme::label_column().child(self.i18n.text("sasl_key")))
+                .child(div().child(self.i18n.text(if saved {
+                    "credential_saved"
+                } else {
+                    "sasl_key_none"
+                })))
+                .child(actions),
+        );
+        if let Some(public) = self.settings.sasl_public_key.clone() {
+            section =
+                section.child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_color(theme.text_secondary)
+                                .child(self.i18n.text("sasl_key_public")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().min_w_0().child(public))
+                                .child(button("sasl-key-copy", "sasl_key_copy", cx).on_click(
+                                    cx.listener(|this, _, _, cx| this.copy_public_key(cx)),
+                                )),
+                        ),
+                );
+        }
+        section.child(
+            div()
+                .ml(settings_theme::LABEL_INDENT)
+                .text_color(theme.text_secondary)
+                .child(self.i18n.text("sasl_key_note")),
+        )
     }
 
     fn font_input(&self, target: FontTarget) -> Entity<TextInput> {
