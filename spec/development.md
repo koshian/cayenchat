@@ -116,7 +116,11 @@ runs: it builds release, checks the PE subsystem and the exe version, builds
 the signed test MSIX from that same exe and uploads it as the `msix-test`
 artifact. Both must pass. `build-and-test` and that job restore the Cargo
 build cache (`Swatinem/rust-cache`, pinned by commit); only pushes to master
-save it, so a pull request cannot write a cache that master reuses. CI does
+save it, so a pull request cannot write a cache that master reuses. When the
+Windows ARM64 test step fails, the job runs the UI tests again one at a time
+with `--nocapture`, so the log names the test that was running when the
+process died (the UI test binary has crashed there with
+`STATUS_ACCESS_VIOLATION`, #659). CI does
 not exercise GUI interaction, IME, drag and drop or clipboard images.
 
 The "Dependency advisories" job runs `cargo deny check advisories` against
