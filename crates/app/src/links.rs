@@ -113,12 +113,39 @@ mod tests {
         assert_eq!(urls[1].1, "https://example.org/c");
     }
 
+    /// The best of several runs of `find` on the text built for `scale`
+    /// repetitions. The minimum drops slices lost to a busy host.
+    fn best_time(build: &dyn Fn(usize) -> String, scale: usize) -> std::time::Duration {
+        let text = build(scale);
+        (0..5)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                std::hint::black_box(find(std::hint::black_box(&text)));
+                started.elapsed()
+            })
+            .min()
+            .unwrap()
+    }
+
+    /// Fails when the time grows much faster than the input. An input 8 times
+    /// larger should take about 8 times longer (a quadratic scan 64 times),
+    /// so the limit of 24 times sits between them whatever the host speed.
+    /// The small time has a floor so timer granularity cannot inflate the ratio.
+    fn assert_linear(build: &dyn Fn(usize) -> String, small: usize) {
+        let floor = std::time::Duration::from_micros(200);
+        let base = best_time(build, small).max(floor);
+        let large = best_time(build, small * 8);
+        assert!(large < base * 24, "{base:?} for {small}, {large:?} for 8x");
+    }
+
     #[test]
     fn long_runs_of_closing_brackets_are_trimmed_in_linear_time() {
+        assert_linear(
+            &|n| format!("https://example.org/{}", ")".repeat(n * 10)),
+            1_000,
+        );
         let text = format!("https://example.org/{}", ")".repeat(16_000));
-        let started = std::time::Instant::now();
         let urls = find(&text);
-        assert!(started.elapsed() < std::time::Duration::from_millis(50));
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].1, "https://example.org/");
         assert_eq!(urls[0].0, 0.."https://example.org/".len());
@@ -128,16 +155,21 @@ mod tests {
 
     #[test]
     fn many_candidates_are_found_in_linear_time() {
-        let limit = std::time::Duration::from_millis(50);
+        for unit in [
+            "https://[ ",
+            "https://[ http:// ",
+            "http://example.org/ ",
+            "https://x ",
+        ] {
+            assert_linear(&|n| unit.repeat(n), 400);
+        }
         for text in [
             "https://[ ".repeat(1_600),
             "https://[ http:// ".repeat(900),
             "http://example.org/ ".repeat(800),
             "https://x ".repeat(1_600),
         ] {
-            let started = std::time::Instant::now();
             let urls = find(&text);
-            assert!(started.elapsed() < limit);
             assert_eq!(
                 urls.len(),
                 text.matches("http://example.org/").count() + text.matches("https://x").count()
