@@ -493,6 +493,28 @@ impl Stream for ClientStream {
     }
 }
 
+/// Most channels with a member list per connection (local change, see vendor/README.md).
+#[cfg(feature = "channel-lists")]
+const MAX_LISTED_CHANNELS: usize = 2_000;
+/// Most members listed in one channel (local change, see vendor/README.md).
+#[cfg(feature = "channel-lists")]
+const MAX_MEMBERS_PER_CHANNEL: usize = 50_000;
+/// Most members listed over all channels of a connection (local change, see vendor/README.md).
+#[cfg(feature = "channel-lists")]
+const MAX_MEMBERS_TOTAL: usize = 100_000;
+
+/// Fails when `more` members would pass the per-channel or per-connection limit.
+#[cfg(feature = "channel-lists")]
+fn check_member_budget(in_channel: usize, in_total: usize, more: usize) -> error::Result<()> {
+    if in_channel + more > MAX_MEMBERS_PER_CHANNEL {
+        Err(error::Error::ChannelListLimit("too many members in a channel"))
+    } else if in_total + more > MAX_MEMBERS_TOTAL {
+        Err(error::Error::ChannelListLimit("too many members in total"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Thread-safe internal state for an IRC server connection.
 #[derive(Debug)]
 struct ClientState {
@@ -582,7 +604,7 @@ impl ClientState {
     fn handle_message(&self, msg: &Message) -> error::Result<()> {
         log::trace!("[RECV] {}", msg.to_string());
         match msg.command {
-            JOIN(ref chan, _, _) => self.handle_join(msg.source_nickname().unwrap_or(""), chan),
+            JOIN(ref chan, _, _) => self.handle_join(msg.source_nickname().unwrap_or(""), chan)?,
             PART(ref chan, _) => self.handle_part(msg.source_nickname().unwrap_or(""), chan),
             KICK(ref chan, ref user, _) => {
                 // Local change (see vendor/README.md): being kicked drops the
@@ -637,7 +659,7 @@ impl ClientState {
                     }
                 }
             }
-            Command::Response(Response::RPL_NAMREPLY, ref args) => self.handle_namreply(args),
+            Command::Response(Response::RPL_NAMREPLY, ref args) => self.handle_namreply(args)?,
             Command::Response(Response::RPL_ENDOFMOTD, _)
             | Command::Response(Response::ERR_NOMOTD, _) => {
                 // Local change (see vendor/README.md): only the first end of
@@ -731,10 +753,12 @@ impl ClientState {
     }
 
     #[cfg(not(feature = "channel-lists"))]
-    fn handle_join(&self, _: &str, _: &str) {}
+    fn handle_join(&self, _: &str, _: &str) -> error::Result<()> {
+        Ok(())
+    }
 
     #[cfg(feature = "channel-lists")]
-    fn handle_join(&self, src: &str, chan: &str) {
+    fn handle_join(&self, src: &str, chan: &str) -> error::Result<()> {
         // Local change (see vendor/README.md): our own JOIN is the only thing
         // that creates a list, and it starts a new empty one.
         if self
@@ -745,15 +769,23 @@ impl ClientState {
         {
             self.names_done.write().remove(chan);
             self.names_index.write().remove(chan);
-            self.chanlists.write().insert(chan.to_owned(), Vec::new());
-            return;
+            let mut lists = self.chanlists.write();
+            if lists.len() >= MAX_LISTED_CHANNELS && !lists.contains_key(chan) {
+                return Err(error::Error::ChannelListLimit("too many channels"));
+            }
+            lists.insert(chan.to_owned(), Vec::new());
+            return Ok(());
         }
-        if let Some(vec) = self.chanlists.write().get_mut(&chan.to_owned()) {
+        let mut lists = self.chanlists.write();
+        let total: usize = lists.values().map(Vec::len).sum();
+        if let Some(vec) = lists.get_mut(&chan.to_owned()) {
             if !src.is_empty() {
+                check_member_budget(vec.len(), total, 1)?;
                 vec.push(User::new(src));
                 self.names_index.write().remove(chan);
             }
         }
+        Ok(())
     }
 
     #[cfg(not(feature = "channel-lists"))]
@@ -826,19 +858,23 @@ impl ClientState {
     }
 
     #[cfg(not(feature = "channel-lists"))]
-    fn handle_namreply(&self, _: &[String]) {}
+    fn handle_namreply(&self, _: &[String]) -> error::Result<()> {
+        Ok(())
+    }
 
     #[cfg(feature = "channel-lists")]
-    fn handle_namreply(&self, args: &[String]) {
+    fn handle_namreply(&self, args: &[String]) -> error::Result<()> {
         if args.len() == 4 {
             let chan = &args[2];
             let mut lists = self.chanlists.write();
             // Only a channel we joined has a list.
+            let mut total: usize = lists.values().map(Vec::len).sum();
             let Some(vec) = lists.get_mut(chan) else {
-                return;
+                return Ok(());
             };
             // The first line of a new reply replaces the old list.
             if self.names_done.write().remove(chan) {
+                total -= vec.len();
                 vec.clear();
                 self.names_index.write().remove(chan);
             }
@@ -852,17 +888,22 @@ impl ClientState {
                     .map(|(i, u)| (u.get_nickname().to_owned(), i))
                     .collect()
             });
+            let mut added = 0;
             for user in args[3].split(' ') {
                 let user = User::new(user);
                 match index.get(user.get_nickname()) {
                     Some(&i) => vec[i] = user,
                     None => {
+                        // Over the limit the list would be incomplete, so end the connection.
+                        check_member_budget(vec.len(), total + added, 1)?;
+                        added += 1;
                         index.insert(user.get_nickname().to_owned(), vec.len());
                         vec.push(user);
                     }
                 }
             }
         }
+        Ok(())
     }
 
     #[cfg(not(feature = "channel-lists"))]
@@ -1214,6 +1255,8 @@ impl Client {
 mod test {
     use std::{collections::HashMap, default::Default, thread, time::Duration};
 
+    #[cfg(feature = "channel-lists")]
+    use super::{MAX_LISTED_CHANNELS, MAX_MEMBERS_PER_CHANNEL, MAX_MEMBERS_TOTAL};
     use super::Client;
     #[cfg(feature = "channel-lists")]
     use crate::client::data::User;
@@ -1767,6 +1810,89 @@ mod test {
         assert_eq!(client.list_users("#big").unwrap().len(), 40_000);
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         Ok(())
+    }
+
+    #[cfg(feature = "channel-lists")]
+    fn names_lines(chan: &str, from: usize, count: usize) -> String {
+        let mut out = String::new();
+        let mut n = from;
+        while n < from + count {
+            let end = (n + 20).min(from + count);
+            let names: Vec<String> = (n..end).map(|i| format!("n{i}")).collect();
+            out.push_str(&format!(
+                ":irc.test.net 353 test = {chan} :{}\r\n",
+                names.join(" ")
+            ));
+            n = end;
+        }
+        out
+    }
+
+    #[cfg(feature = "channel-lists")]
+    async fn run_lines(value: String) -> (Client, std::result::Result<(), Error>) {
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value),
+            ..test_config()
+        })
+        .await
+        .unwrap();
+        let res = client.stream().unwrap().collect().await.map(drop);
+        (client, res)
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn names_per_channel_limit_ends_the_connection() {
+        let head = ":irc.test.net 001 test :Welcome\r\n:test!t@h JOIN #a\r\n";
+        // Exactly at the limit, with duplicates ignored, is accepted.
+        let at = format!(
+            "{head}{}{}",
+            names_lines("#a", 0, MAX_MEMBERS_PER_CHANNEL),
+            names_lines("#a", 0, 100)
+        );
+        let (client, res) = run_lines(at).await;
+        res.unwrap();
+        assert_eq!(client.list_users("#a").unwrap().len(), MAX_MEMBERS_PER_CHANNEL);
+        // One more is refused.
+        let over = format!("{head}{}", names_lines("#a", 0, MAX_MEMBERS_PER_CHANNEL + 1));
+        let (client, res) = run_lines(over).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
+        assert!(client.list_users("#a").unwrap().len() <= MAX_MEMBERS_PER_CHANNEL);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn names_connection_limit_spans_channels_and_a_refresh_is_not_double_counted() {
+        let mut value = String::from(":irc.test.net 001 test :Welcome\r\n");
+        let chans = MAX_MEMBERS_TOTAL / MAX_MEMBERS_PER_CHANNEL;
+        for c in 0..chans {
+            value.push_str(&format!(":test!t@h JOIN #c{c}\r\n"));
+            value.push_str(&names_lines(&format!("#c{c}"), 0, MAX_MEMBERS_PER_CHANNEL));
+        }
+        // A refreshed NAMES of a full channel replaces its list.
+        value.push_str(":irc.test.net 366 test #c0 :End\r\n");
+        value.push_str(&names_lines("#c0", 0, MAX_MEMBERS_PER_CHANNEL));
+        let (_, res) = run_lines(value.clone()).await;
+        res.unwrap();
+        // One member in another channel passes the total.
+        value.push_str(":test!t@h JOIN #extra\r\n:x!x@h JOIN #extra\r\n");
+        let (_, res) = run_lines(value).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn join_and_channel_count_are_limited() {
+        let mut value = String::from(":irc.test.net 001 test :Welcome\r\n");
+        for c in 0..MAX_LISTED_CHANNELS {
+            value.push_str(&format!(":test!t@h JOIN #c{c}\r\n"));
+        }
+        let (client, res) = run_lines(value.clone()).await;
+        res.unwrap();
+        assert_eq!(client.list_channels().map_or(0, |c| c.len()), MAX_LISTED_CHANNELS);
+        value.push_str(":test!t@h JOIN #one-too-many\r\n");
+        let (_, res) = run_lines(value).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
     }
 
     #[tokio::test]
