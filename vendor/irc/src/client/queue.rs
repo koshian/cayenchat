@@ -15,7 +15,10 @@ use std::{
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::{error, proto::Message};
+use crate::{
+    error,
+    proto::{Command, Message},
+};
 
 /// Most messages waiting to be written.
 pub const MAX_QUEUED_MESSAGES: usize = 1024;
@@ -55,12 +58,15 @@ pub fn channel() -> (OutgoingSender, OutgoingReceiver) {
 }
 
 impl OutgoingSender {
-    /// Queues `msg`, or fails when the queue is closed or full.
+    /// Queues `msg`, or fails when the queue is closed or full. `QUIT` is
+    /// always admitted: the application sends it once when it ends the
+    /// connection and it must be written behind any backlog.
     pub fn send(&self, msg: Message) -> error::Result<()> {
         let weight = msg.to_string().len();
         let messages = self.usage.messages.fetch_add(1, Ordering::AcqRel) + 1;
         let bytes = self.usage.bytes.fetch_add(weight, Ordering::AcqRel) + weight;
-        if messages > MAX_QUEUED_MESSAGES || bytes > MAX_QUEUED_BYTES {
+        let over = messages > MAX_QUEUED_MESSAGES || bytes > MAX_QUEUED_BYTES;
+        if over && !matches!(msg.command, Command::QUIT(_)) {
             self.usage.release(weight);
             return Err(error::Error::OutgoingQueueFull);
         }
@@ -92,7 +98,6 @@ impl Usage {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::proto::Command;
     use futures_util::task::noop_waker;
 
     fn pong(data: &str) -> Message {
@@ -117,6 +122,15 @@ mod test {
             tx.usage.messages.load(Ordering::Acquire),
             MAX_QUEUED_MESSAGES
         );
+    }
+
+    #[test]
+    fn quit_is_admitted_behind_a_full_queue() {
+        let (tx, _rx) = channel();
+        for _ in 0..MAX_QUEUED_MESSAGES {
+            tx.send(pong("x")).unwrap();
+        }
+        tx.send(Command::QUIT(None).into()).unwrap();
     }
 
     #[test]
