@@ -107,6 +107,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_Storage_Packaging_Appx",
+  "Win32_System_Com",
   "Win32_System_Console",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Power",
@@ -115,7 +116,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 # Packaged (MSIX) login startup through the WinRT StartupTask (#153).
-windows = { version = "0.61", default-features = false, features = ["ApplicationModel", "Foundation", "Win32_System_WinRT"] }
+windows = { version = "0.61", default-features = false, features = ["ApplicationModel", "Foundation"] }
 gpui = { workspace = true, features = ["windows-manifest"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]

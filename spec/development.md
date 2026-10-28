@@ -120,7 +120,13 @@ save it, so a pull request cannot write a cache that master reuses. When the
 Windows ARM64 test step fails, the job runs the UI tests again one at a time
 with `--nocapture`, so the log names the test that was running when the
 process died (the UI test binary has crashed there with
-`STATUS_ACCESS_VIOLATION`, #659). CI does
+`STATUS_ACCESS_VIOLATION`, #659). The cause was `windows-core` caching a WinRT
+activation factory made on a thread that initialized COM and then ended, which
+dangled when the thread's apartment went away. On Windows the app therefore
+holds the process-wide COM MTA with `CoIncrementMTAUsage`
+(`crates/ui/src/process_mta.rs`: at startup, before the settings theme read,
+before the autostart WinRT call), and WinRT calls must not initialize and
+uninitialize COM per thread. CI does
 not exercise GUI interaction, IME, drag and drop or clipboard images.
 
 The "FreeBSD x86_64 (build only)" job runs `cargo check --workspace

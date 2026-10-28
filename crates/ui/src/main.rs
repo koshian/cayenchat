@@ -48,6 +48,8 @@ mod phrase_wrap;
 #[cfg(any(target_os = "windows", test))]
 mod placement;
 mod previews;
+#[cfg(target_os = "windows")]
+mod process_mta;
 mod quit_dialog;
 mod reiwa_group;
 mod scrollbar;
@@ -122,8 +124,45 @@ pub(crate) const APP_ID: &str = "cayenchat";
 /// The channel log's share of the log height when nothing was dragged, and
 /// the bounds of what dragging may leave to either log.
 const DEFAULT_LOG_SPLIT: f32 = 0.5;
-/// How long a line stays emphasized after a jump to a notified line.
-const REVEAL_FLASH: Duration = Duration::from_millis(2_000);
+/// How long a line stays fully emphasized after a jump, and then how long
+/// its background takes to fade out.
+const REVEAL_HOLD: Duration = Duration::from_millis(1_000);
+const REVEAL_FADE: Duration = Duration::from_millis(800);
+/// Pause between repaints while the emphasis fades.
+const REVEAL_FRAME: Duration = Duration::from_millis(16);
+/// Background alpha of a freshly emphasized line.
+const REVEAL_ALPHA: f32 = 0.35;
+
+/// Share of `REVEAL_ALPHA` left `elapsed` after a jump; `None` once gone.
+fn reveal_strength(elapsed: Duration) -> Option<f32> {
+    let fading = elapsed.checked_sub(REVEAL_HOLD).unwrap_or_default();
+    if fading >= REVEAL_FADE {
+        return None;
+    }
+    let left = 1. - fading.as_secs_f32() / REVEAL_FADE.as_secs_f32();
+    // Ease out: fast at first, gentle at the end.
+    Some(left * left)
+}
+
+/// `from` moved `t` (0..=1) of the way to `to`.
+fn mix(from: Rgba, to: Rgba, t: f32) -> Rgba {
+    let channel = |a: f32, b: f32| a + (b - a) * t;
+    Rgba {
+        r: channel(from.r, to.r),
+        g: channel(from.g, to.g),
+        b: channel(from.b, to.b),
+        a: channel(from.a, to.a),
+    }
+}
+
+/// Background of an emphasized line `strength` into the fade. Opaque colors
+/// are mixed here because `bg` replaces the alternating background instead of
+/// blending with it: full strength is the highlight over the log background,
+/// none is the row's own background, with no step at the end.
+fn reveal_background(row: Rgba, log: Rgba, highlight: Rgba, strength: f32) -> Rgba {
+    let emphasized = mix(log, highlight, REVEAL_ALPHA);
+    mix(row, emphasized, strength)
+}
 /// Pause after the last move or resize before the window layout is written.
 const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(500);
 /// Width of the right column (members and channel tree), its limits, and the
@@ -851,9 +890,9 @@ struct ChatWindow {
     log_dragging: bool,
     /// The main log row whose URL the pointer is over; it shows a hand.
     url_hover: Option<(ConversationId, usize)>,
-    /// The line a jump to a notified line just chose, drawn emphasized for
-    /// `REVEAL_FLASH`.
-    reveal_flash: Option<(ConversationId, u64)>,
+    /// The line a jump just chose and when, drawn emphasized while
+    /// `reveal_strength` has anything left.
+    reveal_flash: Option<(ConversationId, u64, Instant)>,
     /// Share of the two logs' height taken by the channel log; changed by
     /// dragging the bottom edge of the draft input, kept for this run only.
     log_split: f32,
@@ -4846,15 +4885,37 @@ impl ChatWindow {
         if let Some(list) = self.main_lists.get_mut(&Selection::Channel(id)) {
             list.scroll_to_sequence(sequence);
         }
-        self.reveal_flash = Some((id, sequence));
+        let started = Instant::now();
+        self.reveal_flash = Some((id, sequence, started));
+        // Repaint only while the emphasis fades; a later jump replaces
+        // `started`, which ends this task without touching the new one.
         cx.spawn(async move |this, cx| {
-            Timer::after(REVEAL_FLASH).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.reveal_flash == Some((id, sequence)) {
-                    this.reveal_flash = None;
-                    cx.notify();
+            Timer::after(REVEAL_HOLD).await;
+            loop {
+                let Ok(more) = this.update(cx, |this, cx| {
+                    if !matches!(this.reveal_flash, Some((_, _, s)) if s == started) {
+                        return false;
+                    }
+                    let more = reveal_strength(started.elapsed()).is_some();
+                    if !more {
+                        this.reveal_flash = None;
+                    }
+                    // Only the main log shows the line, and only while its
+                    // conversation is selected; the other panes stay cached.
+                    if let Some(panes) = &this.panes
+                        && this.state.selected_channel().map(|c| c.id) == Some(id)
+                    {
+                        App::notify(cx, panes.main_log.entity_id());
+                    }
+                    more
+                }) else {
+                    return;
+                };
+                if !more {
+                    return;
                 }
-            });
+                Timer::after(REVEAL_FRAME).await;
+            }
         })
         .detach();
     }
@@ -8769,13 +8830,24 @@ impl ChatWindow {
             .when(style.alternate_rows && index % 2 == 1, |d| {
                 d.bg(style.main_alt)
             })
-            .when(
-                self.reveal_flash == Some((selected_channel, message.sequence)),
-                |d| {
-                    d.bg(Rgba {
-                        a: 0.35,
-                        ..theme.panes.highlight
+            .when_some(
+                self.reveal_flash
+                    .filter(|&(id, sequence, _)| {
+                        id == selected_channel && sequence == message.sequence
                     })
+                    .and_then(|(_, _, started)| reveal_strength(started.elapsed())),
+                |d, strength| {
+                    let row = if style.alternate_rows && index % 2 == 1 {
+                        style.main_alt
+                    } else {
+                        theme.panes.main_log
+                    };
+                    d.bg(reveal_background(
+                        row,
+                        theme.panes.main_log,
+                        theme.panes.highlight,
+                        strength,
+                    ))
                 },
             )
             .on_mouse_down(
@@ -9823,6 +9895,8 @@ fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
 
 fn main() {
     diagnostics::init();
+    #[cfg(target_os = "windows")]
+    process_mta::keep();
     #[cfg(feature = "test-build")]
     match cayenchat_storage::test_build_directory() {
         Ok(directory) => eprintln!(
@@ -10034,6 +10108,36 @@ mod combined_log_tests;
 #[cfg(test)]
 #[path = "main_tests/combined_jump_tests.rs"]
 mod combined_jump_tests;
+
+#[cfg(test)]
+mod reveal_strength_tests {
+    use super::{REVEAL_ALPHA, REVEAL_FADE, REVEAL_HOLD, mix, reveal_background, reveal_strength};
+    use gpui::rgb;
+    use std::time::Duration;
+
+    #[test]
+    fn holds_then_fades_to_nothing() {
+        assert_eq!(reveal_strength(Duration::ZERO), Some(1.));
+        assert_eq!(reveal_strength(REVEAL_HOLD), Some(1.));
+        let mid = reveal_strength(REVEAL_HOLD + REVEAL_FADE / 2).unwrap();
+        assert!(0. < mid && mid < 1.);
+        let late = reveal_strength(REVEAL_HOLD + REVEAL_FADE - Duration::from_millis(1)).unwrap();
+        assert!(0. < late && late < mid);
+        assert_eq!(reveal_strength(REVEAL_HOLD + REVEAL_FADE), None);
+    }
+
+    #[test]
+    fn background_ends_on_the_row_color() {
+        let row = rgb(0xe8eef8);
+        let log = rgb(0xffffff);
+        let highlight = rgb(0x3060d0);
+        let start = reveal_background(row, log, highlight, 1.);
+        assert_eq!(start, mix(log, highlight, REVEAL_ALPHA));
+        assert_eq!(reveal_background(row, log, highlight, 0.), row);
+        let near = reveal_background(row, log, highlight, 0.001);
+        assert!((near.b - row.b).abs() < 0.001);
+    }
+}
 
 #[cfg(test)]
 #[path = "main_tests/link_icon_tests.rs"]
