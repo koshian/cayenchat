@@ -31,11 +31,21 @@ use crate::{
 pub(crate) struct Missing {
     pub server: bool,
     pub sasl: bool,
+    /// The SASL private key (ECDSA) is not there. No dialog can supply it:
+    /// the connection is not started and the user is pointed to the
+    /// settings.
+    pub key: bool,
 }
 
 impl Missing {
+    /// A password the dialog can ask for is missing.
     pub(crate) fn any(self) -> bool {
         self.server || self.sasl
+    }
+
+    /// The SASL password or key is missing.
+    pub(crate) fn sasl_secret(self) -> bool {
+        self.sasl || self.key
     }
 }
 
@@ -64,13 +74,24 @@ pub(crate) fn fill(
     server_needed: bool,
 ) -> Missing {
     apply_secrets(config, server, sasl);
+    let sasl_missing = config
+        .sasl
+        .as_ref()
+        .is_some_and(|credentials| credentials.password.is_empty());
+    let keyed = uses_key(config);
     Missing {
         server: server_needed && config.server_password.is_none(),
-        sasl: config
-            .sasl
-            .as_ref()
-            .is_some_and(|credentials| credentials.password.is_empty()),
+        sasl: sasl_missing && !keyed,
+        key: sasl_missing && keyed,
     }
+}
+
+/// Whether the SASL mechanism of `config` signs with a key (its "password"
+/// is then the stored key, which no dialog asks for).
+pub(crate) fn uses_key(config: &ConnectionConfig) -> bool {
+    config.sasl.as_ref().is_some_and(|credentials| {
+        credentials.mechanism == cayenchat_irc_core::SaslMechanism::EcdsaNist256pChallenge
+    })
 }
 
 /// The passwords `config` sends that the profile does not note as saved:
@@ -85,9 +106,11 @@ pub(crate) fn unsaved_secrets(
         .filter(|password| !password.is_empty())
         .filter(|_| !profile.is_some_and(ServerProfile::server_password_saved))
         .map(Secret::new);
+    // A key is always in the store; nothing of it is kept for a dialog.
     let sasl = config
         .sasl
         .as_ref()
+        .filter(|_| !uses_key(config))
         .map(|credentials| credentials.password.as_str())
         .filter(|password| !password.is_empty())
         .filter(|_| !profile.is_some_and(ServerProfile::sasl_password_saved))
@@ -217,6 +240,9 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        if missing.key {
+            return Err(self.i18n.text("sasl_key_required"));
+        }
         if missing.any() {
             self.open_credential_prompt(network, config, Resume::Fresh, missing, None, cx);
             return Ok(());
@@ -259,9 +285,8 @@ impl ChatWindow {
                 } else {
                     store.get(&profile.server_password_key())
                 };
-                let sasl = if profile.sasl_enabled && profile.sasl_password_saved() && !sasl_refused
-                {
-                    store.get(&profile.sasl_password_key())
+                let sasl = if profile.sasl_enabled && profile.sasl_secret_saved() && !sasl_refused {
+                    store.get(&profile.sasl_secret_key())
                 } else {
                     Ok(None)
                 };
@@ -330,12 +355,23 @@ impl ChatWindow {
             }
         };
         let (server, sasl) = (read(server), read(sasl));
+        // A stored key that cannot sign counts as missing.
+        let sasl = sasl.filter(|secret| {
+            !uses_key(&config) || cayenchat_irc_core::sasl_key_is_valid(secret.expose())
+        });
         let server_needed = matches!(refused, Some(Refusal::Server { .. }))
             || self
                 .sessions
                 .get(&network)
                 .is_some_and(|session| session.server_password_used);
         let missing = fill(&mut config, server.as_ref(), sasl.as_ref(), server_needed);
+        if missing.key {
+            // No key to sign with: say so instead of connecting.
+            let text = self.i18n.text("sasl_key_required");
+            self.state.append_server_message(network, text.clone());
+            self.raise_error(Some(network), text, crate::notices::Origin::Background, cx);
+            return;
+        }
         if missing.any() {
             let resume = Resume::Reconnect { announce };
             self.open_credential_prompt(network, config, resume, missing, refused, cx);
@@ -824,21 +860,14 @@ pub(crate) fn note_found(
     server: Option<bool>,
     sasl: Option<bool>,
 ) -> bool {
-    let before = (
-        profile.server_password_saved(),
-        profile.sasl_password_saved(),
-    );
+    let before = (profile.server_password_saved(), profile.sasl_secret_saved());
     if let Some(found) = server.filter(|found| *found != before.0) {
         profile.set_server_password_saved(found);
     }
     if let Some(found) = sasl.filter(|found| *found != before.1) {
-        profile.set_sasl_password_saved(found);
+        profile.set_sasl_secret_saved(found);
     }
-    before
-        != (
-            profile.server_password_saved(),
-            profile.sasl_password_saved(),
-        )
+    before != (profile.server_password_saved(), profile.sasl_secret_saved())
 }
 
 fn saved_keys(
@@ -858,7 +887,7 @@ fn saved_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{Missing, apply_secrets, fill, note_found, while_incomplete};
+    use super::{Missing, apply_secrets, fill, note_found, unsaved_secrets, while_incomplete};
     use cayenchat_irc_core::{ConnectionConfig, SaslCredentials};
     use cayenchat_storage::Secret;
 
@@ -882,12 +911,36 @@ mod tests {
             missing,
             Missing {
                 server: false,
-                sasl: true
+                sasl: true,
+                key: false
             }
         );
         let missing = fill(&mut config, None, Some(&Secret::new("pw")), false);
         assert!(!missing.any());
         assert_eq!(config.sasl.unwrap().password, "pw");
+    }
+
+    #[test]
+    fn a_missing_key_is_no_case_for_the_password_dialog() {
+        let mut config = config(true);
+        config.sasl.as_mut().unwrap().mechanism =
+            cayenchat_irc_core::SaslMechanism::EcdsaNist256pChallenge;
+        let missing = fill(&mut config, None, None, false);
+        assert_eq!(
+            missing,
+            Missing {
+                server: false,
+                sasl: false,
+                key: true
+            }
+        );
+        assert!(!missing.any() && missing.sasl_secret());
+        // With the key there, nothing is missing and nothing of it is kept
+        // for a dialog after a refusal.
+        let key = cayenchat_irc_core::generate_sasl_key().unwrap();
+        let missing = fill(&mut config, None, Some(&Secret::new(key.as_str())), false);
+        assert!(!missing.sasl_secret());
+        assert_eq!(unsaved_secrets(None, &config), (None, None));
     }
 
     #[test]

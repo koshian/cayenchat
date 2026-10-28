@@ -310,15 +310,24 @@ pub enum SaslMechanism {
     ScramSha1,
     ScramSha256,
     ScramSha512,
+    /// Signs a challenge with a P-256 key kept in the credential store
+    /// instead of sending a password.
+    EcdsaNist256pChallenge,
 }
 
 impl SaslMechanism {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Plain,
         Self::ScramSha1,
         Self::ScramSha256,
         Self::ScramSha512,
+        Self::EcdsaNist256pChallenge,
     ];
+
+    /// Whether the mechanism uses the key of the profile, not its password.
+    pub fn uses_key(self) -> bool {
+        self == Self::EcdsaNist256pChallenge
+    }
 
     /// The name on the wire, shown in the settings.
     pub fn name(self) -> &'static str {
@@ -327,6 +336,7 @@ impl SaslMechanism {
             Self::ScramSha1 => "SCRAM-SHA-1",
             Self::ScramSha256 => "SCRAM-SHA-256",
             Self::ScramSha512 => "SCRAM-SHA-512",
+            Self::EcdsaNist256pChallenge => "ECDSA-NIST256P-CHALLENGE",
         }
     }
 }
@@ -821,6 +831,10 @@ pub struct ServerProfile {
     /// Same for the SASL password.
     #[serde(default)]
     pub sasl_saved: bool,
+    /// Same for the SASL private key (ECDSA-NIST256P-CHALLENGE): the store
+    /// holds one. Only a note; the key itself is never in the file.
+    #[serde(default)]
+    pub sasl_key_saved: bool,
     /// Send the server password even without TLS, after the user accepted a
     /// warning; for bouncers such as ZNC on a trusted network.
     #[serde(default)]
@@ -944,6 +958,7 @@ impl ServerProfile {
             remember_passwords: false,
             server_saved: false,
             sasl_saved: false,
+            sasl_key_saved: false,
             allow_plaintext_pass: false,
             nickname: String::new(),
             username: String::new(),
@@ -1151,6 +1166,37 @@ impl ServerProfile {
 
     pub fn sasl_password_key(&self) -> SecretKey {
         SecretKey::sasl_password(&self.id)
+    }
+
+    pub fn sasl_key_key(&self) -> SecretKey {
+        SecretKey::sasl_key(&self.id)
+    }
+
+    /// The store entry the SASL mechanism of the profile reads: the private
+    /// key for ECDSA, otherwise the password.
+    pub fn sasl_secret_key(&self) -> SecretKey {
+        if self.sasl_mechanism.uses_key() {
+            self.sasl_key_key()
+        } else {
+            self.sasl_password_key()
+        }
+    }
+
+    /// Whether the entry of [`Self::sasl_secret_key`] is noted as saved.
+    pub fn sasl_secret_saved(&self) -> bool {
+        if self.sasl_mechanism.uses_key() {
+            self.sasl_key_saved
+        } else {
+            self.sasl_password_saved()
+        }
+    }
+
+    pub fn set_sasl_secret_saved(&mut self, saved: bool) {
+        if self.sasl_mechanism.uses_key() {
+            self.sasl_key_saved = saved;
+        } else {
+            self.set_sasl_password_saved(saved);
+        }
     }
 }
 
@@ -1513,7 +1559,13 @@ impl Settings {
     pub fn connection_secret_keys(&self) -> Vec<SecretKey> {
         self.servers
             .iter()
-            .flat_map(|server| [server.server_password_key(), server.sasl_password_key()])
+            .flat_map(|server| {
+                [
+                    server.server_password_key(),
+                    server.sasl_password_key(),
+                    server.sasl_key_key(),
+                ]
+            })
             .collect()
     }
 
@@ -1634,6 +1686,7 @@ impl Settings {
                     || s.id == selected
                     || s.server_password_saved()
                     || s.sasl_password_saved()
+                    || s.sasl_key_saved
             });
             self.servers.sort_by_key(is_preset);
         }
@@ -2634,6 +2687,31 @@ mod tests {
         assert_eq!(loaded.profile("custom-1").unwrap().nickname, "alice");
         assert_eq!(loaded.profile("custom-2").unwrap().nickname, "bob");
         assert_eq!(loaded.profile("custom-2").unwrap().channels(), ["#c"]);
+    }
+
+    #[test]
+    fn the_key_of_ecdsa_has_its_own_note_and_store_entry() {
+        let mut settings = Settings::default();
+        let profile = settings.add_server("irc.example.net");
+        profile.sasl_enabled = true;
+        profile.sasl_mechanism = SaslMechanism::EcdsaNist256pChallenge;
+        assert!(!profile.sasl_secret_saved());
+        assert_eq!(profile.sasl_secret_key(), profile.sasl_key_key());
+        profile.set_sasl_secret_saved(true);
+        assert!(profile.sasl_key_saved && !profile.sasl_password_saved());
+        // Choosing another mechanism looks at the password's note again.
+        profile.sasl_mechanism = SaslMechanism::Plain;
+        assert!(!profile.sasl_secret_saved());
+        assert_eq!(profile.sasl_secret_key(), profile.sasl_password_key());
+        let id = profile.id.clone();
+        assert!(
+            settings
+                .connection_secret_keys()
+                .contains(&SecretKey::sasl_key(&id))
+        );
+        // The file holds the note, never a key.
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(text.contains("sasl_key_saved"));
     }
 
     #[test]

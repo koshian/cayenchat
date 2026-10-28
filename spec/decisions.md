@@ -3051,8 +3051,8 @@ inputs.
 added without a settings version change; files without it read as PLAIN, so a
 profile with `sasl_enabled` keeps working). Whether SASL is used is a
 separate checkbox (`sasl_enabled`), not an entry of the mechanism list, which
-offers PLAIN, SCRAM-SHA-1, SCRAM-SHA-256 and SCRAM-SHA-512 and is remembered
-while SASL is off. ECDSA-NIST256P-CHALLENGE is #657;
+offers PLAIN, SCRAM-SHA-1, SCRAM-SHA-256, SCRAM-SHA-512 and (D072)
+ECDSA-NIST256P-CHALLENGE, and is remembered while SASL is off.
 EXTERNAL and the `-PLUS` (channel binding) mechanisms are out of scope.
 
 - **No fallback.** The chosen mechanism must be in the `sasl=` list of
@@ -3095,3 +3095,60 @@ EXTERNAL and the `-PLUS` (channel binding) mechanisms are out of scope.
   a payload, proof, signature, nonce or password; the transcript shows
   `AUTHENTICATE <data>` as `[redacted]` and keeps `+`, `*` and mechanism
   names.
+
+## D072 — SASL ECDSA-NIST256P-CHALLENGE and the SASL key (#657)
+
+2026-10-29. `ECDSA-NIST256P-CHALLENGE` joins the mechanism list of D071 with
+all its rules (TLS required, no fallback, the mechanism must be in the `sasl=`
+list). The account name is the same field as for the other mechanisms.
+
+- **Exchange.** `AUTHENTICATE ECDSA-NIST256P-CHALLENGE`, the server's `+`, the
+  account name (base64), the server's 32 byte challenge, then the signature.
+  The challenge is signed as the digest itself, with no further hashing
+  ("prehash"), and sent DER encoded (a 70–72 byte `SEQUENCE` of two
+  `INTEGER`s). This is the form `ecdsatool` and the services expect; it was
+  checked against OpenSSL (`openssl pkeyutl -verify`, which also takes its
+  input as the digest) and is fixed by tests that verify the signature with
+  the public key as a prehash and show that a hashing verifier rejects it.
+  A challenge that is not 32 bytes, is not base64 or is too long is a
+  client-side stop (not a refusal), as for a bad SCRAM message. A server that
+  closes the link early ends the attempt like any lost connection, and the
+  registration timeout covers a silent one.
+- **Library.** The `p256` crate (RustCrypto, MIT/Apache-2.0) does the
+  arithmetic, key parsing and RFC 6979 signing; no code of another IRC client
+  was copied (D042). It lives in `irc-core::ecdsa`; keys are made from
+  `getrandom`, i.e. the operating system's random numbers.
+- **The key.** It is kept in the credential store at
+  `connection/<profile-id>/sasl-key` as the base64 of the 32 byte scalar and
+  reaches the handshake as the `password` of `SaslCredentials` (whose `Debug`
+  already redacts it); the handshake clears it after signing. The settings
+  file holds only `sasl_key_saved`, a note like D068's, and the store is read
+  only when the note is set or the user asks (show the public key, Connect).
+  Removing the server deletes the key (`forget_removed_profiles`); a settings import
+  clears the note. A stored value that is not a valid
+  P-256 key counts as missing. Choosing another mechanism leaves the key; the
+  password and the key have separate entries and notes.
+- **Settings.** With this mechanism the password row is replaced by the key
+  section: Generate, Import PEM…, and for a saved key Show public key and
+  Delete; the compressed public key (33 bytes, base64) is shown after making,
+  importing or asking, with a Copy button that copies the public key only.
+  Replacing a key (and Delete) asks first because the old key cannot be got
+  back; with the local file as the store the plaintext warning of D068 is
+  asked as for a password. The server must be saved first. Import reads at
+  most 16 KiB off the UI thread, accepts unencrypted PKCS#8 (`PRIVATE KEY`) and
+  SEC1 (`EC PRIVATE KEY`, also after an `EC PARAMETERS` block) and refuses an
+  encrypted key, an OpenSSH or RSA key, a public key or certificate and any
+  other curve, each with its own message. There is no export. The private key
+  is never shown, copied, logged or put in an error message.
+- **Failures.** A missing or invalid key stops the connection before it
+  starts (a message pointing to the settings, no dialog, no network
+  traffic); the same check in the handshake covers a key that became invalid.
+  A refusal (902, 904–907) is `Event::Refused(SASL_KEY_REFUSED)`, not
+  `SASL_FAILED`: the password dialog is not opened, the error says to check
+  that the key is registered for the account, and nothing reconnects.
+- **Diagnostics.** The connection diagnostics record whether the key was read,
+  the account name's size, the challenge's size, that it was signed and the
+  signature's size, and the numeric result. The transcript, the notes and the
+  `ServerLine` debug events show `AUTHENTICATE <data>` as `[redacted]` for the
+  server's challenge too (before, a server's `AUTHENTICATE` data reached
+  `ServerLine`).

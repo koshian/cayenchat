@@ -7,6 +7,7 @@ mod cap;
 mod chanmodes;
 mod charsets;
 mod ctcp;
+mod ecdsa;
 mod echo;
 mod history;
 mod metadata;
@@ -24,6 +25,10 @@ pub mod text;
 pub use avatar_mask::{MAX_REMEMBERED_MASKS, PeerAvatarCache};
 pub use cap::Ircv3Options;
 pub use charsets::ChannelEncoding;
+pub use ecdsa::{
+    KeyError, SecretText, generate as generate_sasl_key, import_pem as import_sasl_key_pem,
+    is_valid as sasl_key_is_valid, public_key_base64 as sasl_public_key,
+};
 pub use history::{
     HISTORY_LIMIT, HistoryMessage, HistoryResume, MAX_HISTORY_LINES, MessageReference,
     OlderHistoryStatus,
@@ -152,9 +157,20 @@ pub enum SaslMechanism {
     ScramSha1,
     ScramSha256,
     ScramSha512,
+    /// Signs the server's challenge with a P-256 key; the "password" of the
+    /// credentials is then the stored key ([`generate_sasl_key`]).
+    EcdsaNist256pChallenge,
 }
 
 impl SaslMechanism {
+    pub const ALL: [Self; 5] = [
+        Self::Plain,
+        Self::ScramSha1,
+        Self::ScramSha256,
+        Self::ScramSha512,
+        Self::EcdsaNist256pChallenge,
+    ];
+
     /// The name on the wire (`AUTHENTICATE <name>`, `CAP LS` `sasl=` list).
     pub fn name(self) -> &'static str {
         match self {
@@ -162,12 +178,13 @@ impl SaslMechanism {
             Self::ScramSha1 => "SCRAM-SHA-1",
             Self::ScramSha256 => "SCRAM-SHA-256",
             Self::ScramSha512 => "SCRAM-SHA-512",
+            Self::EcdsaNist256pChallenge => "ECDSA-NIST256P-CHALLENGE",
         }
     }
 
     fn scram_hash(self) -> Option<scram::Hash> {
         match self {
-            Self::Plain => None,
+            Self::Plain | Self::EcdsaNist256pChallenge => None,
             Self::ScramSha1 => Some(scram::Hash::Sha1),
             Self::ScramSha256 => Some(scram::Hash::Sha256),
             Self::ScramSha512 => Some(scram::Hash::Sha512),
@@ -1387,14 +1404,29 @@ fn without_channel_key(message: &IrcMessage) -> Option<IrcMessage> {
 fn is_authenticate_marker(data: &str) -> bool {
     data == "+"
         || data == "*"
-        || [
-            SaslMechanism::Plain,
-            SaslMechanism::ScramSha1,
-            SaslMechanism::ScramSha256,
-            SaslMechanism::ScramSha512,
-        ]
-        .iter()
-        .any(|mechanism| data.eq_ignore_ascii_case(mechanism.name()))
+        || SaslMechanism::ALL
+            .iter()
+            .any(|mechanism| data.eq_ignore_ascii_case(mechanism.name()))
+}
+
+/// `message` with the data of an `AUTHENTICATE` hidden (a challenge, proof or
+/// signature), if it carries any.
+fn without_authenticate_data(message: &IrcMessage) -> Option<IrcMessage> {
+    let command = match &message.command {
+        IrcCommand::AUTHENTICATE(data) if !is_authenticate_marker(data) => {
+            IrcCommand::AUTHENTICATE("[redacted]".into())
+        }
+        IrcCommand::Raw(verb, args)
+            if verb.eq_ignore_ascii_case("AUTHENTICATE")
+                && !args.first().is_some_and(|arg| is_authenticate_marker(arg)) =>
+        {
+            IrcCommand::AUTHENTICATE("[redacted]".into())
+        }
+        _ => return None,
+    };
+    let mut redacted = message.clone();
+    redacted.command = command;
+    Some(redacted)
 }
 
 fn redacted_wire_line(message: &IrcMessage) -> String {
@@ -4549,6 +4581,11 @@ pub const PASSWORD_REFUSED: &str = "Server rejected the password (464).";
 /// 904 and the like), so a caller can ask for the SASL password again.
 pub const SASL_FAILED: &str = "SASL authentication failed.";
 
+/// The reason of [`Event::Refused`] when the server refused the SASL key of
+/// `ECDSA-NIST256P-CHALLENGE`. There is no password to ask for again, so
+/// this is shown as an error and the connection is not retried.
+pub const SASL_KEY_REFUSED: &str = "SASL authentication failed: the server refused the key. Check that the key is registered for this account.";
+
 /// Registration replies after which the server closes the link and an
 /// identical reconnect would be refused again.
 fn registration_refusal(message: &IrcMessage) -> Option<String> {
@@ -5078,7 +5115,8 @@ fn translate_message(
             let mut events = topic_event(&message, server_time)
                 .into_iter()
                 .collect::<Vec<_>>();
-            let shown = without_channel_key(&message);
+            let shown =
+                without_channel_key(&message).or_else(|| without_authenticate_data(&message));
             events.push(Event::ServerLine(tags::untagged_line(
                 shown.as_ref().unwrap_or(&message),
             )));

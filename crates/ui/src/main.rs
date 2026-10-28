@@ -338,11 +338,16 @@ fn saved_connection_secrets(
     } else {
         None
     };
-    let sasl = if profile.sasl_enabled && profile.sasl_password_saved() {
-        get(profile.sasl_password_key())?
+    let sasl = if profile.sasl_enabled && profile.sasl_secret_saved() {
+        get(profile.sasl_secret_key())?
     } else {
         None
     };
+    // A stored key that cannot be used counts as missing, so the connection
+    // is not started with it.
+    let sasl = sasl.filter(|secret| {
+        !profile.sasl_mechanism.uses_key() || cayenchat_irc_core::sasl_key_is_valid(secret.expose())
+    });
     Ok((server, sasl))
 }
 
@@ -413,6 +418,7 @@ fn sasl_mechanism(
         Saved::ScramSha1 => Wire::ScramSha1,
         Saved::ScramSha256 => Wire::ScramSha256,
         Saved::ScramSha512 => Wire::ScramSha512,
+        Saved::EcdsaNist256pChallenge => Wire::EcdsaNist256pChallenge,
     }
 }
 
@@ -526,6 +532,7 @@ fn forget_removed_profiles(
             let noted = [
                 (server.server_password_saved(), server.server_password_key()),
                 (server.sasl_password_saved(), server.sasl_password_key()),
+                (server.sasl_key_saved, server.sasl_key_key()),
             ];
             for key in noted
                 .into_iter()
@@ -2586,8 +2593,13 @@ impl ChatWindow {
             self.note_stored_passwords(
                 &profile_id,
                 Some(config.server_password.is_some()),
-                sasl.then_some(!missing.sasl),
+                sasl.then_some(!missing.sasl_secret()),
             );
+        }
+        // Without its key the connection is not started; the error opens the
+        // server's settings, where the key is made.
+        if missing.key {
+            return Err(self.i18n.text("sasl_key_required"));
         }
         Ok(self
             .connect_fresh(network, config, missing, window, cx)
@@ -5839,6 +5851,13 @@ impl ChatWindow {
                 // connection that ended by itself is reconnected and logged.
                 // A refused password is answered by its dialog instead.
                 let announce = refused && connect_auth::Refusal::of(&reason, false).is_none();
+                // A refused key has no dialog to ask again; the error says
+                // what to check.
+                let reason = if reason == cayenchat_irc_core::SASL_KEY_REFUSED {
+                    self.i18n.text("sasl_key_refused")
+                } else {
+                    reason
+                };
                 self.drop_own_messages(network);
                 // What the server never confirmed is shown as not delivered.
                 let unconfirmed: Vec<_> = self

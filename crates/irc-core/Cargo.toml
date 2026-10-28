@@ -25,6 +25,8 @@ hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 stringprep = "0.1"
 getrandom = "0.3"
+# ECDSA-NIST256P-CHALLENGE: P-256 keys, PEM import and prehash signatures.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
 
 [dev-dependencies]
 # The encodings the application offers, round-tripped through the codec.

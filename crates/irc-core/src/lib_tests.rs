@@ -787,7 +787,14 @@ fn diagnostic_wire_preserves_messages_and_redacts_credentials() {
         line(IrcCommand::AUTHENTICATE("PLAIN".into())),
         "AUTHENTICATE PLAIN"
     );
-    for mechanism in ["SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-512", "+", "*"] {
+    for mechanism in [
+        "SCRAM-SHA-1",
+        "SCRAM-SHA-256",
+        "SCRAM-SHA-512",
+        "ECDSA-NIST256P-CHALLENGE",
+        "+",
+        "*",
+    ] {
         assert_eq!(
             line(IrcCommand::AUTHENTICATE(mechanism.into())),
             format!("AUTHENTICATE {mechanism}")
@@ -2489,6 +2496,7 @@ fn plaintext_server_password_requires_opt_in_and_sasl_still_requires_tls() {
         SaslMechanism::ScramSha1,
         SaslMechanism::ScramSha256,
         SaslMechanism::ScramSha512,
+        SaslMechanism::EcdsaNist256pChallenge,
     ] {
         config.use_tls = false;
         config.sasl = Some(SaslCredentials {
@@ -7496,4 +7504,223 @@ fn sasl_scram_with_a_forged_server_signature_is_refused() {
         "{reported}"
     );
     assert!(reported.contains("Negotiation refused"), "{reported}");
+}
+
+/// What the mock server of [`ecdsa_login`] does with the exchange.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EcdsaServer {
+    /// Sends a 32 byte challenge and accepts the signature.
+    Accepts,
+    /// Sends a 32 byte challenge and answers the signature with 904.
+    Refuses,
+    /// A challenge of this many bytes.
+    ChallengeOf(usize),
+    /// A challenge that is not base64.
+    BrokenBase64,
+    /// Closes the connection after the account name.
+    HangsUp,
+}
+
+/// Runs an ECDSA-NIST256P-CHALLENGE login against a local server. Returns the
+/// refusal (if any), everything the worker reported as debug text, and the
+/// key, challenge and signature the exchange used.
+fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
+    use base64::engine::general_purpose::STANDARD;
+    use p256::ecdsa::signature::hazmat::PrehashVerifier;
+    let secret = crate::generate_sasl_key().unwrap();
+    let public = STANDARD
+        .decode(crate::sasl_public_key(&secret).unwrap())
+        .unwrap();
+    let challenge = [0x5au8; 32];
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut read = move || loop {
+            let mut line = String::new();
+            if lines.read_line(&mut line).unwrap() == 0 {
+                return String::new();
+            }
+            if !line.starts_with("PING ") && !is_mode_query(&line) {
+                return line.trim_end().to_owned();
+            }
+        };
+        while !read().starts_with("USER ") {}
+        socket
+            .write_all(b":server CAP alice LS :sasl=PLAIN,ECDSA-NIST256P-CHALLENGE\r\n")
+            .unwrap();
+        assert_eq!(read(), "CAP REQ sasl");
+        socket
+            .write_all(b":server CAP alice ACK :sasl\r\n")
+            .unwrap();
+        assert_eq!(read(), "AUTHENTICATE ECDSA-NIST256P-CHALLENGE");
+        socket.write_all(b"AUTHENTICATE +\r\n").unwrap();
+        assert_eq!(
+            read(),
+            format!("AUTHENTICATE {}", STANDARD.encode("account"))
+        );
+        let challenge_line = match scenario {
+            EcdsaServer::HangsUp => return,
+            EcdsaServer::BrokenBase64 => "AUTHENTICATE !!!notbase64!!!".to_owned(),
+            EcdsaServer::ChallengeOf(0) => "AUTHENTICATE +".to_owned(),
+            EcdsaServer::ChallengeOf(length) => {
+                format!("AUTHENTICATE {}", STANDARD.encode(vec![1u8; length]))
+            }
+            EcdsaServer::Accepts | EcdsaServer::Refuses => {
+                format!("AUTHENTICATE {}", STANDARD.encode(challenge))
+            }
+        };
+        socket
+            .write_all(format!("{challenge_line}\r\n").as_bytes())
+            .unwrap();
+        if !matches!(scenario, EcdsaServer::Accepts | EcdsaServer::Refuses) {
+            return;
+        }
+        let signature = read();
+        let der = STANDARD
+            .decode(signature.strip_prefix("AUTHENTICATE ").unwrap())
+            .unwrap();
+        let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(&public).unwrap();
+        let signature = p256::ecdsa::Signature::from_der(&der).unwrap();
+        verifying.verify_prehash(&challenge, &signature).unwrap();
+        if scenario == EcdsaServer::Refuses {
+            socket
+                .write_all(b":server 904 alice :SASL authentication failed\r\n")
+                .unwrap();
+            return;
+        }
+        socket
+            .write_all(b":server 903 alice :SASL authentication successful\r\n")
+            .unwrap();
+        assert_eq!(read(), "CAP END");
+        socket
+            .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
+            .unwrap();
+        assert!(read().starts_with("QUIT"));
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false; // The private worker is tested without a certificate.
+    config.sasl = Some(SaslCredentials {
+        mechanism: SaslMechanism::EcdsaNist256pChallenge,
+        username: "account".into(),
+        password: (*secret).clone(),
+    });
+    let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+    let worker = thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(config, command_rx, event_tx));
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut refusal = None;
+    let mut reported = String::new();
+    while Instant::now() < deadline {
+        match event_rx.try_recv() {
+            Ok(Event::Refused(reason)) => {
+                reported.push_str(&reason);
+                refusal = Some(reason);
+                break;
+            }
+            Ok(Event::Registered { .. }) => break,
+            Ok(Event::Disconnected(reason)) => {
+                reported.push_str(&reason);
+                break;
+            }
+            Ok(event) => reported.push_str(&format!("{event:?}\n")),
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    if refusal.is_none() {
+        let _ = command_tx.try_send(Outgoing::Quit);
+    }
+    server.join().unwrap();
+    worker.join().unwrap();
+    let mut secrets = vec![(*secret).clone(), STANDARD.encode(challenge)];
+    secrets.extend(
+        (*secret)
+            .as_bytes()
+            .chunks(12)
+            .map(|part| String::from_utf8_lossy(part).into_owned()),
+    );
+    (refusal, reported, secrets)
+}
+
+fn assert_no_ecdsa_secret(reported: &str, secrets: &[String]) {
+    for secret in secrets {
+        assert!(!reported.contains(secret.as_str()), "{reported}");
+    }
+}
+
+#[test]
+fn sasl_ecdsa_logs_in_with_a_verifiable_signature_and_leaks_nothing() {
+    let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::Accepts);
+    assert_eq!(refusal, None, "{reported}");
+    for expected in [
+        "SASL ECDSA-NIST256P-CHALLENGE is offered",
+        "SASL ECDSA: the private key was read",
+        "challenge received (32 bytes)",
+        "challenge signed",
+        "authentication succeeded (903)",
+        "AUTHENTICATE [redacted]",
+    ] {
+        assert!(
+            reported.contains(expected),
+            "missing {expected}: {reported}"
+        );
+    }
+    assert_no_ecdsa_secret(&reported, &secrets);
+}
+
+#[test]
+fn sasl_ecdsa_refusal_is_a_sasl_failure_without_leaks() {
+    let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::Refuses);
+    assert_eq!(refusal.as_deref(), Some(SASL_KEY_REFUSED), "{reported}");
+    assert!(reported.contains("refused ECDSA-NIST256P-CHALLENGE with 904"));
+    assert_no_ecdsa_secret(&reported, &secrets);
+}
+
+#[test]
+fn sasl_ecdsa_unexpected_challenges_are_refused_safely() {
+    for (scenario, expected) in [
+        (EcdsaServer::ChallengeOf(31), "is 31 bytes, not 32"),
+        (EcdsaServer::ChallengeOf(33), "is 33 bytes, not 32"),
+        (EcdsaServer::ChallengeOf(0), "is 0 bytes, not 32"),
+        (EcdsaServer::BrokenBase64, "is not base64"),
+    ] {
+        let (refusal, reported, secrets) = ecdsa_login(scenario);
+        let refusal = refusal.unwrap_or_else(|| panic!("no refusal: {reported}"));
+        assert!(refusal.contains(expected), "{refusal}: expected {expected}");
+        assert_ne!(refusal, SASL_FAILED);
+        assert_no_ecdsa_secret(&reported, &secrets);
+    }
+}
+
+#[test]
+fn sasl_ecdsa_server_that_hangs_up_ends_the_attempt() {
+    let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::HangsUp);
+    assert_eq!(refusal, None);
+    assert!(!reported.is_empty());
+    assert_no_ecdsa_secret(&reported, &secrets);
+}
+
+#[test]
+fn sasl_ecdsa_with_a_missing_or_unreadable_key_never_starts() {
+    let mut sasl = crate::sasl::SaslHandshake::new(SaslCredentials {
+        mechanism: SaslMechanism::EcdsaNist256pChallenge,
+        username: "account".into(),
+        password: "not a key".into(),
+    });
+    let error = sasl.begin().unwrap_err();
+    assert!(error.contains("missing or unreadable"), "{error}");
+    let notes = sasl.take_failure_notes().join("\n");
+    assert!(notes.contains("missing or unreadable"), "{notes}");
+    assert!(!notes.contains("not a key"));
 }
