@@ -299,6 +299,10 @@ jobs:
           # The sources only need to get in; nothing comes back out.
           copyback: false
           prepare: |
-            pkg install -y rust pkgconf cmake libxcb libxkbcommon wayland fontconfig freetype2
+            # The pkg `rust` is built for a newer FreeBSD than the 15.0 VM
+            # (its cargo needs libc FBSD_1.9), so take the toolchain from rustup.
+            pkg install -y curl ca_root_nss pkgconf cmake libxcb libxkbcommon wayland fontconfig freetype2
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           run: |
+            . "$HOME/.cargo/env"
             cargo check --workspace --all-targets --locked
