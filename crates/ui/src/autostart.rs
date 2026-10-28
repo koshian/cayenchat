@@ -14,7 +14,7 @@
 
 /// The argument given to a launch made by the login registration. macOS's
 /// login item has no arguments.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(unix_desktop, target_os = "windows"))]
 pub const AUTOSTART_ARG: &str = "--autostart";
 
 /// Whether this process was started by the login registration.
@@ -140,7 +140,7 @@ fn change(to: AutostartStatus) -> Result<(), String> {
 }
 
 #[cfg_attr(test, allow(dead_code))]
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 mod platform {
     use std::path::{Path, PathBuf};
 
@@ -761,7 +761,7 @@ mod platform {
 }
 
 #[cfg_attr(test, allow(dead_code))]
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(unix_desktop, target_os = "macos", target_os = "windows")))]
 mod platform {
     use super::AutostartStatus;
 

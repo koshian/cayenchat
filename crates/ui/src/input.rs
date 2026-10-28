@@ -1907,9 +1907,9 @@ impl TextInput {
     }
 }
 
-/// Binds draft editing keys. `emacs` adds the GTK Emacs key theme on Linux;
+/// Binds draft editing keys. `emacs` adds the GTK Emacs key theme on Linux and FreeBSD;
 /// macOS always has its Emacs-style Control bindings.
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+#[cfg_attr(not(unix_desktop), allow(unused_variables))]
 pub fn bind_keys(emacs: bool, cx: &mut App) {
     // GPUI 0.2.2 does not forward macOS text command selectors to this editor.
     // Keep editing bindings local to the focused input and reserve app shortcuts.
@@ -1953,7 +1953,7 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
         KeyBinding::new("alt-up", Home, Some("TextInput")),
         KeyBinding::new("alt-down", End, Some("TextInput")),
     ]);
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", unix_desktop))]
     cx.bind_keys([
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
@@ -1970,7 +1970,7 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
     // Mirrors GTK 3's gtk-keys.css.emacs for GtkEntry. Bound last so these
     // win over Select All (Ctrl+A) and Redo (Ctrl+Y); GTK likewise moves
     // Select All to Ctrl+/ under this theme.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     if emacs {
         cx.bind_keys([
             KeyBinding::new("ctrl-b", Left, Some("TextInput")),
@@ -2001,7 +2001,7 @@ pub fn bind_keys(emacs: bool, cx: &mut App) {
 
 /// Binds the keys of a multi-line input. Called after every other binding, so
 /// that Enter, Up and Down win over the chat draft's (same depth, later wins).
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+#[cfg_attr(not(unix_desktop), allow(unused_variables))]
 pub fn bind_multiline_keys(emacs: bool, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", InsertNewline, Some("MultilineInput")),
@@ -2022,7 +2022,7 @@ pub fn bind_multiline_keys(emacs: bool, cx: &mut App) {
         KeyBinding::new("cmd-shift-up", SelectDocumentStart, Some("MultilineInput")),
         KeyBinding::new("cmd-shift-down", SelectDocumentEnd, Some("MultilineInput")),
     ]);
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", unix_desktop))]
     cx.bind_keys([
         KeyBinding::new("ctrl-home", DocumentStart, Some("MultilineInput")),
         KeyBinding::new("ctrl-end", DocumentEnd, Some("MultilineInput")),
@@ -2033,7 +2033,7 @@ pub fn bind_multiline_keys(emacs: bool, cx: &mut App) {
         ),
         KeyBinding::new("ctrl-shift-end", SelectDocumentEnd, Some("MultilineInput")),
     ]);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     if emacs {
         cx.bind_keys([
             KeyBinding::new("ctrl-p", Up, Some("MultilineInput")),

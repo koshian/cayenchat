@@ -61,7 +61,7 @@ mod settings_window;
 mod setup_wizard;
 mod shortcut_settings;
 mod shortcuts;
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 mod signals;
 mod splitter;
 mod theme;
@@ -6181,7 +6181,7 @@ fn default_time_font() -> &'static str {
     {
         "Consolas"
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     {
         "DejaVu Sans Mono"
     }
@@ -9623,7 +9623,7 @@ fn find_in_log_key(cx: &App) -> &'static str {
         .is_some_and(|prefs| emacs_keys_active(prefs, cx));
     if cfg!(target_os = "macos") {
         "cmd-f"
-    } else if cfg!(target_os = "linux") && emacs {
+    } else if cfg!(unix_desktop) && emacs {
         "f3"
     } else {
         "ctrl-f"
@@ -9637,7 +9637,7 @@ fn themed_bindings(
     emacs: bool,
 ) -> Vec<KeyBinding> {
     let mut bindings = shortcut_bindings(channel_modifier, overrides);
-    if cfg!(target_os = "linux") && emacs {
+    if cfg!(unix_desktop) && emacs {
         // Ctrl+F is "cursor right" in the Emacs key theme. A binding without
         // a context outranks the input's, so search opens with F3 instead.
         bindings.retain(|binding| !binding.action().partial_eq(&FindInLog));
@@ -9733,7 +9733,7 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
                 Command::SelectServerAt(index),
             ));
         }
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        #[cfg(any(target_os = "windows", unix_desktop))]
         {
             let modifier = match channel_modifier {
                 ChannelNumberModifier::Ctrl => "ctrl",
@@ -9753,9 +9753,9 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
     bindings
 }
 
-/// Chooses the Linux display server before GPUI picks one from the
+/// Chooses the Linux or FreeBSD display server before GPUI picks one from the
 /// environment. `CAYENCHAT_DISPLAY=x11|wayland` overrides the saved choice.
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 fn select_linux_display(saved: cayenchat_storage::LinuxDisplay) {
     use cayenchat_storage::LinuxDisplay;
     let choice = match std::env::var("CAYENCHAT_DISPLAY")
@@ -9832,14 +9832,14 @@ fn main() {
         Err(error) => eprintln!("CayenChat test build: {error}"),
     }
     let (saved, notice, first_run) = load_settings_at_startup();
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     select_linux_display(saved.linux_display);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     let signal_quit = signals::install();
     Application::new()
         .with_assets(toolbar::Icons)
         .run(move |cx: &mut App| {
-            #[cfg(target_os = "linux")]
+            #[cfg(unix_desktop)]
             if let Some(receiver) = signal_quit {
                 signals::quit_on_signal(receiver, cx);
             }

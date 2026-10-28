@@ -4032,7 +4032,7 @@ impl SettingsWindow {
                 ))
                 .child(hint("channel_number_modifier_hint"))
             })
-            .when(cfg!(target_os = "linux"), |d| {
+            .when(cfg!(unix_desktop), |d| {
                 d.child(self.option_row(
                     "text_key_theme",
                     [

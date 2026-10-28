@@ -49,7 +49,11 @@ Primary targets:
 - macOS
 - Windows
 
-Linux may be considered later, but portable core logic is preferred.
+Linux is supported as well. FreeBSD builds on the same X11/Wayland code
+(`cfg(unix_desktop)`, see `spec/architecture.md`, "Platform boundary"); CI only
+checks that it builds, and the app has not been started on a real FreeBSD.
+OpenBSD and NetBSD are out of scope, since GPUI has no port for them. Portable
+core logic is preferred.
 
 ## Technology direction
 

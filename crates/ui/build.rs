@@ -2,9 +2,22 @@
 use std::process::Command;
 
 fn main() {
+    emit_unix_desktop();
     emit_commit();
     #[cfg(windows)]
     windows_resources();
+}
+
+/// Sets `cfg(unix_desktop)` on the systems with GPUI's X11/Wayland backends and
+/// the XDG desktop: Linux and FreeBSD (OpenBSD and NetBSD have no GPUI port).
+/// This is the one place that names them, apart from the `[target.'cfg(...)']`
+/// tables in `Cargo.toml`, which cannot use a custom cfg and repeat this list.
+fn emit_unix_desktop() {
+    println!("cargo::rustc-check-cfg=cfg(unix_desktop)");
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if matches!(os.as_str(), "linux" | "freebsd") {
+        println!("cargo::rustc-cfg=unix_desktop");
+    }
 }
 
 /// Hands the commit being built to the About window as `CAYENCHAT_COMMIT`.

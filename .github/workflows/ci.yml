@@ -23,6 +23,7 @@ jobs:
       matrix: ${{ steps.choose.outputs.matrix }}
       gui: ${{ steps.choose.outputs.gui }}
       windows: ${{ steps.choose.outputs.windows }}
+      freebsd: ${{ steps.choose.outputs.freebsd }}
 
     steps:
       - name: Check out repository
@@ -105,7 +106,16 @@ jobs:
       # The default member is only the UI crate; test every crate so storage,
       # upload, irc-core and app also run on each platform.
       - name: Test
+        id: test
         run: cargo test --workspace --locked --verbose
+
+      # The UI test binary has died on Windows ARM64 with 0xc0000005 (#659).
+      # libtest prints a test's name only when it ends, so the log cannot say
+      # which one crashed. Run the UI tests again one at a time, where each
+      # name is printed before it starts, to find the one that crashes.
+      - name: Find the crashing UI test (Windows ARM64)
+        if: failure() && steps.test.outcome == 'failure' && matrix.os == 'windows-11-arm'
+        run: cargo test -p cayenchat-ui --bin cayenchat --locked -- --test-threads=1 --nocapture
 
       # The vendored XIM client is outside the workspace; keep its decoder tests.
       # XIM is only used on X11, and the crate does not resolve on other hosts.
@@ -264,3 +274,35 @@ jobs:
           name: gui-e2e-linux
           path: ${{ runner.temp }}/e2e
           if-no-files-found: ignore
+
+  # FreeBSD shares GPUI's X11/Wayland platform with Linux. Only the build is
+  # checked, in a VM: a cross `cargo check` fails on the C dependencies (aws-lc),
+  # and the tests and packages are not run or built there. Nobody has started
+  # the app on a real FreeBSD (spec/development.md, "Continuous integration").
+  freebsd-check:
+    name: FreeBSD x86_64 (build only)
+    needs: changes
+    if: needs.changes.outputs.freebsd == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the build in a FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.0"
+          usesh: true
+          # The sources only need to get in; nothing comes back out.
+          copyback: false
+          prepare: |
+            # The pkg `rust` is built for a newer FreeBSD than the 15.0 VM
+            # (its cargo needs libc FBSD_1.9), so take the toolchain from rustup.
+            pkg install -y curl ca_root_nss pkgconf cmake libxcb libxkbcommon wayland fontconfig freetype2
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          run: |
+            . "$HOME/.cargo/env"
+            cargo check --workspace --all-targets --locked
