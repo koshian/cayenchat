@@ -203,6 +203,13 @@ directional, decoded IRC command/reply lines through core events. The chat windo
 keeps a bounded in-memory transcript and copies it from the native menu. Known
 credential commands are masked, while normal message bodies remain visible.
 The terminal disconnect reason is also part of the copied transcript.
+The View menu switches the log between an overview (stages and notes) and the
+IRC protocol (the decoded lines with → / ←); each is kept per server, bounded
+to 1000 lines, and cleared when a new connection attempt starts. Every line
+shows the local date and time it was recorded (milliseconds, UTC offset) and
+the time since the attempt began, and Copy Connection Diagnostics copies the
+shown view with these stamps; the time of copying is never used. After a
+failure or disconnect the log stays copyable.
 The library generates some maintenance traffic internally; PONG and configured
 JOIN are included, but the transcript is not a complete byte-for-byte capture.
 The trace is visible by default until registration succeeds and after failures;
@@ -3080,7 +3087,10 @@ EXTERNAL and the `-PLUS` (channel binding) mechanisms are out of scope.
 - **Diagnostics.** The connection diagnostics (always on, no extra mode) record
   the stages: the mechanism, whether the server offers it, `CAP` replies,
   `AUTHENTICATE` stages with byte counts, SCRAM's iteration count, the
-  signature check, the 90 seconds registration timeout with the stage SASL
+  numeric reply, the stage a failure stopped in (client-first, server-first,
+  client-final, server-final) and whether the server refused or a client
+  check failed; SCRAM `e=` values are shown only as a fixed RFC 5802 error
+  name, any other value as "not shown". Also the signature check, the 90 seconds registration timeout with the stage SASL
   was in, and the numeric replies the worker already notes. Notes never carry
   a payload, proof, signature, nonce or password; the transcript shows
   `AUTHENTICATE <data>` as `[redacted]` and keeps `+`, `*` and mechanism

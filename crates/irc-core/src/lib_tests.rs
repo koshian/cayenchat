@@ -347,6 +347,7 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
     let (event_tx, events) = mpsc::channel(1);
     event_tx
         .try_send(Event::Diagnostic {
+            at: SystemTime::now(),
             elapsed: Duration::ZERO,
             message: "TLS failed".into(),
         })

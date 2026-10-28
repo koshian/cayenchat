@@ -103,6 +103,7 @@ fn incoming(sequence: usize, images: bool, long_urls: bool, nick_links: bool) ->
     };
     [
         Event::Wire {
+            at: std::time::SystemTime::now(),
             elapsed: Duration::from_millis(sequence as u64),
             direction: WireDirection::Received,
             line: format!(":{sender}!{sender}@load.invalid PRIVMSG {channel} :{text}"),

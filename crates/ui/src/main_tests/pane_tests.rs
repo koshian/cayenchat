@@ -3421,6 +3421,7 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
                 channel: channel.into(),
             },
             Event::Wire {
+                at: std::time::SystemTime::now(),
                 elapsed: Duration::ZERO,
                 direction: WireDirection::Received,
                 line: text.into(),
@@ -3458,8 +3459,8 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
         // Same channel name on two servers: separate conversations.
         assert_eq!(texts(chat, custom_net), ["custom"]);
         assert_eq!(texts(chat, ircnet), ["ircnet"]);
-        assert_eq!(chat.sessions[&custom_net].diagnostics.len(), 1);
-        assert_eq!(chat.sessions[&ircnet].diagnostics.len(), 1);
+        assert_eq!(chat.sessions[&custom_net].wire.len(), 1);
+        assert_eq!(chat.sessions[&ircnet].wire.len(), 1);
 
         // A disconnect on one server leaves the other registered.
         chat.handle_events(

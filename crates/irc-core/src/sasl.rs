@@ -321,14 +321,32 @@ fn safe_text(text: &str) -> String {
     }
 }
 
-/// The `e=` value of a SCRAM message (a fixed token such as `invalid-proof`).
-fn server_error_value(payload: &[u8]) -> String {
+/// The `e=` value of a SCRAM message as a fixed label. Only the error
+/// names of RFC 5802 §7 are passed on; any other value (which could carry
+/// a nonce, proof or signature) is never copied into the diagnostics.
+fn server_error_value(payload: &[u8]) -> &'static str {
     let text = String::from_utf8_lossy(payload);
     let value = text
         .split(',')
         .find_map(|part| part.strip_prefix("e="))
         .unwrap_or_default();
-    safe_text(value)
+    const KNOWN: [&str; 11] = [
+        "invalid-encoding",
+        "extensions-not-supported",
+        "invalid-proof",
+        "channel-bindings-dont-match",
+        "server-does-not-support-channel-binding",
+        "channel-binding-not-supported",
+        "unsupported-channel-binding-type",
+        "unknown-user",
+        "invalid-username-encoding",
+        "no-resources",
+        "other-error",
+    ];
+    KNOWN
+        .into_iter()
+        .find(|known| *known == value)
+        .unwrap_or("unrecognized value (not shown)")
 }
 
 /// `AUTHENTICATE` lines of at most 400 characters; a message that fills its
@@ -466,6 +484,20 @@ mod tests {
         assert!(notes.contains("server rejected"), "{notes}");
         assert!(notes.contains("invalid-proof"), "{notes}");
         assert!(notes.contains("server-final"), "{notes}");
+    }
+
+    #[test]
+    fn unknown_scram_error_values_are_never_copied_into_the_notes() {
+        for stage_value in ["e=nonce-r0b0TT0PSECRET", "e=v=c2lnbmF0dXJl,r=abcdSECRET"] {
+            let (mut sasl, _, _, _) =
+                up_to_client_final(SaslMechanism::ScramSha256, Hash::Sha256, 16);
+            let error = feed(&mut sasl, &challenge(stage_value.as_bytes())).unwrap_err();
+            assert_eq!(error, crate::SASL_FAILED);
+            let notes = sasl.take_failure_notes().join("\n");
+            assert!(!notes.contains("SECRET"), "{notes}");
+            assert!(!notes.contains("c2lnbmF0dXJl"), "{notes}");
+            assert!(notes.contains("not shown"), "{notes}");
+        }
     }
 
     #[test]

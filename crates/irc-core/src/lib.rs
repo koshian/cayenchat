@@ -748,10 +748,14 @@ pub enum WireDirection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Diagnostic {
+        /// When the event happened, for the copied log; `elapsed` is the time
+        /// since the connection attempt began.
+        at: SystemTime,
         elapsed: Duration,
         message: String,
     },
     Wire {
+        at: SystemTime,
         elapsed: Duration,
         direction: WireDirection,
         line: String,
@@ -1243,6 +1247,7 @@ async fn next_command(
 async fn diagnostic(events: &EventSender, started: Instant, message: impl Into<String>) {
     let _ = events
         .send(Event::Diagnostic {
+            at: SystemTime::now(),
             elapsed: started.elapsed(),
             message: message.into(),
         })
@@ -1530,6 +1535,7 @@ impl Transcript {
             let _ = self
                 .events
                 .send(Event::Wire {
+                    at: SystemTime::now(),
                     elapsed: self.started.elapsed(),
                     direction,
                     line,

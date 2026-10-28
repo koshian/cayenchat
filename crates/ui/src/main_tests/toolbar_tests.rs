@@ -9,6 +9,7 @@ use gpui::{Action, MenuItem, TestAppContext};
 fn view_menu_label(toolbar_shown: bool) -> String {
     let menus = app_menus(
         false,
+        Default::default(),
         toolbar_shown,
         false,
         &Localizer::new(Language::English),
@@ -37,6 +38,7 @@ fn the_view_menu_offers_the_menu_bar_apart_from_the_toolbar() {
     let label = |menu_bar_hidden, toolbar_shown| {
         let menus = app_menus(
             false,
+            Default::default(),
             toolbar_shown,
             menu_bar_hidden,
             &Localizer::new(Language::English),

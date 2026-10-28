@@ -344,6 +344,8 @@
   "menu_hide_diagnostics": "接続診断を隠す",
   "menu_show_diagnostics": "接続診断を表示",
   "menu_copy_diagnostics": "接続診断をコピー",
+  "menu_diagnostics_show_protocol": "接続診断：IRC プロトコルを表示",
+  "menu_diagnostics_show_overview": "接続診断：概要を表示",
   "menu_window": "ウインドウ",
   "menu_minimize": "最小化",
   "menu_zoom": "ズーム",
