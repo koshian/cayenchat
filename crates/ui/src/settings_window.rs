@@ -2325,8 +2325,11 @@ impl SettingsWindow {
     /// Generate: a new key from the operating system's random numbers.
     fn generate_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.feedback = None;
+        let Some(target) = self.key_profile(cx).map(|profile| profile.id) else {
+            return;
+        };
         match cayenchat_irc_core::generate_sasl_key() {
-            Ok(secret) => self.offer_key(secret, window, cx),
+            Ok(secret) => self.offer_key(&target, secret, window, cx),
             Err(error) => {
                 self.feedback = Some(self.key_error_text(error));
                 cx.notify();
@@ -2339,9 +2342,11 @@ impl SettingsWindow {
     /// shown, only why it was refused.
     fn import_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.feedback = None;
-        if self.key_profile(cx).is_none() {
+        // The server the import was started for: the selection may change
+        // while the dialog is open or the file is read.
+        let Some(target) = self.key_profile(cx).map(|profile| profile.id) else {
             return;
-        }
+        };
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -2359,19 +2364,22 @@ impl SettingsWindow {
             let result = cx
                 .background_spawn(async move { read_key_file(&path) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| this.imported_key(result, window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.imported_key(&target, result, window, cx)
+            });
         })
         .detach();
     }
 
     fn imported_key(
         &mut self,
+        target: &str,
         result: Result<cayenchat_irc_core::SecretText, KeyFileError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok(secret) => self.offer_key(secret, window, cx),
+            Ok(secret) => self.offer_key(target, secret, window, cx),
             Err(KeyFileError::Key(error)) => {
                 self.feedback = Some(self.key_error_text(error));
                 cx.notify();
@@ -2386,16 +2394,21 @@ impl SettingsWindow {
         }
     }
 
-    /// Stores a new key for the shown server. Replacing a key asks first (the
-    /// old one cannot be got back, and its public key is registered with the
-    /// network); so does the local file as storage, as for a password.
+    /// Stores a new key for the server `target` the import was started for,
+    /// not the one shown now (a removed server stores nothing). Replacing a
+    /// key asks first (the old one cannot be got back, and its public key is
+    /// registered with the network); so does the local file as storage, as
+    /// for a password.
     fn offer_key(
         &mut self,
+        target: &str,
         secret: cayenchat_irc_core::SecretText,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(profile) = self.key_profile(cx) else {
+        let Some(profile) = self.saved.profile(target).cloned() else {
+            self.feedback = Some(self.i18n.text("sasl_key_server_unsaved"));
+            cx.notify();
             return;
         };
         let answer = if profile.sasl_key_saved {
@@ -5618,6 +5631,47 @@ mod escape_tests {
         assert_eq!(note(cx), (false, false));
         form.update(cx, |form, cx| form.show_public_key(cx));
         assert!(form.read_with(cx, |form, _| form.settings.sasl_public_key.is_none()));
+    }
+
+    #[gpui::test]
+    fn an_imported_key_goes_to_the_server_the_import_started_for(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        let a = settings.selected_server.clone();
+        let b = settings.add_server("b.example").id.clone();
+        settings.selected_server = a.clone();
+        let (form, cx, _app) = open(cx, settings);
+        let store = cx.update(|_, cx| crate::secrets::store(cx));
+        let existing = cayenchat_irc_core::generate_sasl_key().unwrap();
+        store
+            .set(
+                &SecretKey::sasl_key(&b),
+                &cayenchat_storage::Secret::new(existing.as_str()),
+            )
+            .unwrap();
+
+        // The import is started for A; the selection moves to B before the
+        // file has been read.
+        form.update(cx, |form, cx| form.select_server(b.clone(), cx));
+        cx.run_until_parked();
+        let imported = cayenchat_irc_core::generate_sasl_key().unwrap();
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.imported_key(&a, Ok(imported.clone()), window, cx)
+            })
+        });
+        cx.run_until_parked();
+
+        let stored = |id: &str| store.get(&SecretKey::sasl_key(id)).unwrap();
+        assert_eq!(stored(&a).unwrap().expose(), imported.as_str());
+        assert_eq!(stored(&b).unwrap().expose(), existing.as_str());
+        // A server that is gone stores nothing.
+        let gone = cayenchat_irc_core::generate_sasl_key().unwrap();
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.imported_key("removed", Ok(gone.clone()), window, cx)
+            })
+        });
+        assert!(stored("removed").is_none());
     }
 
     #[test]
