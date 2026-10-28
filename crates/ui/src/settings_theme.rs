@@ -57,6 +57,9 @@ pub fn refresh(cx: &mut App) {
     finish(SystemTheme::from_system(), cx);
     #[cfg(not(target_os = "macos"))]
     {
+        // The tests never run `main`, so take the MTA here too (idempotent).
+        #[cfg(target_os = "windows")]
+        crate::process_mta::keep();
         let read = cx.background_spawn(async { SystemTheme::from_system() });
         cx.spawn(async move |cx| {
             let result = read.await;
