@@ -8,6 +8,7 @@ use base64::Engine;
 use irc::proto::{Command as IrcCommand, Message as IrcMessage, Response};
 use zeroize::Zeroize;
 
+use crate::ecdsa;
 use crate::scram::{self, Scram};
 use crate::{SaslCredentials, SaslMechanism};
 
@@ -15,6 +16,10 @@ use crate::{SaslCredentials, SaslMechanism};
 const CHUNK: usize = 400;
 /// The most base64 characters accepted for one server message.
 const MAX_INCOMING: usize = 8 * 1024;
+/// The error when the ECDSA key is missing or unreadable at the start of the
+/// exchange.
+pub(crate) const ECDSA_KEY_UNREADABLE: &str =
+    "The SASL private key is missing or unreadable; set a key for this server.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -27,8 +32,10 @@ enum Phase {
     Deriving,
     /// Client-final sent; waiting for server-final.
     ScramFinal,
-    /// Credentials sent (PLAIN) or the server signature verified (SCRAM);
-    /// waiting for 903.
+    /// ECDSA: the account name sent; waiting for the 32 byte challenge.
+    EcdsaChallenge,
+    /// Credentials sent (PLAIN), the server signature verified (SCRAM) or
+    /// the challenge signed (ECDSA); waiting for 903.
     WaitingForResult,
     Complete,
 }
@@ -90,6 +97,7 @@ impl SaslHandshake {
             Phase::ScramFirst => "waiting for the SCRAM server-first message (client-first sent)",
             Phase::Deriving => "deriving the SCRAM keys (server-first accepted)",
             Phase::ScramFinal => "waiting for the SCRAM server-final message (client-final sent)",
+            Phase::EcdsaChallenge => "waiting for the ECDSA challenge (account name sent)",
             Phase::WaitingForResult => "waiting for the SASL result",
             Phase::Complete => "complete",
         }
@@ -97,6 +105,21 @@ impl SaslHandshake {
 
     pub(crate) fn begin(&mut self) -> Result<Out, String> {
         let mut out = Out::default();
+        if self.mechanism == SaslMechanism::EcdsaNist256pChallenge {
+            let readable = ecdsa::is_valid(&self.password);
+            out.notes.push(format!(
+                "SASL ECDSA: the private key {}.",
+                if readable {
+                    "was read"
+                } else {
+                    "is missing or unreadable"
+                }
+            ));
+            if !readable {
+                self.failure_notes.append(&mut out.notes);
+                return Err(ECDSA_KEY_UNREADABLE.into());
+            }
+        }
         self.scram = match self.mechanism.scram_hash() {
             Some(hash) => Some(Scram::new(hash, &self.username, &self.password)?),
             None => None,
@@ -175,7 +198,12 @@ impl SaslHandshake {
                     self.stage(),
                     safe_text(args.last().map_or("", String::as_str))
                 ));
-                return Err(crate::SASL_FAILED.into());
+                return Err(if self.mechanism == SaslMechanism::EcdsaNist256pChallenge {
+                    crate::SASL_KEY_REFUSED
+                } else {
+                    crate::SASL_FAILED
+                }
+                .into());
             }
             _ => {}
         }
@@ -233,6 +261,17 @@ impl SaslHandshake {
                         self.phase = Phase::ScramFirst;
                         scram.first().into_bytes()
                     }
+                    None if self.mechanism == SaslMechanism::EcdsaNist256pChallenge => {
+                        // The key is kept until the challenge is signed.
+                        self.phase = Phase::EcdsaChallenge;
+                        out.notes.push(format!(
+                            "SASL ECDSA: sending the account name ({} bytes).",
+                            self.username.len()
+                        ));
+                        out.send
+                            .extend(authenticate_lines(self.username.as_bytes()));
+                        return Ok(());
+                    }
                     None => {
                         self.phase = Phase::WaitingForResult;
                         let mut plain = format!("\0{}\0{}", self.username, self.password);
@@ -248,6 +287,28 @@ impl SaslHandshake {
                     response.len()
                 ));
                 out.send.extend(authenticate_lines(&response));
+            }
+            Phase::EcdsaChallenge => {
+                if payload.len() != ecdsa::CHALLENGE_BYTES {
+                    return Err(format!(
+                        "The ECDSA challenge from the server is {} bytes, not {}.",
+                        payload.len(),
+                        ecdsa::CHALLENGE_BYTES
+                    ));
+                }
+                out.notes.push(format!(
+                    "SASL ECDSA: challenge received ({} bytes).",
+                    payload.len()
+                ));
+                let signature = ecdsa::sign(&self.password, payload)
+                    .map_err(|error| format!("The ECDSA challenge could not be signed: {error}"))?;
+                self.password.zeroize();
+                out.notes.push(format!(
+                    "SASL ECDSA: challenge signed; sending the signature ({} bytes).",
+                    signature.len()
+                ));
+                self.phase = Phase::WaitingForResult;
+                out.send.extend(authenticate_lines(&signature));
             }
             Phase::ScramFirst => {
                 let scram = self.scram.as_mut().ok_or("Unexpected SASL state.")?;

@@ -22,7 +22,7 @@ Server history is limited to channel history on opt-in IRCv3 servers (recent lin
 - DONE — multiple live networks; each connects, disconnects and retries independently, and its events, menus, prompts and WHOIS windows stay with it
 - PARTIAL — connecting, registered, disconnected status and errors shown in the UI (a lost registered connection also adds a `Disconnected: reason` line to every channel and conversation log of that server, so the log shows where it was cut); directional IRC transcript appears automatically during connection/failure, with a menu toggle after registration and clipboard copy (parsed lines, not a complete socket capture)
 - DONE — optional server PASS over TLS
-- PARTIAL — SASL PLAIN and SCRAM-SHA-1/256/512 over TLS with CAP negotiation (D071); ECDSA-NIST256P-CHALLENGE is #657; external-server interoperability unverified
+- PARTIAL — SASL PLAIN, SCRAM-SHA-1/256/512 and ECDSA-NIST256P-CHALLENGE over TLS with CAP negotiation (D071, D072); external-server interoperability unverified (the ECDSA signature form was checked against OpenSSL, not against a network)
 
 ## Channels
 

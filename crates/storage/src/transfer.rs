@@ -137,6 +137,7 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         server.remember_passwords = false;
         server.server_saved = false;
         server.sasl_saved = false;
+        server.sasl_key_saved = false;
     }
     if let Some((_, id)) = ids.iter().find(|(old, _)| *old == settings.selected_server) {
         settings.selected_server = id.clone();

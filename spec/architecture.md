@@ -550,7 +550,7 @@ Safe-channel short names are sent unchanged in JOIN; the server's returned full
 name (including its five-character identifier) is used for the conversation,
 roster, messages and subsequent commands, and is preserved in WHOIS channel links.
 CAP negotiation is shared by SASL and the opt-in IRCv3 extensions (see IRCv3
-capabilities and message tags below); SASL runs the server's chosen mechanism (PLAIN or SCRAM-SHA-1/256/512, D071) once `sasl`
+capabilities and message tags below); SASL runs the server's chosen mechanism (PLAIN, SCRAM-SHA-1/256/512 or ECDSA-NIST256P-CHALLENGE, D071, D072) once `sasl`
 is acknowledged, and CAP END waits for its success. The UI retains each server's active connection
 configuration and retries its unexpected disconnections after 3, 6, 12, 24, then 30
 seconds (capped), independently of the other servers.
@@ -561,7 +561,7 @@ A successful registration resets the delay; an explicit disconnect cancels pendi
 retries. Disconnect during DNS lookup or TCP/TLS setup ends the worker at once
 (the command queue is read only after the transport opens); once connected it
 sends QUIT and flushes it before closing. The core reports a terminal `Refused` event instead of `Disconnected`
-for SASL failures (902 account locked or held, 904–907), a missing offer of the chosen SASL mechanism, a bad SCRAM challenge or signature, UTF8ONLY with a legacy encoding,
+for SASL failures (902 account locked or held, 904–907), a missing offer of the chosen SASL mechanism, a bad SCRAM or ECDSA challenge or a bad SCRAM signature, UTF8ONLY with a legacy encoding,
 and 464/465 during registration; the UI does not retry those automatically,
 because repeating rejected credentials risks account lockout or a server ban.
 The `irc` library consumes 432/433 and reports `NoUsableNick` because no
@@ -1920,6 +1920,7 @@ storage::credentials::CredentialStore
 Secrets are addressed by `SecretKey`, whose names come from stable internal
 IDs: `connection/<profile-id>/server-password`,
 `connection/<profile-id>/sasl-password`,
+`connection/<profile-id>/sasl-key` (the SASL ECDSA private key, D072),
 `connection/<profile-id>/channel-key/<channel>` (D052) and
 `uploader/<provider-id>/<account>/credential`. Profile IDs are the existing
 `ircnet`, `ircnet-ipv6` and legacy `custom-N` IDs remain unchanged. New custom
@@ -1930,8 +1931,8 @@ its `Debug` output and zeroes its buffer on drop (best effort). Credential
 errors are mapped to sanitized text; keyring payloads, which may contain secret
 bytes, are dropped. The settings file records only the backend choice
 (`credential_backend`) and, per profile, a note of which passwords are in the
-store (`server_saved`, `sasl_saved`; the old `remember_passwords` counts as
-both). Settings shows the saved state from the note, so opening it, picking or
+store (`server_saved`, `sasl_saved`, and `sasl_key_saved` for the SASL key;
+the old `remember_passwords` counts as both passwords). Settings shows the saved state from the note, so opening it, picking or
 adding a server never reads the store (D068); a connection reads the store and
 corrects the note.
 
