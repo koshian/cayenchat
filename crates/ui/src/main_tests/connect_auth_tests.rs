@@ -295,6 +295,41 @@ fn another_refusal_still_raises_the_error_dialog(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_refused_sasl_key_raises_an_error_and_no_password_dialog(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(cayenchat_irc_core::SASL_KEY_REFUSED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty(), "no password to ask for");
+        assert!(!chat.sessions[&NET].retry_pending, "no automatic retry");
+        let notices = chat.notices.all();
+        assert!(!notices.is_empty());
+        let text = format!("{notices:?}");
+        assert!(text.contains(&chat.i18n.text("sasl_key_refused")), "{text}");
+    });
+}
+
+#[test]
+fn only_a_password_failure_is_answered_by_the_dialog() {
+    use crate::connect_auth::Refusal;
+    assert_eq!(
+        Refusal::of(cayenchat_irc_core::SASL_FAILED, false),
+        Some(Refusal::Sasl)
+    );
+    assert_eq!(
+        Refusal::of(cayenchat_irc_core::SASL_KEY_REFUSED, false),
+        None
+    );
+}
+
+#[gpui::test]
 fn a_connection_keeps_no_password_in_the_session(cx: &mut TestAppContext) {
     let (chat, _store, cx) = open_chat(cx);
     chat.update_in(cx, |chat, window, cx| {
@@ -564,6 +599,7 @@ fn the_profile_mechanism_reaches_the_connection_config() {
         (Saved::ScramSha1, Wire::ScramSha1),
         (Saved::ScramSha256, Wire::ScramSha256),
         (Saved::ScramSha512, Wire::ScramSha512),
+        (Saved::EcdsaNist256pChallenge, Wire::EcdsaNist256pChallenge),
     ] {
         profile.sasl_mechanism = saved;
         let config = crate::connection_config_without_secrets(

@@ -417,3 +417,108 @@ fn the_store_is_touched_only_for_passwords_noted_as_saved() {
     forget_removed_profiles(&previous, &next, &store).unwrap();
     assert_eq!(touches(), 4);
 }
+
+fn ecdsa_profile(settings: &mut Settings) -> cayenchat_storage::ServerProfile {
+    settings.add_server("irc.example.org");
+    let profile = settings.selected_profile_mut().unwrap();
+    profile.nickname = "alice".into();
+    profile.username = "ident".into();
+    profile.use_tls = true;
+    profile.sasl_enabled = true;
+    profile.sasl_username = "account".into();
+    profile.sasl_mechanism = cayenchat_storage::SaslMechanism::EcdsaNist256pChallenge;
+    profile.clone()
+}
+
+#[test]
+fn the_sasl_key_is_read_only_when_noted_and_a_bad_one_counts_as_missing() {
+    let backend = Arc::new(CountingBackend {
+        inner: MemoryBackend::new(CredentialBackendKind::System),
+        touches: Default::default(),
+    });
+    let store = CredentialStore::with_backend(backend.clone());
+    let touches = || backend.touches.load(std::sync::atomic::Ordering::SeqCst);
+    let mut settings = Settings::default();
+    let mut profile = ecdsa_profile(&mut settings);
+    let key = cayenchat_irc_core::generate_sasl_key().unwrap();
+    store
+        .set(&profile.sasl_key_key(), &Secret::new(key.as_str()))
+        .unwrap();
+
+    // Not noted: the store is not read, and the connection is stopped
+    // before it starts, not sent to the password dialog.
+    let (_, missing, _) =
+        super::saved_connection_config_read(&profile, settings.language, &store).unwrap();
+    assert!(missing.key && !missing.sasl && !missing.any());
+    assert_eq!(touches(), 0);
+
+    // Noted: the key is read and put into the configuration.
+    profile.sasl_key_saved = true;
+    let (config, missing, _) =
+        super::saved_connection_config_read(&profile, settings.language, &store).unwrap();
+    assert!(!missing.sasl_secret());
+    assert_eq!(touches(), 1);
+    let sasl = config.sasl.unwrap();
+    assert_eq!(
+        sasl.mechanism,
+        cayenchat_irc_core::SaslMechanism::EcdsaNist256pChallenge
+    );
+    assert_eq!(sasl.password, key.as_str());
+
+    // A stored value that is not a key is as good as none.
+    store
+        .set(&profile.sasl_key_key(), &Secret::new("not a key"))
+        .unwrap();
+    let (config, missing, _) =
+        super::saved_connection_config_read(&profile, settings.language, &store).unwrap();
+    assert!(missing.key);
+    assert!(config.sasl.unwrap().password.is_empty());
+
+    // The password's own note does not make the key readable.
+    profile.sasl_key_saved = false;
+    profile.set_sasl_password_saved(true);
+    let before = touches();
+    let (_, missing, _) =
+        super::saved_connection_config_read(&profile, settings.language, &store).unwrap();
+    assert!(missing.key);
+    assert_eq!(touches(), before);
+}
+
+#[test]
+fn removing_a_server_deletes_its_sasl_key_but_only_when_noted() {
+    let store = memory_store();
+    let mut previous = Settings::default();
+    let mut profile = ecdsa_profile(&mut previous);
+    let key = cayenchat_irc_core::generate_sasl_key().unwrap();
+    store
+        .set(&profile.sasl_key_key(), &Secret::new(key.as_str()))
+        .unwrap();
+    let mut next = previous.clone();
+    next.remove_selected_server();
+    // No note, no deletion.
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    assert!(store.contains(&profile.sasl_key_key()).unwrap());
+    profile.sasl_key_saved = true;
+    *previous.selected_profile_mut().unwrap() = profile.clone();
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    assert!(!store.contains(&profile.sasl_key_key()).unwrap());
+}
+
+#[test]
+fn the_private_key_never_reaches_the_settings_file_or_debug_output() {
+    let mut settings = Settings::default();
+    let mut profile = ecdsa_profile(&mut settings);
+    profile.sasl_key_saved = true;
+    *settings.selected_profile_mut().unwrap() = profile.clone();
+    let key = cayenchat_irc_core::generate_sasl_key().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.json");
+    cayenchat_storage::save_to(&path, &settings).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"sasl_key_saved\": true"), "{text}");
+    assert!(!text.contains(key.as_str()));
+    // The configuration's debug output shows no key either.
+    let mut config = super::connection_config_without_secrets(&profile, settings.language).unwrap();
+    super::connect_auth::apply_secrets(&mut config, None, Some(&Secret::new(key.as_str())));
+    assert!(!format!("{config:?}").contains(key.as_str()));
+}

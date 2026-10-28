@@ -108,7 +108,6 @@ Likely later features include:
 - notifications
 - keyboard shortcuts
 - logs/history
-- SASL ECDSA-NIST256P-CHALLENGE (PLAIN and SCRAM-SHA-1/256/512 exist)
 - IRCv3 capabilities
 - themes/appearance preferences
 - scripting or automation hooks

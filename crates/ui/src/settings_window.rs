@@ -5423,7 +5423,7 @@ mod server_settings_tests {
 
 #[cfg(test)]
 mod escape_tests {
-    use super::SettingsWindow;
+    use super::{KeyError, KeyFileError, SecretKey, SettingsWindow, read_key_file};
     use gpui::TestAppContext;
 
     #[gpui::test]
@@ -5554,6 +5554,103 @@ mod escape_tests {
             state(cx),
             (false, cayenchat_storage::SaslMechanism::ScramSha512, true)
         );
+    }
+
+    #[gpui::test]
+    fn the_sasl_key_is_made_shown_copied_and_deleted(cx: &mut TestAppContext) {
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        let id = form.read_with(cx, |form, _| form.settings.values.selected_server.clone());
+        let store = cx.update(|_, cx| crate::secrets::store(cx));
+        let note = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                let in_form = form
+                    .settings
+                    .values
+                    .selected_profile()
+                    .unwrap()
+                    .sasl_key_saved;
+                let in_saved = form.saved.profile(&form.settings.values.selected_server);
+                (in_form, in_saved.unwrap().sasl_key_saved)
+            })
+        };
+        assert_eq!(note(cx), (false, false));
+
+        cx.update(|window, cx| form.update(cx, |form, cx| form.generate_key(window, cx)));
+        let stored = store.get(&SecretKey::sasl_key(&id)).unwrap().unwrap();
+        assert!(cayenchat_irc_core::sasl_key_is_valid(stored.expose()));
+        assert_eq!(note(cx), (true, true));
+        let public = form
+            .read_with(cx, |form, _| form.settings.sasl_public_key.clone())
+            .expect("the public key is shown");
+        // 33 bytes (compressed) in base64 are 44 characters.
+        assert_eq!(public.len(), 44);
+
+        // Copy puts the public key on the clipboard, never the private one.
+        form.update(cx, |form, cx| form.copy_public_key(cx));
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some(public.as_str()));
+        assert_ne!(copied.as_deref(), Some(stored.expose()));
+
+        // Showing again reads the store, as the user asked.
+        form.update(cx, |form, _| form.settings.sasl_public_key = None);
+        form.update(cx, |form, cx| form.show_public_key(cx));
+        assert_eq!(
+            form.read_with(cx, |form, _| form.settings.sasl_public_key.clone()),
+            Some(public)
+        );
+
+        // Delete clears the store, the notes and the shown key.
+        form.update(cx, |form, cx| {
+            let result = crate::secrets::store(cx).delete(&SecretKey::sasl_key(&id));
+            form.key_done(&id, result, false, cx);
+            form.settings.sasl_public_key = None;
+        });
+        assert!(store.get(&SecretKey::sasl_key(&id)).unwrap().is_none());
+        assert_eq!(note(cx), (false, false));
+        form.update(cx, |form, cx| form.show_public_key(cx));
+        assert!(form.read_with(cx, |form, _| form.settings.sasl_public_key.is_none()));
+    }
+
+    #[test]
+    fn key_files_are_read_with_the_reason_they_are_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let write = |name: &str, text: &str| {
+            let path = directory.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let ok = write(
+            "ok.pem",
+            "-----BEGIN PRIVATE KEY-----\n\
+             MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg7bua35rLTqSZSqVG\n\
+             eqVCn9nr9neWhNoQSdfIliAszo6hRANCAAQt7dJhtTnt+F+o8tGZEmiXpAv19D+/\n\
+             wxsyotYgHOeMqHvQsPqboMB/wIAv6O15TDlnG6Cuyk9MQ/G3FRgwtTg8\n\
+             -----END PRIVATE KEY-----\n",
+        );
+        assert!(read_key_file(&ok).is_ok());
+        let encrypted = write(
+            "enc.pem",
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n-----END ENCRYPTED PRIVATE KEY-----\n",
+        );
+        assert!(matches!(
+            read_key_file(&encrypted),
+            Err(KeyFileError::Key(KeyError::Encrypted))
+        ));
+        let huge = write("huge.pem", &"A".repeat(100_000));
+        assert!(matches!(
+            read_key_file(&huge),
+            Err(KeyFileError::Key(KeyError::NotPem))
+        ));
+        assert!(matches!(
+            read_key_file(&directory.path().join("missing.pem")),
+            Err(KeyFileError::Io(_))
+        ));
+        let binary = directory.path().join("binary.pem");
+        std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(matches!(
+            read_key_file(&binary),
+            Err(KeyFileError::Key(KeyError::NotPem))
+        ));
     }
 
     #[gpui::test]

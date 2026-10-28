@@ -235,6 +235,29 @@ mod tests {
         assert_eq!(*import_pem(&with_parameters).unwrap(), *secret);
     }
 
+    /// A key made by `openssl ecparam -genkey -name prime256v1 -noout` and
+    /// converted with `openssl pkcs8 -topk8 -nocrypt`; the public key is
+    /// `openssl ec -pubout -conv_form compressed`'s. A throwaway test key.
+    const OPENSSL_SEC1: &str = "-----BEGIN EC PRIVATE KEY-----\n\
+        MHcCAQEEIO27mt+ay06kmUqlRnqlQp/Z6/Z3loTaEEnXyJYgLM6OoAoGCCqGSM49\n\
+        AwEHoUQDQgAELe3SYbU57fhfqPLRmRJol6QL9fQ/v8MbMqLWIBznjKh70LD6m6DA\n\
+        f8CAL+jteUw5ZxugrspPTEPxtxUYMLU4PA==\n\
+        -----END EC PRIVATE KEY-----\n";
+    const OPENSSL_PKCS8: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg7bua35rLTqSZSqVG\n\
+        eqVCn9nr9neWhNoQSdfIliAszo6hRANCAAQt7dJhtTnt+F+o8tGZEmiXpAv19D+/\n\
+        wxsyotYgHOeMqHvQsPqboMB/wIAv6O15TDlnG6Cuyk9MQ/G3FRgwtTg8\n\
+        -----END PRIVATE KEY-----\n";
+    const OPENSSL_PUBLIC: &str = "Ai3t0mG1Oe34X6jy0ZkSaJekC/X0P7/DGzKi1iAc54yo";
+
+    #[test]
+    fn keys_written_by_openssl_give_openssl_s_compressed_public_key() {
+        for pem in [OPENSSL_SEC1, OPENSSL_PKCS8] {
+            let secret = import_pem(pem).unwrap();
+            assert_eq!(public_key_base64(&secret).unwrap(), OPENSSL_PUBLIC);
+        }
+    }
+
     #[test]
     fn unreadable_files_say_what_could_not_be_read() {
         let cases = [
