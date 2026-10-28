@@ -125,6 +125,11 @@ pub enum Error {
     #[error("none of the specified nicknames were usable")]
     NoUsableNick,
 
+    /// The server sent more channels or members than the client keeps (local change, see
+    /// vendor/README.md). The list would be incomplete, so the connection ends.
+    #[error("channel list limit exceeded: {0}")]
+    ChannelListLimit(&'static str),
+
     /// Stream has already been configured.
     #[error("stream has already been configured")]
     StreamAlreadyConfigured,
