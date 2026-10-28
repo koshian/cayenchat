@@ -24,8 +24,18 @@ pub struct User {
 impl User {
     /// Creates a new User.
     pub fn new(string: &str) -> User {
-        let ranks: Vec<_> = AccessLevelIterator::new(string).collect();
+        let mut ranks: Vec<_> = AccessLevelIterator::new(string).collect();
         let mut state = &string[ranks.len()..];
+        // The prefix is parsed above, so dedupe only now. Keep each level once, so the list never outgrows the set of levels (local change,
+        // see vendor/README.md).
+        let mut seen = Vec::with_capacity(ranks.len().min(8));
+        ranks.retain(|r| {
+            let new = !seen.contains(r);
+            if new {
+                seen.push(*r);
+            }
+            new
+        });
         let nickname = state.find('!').map_or(state, |i| &state[..i]).to_owned();
         state = state.find('!').map_or("", |i| &state[i + 1..]);
         let username = state.find('@').map(|i| state[..i].to_owned());
@@ -100,7 +110,9 @@ impl User {
         if level > self.highest_access_level() {
             self.highest_access_level = level
         }
-        self.access_levels.push(level)
+        if !self.access_levels.contains(&level) {
+            self.access_levels.push(level)
+        }
     }
 
     /// Removes an access level from the list, and updates the highest level if necessary.
