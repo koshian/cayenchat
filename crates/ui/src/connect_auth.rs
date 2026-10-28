@@ -94,6 +94,25 @@ pub(crate) fn uses_key(config: &ConnectionConfig) -> bool {
     })
 }
 
+/// Whether `config` still connects the way `profile` says: same server,
+/// port, TLS and SASL account and mechanism. The profile's stored secrets
+/// belong to that identity; a `config` that differs (the settings changed
+/// while the session kept its old connection) must not be given them, or a
+/// password or key could go to another server or into another mechanism.
+pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig) -> bool {
+    let sasl = match (&config.sasl, profile.sasl_enabled) {
+        (None, false) => true,
+        (Some(credentials), true) => {
+            credentials.username == profile.sasl_username
+                && credentials.mechanism == crate::sasl_mechanism(profile.sasl_mechanism)
+        }
+        _ => false,
+    };
+    sasl && config.host == profile.host
+        && config.port == profile.port
+        && config.use_tls == profile.use_tls
+}
+
 /// The passwords `config` sends that the profile does not note as saved:
 /// the ones a refusal of the other password would otherwise lose.
 pub(crate) fn unsaved_secrets(
@@ -273,6 +292,18 @@ impl ChatWindow {
         session.retry_token += 1;
         let token = session.retry_token;
         let profile = self.saved.profile(&session.profile_id).cloned();
+        // The settings changed after this connection was made: the stored
+        // secrets are those of the new settings. Reconnecting with them
+        // would mix the two, so the user connects again with the new ones.
+        if profile
+            .as_ref()
+            .is_some_and(|profile| !matches_profile(profile, &config))
+        {
+            let text = self.i18n.text("reconnect_settings_changed");
+            self.state.append_server_message(network, text.clone());
+            self.raise_error(Some(network), text, crate::notices::Origin::Background, cx);
+            return;
+        }
         let store = secrets::store(cx);
         let read = match profile {
             None => (Ok(None), Ok(None)),
@@ -565,6 +596,23 @@ impl ChatWindow {
         if let Err(error) = validated {
             self.credential_prompts[index].error = Some(error);
             cx.notify();
+            return;
+        }
+        // The prompt holds the configuration of when it opened. If the
+        // settings changed since, what was typed would go to the old server
+        // under the new settings' name.
+        let stale = matches!(resume, Resume::Reconnect { .. })
+            && self.sessions.get(&network).is_some_and(|session| {
+                self.saved
+                    .profile(&session.profile_id)
+                    .is_some_and(|profile| {
+                        !matches_profile(profile, &self.credential_prompts[index].config)
+                    })
+            });
+        if stale {
+            self.close_credential_prompt(index, window, cx);
+            let text = self.i18n.text("reconnect_settings_changed");
+            self.raise_error(Some(network), text, crate::notices::Origin::User, cx);
             return;
         }
         self.close_credential_prompt(index, window, cx);
@@ -887,7 +935,10 @@ fn saved_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{Missing, apply_secrets, fill, note_found, unsaved_secrets, while_incomplete};
+    use super::{
+        Missing, apply_secrets, fill, matches_profile, note_found, unsaved_secrets,
+        while_incomplete,
+    };
     use cayenchat_irc_core::{ConnectionConfig, SaslCredentials};
     use cayenchat_storage::Secret;
 
@@ -901,6 +952,50 @@ mod tests {
             });
         }
         config
+    }
+
+    /// The profile `config(sasl)` was made from.
+    fn profile(sasl: bool) -> cayenchat_storage::ServerProfile {
+        let config = config(sasl);
+        let mut profile = cayenchat_storage::ServerProfile::default();
+        profile.host = config.host;
+        profile.port = config.port;
+        profile.use_tls = config.use_tls;
+        profile.sasl_enabled = sasl;
+        profile.sasl_username = "acct".into();
+        profile.sasl_mechanism = cayenchat_storage::SaslMechanism::Plain;
+        profile
+    }
+
+    #[test]
+    fn a_configuration_matches_the_profile_it_was_made_from() {
+        assert!(matches_profile(&profile(true), &config(true)));
+        assert!(matches_profile(&profile(false), &config(false)));
+    }
+
+    #[test]
+    fn a_changed_profile_does_not_match_the_old_configuration() {
+        let old = config(true);
+        let mut changed = profile(true);
+        changed.sasl_mechanism = cayenchat_storage::SaslMechanism::EcdsaNist256pChallenge;
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.sasl_mechanism = cayenchat_storage::SaslMechanism::ScramSha256;
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.sasl_username = "other".into();
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.host = "other.example".into();
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.port += 1;
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.use_tls = !changed.use_tls;
+        assert!(!matches_profile(&changed, &old));
+        assert!(!matches_profile(&profile(false), &old));
+        assert!(!matches_profile(&profile(true), &config(false)));
     }
 
     #[test]

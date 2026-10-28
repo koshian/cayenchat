@@ -28,6 +28,8 @@ fn open_chat(
     let profile = &mut settings.servers[0];
     profile.nickname = "me".into();
     profile.username = "me".into();
+    profile.host = "127.0.0.1".into();
+    profile.port = 1;
     profile.use_tls = true;
     profile.sasl_enabled = true;
     profile.sasl_username = "acct".into();
@@ -100,6 +102,27 @@ fn a_reconnect_without_a_saved_sasl_password_asks_and_cancel_stops_it(cx: &mut T
     });
     cx.run_until_parked();
     chat.update(cx, |chat, _| assert!(chat.credential_prompts.is_empty()));
+}
+
+#[gpui::test]
+fn a_reconnect_after_the_settings_changed_does_not_use_the_new_secrets(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        let profile = &mut chat.saved.servers[0];
+        profile.sasl_mechanism = cayenchat_storage::SaslMechanism::EcdsaNist256pChallenge;
+        profile.sasl_key_saved = true;
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty(), "no dialog either");
+        let session = &chat.sessions[&NET];
+        assert!(
+            session.irc.is_none(),
+            "nothing connects with mixed settings"
+        );
+        assert!(!session.retry_pending);
+    });
 }
 
 #[gpui::test]

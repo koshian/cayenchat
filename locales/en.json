@@ -496,6 +496,7 @@
   "sasl_key_delete_detail": "The key cannot be recovered. You cannot sign in with it again unless you saved a copy elsewhere.",
   "sasl_key_delete_confirm": "Delete",
   "sasl_key_required": "No SASL key is set for this server. Generate or import a key in the server's settings, and register its public key with the network.",
+  "reconnect_settings_changed": "The settings of this server changed after it connected. Connect again to use the new settings.",
   "sasl_key_refused": "The server refused the SASL key. Check that the key is registered for this account.",
   "sasl_key_error_random": "The operating system could not provide random numbers.",
   "sasl_key_error_not_pem": "The file is not PEM text (or it is too large).",
