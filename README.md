@@ -2,7 +2,7 @@
 
 [Japanese README](README.ja.md)
 
-A compact native IRC desktop client written in Rust and GPUI, for macOS, Windows and Linux.
+A compact native IRC desktop client written in Rust and GPUI, for macOS, Windows and Linux. FreeBSD is only checked to build in CI; it has not been run on a real FreeBSD.
 
 - Multiple servers at once, with per-server nickname, auto-join channels, TLS and SASL
 - UTF-8, ISO-2022-JP, Shift_JIS and EUC-JP encodings

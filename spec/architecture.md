@@ -200,6 +200,8 @@ macOS and Windows are equal primary targets.
 
 Platform-specific behavior should sit behind narrow interfaces. Do not introduce a macOS-only assumption into core or application state for convenience.
 
+Linux and FreeBSD share GPUI's X11/Wayland platform and the XDG desktop. The `ui` crate's `build.rs` sets `cfg(unix_desktop)` on exactly those two systems (`CARGO_CFG_TARGET_OS` is `linux` or `freebsd`), and the code uses it for everything that belongs to that desktop: GPUI's `wayland`/`x11` features, the key bindings, the SIGTERM handling, login autostart, `.desktop`, the display server choice, the GTK Emacs key theme, the language lookup and settings reset. When GPUI gains another such OS, change `build.rs` and the `[target.'cfg(any(target_os = "linux", target_os = "freebsd"))']` table in `crates/ui/Cargo.toml`, which cannot use a custom cfg and repeats the list. What depends on a Linux-only mechanism keeps `target_os = "linux"`: the logind sleep notice and its `zbus` dependency (FreeBSD takes the "other OS" path of `wake.rs`). The core crates keep their `unix` / `not(macos)` conditions, which already cover FreeBSD. FreeBSD is only checked to build in CI; the app has not been started on a real FreeBSD. OpenBSD and NetBSD are out of scope (GPUI has no port).
+
 ## UI structure
 
 The initial UI should be structurally close to a traditional desktop IRC client:
@@ -835,7 +837,7 @@ by all servers). The vendored GPUI answers `WM_QUERYENDSESSION` with TRUE and
 runs the app quit handlers synchronously on `WM_ENDSESSION`; see
 `vendor/gpui/PATCHES.md`. If the network is already down the QUIT is not delivered.
 
-On Linux SIGTERM, SIGHUP and SIGINT take the same path (issue #285,
+On Linux and FreeBSD SIGTERM, SIGHUP and SIGINT take the same path (issue #285,
 `crates/ui/src/signals.rs`). A `signal-hook` thread wakes the UI thread through a
 channel (no polling), which calls `App::quit`, so the layout is saved and
 `quit_connections` runs; with no connections it ends at once. Two safeguards keep the
@@ -892,7 +894,8 @@ is never blocked and no run loop is nested; `kIOMessageSystemWillSleep` waits
 for the UI, `kIOMessageCanSystemSleep` is allowed at once, and
 `IOAllowPowerChange` is called exactly once per message; a failed registration
 is logged and left to the clock check), `PBT_APMSUSPEND` in the same Windows callback, and logind's
-`PrepareForSleep(true)` on Linux, where a `delay` inhibitor lock
+`PrepareForSleep(true)` on Linux (not FreeBSD, which has no logind and takes the
+clock check alone), where a `delay` inhibitor lock
 (`Inhibit("sleep", "CayenChat", …)`) is held while running, released once the
 UI is done and taken again on wake. The notice carries a `SleepNotice` guard
 that the UI drops when finished; the OS-side handler waits for that for at most

@@ -23,6 +23,7 @@ jobs:
       matrix: ${{ steps.choose.outputs.matrix }}
       gui: ${{ steps.choose.outputs.gui }}
       windows: ${{ steps.choose.outputs.windows }}
+      freebsd: ${{ steps.choose.outputs.freebsd }}
 
     steps:
       - name: Check out repository
@@ -264,3 +265,31 @@ jobs:
           name: gui-e2e-linux
           path: ${{ runner.temp }}/e2e
           if-no-files-found: ignore
+
+  # FreeBSD shares GPUI's X11/Wayland platform with Linux. Only the build is
+  # checked, in a VM: a cross `cargo check` fails on the C dependencies (aws-lc),
+  # and the tests and packages are not run or built there. Nobody has started
+  # the app on a real FreeBSD (spec/development.md, "Continuous integration").
+  freebsd-check:
+    name: FreeBSD x86_64 (build only)
+    needs: changes
+    if: needs.changes.outputs.freebsd == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the build in a FreeBSD VM
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "15.0"
+          usesh: true
+          # The sources only need to get in; nothing comes back out.
+          copyback: false
+          prepare: |
+            pkg install -y rust pkgconf cmake libxcb libxkbcommon wayland fontconfig freetype2
+          run: |
+            cargo check --workspace --all-targets --locked

@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-Rust と GPUI で作った、macOS・Windows・Linux 向けのコンパクトなネイティブ IRC クライアントです。
+Rust と GPUI で作った、macOS・Windows・Linux 向けのコンパクトなネイティブ IRC クライアントです。FreeBSD は CI でビルドを確かめているだけで、実機での動作は確認していません。
 
 - 複数サーバーへの同時接続（サーバーごとにニックネーム、自動参加チャンネル、TLS、SASL を設定）
 - UTF-8、ISO-2022-JP、Shift_JIS、EUC-JP に対応

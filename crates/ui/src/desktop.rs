@@ -50,7 +50,7 @@ impl ButtonLayout {
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(unix_desktop), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DoubleClick {
     #[default]
@@ -60,7 +60,7 @@ pub enum DoubleClick {
     None,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(unix_desktop), allow(dead_code))]
 impl DoubleClick {
     pub fn parse(value: &str) -> Self {
         match value {
@@ -86,7 +86,7 @@ impl Global for DesktopSettings {}
 
 /// Extracts the family from a Pango font description such as
 /// `Adwaita Sans 11` or `Cantarell Bold 11`.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(unix_desktop), allow(dead_code))]
 pub fn font_family(description: &str) -> Option<String> {
     const STYLES: [&str; 12] = [
         "bold",
@@ -117,7 +117,7 @@ pub fn font_family(description: &str) -> Option<String> {
 
 /// Reads `gtk-key-theme-name` from GTK 3's `settings.ini`, the fallback for
 /// desktops whose portal does not publish `gtk-key-theme`.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(unix_desktop), allow(dead_code))]
 pub fn settings_ini_key_theme(contents: &str) -> Option<String> {
     let mut in_settings = false;
     for line in contents.lines().map(str::trim) {
@@ -133,7 +133,7 @@ pub fn settings_ini_key_theme(contents: &str) -> Option<String> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 fn settings_ini_emacs() -> bool {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|path| !path.is_empty())
@@ -156,15 +156,15 @@ pub fn current(cx: &App) -> DesktopSettings {
 /// Loads the portal settings and follows later changes.
 pub fn watch(cx: &mut App) {
     cx.set_global(DesktopSettings {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix_desktop)]
         emacs_keys: settings_ini_emacs(),
         ..Default::default()
     });
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     portal::watch(cx);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 mod portal {
     use super::{ButtonLayout, DesktopSettings, DoubleClick, font_family, settings_ini_emacs};
     use ashpd::desktop::settings::Settings;
