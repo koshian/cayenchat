@@ -80,6 +80,9 @@ pub enum SecretKey {
     ServerPassword { profile: String },
     /// SASL PLAIN password for a server profile.
     SaslPassword { profile: String },
+    /// The P-256 private key of SASL ECDSA-NIST256P-CHALLENGE for a server
+    /// profile (base64 of the 32 byte scalar).
+    SaslKey { profile: String },
     /// Token authenticating an external image uploader account.
     UploaderToken { provider: String, account: String },
     /// The `+k` key of a channel on a server profile. `channel` is the name
@@ -96,6 +99,12 @@ impl SecretKey {
 
     pub fn sasl_password(profile: &str) -> Self {
         Self::SaslPassword {
+            profile: profile.to_owned(),
+        }
+    }
+
+    pub fn sasl_key(profile: &str) -> Self {
+        Self::SaslKey {
             profile: profile.to_owned(),
         }
     }
@@ -123,6 +132,7 @@ impl SecretKey {
         match self {
             Self::ServerPassword { profile } => format!("connection/{profile}/server-password"),
             Self::SaslPassword { profile } => format!("connection/{profile}/sasl-password"),
+            Self::SaslKey { profile } => format!("connection/{profile}/sasl-key"),
             Self::UploaderToken { provider, account } => {
                 format!("uploader/{provider}/{account}/credential")
             }
@@ -810,6 +820,10 @@ mod tests {
         assert_eq!(
             SecretKey::sasl_password("ircnet").name(),
             "connection/ircnet/sasl-password"
+        );
+        assert_eq!(
+            SecretKey::sasl_key("ircnet").name(),
+            "connection/ircnet/sasl-key"
         );
         assert_eq!(
             SecretKey::uploader_token("imgbb").name(),
