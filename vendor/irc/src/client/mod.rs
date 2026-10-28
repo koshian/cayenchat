@@ -542,8 +542,12 @@ impl ClientState {
 
     fn send<M: Into<Message>>(&self, msg: M) -> error::Result<()> {
         let msg = msg.into();
-        self.handle_sent_message(&msg)?;
-        self.sender.send(msg)
+        // Local change (see vendor/README.md): the queue can refuse a message when it is
+        // full, so the state change for a sent message happens only once it is queued.
+        // A refused PART must not drop the list of a channel we are still in.
+        let sent = msg.clone();
+        self.sender.send(msg)?;
+        self.handle_sent_message(&sent)
     }
 
     /// Drops the list of `chan` and the end-of-NAMES mark that goes with it (local change,
@@ -1506,13 +1510,52 @@ mod test {
         })
         .await?;
 
-        client.stream()?.collect().await?;
+        // Keep the stream alive: once it is dropped the queue is closed and sends fail.
+        let mut stream = client.stream()?;
+        while stream.next().await.is_some() {}
 
         assert_eq!(client.list_channels(), Some(vec!["#test".to_owned()]));
-        // we ignore the result, as soon as we queue an outgoing message we
-        // update client state, regardless if the queue is available or not.
+        // we ignore the result: the client state is updated once the message is queued.
         let _ = client.send(PART("#test".to_string(), None));
         assert_eq!(client.list_channels(), Some(vec![]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn refused_part_keeps_the_channel_list() -> Result<()> {
+        use crate::proto::command::Command::PART;
+
+        let value = ":irc.test.net 001 test :Welcome\r\n:test!t@h JOIN #test\r\n:irc.test.net 353 test = #test :test ~owner\r\n";
+        let mut client = Client::from_config(Config {
+            mock_initial_value: Some(value.to_owned()),
+            ..test_config()
+        })
+        .await?;
+
+        // Keep the stream alive, so the queue stays open but is never drained.
+        let mut stream = client.stream()?;
+        while stream.next().await.is_some() {}
+
+        let mut refused = false;
+        for _ in 0..=super::queue::MAX_QUEUED_MESSAGES {
+            if matches!(
+                client.send(PRIVMSG("#x".to_string(), "x".to_string())),
+                Err(Error::OutgoingQueueFull)
+            ) {
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused);
+
+        assert!(matches!(
+            client.send(PART("#test".to_string(), None)),
+            Err(Error::OutgoingQueueFull)
+        ));
+        assert_eq!(client.list_channels(), Some(vec!["#test".to_owned()]));
+        assert_eq!(client.list_users("#test").map(|u| u.len()), Some(2));
+        drop(stream);
         Ok(())
     }
 
