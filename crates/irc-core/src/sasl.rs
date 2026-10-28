@@ -267,7 +267,7 @@ fn authenticate_lines(payload: &[u8]) -> Vec<IrcCommand> {
             IrcCommand::AUTHENTICATE(std::str::from_utf8(chunk).expect("base64 is ASCII").into())
         })
         .collect();
-    if encoded.len() % CHUNK == 0 {
+    if encoded.len().is_multiple_of(CHUNK) {
         lines.push(IrcCommand::AUTHENTICATE("+".into()));
     }
     lines
@@ -440,7 +440,7 @@ mod tests {
                 ))
             })
             .collect();
-        if encoded.len() % 400 == 0 {
+        if encoded.len().is_multiple_of(400) {
             lines.push(server("AUTHENTICATE +"));
         }
         assert!(feed(&mut exact, &lines).unwrap().derive.is_some());
