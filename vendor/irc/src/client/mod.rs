@@ -70,12 +70,12 @@ use std::{
     },
     task::{Context, Poll},
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::{
     client::{
         conn::Connection,
         data::{Config, User},
+        queue::{OutgoingReceiver, OutgoingSender},
     },
     error,
     proto::{
@@ -94,6 +94,7 @@ pub mod conn;
 pub mod data;
 mod mock;
 pub mod prelude;
+mod queue;
 pub mod transport;
 
 macro_rules! pub_state_base {
@@ -922,13 +923,14 @@ impl ClientState {
 /// Thread-safe sender that can be used with the client.
 #[derive(Debug, Clone)]
 pub struct Sender {
-    tx_outgoing: UnboundedSender<Message>,
+    tx_outgoing: OutgoingSender,
 }
 
 impl Sender {
-    /// Send a single message to the unbounded queue.
+    /// Send a single message to the outgoing queue, which fails with
+    /// `Error::OutgoingQueueFull` when the connection does not drain it.
     pub fn send<M: Into<Message>>(&self, msg: M) -> error::Result<()> {
-        Ok(self.tx_outgoing.send(msg.into())?)
+        self.tx_outgoing.send(msg.into())
     }
 
     pub_state_base!();
@@ -941,7 +943,7 @@ impl Sender {
 #[derive(Debug)]
 pub struct Outgoing {
     sink: SplitSink<Connection, Message>,
-    stream: UnboundedReceiver<Message>,
+    stream: OutgoingReceiver,
     buffered: Option<Message>,
 }
 
@@ -1035,7 +1037,7 @@ impl Client {
     /// single, shared event loop. It can also be used to take more control over execution and error
     /// handling. Connection will not occur until the event loop is run.
     pub async fn from_config(config: Config) -> error::Result<Client> {
-        let (tx_outgoing, rx_outgoing) = mpsc::unbounded_channel();
+        let (tx_outgoing, rx_outgoing) = queue::channel();
         let conn = Connection::new(&config, tx_outgoing.clone()).await?;
 
         #[cfg(test)]
