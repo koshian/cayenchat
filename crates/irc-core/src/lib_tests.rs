@@ -5026,14 +5026,15 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
             .write_all(b":srv.example 001 alice :Welcome\r\n:srv.example 376 alice :End\r\n")
             .unwrap();
         assert_eq!(read_client_line(&mut lines), "JOIN #test");
-        // NAMES has no realname: nobody is asked about until they speak.
+        // NAMES has no realname: nobody is asked about until they speak,
+        // and whoever queries us is queried in return (no lookup first).
         socket
             .write_all(
                 b":alice!u@h JOIN #test\r\n\
 :srv.example 353 alice = #test :alice kv @bob carol\r\n\
 :srv.example 366 alice #test :End\r\n\
-:kv!u@h PRIVMSG #test :hello\r\n\
-:kv!u@h PRIVMSG alice :\x01AVATAR\x01\r\n",
+:kv!u@h PRIVMSG alice :\x01AVATAR\x01\r\n\
+:kv!u@h PRIVMSG #test :hello\r\n",
             )
             .unwrap();
         let mut sent = [read_client_line(&mut lines), read_client_line(&mut lines)];
@@ -5042,16 +5043,9 @@ fn kvirc_peer_avatars_are_exchanged_by_url_only() {
             sent,
             [
                 "NOTICE kv :\u{1}AVATAR https://example.com/alice.png\u{1}".to_owned(),
-                "WHO kv".to_owned(),
+                "PRIVMSG kv \u{1}AVATAR\u{1}".to_owned(),
             ]
         );
-        socket
-            .write_all(
-                b":srv.example 352 alice #test ~kv host srv.example kv H :0 \x034\x0fKVIrc 5.2\r\n\
-:srv.example 315 alice kv :End of /WHO list.\r\n",
-            )
-            .unwrap();
-        assert_eq!(read_client_line(&mut lines), "PRIVMSG kv \u{1}AVATAR\u{1}");
         socket
             .write_all(
                 b":kv!u@h NOTICE alice :\x01AVATAR https://example.com/kv.png M\x01\r\n\

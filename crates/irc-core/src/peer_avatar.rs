@@ -10,7 +10,9 @@
 //! - A client that has an avatar starts its realname with ETX (0x03), an
 //!   ASCII digit `0`–`7` whose bit 2 (the fours place) is set, and SI
 //!   (0x0F). KVIrc sends `\x034\x0f` in its `USER` command; the realname's
-//!   text follows unchanged.
+//!   text follows unchanged. A connection in ISO-2022-JP cannot read SI and
+//!   shows U+FFFD in its place, so `\x03<digit>U+FFFD` counts as the mark
+//!   too (D025).
 //! - `PRIVMSG <nick> :\x01AVATAR\x01` asks for it. KVIrc sends the query
 //!   when a WHO reply shows the mark.
 //! - The answer is `NOTICE <nick> :\x01AVATAR <file> <gender>\x01`, where
@@ -59,7 +61,11 @@
 //! shared URL changes, or stops, each of them is told with a private
 //! `NOTICE <nick> :\x01AVATAR <url>\x01` (`\x01AVATAR\x01` for none), one per
 //! two seconds, only the latest state. Nothing goes to channels: clients
-//! that do not speak CTCP AVATAR would show it.
+//! that do not speak CTCP AVATAR would show it. Someone who queried us also
+//! speaks CTCP AVATAR whatever their realname shows, so they are queried
+//! once in return (the usual queue and bounds; not if they were queried or
+//! answered already, or have a metadata avatar), and the two clients do not
+//! keep asking each other (D025).
 //!
 //! Pictures are tied to a mask, not to presence (D058). CTCP AVATAR is a
 //! stop-gap for servers without metadata, so it is not held to the
@@ -183,15 +189,36 @@ fn text_mark(realname: &str) -> Option<(u8, usize)> {
         .then_some((digit, TEXT_MARK_PREFIX.len() + 1 + TEXT_MARK_SUFFIX.len()))
 }
 
-/// A realname without its leading marks (KVIrc's ETX, a digit, SI; the
-/// invisible one; the textual `\x03<digit>\x03`, in any order and number),
-/// as the user configured it.
+/// The digit of KVIrc's mark at the start of `realname`, and the length of
+/// the mark: ETX, a digit `0`–`7`, and SI. A connection that cannot carry SI
+/// (ISO-2022-JP) reads it as U+FFFD, so that form counts too, whatever the
+/// connection's encoding: where SI is readable it never turns into U+FFFD.
+fn kvirc_mark(realname: &str) -> Option<(u8, usize)> {
+    let rest = realname.strip_prefix('\u{3}')?;
+    let digit = *rest.as_bytes().first()?;
+    if !(b'0'..=b'7').contains(&digit) {
+        return None;
+    }
+    // The digit is ASCII, so index 1 is a character boundary.
+    let rest = &rest[1..];
+    if rest.starts_with('\u{f}') {
+        Some((digit, 3))
+    } else if rest.starts_with('\u{FFFD}') {
+        Some((digit, 2 + '\u{FFFD}'.len_utf8()))
+    } else {
+        None
+    }
+}
+
+/// A realname without its leading marks (KVIrc's ETX, a digit, SI or its
+/// U+FFFD reading; the invisible one; the textual `\x03<digit>\x03`, in any
+/// order and number), as the user configured it.
 pub(crate) fn without_mark(mut realname: &str) -> &str {
     loop {
         let rest = if let Some(rest) = realname.strip_prefix(INVISIBLE_MARK) {
             rest
-        } else if let [0x03, b'0'..=b'7', 0x0f, ..] = realname.as_bytes() {
-            &realname[3..]
+        } else if let Some((_, len)) = kvirc_mark(realname) {
+            &realname[len..]
         } else if let Some((_, len)) = text_mark(realname) {
             &realname[len..]
         } else {
@@ -211,10 +238,7 @@ pub(crate) fn advertises_avatar(realname: &str) -> bool {
     if let Some((digit, _)) = text_mark(realname) {
         return matches!(digit, b'4'..=b'7');
     }
-    match realname.as_bytes() {
-        [0x03, digit @ b'0'..=b'7', 0x0f, ..] => (digit - b'0') & AVATAR_BIT != 0,
-        _ => false,
-    }
+    kvirc_mark(realname).is_some_and(|(digit, _)| (digit - b'0') & AVATAR_BIT != 0)
 }
 
 /// The realname after an IRCnet server ID (a digit and three of `[0-9A-Z]`,
@@ -429,6 +453,26 @@ impl PeerAvatars {
         });
     }
 
+    /// A user who queried us speaks CTCP AVATAR even when their realname
+    /// mark did not reach us (a bouncer, ISO-2022-JP), so they are queried
+    /// once too, through the usual queue. Someone already queried or who
+    /// answered is not asked again, so two such clients do not keep asking
+    /// each other; nor is someone with a metadata avatar.
+    fn ask_back(&mut self, sender: &str, presence: &PresenceIndex) -> Option<String> {
+        if !valid_sender(sender) || !presence.shares(sender, None) {
+            return None;
+        }
+        let key = nickname_key(sender);
+        let from_metadata = self
+            .avatars
+            .get(&key)
+            .is_some_and(|sources| sources.metadata.is_some());
+        if from_metadata || self.stages.get(&key) == Some(&Stage::Queried) {
+            return None;
+        }
+        self.enqueue(ProbeKind::Query, sender, key)
+    }
+
     /// Records that an asker was just given what we share now.
     fn mark_told(&mut self, sender: &str) {
         if let Some(asker) = self.askers.get_mut(&nickname_key(sender)) {
@@ -498,6 +542,7 @@ impl PeerAvatars {
                     && same_nickname(target, current_nick)
                 {
                     self.remember_asker(sender, presence);
+                    handled.notes.extend(self.ask_back(sender, presence));
                     if let Some(url) = self.share.clone()
                         && self.may_reply(sender, now)
                     {
@@ -1217,6 +1262,145 @@ mod tests {
     }
 
     #[test]
+    fn the_kvirc_mark_read_as_replacement_character_still_counts() {
+        assert!(advertises_avatar("\u{3}4\u{FFFD}名前"));
+        assert!(advertises_avatar("\u{3}7\u{FFFD}"));
+        assert!(!advertises_avatar("\u{3}3\u{FFFD}名前"));
+        assert!(!advertises_avatar("\u{3}8\u{FFFD}名前"));
+        assert!(!advertises_avatar("\u{FFFD}4\u{FFFD}名前"));
+        assert_eq!(without_mark("\u{3}4\u{FFFD}名前"), "名前");
+        assert_eq!(without_mark("\u{3}3\u{FFFD}名前"), "名前");
+        assert_eq!(without_mark("\u{3}4\u{FFFD}\u{3}4\u{f}Bob"), "Bob");
+        assert_eq!(without_mark("\u{3}8\u{FFFD}名前"), "\u{3}8\u{FFFD}名前");
+    }
+
+    #[test]
+    fn a_kvirc_mark_received_on_iso_2022_jp_is_recognized_in_a_who_reply() {
+        // A UTF-8 client sends the mark's SI byte as it is.
+        let sent = realname("name", true);
+        let (decoded, _) = encoding_rs::ISO_2022_JP.decode_without_bom_handling(sent.as_bytes());
+        assert!(decoded.starts_with("\u{3}4\u{FFFD}"), "{decoded:?}");
+        let now = Instant::now();
+        let mut peers = PeerAvatars::new(false, None);
+        let rosters = rosters();
+        peers.speaker("kv", ME, &rosters);
+        assert_eq!(wire(&peers.tick(now, ME, &rosters).send), ["WHO kv"]);
+        let who = format!(":srv 352 alice #a ~kv host srv kv H :0 {decoded}");
+        assert!(observe(&mut peers, &who, now).is_some());
+        assert_eq!(
+            wire(&peers.tick(now + PROBE_INTERVAL, ME, &rosters).send),
+            ["PRIVMSG kv \u{1}AVATAR\u{1}"]
+        );
+    }
+
+    #[test]
+    fn a_user_who_queried_us_is_queried_once_in_return() {
+        let now = Instant::now();
+        let rosters = rosters();
+        let mut peers = PeerAvatars::new(true, None);
+        let query = ":kv!u@h PRIVMSG alice :\u{1}AVATAR\u{1}";
+        for _ in 0..3 {
+            observe(&mut peers, query, now).unwrap();
+        }
+        assert_eq!(peers.queue.len(), 1);
+        assert_eq!(
+            wire(&peers.tick(now, ME, &rosters).send),
+            ["PRIVMSG kv \u{1}AVATAR\u{1}"]
+        );
+        // Asking again after it was sent, or answered, queues nothing.
+        observe(&mut peers, query, now).unwrap();
+        assert!(peers.queue.is_empty());
+        observe(
+            &mut peers,
+            ":kv!u@h NOTICE alice :\u{1}AVATAR https://example.com/kv.png\u{1}",
+            now,
+        )
+        .unwrap();
+        observe(&mut peers, query, now).unwrap();
+        assert!(peers.queue.is_empty());
+        // No shared channel, or a metadata avatar: not asked.
+        observe(
+            &mut peers,
+            ":mallory!u@h PRIVMSG alice :\u{1}AVATAR\u{1}",
+            now,
+        )
+        .unwrap();
+        assert!(peers.queue.is_empty());
+        peers.observe_metadata(&[Event::UserAvatar {
+            nickname: "bob".into(),
+            url: Some("https://example.com/bob.png".into()),
+        }]);
+        observe(&mut peers, ":bob!u@h PRIVMSG alice :\u{1}AVATAR\u{1}", now).unwrap();
+        assert!(peers.queue.is_empty());
+        // Channel queries and replayed ones are not asked back either.
+        observe(&mut peers, ":carol!u@h PRIVMSG #a :\u{1}AVATAR\u{1}", now).unwrap();
+        assert!(peers.queue.is_empty());
+        // The usual bounds apply.
+        let members: Vec<String> = (0..100).map(|index| format!("u{index}")).collect();
+        let big =
+            PresenceIndex::from_rosters(&HashMap::from([("#big".to_owned(), members.clone())]));
+        let mut peers = PeerAvatars::new(true, None);
+        for nick in &members {
+            let text = format!(":{nick}!u@h PRIVMSG alice :\u{1}AVATAR\u{1}");
+            peers.observe(&line(&text), ME, &big, false, now).unwrap();
+        }
+        assert_eq!(peers.queue.len(), MAX_QUEUED_PROBES);
+        let mut sent = 0;
+        let mut at = now;
+        for _ in 0..10 {
+            sent += peers.tick(at, ME, &big).send.len();
+            at += PROBE_INTERVAL;
+        }
+        assert_eq!(sent, MAX_PROBES_IN_FLIGHT);
+    }
+
+    #[test]
+    fn two_clients_asking_each_other_stop_after_one_round() {
+        // An ISO-2022-JP client (ja) and a UTF-8 one (en), sharing a URL.
+        let rosters = PresenceIndex::from_rosters(&HashMap::from([(
+            "#a".to_owned(),
+            vec!["ja".to_owned(), "en".to_owned()],
+        )]));
+        let now = Instant::now();
+        let mut ja = PeerAvatars::new(false, Some("https://example.com/ja.png".into()));
+        let mut en = PeerAvatars::new(true, Some("https://example.com/en.png".into()));
+        // The wire line `command` (sent to `to_nick`) as `from` sends it.
+        let deliver = |from: &str,
+                       to: &mut PeerAvatars,
+                       to_nick: &str,
+                       command: &IrcCommand,
+                       now: Instant|
+         -> Handled {
+            let wire = wire(std::slice::from_ref(command))[0].clone();
+            let (verb, rest) = wire.split_once(' ').unwrap();
+            let (_, text) = rest.split_once(' ').unwrap();
+            let message = line(&format!(":{from}!u@h {verb} {to_nick} {text}"));
+            to.observe(&message, to_nick, &rosters, false, now).unwrap()
+        };
+        // en looked ja up and queries it; ja answers and asks back.
+        let query = IrcCommand::PRIVMSG("ja".into(), "\u{1}AVATAR\u{1}".into());
+        let handled = deliver("en", &mut ja, "ja", &query, now);
+        let answer = handled.send;
+        assert_eq!(answer.len(), 1);
+        let handled = deliver("ja", &mut en, "en", &answer[0], now);
+        assert_eq!(avatars(&handled.events), ["ja=https://example.com/ja.png"]);
+        // ja queries en once; en answers and does not ask ja again.
+        let later = now + PROBE_INTERVAL;
+        let sent = ja.tick(later, "ja", &rosters).send;
+        assert_eq!(wire(&sent), ["PRIVMSG en \u{1}AVATAR\u{1}"]);
+        let handled = deliver("ja", &mut en, "en", &sent[0], later);
+        assert_eq!(handled.send.len(), 1);
+        assert!(en.queue.is_empty(), "en already queried ja");
+        let handled = deliver("en", &mut ja, "ja", &handled.send[0], later);
+        assert_eq!(avatars(&handled.events), ["en=https://example.com/en.png"]);
+        for step in 1..5 {
+            let at = later + PROBE_INTERVAL * step;
+            assert!(ja.tick(at, "ja", &rosters).send.is_empty());
+            assert!(en.tick(at, "en", &rosters).send.is_empty());
+        }
+    }
+
+    #[test]
     fn the_mark_is_stripped_to_show_the_configured_realname() {
         assert_eq!(without_mark(&realname("Alice", true)), "Alice");
         assert_eq!(without_mark("Alice"), "Alice");
@@ -1848,6 +2032,8 @@ mod tests {
     fn ask(peers: &mut PeerAvatars, nick: &str, now: Instant) {
         let text = format!(":{nick}!u@h PRIVMSG alice :\u{1}AVATAR\u{1}");
         observe(peers, &text, now).unwrap();
+        // These tests follow the notices; the query in return has its own.
+        peers.queue.clear();
     }
 
     fn tick(peers: &mut PeerAvatars, now: Instant) -> Vec<String> {

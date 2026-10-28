@@ -1132,6 +1132,22 @@ What CayenChat does:
   for users who share a channel with us. D057 adds an invisible mark that
   CayenChat itself sends on ISO-2022-JP.
 
+- **Receiving KVIrc's mark on ISO-2022-JP, and asking back (#668).** A
+  UTF-8 client sends KVIrc's `03 '4' 0F`; a connection in ISO-2022-JP reads
+  the SI as U+FFFD, so `03 '4' U+FFFD` counts as KVIrc's mark too:
+  `advertises_avatar` (fours place of the digit, as before) and
+  `without_mark` accept it, whatever the connection's encoding (where SI is
+  readable it never becomes U+FFFD). Separately, a user who sends us a
+  private CTCP AVATAR query speaks the protocol even when their mark did not
+  reach us (a bouncer dropped it), so they are queried once too, through
+  the same queue (one query per user until they leave, `MAX_QUEUED_PROBES`,
+  `PROBE_INTERVAL`, `MAX_PROBES_IN_FLIGHT`, timeout, `MAX_PROBED_USERS`),
+  only when they share a channel with us and have no metadata avatar. Not
+  asked again if they were already queried or answered, so two such clients
+  do not keep asking each other. The invisible mark of D057 stays: a user
+  who shares nothing queries nobody, so it is how a sharing ISO-2022-JP user
+  is found.
+
 Interoperability: verified against wire-accurate fixtures written from
 KVIrc's source (realname mark, query, `M`-suffixed answer, empty answer,
 file-name answer, channel announcement); not tested against a running
@@ -1951,7 +1967,9 @@ IRCv3 metadata, need not be handled that strictly.
 - Receiving: a realname starting with the mark always means "has an avatar"
   (it holds no digit). `without_mark` strips KVIrc's, the invisible and the
   textual mark, in any order and number, so CayenChat's own WHOIS and
-  `SETNAME` displays show none of them.
+  `SETNAME` displays show none of them. Since #668 KVIrc's mark read as
+  `03 <digit> U+FFFD` (a UTF-8 client's, seen from ISO-2022-JP) is
+  recognized as well (D025), and a user who queries us is queried back once.
 - It applies only from the next connection (IRCnet has no SETNAME).
 - KVIrc users: on ISO-2022-JP KVIrc does not find a CayenChat user by itself
   (it does not read this mark). A CTCP AVATAR query from KVIrc is answered as
