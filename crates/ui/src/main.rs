@@ -354,11 +354,26 @@ fn connection_config_without_secrets(
     config.shared_avatar = shared_peer_avatar(profile);
     if profile.sasl_enabled {
         config.sasl = Some(SaslCredentials {
+            mechanism: sasl_mechanism(profile.sasl_mechanism),
             username: profile.sasl_username.clone(),
             password: String::new(),
         });
     }
     Ok(config)
+}
+
+/// The mechanism a connection uses for the one the profile names.
+fn sasl_mechanism(
+    mechanism: cayenchat_storage::SaslMechanism,
+) -> cayenchat_irc_core::SaslMechanism {
+    use cayenchat_irc_core::SaslMechanism as Wire;
+    use cayenchat_storage::SaslMechanism as Saved;
+    match mechanism {
+        Saved::Plain => Wire::Plain,
+        Saved::ScramSha1 => Wire::ScramSha1,
+        Saved::ScramSha256 => Wire::ScramSha256,
+        Saved::ScramSha512 => Wire::ScramSha512,
+    }
 }
 
 /// The channels of `profile` with an encoding of their own, as a connection

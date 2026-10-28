@@ -14,8 +14,8 @@ use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::ConnectionConfig;
 use cayenchat_storage::{
     Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DarkColors, Language, NoticeKey, Notifications, Secret, SecretKey, SendKey, ServerProfile,
-    Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    DarkColors, Language, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey,
+    ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
 };
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, time::Duration};
@@ -50,6 +50,7 @@ pub(crate) struct SettingsForm {
     pub(crate) values: Settings,
     server_list_open: bool,
     encoding_list_open: bool,
+    sasl_list_open: bool,
     pub(crate) language_list_open: bool,
     pub(crate) ircv3_server_list_open: bool,
     pub(crate) custom_host: Entity<TextInput>,
@@ -392,6 +393,7 @@ impl SettingsForm {
             },
             server_list_open: false,
             encoding_list_open: false,
+            sasl_list_open: false,
             language_list_open: false,
             ircv3_server_list_open: false,
             values,
@@ -823,6 +825,7 @@ impl SettingsForm {
             });
         }
         self.server_list_open = false;
+        self.sasl_list_open = false;
         self.encoding_list_open = false;
         self.language_list_open = false;
         self.ircv3_server_list_open = false;
@@ -1919,10 +1922,12 @@ impl SettingsWindow {
         } else if self.settings.server_list_open
             || self.settings.ircv3_server_list_open
             || self.settings.encoding_list_open
+            || self.settings.sasl_list_open
             || self.settings.language_list_open
         {
             self.settings.server_list_open = false;
             self.settings.ircv3_server_list_open = false;
+            self.settings.sasl_list_open = false;
             self.settings.encoding_list_open = false;
             self.settings.language_list_open = false;
             cx.notify();
@@ -2329,12 +2334,18 @@ impl SettingsWindow {
         }
     }
 
-    fn toggle_sasl(&mut self, cx: &mut Context<Self>) {
+    /// `None` turns SASL off. Every mechanism needs TLS, so choosing one
+    /// turns TLS on, and TLS stays on while SASL is.
+    fn choose_sasl(&mut self, choice: Option<SaslMechanism>, cx: &mut Context<Self>) {
         self.feedback = None;
+        self.settings.sasl_list_open = false;
         let Some(profile) = self.settings.values.selected_profile_mut() else {
             return;
         };
-        profile.sasl_enabled = !profile.sasl_enabled;
+        profile.sasl_enabled = choice.is_some();
+        if let Some(mechanism) = choice {
+            profile.sasl_mechanism = mechanism;
+        }
         if profile.sasl_enabled && !profile.use_tls {
             self.toggle_tls(cx);
         }
@@ -2801,6 +2812,7 @@ impl SettingsWindow {
                 .child(format!("{selected_label}  ▾"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.server_list_open = !this.settings.server_list_open;
+                    this.settings.sasl_list_open = false;
                     this.settings.encoding_list_open = false;
                     this.settings.language_list_open = false;
                     cx.notify();
@@ -2998,6 +3010,7 @@ impl SettingsWindow {
                 .child(format!("{}  ▾", profile.encoding.label()))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.encoding_list_open = !this.settings.encoding_list_open;
+                    this.settings.sasl_list_open = false;
                     this.settings.server_list_open = false;
                     this.settings.language_list_open = false;
                     cx.notify();
@@ -3029,6 +3042,55 @@ impl SettingsWindow {
                 );
             }
             encoding_selector = encoding_selector.child(menu);
+        }
+        let sasl_label = if sasl {
+            profile.sasl_mechanism.name().to_owned()
+        } else {
+            self.i18n.text("sasl_none")
+        };
+        let mut sasl_selector = div().flex().flex_col().child(
+            div()
+                .id("sasl-select")
+                .px_2()
+                .py_1()
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+                .child(format!("{sasl_label}  ▾"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.sasl_list_open = !this.settings.sasl_list_open;
+                    this.settings.server_list_open = false;
+                    this.settings.encoding_list_open = false;
+                    this.settings.language_list_open = false;
+                    cx.notify();
+                })),
+        );
+        if self.settings.sasl_list_open {
+            let mut menu = div()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface);
+            let choices = std::iter::once(None).chain(SaslMechanism::ALL.map(Some));
+            for (index, choice) in choices.enumerate() {
+                let selected = if sasl {
+                    choice == Some(profile.sasl_mechanism)
+                } else {
+                    choice.is_none()
+                };
+                let label = choice.map_or_else(|| self.i18n.text("sasl_none"), |m| m.name().into());
+                menu = menu.child(
+                    div()
+                        .id(("sasl-option", index))
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover))
+                        .when(selected, |d| d.bg(theme.selected))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| this.choose_sasl(choice, cx))),
+                );
+            }
+            sasl_selector = sasl_selector.child(menu);
         }
         div()
             .flex()
@@ -3187,19 +3249,23 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(settings_theme::LABEL_WIDTH).child("SASL PLAIN"))
+                    .items_start()
                     .child(
                         div()
-                            .id("sasl-toggle")
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(settings_theme::checkbox(sasl, true, cx))
-                            .child(self.i18n.text(if sasl { "on" } else { "off" }))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
-                    ),
+                            .w(settings_theme::LABEL_WIDTH)
+                            .flex_shrink_0()
+                            .child(self.i18n.text("sasl_mechanism")),
+                    )
+                    .child(sasl_selector.flex_1().min_w_0()),
             )
+            .when(sasl, |d| {
+                d.child(
+                    div()
+                        .ml(settings_theme::LABEL_INDENT)
+                        .text_color(theme.text_secondary)
+                        .child(self.i18n.text("sasl_tls_note")),
+                )
+            })
             .when(sasl, |d| {
                 d.child(settings_field(
                     &self.i18n.text("sasl_account"),
@@ -5049,6 +5115,44 @@ mod escape_tests {
         cx.simulate_keystrokes("escape");
         assert!(form.read_with(cx, |form, _| !form.settings.encoding_list_open));
         assert_eq!(windows(&mut app), 2);
+    }
+
+    #[gpui::test]
+    fn choosing_a_sasl_mechanism_keeps_tls_on_and_none_turns_sasl_off(cx: &mut TestAppContext) {
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        let state = |cx: &mut gpui::VisualTestContext| {
+            form.read_with(cx, |form, _| {
+                let profile = form.settings.values.selected_profile().unwrap();
+                (
+                    profile.sasl_enabled,
+                    profile.sasl_mechanism,
+                    profile.use_tls,
+                )
+            })
+        };
+        form.update(cx, |form, cx| {
+            form.settings.values.selected_profile_mut().unwrap().use_tls = false;
+            form.settings.sasl_list_open = true;
+            form.choose_sasl(Some(cayenchat_storage::SaslMechanism::ScramSha512), cx);
+        });
+        assert_eq!(
+            state(cx),
+            (true, cayenchat_storage::SaslMechanism::ScramSha512, true)
+        );
+        assert!(form.read_with(cx, |form, _| !form.settings.sasl_list_open));
+        form.update(cx, |form, cx| form.choose_sasl(None, cx));
+        // The mechanism is remembered for the next time SASL is turned on.
+        assert_eq!(
+            state(cx),
+            (false, cayenchat_storage::SaslMechanism::ScramSha512, true)
+        );
+        form.update(cx, |form, cx| {
+            form.choose_sasl(Some(cayenchat_storage::SaslMechanism::Plain), cx)
+        });
+        assert_eq!(
+            state(cx),
+            (true, cayenchat_storage::SaslMechanism::Plain, true)
+        );
     }
 
     #[gpui::test]
