@@ -16,6 +16,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 /// RFC 7677 recommends at least 4096 iterations; more than a million would
 /// only let a server make the client spin.
+/// The error for a server `e=` message (wrong password, unknown user, ...):
+/// an authentication refusal, not a protocol fault.
+pub(crate) const REJECTED: &str = "The server rejected the SCRAM exchange.";
 const MIN_ITERATIONS: u32 = 4096;
 const MAX_ITERATIONS: u32 = 1_000_000;
 /// Longest accepted salt, decoded.
@@ -104,7 +107,7 @@ impl Scram {
     pub(crate) fn server_first(&mut self, data: &[u8]) -> Result<Job, String> {
         let text = std::str::from_utf8(data).map_err(|_| "SCRAM server-first is not UTF-8.")?;
         if text.starts_with("e=") {
-            return Err("The server rejected the SCRAM request.".into());
+            return Err(REJECTED.into());
         }
         let mut nonce = None;
         let mut salt = None;
@@ -171,10 +174,13 @@ impl Scram {
             return Err("Unexpected SCRAM server-final.".into());
         }
         let text = std::str::from_utf8(data).map_err(|_| "SCRAM server-final is not UTF-8.")?;
-        if text.starts_with("e=") {
-            return Err("The server rejected the SCRAM proof.".into());
+        // RFC 5802 §7: `verifier` or `server-error`, then optional extensions
+        // that a client ignores.
+        let first = text.split(',').next().unwrap_or_default();
+        if first.starts_with("e=") {
+            return Err(REJECTED.into());
         }
-        let signature = text
+        let signature = first
             .strip_prefix("v=")
             .and_then(|value| STANDARD.decode(value).ok())
             .ok_or("Malformed SCRAM server-final.")?;

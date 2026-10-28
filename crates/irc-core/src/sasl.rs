@@ -113,7 +113,15 @@ impl SaslHandshake {
         match &message.command {
             IrcCommand::AUTHENTICATE(chunk) => {
                 if let Some(payload) = self.receive(chunk)? {
-                    self.handle(&payload, &mut out)?;
+                    if let Err(error) = self.handle(&payload, &mut out) {
+                        // A refusal carries the same reason as a 904, so the
+                        // UI asks for the account and password again.
+                        return Err(if error == crate::scram::REJECTED {
+                            crate::SASL_FAILED.into()
+                        } else {
+                            error
+                        });
+                    }
                 }
             }
             IrcCommand::Response(Response::RPL_SASLSUCCESS, _) => match self.phase {
@@ -405,6 +413,32 @@ mod tests {
         let (mut sasl, ..) = up_to_client_final(SaslMechanism::ScramSha1, Hash::Sha1, 16);
         assert!(sasl.observe(&server(":s 903 me :ok")).is_err());
         assert!(!sasl.complete());
+    }
+
+    #[test]
+    fn server_final_extensions_are_ignored_but_the_signature_still_counts() {
+        let (mut sasl, _, server_final, _) =
+            up_to_client_final(SaslMechanism::ScramSha256, Hash::Sha256, 16);
+        let with_extension = format!("{server_final},x=extension");
+        assert!(feed(&mut sasl, &challenge(with_extension.as_bytes())).is_ok());
+        let (mut sasl, _, server_final, _) =
+            up_to_client_final(SaslMechanism::ScramSha256, Hash::Sha256, 16);
+        let mut forged = format!("{server_final},x=extension").into_bytes();
+        forged[3] = if forged[3] == b'A' { b'B' } else { b'A' };
+        assert!(feed(&mut sasl, &challenge(&forged)).is_err());
+    }
+
+    #[test]
+    fn a_scram_error_reply_reads_as_an_authentication_failure() {
+        let (mut sasl, ..) = up_to_client_final(SaslMechanism::ScramSha256, Hash::Sha256, 16);
+        let error = feed(&mut sasl, &challenge(b"e=invalid-proof")).unwrap_err();
+        assert_eq!(error, crate::SASL_FAILED);
+        let mut sasl = handshake(SaslMechanism::ScramSha256, "pencil");
+        let first = sasl.begin().unwrap();
+        feed(&mut sasl, &challenge(b"")).unwrap();
+        let _ = first;
+        let error = feed(&mut sasl, &challenge(b"e=unknown-user")).unwrap_err();
+        assert_eq!(error, crate::SASL_FAILED);
     }
 
     #[test]
