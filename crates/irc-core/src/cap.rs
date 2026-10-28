@@ -414,6 +414,14 @@ impl CapNegotiation {
         Ok(step)
     }
 
+    /// What a failed SASL exchange recorded; an `Err` cannot carry notes.
+    pub(crate) fn take_sasl_failure_notes(&mut self) -> Vec<String> {
+        self.sasl
+            .as_mut()
+            .map(SaslHandshake::take_failure_notes)
+            .unwrap_or_default()
+    }
+
     /// Where SASL stands, for the diagnostics of a registration timeout.
     pub fn sasl_stage(&self) -> Option<String> {
         self.sasl

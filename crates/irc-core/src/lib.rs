@@ -3795,6 +3795,9 @@ impl Worker {
                     };
                 }
                 Err(error) => {
+                    for note in self.negotiation.take_sasl_failure_notes() {
+                        self.note(note).await;
+                    }
                     self.note(format!("Negotiation refused: {error}")).await;
                     let _ = self.events.send(Event::Refused(error)).await;
                     return ControlFlow::Break(());

@@ -52,6 +52,8 @@ pub(crate) struct SaslHandshake {
     scram: Option<Scram>,
     /// Base64 of the server message being received.
     incoming: String,
+    /// Diagnostics of a failure, for [`Self::take_failure_notes`].
+    failure_notes: Vec<String>,
 }
 
 impl SaslHandshake {
@@ -68,6 +70,7 @@ impl SaslHandshake {
             phase: Phase::Idle,
             scram: None,
             incoming: String::new(),
+            failure_notes: Vec::new(),
         }
     }
 
@@ -83,10 +86,10 @@ impl SaslHandshake {
     pub(crate) fn stage(&self) -> &'static str {
         match self.phase {
             Phase::Idle => "waiting for the sasl capability",
-            Phase::Starting => "waiting for the server's AUTHENTICATE +",
-            Phase::ScramFirst => "waiting for the SCRAM server-first message",
-            Phase::Deriving => "deriving the SCRAM keys",
-            Phase::ScramFinal => "waiting for the SCRAM server-final message",
+            Phase::Starting => "waiting for the server's AUTHENTICATE + (before client-first)",
+            Phase::ScramFirst => "waiting for the SCRAM server-first message (client-first sent)",
+            Phase::Deriving => "deriving the SCRAM keys (server-first accepted)",
+            Phase::ScramFinal => "waiting for the SCRAM server-final message (client-final sent)",
             Phase::WaitingForResult => "waiting for the SASL result",
             Phase::Complete => "complete",
         }
@@ -112,16 +115,27 @@ impl SaslHandshake {
         let mut out = Out::default();
         match &message.command {
             IrcCommand::AUTHENTICATE(chunk) => {
-                if let Some(payload) = self.receive(chunk)?
+                let stage = self.stage();
+                let payload = match self.receive(chunk) {
+                    Ok(payload) => payload,
+                    Err(error) => return Err(self.client_error(stage, error)),
+                };
+                if let Some(payload) = payload
                     && let Err(error) = self.handle(&payload, &mut out)
                 {
+                    // Keep what this message already recorded.
+                    self.failure_notes.append(&mut out.notes);
+                    if error != crate::scram::REJECTED {
+                        return Err(self.client_error(stage, error));
+                    }
                     // A refusal carries the same reason as a 904, so the
                     // UI asks for the account and password again.
-                    return Err(if error == crate::scram::REJECTED {
-                        crate::SASL_FAILED.into()
-                    } else {
-                        error
-                    });
+                    let reason = server_error_value(&payload);
+                    self.failure_notes.push(format!(
+                        "SASL: the server rejected {} while {stage} (SCRAM error: {reason}).",
+                        self.mechanism.name()
+                    ));
+                    return Err(crate::SASL_FAILED.into());
                 }
             }
             IrcCommand::Response(Response::RPL_SASLSUCCESS, _) => match self.phase {
@@ -138,25 +152,48 @@ impl SaslHandshake {
                     ));
                 }
             },
+            IrcCommand::Response(Response::RPL_SASLMECHS, args) if self.phase != Phase::Idle => {
+                // Not a failure by itself; the 904 that follows is.
+                out.notes.push(format!(
+                    "SASL: the server lists mechanisms (908): {}.",
+                    safe_text(args.get(1).map_or("", String::as_str))
+                ));
+            }
             IrcCommand::Response(
-                Response::ERR_NICKLOCKED
+                response @ (Response::ERR_NICKLOCKED
                 | Response::ERR_SASLFAIL
                 | Response::ERR_SASLTOOLONG
                 | Response::ERR_SASLABORT
-                | Response::ERR_SASLALREADY,
-                _,
+                | Response::ERR_SASLALREADY),
+                args,
             ) => {
                 // No fallback to another mechanism: the user chose this one.
-                out.notes.push(format!(
-                    "SASL: {} failed while {}.",
+                self.failure_notes.push(format!(
+                    "SASL: the server refused {} with {} while {} (reason: {}).",
                     self.mechanism.name(),
-                    self.stage()
+                    numeric(response),
+                    self.stage(),
+                    safe_text(args.last().map_or("", String::as_str))
                 ));
                 return Err(crate::SASL_FAILED.into());
             }
             _ => {}
         }
         Ok(out)
+    }
+
+    /// Notes recorded by a failing exchange, which `Err` cannot carry.
+    pub(crate) fn take_failure_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.failure_notes)
+    }
+
+    /// A failure of the client's own protocol checks, not a server refusal.
+    fn client_error(&mut self, stage: &str, error: String) -> String {
+        self.failure_notes.push(format!(
+            "SASL: {} stopped by a client-side check while {stage}: {error}",
+            self.mechanism.name()
+        ));
+        error
     }
 
     /// Reassembles a server message from its `AUTHENTICATE` lines: a line of
@@ -264,6 +301,36 @@ impl Drop for SaslHandshake {
     }
 }
 
+fn numeric(response: &Response) -> &'static str {
+    match response {
+        Response::ERR_NICKLOCKED => "902",
+        Response::ERR_SASLFAIL => "904",
+        Response::ERR_SASLTOOLONG => "905",
+        Response::ERR_SASLABORT => "906",
+        _ => "907",
+    }
+}
+
+/// Server text for the diagnostics: printable characters only, and short.
+fn safe_text(text: &str) -> String {
+    let text: String = text.chars().filter(|c| !c.is_control()).take(120).collect();
+    if text.is_empty() {
+        "none given".into()
+    } else {
+        text
+    }
+}
+
+/// The `e=` value of a SCRAM message (a fixed token such as `invalid-proof`).
+fn server_error_value(payload: &[u8]) -> String {
+    let text = String::from_utf8_lossy(payload);
+    let value = text
+        .split(',')
+        .find_map(|part| part.strip_prefix("e="))
+        .unwrap_or_default();
+    safe_text(value)
+}
+
 /// `AUTHENTICATE` lines of at most 400 characters; a message that fills its
 /// last line (or is empty) ends with `+`.
 fn authenticate_lines(payload: &[u8]) -> Vec<IrcCommand> {
@@ -367,6 +434,50 @@ mod tests {
         notes.extend(out.notes);
         assert_eq!(decode(&out.send), client_final);
         (sasl, client_final, server_final, notes)
+    }
+
+    #[test]
+    fn server_refusal_records_numeric_stage_and_reason() {
+        let mut sasl = handshake(SaslMechanism::ScramSha1, "pencil");
+        sasl.begin().unwrap();
+        feed(&mut sasl, &[server("AUTHENTICATE +")]).unwrap();
+        let error = sasl
+            .observe(&server(":s 908 me SCRAM-SHA-256,PLAIN :are available"))
+            .map(|out| out.notes.join("\n"))
+            .unwrap();
+        assert!(error.contains("908"), "{error}");
+        let error = sasl
+            .observe(&server(":s 904 me :SASL authentication failed"))
+            .unwrap_err();
+        assert_eq!(error, crate::SASL_FAILED);
+        let notes = sasl.take_failure_notes().join("\n");
+        assert!(notes.contains("refused SCRAM-SHA-1 with 904"), "{notes}");
+        assert!(notes.contains("server-first"), "{notes}");
+        assert!(notes.contains("SASL authentication failed"), "{notes}");
+        assert!(sasl.take_failure_notes().is_empty());
+    }
+
+    #[test]
+    fn scram_error_attribute_is_a_server_rejection_with_its_token() {
+        let (mut sasl, _, _, _) = up_to_client_final(SaslMechanism::ScramSha256, Hash::Sha256, 16);
+        let error = feed(&mut sasl, &challenge(b"e=invalid-proof")).unwrap_err();
+        assert_eq!(error, crate::SASL_FAILED);
+        let notes = sasl.take_failure_notes().join("\n");
+        assert!(notes.contains("server rejected"), "{notes}");
+        assert!(notes.contains("invalid-proof"), "{notes}");
+        assert!(notes.contains("server-final"), "{notes}");
+    }
+
+    #[test]
+    fn client_side_scram_errors_are_told_apart_and_keep_their_notes() {
+        let (mut sasl, _, _, _) = up_to_client_final(SaslMechanism::ScramSha256, Hash::Sha256, 16);
+        let bad = format!("v={}", b64(b"not the signature"));
+        let error = feed(&mut sasl, &challenge(bad.as_bytes())).unwrap_err();
+        assert_ne!(error, crate::SASL_FAILED);
+        let notes = sasl.take_failure_notes().join("\n");
+        assert!(notes.contains("client-side check"), "{notes}");
+        assert!(notes.contains("server-final"), "{notes}");
+        assert!(!notes.contains(&b64(b"not the signature")), "{notes}");
     }
 
     #[test]
