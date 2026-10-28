@@ -48,6 +48,8 @@ mod phrase_wrap;
 #[cfg(any(target_os = "windows", test))]
 mod placement;
 mod previews;
+#[cfg(target_os = "windows")]
+mod process_mta;
 mod quit_dialog;
 mod reiwa_group;
 mod scrollbar;
@@ -9808,6 +9810,8 @@ fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
 
 fn main() {
     diagnostics::init();
+    #[cfg(target_os = "windows")]
+    process_mta::keep();
     #[cfg(feature = "test-build")]
     match cayenchat_storage::test_build_directory() {
         Ok(directory) => eprintln!(

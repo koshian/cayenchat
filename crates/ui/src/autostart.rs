@@ -486,7 +486,6 @@ mod platform {
     };
 
     use windows::ApplicationModel::{StartupTask, StartupTaskState};
-    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
     use windows::core::HSTRING;
 
     use super::{AUTOSTART_ARG, AutostartStatus};
@@ -605,21 +604,18 @@ mod platform {
     /// `Parameters="--autostart"` so the launch carries the flag.
     const TASK_ID: &str = "CayenChat";
 
-    /// Runs a WinRT call on a thread of its own (an MTA, where blocking on an
-    /// async operation is allowed). Callers are already off the UI thread.
+    /// Runs a WinRT call on a thread of its own, which joins the process-wide
+    /// MTA (where blocking on an async operation is allowed). The thread does
+    /// not initialize COM itself: the factory `windows-core` caches would
+    /// dangle once the thread's own apartment went away (#659). Callers are
+    /// already off the UI thread.
     fn winrt<T: Send + 'static>(
         call: impl FnOnce() -> windows::core::Result<T> + Send + 'static,
     ) -> Result<T, String> {
-        std::thread::spawn(move || {
-            // SAFETY: initializes this fresh thread, undone below.
-            unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.map_err(|error| error.message())?;
-            let result = call().map_err(|error| error.message());
-            // SAFETY: pairs with the successful `RoInitialize` above.
-            unsafe { RoUninitialize() };
-            result
-        })
-        .join()
-        .map_err(|_| "the startup task call panicked".to_string())?
+        crate::process_mta::keep();
+        std::thread::spawn(move || call().map_err(|error| error.message()))
+            .join()
+            .map_err(|_| "the startup task call panicked".to_string())?
     }
 
     fn task_status(state: StartupTaskState) -> AutostartStatus {
