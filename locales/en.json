@@ -487,6 +487,8 @@
   "sasl_key_missing": "There is no saved key. Generate or import one.",
   "sasl_key_file_failed": "Could not read the file: {error}",
   "sasl_key_copied": "The public key was copied.",
+  "sasl_key_plaintext_title": "Save the key to the local credential file?",
+  "sasl_key_plaintext_detail": "Credential storage is set to Local configuration file. The private key will be stored unencrypted in {path}, readable only by your user account.",
   "sasl_key_replace_title": "Replace the key?",
   "sasl_key_replace_detail": "The current key cannot be recovered, and the network knows only its public key. Register the new public key before connecting again.",
   "sasl_key_replace_confirm": "Replace",

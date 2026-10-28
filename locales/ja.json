@@ -487,6 +487,8 @@
   "sasl_key_missing": "保存された鍵がありません。生成するか読み込んでください。",
   "sasl_key_file_failed": "ファイルを読めませんでした: {error}",
   "sasl_key_copied": "公開鍵をコピーしました。",
+  "sasl_key_plaintext_title": "鍵をローカルファイルに保存しますか？",
+  "sasl_key_plaintext_detail": "資格情報の保存先がローカル設定ファイルになっています。秘密鍵は、あなたのユーザーだけが読める {path} に暗号化せずに保存されます。",
   "sasl_key_replace_title": "鍵を置き換えますか？",
   "sasl_key_replace_detail": "今の鍵は元に戻せません。ネットワークには公開鍵だけが登録されています。次に接続する前に、新しい公開鍵を登録してください。",
   "sasl_key_replace_confirm": "置き換える",

@@ -2596,6 +2596,11 @@ impl ChatWindow {
                 sasl.then_some(!missing.sasl_secret()),
             );
         }
+        // Without its key the connection is not started; the error opens the
+        // server's settings, where the key is made.
+        if missing.key {
+            return Err(self.i18n.text("sasl_key_required"));
+        }
         Ok(self
             .connect_fresh(network, config, missing, window, cx)
             .is_err())

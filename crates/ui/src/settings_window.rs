@@ -2402,12 +2402,21 @@ impl SettingsWindow {
             self.confirm(
                 window,
                 "sasl_key_replace_title",
-                "sasl_key_replace_detail",
+                self.i18n.text("sasl_key_replace_detail"),
                 "sasl_key_replace_confirm",
                 cx,
             )
         } else if secrets::store(cx).kind() != CredentialBackendKind::System {
-            self.ask_plaintext_storage(window, cx)
+            self.confirm(
+                window,
+                "sasl_key_plaintext_title",
+                self.i18n.format(
+                    "sasl_key_plaintext_detail",
+                    &[("path", &secrets::local_path_text())],
+                ),
+                "save_passwords",
+                cx,
+            )
         } else {
             self.store_key(&profile.id, &secret, cx);
             return;
@@ -2424,14 +2433,14 @@ impl SettingsWindow {
         &self,
         window: &mut Window,
         title: &str,
-        detail: &str,
+        detail: String,
         confirm: &str,
         cx: &mut Context<Self>,
     ) -> futures_channel::oneshot::Receiver<usize> {
         window.os_prompt(
             PromptLevel::Warning,
             &self.i18n.text(title),
-            Some(&self.i18n.text(detail)),
+            Some(&detail),
             &[
                 PromptButton::ok(self.i18n.text(confirm)),
                 PromptButton::cancel(self.i18n.text("cancel")),
@@ -2466,7 +2475,7 @@ impl SettingsWindow {
         let answer = self.confirm(
             window,
             "sasl_key_delete_title",
-            "sasl_key_delete_detail",
+            self.i18n.text("sasl_key_delete_detail"),
             "sasl_key_delete_confirm",
             cx,
         );
@@ -3885,7 +3894,7 @@ impl SettingsWindow {
                         .on_click(cx.listener(|this, _, window, cx| this.delete_key(window, cx))),
                 );
         }
-        let theme = theme::current(cx);
+        let theme = settings_theme::palette(cx);
         let mut section = div().flex().flex_col().gap_2().child(
             div()
                 .flex()
