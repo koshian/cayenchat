@@ -141,6 +141,26 @@ fn reveal_strength(elapsed: Duration) -> Option<f32> {
     // Ease out: fast at first, gentle at the end.
     Some(left * left)
 }
+
+/// `from` moved `t` (0..=1) of the way to `to`.
+fn mix(from: Rgba, to: Rgba, t: f32) -> Rgba {
+    let channel = |a: f32, b: f32| a + (b - a) * t;
+    Rgba {
+        r: channel(from.r, to.r),
+        g: channel(from.g, to.g),
+        b: channel(from.b, to.b),
+        a: channel(from.a, to.a),
+    }
+}
+
+/// Background of an emphasized line `strength` into the fade. Opaque colors
+/// are mixed here because `bg` replaces the alternating background instead of
+/// blending with it: full strength is the highlight over the log background,
+/// none is the row's own background, with no step at the end.
+fn reveal_background(row: Rgba, log: Rgba, highlight: Rgba, strength: f32) -> Rgba {
+    let emphasized = mix(log, highlight, REVEAL_ALPHA);
+    mix(row, emphasized, strength)
+}
 /// Pause after the last move or resize before the window layout is written.
 const LAYOUT_SAVE_DELAY: Duration = Duration::from_millis(500);
 /// Width of the right column (members and channel tree), its limits, and the
@@ -4863,7 +4883,13 @@ impl ChatWindow {
                     if !more {
                         this.reveal_flash = None;
                     }
-                    cx.notify();
+                    // Only the main log shows the line, and only while its
+                    // conversation is selected; the other panes stay cached.
+                    if let Some(panes) = &this.panes
+                        && this.state.selected_channel().map(|c| c.id) == Some(id)
+                    {
+                        App::notify(cx, panes.main_log.entity_id());
+                    }
                     more
                 }) else {
                     return;
@@ -8794,10 +8820,17 @@ impl ChatWindow {
                     })
                     .and_then(|(_, _, started)| reveal_strength(started.elapsed())),
                 |d, strength| {
-                    d.bg(Rgba {
-                        a: REVEAL_ALPHA * strength,
-                        ..theme.panes.highlight
-                    })
+                    let row = if style.alternate_rows && index % 2 == 1 {
+                        style.main_alt
+                    } else {
+                        theme.panes.main_log
+                    };
+                    d.bg(reveal_background(
+                        row,
+                        theme.panes.main_log,
+                        theme.panes.highlight,
+                        strength,
+                    ))
                 },
             )
             .on_mouse_down(
@@ -10059,7 +10092,8 @@ mod combined_jump_tests;
 
 #[cfg(test)]
 mod reveal_strength_tests {
-    use super::{REVEAL_FADE, REVEAL_HOLD, reveal_strength};
+    use super::{REVEAL_ALPHA, REVEAL_FADE, REVEAL_HOLD, mix, reveal_background, reveal_strength};
+    use gpui::rgb;
     use std::time::Duration;
 
     #[test]
@@ -10071,6 +10105,18 @@ mod reveal_strength_tests {
         let late = reveal_strength(REVEAL_HOLD + REVEAL_FADE - Duration::from_millis(1)).unwrap();
         assert!(0. < late && late < mid);
         assert_eq!(reveal_strength(REVEAL_HOLD + REVEAL_FADE), None);
+    }
+
+    #[test]
+    fn background_ends_on_the_row_color() {
+        let row = rgb(0xe8eef8);
+        let log = rgb(0xffffff);
+        let highlight = rgb(0x3060d0);
+        let start = reveal_background(row, log, highlight, 1.);
+        assert_eq!(start, mix(log, highlight, REVEAL_ALPHA));
+        assert_eq!(reveal_background(row, log, highlight, 0.), row);
+        let near = reveal_background(row, log, highlight, 0.001);
+        assert!((near.b - row.b).abs() < 0.001);
     }
 }
 
