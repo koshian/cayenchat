@@ -58,7 +58,7 @@ use futures_util::{
     sink::Sink as _,
     stream::{SplitSink, SplitStream, StreamExt as _},
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -494,22 +494,68 @@ impl Stream for ClientStream {
 }
 
 /// Most channels with a member list per connection (local change, see vendor/README.md).
-#[cfg(feature = "channel-lists")]
 const MAX_LISTED_CHANNELS: usize = 2_000;
 /// Most members listed in one channel (local change, see vendor/README.md).
-#[cfg(feature = "channel-lists")]
 const MAX_MEMBERS_PER_CHANNEL: usize = 50_000;
 /// Most members listed over all channels of a connection (local change, see vendor/README.md).
-#[cfg(feature = "channel-lists")]
 const MAX_MEMBERS_TOTAL: usize = 100_000;
 
-/// Fails when `more` members would pass the per-channel or per-connection limit.
-#[cfg(feature = "channel-lists")]
-fn check_member_budget(in_channel: usize, in_total: usize, more: usize) -> error::Result<()> {
-    if in_channel + more > MAX_MEMBERS_PER_CHANNEL {
+/// Most bytes retained for the members of one channel (local change, see vendor/README.md).
+const MAX_BYTES_PER_CHANNEL: usize = 16 * 1024 * 1024;
+/// Most bytes retained for the members of all channels of a connection (local change,
+/// see vendor/README.md).
+const MAX_BYTES_TOTAL: usize = 32 * 1024 * 1024;
+
+/// Members and retained bytes of one or more channel lists.
+#[derive(Clone, Copy, Debug, Default)]
+struct Usage {
+    members: usize,
+    bytes: usize,
+}
+
+impl Usage {
+    /// Bytes charged for a user: a fixed share for the entry and index slot, the nickname
+    /// twice (list and `names_index` key) and the optional user and host parts.
+    fn of_user(user: &User) -> Usage {
+        let bytes = 64
+            + 2 * user.get_nickname().len()
+            + user.get_username().map_or(0, str::len)
+            + user.get_hostname().map_or(0, str::len);
+        Usage { members: 1, bytes }
+    }
+
+    fn of_list(list: &[User]) -> Usage {
+        list.iter().fold(Usage::default(), |a, u| a.plus(Usage::of_user(u)))
+    }
+
+    fn of_lists(lists: &HashMap<String, Vec<User>>) -> Usage {
+        lists.values().fold(Usage::default(), |a, l| a.plus(Usage::of_list(l)))
+    }
+
+    fn plus(self, o: Usage) -> Usage {
+        Usage { members: self.members + o.members, bytes: self.bytes + o.bytes }
+    }
+
+    fn minus(self, o: Usage) -> Usage {
+        Usage {
+            members: self.members.saturating_sub(o.members),
+            bytes: self.bytes.saturating_sub(o.bytes),
+        }
+    }
+}
+
+/// Fails when adding `more` to a channel holding `in_channel`, of `in_total` over all
+/// channels, would pass a member or byte limit.
+fn check_budget(in_channel: Usage, in_total: Usage, more: Usage) -> error::Result<()> {
+    let (c, t) = (in_channel.plus(more), in_total.plus(more));
+    if c.members > MAX_MEMBERS_PER_CHANNEL {
         Err(error::Error::ChannelListLimit("too many members in a channel"))
-    } else if in_total + more > MAX_MEMBERS_TOTAL {
+    } else if t.members > MAX_MEMBERS_TOTAL {
         Err(error::Error::ChannelListLimit("too many members in total"))
+    } else if c.bytes > MAX_BYTES_PER_CHANNEL {
+        Err(error::Error::ChannelListLimit("member list of a channel too large"))
+    } else if t.bytes > MAX_BYTES_TOTAL {
+        Err(error::Error::ChannelListLimit("member lists too large in total"))
     } else {
         Ok(())
     }
@@ -531,6 +577,10 @@ struct ClientState {
     /// Any message that is not a RPL_NAMREPLY drops it, since the positions may have moved
     /// (local change, see vendor/README.md).
     names_index: RwLock<HashMap<String, HashMap<String, usize>>>,
+    /// Retained usage after the last RPL_NAMREPLY line: the channel, its members and
+    /// all channels' members. Lets a long reply charge each line in constant time; every
+    /// change to a list drops it with `names_index` (local change, see vendor/README.md).
+    names_usage: Mutex<Option<(String, Usage, Usage)>>,
     /// Set by the first end of MOTD; only that one joins the configured channels.
     motd_handled: AtomicBool,
     /// A thread-safe index to track the current alternative nickname being used.
@@ -550,6 +600,7 @@ impl ClientState {
             chanlists: RwLock::new(HashMap::new()),
             names_done: RwLock::new(HashSet::new()),
             names_index: RwLock::new(HashMap::new()),
+            names_usage: Mutex::new(None),
             motd_handled: AtomicBool::new(false),
             alt_nick_index: RwLock::new(0),
             confirmed_nick: RwLock::new(None),
@@ -567,12 +618,19 @@ impl ClientState {
         self.sender.send(msg)
     }
 
+    /// Drops the NAMES position index of `chan` and the cached usage (local change, see
+    /// vendor/README.md). Call it whenever a list changes.
+    fn forget_names_index(&self, chan: &str) {
+        self.names_index.write().remove(chan);
+        *self.names_usage.lock() = None;
+    }
+
     /// Drops the list of `chan` and the end-of-NAMES mark that goes with it (local change,
     /// see vendor/README.md). Every path that forgets a channel must use this.
     fn drop_channel_list(&self, chan: &str) {
         let _ = self.chanlists.write().remove(chan);
         self.names_done.write().remove(chan);
-        self.names_index.write().remove(chan);
+        self.forget_names_index(chan);
     }
 
     /// Gets the current nickname in use.
@@ -634,7 +692,7 @@ impl ClientState {
                         *me = Some(new_nick.clone());
                     }
                 }
-                self.handle_nick_change(old_nick, new_nick)
+                self.handle_nick_change(old_nick, new_nick)?
             }
             Command::Response(Response::RPL_WELCOME, ref args) => {
                 if let Some(nick) = args.first() {
@@ -768,7 +826,7 @@ impl ClientState {
             .is_some_and(|me| src.eq_ignore_ascii_case(me))
         {
             self.names_done.write().remove(chan);
-            self.names_index.write().remove(chan);
+            self.forget_names_index(chan);
             let mut lists = self.chanlists.write();
             if lists.len() >= MAX_LISTED_CHANNELS && !lists.contains_key(chan) {
                 return Err(error::Error::ChannelListLimit("too many channels"));
@@ -777,12 +835,16 @@ impl ClientState {
             return Ok(());
         }
         let mut lists = self.chanlists.write();
-        let total: usize = lists.values().map(Vec::len).sum();
+        if src.is_empty() || !lists.contains_key(chan) {
+            return Ok(());
+        }
+        let total = Usage::of_lists(&lists);
         if let Some(vec) = lists.get_mut(&chan.to_owned()) {
             if !src.is_empty() {
-                check_member_budget(vec.len(), total, 1)?;
-                vec.push(User::new(src));
-                self.names_index.write().remove(chan);
+                let user = User::new(src);
+                check_budget(Usage::of_list(vec), total, Usage::of_user(&user))?;
+                vec.push(user);
+                self.forget_names_index(chan);
             }
         }
         Ok(())
@@ -797,7 +859,7 @@ impl ClientState {
             if !src.is_empty() {
                 if let Some(n) = vec.iter().position(|x| x.get_nickname() == src) {
                     vec.swap_remove(n);
-                    self.names_index.write().remove(chan);
+                    self.forget_names_index(chan);
                 }
             }
         }
@@ -815,27 +877,38 @@ impl ClientState {
         for (chan, vec) in self.chanlists.write().iter_mut() {
             if let Some(p) = vec.iter().position(|x| x.get_nickname() == src) {
                 vec.swap_remove(p);
-                self.names_index.write().remove(chan);
+                self.forget_names_index(chan);
             }
         }
     }
 
     #[cfg(not(feature = "channel-lists"))]
-    fn handle_nick_change(&self, _: &str, _: &str) {}
+    fn handle_nick_change(&self, _: &str, _: &str) -> error::Result<()> {
+        Ok(())
+    }
 
     #[cfg(feature = "channel-lists")]
-    fn handle_nick_change(&self, old_nick: &str, new_nick: &str) {
+    fn handle_nick_change(&self, old_nick: &str, new_nick: &str) -> error::Result<()> {
         if old_nick.is_empty() || new_nick.is_empty() {
-            return;
+            return Ok(());
         }
 
-        for (chan, vec) in self.chanlists.write().iter_mut() {
+        let mut lists = self.chanlists.write();
+        let mut total = Usage::of_lists(&lists);
+        for (chan, vec) in lists.iter_mut() {
             if let Some(n) = vec.iter().position(|x| x.get_nickname() == old_nick) {
                 let new_entry = User::new(new_nick);
+                // A longer nickname must not grow a list past its budget.
+                let freed = Usage::of_user(&vec[n]);
+                let cost = Usage::of_user(&new_entry);
+                let in_chan = Usage::of_list(vec).minus(freed);
+                check_budget(in_chan, total.minus(freed), cost)?;
+                total = total.minus(freed).plus(cost);
                 vec[n] = new_entry;
-                self.names_index.write().remove(chan);
+                self.forget_names_index(chan);
             }
         }
+        Ok(())
     }
 
     #[cfg(not(feature = "channel-lists"))]
@@ -868,15 +941,24 @@ impl ClientState {
             let chan = &args[2];
             let mut lists = self.chanlists.write();
             // Only a channel we joined has a list.
-            let mut total: usize = lists.values().map(Vec::len).sum();
+            if !lists.contains_key(chan) {
+                return Ok(());
+            }
+            // Counting the lists is linear, so a reply reuses the count of its last line.
+            let cached = self.names_usage.lock().take();
+            let (mut in_chan, mut total) = match cached {
+                Some((c, in_chan, total)) if c == *chan => (in_chan, total),
+                _ => (Usage::of_list(&lists[chan]), Usage::of_lists(&lists)),
+            };
             let Some(vec) = lists.get_mut(chan) else {
                 return Ok(());
             };
             // The first line of a new reply replaces the old list.
             if self.names_done.write().remove(chan) {
-                total -= vec.len();
+                total = total.minus(in_chan);
+                in_chan = Usage::default();
                 vec.clear();
-                self.names_index.write().remove(chan);
+                self.forget_names_index(chan);
             }
             // One nick appears once; the later entry wins so its modes are kept. The index
             // keeps a reply of N names linear instead of scanning the list per name.
@@ -888,20 +970,25 @@ impl ClientState {
                     .map(|(i, u)| (u.get_nickname().to_owned(), i))
                     .collect()
             });
-            let mut added = 0;
             for user in args[3].split(' ') {
                 let user = User::new(user);
-                match index.get(user.get_nickname()) {
-                    Some(&i) => vec[i] = user,
+                let cost = Usage::of_user(&user);
+                // Over a limit the list would be incomplete, so end the connection. A
+                // replaced entry is charged only for the difference.
+                let old = index.get(user.get_nickname()).copied();
+                let freed = old.map_or(Usage::default(), |i| Usage::of_user(&vec[i]));
+                check_budget(in_chan.minus(freed), total.minus(freed), cost)?;
+                in_chan = in_chan.minus(freed).plus(cost);
+                total = total.minus(freed).plus(cost);
+                match old {
+                    Some(i) => vec[i] = user,
                     None => {
-                        // Over the limit the list would be incomplete, so end the connection.
-                        check_member_budget(vec.len(), total + added, 1)?;
-                        added += 1;
                         index.insert(user.get_nickname().to_owned(), vec.len());
                         vec.push(user);
                     }
                 }
             }
+            *self.names_usage.lock() = Some((chan.clone(), in_chan, total));
         }
         Ok(())
     }
@@ -1256,7 +1343,10 @@ mod test {
     use std::{collections::HashMap, default::Default, thread, time::Duration};
 
     #[cfg(feature = "channel-lists")]
-    use super::{MAX_LISTED_CHANNELS, MAX_MEMBERS_PER_CHANNEL, MAX_MEMBERS_TOTAL};
+    use super::{
+        MAX_BYTES_PER_CHANNEL, MAX_BYTES_TOTAL, MAX_LISTED_CHANNELS, MAX_MEMBERS_PER_CHANNEL,
+        MAX_MEMBERS_TOTAL,
+    };
     use super::Client;
     #[cfg(feature = "channel-lists")]
     use crate::client::data::User;
@@ -1876,6 +1966,85 @@ mod test {
         res.unwrap();
         // One member in another channel passes the total.
         value.push_str(":test!t@h JOIN #extra\r\n:x!x@h JOIN #extra\r\n");
+        let (_, res) = run_lines(value).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
+    }
+
+    /// NAMES lines of `count` distinct nicknames of `len` bytes each, one per line.
+    #[cfg(feature = "channel-lists")]
+    fn long_names(chan: &str, from: usize, count: usize, len: usize) -> String {
+        (from..from + count)
+            .map(|i| {
+                let nick = format!("{i:0>len$}");
+                format!(":irc.test.net 353 test = {chan} :{nick}\r\n")
+            })
+            .collect()
+    }
+
+    // A long nickname costs 64 + 2 * 400 bytes (see `Usage::of_user`).
+    #[cfg(feature = "channel-lists")]
+    const LONG_NICK: usize = 400;
+    #[cfg(feature = "channel-lists")]
+    const LONG_COST: usize = 64 + 2 * LONG_NICK;
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn names_byte_budget_per_channel_ends_the_connection() {
+        let head = ":irc.test.net 001 test :Welcome\r\n:test!t@h JOIN #a\r\n";
+        let fit = MAX_BYTES_PER_CHANNEL / LONG_COST;
+        // Right up to the budget is accepted.
+        let at = format!("{head}{}", long_names("#a", 0, fit, LONG_NICK));
+        let (client, res) = run_lines(at.clone()).await;
+        res.unwrap();
+        assert_eq!(client.list_users("#a").unwrap().len(), fit);
+        // One more is refused and the list never passes the budget.
+        let over = format!("{at}{}", long_names("#a", fit, 1, LONG_NICK));
+        let (client, res) = run_lines(over).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
+        assert_eq!(client.list_users("#a").unwrap().len(), fit);
+        // A repeated nickname replaced by a longer one counts the growth.
+        let grown = format!(
+            "{at}:irc.test.net 353 test = #a :{:0>1000}\r\n",
+            0
+        );
+        let (_, res) = run_lines(grown).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
+        // A refreshed NAMES gives the bytes back.
+        let refresh = format!("{at}:irc.test.net 366 test #a :End\r\n{}", long_names("#a", 0, fit, LONG_NICK));
+        let (_, res) = run_lines(refresh).await;
+        res.unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn names_byte_budget_spans_channels() {
+        let mut value = String::from(":irc.test.net 001 test :Welcome\r\n");
+        let per = MAX_BYTES_PER_CHANNEL / LONG_COST;
+        let full = MAX_BYTES_TOTAL / MAX_BYTES_PER_CHANNEL;
+        for c in 0..full {
+            value.push_str(&format!(":test!t@h JOIN #c{c}\r\n"));
+            value.push_str(&long_names(&format!("#c{c}"), 0, per, LONG_NICK));
+        }
+        let (_, res) = run_lines(value.clone()).await;
+        res.unwrap();
+        // The rest of the total budget is smaller than one more long nickname.
+        value.push_str(":test!t@h JOIN #extra\r\n");
+        let room = (MAX_BYTES_TOTAL - full * per * LONG_COST) / LONG_COST;
+        value.push_str(&long_names("#extra", per, room + 1, LONG_NICK));
+        let (_, res) = run_lines(value).await;
+        assert!(matches!(res, Err(Error::ChannelListLimit(_))));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "channel-lists")]
+    async fn nick_change_cannot_grow_a_list_past_the_budget() {
+        let head = ":irc.test.net 001 test :Welcome\r\n:test!t@h JOIN #a\r\n";
+        let fit = MAX_BYTES_PER_CHANNEL / LONG_COST;
+        let value = format!(
+            "{head}{}:irc.test.net 353 test = #a :short\r\n:short!u@h NICK :{:0>2000}\r\n",
+            long_names("#a", 0, fit - 1, LONG_NICK),
+            0
+        );
         let (_, res) = run_lines(value).await;
         assert!(matches!(res, Err(Error::ChannelListLimit(_))));
     }
