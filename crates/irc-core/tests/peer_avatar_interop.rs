@@ -221,7 +221,8 @@ fn a_picture_follows_the_mask_through_a_real_server() {
     assert_eq!(asked, 1, "one CTCP AVATAR query");
 
     // The bot leaves and comes back with the same nick and username: the
-    // mask is remembered, so the join brings the picture and nothing is asked.
+    // mask is remembered, so the join brings the picture at once and no WHO is
+    // sent; one query still goes out, to hear of a later change.
     bot.send("QUIT :back soon");
     client.wait("quit", |event| {
         matches!(event, Event::ChannelActivity { actor, kind: ChannelActivityKind::Quit { .. }, .. }
@@ -245,7 +246,11 @@ fn a_picture_follows_the_mask_through_a_real_server() {
     }
     assert!(client.events.len() > before);
     assert_eq!(client.sent("WHO "), who, "no lookup for a remembered mask");
-    assert_eq!(client.sent("PRIVMSG "), asked, "no query either");
+    assert_eq!(
+        client.sent("PRIVMSG "),
+        asked + 1,
+        "one query to follow later changes"
+    );
 
     // Another nickname is another key: it is looked up afresh.
     let other_nick = format!("{bot_nick}_");
