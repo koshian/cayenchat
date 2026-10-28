@@ -168,7 +168,7 @@ pub fn is_valid(secret: &str) -> bool {
 /// the network's services. It reveals nothing of the private key.
 pub fn public_key_base64(secret: &str) -> Result<String, KeyError> {
     let key = signing_key(secret)?;
-    let point = key.verifying_key().to_encoded_point(true);
+    let point = key.verifying_key().to_sec1_point(true);
     Ok(STANDARD.encode(point.as_bytes()))
 }
 
