@@ -536,7 +536,7 @@ Passwords persist only when the user saves one (the "save password" box of a dra
 in the password dialog) and only through the credential store (see Credentials
 below); Delete removes it at once (D068). TLS certificate verification
 defaults to on per server and can be disabled for a specific connection. The core
-requires TLS before sending SASL PLAIN credentials, and before sending server
+requires TLS before sending SASL credentials (any mechanism, D071), and before sending server
 PASS unless the server's profile explicitly allows it without TLS (D024). The nickname (`NICK`), the `USER` username and the SASL account are separate
 settings; `ConnectionConfig` carries the username explicitly and its `Debug`
 output redacts both passwords. Each core connection supports auto-join, channel
@@ -548,7 +548,7 @@ Safe-channel short names are sent unchanged in JOIN; the server's returned full
 name (including its five-character identifier) is used for the conversation,
 roster, messages and subsequent commands, and is preserved in WHOIS channel links.
 CAP negotiation is shared by SASL and the opt-in IRCv3 extensions (see IRCv3
-capabilities and message tags below); SASL sends PLAIN credentials once `sasl`
+capabilities and message tags below); SASL runs the server's chosen mechanism (PLAIN or SCRAM-SHA-1/256/512, D071) once `sasl`
 is acknowledged, and CAP END waits for its success. The UI retains each server's active connection
 configuration and retries its unexpected disconnections after 3, 6, 12, 24, then 30
 seconds (capped), independently of the other servers.
@@ -559,7 +559,7 @@ A successful registration resets the delay; an explicit disconnect cancels pendi
 retries. Disconnect during DNS lookup or TCP/TLS setup ends the worker at once
 (the command queue is read only after the transport opens); once connected it
 sends QUIT and flushes it before closing. The core reports a terminal `Refused` event instead of `Disconnected`
-for SASL failures (902 account locked or held, 904–907), a missing SASL PLAIN offer, UTF8ONLY with a legacy encoding,
+for SASL failures (902 account locked or held, 904–907), a missing offer of the chosen SASL mechanism, a bad SCRAM challenge or signature, UTF8ONLY with a legacy encoding,
 and 464/465 during registration; the UI does not retry those automatically,
 because repeating rejected credentials risks account lockout or a server ban.
 The `irc` library consumes 432/433 and reports `NoUsableNick` because no
@@ -1025,7 +1025,7 @@ implemented, opted-in extensions that the server offered are requested, plus
 `sasl` when SASL is configured. A NAK of an optional extension is a
 diagnostic, not an error. A multiline ACK is applied at its last line. CAP END
 goes out once every request is answered and SASL has finished; SASL failures
-and a missing PLAIN offer remain terminal refusals. A server without CAP
+and a missing offer of the chosen mechanism remain terminal refusals. A server without CAP
 registers directly (001), which ends negotiation. After registration CAP NEW
 requests newly offered wanted capabilities (never `sasl`) and CAP DEL
 withdraws them; unrequested ACKs are ignored and `-name` entries disable.
