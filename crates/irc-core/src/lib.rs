@@ -520,7 +520,7 @@ impl ConnectionConfig {
         }
         if let Some(sasl) = &self.sasl {
             if !self.use_tls {
-                return Err("SASL PLAIN requires TLS.".into());
+                return Err("SASL requires TLS.".into());
             }
             if sasl.username.is_empty()
                 || sasl.password.is_empty()

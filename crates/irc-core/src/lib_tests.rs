@@ -2483,12 +2483,22 @@ fn plaintext_server_password_requires_opt_in_and_sasl_still_requires_tls() {
     assert!(config.validate().is_err());
     config.allow_plaintext_pass = true;
     config.validate().unwrap();
-    config.sasl = Some(SaslCredentials {
-        mechanism: Default::default(),
-        username: "account".into(),
-        password: "secret".into(),
-    });
-    assert!(config.validate().is_err());
+    for mechanism in [
+        SaslMechanism::Plain,
+        SaslMechanism::ScramSha1,
+        SaslMechanism::ScramSha256,
+        SaslMechanism::ScramSha512,
+    ] {
+        config.use_tls = false;
+        config.sasl = Some(SaslCredentials {
+            mechanism,
+            username: "account".into(),
+            password: "secret".into(),
+        });
+        assert!(config.validate().is_err(), "{mechanism:?} without TLS");
+        config.use_tls = true;
+        config.validate().unwrap();
+    }
 }
 
 #[test]
