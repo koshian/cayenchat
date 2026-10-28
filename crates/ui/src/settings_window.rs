@@ -2334,20 +2334,27 @@ impl SettingsWindow {
         }
     }
 
-    /// `None` turns SASL off. Every mechanism needs TLS, so choosing one
-    /// turns TLS on, and TLS stays on while SASL is.
-    fn choose_sasl(&mut self, choice: Option<SaslMechanism>, cx: &mut Context<Self>) {
+    /// Whether SASL is used is independent of the mechanism. Every mechanism
+    /// needs TLS, so turning SASL on turns TLS on, and TLS stays on while
+    /// SASL is.
+    fn toggle_sasl(&mut self, cx: &mut Context<Self>) {
         self.feedback = None;
-        self.settings.sasl_list_open = false;
         let Some(profile) = self.settings.values.selected_profile_mut() else {
             return;
         };
-        profile.sasl_enabled = choice.is_some();
-        if let Some(mechanism) = choice {
-            profile.sasl_mechanism = mechanism;
-        }
+        profile.sasl_enabled = !profile.sasl_enabled;
         if profile.sasl_enabled && !profile.use_tls {
             self.toggle_tls(cx);
+        }
+        cx.notify();
+    }
+
+    /// Only picks the mechanism; it leaves SASL on or off as it was.
+    fn choose_sasl_mechanism(&mut self, mechanism: SaslMechanism, cx: &mut Context<Self>) {
+        self.feedback = None;
+        self.settings.sasl_list_open = false;
+        if let Some(profile) = self.settings.values.selected_profile_mut() {
+            profile.sasl_mechanism = mechanism;
         }
         cx.notify();
     }
@@ -3043,11 +3050,7 @@ impl SettingsWindow {
             }
             encoding_selector = encoding_selector.child(menu);
         }
-        let sasl_label = if sasl {
-            profile.sasl_mechanism.name().to_owned()
-        } else {
-            self.i18n.text("sasl_none")
-        };
+        let sasl_label = profile.sasl_mechanism.name();
         let mut sasl_selector = div().flex().flex_col().child(
             div()
                 .id("sasl-select")
@@ -3070,14 +3073,9 @@ impl SettingsWindow {
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface);
-            let choices = std::iter::once(None).chain(SaslMechanism::ALL.map(Some));
-            for (index, choice) in choices.enumerate() {
-                let selected = if sasl {
-                    choice == Some(profile.sasl_mechanism)
-                } else {
-                    choice.is_none()
-                };
-                let label = choice.map_or_else(|| self.i18n.text("sasl_none"), |m| m.name().into());
+            for (index, choice) in SaslMechanism::ALL.into_iter().enumerate() {
+                let selected = choice == profile.sasl_mechanism;
+                let label = choice.name();
                 menu = menu.child(
                     div()
                         .id(("sasl-option", index))
@@ -3087,7 +3085,9 @@ impl SettingsWindow {
                         .hover(|d| d.bg(theme.hover))
                         .when(selected, |d| d.bg(theme.selected))
                         .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| this.choose_sasl(choice, cx))),
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.choose_sasl_mechanism(choice, cx)
+                        })),
                 );
             }
             sasl_selector = sasl_selector.child(menu);
@@ -3243,6 +3243,24 @@ impl SettingsWindow {
                     .pt_2()
                     .font_weight(FontWeight::BOLD)
                     .child(self.i18n.text("sasl_heading")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(settings_theme::LABEL_WIDTH).child("SASL"))
+                    .child(
+                        div()
+                            .id("sasl-toggle")
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .cursor_pointer()
+                            .child(settings_theme::checkbox(sasl, true, cx))
+                            .child(self.i18n.text(if sasl { "on" } else { "off" }))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_sasl(cx))),
+                    ),
             )
             .child(
                 div()
@@ -5118,7 +5136,7 @@ mod escape_tests {
     }
 
     #[gpui::test]
-    fn choosing_a_sasl_mechanism_keeps_tls_on_and_none_turns_sasl_off(cx: &mut TestAppContext) {
+    fn sasl_checkbox_is_independent_of_the_mechanism_and_keeps_tls_on(cx: &mut TestAppContext) {
         let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
         let state = |cx: &mut gpui::VisualTestContext| {
             form.read_with(cx, |form, _| {
@@ -5133,25 +5151,24 @@ mod escape_tests {
         form.update(cx, |form, cx| {
             form.settings.values.selected_profile_mut().unwrap().use_tls = false;
             form.settings.sasl_list_open = true;
-            form.choose_sasl(Some(cayenchat_storage::SaslMechanism::ScramSha512), cx);
+            form.choose_sasl_mechanism(cayenchat_storage::SaslMechanism::ScramSha512, cx);
         });
+        // Choosing a mechanism neither turns SASL on nor touches TLS.
+        assert_eq!(
+            state(cx),
+            (false, cayenchat_storage::SaslMechanism::ScramSha512, false)
+        );
+        assert!(form.read_with(cx, |form, _| !form.settings.sasl_list_open));
+        form.update(cx, |form, cx| form.toggle_sasl(cx));
         assert_eq!(
             state(cx),
             (true, cayenchat_storage::SaslMechanism::ScramSha512, true)
         );
-        assert!(form.read_with(cx, |form, _| !form.settings.sasl_list_open));
-        form.update(cx, |form, cx| form.choose_sasl(None, cx));
+        form.update(cx, |form, cx| form.toggle_sasl(cx));
         // The mechanism is remembered for the next time SASL is turned on.
         assert_eq!(
             state(cx),
             (false, cayenchat_storage::SaslMechanism::ScramSha512, true)
-        );
-        form.update(cx, |form, cx| {
-            form.choose_sasl(Some(cayenchat_storage::SaslMechanism::Plain), cx)
-        });
-        assert_eq!(
-            state(cx),
-            (true, cayenchat_storage::SaslMechanism::Plain, true)
         );
     }
 

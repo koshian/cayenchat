@@ -466,7 +466,6 @@
   "plaintext_pass_confirm": "Send Without TLS",
   "sasl_heading": "SASL",
   "sasl_mechanism": "Method",
-  "sasl_none": "Do not use",
   "sasl_tls_note": "Every SASL method needs TLS. SCRAM does not send the password, but it does not replace TLS.",
   "password_saved_placeholder": "Saved — type to replace",
   "credential_error": "Could not use stored credentials: {error}",

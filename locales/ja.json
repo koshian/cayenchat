@@ -466,7 +466,6 @@
   "plaintext_pass_confirm": "TLS なしで送信する",
   "sasl_heading": "SASL",
   "sasl_mechanism": "認証方式",
-  "sasl_none": "使用しない",
   "sasl_tls_note": "どの SASL 方式でも TLS が必要です。SCRAM はパスワードを送りませんが、TLS の代わりにはなりません。",
   "password_saved_placeholder": "保存済み（入力すると置き換えます）",
   "credential_error": "保存済みの資格情報を使えませんでした: {error}",

@@ -3024,8 +3024,10 @@ inputs.
 
 2026-10-28. Each server chooses its mechanism (`ServerProfile::sasl_mechanism`,
 added without a settings version change; files without it read as PLAIN, so a
-profile with `sasl_enabled` keeps working). SASL is off or one of PLAIN,
-SCRAM-SHA-1, SCRAM-SHA-256, SCRAM-SHA-512. ECDSA-NIST256P-CHALLENGE is #657;
+profile with `sasl_enabled` keeps working). Whether SASL is used is a
+separate checkbox (`sasl_enabled`), not an entry of the mechanism list, which
+offers PLAIN, SCRAM-SHA-1, SCRAM-SHA-256 and SCRAM-SHA-512 and is remembered
+while SASL is off. ECDSA-NIST256P-CHALLENGE is #657;
 EXTERNAL and the `-PLUS` (channel binding) mechanisms are out of scope.
 
 - **No fallback.** The chosen mechanism must be in the `sasl=` list of
