@@ -84,12 +84,16 @@ gpui = { workspace = true, features = ["test-support"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
 
-[target.'cfg(target_os = "linux")'.dependencies]
+# The same systems as `cfg(unix_desktop)` in build.rs, which cannot be used here.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui = { workspace = true, features = ["wayland", "x11"] }
 # Same version and backend as GPUI's own portal client, so no new crates.
 ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
 # Ends the app cleanly on SIGTERM, SIGHUP and SIGINT (#285).
 signal-hook = "0.4.5"
+
+# Linux only (not `unix_desktop`): logind does not exist on FreeBSD.
+[target.'cfg(target_os = "linux")'.dependencies]
 # Wake from sleep: logind's PrepareForSleep signal. Already in the tree
 # (ashpd, notify-rust), with the same features.
 zbus = "5"

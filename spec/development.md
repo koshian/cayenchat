@@ -123,6 +123,13 @@ process died (the UI test binary has crashed there with
 `STATUS_ACCESS_VIOLATION`, #659). CI does
 not exercise GUI interaction, IME, drag and drop or clipboard images.
 
+The "FreeBSD x86_64 (build only)" job runs `cargo check --workspace
+--all-targets --locked` in a FreeBSD VM (`vmactions/freebsd-vm`) whenever the
+Linux job runs, since FreeBSD builds the same platform code. A cross `cargo
+check` does not work (the C dependencies such as aws-lc need a FreeBSD
+toolchain). It runs no tests and builds no package, and nobody has started the
+app on a real FreeBSD, so do not claim more than that it builds.
+
 The "Dependency advisories" job runs `cargo deny check advisories` against
 the RustSec database on every pull request and push, whatever changed, since
 new advisories appear without any change here. `deny.toml` fails on every
@@ -142,7 +149,7 @@ On pull requests, CI runs only the jobs the changed paths can affect
 (`scripts/ci-jobs.sh`): documentation (`*.md`, `spec/`, `.claude/`,
 `licenses/`) runs nothing, GPUI's per-platform sources under
 `vendor/gpui/src/platform/{linux,windows,mac}` run only that platform (Linux
-also runs the GUI end-to-end test), and the E2E scripts run only the GUI
+also runs the GUI end-to-end test and the FreeBSD build check), and the E2E scripts run only the GUI
 end-to-end test. Any other path runs every job, so a new file that matters to
 several platforms is covered until the script names it. Pushes to master always
 run every job. The paths come from `git diff` of the checked-out pull request

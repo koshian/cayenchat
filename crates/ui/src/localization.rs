@@ -126,7 +126,7 @@ fn read_catalog(language: &str) -> Option<HashMap<String, String>> {
         #[cfg(debug_assertions)]
         paths.push(directory.join("../../locales").join(&filename));
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     paths.push(PathBuf::from("/usr/share/cayenchat/locales").join(&filename));
     paths.into_iter().find_map(|path| {
         fs::read_to_string(path)

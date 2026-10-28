@@ -14,8 +14,11 @@ expect() {
   # The Windows release check runs exactly when the Windows x86_64 job does.
   local windows=false
   [[ ,$names, == *,'Windows x86_64',* ]] && windows=true
-  if [[ $got != "$names" || $out != *"windows=$windows"$'\n'"gui=$gui" ]]; then
-    echo "FAIL $what: got matrix '$got', $(tail -n2 <<<"$out" | paste -sd' '); want '$names', windows=$windows gui=$gui"
+  # The FreeBSD build check runs exactly when the Linux job does.
+  local freebsd=false
+  [[ ,$names, == *,'Linux x86_64',* ]] && freebsd=true
+  if [[ $got != "$names" || $out != *"windows=$windows"$'\n'"gui=$gui"$'\n'"freebsd=$freebsd" ]]; then
+    echo "FAIL $what: got matrix '$got', $(tail -n3 <<<"$out" | paste -sd' '); want '$names', windows=$windows gui=$gui freebsd=$freebsd"
     fail=1
   fi
 }
@@ -37,6 +40,6 @@ expect 'rename out of unknown path' "$all" true crates/app/src/lib.rs README.md
 expect 'workflow' "$all" true .github/workflows/ci.yml
 
 out=$(./ci-jobs.sh --all </dev/null)
-[[ $(grep -o '"name"' <<<"$out" | wc -l) -eq 4 && $out == *windows=true$'\n'gui=true ]] || { echo 'FAIL --all'; fail=1; }
+[[ $(grep -o '"name"' <<<"$out" | wc -l) -eq 4 && $out == *windows=true$'\n'gui=true$'\n'freebsd=true ]] || { echo 'FAIL --all'; fail=1; }
 
 exit $fail

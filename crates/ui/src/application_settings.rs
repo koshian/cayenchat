@@ -342,7 +342,7 @@ impl SettingsWindow {
                         })),
                 )
             })
-            .when(cfg!(target_os = "linux"), |d| {
+            .when(cfg!(unix_desktop), |d| {
                 d.child(self.option_row(
                     "linux_display",
                     [

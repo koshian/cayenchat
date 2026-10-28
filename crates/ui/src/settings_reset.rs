@@ -36,8 +36,7 @@ impl SettingsWindow {
                     && current.conversation_log == defaults.conversation_log
                     && (cfg!(target_os = "macos")
                         || current.menu_bar_auto_hide == defaults.menu_bar_auto_hide)
-                    && (!cfg!(target_os = "linux")
-                        || current.linux_display == defaults.linux_display)
+                    && (!cfg!(unix_desktop) || current.linux_display == defaults.linux_display)
                     && current.appearance.image_previews == defaults.appearance.image_previews
                     && current.appearance.reiwa_mode == defaults.appearance.reiwa_mode
                     && current.appearance.compact_urls == defaults.appearance.compact_urls
@@ -61,8 +60,7 @@ impl SettingsWindow {
                     && current.notice_key == defaults.notice_key
                     && (cfg!(target_os = "macos")
                         || current.channel_number_modifier == defaults.channel_number_modifier)
-                    && (!cfg!(target_os = "linux")
-                        || current.text_key_theme == defaults.text_key_theme)
+                    && (!cfg!(unix_desktop) || current.text_key_theme == defaults.text_key_theme)
                     && current.keybindings.is_empty()
             }
             SettingsTab::Notifications => current.notifications == defaults.notifications,
@@ -109,7 +107,7 @@ impl SettingsWindow {
                 if !cfg!(target_os = "macos") {
                     values.menu_bar_auto_hide = defaults.menu_bar_auto_hide;
                 }
-                if cfg!(target_os = "linux") {
+                if cfg!(unix_desktop) {
                     values.linux_display = defaults.linux_display;
                 }
                 let appearance = &mut values.appearance;
@@ -143,7 +141,7 @@ impl SettingsWindow {
                 if !cfg!(target_os = "macos") {
                     values.channel_number_modifier = defaults.channel_number_modifier;
                 }
-                if cfg!(target_os = "linux") {
+                if cfg!(unix_desktop) {
                     values.text_key_theme = defaults.text_key_theme;
                 }
                 values.keybindings.clear();
@@ -509,11 +507,11 @@ mod tests {
             );
             assert_eq!(
                 values.linux_display == defaults.linux_display,
-                cfg!(target_os = "linux")
+                cfg!(unix_desktop)
             );
             assert_eq!(
                 values.text_key_theme == defaults.text_key_theme,
-                cfg!(target_os = "linux")
+                cfg!(unix_desktop)
             );
         });
     }

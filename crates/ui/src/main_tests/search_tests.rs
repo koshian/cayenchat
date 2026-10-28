@@ -360,7 +360,7 @@ fn ending_a_composition_without_new_text_searches_what_is_shown(cx: &mut TestApp
     assert_eq!(search_state(&chat, cx).0, 2);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 #[gpui::test]
 fn the_emacs_key_theme_keeps_ctrl_f_for_the_cursor_and_opens_search_with_f3(
     cx: &mut TestAppContext,

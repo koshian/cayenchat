@@ -2,7 +2,8 @@
 # Chooses the CI jobs a pull request needs from the paths it changes, read one
 # per line from stdin, and prints them as GitHub step outputs: `matrix`, the
 # build-and-test platforms as JSON, `windows`, whether the Windows x86_64
-# release check runs, and `gui`, whether the Linux GUI end-to-end test runs.
+# release check runs, `gui`, whether the Linux GUI end-to-end test runs, and
+# `freebsd`, whether the FreeBSD build check runs.
 # With --all (pushes to master) every job runs.
 #
 # A path the cases below do not name runs everything. Documentation runs
@@ -36,3 +37,5 @@ $macos && entries+=('{"name":"macOS ARM64","os":"macos-latest"}')
 (IFS=,; echo "matrix=[${entries[*]}]")
 echo "windows=$windows"
 echo "gui=$gui"
+# FreeBSD builds the Linux platform code, so it runs whenever the Linux job does.
+echo "freebsd=$linux"
