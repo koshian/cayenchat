@@ -19,6 +19,12 @@ base64.workspace = true
 chrono.workspace = true
 # Overwrites the connection secrets once they are no longer needed.
 zeroize = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+stringprep = "0.1"
+getrandom = "0.3"
 
 [dev-dependencies]
 # The encodings the application offers, round-tripped through the codec.

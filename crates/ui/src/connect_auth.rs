@@ -866,6 +866,7 @@ mod tests {
         let mut config = ConnectionConfig::tls("irc.example".into(), "nick".into(), Vec::new());
         if sasl {
             config.sasl = Some(SaslCredentials {
+                mechanism: Default::default(),
                 username: "acct".into(),
                 password: String::new(),
             });

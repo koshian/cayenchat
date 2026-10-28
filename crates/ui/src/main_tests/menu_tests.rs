@@ -17,7 +17,13 @@ fn actions(items: &[MenuItem]) -> Vec<&'static str> {
 #[test]
 fn settings_is_offered_once_and_the_window_menu_is_macos_only() {
     for language in [Language::English, Language::Japanese] {
-        let menus = app_menus(false, true, false, &Localizer::new(language));
+        let menus = app_menus(
+            false,
+            Default::default(),
+            true,
+            false,
+            &Localizer::new(language),
+        );
         let mut all: Vec<&str> = Vec::new();
         for menu in &menus {
             all.extend(actions(&menu.items));
@@ -46,7 +52,7 @@ fn settings_is_offered_once_and_the_window_menu_is_macos_only() {
 fn about_is_in_the_app_menu_on_macos_and_the_help_menu_elsewhere() {
     for language in [Language::English, Language::Japanese] {
         let i18n = Localizer::new(language);
-        let menus = app_menus(false, true, false, &i18n);
+        let menus = app_menus(false, Default::default(), true, false, &i18n);
         let holders: Vec<usize> = menus
             .iter()
             .enumerate()

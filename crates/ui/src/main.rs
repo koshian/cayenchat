@@ -103,7 +103,7 @@ use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use os_text::WindowOsText;
-use session::ServerSession;
+use session::{DiagnosticsView, ServerSession};
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::ops::Range;
 use std::{
@@ -298,6 +298,7 @@ actions!(
         MinimizeWindow,
         ZoomWindow,
         ToggleDebug,
+        ToggleDiagnosticsView,
         ToggleToolbar,
         ToggleMenuBar,
         CopyDiagnostics,
@@ -393,11 +394,26 @@ fn connection_config_without_secrets(
     config.shared_avatar = shared_peer_avatar(profile);
     if profile.sasl_enabled {
         config.sasl = Some(SaslCredentials {
+            mechanism: sasl_mechanism(profile.sasl_mechanism),
             username: profile.sasl_username.clone(),
             password: String::new(),
         });
     }
     Ok(config)
+}
+
+/// The mechanism a connection uses for the one the profile names.
+fn sasl_mechanism(
+    mechanism: cayenchat_storage::SaslMechanism,
+) -> cayenchat_irc_core::SaslMechanism {
+    use cayenchat_irc_core::SaslMechanism as Wire;
+    use cayenchat_storage::SaslMechanism as Saved;
+    match mechanism {
+        Saved::Plain => Wire::Plain,
+        Saved::ScramSha1 => Wire::ScramSha1,
+        Saved::ScramSha256 => Wire::ScramSha256,
+        Saved::ScramSha512 => Wire::ScramSha512,
+    }
 }
 
 /// The channels of `profile` with an encoding of their own, as a connection
@@ -849,6 +865,8 @@ struct ChatWindow {
     whois_windows: HashMap<(NetworkId, String), WindowHandle<WhoisWindow>>,
     whois_replies: Vec<(NetworkId, WhoisInfo, bool)>,
     debug_enabled: bool,
+    /// Which connection log is drawn and copied.
+    diagnostics_view: DiagnosticsView,
     conversation_logs: conversation_log::ConversationLogs,
     menu_bar: menu_bar::MenuBar,
     /// The toolbar is on (View menu, saved in the settings), and its cached
@@ -1405,6 +1423,7 @@ impl ChatWindow {
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
             debug_enabled: false,
+            diagnostics_view: DiagnosticsView::default(),
             conversation_logs: conversation_log::ConversationLogs::new(
                 &saved.conversation_log,
                 log_notify,
@@ -1932,8 +1951,9 @@ impl ChatWindow {
                             && connecting;
                         if waiting && stage > session.watchdog_stage {
                             session.watchdog_stage = stage;
-                            let elapsed = started.elapsed();
-                            session.push_diagnostic(format!("[{:.1}s] UI is still waiting for the transport worker; inspect the latest diagnostic stage.", elapsed.as_secs_f32()));
+                            session.push_diagnostic(
+                                "UI is still waiting for the transport worker; inspect the latest diagnostic stage.".into(),
+                            );
                             cx.notify();
                         }
                         waiting
@@ -2306,7 +2326,7 @@ impl ChatWindow {
         session.sent_secrets =
             connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.connection_starting(&config);
-        session.diagnostics.clear();
+        session.clear_diagnostics();
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
@@ -4437,6 +4457,7 @@ impl ChatWindow {
     fn refresh_menus(&self, cx: &mut Context<Self>) {
         cx.set_menus(app_menus(
             self.debug_enabled,
+            self.diagnostics_view,
             self.toolbar_shown,
             !self.menu_bar.always(),
             &self.i18n,
@@ -4457,20 +4478,43 @@ impl ChatWindow {
         }
     }
 
-    /// Copies the selected server's transcript.
+    /// Switches between the overview and the IRC protocol log.
+    fn toggle_diagnostics_view(
+        &mut self,
+        _: &ToggleDiagnosticsView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.diagnostics_view = match self.diagnostics_view {
+            DiagnosticsView::Overview => DiagnosticsView::Protocol,
+            DiagnosticsView::Protocol => DiagnosticsView::Overview,
+        };
+        self.refresh_menus(cx);
+        if !self.debug_enabled {
+            self.show_diagnostics(window, cx);
+        }
+        self.sync_log_lists();
+        cx.notify();
+    }
+
+    /// Copies the selected server's log in the view being shown, with the
+    /// time each line was recorded.
     fn copy_diagnostics(&mut self, _: &CopyDiagnostics, _: &mut Window, cx: &mut Context<Self>) {
-        let text = self
-            .selected_session()
+        let text = self.diagnostics_text();
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    fn diagnostics_text(&self) -> String {
+        self.selected_session()
             .map(|session| {
                 session
-                    .diagnostics
+                    .lines(self.diagnostics_view)
                     .iter()
-                    .map(String::as_str)
+                    .map(session::DiagnosticLine::render)
                     .collect::<Vec<_>>()
                     .join("\n")
             })
-            .unwrap_or_default();
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+            .unwrap_or_default()
     }
 
     fn selected_session(&self) -> Option<&ServerSession> {
@@ -4807,6 +4851,26 @@ impl ChatWindow {
         }
     }
 
+    fn record_diagnostic(
+        &mut self,
+        network: NetworkId,
+        view: DiagnosticsView,
+        at: std::time::SystemTime,
+        elapsed: Duration,
+        text: String,
+    ) {
+        if let Some(session) = self.sessions.get_mut(&network) {
+            session.record(
+                view,
+                session::DiagnosticLine {
+                    at,
+                    elapsed: Some(elapsed),
+                    text,
+                },
+            );
+        }
+    }
+
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
         if let Some(session) = self.sessions.get_mut(&network) {
             session.push_diagnostic(line);
@@ -5113,13 +5177,13 @@ impl ChatWindow {
         let refused = matches!(event, Event::Refused(_));
         let replayed = matches!(event, Event::JoinedReplayed { .. });
         match event {
-            Event::Diagnostic { elapsed, message } => {
-                self.push_diagnostic(
-                    network,
-                    format!("[{:.1}s] {message}", elapsed.as_secs_f32()),
-                );
-            }
+            Event::Diagnostic {
+                at,
+                elapsed,
+                message,
+            } => self.record_diagnostic(network, DiagnosticsView::Overview, at, elapsed, message),
             Event::Wire {
+                at,
                 elapsed,
                 direction,
                 line,
@@ -5128,9 +5192,12 @@ impl ChatWindow {
                     WireDirection::Sent => "→",
                     WireDirection::Received => "←",
                 };
-                self.push_diagnostic(
+                self.record_diagnostic(
                     network,
-                    format!("[{:.1}s] {arrow} {line}", elapsed.as_secs_f32()),
+                    DiagnosticsView::Protocol,
+                    at,
+                    elapsed,
+                    format!("{arrow} {line}"),
                 );
             }
             Event::CaseMapping(mapping) => self.state.set_casemapping(network, mapping),
@@ -8020,6 +8087,7 @@ impl ChatWindow {
                 d.on_action(cx.listener(Self::reconnect_action))
             })
             .on_action(cx.listener(Self::toggle_debug))
+            .on_action(cx.listener(Self::toggle_diagnostics_view))
             .on_action(cx.listener(Self::toggle_toolbar))
             .on_action(cx.listener(Self::toggle_menu_bar))
             .on_action(cx.listener(Self::copy_diagnostics))
@@ -8369,7 +8437,7 @@ impl ChatWindow {
     fn main_layout(&self) -> MainLayout {
         let count = self
             .selected_session()
-            .map_or(0, |session| session.diagnostics.len());
+            .map_or(0, |session| session.lines(self.diagnostics_view).len());
         let registration_incomplete = self
             .selected_network_id()
             .and_then(|network| self.state.status(network))
@@ -8503,8 +8571,8 @@ impl ChatWindow {
                 .text_color(theme.text_secondary)
                 .child(
                     self.selected_session()
-                        .and_then(|session| session.diagnostics.get(index))
-                        .map(|line| diagnostic_text(line))
+                        .and_then(|session| session.lines(self.diagnostics_view).get(index))
+                        .map(|line| diagnostic_text(&line.render()))
                         .unwrap_or_default(),
                 )
                 .into_any_element(),
@@ -9467,6 +9535,7 @@ fn menu_access_keys(i18n: &Localizer) -> menu_bar::AccessKeys {
 
 fn app_menus(
     debug_enabled: bool,
+    diagnostics_view: DiagnosticsView,
     toolbar_shown: bool,
     menu_bar_hidden: bool,
     i18n: &Localizer,
@@ -9529,6 +9598,13 @@ fn app_menus(
                 i18n.text("menu_show_diagnostics")
             },
             ToggleDebug,
+        ),
+        MenuItem::action(
+            i18n.text(match diagnostics_view {
+                DiagnosticsView::Overview => "menu_diagnostics_show_protocol",
+                DiagnosticsView::Protocol => "menu_diagnostics_show_overview",
+            }),
+            ToggleDiagnosticsView,
         ),
         MenuItem::action(i18n.text("menu_copy_diagnostics"), CopyDiagnostics),
     ]);
@@ -9908,6 +9984,7 @@ fn main() {
             apply_shortcuts(ShortcutPrefs::from(&saved), cx);
             cx.set_menus(app_menus(
                 false,
+                DiagnosticsView::default(),
                 saved.show_toolbar,
                 saved.menu_bar_auto_hide,
                 &Localizer::new(Language::System),
@@ -10041,6 +10118,7 @@ fn main() {
                     chat.apply_layout(&layout);
                     cx.set_menus(app_menus(
                         false,
+                        DiagnosticsView::default(),
                         chat.toolbar_shown,
                         !chat.menu_bar.always(),
                         &chat.i18n,

@@ -347,6 +347,7 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
     let (event_tx, events) = mpsc::channel(1);
     event_tx
         .try_send(Event::Diagnostic {
+            at: SystemTime::now(),
             elapsed: Duration::ZERO,
             message: "TLS failed".into(),
         })
@@ -786,6 +787,17 @@ fn diagnostic_wire_preserves_messages_and_redacts_credentials() {
         line(IrcCommand::AUTHENTICATE("PLAIN".into())),
         "AUTHENTICATE PLAIN"
     );
+    for mechanism in ["SCRAM-SHA-1", "SCRAM-SHA-256", "SCRAM-SHA-512", "+", "*"] {
+        assert_eq!(
+            line(IrcCommand::AUTHENTICATE(mechanism.into())),
+            format!("AUTHENTICATE {mechanism}")
+        );
+    }
+    // A proof or signature is data, whatever the line before it was.
+    assert_eq!(
+        line(IrcCommand::AUTHENTICATE("cD1wcm9vZg==".into())),
+        "AUTHENTICATE [redacted]"
+    );
     assert_eq!(
         line(IrcCommand::OPER("alice".into(), "oper-secret".into())),
         "OPER alice [redacted]"
@@ -846,6 +858,7 @@ fn debug_output_redacts_credentials_and_username_is_validated() {
     let mut config = ConnectionConfig::tls("irc.example.org".into(), "alice".into(), vec![]);
     config.server_password = Some("server-secret".into());
     config.sasl = Some(SaslCredentials {
+        mechanism: Default::default(),
         username: "account".into(),
         password: "sasl-secret".into(),
     });
@@ -879,6 +892,7 @@ fn config_and_outgoing_reject_protocol_control_characters() {
     assert!(!valid_channel("#bad\nJOIN"));
     config.nickname = "alice".into();
     config.sasl = Some(SaslCredentials {
+        mechanism: Default::default(),
         username: "account".into(),
         password: "secret".into(),
     });
@@ -2470,11 +2484,22 @@ fn plaintext_server_password_requires_opt_in_and_sasl_still_requires_tls() {
     assert!(config.validate().is_err());
     config.allow_plaintext_pass = true;
     config.validate().unwrap();
-    config.sasl = Some(SaslCredentials {
-        username: "account".into(),
-        password: "secret".into(),
-    });
-    assert!(config.validate().is_err());
+    for mechanism in [
+        SaslMechanism::Plain,
+        SaslMechanism::ScramSha1,
+        SaslMechanism::ScramSha256,
+        SaslMechanism::ScramSha512,
+    ] {
+        config.use_tls = false;
+        config.sasl = Some(SaslCredentials {
+            mechanism,
+            username: "account".into(),
+            password: "secret".into(),
+        });
+        assert!(config.validate().is_err(), "{mechanism:?} without TLS");
+        config.use_tls = true;
+        config.validate().unwrap();
+    }
 }
 
 #[test]
@@ -2963,6 +2988,7 @@ fn sasl_plain_waits_for_success_before_ending_cap_negotiation() {
     config.use_tls = false;
     config.server_password = Some("server-secret".into());
     config.sasl = Some(SaslCredentials {
+        mechanism: Default::default(),
         username: "account".into(),
         password: "secret".into(),
     });
@@ -3063,6 +3089,7 @@ fn sasl_failure_stops_registration() {
     config.port = port;
     config.use_tls = false; // The private worker is tested without a certificate.
     config.sasl = Some(SaslCredentials {
+        mechanism: Default::default(),
         username: "account".into(),
         password: "wrong".into(),
     });
@@ -7328,4 +7355,145 @@ fn disconnect_after_the_worker_has_ended_is_not_an_error() {
     }
     assert!(connection.wait_closed(Duration::from_secs(5)));
     assert_eq!(connection.disconnect(), Ok(()));
+}
+
+/// Runs a SCRAM-SHA-256 login against a local server. The server answers
+/// the proof with `server_final` computed from the real exchange unless
+/// `forge` is set. Returns the refusal (if any) and everything the worker
+/// reported, as debug text.
+fn scram_login(forge: bool) -> (Option<String>, String) {
+    use crate::scram::{Hash, mock};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut read = move || loop {
+            let mut line = String::new();
+            if lines.read_line(&mut line).unwrap() == 0 {
+                return String::new();
+            }
+            if !line.starts_with("PING ") && !is_mode_query(&line) {
+                return line.trim_end().to_owned();
+            }
+        };
+        while !read().starts_with("USER ") {}
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        socket
+            .write_all(b":server CAP alice LS * :server-time\r\n:server CAP alice LS :sasl=PLAIN,SCRAM-SHA-256\r\n")
+            .unwrap();
+        assert_eq!(read(), "CAP REQ sasl");
+        socket
+            .write_all(b":server CAP alice ACK :sasl\r\n")
+            .unwrap();
+        assert_eq!(read(), "AUTHENTICATE SCRAM-SHA-256");
+        socket.write_all(b"AUTHENTICATE +\r\n").unwrap();
+        let first = read();
+        let first = base64::engine::general_purpose::STANDARD
+            .decode(first.strip_prefix("AUTHENTICATE ").unwrap())
+            .unwrap();
+        let first = String::from_utf8(first).unwrap();
+        let (server_first, client_final, server_final) =
+            mock::server(Hash::Sha256, "secret", &first, 16);
+        socket
+            .write_all(format!("AUTHENTICATE {}\r\n", b64(server_first.as_bytes())).as_bytes())
+            .unwrap();
+        assert_eq!(
+            read(),
+            format!("AUTHENTICATE {}", b64(client_final.as_bytes()))
+        );
+        let server_final = if forge {
+            format!("v={}", b64(&[0u8; 32]))
+        } else {
+            server_final
+        };
+        socket
+            .write_all(format!("AUTHENTICATE {}\r\n", b64(server_final.as_bytes())).as_bytes())
+            .unwrap();
+        if forge {
+            return;
+        }
+        assert_eq!(read(), "AUTHENTICATE +");
+        socket
+            .write_all(b":server 903 alice :SASL authentication successful\r\n")
+            .unwrap();
+        assert_eq!(read(), "CAP END");
+        socket
+            .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
+            .unwrap();
+        assert!(read().starts_with("QUIT"));
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false; // The private worker is tested without a certificate.
+    config.sasl = Some(SaslCredentials {
+        mechanism: SaslMechanism::ScramSha256,
+        username: "account".into(),
+        password: "secret".into(),
+    });
+    let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+    let worker = thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(config, command_rx, event_tx));
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut refusal = None;
+    let mut reported = String::new();
+    while Instant::now() < deadline {
+        match event_rx.try_recv() {
+            Ok(Event::Refused(reason)) => {
+                reported.push_str(&reason);
+                refusal = Some(reason);
+                break;
+            }
+            Ok(Event::Registered { .. }) => break,
+            Ok(Event::Disconnected(reason)) => panic!("unexpected disconnect: {reason}"),
+            Ok(event) => reported.push_str(&format!("{event:?}\n")),
+            Err(_) => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    if refusal.is_none() {
+        command_tx.try_send(Outgoing::Quit).unwrap();
+    }
+    server.join().unwrap();
+    worker.join().unwrap();
+    (refusal, reported)
+}
+
+#[test]
+fn sasl_scram_logs_in_over_a_multiline_cap_ls_and_leaks_nothing() {
+    let (refusal, reported) = scram_login(false);
+    assert_eq!(refusal, None, "{reported}");
+    for expected in [
+        "SASL SCRAM-SHA-256 is offered",
+        "SASL: starting SCRAM-SHA-256",
+        "server-first accepted",
+        "server signature verified",
+        "authentication succeeded (903)",
+        "AUTHENTICATE [redacted]",
+    ] {
+        assert!(
+            reported.contains(expected),
+            "missing {expected}: {reported}"
+        );
+    }
+    assert!(!reported.contains("secret"), "{reported}");
+}
+
+#[test]
+fn sasl_scram_with_a_forged_server_signature_is_refused() {
+    let (refusal, reported) = scram_login(true);
+    assert_eq!(
+        refusal.as_deref(),
+        Some("The SCRAM server signature does not match."),
+        "{reported}"
+    );
+    assert!(reported.contains("Negotiation refused"), "{reported}");
 }

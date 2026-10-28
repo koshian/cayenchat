@@ -46,6 +46,7 @@ fn config(sasl: bool) -> ConnectionConfig {
     config.port = 1;
     if sasl {
         config.sasl = Some(SaslCredentials {
+            mechanism: Default::default(),
             username: "acct".into(),
             password: String::new(),
         });
@@ -548,4 +549,28 @@ fn stopping_a_pending_retry_drops_the_sent_passwords(cx: &mut TestAppContext) {
         chat.disconnect(NET, cx);
         assert_eq!(sent(chat), (None, None));
     });
+}
+
+#[test]
+fn the_profile_mechanism_reaches_the_connection_config() {
+    use cayenchat_irc_core::SaslMechanism as Wire;
+    use cayenchat_storage::SaslMechanism as Saved;
+    let mut profile = cayenchat_storage::ServerProfile::default();
+    profile.sasl_enabled = true;
+    profile.sasl_username = "account".into();
+    profile.username = "ident".into();
+    for (saved, wire) in [
+        (Saved::Plain, Wire::Plain),
+        (Saved::ScramSha1, Wire::ScramSha1),
+        (Saved::ScramSha256, Wire::ScramSha256),
+        (Saved::ScramSha512, Wire::ScramSha512),
+    ] {
+        profile.sasl_mechanism = saved;
+        let config = crate::connection_config_without_secrets(
+            &profile,
+            cayenchat_storage::Language::English,
+        )
+        .unwrap();
+        assert_eq!(config.sasl.unwrap().mechanism, wire);
+    }
 }

@@ -16,6 +16,8 @@ mod presence;
 mod regain;
 mod relay;
 mod replay;
+mod sasl;
+mod scram;
 mod tags;
 pub mod text;
 
@@ -141,8 +143,41 @@ fn ensure_tls_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
+/// The SASL mechanisms offered. Channel binding (`-PLUS`) is not used, and
+/// EXTERNAL is out of scope.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SaslMechanism {
+    #[default]
+    Plain,
+    ScramSha1,
+    ScramSha256,
+    ScramSha512,
+}
+
+impl SaslMechanism {
+    /// The name on the wire (`AUTHENTICATE <name>`, `CAP LS` `sasl=` list).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "PLAIN",
+            Self::ScramSha1 => "SCRAM-SHA-1",
+            Self::ScramSha256 => "SCRAM-SHA-256",
+            Self::ScramSha512 => "SCRAM-SHA-512",
+        }
+    }
+
+    fn scram_hash(self) -> Option<scram::Hash> {
+        match self {
+            Self::Plain => None,
+            Self::ScramSha1 => Some(scram::Hash::Sha1),
+            Self::ScramSha256 => Some(scram::Hash::Sha256),
+            Self::ScramSha512 => Some(scram::Hash::Sha512),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct SaslCredentials {
+    pub mechanism: SaslMechanism,
     pub username: String,
     pub password: String,
 }
@@ -151,6 +186,7 @@ pub struct SaslCredentials {
 impl fmt::Debug for SaslCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SaslCredentials")
+            .field("mechanism", &self.mechanism)
             .field("username", &self.username)
             .field("password", &"[redacted]")
             .finish()
@@ -484,7 +520,7 @@ impl ConnectionConfig {
         }
         if let Some(sasl) = &self.sasl {
             if !self.use_tls {
-                return Err("SASL PLAIN requires TLS.".into());
+                return Err("SASL requires TLS.".into());
             }
             if sasl.username.is_empty()
                 || sasl.password.is_empty()
@@ -712,10 +748,14 @@ pub enum WireDirection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Diagnostic {
+        /// When the event happened, for the copied log; `elapsed` is the time
+        /// since the connection attempt began.
+        at: SystemTime,
         elapsed: Duration,
         message: String,
     },
     Wire {
+        at: SystemTime,
         elapsed: Duration,
         direction: WireDirection,
         line: String,
@@ -1207,6 +1247,7 @@ async fn next_command(
 async fn diagnostic(events: &EventSender, started: Instant, message: impl Into<String>) {
     let _ = events
         .send(Event::Diagnostic {
+            at: SystemTime::now(),
             elapsed: started.elapsed(),
             message: message.into(),
         })
@@ -1341,15 +1382,28 @@ fn without_channel_key(message: &IrcMessage) -> Option<IrcMessage> {
     Some(redacted)
 }
 
+/// An `AUTHENTICATE` argument that carries no payload: `+`, `*` or a
+/// mechanism name. Anything else is base64 data and stays out of the log.
+fn is_authenticate_marker(data: &str) -> bool {
+    data == "+"
+        || data == "*"
+        || [
+            SaslMechanism::Plain,
+            SaslMechanism::ScramSha1,
+            SaslMechanism::ScramSha256,
+            SaslMechanism::ScramSha512,
+        ]
+        .iter()
+        .any(|mechanism| data.eq_ignore_ascii_case(mechanism.name()))
+}
+
 fn redacted_wire_line(message: &IrcMessage) -> String {
     if let Some(redacted) = without_channel_key(message) {
         return tags::transcript_line(&redacted);
     }
     match &message.command {
         IrcCommand::PASS(_) => "PASS [redacted]".into(),
-        IrcCommand::AUTHENTICATE(data)
-            if data != "+" && data != "*" && !data.eq_ignore_ascii_case("PLAIN") =>
-        {
+        IrcCommand::AUTHENTICATE(data) if !is_authenticate_marker(data) => {
             "AUTHENTICATE [redacted]".into()
         }
         IrcCommand::OPER(name, _) => format!("OPER {name} [redacted]"),
@@ -1368,7 +1422,7 @@ fn redacted_wire_line(message: &IrcMessage) -> String {
         }
         IrcCommand::Raw(verb, _) if verb.eq_ignore_ascii_case("PASS") => "PASS [redacted]".into(),
         IrcCommand::Raw(verb, args) if verb.eq_ignore_ascii_case("AUTHENTICATE") => {
-            if args.first().is_some_and(|arg| arg == "+" || arg == "*") {
+            if args.first().is_some_and(|arg| is_authenticate_marker(arg)) {
                 message
                     .to_string()
                     .trim_end_matches(['\r', '\n'])
@@ -1481,6 +1535,7 @@ impl Transcript {
             let _ = self
                 .events
                 .send(Event::Wire {
+                    at: SystemTime::now(),
                     elapsed: self.started.elapsed(),
                     direction,
                     line,
@@ -3727,16 +3782,32 @@ impl Worker {
     /// Feeds the capability negotiation and what depends on the enabled
     /// capabilities. `Continue` says whether chathistory was just enabled.
     async fn negotiate(&mut self, message: &IrcMessage) -> ControlFlow<(), bool> {
-        match self.negotiation.observe(message) {
-            Ok(step) => {
-                for note in step.notes {
-                    self.note(note).await;
+        let mut step = self.negotiation.observe(message);
+        loop {
+            match step {
+                Ok(mut current) => {
+                    for note in std::mem::take(&mut current.notes) {
+                        self.note(note).await;
+                    }
+                    self.send_commands(std::mem::take(&mut current.send))
+                        .await?;
+                    let Some(job) = current.derive.take() else {
+                        break;
+                    };
+                    // PBKDF2 can take a second; keep it off the runtime.
+                    step = match tokio::task::spawn_blocking(move || job.run()).await {
+                        Ok(derived) => self.negotiation.derived(derived),
+                        Err(_) => Err("The SCRAM key derivation failed.".into()),
+                    };
                 }
-                self.send_commands(step.send).await?;
-            }
-            Err(error) => {
-                let _ = self.events.send(Event::Refused(error)).await;
-                return ControlFlow::Break(());
+                Err(error) => {
+                    for note in self.negotiation.take_sasl_failure_notes() {
+                        self.note(note).await;
+                    }
+                    self.note(format!("Negotiation refused: {error}")).await;
+                    let _ = self.events.send(Event::Refused(error)).await;
+                    return ControlFlow::Break(());
+                }
             }
         }
         // CAP DEL (or ACK -batch) withdrew batch: forget open batches.
@@ -4372,6 +4443,9 @@ impl Worker {
 
     async fn on_registration_timeout(&mut self) {
         self.note("IRC registration timed out.").await;
+        if let Some(stage) = self.negotiation.sasl_stage() {
+            self.note(format!("SASL did not finish: {stage}.")).await;
+        }
         let event = self.refusal.take().map_or_else(
             || Event::Disconnected("Registration timed out.".into()),
             Event::Refused,

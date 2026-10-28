@@ -203,6 +203,13 @@ directional, decoded IRC command/reply lines through core events. The chat windo
 keeps a bounded in-memory transcript and copies it from the native menu. Known
 credential commands are masked, while normal message bodies remain visible.
 The terminal disconnect reason is also part of the copied transcript.
+The View menu switches the log between an overview (stages and notes) and the
+IRC protocol (the decoded lines with → / ←); each is kept per server, bounded
+to 1000 lines, and cleared when a new connection attempt starts. Every line
+shows the local date and time it was recorded (milliseconds, UTC offset) and
+the time since the attempt began, and Copy Connection Diagnostics copies the
+shown view with these stamps; the time of copying is never used. After a
+failure or disconnect the log stays copyable.
 The library generates some maintenance traffic internally; PONG and configured
 JOIN are included, but the transcript is not a complete byte-for-byte capture.
 The trace is visible by default until registration succeeds and after failures;
@@ -3037,3 +3044,54 @@ the native settings-style ones, because blue and the OS theme's caret color are
 hard to tell from the dark input backgrounds (issue #219). In the light theme
 the caret is blue, or the OS theme's caret color for native settings-style
 inputs.
+
+## D071 — SASL mechanisms: PLAIN and SCRAM-SHA-1/256/512 (#656)
+
+2026-10-28. Each server chooses its mechanism (`ServerProfile::sasl_mechanism`,
+added without a settings version change; files without it read as PLAIN, so a
+profile with `sasl_enabled` keeps working). Whether SASL is used is a
+separate checkbox (`sasl_enabled`), not an entry of the mechanism list, which
+offers PLAIN, SCRAM-SHA-1, SCRAM-SHA-256 and SCRAM-SHA-512 and is remembered
+while SASL is off. ECDSA-NIST256P-CHALLENGE is #657;
+EXTERNAL and the `-PLUS` (channel binding) mechanisms are out of scope.
+
+- **No fallback.** The chosen mechanism must be in the `sasl=` list of
+  `CAP LS` (a value-less `sasl` follows the server's answer). Otherwise the
+  connection is refused; PLAIN or another mechanism is never tried without the
+  user's say-so. A failure (902, 904–907), a bad challenge or a wrong server
+  signature is a terminal `Refused`, as for PLAIN.
+- **TLS for every mechanism.** SCRAM sends no password, but the rule stays the
+  one of D024: SASL on means TLS on, and TLS cannot be turned off while SASL
+  is on (`ConnectionConfig::validate`, `toggle_tls`). SCRAM is not a substitute
+  for TLS.
+- **Shared password and dialog.** PLAIN and SCRAM use the same SASL password,
+  its saved note (`sasl_saved`) and the connect-time SASL dialog (D068), so
+  changing the mechanism keeps a saved password. A failed SCRAM login opens
+  the SASL fields as a failed PLAIN one does.
+- **SCRAM (RFC 5802, RFC 7677).** `irc-core::scram` is a state machine; the
+  GS2 header is `n,,` (no channel binding). The password is SASLprepped
+  (RFC 4013, `stringprep`); one that cannot be is not sent. `=` and `,` in
+  the account are escaped as `=3D` and `=2C`. The client nonce is 18 random
+  bytes. The server's nonce must extend ours; the salt must be non-empty and
+  at most 1 KiB; the iteration count must be 4096–1,000,000. A server
+  message may be at most 8 KiB (base64) over its `AUTHENTICATE` lines; a line
+  of 400 characters continues it. The server-final signature is compared in
+  constant time and a mismatch is refused; a 903 before it was verified is
+  refused too. After verifying it the client answers `AUTHENTICATE +` and
+  waits for 903.
+- **PBKDF2 off the runtime.** The derivation (up to a million iterations)
+  runs in `spawn_blocking`; the worker waits for it. SaltedPassword,
+  ClientKey and the other intermediates are zeroed after use and nothing is
+  kept between connections; a `Scram` exists only during one exchange and the
+  handshake clears its password when it has sent it.
+- **Diagnostics.** The connection diagnostics (always on, no extra mode) record
+  the stages: the mechanism, whether the server offers it, `CAP` replies,
+  `AUTHENTICATE` stages with byte counts, SCRAM's iteration count, the
+  numeric reply, the stage a failure stopped in (client-first, server-first,
+  client-final, server-final) and whether the server refused or a client
+  check failed; SCRAM `e=` values are shown only as a fixed RFC 5802 error
+  name, any other value as "not shown". Also the signature check, the 90 seconds registration timeout with the stage SASL
+  was in, and the numeric replies the worker already notes. Notes never carry
+  a payload, proof, signature, nonce or password; the transcript shows
+  `AUTHENTICATE <data>` as `[redacted]` and keeps `+`, `*` and mechanism
+  names.
