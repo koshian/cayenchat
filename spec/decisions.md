@@ -2495,9 +2495,12 @@ The maintainer approved this specification on the issue (2026-10-13).
   The file is opened without following a symbolic link (`O_NOFOLLOW`, and a
   check on other platforms) and without waiting on a pipe (`O_NONBLOCK`),
   `0600` in `0700` directories. Before the first write to a file the opened
-  file must be a regular file and, on Unix, neither it nor the directories
-  below the folder may be accessible to group or others; otherwise nothing
-  is written and the failure says which mode to set (`chmod 600` / `700`).
+  file must be a regular file and, on Unix, neither it nor the chosen folder
+  itself nor the directories below it may be accessible to group or others
+  (an existing shared `0755` folder is refused, since its listing would
+  show the network names); otherwise nothing is written and the failure
+  says which mode to set (`chmod 600` / `700`). "Open folder" creates a
+  missing folder as `0700` too (`chatlog::create_root`).
 - **Line format.** A new file starts with `# cayenchat-log 1`. Every other
   line has four tab-separated columns: time (ISO 8601, local offset,
   milliseconds; the server's `time` when negotiated, else receipt), kind,

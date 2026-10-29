@@ -517,7 +517,7 @@ impl SettingsWindow {
         // The disk (a network share, say) may be slow, so not on this thread.
         let creating = cx.background_spawn({
             let directory = directory.clone();
-            async move { std::fs::create_dir_all(&directory) }
+            async move { cayenchat_storage::chatlog::create_root(&directory) }
         });
         cx.spawn(async move |this, cx| {
             let result = creating.await;
