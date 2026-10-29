@@ -1421,6 +1421,17 @@ impl SettingsWindow {
             autostart_generation: 0,
             _subscriptions: subscriptions,
         };
+        let avatar_url = this.settings.avatar_url.clone();
+        this._subscriptions.push(cx.subscribe(
+            &avatar_url,
+            |this, _, paste: &input::ClipboardImagePaste, cx| {
+                let item = paste.0.clone();
+                let window = this.window;
+                let _ = cx.update_window(window, |this, window, cx| {
+                    this.paste_avatar_image(&item, window, cx)
+                });
+            },
+        ));
         // Without a server the form shows no fields, so the focus waits on
         // the page itself and Escape still reaches the window.
         if this.settings.values.servers.is_empty() {

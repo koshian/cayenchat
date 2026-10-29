@@ -2126,6 +2126,15 @@ impl ChatWindow {
             cx.notify();
         })
         .detach();
+        cx.subscribe(&input, |this, _, paste: &input::ClipboardImagePaste, cx| {
+            if let Some(window) = this.window_handle {
+                let item = paste.0.clone();
+                let _ = cx.update_window(window, |this, window, cx| {
+                    this.paste_image(&item, window, cx)
+                });
+            }
+        })
+        .detach();
         input
     }
 
@@ -8130,7 +8139,6 @@ impl ChatWindow {
             // The menu bar greys out an action no window handles, so the chat
             // window handles About itself; `open_about` covers other windows.
             .on_action(cx.listener(|this, _: &About, _, cx| about::open(&this.i18n, cx)))
-            .on_action(cx.listener(Self::paste_image))
             .on_action(cx.listener(|this, _: &input::UploadImage, window, cx| {
                 this.toolbar_upload(window, cx)
             }))

@@ -128,8 +128,10 @@ impl gpui::Global for ConfirmMultilinePaste {}
 /// was inserted; the enclosing window asks, or calls
 /// [`TextInput::insert_pasted`] when it cannot.
 pub struct MultilinePaste(pub String);
+pub struct ClipboardImagePaste(pub ClipboardItem);
 
 impl gpui::EventEmitter<MultilinePaste> for TextInput {}
+impl gpui::EventEmitter<ClipboardImagePaste> for TextInput {}
 
 /// Pasted text as one line: every line break (a CRLF counts once) becomes a
 /// single space.
@@ -194,6 +196,8 @@ pub struct TextInput {
     /// The x Up and Down aim for while the caret moves between lines.
     goal_x: Option<Pixels>,
     menu: Option<InputMenu>,
+    /// The pending system clipboard read. A later Paste cancels this one.
+    clipboard_read: Option<Task<()>>,
 }
 
 impl TextInput {
@@ -885,25 +889,31 @@ impl TextInput {
 
     /// Text wins when the clipboard holds both text and an image, matching
     /// what text fields elsewhere paste. An image-only clipboard in a draft
-    /// propagates the action to the chat window's attachment flow.
+    /// emits an event for the chat window's attachment flow after the read.
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
-            return;
-        };
-        if let Some(text) = item.text() {
-            if self.draft
-                && text.trim().contains(['\r', '\n'])
-                && cx
-                    .try_global::<ConfirmMultilinePaste>()
-                    .is_some_and(|g| g.0)
-            {
-                cx.emit(MultilinePaste(text));
-                return;
-            }
-            self.insert_pasted(&text, window, cx);
-        } else if self.attachments && clipboard_image(&item).is_some() {
-            cx.propagate();
-        }
+        let read = cx.read_from_clipboard_async();
+        self.clipboard_read = Some(cx.spawn_in(window, async move |this, cx| {
+            let item = read.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(item) = item else {
+                    return;
+                };
+                if let Some(text) = item.text() {
+                    if this.draft
+                        && text.trim().contains(['\r', '\n'])
+                        && cx
+                            .try_global::<ConfirmMultilinePaste>()
+                            .is_some_and(|g| g.0)
+                    {
+                        cx.emit(MultilinePaste(text));
+                        return;
+                    }
+                    this.insert_pasted(&text, window, cx);
+                } else if this.attachments && clipboard_image(&item).is_some() {
+                    cx.emit(ClipboardImagePaste(item));
+                }
+            });
+        }));
     }
 
     // A secret never reaches the clipboard, where clipboard history and other
@@ -1844,6 +1854,7 @@ impl TextInput {
             followed: None,
             goal_x: None,
             menu: None,
+            clipboard_read: None,
         }
     }
 
