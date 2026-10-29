@@ -108,20 +108,14 @@ pub fn save_orders(orders: &ChannelOrders) -> Result<(), String> {
     save_orders_to(&order_path()?, orders)
 }
 
-/// Writes the file whole or not at all (a temporary file, then a rename).
+/// Writes the file whole or not at all, keeping it readable only by the user.
 pub fn save_orders_to(path: &Path, orders: &ChannelOrders) -> Result<(), String> {
-    let parent = path.parent().ok_or("The order path has no directory.")?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Could not create the order directory: {error}"))?;
     let bytes = serde_json::to_vec_pretty(&ChannelOrders {
         version: ORDER_VERSION,
         ..orders.clone()
     })
     .map_err(|error| format!("Could not serialize the channel order: {error}"))?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, bytes)
-        .map_err(|error| format!("Could not write the channel order: {error}"))?;
-    fs::rename(&temporary, path)
+    crate::private_file::write(path, &bytes, crate::private_file::Flush::Skip)
         .map_err(|error| format!("Could not save the channel order: {error}"))
 }
 
@@ -132,10 +126,17 @@ mod tests {
     #[test]
     fn an_order_reads_back_and_damage_reads_as_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("channel-order.json");
+        let path = dir.path().join("nested").join("channel-order.json");
         let mut orders = ChannelOrders::default();
         orders.set("a", vec!["#b".into(), "#a".into()]);
         save_orders_to(&path, &orders).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(path.parent().unwrap()), 0o700);
+        }
         assert_eq!(load_orders_from(&path).order("a"), ["#b", "#a"]);
         assert!(load_orders_from(&path).order("missing").is_empty());
         fs::write(&path, b"{ not json").unwrap();
@@ -157,5 +158,30 @@ mod tests {
         assert!(text.len() as u64 > MAX_FILE_BYTES);
         fs::write(&path, text).unwrap();
         assert_eq!(load_orders_from(&path), ChannelOrders::default());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_replaces_a_symlink_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        let path = dir.path().join("channel-order.json");
+        fs::write(&target, b"target remains unchanged").unwrap();
+        symlink(&target, &path).unwrap();
+        let mut orders = ChannelOrders::default();
+        orders.set("a", vec!["#private".into()]);
+
+        save_orders_to(&path, &orders).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"target remains unchanged");
+        assert!(
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(load_orders_from(&path).order("a"), ["#private"]);
     }
 }
