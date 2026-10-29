@@ -979,7 +979,8 @@ joining again gets it back (`crates/irc-core/src/regain.rs`, D055, D056).
   without it read as on), a checkbox with an explanation on the server's
   settings page. Saving the settings with it off applies to the next
   connection, automatic reconnects included (`apply_servers` updates
-  `active_config.regain_ops`); a worker already running keeps the value it was
+  `active_config.regain_ops` and the TLS certificate-verification and
+  plaintext-password policies); a worker already running keeps the value it was
   started with, so a wait in progress is not cancelled by the change.
 
 `app::AppState` owns networks, conversations, bounded message logs, user lists,
