@@ -2,10 +2,7 @@ use std::{
     fs::File,
     io::{ErrorKind, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
-    sync::{
-        Arc,
-        atomic::AtomicUsize,
-    },
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 use calloop::{LoopHandle, PostAction};
@@ -121,8 +118,7 @@ impl<T: ReceiveData> DataOffer<T> {
         let read = executor.spawn(async move {
             match unsafe {
                 read_fd_limited_async(fd, deadline, Some(&total_read), 32 * 1024 * 1024).await
-            }
-            {
+            } {
                 Ok(bytes) => Some(bytes),
                 Err(error) => {
                     log::warn!("Unable to read Wayland clipboard data: {error}");
@@ -194,7 +190,9 @@ impl<T: ReceiveData> DataOffer<T> {
                     return None;
                 }
             };
-            Some(ClipboardItem::new_string(text_content.replace("\r\n", "\n")))
+            Some(ClipboardItem::new_string(
+                text_content.replace("\r\n", "\n"),
+            ))
         }))
     }
 }
@@ -291,12 +289,8 @@ impl Clipboard {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let total_read = Arc::new(AtomicUsize::new(0));
         executor.clone().spawn(async move {
-            if let Some(text) = offer.read_text_async(
-                &connection,
-                &executor,
-                deadline,
-                total_read.clone(),
-            )
+            if let Some(text) =
+                offer.read_text_async(&connection, &executor, deadline, total_read.clone())
                 && let Some(item) = text.await
             {
                 return Some(item);
@@ -306,15 +300,13 @@ impl Clipboard {
                 if !offer.has_mime_type(mime_type) {
                     continue;
                 }
-                let Some(bytes) =
-                    offer.read_bytes_async(
-                        &connection,
-                        mime_type,
-                        &executor,
-                        deadline,
-                        total_read.clone(),
-                    )
-                else {
+                let Some(bytes) = offer.read_bytes_async(
+                    &connection,
+                    mime_type,
+                    &executor,
+                    deadline,
+                    total_read.clone(),
+                ) else {
                     continue;
                 };
                 if let Some(bytes) = bytes.await {
