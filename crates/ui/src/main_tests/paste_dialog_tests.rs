@@ -44,6 +44,9 @@ fn a_multiline_paste_is_joined_with_spaces_when_switched_off(cx: &mut TestAppCon
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
     chat.update_in(cx, |chat, window, cx| {
         paste_lines(chat, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, _, cx| {
         let input = chat.inputs[&chat.state.selection()].clone();
         // One space per line break, an empty line included.
         assert_eq!(input.read(cx).text(), "one two  three ");
@@ -82,7 +85,26 @@ fn a_multiline_paste_opens_the_dialog_when_switched_on(cx: &mut TestAppContext) 
     let (chat, cx) =
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
     chat.update_in(cx, paste_lines);
+    cx.run_until_parked();
     chat.update_in(cx, drive_dialog);
+}
+
+#[gpui::test]
+fn an_image_paste_is_deferred_until_the_input_update_finishes(cx: &mut TestAppContext) {
+    install_globals(cx, false);
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) =
+        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    chat.update_in(cx, |chat, _, cx| {
+        let input = chat.inputs[&chat.state.selection()].clone();
+        input.update(cx, |_, cx| {
+            cx.emit(crate::input::ClipboardImagePaste(ClipboardItem::new_image(
+                &gpui::Image::empty(),
+            )));
+        });
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, _, _| assert!(chat.pending_image_paste.is_none()));
 }
 
 /// Lines added in the editor after the dialog opened are checked again when
@@ -95,6 +117,7 @@ fn too_many_lines_cannot_be_sent(cx: &mut TestAppContext) {
     let (chat, cx) =
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
     chat.update_in(cx, paste_lines);
+    cx.run_until_parked();
     chat.update_in(cx, |chat, window, cx| {
         let many = vec!["x"; super::paste_dialog::MAX_LINES + 1].join("\n");
         chat.paste_prompt

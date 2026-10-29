@@ -892,6 +892,8 @@ struct ChatWindow {
     /// A multi-line paste waiting for the next frame, which has the window to
     /// ask about it in (the draft inputs are made without one).
     pending_paste: Option<(Entity<TextInput>, String)>,
+    /// An image paste waiting for the next frame, after its source input update.
+    pending_image_paste: Option<(Entity<TextInput>, gpui::ClipboardItem)>,
     layout_file: Option<std::path::PathBuf>,
     /// The channel order chosen by dragging or the menu, and the file it is
     /// written to (`None` writes nothing, as for `layout_file`).
@@ -1464,6 +1466,7 @@ impl ChatWindow {
             confirm_channel_dblclick_part: saved.confirm_channel_dblclick_part,
             paste_prompt: None,
             pending_paste: None,
+            pending_image_paste: None,
             layout_file: None,
             channel_orders: Default::default(),
             order_file: None,
@@ -2129,21 +2132,8 @@ impl ChatWindow {
         cx.subscribe(
             &input,
             |this, input, paste: &input::ClipboardImagePaste, cx| {
-                if let Some(window) = this.window_handle {
-                    let item = paste.0.clone();
-                    let _ = cx.update_window(window.into(), |view, window, cx| {
-                        if let Ok(view) = view.downcast::<ChatWindow>() {
-                            let chat = view.read(cx);
-                            let is_selected = chat
-                                .inputs
-                                .get(&chat.state.selection())
-                                .is_some_and(|selected| selected == &input);
-                            if is_selected {
-                                view.update(cx, |this, cx| this.paste_image(&item, window, cx));
-                            }
-                        }
-                    });
-                }
+                this.pending_image_paste = Some((input, paste.0.clone()));
+                cx.notify();
             },
         )
         .detach();
@@ -8080,6 +8070,14 @@ impl ChatWindow {
         let disconnect_prompt = self.render_disconnect_prompt(window, cx);
         if let Some((input, text)) = self.pending_paste.take() {
             self.open_paste_prompt(&input, &text, window, cx);
+        }
+        if let Some((input, item)) = self.pending_image_paste.take()
+            && self
+                .inputs
+                .get(&self.state.selection())
+                .is_some_and(|selected| selected == &input)
+        {
+            self.paste_image(&item, window, cx);
         }
         let paste_prompt = self.render_paste_prompt(window, cx);
         let transfer_dialog = self.render_transfer_dialog(window, cx);
