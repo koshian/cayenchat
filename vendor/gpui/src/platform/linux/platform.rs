@@ -750,7 +750,7 @@ pub(super) unsafe fn read_fd_limited(
         let timeout_ms = remaining.as_millis().clamp(1, 50) as i32;
         let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
         if ready == 0 {
-            anyhow::bail!("clipboard read timed out");
+            continue;
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
@@ -765,16 +765,23 @@ pub(super) unsafe fn read_fd_limited(
                 if buffer.len() + count > max_bytes {
                     anyhow::bail!("clipboard data exceeds the size limit");
                 }
-                if let Some(total_read) = total_read
-                    && total_read
-                        .fetch_update(
+                if let Some(total_read) = total_read {
+                    let mut total = total_read.load(std::sync::atomic::Ordering::Relaxed);
+                    loop {
+                        let Some(next) = total.checked_add(count).filter(|next| *next <= max_bytes)
+                        else {
+                            anyhow::bail!("clipboard data exceeds the size limit");
+                        };
+                        match total_read.compare_exchange_weak(
+                            total,
+                            next,
                             std::sync::atomic::Ordering::Relaxed,
                             std::sync::atomic::Ordering::Relaxed,
-                            |total| total.checked_add(count).filter(|next| *next <= max_bytes),
-                        )
-                        .is_err()
-                {
-                    anyhow::bail!("clipboard data exceeds the size limit");
+                        ) {
+                            Ok(_) => break,
+                            Err(actual) => total = actual,
+                        }
+                    }
                 }
                 buffer.extend_from_slice(&chunk[..count]);
             }
@@ -1113,14 +1120,15 @@ mod tests {
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
     fn clipboard_read(
-        pipe: filedescriptor::Pipe,
+        read: filedescriptor::FileDescriptor,
         max_bytes: usize,
         cancelled: Option<&std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
     ) -> Result<Vec<u8>> {
         unsafe {
             read_fd_limited(
-                pipe.read,
-                std::time::Instant::now() + std::time::Duration::from_millis(30),
+                read,
+                std::time::Instant::now() + timeout,
                 cancelled,
                 None,
                 max_bytes,
@@ -1132,7 +1140,7 @@ mod tests {
     #[test]
     fn clipboard_reader_times_out_when_the_writer_stays_open() {
         let pipe = filedescriptor::Pipe::new().unwrap();
-        assert!(clipboard_read(pipe, 8, None).is_err());
+        assert!(clipboard_read(pipe.read, 8, None, std::time::Duration::from_millis(30)).is_err());
     }
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -1142,7 +1150,7 @@ mod tests {
 
         let mut pipe = filedescriptor::Pipe::new().unwrap();
         pipe.write.write_all(b"abc").unwrap();
-        assert!(clipboard_read(pipe, 8, None).is_err());
+        assert!(clipboard_read(pipe.read, 8, None, std::time::Duration::from_millis(30)).is_err());
     }
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -1153,7 +1161,8 @@ mod tests {
         let mut pipe = filedescriptor::Pipe::new().unwrap();
         pipe.write.write_all(b"1234").unwrap();
         drop(pipe.write);
-        let error = clipboard_read(pipe, 3, None).unwrap_err();
+        let error =
+            clipboard_read(pipe.read, 3, None, std::time::Duration::from_millis(30)).unwrap_err();
         assert!(error.to_string().contains("size limit"));
     }
 
@@ -1165,7 +1174,10 @@ mod tests {
         let mut pipe = filedescriptor::Pipe::new().unwrap();
         pipe.write.write_all(b"hello").unwrap();
         drop(pipe.write);
-        assert_eq!(clipboard_read(pipe, 8, None).unwrap(), b"hello");
+        assert_eq!(
+            clipboard_read(pipe.read, 8, None, std::time::Duration::from_millis(30)).unwrap(),
+            b"hello"
+        );
     }
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -1173,8 +1185,47 @@ mod tests {
     fn clipboard_reader_stops_when_cancelled() {
         let pipe = filedescriptor::Pipe::new().unwrap();
         let cancelled = std::sync::atomic::AtomicBool::new(true);
-        let error = clipboard_read(pipe, 8, Some(&cancelled)).unwrap_err();
+        let error = clipboard_read(
+            pipe.read,
+            8,
+            Some(&cancelled),
+            std::time::Duration::from_millis(30),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn clipboard_reader_allows_idle_periods_before_the_deadline() {
+        use std::{io::Write, thread, time::Duration};
+
+        let mut pipe = filedescriptor::Pipe::new().unwrap();
+        let read = pipe.read;
+        let writer = std::thread::spawn(move || {
+            thread::sleep(Duration::from_millis(120));
+            pipe.write.write_all(b"hello").unwrap();
+        });
+        let data = clipboard_read(read, 8, None, Duration::from_secs(1)).unwrap();
+        writer.join().unwrap();
+        assert_eq!(data, b"hello");
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn clipboard_reader_allows_idle_periods_after_partial_data() {
+        use std::{io::Write, thread, time::Duration};
+
+        let mut pipe = filedescriptor::Pipe::new().unwrap();
+        pipe.write.write_all(b"hel").unwrap();
+        let read = pipe.read;
+        let writer = std::thread::spawn(move || {
+            thread::sleep(Duration::from_millis(120));
+            pipe.write.write_all(b"lo").unwrap();
+        });
+        let data = clipboard_read(read, 8, None, Duration::from_secs(1)).unwrap();
+        writer.join().unwrap();
+        assert_eq!(data, b"hello");
     }
 
     #[test]
