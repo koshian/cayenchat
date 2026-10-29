@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, Worker};
-use crate::channel_keys::KeyJoin;
+use crate::channel_keys::{JoinTarget, KeyJoin};
 use cayenchat_irc_core::{ChannelActivityKind, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
 use cayenchat_storage::{CredentialStore, Secret, SecretKey};
 use gpui::TestAppContext;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
+use std::sync::mpsc;
 
 const NET: NetworkId = NetworkId(1);
 
@@ -88,6 +92,43 @@ fn key_of(store: &CredentialStore, chat: &ChatWindow) -> Option<String> {
         .map(|key| key.expose().to_owned())
 }
 
+fn local_connection() -> (
+    cayenchat_irc_core::Connection,
+    ConnectionConfig,
+    mpsc::Receiver<Option<String>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (join_tx, join_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    let _ = join_tx.send(None);
+                    return;
+                }
+                Ok(_) if line.starts_with("JOIN ") => {
+                    let _ = join_tx.send(Some(line.trim_end().to_owned()));
+                    return;
+                }
+                Ok(_) => {}
+            }
+        }
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), Vec::new());
+    config.port = port;
+    config.use_tls = false;
+    let connection = cayenchat_irc_core::Connection::connect(config.clone()).unwrap();
+    (connection, config, join_rx)
+}
+
 #[gpui::test]
 fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
     let (chat, _store, cx) = open_chat(None, cx);
@@ -108,6 +149,255 @@ fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
     });
     // The dialog draws (masked field, checkbox, buttons).
     cx.update(|window, cx| window.draw(cx).clear());
+}
+
+#[gpui::test]
+fn delayed_join_key_read_uses_the_registered_connection_and_drops_replaced_connection(
+    cx: &mut TestAppContext,
+) {
+    let (chat, store, cx) = open_chat(None, cx);
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    store
+        .set(
+            &SecretKey::channel_key(&profile, "#Secret"),
+            &Secret::new("saved-key"),
+        )
+        .unwrap();
+
+    let (old_connection, old_config, _old_join) = local_connection();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        let mut old_config = old_config;
+        old_config.channels.clear();
+        session.active_config = Some(old_config);
+        session.irc = Some(old_connection);
+        event(chat, registered(), cx);
+        chat.join_channels(NET, &["#Secret".into()], cx).unwrap();
+    });
+    let (new_connection, new_config, new_join) = local_connection();
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.generation += 1;
+        let mut new_config = new_config;
+        new_config.host = "localhost".into();
+        session.active_config = Some(new_config);
+        session.irc = Some(new_connection);
+        event(chat, registered(), cx);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        new_join
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        None,
+        "a JOIN with the old connection's key must not reach the replacement"
+    );
+    chat.update(cx, |chat, _| {
+        assert!(chat.sessions[&NET].pending_joins.is_empty());
+        assert!(chat.sessions[&NET].key_joins.is_empty());
+    });
+}
+
+#[gpui::test]
+fn delayed_join_key_read_sends_the_key_when_its_connection_is_still_current(
+    cx: &mut TestAppContext,
+) {
+    let (chat, store, cx) = open_chat(None, cx);
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    store
+        .set(
+            &SecretKey::channel_key(&profile, "#Secret"),
+            &Secret::new("saved-key"),
+        )
+        .unwrap();
+    let (connection, config, join_rx) = local_connection();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        let mut config = config;
+        config.channels.clear();
+        session.active_config = Some(config);
+        session.irc = Some(connection);
+        event(chat, registered(), cx);
+        chat.join_channels(NET, &["#Secret".into()], cx).unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        join_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        Some("JOIN #Secret saved-key".into())
+    );
+}
+
+#[gpui::test]
+fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key(
+    cx: &mut TestAppContext,
+) {
+    let (chat, store, cx) = open_chat(Some("old-key"), cx);
+    chat.update(cx, |chat, _| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+    });
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.key_joins.push(KeyJoin {
+            channel: "#Secret".into(),
+            typed: Some(Secret::new("old-key")),
+            remember: false,
+            stale: true,
+        });
+        chat.key_join_succeeded(NET, "#Secret", cx);
+    });
+    let (profile, read, target, revision, old_snapshot) = chat.read_with(cx, |chat, _| {
+        let profile = chat
+            .saved
+            .profile(&chat.sessions[&NET].profile_id)
+            .unwrap()
+            .clone();
+        let target = JoinTarget::new(&chat.sessions[&NET]).unwrap();
+        let session = &chat.sessions[&NET];
+        let revision = session.channel_key_revision;
+        assert_eq!(session.channel_key_writes_pending, 1);
+        let snapshot = store
+            .get(&SecretKey::channel_key(&profile.id, "#Secret"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.expose(), "old-key");
+        (
+            profile.clone(),
+            profile.channels_to_read_keys_for(),
+            target,
+            revision,
+            BTreeMap::from([("#Secret".to_owned(), snapshot.expose().to_owned())]),
+        )
+    });
+    cx.run_until_parked();
+    assert!(
+        store
+            .get(&SecretKey::channel_key(&profile.id, "#Secret"))
+            .unwrap()
+            .is_none(),
+        "the forget completes before the old refresh snapshot is applied"
+    );
+    chat.update(cx, |chat, _| {
+        assert_eq!(
+            chat.sessions[&NET].channel_key_revision,
+            revision.wrapping_add(1),
+            "a successful forget invalidates earlier refresh snapshots"
+        );
+        assert!(
+            !chat.sessions[&NET]
+                .active_config
+                .as_ref()
+                .unwrap()
+                .channel_keys
+                .contains_key("#Secret")
+        );
+    });
+
+    chat.update(cx, |chat, _| {
+        chat.finish_key_refresh(NET, &profile, &read, &target, revision, old_snapshot);
+        assert!(
+            !chat.sessions[&NET]
+                .active_config
+                .as_ref()
+                .unwrap()
+                .channel_keys
+                .contains_key("#Secret")
+        );
+        assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
+    });
+}
+
+#[gpui::test]
+fn successful_key_writes_for_different_channels_both_update_the_config(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(None, cx);
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    store
+        .set(
+            &SecretKey::channel_key(&profile, "#a"),
+            &Secret::new("old-a"),
+        )
+        .unwrap();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#a".into()]);
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        let config = session.active_config.as_mut().unwrap();
+        config.channels = vec!["#a".into(), "#b".into()];
+        config.channel_keys.insert("#a".into(), "old-a".into());
+        session.key_joins = vec![
+            KeyJoin {
+                channel: "#a".into(),
+                typed: Some(Secret::new("rejected-a")),
+                remember: false,
+                stale: true,
+            },
+            KeyJoin {
+                channel: "#b".into(),
+                typed: Some(Secret::new("key-b")),
+                remember: true,
+                stale: false,
+            },
+        ];
+        chat.key_join_succeeded(NET, "#a", cx);
+        chat.key_join_succeeded(NET, "#b", cx);
+    });
+    cx.run_until_parked();
+
+    chat.update(cx, |chat, _| {
+        let session = &chat.sessions[&NET];
+        let config = session.active_config.as_ref().unwrap();
+        assert!(!config.channel_keys.contains_key("#a"));
+        assert_eq!(
+            config.channel_keys.get("#b").map(String::as_str),
+            Some("key-b")
+        );
+        assert!(!chat.saved.servers[0].channel_key_noted("#a"));
+        assert!(chat.saved.servers[0].channel_key_noted("#b"));
+    });
+    assert!(
+        store
+            .get(&SecretKey::channel_key(&profile, "#a"))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .get(&SecretKey::channel_key(&profile, "#b"))
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "key-b"
+    );
+}
+
+#[test]
+fn join_targets_match_only_the_same_generation_and_destination() {
+    let mut session = crate::session::ServerSession::new("profile".into());
+    session.active_config = Some(ConnectionConfig::tls(
+        "irc.example.org".into(),
+        "me".into(),
+        vec![],
+    ));
+    let target = JoinTarget::new(&session).unwrap();
+    assert!(target.matches(&session));
+
+    session.generation += 1;
+    assert!(!target.matches(&session));
+    session.generation -= 1;
+
+    session.active_config.as_mut().unwrap().host = "irc.other.example".into();
+    assert!(!target.matches(&session));
+    session.active_config.as_mut().unwrap().host = "irc.example.org".into();
+
+    session.active_config.as_mut().unwrap().port += 1;
+    assert!(!target.matches(&session));
+    session.active_config.as_mut().unwrap().port -= 1;
+
+    session.active_config.as_mut().unwrap().use_tls = false;
+    assert!(!target.matches(&session));
 }
 
 #[gpui::test]
