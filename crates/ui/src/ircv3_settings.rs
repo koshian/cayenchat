@@ -1167,9 +1167,11 @@ mod tests {
     #[test]
     fn server_label_prefers_the_display_name_over_host_and_port() {
         let i18n = crate::localization::Localizer::new(Language::System);
-        let mut profile = ServerProfile::default();
-        profile.host = "tiarra.example".into();
-        profile.port = 6667;
+        let mut profile = ServerProfile {
+            host: "tiarra.example".into(),
+            port: 6667,
+            ..Default::default()
+        };
         assert_eq!(super::server_label(&profile, &i18n), "tiarra.example:6667");
         profile.display_name = "Tiarra".into();
         assert_eq!(super::server_label(&profile, &i18n), "Tiarra");
@@ -1178,9 +1180,11 @@ mod tests {
     #[test]
     fn server_label_neutralizes_bidi_controls_in_display_names_and_hosts() {
         let i18n = crate::localization::Localizer::new(Language::System);
-        let mut profile = ServerProfile::default();
-        profile.host = "irc\u{202e}.evil.example".into();
-        profile.port = 6667;
+        let mut profile = ServerProfile {
+            host: "irc\u{202e}.evil.example".into(),
+            port: 6667,
+            ..Default::default()
+        };
         assert_eq!(
             super::server_label(&profile, &i18n),
             "irc\u{200b}.evil.example:6667"

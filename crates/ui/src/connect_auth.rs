@@ -956,14 +956,15 @@ mod tests {
     /// The profile `config(sasl)` was made from.
     fn profile(sasl: bool) -> cayenchat_storage::ServerProfile {
         let config = config(sasl);
-        let mut profile = cayenchat_storage::ServerProfile::default();
-        profile.host = config.host;
-        profile.port = config.port;
-        profile.use_tls = config.use_tls;
-        profile.sasl_enabled = sasl;
-        profile.sasl_username = "acct".into();
-        profile.sasl_mechanism = cayenchat_storage::SaslMechanism::Plain;
-        profile
+        cayenchat_storage::ServerProfile {
+            host: config.host,
+            port: config.port,
+            use_tls: config.use_tls,
+            sasl_enabled: sasl,
+            sasl_username: "acct".into(),
+            sasl_mechanism: cayenchat_storage::SaslMechanism::Plain,
+            ..Default::default()
+        }
     }
 
     #[test]

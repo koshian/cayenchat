@@ -2017,9 +2017,9 @@ replacing the old destination. New Unix log files use mode 0600. There is no
 background logging thread, timer or in-memory log queue; disk writes are
 synchronous, and logs grow until disabled (no rotation).
 
-Startup applies saved logging preferences before credential migration and
-GPUI initialization. Failures are shown as a startup notice without stopping
-the app. Settings changes apply immediately through the existing save path;
+Startup applies saved logging preferences before GPUI initialization. Failures
+are shown as a startup notice without stopping the app. Settings changes apply
+immediately through the existing save path;
 while a new server form is incomplete, experimental preferences are persisted
 independently so they do not require finishing the connection form. Opening a
 file must succeed before saving the preference, and a settings-save failure

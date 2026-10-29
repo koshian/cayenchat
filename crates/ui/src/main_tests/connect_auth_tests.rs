@@ -647,10 +647,12 @@ fn stopping_a_pending_retry_drops_the_sent_passwords(cx: &mut TestAppContext) {
 fn the_profile_mechanism_reaches_the_connection_config() {
     use cayenchat_irc_core::SaslMechanism as Wire;
     use cayenchat_storage::SaslMechanism as Saved;
-    let mut profile = cayenchat_storage::ServerProfile::default();
-    profile.sasl_enabled = true;
-    profile.sasl_username = "account".into();
-    profile.username = "ident".into();
+    let mut profile = cayenchat_storage::ServerProfile {
+        sasl_enabled: true,
+        sasl_username: "account".into(),
+        username: "ident".into(),
+        ..Default::default()
+    };
     for (saved, wire) in [
         (Saved::Plain, Wire::Plain),
         (Saved::ScramSha1, Wire::ScramSha1),
