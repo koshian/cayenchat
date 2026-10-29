@@ -1995,7 +1995,11 @@ The backend is chosen explicitly (settings version 11, default System). Opening
 never falls back to another backend. The Credential Storage tab probes the
 system store on a background task (D-Bus may be slow) and offers the local file
 when it is unavailable; switching requires confirmation for the local file and
-moves known secrets (`migrate` copies all, then deletes the originals). Startup
+moves known secrets, channel keys included (D052): `copy_secrets` copies all,
+the new choice is saved, and only then are the originals deleted, so a failed
+copy or settings save leaves every secret in the store still in use (the
+copies are removed again). Removing a profile deletes its channel keys too.
+Startup
 does not migrate plaintext passwords; settings versions that could contain
 them are rejected by the reader (D014). The settings form never shows saved
 passwords: an unsaved password of a draft server has a field and a "save

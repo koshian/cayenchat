@@ -95,8 +95,11 @@ impl SettingsWindow {
         keys.extend(all_secret_keys(&self.settings.values));
         keys.sort();
         keys.dedup();
-        let report = match credentials::migrate(&from, &to, &keys) {
-            Ok(report) => report,
+        // Copy first, record the choice, and only then delete the originals, so
+        // a failure before the choice is saved leaves every secret in the
+        // backend still in use.
+        let copied = match credentials::copy_secrets(&from, &to, &keys) {
+            Ok(copied) => copied,
             Err(error) => {
                 self.feedback = Some(secrets::error_text(&self.i18n, &error));
                 cx.notify();
@@ -105,11 +108,12 @@ impl SettingsWindow {
         };
         saved.credential_backend = kind;
         if let Err(error) = settings_file::save(&saved) {
-            // Keep using the old backend; the copies in the new one are harmless.
+            copied.remove_copies(&to);
             self.feedback = Some(error);
             cx.notify();
             return;
         }
+        let report = copied.remove_originals(&from);
         self.settings.values.credential_backend = kind;
         cx.set_global(secrets::Credentials(to));
         self.feedback = Some(if report.source_unavailable {

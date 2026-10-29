@@ -294,6 +294,22 @@ fn removed_profiles_lose_their_saved_passwords() {
 }
 
 #[test]
+fn removed_profiles_lose_their_saved_channel_keys() {
+    let store = memory_store();
+    let mut previous = Settings::default();
+    previous.add_server("");
+    let profile = previous.selected_profile_mut().unwrap();
+    profile.host = "irc.example.org".into();
+    profile.note_channel_key("#secret", true);
+    let key = SecretKey::channel_key(&profile.id, "#secret");
+    store.set(&key, &Secret::new("k")).unwrap();
+    let mut next = previous.clone();
+    next.remove_selected_server();
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    assert!(store.get(&key).unwrap().is_none());
+}
+
+#[test]
 fn saving_settings_keeps_the_saved_passwords_of_a_kept_server() {
     let store = memory_store();
     let mut previous = Settings::default();
