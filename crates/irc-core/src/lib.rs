@@ -3911,9 +3911,13 @@ impl Worker {
             message.command,
             IrcCommand::Response(Response::RPL_WELCOME, _)
         ) {
+            if let Err(error) = self.negotiation.registered() {
+                self.note(format!("Negotiation refused: {error}")).await;
+                let _ = self.events.send(Event::Refused(error.into())).await;
+                return ControlFlow::Break(());
+            }
             self.registered = true;
             self.transcript.registered = true;
-            self.negotiation.registered();
             self.note("Registration completed (001 received).").await;
         }
         // Reported ahead of the 001's own Registered event;

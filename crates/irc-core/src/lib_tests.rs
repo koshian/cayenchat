@@ -3230,6 +3230,83 @@ fn sasl_failure_stops_registration() {
 }
 
 #[test]
+fn welcome_before_sasl_success_stops_registration() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            if line.starts_with("USER ") {
+                break;
+            }
+        }
+        socket
+            .write_all(b":server CAP alice LS :sasl=PLAIN\r\n")
+            .unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "CAP REQ sasl");
+        socket
+            .write_all(b":server CAP alice ACK :sasl\r\n")
+            .unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "AUTHENTICATE PLAIN");
+        socket.write_all(b"AUTHENTICATE +\r\n").unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert!(line.starts_with("AUTHENTICATE "));
+        socket.write_all(b":server 001 alice :Welcome\r\n").unwrap();
+        line.clear();
+        assert_eq!(lines.read_line(&mut line).unwrap(), 0);
+    });
+
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false; // The private worker is tested without a certificate.
+    config.sasl = Some(SaslCredentials {
+        mechanism: Default::default(),
+        username: "account".into(),
+        password: "secret".into(),
+    });
+    let (_commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+    let worker = thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(config, command_rx, event_tx));
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut failure = None;
+    while Instant::now() < deadline {
+        match event_rx.try_recv() {
+            Ok(Event::Refused(reason)) => {
+                failure = Some(reason);
+                break;
+            }
+            Ok(Event::Disconnected(reason)) => panic!("retryable SASL refusal: {reason}"),
+            Ok(Event::Registered { .. }) => panic!("registered before SASL success"),
+            _ => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(
+        failure.as_deref(),
+        Some("SASL authentication did not complete before registration.")
+    );
+    server.join().unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
 fn password_mismatch_is_refused_instead_of_retryable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -7620,6 +7697,8 @@ enum EcdsaServer {
     Refuses,
     /// Sends a second challenge after receiving the first signature.
     RepeatsChallenge,
+    /// Sends 001 instead of a SASL result after receiving the signature.
+    WelcomesBeforeResult,
     /// A challenge of this many bytes.
     ChallengeOf(usize),
     /// A challenge that is not base64.
@@ -7677,7 +7756,10 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
             EcdsaServer::ChallengeOf(length) => {
                 format!("AUTHENTICATE {}", STANDARD.encode(vec![1u8; length]))
             }
-            EcdsaServer::Accepts | EcdsaServer::Refuses | EcdsaServer::RepeatsChallenge => {
+            EcdsaServer::Accepts
+            | EcdsaServer::Refuses
+            | EcdsaServer::RepeatsChallenge
+            | EcdsaServer::WelcomesBeforeResult => {
                 format!("AUTHENTICATE {}", STANDARD.encode(challenge))
             }
         };
@@ -7686,7 +7768,10 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
             .unwrap();
         if !matches!(
             scenario,
-            EcdsaServer::Accepts | EcdsaServer::Refuses | EcdsaServer::RepeatsChallenge
+            EcdsaServer::Accepts
+                | EcdsaServer::Refuses
+                | EcdsaServer::RepeatsChallenge
+                | EcdsaServer::WelcomesBeforeResult
         ) {
             return;
         }
@@ -7708,6 +7793,11 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
                 "the second challenge must not be signed"
             );
             assert_eq!(signature_count, 1);
+            return;
+        }
+        if scenario == EcdsaServer::WelcomesBeforeResult {
+            socket.write_all(b":server 001 alice :Welcome\r\n").unwrap();
+            assert!(read().is_empty(), "registration was accepted");
             return;
         }
         if scenario == EcdsaServer::Refuses {
@@ -7819,6 +7909,20 @@ fn sasl_ecdsa_signs_at_most_once_per_handshake() {
             .is_some_and(|reason| reason.contains("Unexpected SASL challenge")),
         "{reported}"
     );
+    assert_no_ecdsa_secret(&reported, &secrets);
+}
+
+#[test]
+fn sasl_ecdsa_registration_before_result_is_refused_without_password_prompt() {
+    let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::WelcomesBeforeResult);
+    let refusal = refusal.unwrap_or_else(|| panic!("no refusal: {reported}"));
+    assert_eq!(
+        refusal,
+        "SASL authentication did not complete before registration."
+    );
+    assert_ne!(refusal, SASL_FAILED);
+    assert_ne!(refusal, SASL_KEY_REFUSED);
+    assert!(reported.contains("Negotiation refused"), "{reported}");
     assert_no_ecdsa_secret(&reported, &secrets);
 }
 

@@ -247,13 +247,17 @@ impl CapNegotiation {
         self.enabled.contains(capability)
     }
 
-    /// Registration completed (001). Pending SASL is abandoned, as before
-    /// this negotiation existed; NEW and DEL are still followed.
-    pub fn registered(&mut self) {
+    /// Registration completed (001). SASL must have completed first when it
+    /// was configured; NEW and DEL are still followed afterward.
+    pub fn registered(&mut self) -> Result<(), &'static str> {
+        if self.sasl.as_ref().is_some_and(|sasl| !sasl.complete()) {
+            return Err("SASL authentication did not complete before registration.");
+        }
         self.sasl = None;
         if self.phase != Phase::Inactive {
             self.phase = Phase::Ended;
         }
+        Ok(())
     }
 
     /// Advances negotiation. An error is a refusal the caller must not retry
@@ -633,6 +637,24 @@ mod tests {
         assert_eq!(sent(&step), ["CAP END"]);
         assert!(!cap.negotiating());
         assert!(!cap.enabled(SERVER_TIME));
+        assert!(cap.registered().is_ok());
+    }
+
+    #[test]
+    fn registration_requires_configured_sasl_to_complete() {
+        let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :sasl")).unwrap();
+        cap.observe(&line(":s CAP * ACK :sasl")).unwrap();
+        cap.observe(&line("AUTHENTICATE +")).unwrap();
+
+        assert_eq!(
+            cap.registered(),
+            Err("SASL authentication did not complete before registration.")
+        );
+
+        let mut cap = CapNegotiation::new(Ircv3Options::default(), None, true);
+        assert!(cap.registered().is_ok());
     }
 
     #[test]
@@ -829,7 +851,7 @@ mod tests {
         cap.start();
         let step = cap.observe(&line(":s CAP * LS :multi-prefix")).unwrap();
         assert_eq!(sent(&step), ["CAP END"]);
-        cap.registered();
+        cap.registered().unwrap();
         // A nickname that parses as a subcommand name does not confuse replies.
         let step = cap.observe(&line(":s CAP new NEW :server-time")).unwrap();
         assert_eq!(sent(&step), ["CAP REQ server-time"]);
@@ -865,7 +887,7 @@ mod tests {
         assert_eq!(sent(&step), ["CAP END"]);
         assert!(cap.enabled(BATCH));
         assert!(!cap.enabled(SERVER_TIME) && !cap.enabled(MESSAGE_TAGS));
-        cap.registered();
+        cap.registered().unwrap();
         cap.observe(&line(":s CAP me DEL :batch")).unwrap();
         assert!(!cap.enabled(BATCH));
 
@@ -1038,7 +1060,7 @@ mod tests {
         cap.start();
         cap.observe(&line(":s 421 * CAP :Unknown command")).unwrap();
         assert!(cap.negotiating());
-        cap.registered();
+        cap.registered().unwrap();
         assert!(!cap.negotiating());
         let step = cap.observe(&line(":s CAP * ACK :server-time")).unwrap();
         assert!(step.send.is_empty());
@@ -1096,7 +1118,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(sent(&step), ["CAP END"]);
-        cap.registered();
+        cap.registered().unwrap();
         let step = cap.observe(&line(":s CAP me NEW :server-time")).unwrap();
         assert_eq!(sent(&step), ["CAP REQ server-time"]);
         cap.observe(&line(":s CAP me ACK :SERVER-TIME")).unwrap();
@@ -1345,7 +1367,7 @@ mod tests {
         cap.observe(&line(":s CAP * ACK :batch")).unwrap();
         cap.observe(&line(":s CAP * ACK :draft/chathistory"))
             .unwrap();
-        cap.registered();
+        cap.registered().unwrap();
         let step = cap.observe(&line(":s CAP me DEL :batch")).unwrap();
         assert_eq!(sent(&step), ["CAP REQ -draft/chathistory"]);
         assert!(!cap.enabled(CHATHISTORY));
@@ -1391,7 +1413,7 @@ mod tests {
             cap.observe(&line(":s CAP * ACK :batch")).unwrap();
             cap.observe(&line(":s CAP * ACK :draft/metadata-2"))
                 .unwrap();
-            cap.registered();
+            cap.registered().unwrap();
             cap
         };
         let mut cap = registered();
