@@ -374,7 +374,6 @@ impl SettingsWindow {
             .flex_col()
             .gap_2()
             .pt_2()
-            .on_action(cx.listener(Self::paste_avatar_image))
             .when(provider.is_some(), |section| {
                 section
                     .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(theme.selected))
@@ -583,7 +582,7 @@ impl SettingsWindow {
 
     pub(crate) fn paste_avatar_image(
         &mut self,
-        _: &input::Paste,
+        item: &gpui::ClipboardItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -592,10 +591,33 @@ impl SettingsWindow {
         if !self.avatar_images_accepted() {
             return;
         }
-        if let Some(attachment) = clipboard_attachment(cx) {
+        if let Some(attachment) = clipboard_attachment(item) {
             let profile = self.selected_profile_id();
             self.offer_avatar_image(attachment, profile, window, cx);
         }
+    }
+
+    pub(crate) fn paste_avatar_image_action(
+        &mut self,
+        _: &input::Paste,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self.selected_profile_id() else {
+            return;
+        };
+        let read = cx.read_from_clipboard_async();
+        cx.spawn_in(window, async move |this, cx| {
+            let item = read.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.selected_profile_id().as_deref() == Some(&profile)
+                    && let Some(item) = item
+                {
+                    this.paste_avatar_image(&item, window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn drop_avatar_image(
