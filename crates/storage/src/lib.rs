@@ -1072,6 +1072,9 @@ impl ServerProfile {
         char_refs: Option<CharRefMode>,
         same: impl Fn(&str, &str) -> bool,
     ) -> Result<(), String> {
+        if !valid_charset_channel(channel) {
+            return Err("Invalid channel name.".to_owned());
+        }
         let at = self
             .channel_charsets
             .iter()
@@ -1251,7 +1254,8 @@ impl ServerProfile {
 /// Whether a channel can have settings of its own kept
 /// ([`ServerProfile::channel_charsets`]).
 pub fn valid_charset_channel(name: &str) -> bool {
-    name.len() <= MAX_CHARSET_CHANNEL_BYTES
+    name.len() > 1
+        && name.len() <= MAX_CHARSET_CHANNEL_BYTES
         && name.starts_with(['#', '&', '!'])
         && !name.contains(|ch: char| ch.is_control() || ch.is_whitespace() || ch == ',')
 }
@@ -2318,6 +2322,13 @@ mod tests {
     fn channel_charsets_are_set_replaced_removed_and_limited() {
         let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
         let mut profile = ServerProfile::new("a".into(), "irc.example.net");
+        for invalid in ["#", "&", "!"] {
+            assert!(
+                profile
+                    .set_channel_charset(invalid, None, None, Some(CharRefMode::Off), same)
+                    .is_err()
+            );
+        }
         assert!(profile.channel_charset("#a", same).is_none());
         profile
             .set_channel_charset("#A", Some(TextEncoding::Koi8R), None, None, same)

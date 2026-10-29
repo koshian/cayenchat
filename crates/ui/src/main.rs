@@ -2028,6 +2028,23 @@ impl ChatWindow {
             .map(|(id, _)| *id)
     }
 
+    /// The live channel-name rules and UTF8ONLY state for a settings profile.
+    /// With no live connection, use ASCII: it does not merge names whose
+    /// equivalence cannot be known until the server advertises CASEMAPPING.
+    pub(crate) fn channel_settings_context(&self, profile_id: &str) -> (names::CaseMapping, bool) {
+        let Some((network, session)) = self
+            .sessions
+            .iter()
+            .find(|(_, session)| session.profile_id == profile_id)
+        else {
+            return (names::CaseMapping::Ascii, false);
+        };
+        let Some(connection) = session.irc.as_ref() else {
+            return (names::CaseMapping::Ascii, false);
+        };
+        (self.state.casemapping(*network), connection.utf8_only())
+    }
+
     /// Gives every network its saved channel order (D041).
     fn restore_channel_orders(&mut self) {
         let orders: Vec<_> = self

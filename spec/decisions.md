@@ -3190,8 +3190,12 @@ list). The account name is the same field as for the other mechanisms.
   auto-join state together through the form's autosave; it never sends JOIN or
   PART. A channel that was never listed is added only when auto-join is on,
   but its other settings are kept either way. Channels are compared with the
-  network's case mapping when opened from the menu, the default mapping from
-  the list.
+  network's case mapping when opened from the menu. The list uses the active
+  network's mapping, or conservative ASCII folding when no live connection is
+  available so distinct names are not accidentally merged. Saving rejects
+  names that cannot be IRC channel targets, including a channel prefix with no
+  name. On a live `UTF8ONLY` connection, non-UTF-8 encoding overrides are
+  rejected while numeric reference modes remain available.
 - **Live connections.** After a save `apply_servers` makes the live
   `Connection` follow the profile's channel entries (changed ones set,
   removed ones cleared). On a `UTF8ONLY` server the encodings that cannot be

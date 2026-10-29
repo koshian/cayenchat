@@ -1090,6 +1090,18 @@ fn char_ref_choices(inherit: bool) -> Vec<(Option<CharRefMode>, &'static str)> {
     choices
 }
 
+fn channel_encodings_allowed(
+    utf8_only: bool,
+    decode: Option<TextEncoding>,
+    encode: Option<TextEncoding>,
+) -> bool {
+    !utf8_only
+        || [decode, encode]
+            .into_iter()
+            .flatten()
+            .all(|encoding| encoding == TextEncoding::Utf8)
+}
+
 /// The color picker open under one color row of the appearance settings.
 pub(crate) struct OpenColorPicker {
     /// The `#RRGGBB` field the picker edits.
@@ -2809,21 +2821,7 @@ impl SettingsWindow {
                                 |d| d.opacity(0.4),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                let Some(name) = this
-                                    .auto_join
-                                    .as_ref()
-                                    .and_then(|dialog| dialog.rows.get(index))
-                                    .map(|row| row.name.read(cx).text().to_owned())
-                                    .filter(|name| cayenchat_storage::valid_charset_channel(name))
-                                else {
-                                    return;
-                                };
-                                this.show_channel_settings(
-                                    &name,
-                                    CaseMapping::default(),
-                                    window,
-                                    cx,
-                                );
+                                this.open_auto_join_channel_settings(index, window, cx);
                             })),
                     )
                     .child(
@@ -3090,6 +3088,34 @@ impl SettingsWindow {
         self.sync_auto_join(cx);
     }
 
+    fn open_auto_join_channel_settings(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = self
+            .auto_join
+            .as_ref()
+            .and_then(|dialog| dialog.rows.get(index))
+            .map(|row| row.name.read(cx).text().to_owned())
+            .filter(|name| cayenchat_storage::valid_charset_channel(name))
+        else {
+            return;
+        };
+        let Some(profile) = self.settings.values.selected_profile() else {
+            return;
+        };
+        let profile_id = profile.id.clone();
+        let (mapping, _) = self
+            .owner
+            .update(cx, |owner, _, _| {
+                owner.channel_settings_context(&profile_id)
+            })
+            .unwrap_or((CaseMapping::Ascii, false));
+        self.show_channel_settings(&name, mapping, window, cx);
+    }
+
     fn add_auto_join_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let row = self.auto_join_row("", true, cx);
         let input = row.name.clone();
@@ -3129,6 +3155,27 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(profile_id) = self
+            .settings
+            .values
+            .selected_profile()
+            .map(|profile| profile.id.clone())
+        else {
+            return;
+        };
+        // `/charset` writes the profile directly while this window may stay
+        // open. Refresh just that shared store, preserving unrelated edits in
+        // the settings form.
+        if let Ok(Some(latest)) = settings_file::load()
+            && let Some(latest) = latest.profile(&profile_id)
+        {
+            if let Some(profile) = self.settings.values.selected_profile_mut() {
+                profile.channel_charsets = latest.channel_charsets.clone();
+            }
+            if let Some(profile) = self.saved.profile_mut(&profile_id) {
+                profile.channel_charsets = latest.channel_charsets.clone();
+            }
+        }
         let Some(profile) = self.settings.values.selected_profile() else {
             return;
         };
@@ -3192,6 +3239,25 @@ impl SettingsWindow {
         };
         let (channel, mapping, enabled) = (dialog.channel.clone(), dialog.mapping, dialog.enabled);
         let (decode, encode, char_refs) = (dialog.decode, dialog.encode, dialog.char_refs);
+        let profile_id = self
+            .settings
+            .values
+            .selected_profile()
+            .map(|profile| profile.id.clone());
+        let utf8_only = profile_id.as_deref().is_some_and(|profile_id| {
+            self.owner
+                .update(cx, |owner, _, _| {
+                    owner.channel_settings_context(profile_id).1
+                })
+                .unwrap_or(false)
+        });
+        if !channel_encodings_allowed(utf8_only, decode, encode) {
+            if let Some(dialog) = &mut self.channel_settings {
+                dialog.error = Some(self.i18n.text("charset_utf8only"));
+            }
+            cx.notify();
+            return;
+        }
         let same = |left: &str, right: &str| mapping.same(left, right);
         let Some(profile) = self.settings.values.selected_profile_mut() else {
             return;
@@ -5913,7 +5979,9 @@ mod server_settings_tests {
 
 #[cfg(test)]
 mod escape_tests {
-    use super::{KeyError, KeyFileError, SecretKey, SettingsWindow, read_key_file};
+    use super::{
+        KeyError, KeyFileError, SecretKey, SettingsWindow, channel_encodings_allowed, read_key_file,
+    };
     use gpui::TestAppContext;
 
     #[gpui::test]
@@ -6219,11 +6287,17 @@ mod escape_tests {
         channel: &str,
         cx: &mut gpui::VisualTestContext,
     ) {
-        let profile = form.read_with(cx, |form, _| {
-            form.settings.values.selected_profile().unwrap().id.clone()
+        let (profile, owner) = form.read_with(cx, |form, _| {
+            (
+                form.settings.values.selected_profile().unwrap().id.clone(),
+                form.owner,
+            )
         });
+        let mapping = owner
+            .update(cx, |owner, _, _| owner.channel_settings_context(&profile).0)
+            .unwrap_or(CaseMapping::Ascii);
         form.update_in(cx, |form, window, cx| {
-            form.open_channel_settings(&profile, channel, CaseMapping::default(), window, cx)
+            form.open_channel_settings(&profile, channel, mapping, window, cx)
         });
     }
 
@@ -6348,7 +6422,9 @@ mod escape_tests {
         let file = crate::settings_file::TestFile::with(&settings);
         let (form, cx, _app) = open(cx, settings);
         form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
-        open_channel(&form, "#b", cx);
+        form.update_in(cx, |form, window, cx| {
+            form.open_auto_join_channel_settings(1, window, cx)
+        });
         form.update_in(cx, |form, window, cx| {
             let dialog = form.channel_settings.as_mut().unwrap();
             dialog.enabled = false;
@@ -6366,5 +6442,81 @@ mod escape_tests {
             Some(CharRefMode::Iso2022Jp)
         );
         drop(file);
+    }
+
+    #[gpui::test]
+    fn channel_settings_open_refreshes_charset_changes_made_outside_the_form(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = crate::settings_with_channels("#a[,#a{");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        let mut latest = crate::settings_file::load().unwrap().unwrap();
+        let profile = latest.selected_profile_mut().unwrap();
+        profile
+            .set_channel_charset(
+                "#a[",
+                Some(TextEncoding::Gbk),
+                None,
+                Some(CharRefMode::Auto),
+                |left, right| CaseMapping::Ascii.same(left, right),
+            )
+            .unwrap();
+        profile
+            .set_channel_charset(
+                "#a{",
+                Some(TextEncoding::Big5),
+                Some(TextEncoding::ShiftJis),
+                Some(CharRefMode::Off),
+                |left, right| CaseMapping::Ascii.same(left, right),
+            )
+            .unwrap();
+        crate::settings_file::save(&latest).unwrap();
+
+        // The displayed form is stale, as it is after `/charset` updates the
+        // shared settings file while this window remains open. Open through
+        // the auto-join row to cover its live CASEMAPPING lookup as well.
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        form.update_in(cx, |form, window, cx| {
+            form.open_auto_join_channel_settings(1, window, cx)
+        });
+        form.read_with(cx, |form, _| {
+            let dialog = form.channel_settings.as_ref().unwrap();
+            assert_eq!(dialog.decode, Some(TextEncoding::Big5));
+            assert_eq!(dialog.encode, Some(TextEncoding::ShiftJis));
+            assert_eq!(dialog.char_refs, Some(CharRefMode::Off));
+        });
+        form.update_in(cx, |form, window, cx| {
+            form.cancel_channel_settings(window, cx)
+        });
+        form.update_in(cx, |form, window, cx| {
+            form.open_auto_join_channel_settings(0, window, cx)
+        });
+        form.read_with(cx, |form, _| {
+            let dialog = form.channel_settings.as_ref().unwrap();
+            assert_eq!(dialog.decode, Some(TextEncoding::Gbk));
+            assert_eq!(dialog.char_refs, Some(CharRefMode::Auto));
+        });
+        drop(file);
+    }
+
+    #[test]
+    fn utf8only_channel_settings_allow_only_utf8_overrides() {
+        assert!(channel_encodings_allowed(true, None, None));
+        assert!(channel_encodings_allowed(
+            true,
+            Some(TextEncoding::Utf8),
+            Some(TextEncoding::Utf8)
+        ));
+        assert!(!channel_encodings_allowed(
+            true,
+            Some(TextEncoding::ShiftJis),
+            None
+        ));
+        assert!(channel_encodings_allowed(
+            false,
+            Some(TextEncoding::ShiftJis),
+            None
+        ));
     }
 }
