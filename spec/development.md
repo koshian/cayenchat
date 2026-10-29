@@ -1400,7 +1400,11 @@ after batch's ACK; one `CHATHISTORY LATEST <channel> * 50` per joined
 channel, the second only after the first reply ended; a reply of at most
 50 lines ending with the newest line, with msgid and server-time; a live
 line afterwards arriving as an ordinary live message and no history line
-arriving as live. Observed: Ergo returns our own JOIN (and other joins) as
+arriving as live. A fake-server regression covers nested-batch overflow
+remaining consumed through the reply end; unit tests cover that boundary and
+replay-reference overflow keeping unknown batch-tagged lines classified as
+replayed until reset. Observed: Ergo returns
+our own JOIN (and other joins) as
 `HistServ` PRIVMSGs ("<nick> joined the channel") counted within the
 limit when event-playback is not negotiated, so a channel nobody spoke in
 still returns those lines; and its fakelag lets the filling client send
@@ -1622,7 +1626,9 @@ are not watched continuously; reopening settings refreshes them.
 
 Unit tests: label uniqueness and size, labeled echo with a rewritten text,
 ACK, error numeric, FAIL, labeled batch, unlabeled matching by target and
-text, self-messages, bounds, expiry and its next deadline (`echo.rs`); CAP
+text, replayed history leaving a pending send untouched followed by a live
+echo confirming it, self-messages, bounds, expiry and its next deadline
+(`echo.rs`); CAP
 requests and dependency order, legacy encodings, off (`cap.rs`); fake-server
 flows for
 labeled echo/batch/error, echo-only and no-echo servers; app confirm/fail and

@@ -3767,16 +3767,19 @@ impl Worker {
         }
         let history_started = self.negotiate(&message).await?;
         self.track_registration(&message, history_started).await?;
-        let replayed = self.replay.replayed(&message);
+        let in_history_batch = self.replay.in_history_batch(&message);
+        let replayed = self
+            .replay
+            .replayed_with_history(&message, in_history_batch);
         let history = self.consume_own_replies(&message).await?;
         // A line replayed from history shows our mask of the past.
-        if !history && !self.replay.in_history_batch(&message) {
+        if !history && !in_history_batch {
             self.observe_own_mask(&message);
         }
         if history || self.consume_avatar_and_ctcp(&message, replayed).await? {
             return ControlFlow::Continue(());
         }
-        self.deliver(message, replayed).await
+        self.deliver(message, replayed, in_history_batch).await
     }
 
     /// Records the line in the transcript, with the replies the library
@@ -4081,7 +4084,12 @@ impl Worker {
     }
 
     /// Turns the message into events for the application.
-    async fn deliver(&mut self, message: IrcMessage, replayed: bool) -> Flow {
+    async fn deliver(
+        &mut self,
+        message: IrcMessage,
+        replayed: bool,
+        in_history_batch: bool,
+    ) -> Flow {
         // Peer avatars follow who is present before metadata's events for
         // the same message are looked at, so a departed user's peer state
         // cannot stand in for their metadata.
@@ -4139,7 +4147,7 @@ impl Worker {
         self.track_own_membership(&message).await?;
         let mode_events = self.track_channel_modes(&message).await;
         // Echoes, ACKs and errors of messages we sent.
-        if self.observe_echoes(&message).await? {
+        if self.observe_echoes(&message, in_history_batch).await? {
             return ControlFlow::Continue(());
         }
         // Our WHOX reply is not a server line.
@@ -4421,16 +4429,26 @@ impl Worker {
     }
 
     /// `Continue(true)` means the server's echo or ACK consumed the message.
-    async fn observe_echoes(&mut self, message: &IrcMessage) -> ControlFlow<(), bool> {
+    async fn observe_echoes(
+        &mut self,
+        message: &IrcMessage,
+        in_history_batch: bool,
+    ) -> ControlFlow<(), bool> {
         let mut echo_events = self.echoes.expire(tokio::time::Instant::now());
         if !self.negotiation.enabled(cap::ECHO_MESSAGE) && !self.echoes.outstanding().is_empty() {
             echo_events.extend(self.echoes.reset());
         }
-        let echoed = self.echoes.observe(
-            message,
-            &self.current_nick,
-            self.negotiation.enabled(cap::LABELED_RESPONSE),
-        );
+        // ACK/error replies are not history just because their prefix is the
+        // server; only a tracked history batch blocks echo reconciliation.
+        let echoed = if in_history_batch {
+            None
+        } else {
+            self.echoes.observe(
+                message,
+                &self.current_nick,
+                self.negotiation.enabled(cap::LABELED_RESPONSE),
+            )
+        };
         let consumed = echoed.is_some();
         echo_events.extend(echoed.unwrap_or_default());
         self.emit_all(echo_events).await?;

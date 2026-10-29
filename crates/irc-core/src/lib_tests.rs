@@ -3562,7 +3562,7 @@ fn register_with(
 }
 
 #[test]
-fn chathistory_requests_the_latest_lines_on_join_and_reports_them_once() {
+fn chathistory_requests_latest_lines_and_contains_over_nested_batches() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
@@ -3587,15 +3587,41 @@ fn chathistory_requests_the_latest_lines_on_join_and_reports_them_once() {
         );
         // A live line arrives before the reply and is also in it.
         socket
-                .write_all(
-                    b"@time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
-@draft/chathistory-end :srv BATCH +r1 chathistory #test\r\n\
-@batch=r1;time=2026-09-27T23:50:00.000Z;msgid=old1 :bob!u@h PRIVMSG #test :alice: old\r\n\
+            .write_all(
+                b"@time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
+@draft/chathistory-end :srv BATCH +r1 chathistory #test\r\n",
+            )
+            .unwrap();
+        let mut nested = String::new();
+        let mut parent = "r1".to_owned();
+        for depth in 0..=16 {
+            let reference = format!("nested-{depth}");
+            nested.push_str(&format!(
+                "@batch={parent} :srv BATCH +{reference} draft/multiline #test\r\n"
+            ));
+            parent = reference;
+        }
+        nested.push_str(&format!(
+            "@batch={parent} :bob!u@h PRIVMSG #test :alice: too deep\r\n"
+        ));
+        for depth in (0..=16).rev() {
+            let reference = format!("nested-{depth}");
+            let parent = if depth == 0 {
+                "r1".to_owned()
+            } else {
+                format!("nested-{}", depth - 1)
+            };
+            nested.push_str(&format!("@batch={parent} :srv BATCH -{reference}\r\n"));
+        }
+        socket.write_all(nested.as_bytes()).unwrap();
+        socket
+            .write_all(
+                b"@batch=r1;time=2026-09-27T23:50:00.000Z;msgid=old1 :bob!u@h PRIVMSG #test :alice: old\r\n\
 @batch=r1;time=2026-09-27T23:58:31.000Z;msgid=live1 :bob!u@h PRIVMSG #test :alice: live during request\r\n\
 :srv BATCH -r1\r\n\
 @time=2026-09-27T23:59:00.000Z;msgid=after1 :bob!u@h PRIVMSG #test :after\r\n",
-                )
-                .unwrap();
+            )
+            .unwrap();
         let _ = read_client_line(&mut lines);
     });
     let events = run_fixture(plain_config(port, history_options()), |events| {
@@ -3944,10 +3970,16 @@ fn without_labels_an_identical_echo_confirms_and_without_echo_nothing_is_tracked
         let mut lines = BufReader::new(socket.try_clone().unwrap());
         let requested = register_with(&mut socket, &mut lines, "echo-message", "NETWORK=t");
         assert_eq!(requested, ["echo-message"]);
-        // No label tag: labeled-response was not negotiated.
+        // No label tag: labeled-response was not negotiated. The matching
+        // historical playback must leave the pending send for the live echo.
         assert_eq!(read_client_line(&mut lines), "PRIVMSG #test hi");
         socket
-            .write_all(b"@msgid=e1 :alice!u@h PRIVMSG #test :hi\r\n")
+            .write_all(
+                b":srv BATCH +p znc.in/playback #test\r\n\
+@batch=p;msgid=old :alice!u@h PRIVMSG #test :hi\r\n\
+:srv BATCH -p\r\n\
+@msgid=e1 :alice!u@h PRIVMSG #test :hi\r\n",
+            )
             .unwrap();
         let _ = read_client_line(&mut lines);
     });
@@ -4921,6 +4953,14 @@ fn negotiated_batch_marks_history_until_it_is_withdrawn() {
         assert_eq!(read_client_line(&mut lines), "JOIN #test");
         socket.write_all(b":alice!u@h JOIN #test\r\n").unwrap();
         socket.write_all(BATCH_TRAFFIC).unwrap();
+        for index in 0..65 {
+            socket
+                .write_all(format!(":srv BATCH +overflow-{index} chathistory #test\r\n").as_bytes())
+                .unwrap();
+        }
+        socket
+            .write_all(b"@batch=overflow-0 :bob!u@h PRIVMSG #test :alice: evicted old\r\n")
+            .unwrap();
         // Withdrawing batch forgets a history batch left open.
         socket
             .write_all(
@@ -4959,7 +4999,7 @@ fn negotiated_batch_marks_history_until_it_is_withdrawn() {
         ..Ircv3Options::default()
     };
     let events = run_fixture(plain_config(port, options), |events| {
-        replay_flags(events).len() == 8
+        replay_flags(events).len() == 9
     });
     let owned = |pairs: &[(&str, bool)]| -> Vec<(String, bool)> {
         pairs
@@ -4976,6 +5016,7 @@ fn negotiated_batch_marks_history_until_it_is_withdrawn() {
             ("alice: unknown type", false),
             ("alice: other case", false),
             ("alice: after end", false),
+            ("alice: evicted old", true),
             ("alice: before del", true),
             ("alice: after del", false),
         ])

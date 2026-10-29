@@ -235,6 +235,9 @@ struct Outstanding {
     /// Lines asked for.
     limit: usize,
     nested: Vec<String>,
+    /// A reply nested past the tracking bound is consumed fail-closed until
+    /// its root batch ends, so deeper lines cannot escape as live traffic.
+    nested_overflowed: bool,
     messages: Vec<HistoryMessage>,
     targets: Vec<HistoryTarget>,
     dropped: usize,
@@ -573,6 +576,7 @@ impl HistoryRequests {
             end: false,
             limit,
             nested: Vec::new(),
+            nested_overflowed: false,
             messages: Vec::new(),
             targets: Vec::new(),
             dropped: 0,
@@ -636,6 +640,20 @@ impl HistoryRequests {
 
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
         let batch_tag = tags::tag_value(message, "batch");
+        if !matches!(message.command, IrcCommand::BATCH(..))
+            && self
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+            && batch_tag.is_some_and(|reference| {
+                self.outstanding.as_ref().is_some_and(|outstanding| {
+                    outstanding.reference.as_deref() != Some(reference)
+                        && !outstanding.nested.iter().any(|open| open == reference)
+                })
+            })
+        {
+            return Observed::Consumed;
+        }
         if let IrcCommand::BATCH(reference, kind, params) = &message.command {
             return self.observe_batch(
                 reference,
@@ -714,6 +732,14 @@ impl HistoryRequests {
                 return Observed::Consumed;
             }
             if outstanding.reference.as_deref() != Some(reference) {
+                if parent.is_some()
+                    && self
+                        .outstanding
+                        .as_ref()
+                        .is_some_and(|outstanding| outstanding.nested_overflowed)
+                {
+                    return Observed::Consumed;
+                }
                 return Observed::Unrelated;
             }
             let outstanding = self.outstanding.take().expect("outstanding request");
@@ -755,6 +781,14 @@ impl HistoryRequests {
                 note,
             });
         }
+        if parent.is_some()
+            && self
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+        {
+            return Observed::Consumed;
+        }
         let Some(reference) = reference.strip_prefix('+') else {
             return Observed::Unrelated;
         };
@@ -775,6 +809,8 @@ impl HistoryRequests {
             {
                 if outstanding.nested.len() < MAX_NESTED {
                     outstanding.nested.push(reference.to_owned());
+                } else {
+                    outstanding.nested_overflowed = true;
                 }
                 return Observed::Consumed;
             }
@@ -1132,6 +1168,115 @@ mod tests {
         };
         let texts: Vec<_> = messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, ["nested", "after"]);
+    }
+
+    #[test]
+    fn over_nested_history_reply_stays_out_of_the_live_path() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        requests.enqueue("#a");
+        sent(&mut requests, now);
+        assert_eq!(
+            requests.observe(&parse(":srv BATCH +r chathistory #a")),
+            Observed::Consumed
+        );
+
+        let mut parent = "r".to_owned();
+        for depth in 0..=MAX_NESTED {
+            let reference = format!("n{depth}");
+            assert_eq!(
+                requests.observe(&parse(&format!(
+                    "@batch={parent} :srv BATCH +{reference} draft/multiline #a"
+                ))),
+                Observed::Consumed
+            );
+            parent = reference;
+        }
+        // The seventeenth nested level exceeds the tracking bound. Its line
+        // and deeper descendants remain consumed until the reply ends.
+        assert!(
+            requests
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+        );
+        assert_eq!(
+            requests.observe(&parse("@batch=unknown :bob!u@h PRIVMSG #a :history")),
+            Observed::Consumed
+        );
+        assert_eq!(
+            requests.observe(&parse(&format!(
+                "@batch={parent} :srv BATCH +deep draft/multiline #a"
+            ))),
+            Observed::Consumed
+        );
+        assert_eq!(
+            requests.observe(&parse("@batch=deep :bob!u@h PRIVMSG #a :deeper history")),
+            Observed::Consumed
+        );
+        assert_eq!(
+            requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
+            Observed::Consumed
+        );
+        assert!(matches!(
+            requests.observe(&parse(":srv BATCH -r")),
+            Observed::Finished(Finished { messages, .. })
+                if messages.iter().any(|message| message.text == "root history")
+        ));
+    }
+
+    #[test]
+    fn wrapped_history_reply_finishes_after_nested_batch_limit() {
+        for depth in [MAX_NESTED, MAX_NESTED + 1] {
+            let mut requests = HistoryRequests::default();
+            let now = Instant::now();
+            requests.enqueue("#a");
+            requests.enqueue("#b");
+            sent(&mut requests, now);
+
+            assert_eq!(
+                requests.observe(&parse("@batch=outer :srv BATCH +r chathistory #a")),
+                Observed::Consumed
+            );
+            let mut parent = "r".to_owned();
+            for index in 0..depth {
+                let reference = format!("n{index}");
+                assert_eq!(
+                    requests.observe(&parse(&format!(
+                        "@batch={parent} :srv BATCH +{reference} draft/multiline #a"
+                    ))),
+                    Observed::Consumed
+                );
+                parent = reference;
+            }
+            assert_eq!(
+                requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
+                Observed::Consumed
+            );
+            for index in (0..depth).rev() {
+                let reference = format!("n{index}");
+                let parent = if index == 0 {
+                    "r".to_owned()
+                } else {
+                    format!("n{}", index - 1)
+                };
+                assert_eq!(
+                    requests.observe(&parse(&format!("@batch={parent} :srv BATCH -{reference}"))),
+                    Observed::Consumed
+                );
+            }
+            let Observed::Finished(Finished { messages, .. }) =
+                requests.observe(&parse("@batch=outer :srv BATCH -r"))
+            else {
+                panic!("wrapped reply at depth {depth} did not finish");
+            };
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].text, "root history");
+            assert_eq!(
+                sent(&mut requests, now).as_deref(),
+                Some("CHATHISTORY LATEST #b * 50")
+            );
+        }
     }
 
     #[test]

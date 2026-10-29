@@ -1124,9 +1124,11 @@ that already recognized history, follows them:
   normalized reader (last duplicate wins, empty is missing).
 - Bounds: at most 64 open history batches (a missing `BATCH -` evicts the
   oldest when the table is full) and references of at most 64 bytes (longer
-  ones are not followed). A reused open reference replaces its entry, so a
-  stale history batch cannot mute a later live one; an unknown `BATCH -` is
-  ignored.
+  ones are not followed). If the table overflows, unknown batch-tagged lines
+  are treated as replayed until the tracker resets, so an evicted history
+  reference cannot become live. Before overflow, a reused open reference
+  replaces its entry, so a stale history batch cannot mute a later live one;
+  an unknown `BATCH -` is ignored.
 - The tracker lives in the connection's worker, so disconnects and
   reconnects start empty, and CAP DEL (or `ACK -batch`) clears it.
 - With batch negotiated, `BATCH` framing lines produce no event (like
@@ -1615,7 +1617,10 @@ reported together when the batch ends, so a batch cut off by a disconnect
 reports nothing. A reply after its timeout is swallowed (the last 8
 abandoned channels are remembered) rather than shown as live or as
 another request's reply. Other `chathistory` batches (bouncer playback)
-keep the existing replay handling. Ergo 2.19 reports events such as our
+keep the existing replay handling. If a reply exceeds the 16 nested-batch
+tracking limit, batch-tagged lines are consumed until its root batch ends;
+this bounded fail-closed path prevents deeper descendants from reaching the
+live path. Ergo 2.19 reports events such as our
 own JOIN as `HistServ` PRIVMSGs inside the reply when event-playback is not
 negotiated; they are shown as ordinary history lines.
 
