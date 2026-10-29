@@ -11,7 +11,7 @@ use std::{
 use chrono::prelude::*;
 use futures_util::{future::Future, ready, sink::Sink, stream::Stream};
 use pin_project::pin_project;
-use tokio::sync::mpsc::UnboundedSender;
+use super::queue::OutgoingSender;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     time::{self, Interval, Sleep},
@@ -27,7 +27,7 @@ use crate::{
 /// Pinger-based futures helper.
 #[pin_project]
 struct Pinger {
-    tx: UnboundedSender<Message>,
+    tx: OutgoingSender,
     // Whether this pinger pings.
     enabled: bool,
     /// The amount of time to wait before timing out from no ping response.
@@ -42,7 +42,7 @@ struct Pinger {
 
 impl Pinger {
     /// Construct a new pinger helper.
-    pub fn new(tx: UnboundedSender<Message>, config: &Config) -> Pinger {
+    pub fn new(tx: OutgoingSender, config: &Config) -> Pinger {
         let ping_time = Duration::from_secs(u64::from(config.ping_time()));
         let ping_timeout = Duration::from_secs(u64::from(config.ping_timeout()));
 
@@ -154,7 +154,7 @@ where
     pub fn new(
         config: &Config,
         inner: Framed<T, IrcCodec>,
-        tx: UnboundedSender<Message>,
+        tx: OutgoingSender,
     ) -> Transport<T> {
         let pinger = Some(Pinger::new(tx, config));
 
@@ -329,5 +329,28 @@ where
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().inner.poll_flush(cx)
+    }
+}
+
+#[cfg(test)]
+mod pinger_test {
+    use super::*;
+    use crate::client::queue;
+
+    /// A server that pings faster than the connection drains the queue gets
+    /// an error, not an ever-growing queue of PONGs.
+    #[tokio::test]
+    async fn pings_without_draining_fail_instead_of_growing() {
+        let (tx, _rx) = queue::channel();
+        let mut pinger = Box::pin(Pinger::new(tx, &Config::default()));
+        let ping = Message::from(Command::PING("token".to_owned(), None));
+        let mut failed_at = None;
+        for i in 0..=queue::MAX_QUEUED_MESSAGES {
+            if pinger.as_mut().handle_message(&ping).is_err() {
+                failed_at = Some(i);
+                break;
+            }
+        }
+        assert_eq!(failed_at, Some(queue::MAX_QUEUED_MESSAGES));
     }
 }
