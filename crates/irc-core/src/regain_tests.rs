@@ -315,3 +315,37 @@ fn unusual_flags_are_left_out() {
         )]
     );
 }
+
+#[test]
+fn many_due_channels_are_rejoined_a_few_per_poll() {
+    let start = Instant::now();
+    let mut regain = OpRegain::new(true);
+    let total = MAX_REJOINS_PER_POLL * 3 + 1;
+    for index in 0..total {
+        let name = format!("#c{index}");
+        regain.joined(&name);
+        regain.roster(&name, &users(&["Me_"]), "Me_", false, start);
+        regain.roster(&name, &users(&["Me_"]), "Me_", true, start);
+    }
+    let mut rejoined = Vec::new();
+    let mut now = start + STABLE;
+    for _ in 0..4 {
+        let steps = regain.poll(now, true, flags);
+        let batch: Vec<_> = steps
+            .into_iter()
+            .filter_map(|step| match step {
+                Step::Rejoin(name) => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert!(batch.len() <= MAX_REJOINS_PER_POLL);
+        rejoined.extend(batch);
+        // Every channel is still scheduled until all have been handled.
+        let next = regain.next_deadline().expect("work left");
+        assert!(next > now || rejoined.len() == total);
+        now = next;
+    }
+    rejoined.sort();
+    rejoined.dedup();
+    assert_eq!(rejoined.len(), total);
+}

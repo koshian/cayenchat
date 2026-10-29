@@ -959,7 +959,11 @@ joining again gets it back (`crates/irc-core/src/regain.rs`, D055, D056).
   is final and shown in the server log as `Event::OpRegain`; there is no
   retry, and no reason is shown for a channel that was not tried. The channel
   gets one more attempt once the roster shows us as operator, or once the user
-  parts it and joins again (a PART or KICK forgets the channel). A new
+  parts it and joins again (a PART or KICK forgets the channel). One poll
+  rejoins at most 4 channels; the others that are due wait 2 s and are checked
+  again, so a ghost session with many channels (up to 512 are tracked) does
+  not send a burst of PART and JOIN that trips the server's flood protection
+  (#710). A new
   connection starts afresh. Our own PART and JOIN show as usual ("Left",
   "Joined").
 - Because the channel is created anew, modes, topic and lists are reset. A

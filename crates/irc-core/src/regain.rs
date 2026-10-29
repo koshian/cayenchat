@@ -41,6 +41,16 @@ const RESTORE_WAIT: Duration = if cfg!(test) {
 } else {
     Duration::from_secs(5)
 };
+/// Most channels parted and joined again by one poll; the others due at the
+/// same time follow [`REJOIN_SPACING`] later, so 512 channels never send
+/// about 1000 commands at once.
+const MAX_REJOINS_PER_POLL: usize = 4;
+/// How long the channels left over by [`MAX_REJOINS_PER_POLL`] wait.
+const REJOIN_SPACING: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(2)
+};
 /// Most channels tracked; beyond it a channel is neither watched nor
 /// reported.
 const MAX_TRACKED: usize = 512;
@@ -396,6 +406,7 @@ impl OpRegain {
         mut flags_of: impl FnMut(&str) -> Option<String>,
     ) -> Vec<Step> {
         let mut steps = Vec::new();
+        let mut rejoins = 0;
         for channel in self.channels.values_mut() {
             match channel.stage {
                 Stage::Settling(at) if at <= now => {
@@ -424,6 +435,15 @@ impl OpRegain {
                         ));
                         continue;
                     }
+                    // Many channels due at once (a ghost session gone) must not
+                    // become a burst of PART and JOIN that trips the server's
+                    // flood protection: the rest wait for a later poll, where
+                    // the conditions are checked again.
+                    if rejoins >= MAX_REJOINS_PER_POLL {
+                        channel.stage = Stage::Settling(now + REJOIN_SPACING);
+                        continue;
+                    }
+                    rejoins += 1;
                     let flags: String = flags
                         .chars()
                         .filter(|letter| RESTORED_FLAGS.contains(*letter))
