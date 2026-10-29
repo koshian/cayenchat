@@ -2126,9 +2126,10 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
 - **Off the UI thread.** Reading saved keys for a manual `/join`, saving or
   deleting a key after our JOIN, and refreshing the running connection's keys
   after the auto-join list changes run in background tasks; the results are
-  applied only if the session still belongs to the same profile. The keys of a
-  connection started from saved settings are read while its configuration is
-  built, like the passwords it already reads there.
+  applied only if the session still belongs to the same profile and connection
+  generation and still has the same host, port and TLS setting as when the read
+  began. The keys of a connection started from saved settings are read while
+  its configuration is built, like the passwords it already reads there.
 - **Remember choice.** A dialog reopened after a refused typed key keeps the
   checkbox the user chose for that attempt.
 - **Storage name.** The channel is lowercased by ASCII only, because the

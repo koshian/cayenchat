@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, Worker};
-use crate::channel_keys::KeyJoin;
+use crate::channel_keys::{JoinTarget, KeyJoin};
 use cayenchat_irc_core::{ChannelActivityKind, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
-use cayenchat_storage::{CredentialStore, Secret, SecretKey};
+use cayenchat_storage::{
+    CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey,
+    credentials::CredentialBackend,
+};
 use gpui::TestAppContext;
+use std::sync::{Mutex, mpsc};
 
 const NET: NetworkId = NetworkId(1);
 
@@ -88,6 +92,37 @@ fn key_of(store: &CredentialStore, chat: &ChatWindow) -> Option<String> {
         .map(|key| key.expose().to_owned())
 }
 
+struct DelayedRead {
+    ready: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl CredentialBackend for DelayedRead {
+    fn kind(&self) -> CredentialBackendKind {
+        CredentialBackendKind::System
+    }
+
+    fn is_memory(&self) -> bool {
+        true
+    }
+
+    fn get(&self, _key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
+        if let Some(ready) = self.ready.lock().unwrap().take() {
+            ready.send(()).unwrap();
+        }
+        self.release.lock().unwrap().recv().unwrap();
+        Ok(Some(Secret::new("saved-key")))
+    }
+
+    fn set(&self, _key: &SecretKey, _value: &Secret) -> Result<(), CredentialError> {
+        unreachable!("the delayed test backend is read-only")
+    }
+
+    fn delete(&self, _key: &SecretKey) -> Result<(), CredentialError> {
+        unreachable!("the delayed test backend is read-only")
+    }
+}
+
 #[gpui::test]
 fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
     let (chat, _store, cx) = open_chat(None, cx);
@@ -108,6 +143,69 @@ fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
     });
     // The dialog draws (masked field, checkbox, buttons).
     cx.update(|window, cx| window.draw(cx).clear());
+}
+
+#[gpui::test]
+fn a_late_key_read_is_dropped_after_the_same_profile_changes_host(cx: &mut TestAppContext) {
+    let (chat, _old_store, cx) = open_chat(None, cx);
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let store = CredentialStore::with_backend(std::sync::Arc::new(DelayedRead {
+        ready: Mutex::new(Some(ready_tx)),
+        release: Mutex::new(release_rx),
+    }));
+    let (profile, target) = chat.update(cx, |chat, _| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+        let session = &chat.sessions[&NET];
+        (
+            session.profile_id.clone(),
+            JoinTarget::new(session).unwrap(),
+        )
+    });
+    let (result_tx, result_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let keyed =
+            crate::channel_keys::join_keys(&store, &profile, vec![("#Secret".into(), true)]);
+        result_tx.send(keyed).unwrap();
+    });
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("background task reached the delayed credential read");
+
+    chat.update(cx, |chat, _| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.active_config.as_mut().unwrap().host = "irc.other.example".into();
+    });
+    release_tx.send(()).unwrap();
+    let keyed = result_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the delayed credential read completed");
+
+    chat.update(cx, |chat, cx| {
+        let profile = chat.sessions[&NET].profile_id.clone();
+        chat.send_joins(NET, &profile, &target, keyed, cx);
+        assert!(chat.sessions[&NET].pending_joins.is_empty());
+        assert!(chat.sessions[&NET].key_joins.is_empty());
+    });
+}
+
+#[test]
+fn join_targets_match_only_the_same_generation_and_destination() {
+    let mut session = crate::session::ServerSession::new("profile".into());
+    session.active_config = Some(ConnectionConfig::tls(
+        "irc.example.org".into(),
+        "me".into(),
+        vec![],
+    ));
+    let target = JoinTarget::new(&session).unwrap();
+    assert!(target.matches(&session));
+
+    session.generation += 1;
+    assert!(!target.matches(&session));
+    session.generation -= 1;
+
+    session.active_config.as_mut().unwrap().host = "irc.other.example".into();
+    assert!(!target.matches(&session));
 }
 
 #[gpui::test]

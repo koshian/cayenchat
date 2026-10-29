@@ -27,6 +27,32 @@ const MAX_TRACKED: usize = 256;
 /// Channels one `/join` may name for a stored key to be looked up for each.
 const MAX_JOIN_CHANNELS: usize = 32;
 
+/// The connection a manual JOIN was requested on. A profile can reconnect to
+/// a different destination without changing its `NetworkId`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct JoinTarget {
+    generation: u64,
+    host: String,
+    port: u16,
+    use_tls: bool,
+}
+
+impl JoinTarget {
+    pub(super) fn new(session: &ServerSession) -> Option<Self> {
+        let config = session.active_config.as_ref()?;
+        Some(Self {
+            generation: session.generation,
+            host: config.host.clone(),
+            port: config.port,
+            use_tls: config.use_tls,
+        })
+    }
+
+    pub(super) fn matches(&self, session: &ServerSession) -> bool {
+        Self::new(session).as_ref() == Some(self)
+    }
+}
+
 /// A JOIN waiting for the server's answer.
 pub struct KeyJoin {
     /// The channel as it was requested. Names are compared under the
@@ -175,11 +201,12 @@ impl ChatWindow {
         channels: &[String],
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let profile = self
+        let session = self
             .sessions
             .get(&network)
-            .map(|session| session.profile_id.clone())
             .ok_or_else(|| self.i18n.text("not_connected"))?;
+        let profile = session.profile_id.clone();
+        let target = JoinTarget::new(session).ok_or_else(|| self.i18n.text("not_connected"))?;
         self.registered_connection(network)?;
         let store = secrets::store(cx);
         // The store is read only for channels noted as keyed (#643); a JOIN
@@ -194,31 +221,47 @@ impl ChatWindow {
                 (channel.clone(), noted)
             })
             .collect();
+        self.spawn_join_read(network, profile, target, channels, store, cx);
+        Ok(())
+    }
+
+    /// Starts the saved-key read for a manual JOIN.
+    fn spawn_join_read(
+        &mut self,
+        network: NetworkId,
+        profile: String,
+        target: JoinTarget,
+        channels: Vec<(String, bool)>,
+        store: CredentialStore,
+        cx: &mut Context<Self>,
+    ) {
         let reading = cx.background_spawn({
             let profile = profile.clone();
             async move { join_keys(&store, &profile, channels) }
         });
         cx.spawn(async move |this, cx| {
             let keyed = reading.await;
-            let _ = this.update(cx, |this, cx| this.send_joins(network, &profile, keyed, cx));
+            let _ = this.update(cx, |this, cx| {
+                this.send_joins(network, &profile, &target, keyed, cx)
+            });
         })
         .detach();
-        Ok(())
     }
 
     /// Sends the JOINs whose keys were read, unless the connection went away
     /// or became another server's meanwhile.
-    fn send_joins(
+    pub(super) fn send_joins(
         &mut self,
         network: NetworkId,
         profile: &str,
+        target: &JoinTarget,
         keyed: Vec<(String, Option<Secret>)>,
         cx: &mut Context<Self>,
     ) {
         if self
             .sessions
             .get(&network)
-            .is_none_or(|session| session.profile_id != profile)
+            .is_none_or(|session| session.profile_id != profile || !target.matches(session))
         {
             return;
         }
