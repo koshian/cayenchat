@@ -8,6 +8,8 @@ use cayenchat_storage::{
     credentials::CredentialBackend,
 };
 use gpui::TestAppContext;
+use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
 use std::sync::{Mutex, mpsc};
 
 const NET: NetworkId = NetworkId(1);
@@ -95,6 +97,61 @@ fn key_of(store: &CredentialStore, chat: &ChatWindow) -> Option<String> {
 struct DelayedRead {
     ready: Mutex<Option<mpsc::Sender<()>>>,
     release: Mutex<mpsc::Receiver<()>>,
+    finished: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+fn local_connection() -> (
+    cayenchat_irc_core::Connection,
+    ConnectionConfig,
+    mpsc::Receiver<Option<String>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (join_tx, join_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    let _ = join_tx.send(None);
+                    return;
+                }
+                Ok(_) if line.starts_with("JOIN ") => {
+                    let _ = join_tx.send(Some(line.trim_end().to_owned()));
+                    return;
+                }
+                Ok(_) => {}
+            }
+        }
+    });
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "me".into(), Vec::new());
+    config.port = port;
+    config.use_tls = false;
+    let connection = cayenchat_irc_core::Connection::connect(config.clone()).unwrap();
+    (connection, config, join_rx)
+}
+
+fn delayed_store() -> (
+    CredentialStore,
+    mpsc::Receiver<()>,
+    mpsc::Sender<()>,
+    mpsc::Receiver<()>,
+) {
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let store = CredentialStore::with_backend(std::sync::Arc::new(DelayedRead {
+        ready: Mutex::new(Some(ready_tx)),
+        release: Mutex::new(release_rx),
+        finished: Mutex::new(Some(finished_tx)),
+    }));
+    (store, ready_rx, release_tx, finished_rx)
 }
 
 impl CredentialBackend for DelayedRead {
@@ -111,15 +168,18 @@ impl CredentialBackend for DelayedRead {
             ready.send(()).unwrap();
         }
         self.release.lock().unwrap().recv().unwrap();
+        if let Some(finished) = self.finished.lock().unwrap().take() {
+            finished.send(()).unwrap();
+        }
         Ok(Some(Secret::new("saved-key")))
     }
 
     fn set(&self, _key: &SecretKey, _value: &Secret) -> Result<(), CredentialError> {
-        unreachable!("the delayed test backend is read-only")
+        Ok(())
     }
 
     fn delete(&self, _key: &SecretKey) -> Result<(), CredentialError> {
-        unreachable!("the delayed test backend is read-only")
+        Ok(())
     }
 }
 
@@ -146,46 +206,143 @@ fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_late_key_read_is_dropped_after_the_same_profile_changes_host(cx: &mut TestAppContext) {
-    let (chat, _old_store, cx) = open_chat(None, cx);
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    let store = CredentialStore::with_backend(std::sync::Arc::new(DelayedRead {
-        ready: Mutex::new(Some(ready_tx)),
-        release: Mutex::new(release_rx),
-    }));
-    let (profile, target) = chat.update(cx, |chat, _| {
+fn delayed_join_key_read_uses_the_registered_connection_and_drops_replaced_connection(
+    cx: &mut TestAppContext,
+) {
+    let (chat, _memory, cx) = open_chat(None, cx);
+    let (store, ready_rx, release_tx, finished_rx) = delayed_store();
+    cx.update(|cx| cx.set_global(crate::secrets::Credentials(store)));
+
+    let (old_connection, old_config, _old_join) = local_connection();
+    chat.update(cx, |chat, cx| {
         chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
-        let session = &chat.sessions[&NET];
-        (
-            session.profile_id.clone(),
-            JoinTarget::new(session).unwrap(),
-        )
-    });
-    let (result_tx, result_rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let keyed =
-            crate::channel_keys::join_keys(&store, &profile, vec![("#Secret".into(), true)]);
-        result_tx.send(keyed).unwrap();
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        let mut old_config = old_config;
+        old_config.channels.clear();
+        session.active_config = Some(old_config);
+        session.irc = Some(old_connection);
+        event(chat, registered(), cx);
+        chat.join_channels(NET, &["#Secret".into()], cx).unwrap();
     });
     ready_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("background task reached the delayed credential read");
+        .expect("the real /join path reached the delayed credential read");
 
-    chat.update(cx, |chat, _| {
+    let (new_connection, new_config, new_join) = local_connection();
+    chat.update(cx, |chat, cx| {
         let session = chat.sessions.get_mut(&NET).unwrap();
-        session.active_config.as_mut().unwrap().host = "irc.other.example".into();
+        session.generation += 1;
+        let mut new_config = new_config;
+        new_config.host = "localhost".into();
+        session.active_config = Some(new_config);
+        session.irc = Some(new_connection);
+        event(chat, registered(), cx);
     });
     release_tx.send(()).unwrap();
-    let keyed = result_rx
+    finished_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the delayed credential read completed");
+        .expect("the delayed backend returned the saved key");
+    cx.run_until_parked();
 
-    chat.update(cx, |chat, cx| {
-        let profile = chat.sessions[&NET].profile_id.clone();
-        chat.send_joins(NET, &profile, &target, keyed, cx);
+    assert_eq!(
+        new_join
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        None,
+        "a JOIN with the old connection's key must not reach the replacement"
+    );
+    chat.update(cx, |chat, _| {
         assert!(chat.sessions[&NET].pending_joins.is_empty());
         assert!(chat.sessions[&NET].key_joins.is_empty());
+    });
+}
+
+#[gpui::test]
+fn delayed_join_key_read_sends_the_key_when_its_connection_is_still_current(
+    cx: &mut TestAppContext,
+) {
+    let (chat, _memory, cx) = open_chat(None, cx);
+    let (store, ready_rx, release_tx, finished_rx) = delayed_store();
+    cx.update(|cx| cx.set_global(crate::secrets::Credentials(store)));
+    let (connection, config, join_rx) = local_connection();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        let mut config = config;
+        config.channels.clear();
+        session.active_config = Some(config);
+        session.irc = Some(connection);
+        event(chat, registered(), cx);
+        chat.join_channels(NET, &["#Secret".into()], cx).unwrap();
+    });
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the real /join path reached the delayed credential read");
+    release_tx.send(()).unwrap();
+    finished_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the delayed backend returned the saved key");
+    cx.run_until_parked();
+    assert_eq!(
+        join_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        Some("JOIN #Secret saved-key".into())
+    );
+}
+
+#[gpui::test]
+fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext) {
+    let (chat, _memory, cx) = open_chat(Some("old-key"), cx);
+    let (store, ready_rx, release_tx, finished_rx) = delayed_store();
+    cx.update(|cx| cx.set_global(crate::secrets::Credentials(store)));
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
+        let profile_id = chat.sessions[&NET].profile_id.clone();
+        let profile = chat.saved.profile(&profile_id).unwrap().clone();
+        chat.refresh_stored_keys(NET, &profile, cx);
+    });
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("refresh reached the delayed credential read");
+
+    chat.update(cx, |chat, cx| {
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        session.key_joins.push(KeyJoin {
+            channel: "#Secret".into(),
+            typed: Some(Secret::new("old-key")),
+            remember: false,
+            stale: true,
+        });
+        chat.key_join_succeeded(NET, "#Secret", cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(
+            !chat.sessions[&NET]
+                .active_config
+                .as_ref()
+                .unwrap()
+                .channel_keys
+                .contains_key("#Secret")
+        );
+    });
+
+    release_tx.send(()).unwrap();
+    finished_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the delayed backend returned the stale key snapshot");
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(
+            !chat.sessions[&NET]
+                .active_config
+                .as_ref()
+                .unwrap()
+                .channel_keys
+                .contains_key("#Secret")
+        );
+        assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
     });
 }
 
@@ -205,6 +362,14 @@ fn join_targets_match_only_the_same_generation_and_destination() {
     session.generation -= 1;
 
     session.active_config.as_mut().unwrap().host = "irc.other.example".into();
+    assert!(!target.matches(&session));
+    session.active_config.as_mut().unwrap().host = "irc.example.org".into();
+
+    session.active_config.as_mut().unwrap().port += 1;
+    assert!(!target.matches(&session));
+    session.active_config.as_mut().unwrap().port -= 1;
+
+    session.active_config.as_mut().unwrap().use_tls = false;
     assert!(!target.matches(&session));
 }
 

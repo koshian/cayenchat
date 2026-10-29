@@ -37,6 +37,21 @@ pub(super) struct JoinTarget {
     use_tls: bool,
 }
 
+struct KeyStoreWrite {
+    profile: String,
+    target: JoinTarget,
+    revision: u64,
+    channel: String,
+    key: Option<String>,
+}
+
+struct JoinRead {
+    profile: String,
+    target: JoinTarget,
+    revision: u64,
+    channels: Vec<(String, bool)>,
+}
+
 impl JoinTarget {
     pub(super) fn new(session: &ServerSession) -> Option<Self> {
         let config = session.active_config.as_ref()?;
@@ -207,6 +222,7 @@ impl ChatWindow {
             .ok_or_else(|| self.i18n.text("not_connected"))?;
         let profile = session.profile_id.clone();
         let target = JoinTarget::new(session).ok_or_else(|| self.i18n.text("not_connected"))?;
+        let revision = session.channel_key_revision;
         self.registered_connection(network)?;
         let store = secrets::store(cx);
         // The store is read only for channels noted as keyed (#643); a JOIN
@@ -221,7 +237,17 @@ impl ChatWindow {
                 (channel.clone(), noted)
             })
             .collect();
-        self.spawn_join_read(network, profile, target, channels, store, cx);
+        self.spawn_join_read(
+            network,
+            JoinRead {
+                profile,
+                target,
+                revision,
+                channels,
+            },
+            store,
+            cx,
+        );
         Ok(())
     }
 
@@ -229,12 +255,16 @@ impl ChatWindow {
     fn spawn_join_read(
         &mut self,
         network: NetworkId,
-        profile: String,
-        target: JoinTarget,
-        channels: Vec<(String, bool)>,
+        request: JoinRead,
         store: CredentialStore,
         cx: &mut Context<Self>,
     ) {
+        let JoinRead {
+            profile,
+            target,
+            revision,
+            channels,
+        } = request;
         let reading = cx.background_spawn({
             let profile = profile.clone();
             async move { join_keys(&store, &profile, channels) }
@@ -242,7 +272,7 @@ impl ChatWindow {
         cx.spawn(async move |this, cx| {
             let keyed = reading.await;
             let _ = this.update(cx, |this, cx| {
-                this.send_joins(network, &profile, &target, keyed, cx)
+                this.send_joins(network, &profile, &target, revision, keyed, cx)
             });
         })
         .detach();
@@ -255,14 +285,16 @@ impl ChatWindow {
         network: NetworkId,
         profile: &str,
         target: &JoinTarget,
+        revision: u64,
         keyed: Vec<(String, Option<Secret>)>,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .sessions
-            .get(&network)
-            .is_none_or(|session| session.profile_id != profile || !target.matches(session))
-        {
+        if self.sessions.get(&network).is_none_or(|session| {
+            session.profile_id != profile
+                || session.channel_key_revision != revision
+                || session.channel_key_writes_pending != 0
+                || !target.matches(session)
+        }) {
             return;
         }
         for (channel, saved) in keyed {
@@ -427,6 +459,15 @@ impl ChatWindow {
         let store = secrets::store(cx);
         let key = SecretKey::channel_key(&profile, channel);
         let channel = channel.to_owned();
+        let Some((target, revision)) = self.sessions.get_mut(&network).and_then(|session| {
+            let target = JoinTarget::new(session)?;
+            session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
+            session.channel_key_writes_pending =
+                session.channel_key_writes_pending.saturating_add(1);
+            Some((target, session.channel_key_revision))
+        }) else {
+            return;
+        };
         let remembered = match &change {
             StoreChange::Save(typed) => Some(typed.expose().to_owned()),
             StoreChange::Forget => None,
@@ -444,7 +485,18 @@ impl ChatWindow {
         cx.spawn(async move |this, cx| {
             let result = writing.await;
             let _ = this.update(cx, |this, cx| {
-                this.key_store_written(network, &profile, &channel, remembered, result, cx)
+                this.key_store_written(
+                    network,
+                    KeyStoreWrite {
+                        profile,
+                        target,
+                        revision,
+                        channel,
+                        key: remembered,
+                    },
+                    result,
+                    cx,
+                )
             });
         })
         .detach();
@@ -454,24 +506,43 @@ impl ChatWindow {
     fn key_store_written(
         &mut self,
         network: NetworkId,
-        profile: &str,
-        channel: &str,
-        key: Option<String>,
+        write: KeyStoreWrite,
         result: Result<(), (&'static str, cayenchat_storage::CredentialError)>,
         cx: &mut Context<Self>,
     ) {
+        let current = self.sessions.get(&network).is_some_and(|session| {
+            session.profile_id == write.profile
+                && session.channel_key_revision == write.revision
+                && write.target.matches(session)
+        });
+        if let Some(session) = self
+            .sessions
+            .get_mut(&network)
+            .filter(|session| session.profile_id == write.profile)
+        {
+            session.channel_key_writes_pending =
+                session.channel_key_writes_pending.saturating_sub(1);
+            if session.channel_key_writes_pending == 0 {
+                session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
+            }
+        }
+        if !current {
+            return;
+        }
         match result {
             Ok(()) => {
                 // The store holds the key now (or no longer): note it, so
                 // the next connection reads it (or leaves the store alone).
-                self.update_profile_note(profile, |p| p.note_channel_key(channel, key.is_some()));
+                self.update_profile_note(&write.profile, |p| {
+                    p.note_channel_key(&write.channel, write.key.is_some())
+                });
                 // Only the connection the key was confirmed on is updated.
                 if self
                     .sessions
                     .get(&network)
-                    .is_some_and(|session| session.profile_id == profile)
+                    .is_some_and(|session| session.profile_id == write.profile)
                 {
-                    self.sync_config_key(network, channel, key);
+                    self.sync_config_key(network, &write.channel, write.key);
                 }
             }
             Err((message, error)) => {
@@ -480,7 +551,7 @@ impl ChatWindow {
                     &[
                         (
                             "channel",
-                            &cayenchat_model::display::neutralize_bidi(channel),
+                            &cayenchat_model::display::neutralize_bidi(&write.channel),
                         ),
                         ("error", &secrets::error_text(&self.i18n, &error)),
                     ],
@@ -507,6 +578,14 @@ impl ChatWindow {
         }
         let store = secrets::store(cx);
         let profile = profile.clone();
+        let Some((target, revision)) = self.sessions.get(&network).and_then(|session| {
+            if session.profile_id != profile.id {
+                return None;
+            }
+            Some((JoinTarget::new(session)?, session.channel_key_revision))
+        }) else {
+            return;
+        };
         let reading = cx.background_spawn({
             let profile = profile.clone();
             async move { stored_channel_keys(&profile, &store) }
@@ -517,7 +596,11 @@ impl ChatWindow {
                 let Some(session) = this.sessions.get_mut(&network) else {
                     return;
                 };
-                if session.profile_id != profile.id {
+                if session.profile_id != profile.id
+                    || session.channel_key_revision != revision
+                    || session.channel_key_writes_pending != 0
+                    || !target.matches(session)
+                {
                     return;
                 }
                 if let Some(config) = session.active_config.as_mut() {
