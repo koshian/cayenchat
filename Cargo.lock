@@ -993,6 +993,7 @@ dependencies = [
 name = "cayenchat-upload"
 version = "1.0.0-rc.8"
 dependencies = [
+ "cayenchat-media",
  "cayenchat-model",
  "cayenchat-storage",
  "serde_json",

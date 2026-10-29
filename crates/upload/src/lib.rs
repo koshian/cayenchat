@@ -15,6 +15,7 @@
 
 use std::{fmt, sync::Arc};
 
+use cayenchat_media::policy::publishable_avatar_url;
 use cayenchat_model::attachment::Attachment;
 use cayenchat_storage::Secret;
 
@@ -88,12 +89,16 @@ pub trait ExternalUploader: Send + Sync {
 }
 
 /// Accepts only an `https` URL without whitespace or control characters, as
-/// the link is inserted into IRC text.
+/// the link is inserted into IRC text. The reply is untrusted, so the URL
+/// must also pass the check used for published avatar links: it parses, has
+/// no userinfo or credential-like parameters, no explicit port, and a public
+/// host.
 pub(crate) fn checked_url(url: &str) -> Option<String> {
     let valid = url.starts_with("https://")
         && url.len() > "https://".len()
         && url.len() <= 2048
-        && !url.chars().any(|ch| ch.is_whitespace() || ch.is_control());
+        && !url.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        && publishable_avatar_url(url).is_ok();
     valid.then(|| url.to_owned())
 }
 
@@ -121,6 +126,12 @@ mod tests {
             "https://",
             "https://a b",
             "https://a\r\nPRIVMSG",
+            "https://user@i.ibb.co/x.png",
+            "https://i.ibb.co@evil.example/x.png",
+            "https://127.0.0.1/x.png",
+            "https://[::1]/x.png",
+            "https://localhost/x.png",
+            "https://i.ibb.co:8443/x.png",
         ] {
             assert!(checked_url(bad).is_none(), "{bad}");
         }
