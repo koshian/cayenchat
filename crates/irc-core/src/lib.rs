@@ -24,7 +24,7 @@ pub mod text;
 
 pub use avatar_mask::{MAX_REMEMBERED_MASKS, PeerAvatarCache};
 pub use cap::Ircv3Options;
-pub use charsets::ChannelEncoding;
+pub use charsets::{ChannelEncoding, CharRefMode};
 pub use ecdsa::{
     KeyError, SecretText, generate as generate_sasl_key, import_pem as import_sasl_key_pem,
     is_valid as sasl_key_is_valid, public_key_base64 as sasl_public_key,
@@ -269,10 +269,11 @@ pub struct ConnectionConfig {
     pub regain_ops: bool,
     /// Write the characters ISO-2022-JP cannot hold in the text of a message
     /// as decimal HTML numeric character references (`&#128512;`) instead of
-    /// refusing it (#522). Applies only when the text is sent in ISO-2022-JP
-    /// (the server's encoding or the channel's override); nothing else on
-    /// the line is touched.
-    pub char_refs_for_iso2022jp: bool,
+    /// refusing it (#522). `Auto` does so only when the text is sent in
+    /// ISO-2022-JP (the server's encoding or the channel's override);
+    /// `Iso2022Jp` also in any other encoding (#680); nothing else on the
+    /// line is touched. A channel's own mode takes precedence.
+    pub char_refs: CharRefMode,
 }
 
 impl fmt::Debug for ConnectionConfig {
@@ -303,7 +304,7 @@ impl fmt::Debug for ConnectionConfig {
             .field("history_targets_since", &self.history_targets_since)
             .field("channel_encodings", &self.channel_encodings)
             .field("regain_ops", &self.regain_ops)
-            .field("char_refs_for_iso2022jp", &self.char_refs_for_iso2022jp)
+            .field("char_refs", &self.char_refs)
             .finish()
     }
 }
@@ -336,7 +337,7 @@ impl ConnectionConfig {
             history_targets_since: None,
             channel_encodings: Vec::new(),
             regain_ops: false,
-            char_refs_for_iso2022jp: true,
+            char_refs: CharRefMode::Auto,
         }
     }
 
@@ -2023,8 +2024,8 @@ pub struct Connection {
     realname_mark: peer_avatar::RealnameMark,
     /// Channels with an encoding of their own for their text.
     charsets: Arc<ChannelCharsets>,
-    /// See [`ConnectionConfig::char_refs_for_iso2022jp`].
-    char_refs_for_iso2022jp: bool,
+    /// See [`ConnectionConfig::char_refs`].
+    char_refs: CharRefMode,
     /// Reason for a `PART` that names none.
     part_message: Option<String>,
     /// The server's announced `MODES` limit; 0 until one is seen.
@@ -2054,7 +2055,7 @@ impl Connection {
         let charsets = Arc::new(ChannelCharsets::new(&config.channel_encodings)?);
         let worker_charsets = charsets.clone();
         let part_message = config.wire_part_message();
-        let char_refs_for_iso2022jp = config.char_refs_for_iso2022jp;
+        let char_refs = config.char_refs;
         let (commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
         let cancel = Arc::new(Notify::new());
@@ -2114,7 +2115,7 @@ impl Connection {
             encoding,
             realname_mark,
             charsets,
-            char_refs_for_iso2022jp,
+            char_refs,
             part_message,
             modes_per_line,
             relay_prefix,
@@ -2178,13 +2179,15 @@ impl Connection {
             // checked, shown and written is the same text in that encoding.
             let sent_as_iso2022jp = encoder.or_else(|| charsets::resolve(&self.encoding).ok())
                 == Some(encoding_rs::ISO_2022_JP);
+            let wanted = match self.charsets.char_refs(target).unwrap_or(self.char_refs) {
+                CharRefMode::Auto => sent_as_iso2022jp,
+                CharRefMode::Iso2022Jp => true,
+                CharRefMode::Off => false,
+            };
             // Credentials for services stay as typed and go through the
             // strict encoding check, so a password is never altered.
             // The target may list several recipients, one of them a service.
-            if self.char_refs_for_iso2022jp
-                && sent_as_iso2022jp
-                && !target.split(',').any(|one| is_service_secret(one, text))
-            {
+            if wanted && !target.split(',').any(|one| is_service_secret(one, text)) {
                 charsets::apply_char_refs(text, display_text);
             }
         }
@@ -2215,13 +2218,17 @@ impl Connection {
     /// the override. Applies to the next line in either direction. Only the
     /// text changes: the channel name keeps the server's encoding. Refused
     /// when the server requires UTF-8 (`UTF8ONLY`) and a label is not UTF-8.
+    /// `char_refs` is the channel's own numeric character reference mode for
+    /// what it sends (`None` follows the connection's); it needs no
+    /// encoding, so `UTF8ONLY` does not refuse it.
     pub fn set_channel_encoding(
         &self,
         channel: &str,
         decode: Option<&str>,
         encode: Option<&str>,
+        char_refs: Option<CharRefMode>,
     ) -> Result<(), String> {
-        self.charsets.set(channel, decode, encode)
+        self.charsets.set(channel, decode, encode, char_refs)
     }
 
     /// Whether the server announced `UTF8ONLY`, so channels can only use

@@ -361,7 +361,7 @@ fn closed_worker_keeps_buffered_diagnostics_readable() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
-        char_refs_for_iso2022jp: true,
+        char_refs: CharRefMode::Auto,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -393,7 +393,11 @@ fn queueing_connection(
         encoding: encoding.into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(overrides).unwrap()),
-        char_refs_for_iso2022jp: char_refs,
+        char_refs: if char_refs {
+            CharRefMode::Auto
+        } else {
+            CharRefMode::Off
+        },
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -491,6 +495,7 @@ fn iso2022jp_text_is_refused_when_the_option_is_off_or_the_text_is_not_iso2022jp
             channel: "#jp".into(),
             decode: None,
             encode: Some(encode.into()),
+            char_refs: None,
         }]
     };
     let (connection, mut queued) = queueing_connection("UTF-8", true, &channel("ISO-2022-JP"));
@@ -506,6 +511,91 @@ fn iso2022jp_text_is_refused_when_the_option_is_off_or_the_text_is_not_iso2022jp
     let (connection, mut queued) = queueing_connection("ISO-2022-JP", true, &channel("UTF-8"));
     connection.send_message("#jp", "😀", false).unwrap();
     assert_eq!(queued_texts(&mut queued), [("😀".into(), "😀".into())]);
+}
+
+#[test]
+fn iso2022jp_compatible_mode_converts_whatever_the_wire_encoding_is() {
+    let (mut connection, mut queued) = queueing_connection("UTF-8", true, &[]);
+    // Auto leaves a UTF-8 line as it is.
+    connection
+        .send_message("#t", "こんにちは😀", false)
+        .unwrap();
+    connection.char_refs = CharRefMode::Iso2022Jp;
+    connection
+        .send_message("#t", "こんにちは😀", false)
+        .unwrap();
+    connection.send_private_message("bob", "🍒", true).unwrap();
+    connection.send_command("/me 笑う😀", Some("#t")).unwrap();
+    // Already a reference is not converted twice; kana stay as they are.
+    connection.send_message("#t", "&#128512;あ", false).unwrap();
+    // A service password is never altered.
+    connection
+        .send_private_message("NickServ", "IDENTIFY pä😀ss", false)
+        .unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [
+            ("こんにちは😀".into(), "こんにちは😀".into()),
+            ("こんにちは&#128512;".into(), "こんにちは&#128512;".into()),
+            ("&#127826;".into(), "&#127826;".into()),
+            (
+                "\u{1}ACTION 笑う&#128512;\u{1}".into(),
+                "* 笑う&#128512;".into()
+            ),
+            ("&#128512;あ".into(), "&#128512;あ".into()),
+            ("IDENTIFY pä😀ss".into(), "IDENTIFY pä😀ss".into()),
+        ]
+    );
+    connection.char_refs = CharRefMode::Off;
+    connection.send_message("#t", "😀", false).unwrap();
+    assert_eq!(queued_texts(&mut queued), [("😀".into(), "😀".into())]);
+}
+
+#[test]
+fn a_channels_own_char_ref_mode_overrides_the_servers() {
+    let channel = |mode| {
+        [ChannelEncoding {
+            channel: "#jp".into(),
+            char_refs: Some(mode),
+            ..ChannelEncoding::default()
+        }]
+    };
+    // Server Off, channel compatible: converted on UTF-8; others untouched.
+    let (connection, mut queued) =
+        queueing_connection("UTF-8", false, &channel(CharRefMode::Iso2022Jp));
+    connection.send_message("#jp", "😀", false).unwrap();
+    connection.send_message("#other", "😀", false).unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [
+            ("&#128512;".into(), "&#128512;".into()),
+            ("😀".into(), "😀".into())
+        ]
+    );
+    // Server ISO-2022-JP with Auto, channel Off: the channel is refused.
+    let (connection, _queued) =
+        queueing_connection("ISO-2022-JP", true, &channel(CharRefMode::Off));
+    assert!(connection.send_message("#jp", "😀", false).is_err());
+    // Changed while connected: the next message follows, a queued one keeps
+    // what it was converted with.
+    let (connection, mut queued) = queueing_connection("UTF-8", true, &[]);
+    connection.send_message("#jp", "😀", false).unwrap();
+    connection
+        .set_channel_encoding("#jp", None, None, Some(CharRefMode::Iso2022Jp))
+        .unwrap();
+    connection.send_message("#jp", "😀", false).unwrap();
+    connection
+        .set_channel_encoding("#jp", None, None, None)
+        .unwrap();
+    connection.send_message("#jp", "😀", false).unwrap();
+    assert_eq!(
+        queued_texts(&mut queued),
+        [
+            ("😀".into(), "😀".into()),
+            ("&#128512;".into(), "&#128512;".into()),
+            ("😀".into(), "😀".into())
+        ]
+    );
 }
 
 #[test]
@@ -533,7 +623,7 @@ fn member_modes_are_split_to_the_announced_limit_and_validated_first() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
-        char_refs_for_iso2022jp: true,
+        char_refs: CharRefMode::Auto,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(2)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -576,7 +666,7 @@ fn member_modes_are_not_sent_in_part_when_the_queue_is_nearly_full() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
-        char_refs_for_iso2022jp: true,
+        char_refs: CharRefMode::Auto,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(1)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -747,7 +837,7 @@ fn taken_events_can_be_awaited_until_the_worker_ends() {
         encoding: "UTF-8".into(),
         realname_mark: peer_avatar::RealnameMark::None,
         charsets: Arc::new(ChannelCharsets::new(&[]).unwrap()),
-        char_refs_for_iso2022jp: true,
+        char_refs: CharRefMode::Auto,
         part_message: None,
         modes_per_line: Arc::new(AtomicUsize::new(0)),
         relay_prefix: Arc::new(AtomicUsize::new(0)),
@@ -1047,7 +1137,7 @@ fn iso_2022_jp_channel_name_and_message_round_trip() {
     config.port = port;
     config.use_tls = false;
     config.encoding = "ISO-2022-JP".into();
-    config.char_refs_for_iso2022jp = false;
+    config.char_refs = CharRefMode::Off;
     let mut connection = Connection::connect(config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut joined = false;
@@ -1153,17 +1243,19 @@ fn channels_of_one_server_use_their_own_text_encodings() {
     let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), Vec::new());
     config.port = port;
     config.use_tls = false;
-    config.char_refs_for_iso2022jp = false;
+    config.char_refs = CharRefMode::Off;
     config.channel_encodings = vec![
         ChannelEncoding {
             channel: "#jp".into(),
             decode: Some("ISO-2022-JP".into()),
             encode: Some("ISO-2022-JP".into()),
+            char_refs: None,
         },
         ChannelEncoding {
             channel: "#euc".into(),
             decode: Some("EUC-JP".into()),
             encode: None,
+            char_refs: None,
         },
     ];
     let mut connection = Connection::connect(config).unwrap();
@@ -1189,7 +1281,9 @@ fn channels_of_one_server_use_their_own_text_encodings() {
     assert!(connection.send_message("#utf", "🙂", false).is_ok());
     // The worker writes queued lines later; the override goes once it has.
     wait.recv_timeout(Duration::from_secs(5)).unwrap();
-    connection.set_channel_encoding("#jp", None, None).unwrap();
+    connection
+        .set_channel_encoding("#jp", None, None, None)
+        .unwrap();
     connection.send_message("#jp", "こ", false).unwrap();
     server.join().unwrap();
 }
@@ -1221,6 +1315,7 @@ fn a_channel_override_leaves_the_channel_name_in_the_server_encoding() {
         channel: "#がが".into(),
         decode: Some("UTF-8".into()),
         encode: Some("Shift_JIS".into()),
+        char_refs: None,
     }];
     let mut connection = Connection::connect(config).unwrap();
     assert_eq!(
@@ -1253,6 +1348,7 @@ fn utf8_only_switches_off_other_channel_encodings() {
         channel: "#jp".into(),
         decode: Some("ISO-2022-JP".into()),
         encode: Some("ISO-2022-JP".into()),
+        char_refs: None,
     }];
     let mut connection = Connection::connect(config).unwrap();
     assert_eq!(
@@ -1264,12 +1360,12 @@ fn utf8_only_switches_off_other_channel_encodings() {
     // Nothing but UTF-8 can be set from now on.
     assert!(
         connection
-            .set_channel_encoding("#x", Some("Shift_JIS"), None)
+            .set_channel_encoding("#x", Some("Shift_JIS"), None, None)
             .is_err()
     );
     assert!(
         connection
-            .set_channel_encoding("#x", Some("utf-8"), None)
+            .set_channel_encoding("#x", Some("utf-8"), None, None)
             .is_ok()
     );
     server.join().unwrap();
@@ -1299,6 +1395,7 @@ fn every_offered_encoding_round_trips() {
             channel: "#c".into(),
             decode: Some(label.into()),
             encode: Some(label.into()),
+            char_refs: None,
         }];
         config
             .validate()
@@ -1329,6 +1426,7 @@ fn channel_encodings_are_validated() {
         channel: channel.into(),
         decode: decode.map(str::to_owned),
         encode: None,
+        char_refs: None,
     };
     config.channel_encodings = vec![entry("#a", Some("Big5")), entry("#b", Some("windows-1251"))];
     assert!(config.validate().is_ok());
@@ -6148,6 +6246,7 @@ fn a_queued_message_keeps_the_encoding_it_was_accepted_with() {
         channel: "#test".into(),
         decode: None,
         encode: Some("Shift_JIS".into()),
+        char_refs: None,
     }])
     .unwrap();
     let prefix = relay::OwnMask::default().prefix_bytes("alice", "UTF-8");
@@ -6168,10 +6267,12 @@ fn a_queued_message_keeps_the_encoding_it_was_accepted_with() {
     // Accepted as Shift_JIS (290 bytes), then the channel goes back to the
     // server's UTF-8: the message is still judged, and written, as accepted.
     let pinned = accepted(charsets.encoder("#test"));
-    charsets.set("#test", None, None).unwrap();
+    charsets.set("#test", None, None, None).unwrap();
     assert!(live(&pinned).is_ok());
     // Accepted as UTF-8 (435 bytes), then Shift_JIS is set: still too long.
-    charsets.set("#test", None, Some("Shift_JIS")).unwrap();
+    charsets
+        .set("#test", None, Some("Shift_JIS"), None)
+        .unwrap();
     assert!(live(&accepted(None)).is_err());
 }
 
@@ -6496,6 +6597,7 @@ fn utf8_only_announced_after_acceptance_keeps_legacy_bytes_off_the_wire() {
         channel: "#jp".into(),
         decode: None,
         encode: Some("Shift_JIS".into()),
+        char_refs: None,
     }];
     let mut connection = Connection::connect(config).unwrap();
     flood_sent.recv_timeout(Duration::from_secs(10)).unwrap();

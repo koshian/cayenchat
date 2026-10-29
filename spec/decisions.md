@@ -1777,7 +1777,7 @@ with a Close button (`window.prompt`, `notices.rs`).
 
 **Status:** Accepted
 
-- Per-server `ServerProfile::iso2022jp_char_refs`, on by default (files
+- Per-server `ServerProfile::iso2022jp_char_refs` (a mode since D073), on by default (files
   without it read as on), a checkbox below the encoding on the server's
   settings page. It is kept for every encoding but acts only when the text of
   a message is sent in ISO-2022-JP: the server's encoding, or the channel's
@@ -3152,3 +3152,51 @@ list). The account name is the same field as for the other mechanisms.
   `ServerLine` debug events show `AUTHENTICATE <data>` as `[redacted]` for the
   server's challenge too (before, a server's `AUTHENTICATE` data reached
   `ServerLine`).
+
+## D073 — Channel settings and the numeric character reference mode (#680)
+
+**Status:** Accepted
+
+2026-10-29. Extends D050 and D060.
+
+- **Mode.** `ServerProfile::iso2022jp_char_refs` (bool) becomes
+  `char_refs: CharRefMode` — `Auto` (D060's "on": convert only when the text
+  is sent in ISO-2022-JP), `Iso2022Jp` (convert what ISO-2022-JP cannot hold
+  whatever the wire encoding is, for UTF-8 to a proxy such as Tiarra that
+  converts onwards) and `Off`. The wire encoding never changes; only the set
+  of characters written as references does. Files migrate on read: the old
+  key `iso2022jp_char_refs` is an alias, `true` reads as `Auto`, `false` as
+  `Off`, none as `Auto`; the new key is written. The server's mode applies from
+  the next connection, as before.
+- **Per channel.** `ChannelCharset` (the `/charset` store, one entry per
+  channel) gains `char_refs: Option<CharRefMode>`; an entry exists while any of
+  decode, encode and mode is set, and `None` follows the server. The
+  connection's `ChannelCharsets` holds the mode and `Connection::pinned` asks
+  it for the message's target before choosing, so a change made while a
+  message waits does not alter the queued one. Conversion keeps all D060
+  limits (text of `PRIVMSG`/`NOTICE` and `/me` only, service credentials
+  untouched, converted text validated and length-checked). `UTF8ONLY` refuses
+  non-UTF-8 encodings as before but not the mode.
+- **`/charset`** edits the encodings only; `/charset reset` keeps a channel's
+  mode.
+- **Channel settings dialog.** One dialog of the settings window edits a
+  channel: auto-join (checkbox), receive and send encoding, reference mode
+  (each "follow the server" by default), "Reset to default" (encodings and
+  mode only, not auto-join), Save and Cancel. It opens from a "Settings…"
+  button on each auto-join row and from "Channel Settings…" in the channel
+  context menu (which replaces "Add to / Remove from auto-join"); the menu
+  opens the settings window on the server the channel belongs to and refuses
+  if the form could not switch to it. Save writes the channel's entry and
+  auto-join state together through the form's autosave; it never sends JOIN or
+  PART. A channel that was never listed is added only when auto-join is on,
+  but its other settings are kept either way. Channels are compared with the
+  network's case mapping when opened from the menu. The list uses the active
+  network's mapping, or conservative ASCII folding when no live connection is
+  available so distinct names are not accidentally merged. Saving rejects
+  names that cannot be IRC channel targets, including a channel prefix with no
+  name. On a live `UTF8ONLY` connection, non-UTF-8 encoding overrides are
+  rejected while numeric reference modes remain available.
+- **Live connections.** After a save `apply_servers` makes the live
+  `Connection` follow the profile's channel entries (changed ones set,
+  removed ones cleared). On a `UTF8ONLY` server the encodings that cannot be
+  used are left out and the mode still applies.

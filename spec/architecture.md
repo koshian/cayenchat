@@ -691,11 +691,14 @@ connection without overrides pays one atomic read per line). The server's
 encoding still covers everything but that text. The UI keeps the overrides in
 `ServerProfile::channel_charsets` and copies them into the profile's active
 configuration so reconnects keep them.
-With `ConnectionConfig::char_refs_for_iso2022jp` (`ServerProfile::iso2022jp_char_refs`,
-on by default, D060) the text of a message sent in ISO-2022-JP has the scalar
-values that encoding cannot hold replaced by decimal `&#N;` references in
+With `ConnectionConfig::char_refs` (`ServerProfile::char_refs`, `Auto` by
+default, D060, D073) the text of a message sent in ISO-2022-JP (`Auto`), or in
+any encoding (`Iso2022Jp`, for a proxy that converts onwards), has the scalar
+values ISO-2022-JP cannot hold replaced by decimal `&#N;` references in
 `Connection::pinned`, before any check, so the 512-byte and relayed-length
-checks see the longer text; nothing else on the line changes.
+checks see the longer text; nothing else on the line changes. A channel's own
+mode (`ChannelCharset::char_refs`, held by `ChannelCharsets` next to its
+encodings) takes precedence over the connection's.
 A `PRIVMSG` or `NOTICE` must also fit in 512 bytes once the server has put
 `:nick!user@host ` in front of it, or the recipients would get the end cut off
 (issue #330): the check counts the converted command plus CRLF plus that prefix,
