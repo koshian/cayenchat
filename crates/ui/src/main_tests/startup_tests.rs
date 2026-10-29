@@ -293,6 +293,65 @@ fn removed_profiles_lose_their_saved_passwords() {
     assert!(store.get(&kept).unwrap().is_some());
 }
 
+/// Settings with a kept profile and a second, removable one, both holding a
+/// key for `#shared`. Returns them with the removed profile's id and the kept
+/// profile's key.
+fn removable_profile_with_keys(
+    store: &CredentialStore,
+    removed_notes: Option<&[&str]>,
+) -> (Settings, Settings, String, SecretKey) {
+    let mut previous = Settings::default();
+    previous.add_server("kept.example.org");
+    let kept_id = previous.selected_profile().unwrap().id.clone();
+    previous.add_server("irc.example.org");
+    let removed = previous.selected_profile_mut().unwrap();
+    removed.channels = "#auto,-#off".into();
+    removed.keyed_channels = removed_notes.map(|notes| notes.iter().map(|n| (*n).into()).collect());
+    let removed_id = removed.id.clone();
+    let kept = previous.profile_mut(&kept_id).unwrap();
+    kept.keyed_channels = Some(vec!["#shared".into()]);
+    let kept_key = SecretKey::channel_key(&kept_id, "#shared");
+    store.set(&kept_key, &Secret::new("kept")).unwrap();
+    let mut next = previous.clone();
+    next.remove_selected_server();
+    (previous, next, removed_id, kept_key)
+}
+
+#[test]
+fn removed_profiles_lose_every_noted_channel_key_but_not_other_profiles() {
+    let store = memory_store();
+    let (previous, next, removed_id, kept_key) =
+        removable_profile_with_keys(&store, Some(&["#shared", "#Other"]));
+    let keys = ["#shared", "#other", "#auto"].map(|c| SecretKey::channel_key(&removed_id, c));
+    for key in &keys {
+        store.set(key, &Secret::new("k")).unwrap();
+    }
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    // Noted channels go (case-insensitively); an un-noted one is out of scope.
+    assert!(store.get(&keys[0]).unwrap().is_none());
+    assert!(store.get(&keys[1]).unwrap().is_none());
+    assert!(store.get(&keys[2]).unwrap().is_some());
+    // The kept profile's key for the same channel name stays.
+    assert_eq!(store.get(&kept_key).unwrap().unwrap().expose(), "kept");
+}
+
+#[test]
+fn removed_profiles_from_old_settings_lose_the_auto_join_channel_keys() {
+    let store = memory_store();
+    let (previous, next, removed_id, kept_key) = removable_profile_with_keys(&store, None);
+    let [auto, off] = ["#auto", "#off"].map(|c| SecretKey::channel_key(&removed_id, c));
+    let shared = SecretKey::channel_key(&removed_id, "#shared");
+    for key in [&auto, &off, &shared] {
+        store.set(key, &Secret::new("k")).unwrap();
+    }
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    // The first scan would read only the enabled auto-join channels.
+    assert!(store.get(&auto).unwrap().is_none());
+    assert!(store.get(&off).unwrap().is_some());
+    assert!(store.get(&shared).unwrap().is_some());
+    assert!(store.get(&kept_key).unwrap().is_some());
+}
+
 #[test]
 fn saving_settings_keeps_the_saved_passwords_of_a_kept_server() {
     let store = memory_store();

@@ -2153,9 +2153,13 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   (`JOIN #c [redacted]`), `Debug` output or the input history (`/join` with a
   second word is never recorded). A key must be one IRC parameter: no
   whitespace, controls or commas, and not starting with `:`.
-- **Limits.** Keys are not enumerable, so removing a server profile or switching
-  the credential backend does not remove or move them; a missing key is
-  asked for again. The auto-join manager has no key field.
+- **Limits.** The store cannot be listed, so keys are found from the profile
+  (`ServerProfile::channel_key_secret_keys`): the channels in `keyed_channels`,
+  or, for a file from before the note (`None`), the enabled auto-join channels
+  the first scan reads. Removing a server profile deletes these keys and
+  switching the credential backend moves them (copy, save the choice, delete
+  the originals). A key whose channel is in neither list is neither deleted nor
+  moved; it is asked for again. The auto-join manager has no key field.
 - **The store is touched only for a noted key (#643).** Reading any entry
   opens the one macOS Keychain item, which can ask for the login password
   after an update, so the store is not read to find out whether a key exists.

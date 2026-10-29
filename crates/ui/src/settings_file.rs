@@ -1403,4 +1403,63 @@ mod tests {
         assert!(!working.contains(&key).unwrap());
         drop(file);
     }
+
+    #[gpui::test]
+    fn a_failed_settings_save_keeps_the_backend_and_every_secret(cx: &mut TestAppContext) {
+        use cayenchat_storage::SecretKey;
+
+        let mut settings = settings_with_channels("#a");
+        let id = settings.selected_server.clone();
+        settings.selected_profile_mut().unwrap().keyed_channels =
+            Some(vec!["#a".into(), "#b".into()]);
+        settings.credential_backend = CredentialBackendKind::System;
+        let keys = [
+            SecretKey::channel_key(&id, "#a"),
+            SecretKey::channel_key(&id, "#b"),
+            SecretKey::uploader_token("imgbb"),
+        ];
+        let file = TestFile::with(&settings);
+        let old = cx.update(secrets::install_memory);
+        for key in &keys {
+            old.set(key, &Secret::new("v")).unwrap();
+        }
+        let (form, cx) = open(&settings, cx);
+
+        super::fail_saves(true);
+        form.update(cx, |form, cx| {
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+            assert!(form.feedback.is_some());
+            assert_eq!(
+                form.settings.values.credential_backend,
+                CredentialBackendKind::System
+            );
+        });
+        cx.update(|_, cx| {
+            assert_eq!(secrets::store(cx).kind(), CredentialBackendKind::System);
+            for key in &keys {
+                assert!(secrets::store(cx).contains(key).unwrap(), "{key:?} kept");
+            }
+        });
+        let saved = super::load().unwrap().unwrap();
+        assert_eq!(saved.credential_backend, CredentialBackendKind::System);
+
+        // Once saving works, the same switch moves everything.
+        super::fail_saves(false);
+        form.update(cx, |form, cx| {
+            form.switch_credential_backend(CredentialBackendKind::LocalFile, cx);
+        });
+        cx.update(|_, cx| {
+            let new = secrets::store(cx);
+            assert_eq!(new.kind(), CredentialBackendKind::LocalFile);
+            for key in &keys {
+                assert!(new.contains(key).unwrap(), "{key:?} moved");
+                assert!(!old.contains(key).unwrap(), "{key:?} left behind");
+            }
+        });
+        assert_eq!(
+            super::load().unwrap().unwrap().credential_backend,
+            CredentialBackendKind::LocalFile
+        );
+        drop(file);
+    }
 }
