@@ -748,3 +748,6 @@ priority = -1
 [lints.rust.unexpected_cfgs]
 level = "allow"
 priority = 0
+
+[workspace]
+# Keep focused GPUI tests runnable by manifest path without joining the app workspace.

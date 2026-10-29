@@ -77,12 +77,13 @@ pub(crate) fn image_file_filter(i18n: &Localizer) -> PathPromptFilter {
 }
 
 /// An image from a paste or a single file, or the text explaining why not.
-pub(crate) fn clipboard_attachment(cx: &App) -> Option<Result<Attachment, AttachmentError>> {
-    let item = cx.read_from_clipboard()?;
+pub(crate) fn clipboard_attachment(
+    item: &gpui::ClipboardItem,
+) -> Option<Result<Attachment, AttachmentError>> {
     if item.text().is_some() {
         return None;
     }
-    let image = input::clipboard_image(&item)?;
+    let image = input::clipboard_image(item)?;
     Some(Attachment::image(
         None,
         image.bytes().to_vec(),
@@ -219,11 +220,11 @@ impl ChatWindow {
     /// Paste in a draft whose clipboard has an image and no text.
     pub(crate) fn paste_image(
         &mut self,
-        _: &input::Paste,
+        item: &gpui::ClipboardItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(attachment) = clipboard_attachment(cx) {
+        if let Some(attachment) = clipboard_attachment(item) {
             let target = self.state.selection();
             self.accept_attachment(attachment, target, window, cx);
         }

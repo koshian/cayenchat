@@ -876,6 +876,11 @@ impl LinuxClient for WaylandClient {
         self.0.borrow_mut().clipboard.read()
     }
 
+    fn read_from_clipboard_async(&self) -> crate::Task<Option<crate::ClipboardItem>> {
+        let executor = self.0.borrow().common.background_executor.clone();
+        self.0.borrow_mut().clipboard.read_async(&executor)
+    }
+
     fn active_window(&self) -> Option<AnyWindowHandle> {
         self.0
             .borrow_mut()
