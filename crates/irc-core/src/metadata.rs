@@ -804,10 +804,15 @@ impl MetadataState {
                 "Too many deferred avatar synchronizations; skipping {channel}."
             ));
         }
-        // One entry per attempt, bounded by attempts × pending channels.
-        if self.attempted.len() < MAX_PENDING_SYNCS * usize::from(MAX_SYNC_ATTEMPTS) {
-            self.attempted.push(channel.clone());
+        // One entry per attempt, bounded by attempts × pending channels. A
+        // full record cannot count this attempt, so fail closed: an attempt
+        // that is not recorded would never reach the per-channel limit.
+        if self.attempted.len() >= MAX_PENDING_SYNCS * usize::from(MAX_SYNC_ATTEMPTS) {
+            return Some(format!(
+                "Too many deferred avatar synchronizations on this connection; skipping {channel}."
+            ));
         }
+        self.attempted.push(channel.clone());
         self.syncs.push(PendingSync {
             channel: channel.clone(),
             due,
@@ -1440,6 +1445,30 @@ mod tests {
         defer(&mut state, ":srv 774 me #big2 5", start);
         state.reset();
         assert_eq!((state.next_deadline(), state.attempted.len()), (None, 0));
+    }
+
+    #[test]
+    fn full_attempt_record_stops_further_synchronization() {
+        let mut state = MetadataState::new(true);
+        let start = Instant::now();
+        let all = |_: &str| true;
+        let defer = |state: &mut MetadataState, channel: &str| {
+            let text = format!(":srv 774 me {channel} 1");
+            state.observe(&line(&text), start, "me", all).unwrap()
+        };
+        // Fill the record with one attempt each from many other channels.
+        let cap = MAX_PENDING_SYNCS * usize::from(MAX_SYNC_ATTEMPTS);
+        for n in 0..cap {
+            defer(&mut state, &format!("#other{n}"));
+            state.tick(start + MAX_SYNC_DELAY, all);
+        }
+        assert_eq!(state.attempted.len(), cap);
+        // The target is never recorded, so it must not be retried either.
+        for _ in 0..5 {
+            defer(&mut state, "#target");
+            assert!(state.syncs.is_empty());
+            assert_eq!(state.attempted.len(), cap);
+        }
     }
 
     #[test]

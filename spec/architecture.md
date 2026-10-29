@@ -1282,7 +1282,8 @@ only while it is on:
 - Masks (D058): `irc-core::avatar_mask` builds the key `nick!user@host` —
   case-mapped nickname, username without leading `~ ^ = + -`, host loosened
   (three or more labels → `*.` + last two; IPv4 → first two numbers;
-  IPv6 → first four groups; names with `/` and shorter ones unchanged), all
+  IPv6 → first four groups; names with `/`, shorter ones and those under a
+  public-suffix-like `co.uk` / `github.io` unchanged), all
   case-insensitive — and `PeerAvatarCache`, at most 512 masks, the least
   recently used dropped first. The cache is created with the connection
   configuration and reused by the application for the network's later

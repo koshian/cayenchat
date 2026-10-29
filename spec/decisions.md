@@ -1908,7 +1908,12 @@ IRCv3 metadata, need not be handled that strictly.
   loosened — a host name of three or more labels becomes `*.` plus the last
   two (`host1.example.org` → `*.example.org`), IPv4 keeps two numbers
   (`203.0.*`), IPv6 the first four groups (`2001:db8:1:2:*`), a cloak
-  containing `/` and shorter names are kept; all case-insensitive. Another
+  containing `/` and shorter names are kept; all case-insensitive. A host
+  whose last two labels look like a public suffix (`co.uk`, `com.au`,
+  `github.io`: a generic second-level label under a two-letter country
+  code, or a listed shared hosting suffix) is kept whole, so unrelated
+  hosts under it do not share a key; without a public suffix list in the
+  tree this is a heuristic and an unlisted suffix still loosens. Another
   nickname (`bob_`) is another key and is asked again, as in KVIrc.
   `irc-core::avatar_mask`.
 - **Memory only, bounded.** The table is shared with the connection's
