@@ -644,7 +644,12 @@ impl HistoryRequests {
             .outstanding
             .as_ref()
             .is_some_and(|outstanding| outstanding.nested_overflowed)
-            && batch_tag.is_some()
+            && batch_tag.is_some_and(|reference| {
+                self.outstanding.as_ref().is_some_and(|outstanding| {
+                    outstanding.reference.as_deref() != Some(reference)
+                        && !outstanding.nested.iter().any(|open| open == reference)
+                })
+            })
         {
             return Observed::Consumed;
         }
@@ -1200,9 +1205,14 @@ mod tests {
             requests.observe(&parse("@batch=deep :bob!u@h PRIVMSG #a :deeper history")),
             Observed::Consumed
         );
+        assert_eq!(
+            requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
+            Observed::Consumed
+        );
         assert!(matches!(
             requests.observe(&parse(":srv BATCH -r")),
-            Observed::Finished(_)
+            Observed::Finished(Finished { messages, .. })
+                if messages.iter().any(|message| message.text == "root history")
         ));
     }
 
