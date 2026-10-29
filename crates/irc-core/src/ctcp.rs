@@ -363,9 +363,7 @@ impl CtcpReplies {
     fn answer(&self, tag: &str, params: &str) -> Option<String> {
         match tag.to_ascii_uppercase().as_str() {
             "PING" if params.is_empty() => Some("PING".into()),
-            "PING" if params.len() <= MAX_PING_BYTES && !params.contains('\u{1}') => {
-                Some(format!("PING {params}"))
-            }
+            "PING" if echoable(params) => Some(format!("PING {params}")),
             "PING" => None,
             "VERSION" => Some(format!("VERSION {VERSION}")),
             "TIME" => Some(format!("TIME {}", (self.local_time)())),
@@ -373,7 +371,7 @@ impl CtcpReplies {
             "USERINFO" => Some("USERINFO CayenChat user".into()),
             "FINGER" => Some("FINGER CayenChat user".into()),
             "SOURCE" => Some(format!("SOURCE {SOURCE}")),
-            "ERRMSG" if params.len() > MAX_PING_BYTES || params.contains('\u{1}') => None,
+            "ERRMSG" if !echoable(params) => None,
             "ERRMSG" if params.is_empty() => Some("ERRMSG ERRMSG :No error".into()),
             "ERRMSG" => Some(format!("ERRMSG {params} :No error")),
             // Never interpreted, and AVATAR follows the peer avatar setting.
@@ -389,6 +387,12 @@ impl CtcpReplies {
             "ACTION CLIENTINFO ERRMSG FINGER PING SOURCE TIME USERINFO VERSION"
         }
     }
+}
+
+/// Whether a PING or ERRMSG argument may be echoed back: short and free of
+/// control characters, as `/ctcp` requires of what we send ourselves.
+fn echoable(params: &str) -> bool {
+    params.len() <= MAX_PING_BYTES && !params.chars().any(char::is_control)
 }
 
 /// The tag and parameters of a CTCP message, or `None` for other text. The
@@ -628,6 +632,26 @@ mod tests {
                 "CTCP VERSION request from irc.example.net (not answered)",
             ),
             (&long_ping, "CTCP PING request from bob (not answered)"),
+            (
+                ":bob!u@h PRIVMSG alice :\u{1}PING a\rb\u{1}",
+                "CTCP PING request from bob (not answered)",
+            ),
+            (
+                ":bob!u@h PRIVMSG alice :\u{1}PING a\0b\u{1}",
+                "CTCP PING request from bob (not answered)",
+            ),
+            (
+                ":bob!u@h PRIVMSG alice :\u{1}PING a\u{1b}[2Jb\u{1}",
+                "CTCP PING request from bob (not answered)",
+            ),
+            (
+                ":bob!u@h PRIVMSG alice :\u{1}ERRMSG a\rb\u{1}",
+                "CTCP ERRMSG request from bob (not answered)",
+            ),
+            (
+                ":bob!u@h PRIVMSG alice :\u{1}ERRMSG a\u{7}b\u{1}",
+                "CTCP ERRMSG request from bob (not answered)",
+            ),
             (
                 ":bob!u@h PRIVMSG alice :\u{1}\u{2}X\u{1}",
                 "CTCP request from bob (not answered)",
