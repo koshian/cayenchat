@@ -575,7 +575,7 @@ fn forget_removed_profiles(
     for server in &previous.servers {
         let kept = next.servers.iter().find(|kept| kept.id == server.id);
         if kept.is_none() {
-            // Only passwords noted as saved: deleting touches the store too.
+            // Only secrets noted as saved: deleting touches the store too.
             let noted = [
                 (server.server_password_saved(), server.server_password_key()),
                 (server.sasl_password_saved(), server.sasl_password_key()),
@@ -584,6 +584,7 @@ fn forget_removed_profiles(
             for key in noted
                 .into_iter()
                 .filter_map(|(saved, key)| saved.then_some(key))
+                .chain(server.channel_key_secret_keys())
             {
                 if let Err(error) = store.delete(&key) {
                     first_error.get_or_insert(error);

@@ -262,40 +262,83 @@ pub struct Migration {
     pub source_unavailable: bool,
 }
 
-/// Copies `keys` from `from` to `to`, then deletes them from `from`. Nothing is
-/// deleted unless every copy succeeded. An unusable source is reported rather
-/// than blocking a switch away from it.
-pub fn migrate(
+/// Secrets copied by [`copy_secrets`] whose originals are still in the source.
+#[derive(Debug, Default)]
+pub struct Copied {
+    keys: Vec<SecretKey>,
+    /// The old backend could not be read, so nothing was copied from it.
+    pub source_unavailable: bool,
+}
+
+impl Copied {
+    pub fn count(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Deletes the originals from `from`. A leftover original is harmless
+    /// compared with failing the whole switch, so errors are ignored.
+    pub fn remove_originals(&self, from: &CredentialStore) -> Migration {
+        for key in &self.keys {
+            let _ = from.delete(key);
+        }
+        Migration {
+            moved: self.keys.len(),
+            source_unavailable: self.source_unavailable,
+        }
+    }
+
+    /// Deletes the copies from `to` after a switch was abandoned, so no secret
+    /// is left in a store that is not in use. Errors are ignored: the originals
+    /// are intact.
+    pub fn remove_copies(&self, to: &CredentialStore) {
+        for key in &self.keys {
+            let _ = to.delete(key);
+        }
+    }
+}
+
+/// Copies `keys` from `from` to `to` and leaves the originals in place, so the
+/// caller can commit the switch (save the settings) before removing them. An
+/// unusable source is reported rather than blocking a switch away from it. If
+/// a copy fails, the copies made so far are removed again.
+pub fn copy_secrets(
     from: &CredentialStore,
     to: &CredentialStore,
     keys: &[SecretKey],
-) -> Result<Migration, CredentialError> {
+) -> Result<Copied, CredentialError> {
     let mut found = Vec::new();
     for key in keys {
         match from.get(key) {
             Ok(Some(value)) => found.push((key, value)),
             Ok(None) => {}
             Err(CredentialError::Unavailable(_)) => {
-                return Ok(Migration {
-                    moved: 0,
+                return Ok(Copied {
+                    keys: Vec::new(),
                     source_unavailable: true,
                 });
             }
             Err(error) => return Err(error),
         }
     }
+    let mut copied = Copied::default();
     for (key, value) in &found {
-        to.set(key, value)?;
+        if let Err(error) = to.set(key, value) {
+            copied.remove_copies(to);
+            return Err(error);
+        }
+        copied.keys.push((*key).clone());
     }
-    for (key, _) in &found {
-        // The copies exist; a leftover original is harmless compared with
-        // failing the whole switch.
-        let _ = from.delete(key);
-    }
-    Ok(Migration {
-        moved: found.len(),
-        source_unavailable: false,
-    })
+    Ok(copied)
+}
+
+/// Copies `keys` from `from` to `to`, then deletes them from `from`. Nothing is
+/// deleted unless every copy succeeded.
+pub fn migrate(
+    from: &CredentialStore,
+    to: &CredentialStore,
+    keys: &[SecretKey],
+) -> Result<Migration, CredentialError> {
+    Ok(copy_secrets(from, to, keys)?.remove_originals(from))
 }
 
 /// Raw named entries in the operating system store, below the layouts that
@@ -885,6 +928,92 @@ mod tests {
         assert_eq!(local.get(&keys[0]).unwrap().unwrap().expose(), "pass");
         assert_eq!(local.get(&keys[2]).unwrap().unwrap().expose(), "token");
         assert!(local.get(&keys[1]).unwrap().is_none());
+    }
+
+    #[test]
+    fn copying_keeps_originals_until_they_are_removed() {
+        let system = memory(CredentialBackendKind::System);
+        let local = memory(CredentialBackendKind::LocalFile);
+        let key = SecretKey::channel_key("ircnet", "#a");
+        system.set(&key, &Secret::new("k")).unwrap();
+        let copied = copy_secrets(&system, &local, std::slice::from_ref(&key)).unwrap();
+        assert_eq!(copied.count(), 1);
+        // The switch is not committed yet: the store in use still has it.
+        assert!(system.get(&key).unwrap().is_some());
+        assert_eq!(local.get(&key).unwrap().unwrap().expose(), "k");
+        // Abandoned: the copy goes, the original stays.
+        copied.remove_copies(&local);
+        assert!(local.get(&key).unwrap().is_none());
+        assert!(system.get(&key).unwrap().is_some());
+        // Committed: the original goes, the copy stays.
+        let copied = copy_secrets(&system, &local, std::slice::from_ref(&key)).unwrap();
+        assert_eq!(copied.remove_originals(&system).moved, 1);
+        assert!(system.get(&key).unwrap().is_none());
+        assert!(local.get(&key).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_originals_and_no_copies() {
+        let system = memory(CredentialBackendKind::System);
+        let broken = CredentialStore::with_backend(Arc::new(MemoryBackend::unavailable(
+            CredentialBackendKind::LocalFile,
+        )));
+        let key = SecretKey::sasl_password("ircnet");
+        system.set(&key, &Secret::new("x")).unwrap();
+        assert!(copy_secrets(&system, &broken, std::slice::from_ref(&key)).is_err());
+        assert_eq!(system.get(&key).unwrap().unwrap().expose(), "x");
+    }
+
+    /// A backend whose writes start failing after `allowed` successes.
+    struct FailingAfter {
+        inner: MemoryBackend,
+        allowed: Mutex<usize>,
+    }
+
+    impl CredentialBackend for FailingAfter {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+
+        fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
+            self.inner.get(key)
+        }
+
+        fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError> {
+            let mut allowed = self.allowed.lock().unwrap();
+            if *allowed == 0 {
+                return Err(CredentialError::Unavailable("write refused".into()));
+            }
+            *allowed -= 1;
+            self.inner.set(key, value)
+        }
+
+        fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[test]
+    fn a_copy_failing_midway_removes_the_copies_made_and_keeps_every_original() {
+        let system = memory(CredentialBackendKind::System);
+        let keys = [
+            SecretKey::sasl_password("ircnet"),
+            SecretKey::channel_key("ircnet", "#a"),
+            SecretKey::channel_key("ircnet", "#b"),
+        ];
+        for key in &keys {
+            system.set(key, &Secret::new("v")).unwrap();
+        }
+        let target = Arc::new(FailingAfter {
+            inner: MemoryBackend::new(CredentialBackendKind::LocalFile),
+            allowed: Mutex::new(2),
+        });
+        let to = CredentialStore::with_backend(target.clone());
+        assert!(copy_secrets(&system, &to, &keys).is_err());
+        for key in &keys {
+            assert!(system.contains(key).unwrap(), "original of {key:?} kept");
+            assert!(!to.contains(key).unwrap(), "copy of {key:?} removed");
+        }
     }
 
     #[test]
