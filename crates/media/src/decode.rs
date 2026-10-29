@@ -8,7 +8,7 @@
 //! allocation is capped, and one decode runs at a time in the whole process,
 //! so the full-size image exists only briefly and only once.
 
-use std::{io::Cursor, sync::Mutex};
+use std::{borrow::Cow, io::Cursor, sync::Mutex};
 
 use cayenchat_model::attachment::ImageFormat as Sniffed;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
@@ -26,13 +26,155 @@ pub(crate) fn limited_decoder<'a>(
     format: ImageFormat,
     limits: &Limits,
 ) -> image::ImageResult<impl ImageDecoder + 'a> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    // `image`'s PNG decoder always inflates iCCP and compressed text chunks
+    // while it constructs the decoder. We do not use those values for display,
+    // so remove them before handing PNG data to it. The source raster is also
+    // charged up front: PNG's internal allocation limit cannot be changed once
+    // its decoder has been constructed.
+    let input = if format == ImageFormat::Png {
+        strip_png_metadata(bytes)
+    } else {
+        Cow::Borrowed(bytes)
+    };
+    let filtered_input_bytes = if matches!(&input, Cow::Owned(_)) {
+        input.len() as u64
+    } else {
+        0
+    };
+    let mut reader = ImageReader::with_format(Cursor::new(input), format);
     let mut decoder_limits = image::Limits::default();
     decoder_limits.max_image_width = Some(limits.max_source_side);
     decoder_limits.max_image_height = Some(limits.max_source_side);
-    decoder_limits.max_alloc = Some(limits.max_decode_bytes);
+    decoder_limits.max_alloc = Some(if format == ImageFormat::Png {
+        // Let the PNG decoder classify a malformed or unsupported header.
+        // Such inputs cannot supply a trustworthy raster estimate.
+        let raster_bytes = png_raster_bytes(bytes).unwrap_or(0);
+        limits
+            .max_decode_bytes
+            .saturating_sub(raster_bytes)
+            .saturating_sub(filtered_input_bytes)
+    } else {
+        limits.max_decode_bytes
+    });
     reader.limits(decoder_limits);
     reader.into_decoder()
+}
+
+/// Drops compressed and uncompressed PNG metadata chunks that the media
+/// decoder does not consume. Malformed chunk framing is left for `png` to
+/// reject, rather than interpreting it differently here.
+fn strip_png_metadata(bytes: &[u8]) -> Cow<'_, [u8]> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if !bytes.starts_with(SIGNATURE) {
+        return Cow::Borrowed(bytes);
+    }
+
+    let mut offset = SIGNATURE.len();
+    let mut output: Option<Vec<u8>> = None;
+    while offset < bytes.len() {
+        let Some(header_end) = offset.checked_add(8) else {
+            return finish_png_filter(bytes, offset, output);
+        };
+        let Some(header) = bytes.get(offset..header_end) else {
+            return finish_png_filter(bytes, offset, output);
+        };
+        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let Some(chunk_end) = header_end
+            .checked_add(length)
+            .and_then(|n| n.checked_add(4))
+        else {
+            return finish_png_filter(bytes, offset, output);
+        };
+        if chunk_end > bytes.len() {
+            return finish_png_filter(bytes, offset, output);
+        }
+        let kind = &header[4..8];
+        let is_metadata = matches!(kind, b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt");
+        if is_metadata && output.is_none() {
+            let mut filtered = Vec::with_capacity(bytes.len());
+            filtered.extend_from_slice(&bytes[..offset]);
+            output = Some(filtered);
+        } else if !is_metadata && let Some(filtered) = &mut output {
+            filtered.extend_from_slice(&bytes[offset..chunk_end]);
+        }
+        offset = chunk_end;
+    }
+    output.map_or(Cow::Borrowed(bytes), Cow::Owned)
+}
+
+fn finish_png_filter<'a>(bytes: &'a [u8], offset: usize, output: Option<Vec<u8>>) -> Cow<'a, [u8]> {
+    output.map_or(Cow::Borrowed(bytes), |mut filtered| {
+        filtered.extend_from_slice(&bytes[offset..]);
+        Cow::Owned(filtered)
+    })
+}
+
+/// Upper bound for the transformed PNG source raster decoded by `image`.
+/// `EXPAND` turns indexed and sub-byte samples into 8-bit channels.
+fn png_raster_bytes(bytes: &[u8]) -> Option<u64> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let width = u64::from(u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?));
+    let height = u64::from(u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?));
+    let bit_depth = *bytes.get(24)?;
+    let color_type = *bytes.get(25)?;
+    let has_transparency = png_has_chunk(bytes, b"tRNS");
+    let bytes_per_pixel = match (color_type, bit_depth, has_transparency) {
+        (0, 16, true) => 4,
+        (0, 16, false) => 2,
+        (0, _, true) => 2,
+        (0, _, false) => 1,
+        (2, 16, true) => 8,
+        (2, 16, false) => 6,
+        (2, _, true) => 4,
+        (2, _, false) => 3,
+        (3, _, _) => 4,
+        (4, 16, _) => 4,
+        (4, _, _) => 2,
+        (6, 16, _) => 8,
+        (6, _, _) => 4,
+        _ => return None,
+    };
+    width.checked_mul(height)?.checked_mul(bytes_per_pixel)
+}
+
+fn png_has_chunk(bytes: &[u8], wanted: &[u8; 4]) -> bool {
+    let mut offset = 8usize;
+    while let Some(header) = bytes.get(offset..offset.saturating_add(8)) {
+        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let Some(end) = offset
+            .checked_add(8)
+            .and_then(|n| n.checked_add(length))
+            .and_then(|n| n.checked_add(4))
+        else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        if header[4..8] == wanted[..] {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+/// Leaves room for the decoded source image before decoder-owned intermediate
+/// buffers are allowed to use the per-image budget.
+pub(crate) fn reserve_source_image(
+    decoder: &mut (impl ImageDecoder + ?Sized),
+    limits: &Limits,
+) -> image::ImageResult<()> {
+    let remaining = limits
+        .max_decode_bytes
+        .saturating_sub(decoder.total_bytes());
+    let mut decoder_limits = image::Limits::default();
+    decoder_limits.max_image_width = Some(limits.max_source_side);
+    decoder_limits.max_image_height = Some(limits.max_source_side);
+    decoder_limits.max_alloc = Some(remaining);
+    decoder.set_limits(decoder_limits)
 }
 
 /// A decoded thumbnail in GPUI's BGRA byte order, not premultiplied.
@@ -123,7 +265,7 @@ pub fn thumbnail(
     if cancel.is_cancelled() {
         return Err(LoadError::Cancelled);
     }
-    let decoder = limited_decoder(bytes, format, limits).map_err(|error| match error {
+    let mut decoder = limited_decoder(bytes, format, limits).map_err(|error| match error {
         image::ImageError::Limits(_) => LoadError::TooLarge,
         _ => LoadError::Malformed,
     })?;
@@ -140,6 +282,10 @@ pub fn thumbnail(
     if decoder.total_bytes() > limits.max_decode_bytes {
         return Err(LoadError::TooLarge);
     }
+    reserve_source_image(&mut decoder, limits).map_err(|error| match error {
+        image::ImageError::Limits(_) => LoadError::TooLarge,
+        _ => LoadError::Malformed,
+    })?;
 
     if cancel.is_cancelled() {
         return Err(LoadError::Cancelled);
@@ -328,17 +474,36 @@ mod tests {
         writer.write_image_data(&[255, 0, 0]).unwrap();
         drop(writer);
         assert!(bytes.windows(4).any(|chunk| chunk == b"iCCP"));
-        let mut raw_decoder =
-            png::Decoder::new_with_limits(Cursor::new(&bytes), png::Limits { bytes: 1024 * 1024 });
-        raw_decoder.set_ignore_iccp_chunk(false);
-        let raw_reader = raw_decoder.read_info().unwrap();
-        assert!(raw_reader.info().icc_profile.is_none());
+        let filtered = strip_png_metadata(&bytes);
+        assert!(!filtered.as_ref().windows(4).any(|chunk| chunk == b"iCCP"));
+
+        let _decode = DECODE.lock().unwrap();
+        let mut decoder = limited_decoder(&bytes, ImageFormat::Png, &Limits::default()).unwrap();
+        assert!(decoder.icc_profile().unwrap().is_none());
+        drop(_decode);
 
         let limits = Limits {
             max_decode_bytes: 1024 * 1024,
             ..Limits::default()
         };
         assert!(thumbnail(&bytes, &limits, &CancelFlag::default()).is_ok());
+        assert!(is_small_original(&bytes));
+        assert!(crate::avatar_edit::open(&bytes).is_ok());
+    }
+
+    #[test]
+    fn gif_frame_intermediate_uses_budget_left_after_source_image() {
+        let bytes = include_bytes!("testdata/partial-frame.gif");
+
+        let limits = Limits {
+            max_decode_bytes: 48 * 1024 * 1024,
+            max_source_pixels: 3000 * 3000,
+            ..Limits::default()
+        };
+        assert_eq!(
+            thumbnail(bytes, &limits, &CancelFlag::default()),
+            Err(LoadError::TooLarge)
+        );
     }
 
     #[test]

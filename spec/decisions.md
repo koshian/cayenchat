@@ -496,10 +496,14 @@ local services either; no proxy, cookies, `Referer`, credentials or
 compression; 5 s to connect and 15 s per preview in total. The response must
 be 200 with an `image/*` type (not SVG), at most 8 MiB, and the content must
 sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. The process-wide
-decode gate is held while constructing the limited decoder, so header and
-compressed metadata parsing are serialized and covered by the 48 MiB
-allocation limit. Its dimensions (at most 8192 px a side and 16.7 megapixels)
-are checked before pixel decoding, and that same decoder supplies the pixels.
+decode gate is held while constructing the limited decoder, so header parsing
+is serialized and charged to the 48 MiB per-image allocation budget. PNG
+iCCP and text chunks are removed before decoding because their metadata is not
+used; the source raster is reserved from the budget before PNG decoder-owned
+buffers use the remainder. Dimensions (at most 8192 px a side and 16.7
+megapixels) are checked before pixel decoding, and that same decoder supplies
+the pixels. The decoded source image is charged against the budget before
+intermediate buffers can use its remainder.
 The full image is dropped as soon as the thumbnail (at most
 400×200 px, shown at up to 200×100 logical px) exists. GIF and animated WebP
 show their first frame. There is no disk cache. Anything unsupported or
