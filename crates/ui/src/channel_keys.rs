@@ -534,6 +534,11 @@ impl ChatWindow {
                     .channel_key_write_revisions
                     .remove(&write.channel.to_ascii_lowercase());
             }
+            if result.is_ok() {
+                // Invalidate refreshes that captured a snapshot before this
+                // successful store change completed, even after reconnecting.
+                session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
+            }
         }
         if !current {
             return;
@@ -602,23 +607,37 @@ impl ChatWindow {
         cx.spawn(async move |this, cx| {
             let keys = reading.await;
             let _ = this.update(cx, |this, _| {
-                let Some(session) = this.sessions.get_mut(&network) else {
-                    return;
-                };
-                if session.profile_id != profile.id
-                    || session.channel_key_revision != revision
-                    || session.channel_key_writes_pending != 0
-                    || !target.matches(session)
-                {
-                    return;
-                }
-                if let Some(config) = session.active_config.as_mut() {
-                    replace_keys_if_valid(config, keys.clone());
-                }
-                this.correct_key_notes(&profile.id, &read, &keys);
+                this.finish_key_refresh(network, &profile, &read, &target, revision, keys);
             });
         })
         .detach();
+    }
+
+    /// Applies a completed refresh only while its connection and key state
+    /// are still the ones it read.
+    pub(super) fn finish_key_refresh(
+        &mut self,
+        network: NetworkId,
+        profile: &ServerProfile,
+        read: &[String],
+        target: &JoinTarget,
+        revision: u64,
+        keys: BTreeMap<String, String>,
+    ) {
+        let Some(session) = self.sessions.get_mut(&network) else {
+            return;
+        };
+        if session.profile_id != profile.id
+            || session.channel_key_revision != revision
+            || session.channel_key_writes_pending != 0
+            || !target.matches(session)
+        {
+            return;
+        }
+        if let Some(config) = session.active_config.as_mut() {
+            replace_keys_if_valid(config, keys.clone());
+        }
+        self.correct_key_notes(&profile.id, read, &keys);
     }
 
     /// Writes down in the settings file which of `read` (channels whose key

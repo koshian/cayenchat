@@ -5,6 +5,7 @@ use cayenchat_irc_core::{ChannelActivityKind, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
 use cayenchat_storage::{CredentialStore, Secret, SecretKey};
 use gpui::TestAppContext;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -232,13 +233,12 @@ fn delayed_join_key_read_sends_the_key_when_its_connection_is_still_current(
 }
 
 #[gpui::test]
-fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext) {
-    let (chat, _store, cx) = open_chat(Some("old-key"), cx);
-    chat.update(cx, |chat, cx| {
+fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key(
+    cx: &mut TestAppContext,
+) {
+    let (chat, store, cx) = open_chat(Some("old-key"), cx);
+    chat.update(cx, |chat, _| {
         chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
-        let profile_id = chat.sessions[&NET].profile_id.clone();
-        let profile = chat.saved.profile(&profile_id).unwrap().clone();
-        chat.refresh_stored_keys(NET, &profile, cx);
     });
     chat.update(cx, |chat, cx| {
         let session = chat.sessions.get_mut(&NET).unwrap();
@@ -250,8 +250,43 @@ fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext)
         });
         chat.key_join_succeeded(NET, "#Secret", cx);
     });
+    let (profile, read, target, revision, old_snapshot) = chat.read_with(cx, |chat, _| {
+        let profile = chat
+            .saved
+            .profile(&chat.sessions[&NET].profile_id)
+            .unwrap()
+            .clone();
+        let target = JoinTarget::new(&chat.sessions[&NET]).unwrap();
+        let session = &chat.sessions[&NET];
+        let revision = session.channel_key_revision;
+        assert_eq!(session.channel_key_writes_pending, 1);
+        let snapshot = store
+            .get(&SecretKey::channel_key(&profile.id, "#Secret"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.expose(), "old-key");
+        (
+            profile.clone(),
+            profile.channels_to_read_keys_for(),
+            target,
+            revision,
+            BTreeMap::from([("#Secret".to_owned(), snapshot.expose().to_owned())]),
+        )
+    });
     cx.run_until_parked();
+    assert!(
+        store
+            .get(&SecretKey::channel_key(&profile.id, "#Secret"))
+            .unwrap()
+            .is_none(),
+        "the forget completes before the old refresh snapshot is applied"
+    );
     chat.update(cx, |chat, _| {
+        assert_eq!(
+            chat.sessions[&NET].channel_key_revision,
+            revision.wrapping_add(1),
+            "a successful forget invalidates earlier refresh snapshots"
+        );
         assert!(
             !chat.sessions[&NET]
                 .active_config
@@ -262,8 +297,8 @@ fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext)
         );
     });
 
-    cx.run_until_parked();
     chat.update(cx, |chat, _| {
+        chat.finish_key_refresh(NET, &profile, &read, &target, revision, old_snapshot);
         assert!(
             !chat.sessions[&NET]
                 .active_config
@@ -328,16 +363,14 @@ fn successful_key_writes_for_different_channels_both_update_the_config(cx: &mut 
             .unwrap()
             .is_none()
     );
-    for (channel, expected) in [("#b", "key-b")] {
-        assert_eq!(
-            store
-                .get(&SecretKey::channel_key(&profile, channel))
-                .unwrap()
-                .unwrap()
-                .expose(),
-            expected
-        );
-    }
+    assert_eq!(
+        store
+            .get(&SecretKey::channel_key(&profile, "#b"))
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "key-b"
+    );
 }
 
 #[test]
