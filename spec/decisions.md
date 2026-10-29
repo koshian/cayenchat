@@ -3130,6 +3130,11 @@ list). The account name is the same field as for the other mechanisms.
   checked against OpenSSL (`openssl pkeyutl -verify`, which also takes its
   input as the digest) and is fixed by tests that verify the signature with
   the public key as a prehash and show that a hashing verifier rejects it.
+  The challenge is chosen by the server and the signature carries no IRC
+  context; this interoperability-defined behavior can sign another protocol's
+  digest if a key is reused. The settings note tells users to keep this key
+  dedicated to this server. Each handshake signs at most one challenge; after
+  sending the signature, another challenge is refused.
   A challenge that is not 32 bytes, is not base64 or is too long is a
   client-side stop (not a refusal), as for a bad SCRAM message. A server that
   closes the link early ends the attempt like any lost connection, and the

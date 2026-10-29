@@ -109,6 +109,14 @@ jobs:
         id: test
         run: cargo test --workspace --locked --verbose
 
+      # The vendored GPUI crate has its own workspace; run the Linux pipe
+      # reader tests explicitly because it is a path dependency here.
+      - name: Test Wayland clipboard reader
+        if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_DIR: target
+        run: cargo test --manifest-path vendor/gpui/Cargo.toml --locked --config 'patch.crates-io.zed-xim.path="vendor/zed-xim"' --lib platform::linux::platform::tests::async_clipboard_reader
+
       # The UI test binary has died on Windows ARM64 with 0xc0000005 (#659).
       # libtest prints a test's name only when it ends, so the log cannot say
       # which one crashed. Run the UI tests again one at a time, where each

@@ -1036,7 +1036,11 @@ bounded to 256 capability tokens, 8,191 total bytes, and 512 bytes per token;
 exceeding a limit fails negotiation. CAP END goes out once every request is
 answered and SASL has finished; SASL failures
 and a missing offer of the chosen mechanism remain terminal refusals. A server without CAP
-registers directly (001), which ends negotiation. After registration CAP NEW
+registers directly (001), which ends negotiation when SASL was not configured;
+if SASL was configured, 001 before SASL completes is a terminal refusal and
+does not mark the connection registered. Its refusal reason describes the
+protocol ordering error; it is not classified as a password or key refusal.
+After registration CAP NEW
 requests newly offered wanted capabilities (never `sasl`) and CAP DEL
 withdraws them; unrequested ACKs are ignored and `-name` entries disable.
 The state lives in the connection's worker, so a reconnect always starts
@@ -2058,6 +2062,17 @@ draft reaches the flow. Paste and drop share the flow and the prompts
 guidance, reconnect guidance after an authentication failure). The flow allows
 one upload at a time; cancelling abandons the wait but cannot recall a request
 already sent. The UI knows providers only by registry ID and display name.
+
+Clipboard Paste reads are asynchronous. On Wayland, the vendored GPUI reads
+the offered pipe with nonblocking reads and yields between readiness checks,
+with a 32 MiB limit and a single five-second deadline for the full read. A new
+Paste, resetting the input's contents, or the input/window going away drops
+the read task; dropping its future closes the pipe without waiting for a
+background worker to process a cancellation signal. Image paste is applied
+only while its originating draft remains selected; settings profile fields
+cancel their reads when repopulated. Expiry or an over-limit payload is
+treated as an unavailable clipboard item. Other platforms use their existing
+clipboard read behind the same asynchronous API.
 
 Matrix support, if added, keeps the shared parts (`model::Attachment`, the
 selection-to-attachment UI actions and the confirmation/progress presentation)

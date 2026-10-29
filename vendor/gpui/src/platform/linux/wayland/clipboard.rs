@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{ErrorKind, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 use calloop::{LoopHandle, PostAction};
@@ -11,8 +12,9 @@ use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
 use crate::{
-    ClipboardEntry, ClipboardItem, Image, ImageFormat, WaylandClientStatePtr, hash,
-    platform::linux::platform::read_fd,
+    BackgroundExecutor, ClipboardEntry, ClipboardItem, Image, ImageFormat, Task,
+    WaylandClientStatePtr, hash,
+    platform::linux::platform::{read_fd, read_fd_limited_async},
 };
 
 /// Text mime types that we'll offer to other programs.
@@ -97,6 +99,36 @@ impl<T: ReceiveData> DataOffer<T> {
         }
     }
 
+    fn read_bytes_async(
+        &self,
+        connection: &Connection,
+        mime_type: &str,
+        executor: &BackgroundExecutor,
+        deadline: std::time::Instant,
+        total_read: Arc<AtomicUsize>,
+    ) -> Option<Task<Option<Vec<u8>>>> {
+        let pipe = Pipe::new().unwrap();
+        self.inner.receive_data(mime_type.to_string(), unsafe {
+            BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
+        });
+        let fd = pipe.read;
+        drop(pipe.write);
+        connection.flush().unwrap();
+
+        let read = executor.spawn(async move {
+            match unsafe {
+                read_fd_limited_async(fd, deadline, Some(&total_read), 32 * 1024 * 1024).await
+            } {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    log::warn!("Unable to read Wayland clipboard data: {error}");
+                    None
+                }
+            }
+        });
+        Some(read)
+    }
+
     fn read_text(&self, connection: &Connection) -> Option<ClipboardItem> {
         let mime_type = self.mime_types.iter().find(|&mime_type| {
             ALLOWED_TEXT_MIME_TYPES
@@ -134,6 +166,34 @@ impl<T: ReceiveData> DataOffer<T> {
             }
         }
         None
+    }
+
+    fn read_text_async(
+        &self,
+        connection: &Connection,
+        executor: &BackgroundExecutor,
+        deadline: std::time::Instant,
+        total_read: Arc<AtomicUsize>,
+    ) -> Option<Task<Option<ClipboardItem>>> {
+        let mime_type = self.mime_types.iter().find(|&mime_type| {
+            ALLOWED_TEXT_MIME_TYPES
+                .iter()
+                .any(|&allowed| allowed == mime_type)
+        })?;
+        let bytes = self.read_bytes_async(connection, mime_type, executor, deadline, total_read)?;
+        Some(executor.spawn(async move {
+            let bytes = bytes.await?;
+            let text_content = match String::from_utf8(bytes) {
+                Ok(content) => content,
+                Err(error) => {
+                    log::error!("Failed to convert clipboard content to UTF-8: {error}");
+                    return None;
+                }
+            };
+            Some(ClipboardItem::new_string(
+                text_content.replace("\r\n", "\n"),
+            ))
+        }))
     }
 }
 
@@ -211,6 +271,53 @@ impl Clipboard {
 
         self.cached_read = Some(item.clone());
         Some(item)
+    }
+
+    pub fn read_async(&mut self, executor: &BackgroundExecutor) -> Task<Option<ClipboardItem>> {
+        let Some(offer) = self.current_offer.as_ref().cloned() else {
+            return Task::ready(None);
+        };
+        if let Some(cached) = self.cached_read.clone() {
+            return Task::ready(Some(cached));
+        }
+        if offer.has_mime_type(&self.self_mime) {
+            return Task::ready(self.contents.clone());
+        }
+
+        let connection = self.connection.clone();
+        let executor = executor.clone();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let total_read = Arc::new(AtomicUsize::new(0));
+        executor.clone().spawn(async move {
+            if let Some(text) =
+                offer.read_text_async(&connection, &executor, deadline, total_read.clone())
+                && let Some(item) = text.await
+            {
+                return Some(item);
+            }
+            for format in ImageFormat::iter() {
+                let mime_type = format.mime_type();
+                if !offer.has_mime_type(mime_type) {
+                    continue;
+                }
+                let Some(bytes) = offer.read_bytes_async(
+                    &connection,
+                    mime_type,
+                    &executor,
+                    deadline,
+                    total_read.clone(),
+                ) else {
+                    continue;
+                };
+                if let Some(bytes) = bytes.await {
+                    let id = hash(&bytes);
+                    return Some(ClipboardItem {
+                        entries: vec![ClipboardEntry::Image(Image { format, bytes, id })],
+                    });
+                }
+            }
+            None
+        })
     }
 
     pub fn read_primary(&mut self) -> Option<ClipboardItem> {

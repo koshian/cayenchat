@@ -1077,6 +1077,12 @@ impl App {
         self.platform.read_from_clipboard()
     }
 
+    /// Reads data from the platform clipboard without requiring the caller to
+    /// wait for an external clipboard provider.
+    pub fn read_from_clipboard_async(&self) -> Task<Option<ClipboardItem>> {
+        self.platform.read_from_clipboard_async()
+    }
+
     /// Writes credentials to the platform keychain.
     pub fn write_credentials(
         &self,
