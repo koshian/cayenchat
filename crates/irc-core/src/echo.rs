@@ -663,4 +663,33 @@ mod tests {
             ["2 ok = "]
         );
     }
+
+    #[test]
+    fn replayed_unlabeled_echo_does_not_confirm_pending_message() {
+        let mut echoes = Echoes::default();
+        echoes.track(1, "#a", false, "hi", false, false);
+        let mut replay_tracker = crate::replay::ReplayTracker::default();
+        replay_tracker.observe(&line(":srv BATCH +playback znc.in/playback #a"));
+        let replay = line("@batch=playback :me!u@h PRIVMSG #a :hi");
+        let replayed = replay_tracker.replayed(&replay);
+        assert!(replayed);
+        let echo = if replayed {
+            None
+        } else {
+            echoes.observe(&replay, "me", false)
+        };
+        assert!(echo.is_none());
+        assert_eq!(echoes.outstanding(), [1]);
+
+        let live = line(":me!u@h PRIVMSG #a :hi");
+        let live_replayed = replay_tracker.replayed(&live);
+        assert!(!live_replayed);
+        let echo = if live_replayed {
+            None
+        } else {
+            echoes.observe(&live, "me", false)
+        };
+        assert_eq!(describe(echo), ["1 ok = "]);
+        assert!(echoes.outstanding().is_empty());
+    }
 }

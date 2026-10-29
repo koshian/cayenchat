@@ -235,6 +235,9 @@ struct Outstanding {
     /// Lines asked for.
     limit: usize,
     nested: Vec<String>,
+    /// A reply nested past the tracking bound is consumed fail-closed until
+    /// its root batch ends, so deeper lines cannot escape as live traffic.
+    nested_overflowed: bool,
     messages: Vec<HistoryMessage>,
     targets: Vec<HistoryTarget>,
     dropped: usize,
@@ -573,6 +576,7 @@ impl HistoryRequests {
             end: false,
             limit,
             nested: Vec::new(),
+            nested_overflowed: false,
             messages: Vec::new(),
             targets: Vec::new(),
             dropped: 0,
@@ -636,6 +640,14 @@ impl HistoryRequests {
 
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
         let batch_tag = tags::tag_value(message, "batch");
+        if self
+            .outstanding
+            .as_ref()
+            .is_some_and(|outstanding| outstanding.nested_overflowed)
+            && batch_tag.is_some()
+        {
+            return Observed::Consumed;
+        }
         if let IrcCommand::BATCH(reference, kind, params) = &message.command {
             return self.observe_batch(
                 reference,
@@ -701,6 +713,14 @@ impl HistoryRequests {
         parent: Option<&str>,
         end: bool,
     ) -> Observed {
+        if parent.is_some()
+            && self
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+        {
+            return Observed::Consumed;
+        }
         if let Some(reference) = reference.strip_prefix('-') {
             if let Some(index) = self.discarding.iter().position(|open| open == reference) {
                 self.discarding.remove(index);
@@ -775,6 +795,8 @@ impl HistoryRequests {
             {
                 if outstanding.nested.len() < MAX_NESTED {
                     outstanding.nested.push(reference.to_owned());
+                } else {
+                    outstanding.nested_overflowed = true;
                 }
                 return Observed::Consumed;
             }
@@ -1132,6 +1154,56 @@ mod tests {
         };
         let texts: Vec<_> = messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, ["nested", "after"]);
+    }
+
+    #[test]
+    fn over_nested_history_reply_stays_out_of_the_live_path() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        requests.enqueue("#a");
+        sent(&mut requests, now);
+        assert_eq!(
+            requests.observe(&parse(":srv BATCH +r chathistory #a")),
+            Observed::Consumed
+        );
+
+        let mut parent = "r".to_owned();
+        for depth in 0..=MAX_NESTED {
+            let reference = format!("n{depth}");
+            assert_eq!(
+                requests.observe(&parse(&format!(
+                    "@batch={parent} :srv BATCH +{reference} draft/multiline #a"
+                ))),
+                Observed::Consumed
+            );
+            parent = reference;
+        }
+        // The seventeenth nested level exceeds the tracking bound. Its line
+        // and deeper descendants remain consumed until the reply ends.
+        assert!(
+            requests
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+        );
+        assert_eq!(
+            requests.observe(&parse("@batch=unknown :bob!u@h PRIVMSG #a :history")),
+            Observed::Consumed
+        );
+        assert_eq!(
+            requests.observe(&parse(&format!(
+                "@batch={parent} :srv BATCH +deep draft/multiline #a"
+            ))),
+            Observed::Consumed
+        );
+        assert_eq!(
+            requests.observe(&parse("@batch=deep :bob!u@h PRIVMSG #a :deeper history")),
+            Observed::Consumed
+        );
+        assert!(matches!(
+            requests.observe(&parse(":srv BATCH -r")),
+            Observed::Finished(_)
+        ));
     }
 
     #[test]

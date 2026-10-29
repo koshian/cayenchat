@@ -36,6 +36,10 @@ const HISTORY_BATCH_TYPES: [&str; 2] = ["CHATHISTORY", "ZNC.IN/PLAYBACK"];
 pub(crate) struct ReplayTracker {
     /// References of open history batches, oldest first.
     history_batches: Vec<String>,
+    /// Once an open-history limit is exceeded, an untracked reference could
+    /// still name history. Keep unknown batch-tagged lines replayed until the
+    /// connection resets rather than letting one become live by eviction.
+    overflowed: bool,
 }
 
 impl ReplayTracker {
@@ -61,6 +65,7 @@ impl ReplayTracker {
             if history {
                 if self.history_batches.len() >= MAX_OPEN_BATCHES {
                     self.history_batches.remove(0);
+                    self.overflowed = true;
                 }
                 self.history_batches.push(reference.to_owned());
             }
@@ -71,6 +76,7 @@ impl ReplayTracker {
     /// connection starts with a new tracker.
     pub(crate) fn reset(&mut self) {
         self.history_batches = Vec::new();
+        self.overflowed = false;
     }
 
     /// Whether a PRIVMSG or NOTICE is not a live message from a user: it is
@@ -79,16 +85,27 @@ impl ReplayTracker {
     /// channel logs as NOTICEs from `:tiarra`. A message in an unknown or
     /// already ended batch is live.
     pub(crate) fn replayed(&self, message: &IrcMessage) -> bool {
+        self.replayed_with_history(message, self.in_history_batch(message))
+    }
+
+    /// Classifies a line when its batch membership was already read by the
+    /// caller, avoiding a second scan of the bounded open-reference table.
+    pub(crate) fn replayed_with_history(
+        &self,
+        message: &IrcMessage,
+        in_history_batch: bool,
+    ) -> bool {
         let from_user = matches!(
             &message.prefix,
             Some(Prefix::Nickname(_, user, host)) if !user.is_empty() || !host.is_empty()
         );
-        !from_user || self.in_history_batch(message)
+        !from_user || in_history_batch
     }
 
     pub(crate) fn in_history_batch(&self, message: &IrcMessage) -> bool {
-        tag_value(message, "batch")
-            .is_some_and(|reference| self.history_batches.iter().any(|open| open == reference))
+        tag_value(message, "batch").is_some_and(|reference| {
+            self.overflowed || self.history_batches.iter().any(|open| open == reference)
+        })
     }
 
     fn forget(&mut self, reference: &str) {
@@ -226,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_endings_evict_the_oldest_batch_within_the_limit() {
+    fn missing_endings_fail_closed_after_the_open_batch_limit() {
         let mut tracker = ReplayTracker::default();
         for index in 0..MAX_OPEN_BATCHES + 10 {
             tracker.observe(&parse(&format!(":srv BATCH +h{index} chathistory #chan")));
@@ -234,9 +251,13 @@ mod tests {
             tracker.observe(&parse(&format!(":srv BATCH +u{index} netsplit a b")));
         }
         assert_eq!(tracker.history_batches.len(), MAX_OPEN_BATCHES);
-        assert!(!tracker.replayed(&tagged("batch=h0")));
-        assert!(!tracker.replayed(&tagged("batch=h9")));
+        assert!(tracker.replayed(&tagged("batch=h0")));
+        assert!(tracker.replayed(&tagged("batch=h9")));
         assert!(tracker.replayed(&tagged("batch=h10")));
+        // Once an open history reference cannot be retained, unknown batch
+        // references are history too until reset.
+        assert!(tracker.replayed(&tagged("batch=unknown")));
+        assert!(tracker.in_history_batch(&tagged("batch=unknown")));
         let newest = format!("batch=h{}", MAX_OPEN_BATCHES + 9);
         assert!(tracker.replayed(&tagged(&newest)));
         // A full table still follows nesting for the newest batches.
@@ -249,7 +270,9 @@ mod tests {
 
         tracker.reset();
         assert!(tracker.history_batches.is_empty());
+        assert!(!tracker.overflowed);
         assert!(!tracker.replayed(&tagged("batch=child")));
+        assert!(!tracker.replayed(&tagged("batch=unknown")));
         // Lines without a user mask stay replayed after a reset.
         assert!(tracker.replayed(&parse(":tiarra NOTICE #chan :<alice> hi")));
     }
