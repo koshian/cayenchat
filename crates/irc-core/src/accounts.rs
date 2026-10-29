@@ -20,7 +20,7 @@
 //!   `a` token, which only WHOX has), so users who were there before us
 //!   learn their account from `ACCOUNT` or a later join.
 //! - PART, KICK and QUIT forget users who no longer share a channel; NICK
-//!   moves the entry; our own PART or KICK removes the channel from all.
+//!   moves the entry (forgetting a stale holder of the new name); our own PART or KICK removes the channel from all.
 //!
 //! Every change is reported as [`Event::UserAccount`] or
 //! [`Event::UserAccountForgotten`], so the application can mirror it.
@@ -300,12 +300,18 @@ impl Accounts {
                         outstanding.departed.remove(&nickname_key(new_nick));
                     }
                     let old_key = nickname_key(old);
-                    if let Some(mut known) = self.users.remove(&old_key) {
+                    let key = nickname_key(new_nick);
+                    let moved = self.users.remove(&old_key);
+                    // A stale holder of the new name (it quit unseen) is
+                    // another user; it must not be replaced silently. A
+                    // case-only change maps to the same key and is skipped
+                    // here because the entry was just taken out.
+                    self.forget(&key, &mut events);
+                    if let Some(mut known) = moved {
                         events.push(Event::UserAccountForgotten {
                             nickname: known.nickname.clone(),
                         });
                         known.nickname = new_nick.clone();
-                        let key = nickname_key(new_nick);
                         self.users.insert(key.clone(), known);
                         events.push(self.report(&key));
                     }
@@ -595,6 +601,27 @@ mod tests {
         );
         assert_eq!(accounts.users.len(), 1);
         assert_eq!(accounts.users["alice"].account.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn a_nick_change_onto_a_stale_holder_forgets_the_holder() {
+        let mut accounts = Accounts::default();
+        let none = PresenceIndex::default();
+        feed(&mut accounts, ":a!u@h JOIN #a acct-a :A", &none);
+        feed(&mut accounts, ":B!u@h JOIN #a acct-b :B", &none);
+        assert_eq!(
+            feed(&mut accounts, ":a!u@h NICK b", &none),
+            ["B gone", "a gone", "b account=acct-a real=A"]
+        );
+        assert_eq!(accounts.users.len(), 1);
+        // The stale holder goes even when the sender is not known.
+        feed(&mut accounts, ":c!u@h JOIN #a acct-c :C", &none);
+        assert_eq!(feed(&mut accounts, ":x!u@h NICK c", &none), ["c gone"]);
+        // A case-only change is not a collision.
+        assert_eq!(
+            feed(&mut accounts, ":b!u@h NICK B", &none),
+            ["b gone", "B account=acct-a real=A"]
+        );
     }
 
     #[test]
