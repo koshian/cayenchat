@@ -63,11 +63,47 @@ fn loosen_host(host: &str) -> String {
         return format!("{a:x}:{b:x}:{c:x}:{d:x}:*");
     }
     let labels: Vec<&str> = host.split('.').collect();
-    if labels.len() >= 3 {
+    if labels.len() >= 3 && !is_shared_suffix(labels[labels.len() - 2], labels[labels.len() - 1]) {
         format!("*.{}", labels[labels.len() - 2..].join("."))
     } else {
         host
     }
+}
+
+/// Whether the last two labels look like a public suffix (`co.uk`,
+/// `github.io`), under which unrelated parties share the name space. There
+/// is no public suffix list in the tree, so this is a conservative guess:
+/// a generic second-level label under a two-letter country code, or a
+/// well-known shared hosting suffix. Such hosts stay whole.
+fn is_shared_suffix(second: &str, top: &str) -> bool {
+    const GENERIC: &[&str] = &[
+        "co", "com", "ne", "or", "ac", "go", "gr", "ed", "ad", "lg", "org", "net", "gov", "edu",
+        "mil", "gob", "nom", "sch", "ltd", "plc", "me", "id", "web",
+    ];
+    const SHARED: &[&str] = &[
+        "github.io",
+        "gitlab.io",
+        "herokuapp.com",
+        "blogspot.com",
+        "appspot.com",
+        "pages.dev",
+        "workers.dev",
+        "netlify.app",
+        "vercel.app",
+        "web.app",
+        "firebaseapp.com",
+        "cloudfront.net",
+        "amazonaws.com",
+        "azurewebsites.net",
+        "duckdns.org",
+        "ddns.net",
+        "no-ip.org",
+        "dyndns.org",
+    ];
+    (top.len() == 2 && GENERIC.contains(&second))
+        || SHARED
+            .iter()
+            .any(|s| s.split_once('.') == Some((second, top)))
 }
 
 #[derive(Debug, Default)]
@@ -162,6 +198,27 @@ mod tests {
         assert_eq!(mask("bob", "u", "2001:DB8::1"), "bob!u@2001:db8:0:0:*");
         assert_eq!(mask("bob", "u", "user/Alice"), "bob!u@user/alice");
         assert_eq!(mask("bob", "u", "HOST.Example.ORG"), "bob!u@*.example.org");
+    }
+
+    #[test]
+    fn shared_suffixes_are_not_loosened() {
+        assert_ne!(
+            mask("bob", "u", "a.isp.co.uk"),
+            mask("bob", "u", "b.other.co.uk")
+        );
+        assert_eq!(mask("bob", "u", "a.isp.co.uk"), "bob!u@a.isp.co.uk");
+        assert_eq!(mask("bob", "u", "x.y.com.au"), "bob!u@x.y.com.au");
+        assert_eq!(
+            mask("bob", "u", "a.alice.github.io"),
+            "bob!u@a.alice.github.io"
+        );
+        assert_eq!(
+            mask("bob", "u", "a.example.org"),
+            mask("bob", "u", "b.example.org")
+        );
+        // A country code alone is no shared suffix.
+        assert_eq!(mask("bob", "u", "a.example.de"), "bob!u@*.example.de");
+        assert_eq!(mask("bob", "u", "a.example.co"), "bob!u@*.example.co");
     }
 
     #[test]
