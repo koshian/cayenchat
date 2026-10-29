@@ -194,7 +194,7 @@ goes through its gate; a change that cannot should say why.
 | Fetched URLs (previews, avatars) | `media::policy::check_request` on every request and redirect, and the resolver's public-address filter | Done |
 | Links opened | `app::links::find` (`http`/`https` only), opened by the OS without a shell | Done |
 | Localized text with values | `localization::fill`: one pass, values never read as placeholders | Done |
-| Clipboard | Copies use the retained text and `sender_prefix`; the diagnostics copy is the raw transcript on purpose | Done |
+| Clipboard | Copies use the retained text and `sender_prefix`; the diagnostics copy is the raw transcript on purpose. Windows paste reads only `GlobalSize` bytes, requires an in-range UTF-16 NUL and an even, nonzero length, and caps text and metadata at 16 MiB | Done (#683) |
 
 ## Platform boundary
 
