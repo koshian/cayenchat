@@ -503,7 +503,12 @@ mod disconnect_tests {
                 &cayenchat_storage::Appearance::default(),
             ));
         });
-        let settings = crate::settings_with_channels("#a");
+        let mut settings = crate::settings_with_channels("#a");
+        // The profile the connection below was made from.
+        let profile = &mut settings.servers[0];
+        profile.host = "127.0.0.1".into();
+        profile.port = 0;
+        profile.use_tls = true;
         let (chat, cx) =
             cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
         chat.update(cx, |chat, cx| {

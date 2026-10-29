@@ -511,6 +511,7 @@
   "sasl_key_delete_detail": "鍵は元に戻せません。ほかの場所に控えを取っていない限り、この鍵ではもうログインできません。",
   "sasl_key_delete_confirm": "削除する",
   "sasl_key_required": "このサーバーには SASL の鍵が設定されていません。サーバーの設定で鍵を生成するか読み込み、公開鍵をネットワークに登録してください。",
+  "reconnect_settings_changed": "接続後にこのサーバーの設定が変更されました。新しい設定で接続し直してください。",
   "sasl_key_refused": "サーバーが SASL の鍵を受け付けませんでした。鍵がこのアカウントに登録されているか確かめてください。",
   "sasl_key_error_random": "OS が乱数を提供できませんでした。",
   "sasl_key_error_not_pem": "ファイルが PEM 形式のテキストではありません（または大きすぎます）。",
