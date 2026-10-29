@@ -3652,6 +3652,7 @@ impl SettingsWindow {
         } else {
             format!("{current_host}:{current_port}")
         };
+        let selected_label = display::neutralize_bidi(&selected_label).into_owned();
         let mut server_selector = div().flex().flex_col().child(
             div()
                 .id("server-select")
