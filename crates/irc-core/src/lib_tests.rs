@@ -3298,7 +3298,10 @@ fn welcome_before_sasl_success_stops_registration() {
             _ => thread::sleep(Duration::from_millis(10)),
         }
     }
-    assert_eq!(failure.as_deref(), Some("SASL authentication failed."));
+    assert_eq!(
+        failure.as_deref(),
+        Some("SASL authentication did not complete before registration.")
+    );
     server.join().unwrap();
     worker.join().unwrap();
 }
@@ -7692,6 +7695,8 @@ enum EcdsaServer {
     Accepts,
     /// Sends a 32 byte challenge and answers the signature with 904.
     Refuses,
+    /// Sends 001 instead of a SASL result after receiving the signature.
+    WelcomesBeforeResult,
     /// A challenge of this many bytes.
     ChallengeOf(usize),
     /// A challenge that is not base64.
@@ -7749,14 +7754,17 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
             EcdsaServer::ChallengeOf(length) => {
                 format!("AUTHENTICATE {}", STANDARD.encode(vec![1u8; length]))
             }
-            EcdsaServer::Accepts | EcdsaServer::Refuses => {
+            EcdsaServer::Accepts | EcdsaServer::Refuses | EcdsaServer::WelcomesBeforeResult => {
                 format!("AUTHENTICATE {}", STANDARD.encode(challenge))
             }
         };
         socket
             .write_all(format!("{challenge_line}\r\n").as_bytes())
             .unwrap();
-        if !matches!(scenario, EcdsaServer::Accepts | EcdsaServer::Refuses) {
+        if !matches!(
+            scenario,
+            EcdsaServer::Accepts | EcdsaServer::Refuses | EcdsaServer::WelcomesBeforeResult
+        ) {
             return;
         }
         let signature = read();
@@ -7766,6 +7774,11 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
         let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(&public).unwrap();
         let signature = p256::ecdsa::Signature::from_der(&der).unwrap();
         verifying.verify_prehash(&challenge, &signature).unwrap();
+        if scenario == EcdsaServer::WelcomesBeforeResult {
+            socket.write_all(b":server 001 alice :Welcome\r\n").unwrap();
+            assert!(read().is_empty(), "registration was accepted");
+            return;
+        }
         if scenario == EcdsaServer::Refuses {
             socket
                 .write_all(b":server 904 alice :SASL authentication failed\r\n")
@@ -7863,6 +7876,20 @@ fn sasl_ecdsa_refusal_is_a_sasl_failure_without_leaks() {
     let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::Refuses);
     assert_eq!(refusal.as_deref(), Some(SASL_KEY_REFUSED), "{reported}");
     assert!(reported.contains("refused ECDSA-NIST256P-CHALLENGE with 904"));
+    assert_no_ecdsa_secret(&reported, &secrets);
+}
+
+#[test]
+fn sasl_ecdsa_registration_before_result_is_refused_without_password_prompt() {
+    let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::WelcomesBeforeResult);
+    let refusal = refusal.unwrap_or_else(|| panic!("no refusal: {reported}"));
+    assert_eq!(
+        refusal,
+        "SASL authentication did not complete before registration."
+    );
+    assert_ne!(refusal, SASL_FAILED);
+    assert_ne!(refusal, SASL_KEY_REFUSED);
+    assert!(reported.contains("Negotiation refused"), "{reported}");
     assert_no_ecdsa_secret(&reported, &secrets);
 }
 

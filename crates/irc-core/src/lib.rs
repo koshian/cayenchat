@@ -3913,7 +3913,7 @@ impl Worker {
         ) {
             if let Err(error) = self.negotiation.registered() {
                 self.note(format!("Negotiation refused: {error}")).await;
-                let _ = self.events.send(Event::Refused(SASL_FAILED.into())).await;
+                let _ = self.events.send(Event::Refused(error.into())).await;
                 return ControlFlow::Break(());
             }
             self.registered = true;

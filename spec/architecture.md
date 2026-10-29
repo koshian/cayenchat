@@ -1038,7 +1038,9 @@ answered and SASL has finished; SASL failures
 and a missing offer of the chosen mechanism remain terminal refusals. A server without CAP
 registers directly (001), which ends negotiation when SASL was not configured;
 if SASL was configured, 001 before SASL completes is a terminal refusal and
-does not mark the connection registered. After registration CAP NEW
+does not mark the connection registered. Its refusal reason describes the
+protocol ordering error; it is not classified as a password or key refusal.
+After registration CAP NEW
 requests newly offered wanted capabilities (never `sasl`) and CAP DEL
 withdraws them; unrequested ACKs are ignored and `-name` entries disable.
 The state lives in the connection's worker, so a reconnect always starts
