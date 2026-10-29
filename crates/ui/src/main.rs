@@ -9960,14 +9960,13 @@ fn is_first_run(loaded: &Result<Option<Settings>, String>) -> bool {
     }
 }
 
-/// Loads settings and moves plaintext passwords saved by older versions into
-/// the credential store. Returns a notice for the chat window, and whether
-/// there was no saved server (the first run, #521); a file that cannot be
-/// read is not a first run.
+/// Loads settings. Returns a notice for the chat window, and whether there was
+/// no saved server (the first run, #521); a file that cannot be read is not a
+/// first run.
 fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
     let loaded = cayenchat_storage::load();
     let first_run = is_first_run(&loaded);
-    let mut saved = match loaded {
+    let saved = match loaded {
         Ok(saved) => saved.unwrap_or_default(),
         Err(error) => {
             // The next save replaces the file, so keep what could not be read.
@@ -9982,17 +9981,7 @@ fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
     let logging_error = diagnostics::configure(&saved.experimental)
         .err()
         .map(|error| i18n.format("debug_log_error", &[("error", &error)]));
-    let notice = match cayenchat_storage::migrate_legacy_secrets(&mut saved, &CredentialStore::open)
-    {
-        Ok(None) => None,
-        Ok(Some(report)) if report.used_local_file => Some(i18n.text("legacy_migrated_local")),
-        Ok(Some(_)) => Some(i18n.text("legacy_migrated")),
-        Err(error) => Some(i18n.format("credential_error", &[("error", &error)])),
-    };
-    let notice = match (notice, logging_error) {
-        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
-        (notice, logging_error) => notice.or(logging_error),
-    };
+    let notice = logging_error;
     (saved, notice, first_run)
 }
 

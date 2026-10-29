@@ -432,9 +432,14 @@ mod tests {
 
     #[test]
     fn registering_turns_on_display_and_both_publishing_ways() {
-        let mut profile = ServerProfile::default();
-        profile.user_avatars = false;
-        profile.ircv3.peer_avatars = false;
+        let mut profile = ServerProfile {
+            user_avatars: false,
+            ircv3: cayenchat_storage::Ircv3Preferences {
+                peer_avatars: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         register_in_profile(&mut profile, URL).unwrap();
         assert_eq!(profile.avatar_url, URL);
         assert_eq!(profile.peer_avatar_url, URL);
@@ -443,8 +448,10 @@ mod tests {
 
     #[test]
     fn a_rejected_url_changes_nothing() {
-        let mut profile = ServerProfile::default();
-        profile.user_avatars = false;
+        let mut profile = ServerProfile {
+            user_avatars: false,
+            ..Default::default()
+        };
         let before = profile.clone();
         for bad in ["", "not a url", "https://user:pw@img.example/a.png"] {
             assert!(register_in_profile(&mut profile, bad).is_err(), "{bad}");

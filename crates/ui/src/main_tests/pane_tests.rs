@@ -2509,10 +2509,9 @@ fn the_insertion_line_compares_positions_within_the_server() {
 
 #[test]
 fn a_window_with_older_settings_follows_the_servers_order_in_the_file() {
-    let profile = |id: &str| {
-        let mut profile = cayenchat_storage::ServerProfile::default();
-        profile.id = id.to_owned();
-        profile
+    let profile = |id: &str| cayenchat_storage::ServerProfile {
+        id: id.to_owned(),
+        ..Default::default()
     };
     let ids = |servers: &[cayenchat_storage::ServerProfile]| -> Vec<String> {
         servers.iter().map(|p| p.id.clone()).collect()

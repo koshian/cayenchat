@@ -429,23 +429,15 @@ Before a TLS connection, the core installs rustls's ring crypto provider as the
 process default. The GUI dependency graph enables both ring and aws-lc-rs, so
 rustls cannot infer a provider from crate features alone.
 The UI loads versioned preferences from the platform user configuration directory.
-The reader accepts versions 1 through the current writer version on every OS.
-A future version is rejected without rewriting the file and reports both the
-version range and path, with guidance to update the app. Missing or invalid
-version fields instead suggest restoring a valid backup. Settings opening stays
-blocked on a read error so defaults cannot overwrite unreadable preferences.
-Version 5 adds appearance colors, alternating log rows, and per-pane font choices;
-version 6 adds an opt-in startup connection flag, and version 7 adds a language
-preference. Version 8 renames the appearance background to member-list background
-and changes its default to white; the old default gray migrates to white while
-custom saved colors remain. Version 9 changes the default channel event text color
-to `#007D00`; the previous default migrates while custom colors remain. Version 10
-adds a theme preference (System, Light or Dark), a dark-theme set of the six pane
-colors beside the existing light ones, and a Linux display server choice; older
-settings default to System, the dark defaults and Wayland. Version 11 adds the
-`USER` username (migrated from the old nickname, which earlier versions sent as
-USER), the credential backend choice and the image upload provider, and stops
-reading passwords from the file except to migrate them. Version 12 adds
+The reader accepts versions 11 through the current writer version on every OS;
+versions 1–10 are rejected because they predate the supported pre-release
+settings format and can contain plaintext passwords. Old or future versions
+are rejected without rewriting the file and report the supported range and path.
+Missing or invalid version fields instead suggest restoring a valid backup.
+Settings opening stays blocked on a read error so defaults cannot overwrite
+unreadable preferences. Before it later saves defaults, the UI tries to keep a
+protected copy of a settings file that could not be loaded. Version 11 adds the credential
+backend choice and image upload provider. Version 12 adds
 notification preferences (enabled, mentions, keyword alerts, keywords and
 private messages) and a highlight color to the light and dark pane colors;
 older settings enable them all with no keywords. Version 13 moves the
@@ -669,9 +661,10 @@ double-click. With image previews on, a thumbnail of the message's first
 direct image link appears below its text (see Inline image previews). The
 lower combined log switches to a line's channel on double-click.
 
-Version 4 settings keep several server profiles. Since version 13 the list
-starts empty: the IRCnet hosts are `storage::PRESETS`, offered only when adding
-a server, and every profile is editable and removable in the order added.
+Version 4 introduced several server profiles; settings versions 1–10 are
+rejected (D074). Since version 13 the list starts empty: the IRCnet hosts
+are `storage::PRESETS`, offered only when adding a server, and every profile is
+editable and removable in the order added.
 Host/port/TLS/certificate verification/encoding are per
 profile; version 13 moves the nickname, `USER` username, auto-join channels,
 SASL account and startup connection into each profile too (see Servers and
@@ -679,8 +672,9 @@ sessions below). The Connection tab lists a profile's fields in this order
 (#651): server and port, with TLS indented under the port and certificate
 verification under TLS; authentication (server password, SASL, with each
 password's saved-state widgets beside it); nickname and username; encoding;
-then the rest (real name, quit/part messages, auto-join, ...). Versions 1–3
-are migrated on load, as are version 4 settings. `irc-core` passes the profile's encoding to the `irc` line
+then the rest (real name, quit/part messages, auto-join, ...). Settings
+versions 11–12 migrate their shared identity into the selected profile.
+`irc-core` passes the profile's encoding to the `irc` line
 codec so protocol parameters, including channel names, and message text use the
 same wire charset. It strictly validates outgoing encoding and wire length before
 queueing, avoiding silent replacement and preserving a draft on rejection. A
@@ -1981,12 +1975,12 @@ The backend is chosen explicitly (settings version 11, default System). Opening
 never falls back to another backend. The Credential Storage tab probes the
 system store on a background task (D-Bus may be slow) and offers the local file
 when it is unavailable; switching requires confirmation for the local file and
-moves known secrets (`migrate` copies all, then deletes the originals). On
-startup, plaintext passwords read from version 10 and earlier move into the
-store before any window opens; only if the system store is unavailable do they
-go to the local file, because the user had already accepted plaintext storage
-for them. The settings form never shows saved passwords: an unsaved password
-of a draft server has a field and a "save password" box (written by the server's own Save), one of a registered server a field with Save, a saved one "Saved" with Change and Delete, and Change
+moves known secrets (`migrate` copies all, then deletes the originals). Startup
+does not migrate plaintext passwords; settings versions that could contain
+them are rejected by the reader (D014). The settings form never shows saved
+passwords: an unsaved password of a draft server has a field and a "save
+password" box (written by the server's own Save), one of a registered server a
+field with Save, a saved one "Saved" with Change and Delete, and Change
 shows an empty field with Save and Cancel. A value typed and not saved wins
 for the connection started from that form and is dropped with the window.
 
@@ -2023,9 +2017,9 @@ replacing the old destination. New Unix log files use mode 0600. There is no
 background logging thread, timer or in-memory log queue; disk writes are
 synchronous, and logs grow until disabled (no rotation).
 
-Startup applies saved logging preferences before credential migration and
-GPUI initialization. Failures are shown as a startup notice without stopping
-the app. Settings changes apply immediately through the existing save path;
+Startup applies saved logging preferences before GPUI initialization. Failures
+are shown as a startup notice without stopping the app. Settings changes apply
+immediately through the existing save path;
 while a new server form is incomplete, experimental preferences are persisted
 independently so they do not require finishing the connection form. Opening a
 file must succeed before saving the preference, and a settings-save failure
