@@ -1035,7 +1035,9 @@ diagnostic, not an error. A multiline ACK is applied at its last line and is
 bounded to 256 capability tokens, 8,191 total bytes, and 512 bytes per token;
 exceeding a limit fails negotiation. CAP END goes out once every request is
 answered and SASL has finished; SASL failures
-and a missing offer of the chosen mechanism remain terminal refusals. A server without CAP
+and a missing offer of the chosen mechanism remain terminal refusals; a `sasl=`
+list over 512 bytes is not kept and counts as offering no mechanism, unlike a
+bare `sasl`. A server without CAP
 registers directly (001), which ends negotiation when SASL was not configured;
 if SASL was configured, 001 before SASL completes is a terminal refusal and
 does not mark the connection registered. Its refusal reason describes the
