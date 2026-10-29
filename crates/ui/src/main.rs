@@ -2209,6 +2209,10 @@ impl ChatWindow {
             if let Some(session) = self.sessions.get_mut(&id) {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
+                    // Credential transport policy applies to automatic
+                    // reconnects too; the current connection is not changed.
+                    config.verify_tls_certificates = profile.verify_tls_certificates;
+                    config.allow_plaintext_pass = profile.allow_plaintext_pass;
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
