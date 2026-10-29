@@ -581,9 +581,19 @@ fn forget_removed_profiles(
                 (server.sasl_password_saved(), server.sasl_password_key()),
                 (server.sasl_key_saved, server.sasl_key_key()),
             ];
+            // Channel keys: the noted channels, or the auto-join ones while
+            // the note is missing (a file from before it existed).
+            let keyed = server
+                .keyed_channels
+                .clone()
+                .unwrap_or_else(|| server.channels());
+            let channel_keys = keyed
+                .iter()
+                .map(|channel| SecretKey::channel_key(&server.id, channel));
             for key in noted
                 .into_iter()
                 .filter_map(|(saved, key)| saved.then_some(key))
+                .chain(channel_keys)
             {
                 if let Err(error) = store.delete(&key) {
                     first_error.get_or_insert(error);

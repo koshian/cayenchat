@@ -522,3 +522,78 @@ fn the_private_key_never_reaches_the_settings_file_or_debug_output() {
     super::connect_auth::apply_secrets(&mut config, None, Some(&Secret::new(key.as_str())));
     assert!(!format!("{config:?}").contains(key.as_str()));
 }
+
+fn removed_server_with_keys(
+    keyed_channels: Option<Vec<String>>,
+) -> (
+    Settings,
+    Settings,
+    cayenchat_storage::ServerProfile,
+    CredentialStore,
+) {
+    let store = memory_store();
+    let mut previous = Settings::default();
+    previous.add_server("irc.example.org");
+    let profile = previous.selected_profile_mut().unwrap();
+    profile.channels = "#a,#b".into();
+    profile.keyed_channels = keyed_channels;
+    let removed = profile.clone();
+    let other = SecretKey::channel_key(cayenchat_storage::IRCNET_ID, "#a");
+    for key in [
+        SecretKey::channel_key(&removed.id, "#a"),
+        SecretKey::channel_key(&removed.id, "#b"),
+        SecretKey::channel_key(&removed.id, "#manual"),
+        other,
+    ] {
+        store.set(&key, &Secret::new("k")).unwrap();
+    }
+    let mut next = previous.clone();
+    next.remove_selected_server();
+    (previous, next, removed, store)
+}
+
+#[test]
+fn removed_profiles_lose_their_noted_channel_keys() {
+    let (previous, next, removed, store) =
+        removed_server_with_keys(Some(vec!["#a".into(), "#manual".into()]));
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    assert!(
+        !store
+            .contains(&SecretKey::channel_key(&removed.id, "#a"))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .contains(&SecretKey::channel_key(&removed.id, "#manual"))
+            .unwrap()
+    );
+    // Not noted: left alone, as are other profiles' keys.
+    assert!(
+        store
+            .contains(&SecretKey::channel_key(&removed.id, "#b"))
+            .unwrap()
+    );
+    assert!(
+        store
+            .contains(&SecretKey::channel_key(cayenchat_storage::IRCNET_ID, "#a"))
+            .unwrap()
+    );
+}
+
+#[test]
+fn removed_profiles_without_a_key_note_lose_their_auto_join_keys() {
+    let (previous, next, removed, store) = removed_server_with_keys(None);
+    forget_removed_profiles(&previous, &next, &store).unwrap();
+    for channel in ["#a", "#b"] {
+        assert!(
+            !store
+                .contains(&SecretKey::channel_key(&removed.id, channel))
+                .unwrap()
+        );
+    }
+    assert!(
+        store
+            .contains(&SecretKey::channel_key(cayenchat_storage::IRCNET_ID, "#a"))
+            .unwrap()
+    );
+}

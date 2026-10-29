@@ -1952,7 +1952,9 @@ IDs: `connection/<profile-id>/server-password`,
 `ircnet`, `ircnet-ipv6` and legacy `custom-N` IDs remain unchanged. New custom
 profiles use `custom-<UUID v4>` so deleting and adding a profile before saving,
 or a failed credential cleanup, cannot make a new server inherit old passwords.
-Saving settings deletes the secrets of removed profiles. `Secret` redacts
+Saving settings deletes the secrets of removed profiles: the noted
+passwords and SASL key, and the channel keys of the noted keyed channels (the
+auto-join channels while the note is missing). `Secret` redacts
 its `Debug` output and zeroes its buffer on drop (best effort). Credential
 errors are mapped to sanitized text; keyring payloads, which may contain secret
 bytes, are dropped. The settings file records only the backend choice
