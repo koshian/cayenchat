@@ -7,7 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::UnboundedSender;
+use super::queue::OutgoingSender;
 use tokio_util::codec::Framed;
 
 #[cfg(feature = "proxy")]
@@ -105,7 +105,7 @@ impl Connection {
     /// Creates a new `Connection` using the specified `Config`
     pub(crate) async fn new(
         config: &Config,
-        tx: UnboundedSender<Message>,
+        tx: OutgoingSender,
     ) -> error::Result<Connection> {
         if config.use_mock_connection() {
             log::info!("Connecting via mock to {}.", config.server()?);
@@ -170,7 +170,7 @@ impl Connection {
 
     async fn new_unsecured_transport(
         config: &Config,
-        tx: UnboundedSender<Message>,
+        tx: OutgoingSender,
     ) -> error::Result<Transport<TcpStream>> {
         let stream = Self::new_stream(config).await?;
         let framed = Framed::new(stream, Self::codec(config)?);
@@ -181,7 +181,7 @@ impl Connection {
     #[cfg(all(feature = "tls-native", not(feature = "tls-rust")))]
     async fn new_secured_transport(
         config: &Config,
-        tx: UnboundedSender<Message>,
+        tx: OutgoingSender,
     ) -> error::Result<Transport<TlsStream<TcpStream>>> {
         let mut builder = TlsConnector::builder();
 
@@ -240,7 +240,7 @@ impl Connection {
     #[cfg(feature = "tls-rust")]
     async fn new_secured_transport(
         config: &Config,
-        tx: UnboundedSender<Message>,
+        tx: OutgoingSender,
     ) -> error::Result<Transport<TlsStream<TcpStream>>> {
         #[derive(Debug)]
         struct DangerousAcceptAllVerifier(Arc<CryptoProvider>);
@@ -408,7 +408,7 @@ impl Connection {
 
     async fn new_mocked_transport(
         config: &Config,
-        tx: UnboundedSender<Message>,
+        tx: OutgoingSender,
     ) -> error::Result<Transport<MockStream>> {
         let init_str = config.mock_initial_value();
 

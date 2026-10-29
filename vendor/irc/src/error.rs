@@ -68,6 +68,11 @@ pub enum Error {
     #[error("an async channel closed")]
     AsyncChannelClosed,
 
+    /// The outgoing queue holds too many messages or bytes because the
+    /// connection does not drain it.
+    #[error("the outgoing queue is full")]
+    OutgoingQueueFull,
+
     /// An internal oneshot channel closed.
     #[error("a oneshot channel closed")]
     OneShotCanceled,

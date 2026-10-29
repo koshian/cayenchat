@@ -2727,7 +2727,10 @@ fn shutdown_writes_quit_behind_a_send_backlog_while_lines_arrive() {
                     Err(_) => thread::sleep(Duration::from_millis(1)),
                 }
             }
-            assert!(queued > 10_000, "only {queued} messages were queued");
+            // The irc queue holds at most 1024 messages or 1 MiB (#678), so
+            // a stalled socket ends the flood with refused sends; QUIT is
+            // still admitted behind the backlog.
+            assert!(queued > 500, "only {queued} messages were queued");
             connection.shutdown();
             // The server reads QUIT and the worker ends within the time
             // the application waits on exit.
