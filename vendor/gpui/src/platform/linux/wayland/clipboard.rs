@@ -4,7 +4,7 @@ use std::{
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::AtomicUsize,
     },
 };
 
@@ -17,7 +17,7 @@ use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection
 use crate::{
     BackgroundExecutor, ClipboardEntry, ClipboardItem, Image, ImageFormat, Task,
     WaylandClientStatePtr, hash,
-    platform::linux::platform::{read_fd, read_fd_limited},
+    platform::linux::platform::{read_fd, read_fd_limited_async},
 };
 
 /// Text mime types that we'll offer to other programs.
@@ -46,14 +46,6 @@ pub(crate) struct Clipboard {
 
 pub(crate) trait ReceiveData {
     fn receive_data(&self, mime_type: String, fd: BorrowedFd<'_>);
-}
-
-struct ReadCancellation(Arc<AtomicBool>);
-
-impl Drop for ReadCancellation {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
 }
 
 impl ReceiveData for WlDataOffer {
@@ -117,7 +109,7 @@ impl<T: ReceiveData> DataOffer<T> {
         executor: &BackgroundExecutor,
         deadline: std::time::Instant,
         total_read: Arc<AtomicUsize>,
-    ) -> Option<(Task<Option<Vec<u8>>>, ReadCancellation)> {
+    ) -> Option<Task<Option<Vec<u8>>>> {
         let pipe = Pipe::new().unwrap();
         self.inner.receive_data(mime_type.to_string(), unsafe {
             BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
@@ -126,17 +118,9 @@ impl<T: ReceiveData> DataOffer<T> {
         drop(pipe.write);
         connection.flush().unwrap();
 
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let worker_cancelled = cancelled.clone();
         let read = executor.spawn(async move {
             match unsafe {
-                read_fd_limited(
-                    fd,
-                    deadline,
-                    Some(&worker_cancelled),
-                    Some(&total_read),
-                    32 * 1024 * 1024,
-                )
+                read_fd_limited_async(fd, deadline, Some(&total_read), 32 * 1024 * 1024).await
             }
             {
                 Ok(bytes) => Some(bytes),
@@ -146,7 +130,7 @@ impl<T: ReceiveData> DataOffer<T> {
                 }
             }
         });
-        Some((read, ReadCancellation(cancelled)))
+        Some(read)
     }
 
     fn read_text(&self, connection: &Connection) -> Option<ClipboardItem> {
@@ -200,10 +184,8 @@ impl<T: ReceiveData> DataOffer<T> {
                 .iter()
                 .any(|&allowed| allowed == mime_type)
         })?;
-        let (bytes, cancellation) =
-            self.read_bytes_async(connection, mime_type, executor, deadline, total_read)?;
+        let bytes = self.read_bytes_async(connection, mime_type, executor, deadline, total_read)?;
         Some(executor.spawn(async move {
-            let _cancellation = cancellation;
             let bytes = bytes.await?;
             let text_content = match String::from_utf8(bytes) {
                 Ok(content) => content,
@@ -324,7 +306,7 @@ impl Clipboard {
                 if !offer.has_mime_type(mime_type) {
                     continue;
                 }
-                let Some((bytes, cancellation)) =
+                let Some(bytes) =
                     offer.read_bytes_async(
                         &connection,
                         mime_type,
@@ -335,7 +317,6 @@ impl Clipboard {
                 else {
                     continue;
                 };
-                let _cancellation = cancellation;
                 if let Some(bytes) = bytes.await {
                     let id = hash(&bytes);
                     return Some(ClipboardItem {

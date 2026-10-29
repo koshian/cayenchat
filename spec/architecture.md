@@ -2063,14 +2063,15 @@ one upload at a time; cancelling abandons the wait but cannot recall a request
 already sent. The UI knows providers only by registry ID and display name.
 
 Clipboard Paste reads are asynchronous. On Wayland, the vendored GPUI reads
-the offered pipe on its background executor, with a 32 MiB limit and a single
-five-second deadline for the full read. A new Paste, resetting the input's
-contents, or the input/window going away cancels the UI task and signals the
-reader to close its pipe. Image paste is applied only while its originating
-draft remains selected; settings profile fields cancel their reads when
-repopulated. Expiry or an over-limit payload is treated as an unavailable
-clipboard item. Other platforms use their existing clipboard read behind the
-same asynchronous API.
+the offered pipe with nonblocking reads and yields between readiness checks,
+with a 32 MiB limit and a single five-second deadline for the full read. A new
+Paste, resetting the input's contents, or the input/window going away drops
+the read task; dropping its future closes the pipe without waiting for a
+background worker to process a cancellation signal. Image paste is applied
+only while its originating draft remains selected; settings profile fields
+cancel their reads when repopulated. Expiry or an over-limit payload is
+treated as an unavailable clipboard item. Other platforms use their existing
+clipboard read behind the same asynchronous API.
 
 Matrix support, if added, keeps the shared parts (`model::Attachment`, the
 selection-to-attachment UI actions and the confirmation/progress presentation)
