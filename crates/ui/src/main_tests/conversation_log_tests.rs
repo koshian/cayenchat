@@ -17,6 +17,18 @@ fn message(channel: &str, sender: &str, text: &str, replayed: bool) -> Event {
     }
 }
 
+/// A log root must be user-only; a temporary directory may not be (umask,
+/// default ACL).
+fn private_tempdir() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    directory
+}
+
 fn logged(directory: &std::path::Path, relative: &str) -> Vec<String> {
     let text = std::fs::read_to_string(directory.join(relative)).unwrap_or_default();
     text.lines()
@@ -41,7 +53,7 @@ fn enabled_logs_save_live_lines_only(cx: &mut TestAppContext) {
             &cayenchat_storage::Appearance::default(),
         ));
     });
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut settings = crate::settings_with_channels("#Rust");
     settings.conversation_log.channels = true;
     settings.conversation_log.private = true;
@@ -240,7 +252,7 @@ fn confirmed(local_id: u64, text: Option<&str>, action: Option<&str>) -> Event {
 #[gpui::test]
 fn own_actions_and_rewritten_echoes_are_saved_as_the_server_has_them(cx: &mut TestAppContext) {
     install_globals(cx);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut settings = crate::settings_with_channels("#rust");
     settings.conversation_log.channels = true;
     settings.conversation_log.directory = Some(directory.path().to_owned());
@@ -294,7 +306,7 @@ fn own_actions_and_rewritten_echoes_are_saved_as_the_server_has_them(cx: &mut Te
 #[gpui::test]
 fn turning_a_log_off_drops_the_messages_still_waiting_for_their_echo(cx: &mut TestAppContext) {
     install_globals(cx);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut settings = crate::settings_with_channels("#rust");
     settings.conversation_log.channels = true;
     settings.conversation_log.private = true;
@@ -340,7 +352,7 @@ fn turning_a_log_off_drops_the_messages_still_waiting_for_their_echo(cx: &mut Te
 #[gpui::test]
 fn a_failure_reaches_the_server_tab_without_another_event(cx: &mut TestAppContext) {
     install_globals(cx);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     // A file where the logger's directory must be.
     let blocked = directory.path().join("logs");
     std::fs::write(&blocked, b"").unwrap();
@@ -408,7 +420,7 @@ fn day_files(directory: &std::path::Path) -> Vec<(String, Vec<String>)> {
 fn server_times_far_from_now_do_not_pick_the_day_file(cx: &mut TestAppContext) {
     use std::time::{Duration, SystemTime};
     install_globals(cx);
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_tempdir();
     let mut settings = crate::settings_with_channels("#rust");
     settings.conversation_log.channels = true;
     settings.conversation_log.directory = Some(directory.path().to_owned());
