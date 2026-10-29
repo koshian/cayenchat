@@ -597,6 +597,29 @@ impl SettingsWindow {
         }
     }
 
+    pub(crate) fn paste_avatar_image_action(
+        &mut self,
+        _: &input::Paste,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self.selected_profile_id() else {
+            return;
+        };
+        let read = cx.read_from_clipboard_async();
+        cx.spawn_in(window, async move |this, cx| {
+            let item = read.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.selected_profile_id().as_deref() == Some(&profile)
+                    && let Some(item) = item
+                {
+                    this.paste_avatar_image(&item, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn drop_avatar_image(
         &mut self,
         paths: &[PathBuf],

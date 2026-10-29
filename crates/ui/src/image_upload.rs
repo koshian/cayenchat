@@ -83,7 +83,7 @@ pub(crate) fn clipboard_attachment(
     if item.text().is_some() {
         return None;
     }
-    let image = input::clipboard_image(&item)?;
+    let image = input::clipboard_image(item)?;
     Some(Attachment::image(
         None,
         image.bytes().to_vec(),

@@ -2126,14 +2126,26 @@ impl ChatWindow {
             cx.notify();
         })
         .detach();
-        cx.subscribe(&input, |this, _, paste: &input::ClipboardImagePaste, cx| {
-            if let Some(window) = this.window_handle {
-                let item = paste.0.clone();
-                let _ = cx.update_window(window, |this, window, cx| {
-                    this.paste_image(&item, window, cx)
-                });
-            }
-        })
+        cx.subscribe(
+            &input,
+            |this, input, paste: &input::ClipboardImagePaste, cx| {
+                if let Some(window) = this.window_handle {
+                    let item = paste.0.clone();
+                    let _ = cx.update_window(window.into(), |view, window, cx| {
+                        if let Ok(view) = view.downcast::<ChatWindow>() {
+                            let chat = view.read(cx);
+                            let is_selected = chat
+                                .inputs
+                                .get(&chat.state.selection())
+                                .is_some_and(|selected| selected == &input);
+                            if is_selected {
+                                view.update(cx, |this, cx| this.paste_image(&item, window, cx));
+                            }
+                        }
+                    });
+                }
+            },
+        )
         .detach();
         input
     }

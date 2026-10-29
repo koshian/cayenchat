@@ -8,7 +8,7 @@ use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, DispatchPhase, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId,
     KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle,
+    Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection, UnderlineStyle,
     Window, actions, div, fill, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::*;
@@ -295,6 +295,7 @@ impl TextInput {
     }
 
     pub fn clear_after_send(&mut self, cx: &mut Context<Self>) {
+        self.clipboard_read = None;
         self.content = "".into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
@@ -324,6 +325,7 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.clipboard_read = None;
         self.content = value.to_owned().into();
         self.selected_range = value.len()..value.len();
         self.selection_reversed = false;
@@ -2355,6 +2357,9 @@ mod tests {
             input.content = "a  b".into();
             input.selected_range = 2..2;
             input.paste(&Paste, window, cx);
+        });
+        cx.run_until_parked();
+        input.update_in(cx, |input, window, cx| {
             let pasted = input.content.to_string();
             input.undo(&Undo, window, cx);
             let once = input.content.to_string();
