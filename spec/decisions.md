@@ -2937,8 +2937,12 @@ traffic).
   query went out. Nicknames that leave it meanwhile (PART, KICK, QUIT, or a
   nick change away from the name) are remembered for that one query and their
   354 lines are ignored, whether or not the first NAMES was published yet; a
-  rejoin, or the new name after a nick change, is accepted. The set lives and
-  dies with the query.
+  rejoin, or the new name after a nick change, is accepted unless the set
+  limit below has been reached. The set is capped
+  at 4096 nicknames per query. If more distinct nicknames leave before the
+  query ends, all remaining 354 lines for that query are ignored because the
+  client can no longer tell which departed names were omitted. The set lives
+  and dies with the query.
 - **Initial state.** account-notify only reports changes. After our own JOIN,
   with `WHOX` in ISUPPORT (the token may carry a value, `WHOX=...`; it is
   recognized by name), one `WHO #chan %tnar,<token>` at a time (rolling

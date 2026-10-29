@@ -41,6 +41,8 @@ use crate::{Event, display_nickname, presence::PresenceIndex, text::nickname_key
 const MAX_USERS: usize = 4096;
 /// Channels waiting for their WHOX query.
 const MAX_QUEUED_WHO: usize = 64;
+/// Nicknames whose WHOX entries may be stale during one query.
+const MAX_DEPARTED_WHO: usize = 4096;
 /// A WHOX query without an end-of-WHO is given up after this long.
 const WHO_TIMEOUT: Duration = Duration::from_secs(15);
 /// Longest real name kept, in bytes.
@@ -65,9 +67,12 @@ struct Outstanding {
     /// Casemapped nicknames that left the channel (PART, KICK, QUIT, or a
     /// nick change away from the name) since the query went out. The reply
     /// was made before they left, so its lines about them are stale and
-    /// must not bring them back. Dropped with the query, so it is bounded
-    /// by the channel's membership changes during one WHO.
+    /// must not bring them back. Dropped with the query and capped at
+    /// [`MAX_DEPARTED_WHO`].
     departed: HashSet<String>,
+    /// If more nicknames leave than fit in `departed`, no reply from this
+    /// query is safe to apply.
+    departed_overflowed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -213,7 +218,15 @@ impl Accounts {
         if let Some(outstanding) = self.outstanding.as_mut()
             && channel.is_none_or(|channel| mapping.same(channel, &outstanding.channel))
         {
-            outstanding.departed.insert(nickname_key(nickname));
+            let key = nickname_key(nickname);
+            if outstanding.departed.contains(&key) {
+                return;
+            }
+            if outstanding.departed.len() < MAX_DEPARTED_WHO {
+                outstanding.departed.insert(key);
+            } else {
+                outstanding.departed_overflowed = true;
+            }
         }
     }
 
@@ -412,6 +425,7 @@ impl Accounts {
             token,
             sent: now,
             departed: HashSet::new(),
+            departed_overflowed: false,
         });
         Some(command)
     }
@@ -429,6 +443,9 @@ impl Accounts {
                 let (Some(nickname), Some(account)) = (args.get(2), args.get(3)) else {
                     return Some(events);
                 };
+                if outstanding.departed_overflowed {
+                    return Some(events);
+                }
                 let channel = self.casemapping.fold(&outstanding.channel);
                 // Somebody who left after the query was made: the line
                 // describes the channel as it was, not as it is.
@@ -729,6 +746,38 @@ mod tests {
                 ["carol account=carol-acct real=Carol"]
             );
         }
+    }
+
+    #[test]
+    fn unrelated_departures_are_bounded_during_a_whox_query() {
+        let (mut accounts, members) = asking_about_a();
+        for n in 0..MAX_DEPARTED_WHO + 100 {
+            accounts.observe(
+                &line(&format!(":unrelated{n}!u@h QUIT :bye")),
+                "me",
+                &members,
+            );
+            accounts.observe(&line(&format!(":old{n}!u@h NICK new{n}")), "me", &members);
+        }
+        let departed = &accounts.outstanding.as_ref().unwrap().departed;
+        assert_eq!(departed.len(), MAX_DEPARTED_WHO);
+        assert!(accounts.outstanding.as_ref().unwrap().departed_overflowed);
+        let ignored = accounts.observe_who(&line(":srv 354 me 1 bob bob-acct :Bob"));
+        assert!(shown(ignored.unwrap()).is_empty());
+
+        // A real member's departure is still recorded while there is room.
+        let (mut accounts, members) = asking_about_a();
+        accounts.observe(&line(":bob!u@h QUIT :bye"), "me", &members);
+        assert!(
+            accounts
+                .outstanding
+                .as_ref()
+                .unwrap()
+                .departed
+                .contains("bob")
+        );
+        let stale = accounts.observe_who(&line(":srv 354 me 1 bob bob-acct :Bob"));
+        assert!(shown(stale.unwrap()).is_empty());
     }
 
     #[test]
