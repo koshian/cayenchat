@@ -50,6 +50,10 @@ pub const CHATHISTORY: &str = "draft/chathistory";
 const MAX_OFFERED: usize = 256;
 /// Longest advertised value kept (for example `sasl=PLAIN,EXTERNAL`).
 const MAX_VALUE_BYTES: usize = 512;
+/// Maximum capabilities retained while a multiline ACK is in progress.
+const MAX_ACK_CAPABILITIES: usize = MAX_OFFERED;
+/// Maximum bytes retained across a multiline ACK.
+const MAX_ACK_BYTES: usize = crate::tags::MAX_TAG_BYTES;
 
 /// Opt-in IRCv3 extensions requested for one connection. Everything is off
 /// by default; turning an option on only asks the server for it.
@@ -132,6 +136,7 @@ pub struct CapNegotiation {
     pending: Vec<&'static str>,
     /// Capabilities of a multiline ACK until its last line.
     ack_lines: Vec<String>,
+    ack_bytes: usize,
 }
 
 impl CapNegotiation {
@@ -215,6 +220,7 @@ impl CapNegotiation {
             enabled: HashSet::new(),
             pending: Vec::new(),
             ack_lines: Vec::new(),
+            ack_bytes: 0,
         }
     }
 
@@ -266,10 +272,10 @@ impl CapNegotiation {
                     }
                 }
                 "ACK" => {
-                    self.ack_lines
-                        .extend(list.split_whitespace().map(str::to_owned));
+                    self.append_ack(&list)?;
                     if !continued {
                         let acknowledged = std::mem::take(&mut self.ack_lines);
+                        self.ack_bytes = 0;
                         self.acknowledge(&acknowledged, &mut step)?;
                     }
                 }
@@ -312,6 +318,43 @@ impl CapNegotiation {
         self.enforce_dependencies(&mut step);
         self.end_if_settled(&mut step);
         Ok(step)
+    }
+
+    fn append_ack(&mut self, list: &str) -> Result<(), String> {
+        let tokens = list.split_whitespace();
+        let mut token_count = 0usize;
+        for token in tokens.clone() {
+            token_count += 1;
+            if token.len() > MAX_VALUE_BYTES {
+                self.ack_lines.clear();
+                self.ack_bytes = 0;
+                return Err("Server sent an oversized CAP ACK token.".into());
+            }
+        }
+        let Some(total_tokens) = self.ack_lines.len().checked_add(token_count) else {
+            self.ack_lines.clear();
+            self.ack_bytes = 0;
+            return Err("Server sent too many CAP ACK tokens.".into());
+        };
+        let Some(total_bytes) = self.ack_bytes.checked_add(list.len()) else {
+            self.ack_lines.clear();
+            self.ack_bytes = 0;
+            return Err("Server sent an oversized CAP ACK.".into());
+        };
+        if total_tokens > MAX_ACK_CAPABILITIES {
+            self.ack_lines.clear();
+            self.ack_bytes = 0;
+            return Err("Server sent too many CAP ACK tokens.".into());
+        }
+        if total_bytes > MAX_ACK_BYTES {
+            self.ack_lines.clear();
+            self.ack_bytes = 0;
+            return Err("Server sent an oversized CAP ACK.".into());
+        }
+
+        self.ack_lines.extend(tokens.map(str::to_owned));
+        self.ack_bytes = total_bytes;
+        Ok(())
     }
 
     fn remember_offers(&mut self, list: &str) {
@@ -623,6 +666,64 @@ mod tests {
         let step = cap.observe(&line(":s CAP * ACK :message-tags")).unwrap();
         assert_eq!(sent(&step), ["CAP END"]);
         assert!(cap.enabled(SERVER_TIME) && cap.enabled(MESSAGE_TAGS));
+    }
+
+    #[test]
+    fn multiline_ack_limits_total_bytes_and_token_length() {
+        let mut cap = CapNegotiation::new(options(true, true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :server-time message-tags"))
+            .unwrap();
+
+        let longest = "x".repeat(MAX_VALUE_BYTES);
+        cap.observe(&line(&format!(":s CAP * ACK * :{longest}")))
+            .unwrap();
+        for _ in 0..14 {
+            let token = "x".repeat(MAX_VALUE_BYTES);
+            cap.observe(&line(&format!(":s CAP * ACK * :{token}")))
+                .unwrap();
+        }
+        let last = "x".repeat(MAX_ACK_BYTES - 15 * MAX_VALUE_BYTES);
+        cap.observe(&line(&format!(":s CAP * ACK * :{last}")))
+            .unwrap();
+        assert_eq!(cap.ack_bytes, MAX_ACK_BYTES);
+        assert_eq!(cap.ack_lines.len(), 16);
+
+        let error = cap.observe(&line(":s CAP * ACK * :x")).unwrap_err();
+        assert_eq!(error, "Server sent an oversized CAP ACK.");
+        assert!(cap.ack_lines.is_empty());
+        assert_eq!(cap.ack_bytes, 0);
+
+        let mut cap = CapNegotiation::new(options(true, true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :server-time message-tags"))
+            .unwrap();
+        let too_long = "x".repeat(MAX_VALUE_BYTES + 1);
+        let error = cap
+            .observe(&line(&format!(":s CAP * ACK * :{too_long}")))
+            .unwrap_err();
+        assert_eq!(error, "Server sent an oversized CAP ACK token.");
+        assert!(cap.ack_lines.is_empty());
+    }
+
+    #[test]
+    fn multiline_ack_limits_capability_count() {
+        let mut cap = CapNegotiation::new(options(true, true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :server-time message-tags"))
+            .unwrap();
+        let tokens = (0..MAX_ACK_CAPABILITIES)
+            .map(|n| format!("x{n}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        cap.observe(&line(&format!(":s CAP * ACK * :{tokens}")))
+            .unwrap();
+        assert_eq!(cap.ack_lines.len(), MAX_ACK_CAPABILITIES);
+
+        let error = cap.observe(&line(":s CAP * ACK * :overflow")).unwrap_err();
+        assert_eq!(error, "Server sent too many CAP ACK tokens.");
+        assert!(cap.ack_lines.is_empty());
+        assert_eq!(cap.ack_bytes, 0);
     }
 
     #[test]
