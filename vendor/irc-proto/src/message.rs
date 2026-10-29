@@ -9,6 +9,11 @@ use crate::error;
 use crate::error::{MessageParseError, ProtocolError};
 use crate::prefix::Prefix;
 
+/// Server-to-client tag data limit, including the leading `@` and the space
+/// after the tags. A received message with a longer tag section is parsed
+/// without tags.
+pub const MAX_TAG_BYTES: usize = 8191;
+
 /// A data structure representing an IRC message according to the protocol specification. It
 /// consists of a collection of IRCv3 tags, a prefix (describing the source of the message), and
 /// the protocol command. If the command is unknown, it is treated as a special raw command that
@@ -140,7 +145,9 @@ impl FromStr for Message {
         let tags = if state.starts_with('@') {
             let tags = state.find(' ').map(|i| &state[1..i]);
             state = state.find(' ').map_or("", |i| &state[i + 1..]);
-            tags.map(|ts| {
+            // Measured on the received bytes: parsing shrinks invalid
+            // escapes and drops empty `=`, so a re-measure undercounts.
+            tags.filter(|ts| ts.len() + 2 <= MAX_TAG_BYTES).map(|ts| {
                 ts.split(';')
                     .filter(|s| !s.is_empty())
                     .map(|s: &str| {
@@ -304,7 +311,7 @@ fn unescape_tag_value(value: &str) -> String {
 
 #[cfg(test)]
 mod test {
-    use super::{Message, Tag};
+    use super::{Message, Tag, MAX_TAG_BYTES};
     use crate::command::Command::{Raw, PRIVMSG, QUIT};
 
     #[test]
@@ -396,6 +403,18 @@ mod test {
             &message.to_string()[..],
             ":test!test@test PRIVMSG test :Still testing!\r\n"
         );
+    }
+
+    #[test]
+    fn oversized_tag_section_is_dropped_by_wire_length() {
+        let parse = |tags: &str| format!("@{tags} PING x\r\n").parse::<Message>().unwrap().tags;
+        // `@` and the space take two bytes of the limit.
+        let fits = format!("a={}", "b".repeat(MAX_TAG_BYTES - 2 - 2));
+        assert!(parse(&fits).is_some());
+        assert!(parse(&format!("{fits}b")).is_none());
+        // Invalid escapes shrink when parsed; empty values lose their `=`.
+        assert!(parse(&format!("a={}", "\\b".repeat(5000))).is_none());
+        assert!(parse(&"a=;".repeat(3000)).is_none());
     }
 
     #[test]

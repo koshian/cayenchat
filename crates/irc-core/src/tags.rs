@@ -14,7 +14,7 @@ use irc::proto::{Message as IrcMessage, message::Tag};
 
 /// Server-to-client tag data limit, including the leading `@` and the space
 /// after the tags. The body keeps its own 512-byte limit.
-pub const MAX_TAG_BYTES: usize = 8191;
+pub const MAX_TAG_BYTES: usize = irc::proto::message::MAX_TAG_BYTES;
 
 /// Tags longer than this are shortened in the diagnostic transcript, which
 /// keeps 1,000 lines per server.
@@ -47,7 +47,8 @@ pub fn tag_value<'a>(message: &'a IrcMessage, key: &str) -> Option<&'a str> {
 /// Size of the tag section as it would appear on the wire, re-escaped from
 /// the parsed values. The original bytes are not available after parsing, so
 /// an invalid escape (`\b`) or an explicit empty value (`key=`) counts one
-/// byte less than it was sent with.
+/// byte less than it was sent with. Suited to lines this client builds; the
+/// limit on received sections is applied by the parser on the wire bytes.
 pub fn tag_bytes(tags: &[Tag]) -> usize {
     if tags.is_empty() {
         return 0;
@@ -303,6 +304,18 @@ mod tests {
         assert!(
             matches!(message.command, irc::proto::Command::PRIVMSG(_, ref text) if text == "body")
         );
+    }
+
+    #[test]
+    fn wire_length_decides_even_when_parsing_shrinks_the_section() {
+        // Invalid escapes (`\b`) shrink to one byte, `key=` loses its `=`;
+        // both re-measure under the limit while the wire form is over it.
+        let message = parse(&format!("@msgid={} :s PRIVMSG #c :hi", "\\b".repeat(5000)));
+        assert_eq!(tag_value(&message, "msgid"), None);
+        assert!(!has_tag(&message, "msgid"));
+        let message = parse(&format!("@{}msgid=x :s PRIVMSG #c :hi", "a=;".repeat(3000)));
+        assert_eq!(tag_value(&message, "msgid"), None);
+        assert!(!has_tag(&message, "a"));
     }
 
     #[test]
