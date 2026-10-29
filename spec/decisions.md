@@ -2534,6 +2534,10 @@ The maintainer approved this specification on the issue (2026-10-13).
   Application page; the file is reopened by the next record. The thread
   calls a `Notify` callback when it first fails or finds the folder locked,
   which wakes the chat window, so the notice does not wait for an IRC event.
+  There is no per-file size limit, rotation or retention period: conversation
+  log disk usage is managed by the user. A write failure does not stop the
+  writer or the application; the queued records continue to be handled, and
+  the file is retried on the next record.
   The thread takes an exclusive lock on `<folder>/.cayenchat-log.lock`
   (opened for writing, not append-only: Windows cannot lock an append-only
   handle, a regular file only, never waiting on a pipe; `File::try_lock`, so
