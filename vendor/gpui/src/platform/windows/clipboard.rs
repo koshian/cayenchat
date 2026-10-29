@@ -18,7 +18,10 @@ use windows::Win32::{
 };
 use windows_core::PCWSTR;
 
-use crate::{ClipboardEntry, ClipboardItem, ClipboardString, Image, ImageFormat, hash};
+use crate::{
+    ClipboardEntry, ClipboardItem, ClipboardString, Image, ImageFormat, decode_clipboard_utf16,
+    hash,
+};
 
 // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
 const DRAGDROP_GET_FILES_COUNT: u32 = 0xFFFFFFFF;
@@ -281,10 +284,10 @@ where
 }
 
 fn read_string_from_clipboard() -> Option<ClipboardEntry> {
-    let text = with_clipboard_data(CF_UNICODETEXT.0 as u32, |data_ptr, _| {
-        let pcwstr = PCWSTR(data_ptr as *const u16);
-        String::from_utf16_lossy(unsafe { pcwstr.as_wide() })
-    })?;
+    let text = with_clipboard_data(CF_UNICODETEXT.0 as u32, |data_ptr, size| {
+        let bytes = unsafe { std::slice::from_raw_parts(data_ptr.cast::<u8>(), size) };
+        decode_clipboard_utf16(bytes)
+    })??;
     let Some(hash) = read_hash_from_clipboard() else {
         return Some(ClipboardEntry::String(ClipboardString::new(text)));
     };
@@ -320,10 +323,10 @@ fn read_hash_from_clipboard() -> Option<u64> {
 
 fn read_metadata_from_clipboard() -> Option<String> {
     unsafe { IsClipboardFormatAvailable(*CLIPBOARD_METADATA_FORMAT).ok()? };
-    with_clipboard_data(*CLIPBOARD_METADATA_FORMAT, |data_ptr, _size| {
-        let pcwstr = PCWSTR(data_ptr as *const u16);
-        String::from_utf16_lossy(unsafe { pcwstr.as_wide() })
-    })
+    with_clipboard_data(*CLIPBOARD_METADATA_FORMAT, |data_ptr, size| {
+        let bytes = unsafe { std::slice::from_raw_parts(data_ptr.cast::<u8>(), size) };
+        decode_clipboard_utf16(bytes)
+    })?
 }
 
 fn read_image_from_clipboard(format: u32) -> Option<ClipboardEntry> {
@@ -366,10 +369,32 @@ where
 {
     let global = HGLOBAL(unsafe { GetClipboardData(format).ok() }?.0);
     let size = unsafe { GlobalSize(global) };
+    if size == 0 {
+        return None;
+    }
     let data_ptr = unsafe { GlobalLock(global) };
+    if !global_is_locked(data_ptr) {
+        return None;
+    }
     let result = f(data_ptr, size);
     unsafe { GlobalUnlock(global).ok() };
     Some(result)
+}
+
+fn global_is_locked(data_ptr: *mut std::ffi::c_void) -> bool {
+    !data_ptr.is_null()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::global_is_locked;
+    use std::ffi::c_void;
+
+    #[test]
+    fn rejects_a_failed_global_lock() {
+        assert!(!global_is_locked(std::ptr::null_mut()));
+        assert!(global_is_locked(1usize as *mut c_void));
+    }
 }
 
 impl From<ImageFormat> for image::ImageFormat {

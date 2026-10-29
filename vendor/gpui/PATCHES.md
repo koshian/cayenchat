@@ -230,3 +230,10 @@ across two rows and the icon covered the start of the URL. Both wrappers
 that is followed by a figure space (the start of that room) even when no space
 precedes it, so a long unspaced prefix cannot force a break inside the room or
 at the URL's first letter.
+
+In `src/platform/windows/clipboard.rs` and `src/platform.rs`, text and GPUI
+metadata are decoded from the clipboard's `GlobalSize`-bounded bytes. The
+reader rejects empty allocations, failed `GlobalLock`, odd byte lengths,
+buffers without an in-range UTF-16 NUL, and strings over 16 MiB. Current GPUI
+upstream has a locked-global guard, but its string reader still accepts missing
+terminators and has no size cap; this local patch also bounds the UTF-16 scan.

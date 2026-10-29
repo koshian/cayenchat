@@ -1556,6 +1556,55 @@ pub enum ClipboardEntry {
     Image(Image),
 }
 
+#[cfg(any(target_os = "windows", test))]
+const MAX_CLIPBOARD_STRING_BYTES: usize = 16 * 1024 * 1024;
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn decode_clipboard_utf16(buffer: &[u8]) -> Option<String> {
+    if buffer.is_empty()
+        || buffer.len() > MAX_CLIPBOARD_STRING_BYTES
+        || !buffer.len().is_multiple_of(2)
+    {
+        return None;
+    }
+
+    let units = buffer
+        .chunks_exact(2)
+        .map(|bytes| u16::from_ne_bytes([bytes[0], bytes[1]]));
+    let end = units.clone().position(|unit| unit == 0)?;
+    Some(String::from_utf16_lossy(&units.take(end).collect::<Vec<_>>()))
+}
+
+#[cfg(test)]
+mod clipboard_utf16_tests {
+    use super::decode_clipboard_utf16;
+
+    fn utf16_bytes(value: &[u16]) -> Vec<u8> {
+        value.iter().flat_map(|unit| unit.to_ne_bytes()).collect()
+    }
+
+    #[test]
+    fn decodes_only_through_a_bounded_terminator() {
+        assert_eq!(decode_clipboard_utf16(&utf16_bytes(&[b'h' as u16, 0])), Some("h".into()));
+        assert_eq!(decode_clipboard_utf16(&utf16_bytes(&[0])), Some(String::new()));
+        assert_eq!(
+            decode_clipboard_utf16(&utf16_bytes(&[0xD83D, 0xDE00, 0])),
+            Some("😀".into())
+        );
+    }
+
+    #[test]
+    fn rejects_empty_odd_unterminated_and_oversized_buffers() {
+        assert_eq!(decode_clipboard_utf16(&[]), None);
+        assert_eq!(decode_clipboard_utf16(&[b'a']), None);
+        assert_eq!(decode_clipboard_utf16(&utf16_bytes(&[b'a' as u16])), None);
+        assert_eq!(
+            decode_clipboard_utf16(&vec![0; 16 * 1024 * 1024 + 2]),
+            None
+        );
+    }
+}
+
 impl ClipboardItem {
     /// Create a new ClipboardItem::String with no associated metadata
     pub fn new_string(text: String) -> Self {
