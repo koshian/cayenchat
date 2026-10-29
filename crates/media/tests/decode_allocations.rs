@@ -86,8 +86,28 @@ fn png_with_icc(profile_bytes: usize) -> Vec<u8> {
     bytes
 }
 
+fn png_with_text(width: u32, height: u32, text_bytes: usize) -> Vec<u8> {
+    let mut info = png::Info::with_size(width, height);
+    info.color_type = png::ColorType::Rgba;
+    info.bit_depth = png::BitDepth::Eight;
+    info.uncompressed_latin1_text
+        .push(png::text_metadata::TEXtChunk::new(
+            "Comment",
+            "x".repeat(text_bytes),
+        ));
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::with_info(&mut bytes, info).unwrap();
+    encoder.set_compression(png::Compression::High);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![0; width as usize * height as usize * 4])
+        .unwrap();
+    drop(writer);
+    bytes
+}
+
 #[test]
-fn png_metadata_and_gif_intermediate_allocations_obey_decode_budgets() {
+fn image_allocations_obey_decode_budgets() {
     let png = png_with_icc(2 * 1024 * 1024);
     let preview_budget = 1024 * 1024;
     let limits = Limits {
@@ -113,4 +133,29 @@ fn png_metadata_and_gif_intermediate_allocations_obey_decode_budgets() {
         decode::thumbnail(gif, &limits, &CancelFlag::default())
     });
     assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+
+    let text_png = png_with_text(1, 1, 1536 * 1024);
+    let small_budget = 1024 * 1024;
+    let limits = Limits {
+        max_decode_bytes: small_budget as u64,
+        ..Limits::default()
+    };
+    let result = within_budget(small_budget, || {
+        decode::thumbnail(&text_png, &limits, &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+
+    let raster_png = png_with_text(4096, 2800, 7 * 1024 * 1024);
+    let result = within_budget(48 * 1024 * 1024, || {
+        decode::thumbnail(&raster_png, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+    let result = within_budget(48 * 1024 * 1024, || avatar_edit::open(&raster_png));
+    assert!(matches!(result, Err(cayenchat_media::LoadError::TooLarge)));
+
+    let original_png = png_with_text(2048, 3200, 64 * 1024);
+    assert!(original_png.len() <= 256 * 1024);
+    assert!(!within_budget(24 * 1024 * 1024, || {
+        decode::is_small_original(&original_png)
+    }));
 }

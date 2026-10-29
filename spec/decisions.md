@@ -499,8 +499,9 @@ sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. The process-wide
 decode gate is held while constructing the limited decoder, so header parsing
 is serialized and charged to the 48 MiB per-image allocation budget. PNG
 iCCP and text chunks are removed before decoding because their metadata is not
-used; the source raster is reserved from the budget before PNG decoder-owned
-buffers use the remainder. Dimensions (at most 8192 px a side and 16.7
+used. Before making the filtered PNG copy, its full input length is
+conservatively reserved together with the source raster; PNG decoder-owned
+buffers use only the remainder. Dimensions (at most 8192 px a side and 16.7
 megapixels) are checked before pixel decoding, and that same decoder supplies
 the pixels. The decoded source image is charged against the budget before
 intermediate buffers can use its remainder.

@@ -79,7 +79,8 @@ pub fn open(bytes: &[u8]) -> Result<AvatarSource, LoadError> {
         image::ImageError::Limits(_) => LoadError::TooLarge,
         _ => LoadError::Malformed,
     };
-    let mut decoder = crate::decode::limited_decoder(bytes, format, &limits).map_err(failed)?;
+    let (mut decoder, reserved_copy_bytes) =
+        crate::decode::limited_decoder(bytes, format, &limits).map_err(failed)?;
     let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 {
         return Err(LoadError::Malformed);
@@ -91,7 +92,8 @@ pub fn open(bytes: &[u8]) -> Result<AvatarSource, LoadError> {
     {
         return Err(LoadError::TooLarge);
     }
-    crate::decode::reserve_source_image(&mut decoder, &limits).map_err(failed)?;
+    crate::decode::reserve_source_image(&mut decoder, &limits, reserved_copy_bytes)
+        .map_err(failed)?;
     let mut decoder = decoder;
     let orientation = decoder.orientation().ok();
     let mut image = DynamicImage::from_decoder(decoder).map_err(failed)?;
