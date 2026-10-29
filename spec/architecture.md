@@ -577,7 +577,9 @@ mechanism of the last connection, so it only reads the profile's stored
 secrets while the profile still says the same; if the settings changed since
 (for example SASL moved to ECDSA), nothing is read or sent and the user
 connects again with the new settings (#679), as does a credential dialog that
-was opened before the change. A complete membership event reducer remains future work.
+was opened before the change. A credential dialog that was opened before a
+change to the auto-join channels, IRCv3 options, shared avatar or encodings
+connects with the saved values of when it is answered (#723). A complete membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
 snapshot with operators first and case-insensitive nickname order within each
