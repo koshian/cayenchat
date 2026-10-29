@@ -20,15 +20,34 @@ use irc::proto::charsets::{BodyCharsets, Pin};
 
 use crate::valid_channel;
 
-/// The encoding overrides of one channel, as WHATWG labels. A side that is
-/// `None` follows the connection's encoding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// When the characters ISO-2022-JP cannot hold in the text of a message are
+/// written as numeric character references (#522, #680).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CharRefMode {
+    /// Only when the text is sent in ISO-2022-JP.
+    #[default]
+    Auto,
+    /// Whatever encoding the text is sent in: for a UTF-8 connection to a
+    /// proxy that converts to ISO-2022-JP further on. The encoding of the
+    /// line does not change; only the characters to refer to are chosen as
+    /// ISO-2022-JP would.
+    Iso2022Jp,
+    /// Never.
+    Off,
+}
+
+/// The overrides of one channel. An encoding is a WHATWG label; a side that
+/// is `None` follows the connection's encoding, and a `char_refs` that is
+/// `None` follows the connection's mode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelEncoding {
     pub channel: String,
     /// For the text of messages received in the channel.
     pub decode: Option<String>,
     /// For the text of messages sent to the channel.
     pub encode: Option<String>,
+    /// For the text of messages sent to the channel.
+    pub char_refs: Option<CharRefMode>,
 }
 
 /// An encoding `encoding_rs` can both read and write, by its label.
@@ -92,6 +111,7 @@ struct Entry {
     channel: String,
     decode: Option<&'static Encoding>,
     encode: Option<&'static Encoding>,
+    char_refs: Option<CharRefMode>,
 }
 
 struct State {
@@ -150,11 +170,12 @@ impl ChannelCharsets {
             let decode = entry.decode.as_deref().map(resolve).transpose()?;
             let encode = entry.encode.as_deref().map(resolve).transpose()?;
             kept.retain(|other| other.channel != entry.channel);
-            if decode.is_some() || encode.is_some() {
+            if decode.is_some() || encode.is_some() || entry.char_refs.is_some() {
                 kept.push(Entry {
                     channel: entry.channel.clone(),
                     decode,
                     encode,
+                    char_refs: entry.char_refs,
                 });
             }
         }
@@ -213,13 +234,14 @@ impl ChannelCharsets {
         pin
     }
 
-    /// Replaces the overrides of `channel`; labels that are `None` follow the
-    /// connection, and none at all removes the channel's entry.
+    /// Replaces the overrides of `channel`; settings that are `None` follow
+    /// the connection, and none at all removes the channel's entry.
     pub(crate) fn set(
         &self,
         channel: &str,
         decode: Option<&str>,
         encode: Option<&str>,
+        char_refs: Option<CharRefMode>,
     ) -> Result<(), String> {
         if !valid_channel(channel) {
             return Err(format!("Invalid channel name: {channel}"));
@@ -243,15 +265,25 @@ impl ChannelCharsets {
         state
             .entries
             .retain(|entry| !mapping.same(&entry.channel, channel));
-        if decode.is_some() || encode.is_some() {
+        if decode.is_some() || encode.is_some() || char_refs.is_some() {
             state.entries.push(Entry {
                 channel: channel.to_owned(),
                 decode,
                 encode,
+                char_refs,
             });
         }
         self.any.store(!state.entries.is_empty(), Ordering::Relaxed);
         Ok(())
+    }
+
+    /// The numeric character reference mode `channel` has of its own.
+    pub(crate) fn char_refs(&self, channel: &str) -> Option<CharRefMode> {
+        if !self.any.load(Ordering::Relaxed) {
+            return None;
+        }
+        let state = self.state.read().ok()?;
+        state.find(channel)?.char_refs
     }
 
     /// The network compares channel names with this mapping from now on.
@@ -373,8 +405,30 @@ mod tests {
             channel: channel.into(),
             decode: decode.map(str::to_owned),
             encode: encode.map(str::to_owned),
+            char_refs: None,
         }])
         .unwrap()
+    }
+
+    #[test]
+    fn a_channel_keeps_its_char_ref_mode_without_any_encoding() {
+        let charsets = ChannelCharsets::new(&[ChannelEncoding {
+            channel: "#Jp".into(),
+            char_refs: Some(CharRefMode::Iso2022Jp),
+            ..ChannelEncoding::default()
+        }])
+        .unwrap();
+        assert!(!charsets.is_empty());
+        assert_eq!(charsets.char_refs("#jp"), Some(CharRefMode::Iso2022Jp));
+        assert_eq!(charsets.char_refs("#other"), None);
+        assert_eq!(charsets.decoder("#jp"), None);
+        charsets
+            .set("#jp", None, None, Some(CharRefMode::Off))
+            .unwrap();
+        assert_eq!(charsets.char_refs("#jp"), Some(CharRefMode::Off));
+        charsets.set("#jp", None, None, None).unwrap();
+        assert!(charsets.is_empty());
+        assert_eq!(charsets.char_refs("#jp"), None);
     }
 
     #[test]
@@ -396,7 +450,7 @@ mod tests {
         let entry = |channel: &str, label: &str| ChannelEncoding {
             channel: channel.into(),
             decode: Some(label.into()),
-            encode: None,
+            ..ChannelEncoding::default()
         };
         let charsets =
             ChannelCharsets::new(&[entry("#a[", "Shift_JIS"), entry("#a{", "UTF-8")]).unwrap();
@@ -414,7 +468,7 @@ mod tests {
         let line = "PRIVMSG #a :x\r\n";
         charsets.pin(line, Some(encoding_rs::BIG5));
         charsets.pin(line, None);
-        charsets.set("#a", None, None).unwrap();
+        charsets.set("#a", None, None, None).unwrap();
         assert!(!charsets.is_empty());
         assert_eq!(charsets.take_pin("PRIVMSG #b :x\r\n"), None);
         assert_eq!(
@@ -447,13 +501,13 @@ mod tests {
     #[test]
     fn setting_replaces_and_clearing_removes() {
         let charsets = one("#a", Some("Big5"), Some("Big5"));
-        charsets.set("#A", None, Some("GBK")).unwrap();
+        charsets.set("#A", None, Some("GBK"), None).unwrap();
         assert_eq!(charsets.decoder("#a"), None);
         assert_eq!(charsets.encoder("#a"), Some(encoding_rs::GBK));
-        charsets.set("#a", None, None).unwrap();
+        charsets.set("#a", None, None, None).unwrap();
         assert!(charsets.is_empty());
-        assert!(charsets.set("#a", Some("nope"), None).is_err());
-        assert!(charsets.set("nick", Some("Big5"), None).is_err());
+        assert!(charsets.set("#a", Some("nope"), None, None).is_err());
+        assert!(charsets.set("nick", Some("Big5"), None, None).is_err());
         assert!(charsets.is_empty());
     }
 
@@ -465,8 +519,14 @@ mod tests {
         assert!(!charsets.set_utf8_only());
         assert_eq!(charsets.decoder("#a"), None);
         assert_eq!(charsets.encoder("#a"), Some(encoding_rs::UTF_8));
-        assert!(charsets.set("#b", Some("GBK"), None).is_err());
-        assert!(charsets.set("#b", Some("UTF-8"), None).is_ok());
+        assert!(charsets.set("#b", Some("GBK"), None, None).is_err());
+        assert!(charsets.set("#b", Some("UTF-8"), None, None).is_ok());
+        // Numeric references are ASCII text in UTF-8: still allowed.
+        assert!(
+            charsets
+                .set("#c", None, None, Some(CharRefMode::Iso2022Jp))
+                .is_ok()
+        );
         assert!(charsets.utf8_only());
     }
 }

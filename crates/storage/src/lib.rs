@@ -275,8 +275,36 @@ fn default_regain_ops() -> bool {
     true
 }
 
-fn default_iso2022jp_char_refs() -> bool {
-    true
+/// When the characters ISO-2022-JP cannot hold in a message are sent as
+/// decimal numeric character references (`&#128512;`) (#522, #680).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CharRefMode {
+    /// Only while the text is sent in ISO-2022-JP.
+    #[default]
+    Auto,
+    /// Whatever encoding the text is sent in, for a proxy that converts to
+    /// ISO-2022-JP further on. The encoding on the wire does not change.
+    Iso2022Jp,
+    Off,
+}
+
+/// Reads `ServerProfile::char_refs`, which was a boolean
+/// (`iso2022jp_char_refs`) before #680: on is `Auto`, off is `Off`.
+fn char_refs_or_legacy<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<CharRefMode, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        Legacy(bool),
+        Mode(CharRefMode),
+    }
+    Ok(match Saved::deserialize(deserializer)? {
+        Saved::Legacy(true) => CharRefMode::Auto,
+        Saved::Legacy(false) => CharRefMode::Off,
+        Saved::Mode(mode) => mode,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -526,8 +554,8 @@ impl TextEncoding {
     }
 }
 
-/// An encoding override for one channel of a server: the side that is set
-/// differs from the server's encoding, the other follows it.
+/// The character settings of one channel of a server: a side that is set
+/// differs from the server's, the others follow it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelCharset {
     pub channel: String,
@@ -537,6 +565,18 @@ pub struct ChannelCharset {
     /// Used for the text of messages sent to the channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encode: Option<TextEncoding>,
+    /// Numeric character references for the text sent to the channel
+    /// (#680). Added without a version change; files without it follow the
+    /// server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub char_refs: Option<CharRefMode>,
+}
+
+impl ChannelCharset {
+    /// Whether any setting differs from the server's.
+    pub fn is_set(&self) -> bool {
+        self.decode.is_some() || self.encode.is_some() || self.char_refs.is_some()
+    }
 }
 
 /// Overrides kept per server. A settings file can hold more, but the extra
@@ -814,11 +854,16 @@ pub struct ServerProfile {
     pub encoding: TextEncoding,
     /// Send the characters ISO-2022-JP cannot hold in a message as decimal
     /// numeric character references (`&#128512;`) instead of refusing the
-    /// message (#522). Used only while the text is sent in ISO-2022-JP; the
-    /// value is kept for other encodings. Added without a version change, so
-    /// files without it read as on.
-    #[serde(default = "default_iso2022jp_char_refs")]
-    pub iso2022jp_char_refs: bool,
+    /// message (#522). `Auto` does so only while the text is sent in
+    /// ISO-2022-JP. Added without a version change as the boolean
+    /// `iso2022jp_char_refs`, which still reads (`true` as `Auto`, `false`
+    /// as `Off`); files without either read as `Auto`.
+    #[serde(
+        default,
+        alias = "iso2022jp_char_refs",
+        deserialize_with = "char_refs_or_legacy"
+    )]
+    pub char_refs: CharRefMode,
     /// Keep this profile's server and SASL passwords in the credential store.
     #[serde(default)]
     pub remember_passwords: bool,
@@ -915,10 +960,11 @@ pub struct ServerProfile {
     /// change; files without it read as empty.
     #[serde(default)]
     pub peer_avatar_url: String,
-    /// Channels whose text uses another encoding than `encoding`, set with
-    /// `/charset` only (there is no settings page for it). A side that is
-    /// not set follows `encoding`. Added without a version change; files
-    /// without it read as empty.
+    /// Channels whose text uses another encoding than `encoding` or its own
+    /// numeric character reference mode, set with `/charset` or in the
+    /// channel settings (#680). A setting that is not set follows the
+    /// server's. Added without a version change; files without it read as
+    /// empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channel_charsets: Vec<ChannelCharset>,
     /// Channels whose key is noted as saved in the credential store (#643).
@@ -954,7 +1000,7 @@ impl ServerProfile {
             use_tls: false,
             verify_tls_certificates: true,
             encoding: TextEncoding::Utf8,
-            iso2022jp_char_refs: true,
+            char_refs: CharRefMode::Auto,
             remember_passwords: false,
             server_saved: false,
             sasl_saved: false,
@@ -1015,21 +1061,25 @@ impl ServerProfile {
             .find(|entry| same(&entry.channel, channel))
     }
 
-    /// Replaces the override of `channel`; a side left `None` follows the
-    /// server's encoding, and none at all removes the entry. Fails when
-    /// there is no room for one more.
+    /// Replaces the override of `channel`; a setting left `None` follows the
+    /// server's, and none at all removes the entry. Fails when there is no
+    /// room for one more.
     pub fn set_channel_charset(
         &mut self,
         channel: &str,
         decode: Option<TextEncoding>,
         encode: Option<TextEncoding>,
+        char_refs: Option<CharRefMode>,
         same: impl Fn(&str, &str) -> bool,
     ) -> Result<(), String> {
         let at = self
             .channel_charsets
             .iter()
             .position(|entry| same(&entry.channel, channel));
-        match (at, decode.is_none() && encode.is_none()) {
+        match (
+            at,
+            decode.is_none() && encode.is_none() && char_refs.is_none(),
+        ) {
             (Some(at), true) => {
                 self.channel_charsets.remove(at);
             }
@@ -1038,6 +1088,7 @@ impl ServerProfile {
                 let entry = &mut self.channel_charsets[at];
                 entry.decode = decode;
                 entry.encode = encode;
+                entry.char_refs = char_refs;
             }
             (None, false) => {
                 if self.channel_charsets.len() >= MAX_CHANNEL_CHARSETS {
@@ -1049,6 +1100,7 @@ impl ServerProfile {
                     channel: channel.to_owned(),
                     decode,
                     encode,
+                    char_refs,
                 });
             }
         }
@@ -1060,12 +1112,8 @@ impl ServerProfile {
     fn clean_channel_charsets(&mut self) {
         let mut seen = HashSet::new();
         self.channel_charsets.retain(|entry| {
-            (entry.decode.is_some() || entry.encode.is_some())
-                && entry.channel.len() <= MAX_CHARSET_CHANNEL_BYTES
-                && entry.channel.starts_with(['#', '&', '!'])
-                && !entry
-                    .channel
-                    .contains(|ch: char| ch.is_control() || ch.is_whitespace() || ch == ',')
+            entry.is_set()
+                && valid_charset_channel(&entry.channel)
                 && seen.insert(entry.channel.to_ascii_lowercase())
         });
         self.channel_charsets.truncate(MAX_CHANNEL_CHARSETS);
@@ -1198,6 +1246,14 @@ impl ServerProfile {
             self.set_sasl_password_saved(saved);
         }
     }
+}
+
+/// Whether a channel can have settings of its own kept
+/// ([`ServerProfile::channel_charsets`]).
+pub fn valid_charset_channel(name: &str) -> bool {
+    name.len() <= MAX_CHARSET_CHANNEL_BYTES
+        && name.starts_with(['#', '&', '!'])
+        && !name.contains(|ch: char| ch.is_control() || ch.is_whitespace() || ch == ',')
 }
 
 fn valid_note_name(name: &str) -> bool {
@@ -2264,30 +2320,38 @@ mod tests {
         let mut profile = ServerProfile::new("a".into(), "irc.example.net");
         assert!(profile.channel_charset("#a", same).is_none());
         profile
-            .set_channel_charset("#A", Some(TextEncoding::Koi8R), None, same)
+            .set_channel_charset("#A", Some(TextEncoding::Koi8R), None, None, same)
             .unwrap();
         profile
-            .set_channel_charset("#a", None, Some(TextEncoding::Big5), same)
+            .set_channel_charset("#a", None, Some(TextEncoding::Big5), None, same)
             .unwrap();
         assert_eq!(profile.channel_charsets.len(), 1);
         let entry = profile.channel_charset("#A", same).unwrap();
         assert_eq!(entry.decode, None);
         assert_eq!(entry.encode, Some(TextEncoding::Big5));
-        profile.set_channel_charset("#a", None, None, same).unwrap();
+        profile
+            .set_channel_charset("#a", None, None, None, same)
+            .unwrap();
         assert!(profile.channel_charsets.is_empty());
         for index in 0..MAX_CHANNEL_CHARSETS {
             profile
-                .set_channel_charset(&format!("#c{index}"), Some(TextEncoding::Gbk), None, same)
+                .set_channel_charset(
+                    &format!("#c{index}"),
+                    Some(TextEncoding::Gbk),
+                    None,
+                    None,
+                    same,
+                )
                 .unwrap();
         }
         assert!(
             profile
-                .set_channel_charset("#more", Some(TextEncoding::Gbk), None, same)
+                .set_channel_charset("#more", Some(TextEncoding::Gbk), None, None, same)
                 .is_err()
         );
         // An existing one can still change.
         profile
-            .set_channel_charset("#c0", Some(TextEncoding::Big5), None, same)
+            .set_channel_charset("#c0", Some(TextEncoding::Big5), None, None, same)
             .unwrap();
     }
 
@@ -2306,6 +2370,7 @@ mod tests {
                 "#がが",
                 Some(TextEncoding::Iso2022Jp),
                 Some(TextEncoding::EucJp),
+                None,
                 same,
             )
             .unwrap();
@@ -2317,21 +2382,25 @@ mod tests {
                 channel: "#ok".into(),
                 decode: Some(TextEncoding::Gbk),
                 encode: None,
+                char_refs: None,
             },
             ChannelCharset {
                 channel: "#none".into(),
                 decode: None,
                 encode: None,
+                char_refs: None,
             },
             ChannelCharset {
                 channel: "nick".into(),
                 decode: Some(TextEncoding::Gbk),
                 encode: None,
+                char_refs: None,
             },
             ChannelCharset {
                 channel: "#a b".into(),
                 decode: Some(TextEncoding::Gbk),
                 encode: None,
+                char_refs: None,
             },
         ];
         save_to(&path, &settings).unwrap();
@@ -3609,14 +3678,21 @@ mod tests {
     }
 
     #[test]
-    fn iso2022jp_char_refs_defaults_on_and_round_trips() {
+    fn char_refs_defaults_to_auto_and_round_trips() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut settings = Settings::default();
         settings.add_server("a.example");
         settings.add_server("b.example");
-        assert!(settings.servers.iter().all(|s| s.iso2022jp_char_refs));
-        settings.servers[0].iso2022jp_char_refs = false;
+        settings.add_server("c.example");
+        assert!(
+            settings
+                .servers
+                .iter()
+                .all(|s| s.char_refs == CharRefMode::Auto)
+        );
+        settings.servers[0].char_refs = CharRefMode::Off;
+        settings.servers[2].char_refs = CharRefMode::Iso2022Jp;
         save_to(&path, &settings).unwrap();
         let mut saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -3625,20 +3701,96 @@ mod tests {
             loaded
                 .servers
                 .iter()
-                .map(|s| s.iso2022jp_char_refs)
+                .map(|s| s.char_refs)
                 .collect::<Vec<_>>(),
-            [false, true]
+            [CharRefMode::Off, CharRefMode::Auto, CharRefMode::Iso2022Jp]
         );
-        // A file from before the setting reads as on.
+        // A file from before the setting reads as Auto.
         for server in saved["servers"].as_array_mut().unwrap() {
-            server
-                .as_object_mut()
-                .unwrap()
-                .remove("iso2022jp_char_refs");
+            server.as_object_mut().unwrap().remove("char_refs");
         }
         fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let loaded = load_from(&path).unwrap().unwrap();
-        assert!(loaded.servers.iter().all(|s| s.iso2022jp_char_refs));
+        assert!(
+            loaded
+                .servers
+                .iter()
+                .all(|s| s.char_refs == CharRefMode::Auto)
+        );
+    }
+
+    #[test]
+    fn the_old_boolean_char_refs_setting_migrates() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.add_server("a.example");
+        settings.add_server("b.example");
+        settings.add_server("c.example");
+        save_to(&path, &settings).unwrap();
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for (server, old) in
+            saved["servers"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .zip([Some(true), Some(false), None])
+        {
+            let server = server.as_object_mut().unwrap();
+            server.remove("char_refs");
+            if let Some(old) = old {
+                server.insert("iso2022jp_char_refs".into(), old.into());
+            }
+        }
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        assert_eq!(
+            loaded
+                .servers
+                .iter()
+                .map(|s| s.char_refs)
+                .collect::<Vec<_>>(),
+            [CharRefMode::Auto, CharRefMode::Off, CharRefMode::Auto]
+        );
+        // Saved again, the new form is written and reads back the same.
+        save_to(&path, &loaded).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("iso2022jp_char_refs"));
+        assert_eq!(load_from(&path).unwrap().unwrap().servers, loaded.servers);
+    }
+
+    #[test]
+    fn a_channel_keeps_its_char_ref_mode_alone_and_per_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+        let mut settings = Settings::default();
+        settings.add_server("a.example");
+        let profile = settings.selected_profile_mut().unwrap();
+        profile
+            .set_channel_charset("#a", None, None, Some(CharRefMode::Iso2022Jp), same)
+            .unwrap();
+        profile
+            .set_channel_charset("#b", Some(TextEncoding::Gbk), None, None, same)
+            .unwrap();
+        profile
+            .set_channel_charset("#c", None, None, Some(CharRefMode::Off), same)
+            .unwrap();
+        // Clearing every setting removes the entry.
+        profile
+            .set_channel_charset("#c", None, None, None, same)
+            .unwrap();
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap().unwrap();
+        let profile = &loaded.servers[0];
+        assert_eq!(profile.channel_charsets.len(), 2);
+        assert_eq!(
+            profile.channel_charset("#A", same).unwrap().char_refs,
+            Some(CharRefMode::Iso2022Jp)
+        );
+        assert_eq!(profile.channel_charset("#b", same).unwrap().char_refs, None);
+        assert!(profile.channel_charset("#c", same).is_none());
     }
 
     #[test]

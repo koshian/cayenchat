@@ -82,18 +82,19 @@ use cayenchat_app::{
     timeline::TimelineLine,
 };
 use cayenchat_irc_core::{
-    ChannelActivityKind, ChannelEncoding, Connection, ConnectionConfig, Event, HistoryMessage,
-    HistoryResume, Ircv3Options, MemberCommand, MessageReference, OlderHistoryStatus,
-    OpRegainStatus, RealNameFailure, SaslCredentials, WhoisInfo, WireDirection, valid_channel,
+    ChannelActivityKind, ChannelEncoding, CharRefMode, Connection, ConnectionConfig, Event,
+    HistoryMessage, HistoryResume, Ircv3Options, MemberCommand, MessageReference,
+    OlderHistoryStatus, OpRegainStatus, RealNameFailure, SaslCredentials, WhoisInfo, WireDirection,
+    valid_channel,
 };
 use cayenchat_model::{
     ConversationId, Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names,
 };
 use cayenchat_storage::chatlog::{Kind as LogKind, Scope};
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialError, CredentialStore,
-    Ircv3Preferences, Language, NoticeKey, Notifications, Secret, SecretKey, SendKey,
-    ServerProfile, Settings, TextKeyTheme, ThemeMode, UnreadLogPosition,
+    Appearance, ChannelNumberModifier, CredentialError, CredentialStore, Ircv3Preferences,
+    Language, NoticeKey, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
+    TextKeyTheme, ThemeMode, UnreadLogPosition,
 };
 use futures_util::StreamExt;
 use gpui::{prelude::*, *};
@@ -393,7 +394,7 @@ fn connection_config_without_secrets(
     config.allow_plaintext_pass = profile.allow_plaintext_pass;
     config.regain_ops = profile.regain_ops;
     config.encoding = profile.encoding.label().into();
-    config.char_refs_for_iso2022jp = profile.iso2022jp_char_refs;
+    config.char_refs = char_ref_mode(profile.char_refs);
     config.channel_encodings = channel_encodings(profile);
     config.ircv3 = ircv3_options(profile.ircv3);
     config.shared_avatar = shared_peer_avatar(profile);
@@ -422,7 +423,16 @@ fn sasl_mechanism(
     }
 }
 
-/// The channels of `profile` with an encoding of their own, as a connection
+/// The mode a connection converts numeric character references with.
+fn char_ref_mode(mode: cayenchat_storage::CharRefMode) -> CharRefMode {
+    match mode {
+        cayenchat_storage::CharRefMode::Auto => CharRefMode::Auto,
+        cayenchat_storage::CharRefMode::Iso2022Jp => CharRefMode::Iso2022Jp,
+        cayenchat_storage::CharRefMode::Off => CharRefMode::Off,
+    }
+}
+
+/// The channels of `profile` with settings of their own, as a connection
 /// takes them.
 fn channel_encodings(profile: &ServerProfile) -> Vec<ChannelEncoding> {
     profile
@@ -432,8 +442,45 @@ fn channel_encodings(profile: &ServerProfile) -> Vec<ChannelEncoding> {
             channel: entry.channel.clone(),
             decode: entry.decode.map(|encoding| encoding.label().to_owned()),
             encode: entry.encode.map(|encoding| encoding.label().to_owned()),
+            char_refs: entry.char_refs.map(char_ref_mode),
         })
         .collect()
+}
+
+/// Makes `connection` follow the channel settings `profile` holds now, which
+/// a settings window may have changed: every saved channel is set, and one
+/// the connection had but the profile no longer has is cleared. On a server
+/// that requires UTF-8 (`UTF8ONLY`) the encodings it cannot use are left
+/// out, so the numeric character reference mode still applies.
+fn follow_channel_settings(
+    connection: &Connection,
+    before: &[ChannelEncoding],
+    profile: &ServerProfile,
+) {
+    let after = channel_encodings(profile);
+    for gone in before
+        .iter()
+        .filter(|old| !after.iter().any(|new| new.channel == old.channel))
+    {
+        let _ = connection.set_channel_encoding(&gone.channel, None, None, None);
+    }
+    for entry in after.iter().filter(|new| !before.contains(new)) {
+        let (decode, encode) = (entry.decode.as_deref(), entry.encode.as_deref());
+        if connection
+            .set_channel_encoding(&entry.channel, decode, encode, entry.char_refs)
+            .is_err()
+        {
+            fn utf8(label: Option<&str>) -> Option<&str> {
+                label.filter(|label| label.eq_ignore_ascii_case("UTF-8"))
+            }
+            let _ = connection.set_channel_encoding(
+                &entry.channel,
+                utf8(decode),
+                utf8(encode),
+                entry.char_refs,
+            );
+        }
+    }
 }
 
 /// The IRCv3 extensions a connection asks for, from the server's opt-ins.
@@ -2141,7 +2188,7 @@ impl ChatWindow {
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
-                    config.char_refs_for_iso2022jp = profile.iso2022jp_char_refs;
+                    config.char_refs = char_ref_mode(profile.char_refs);
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     let before = std::mem::replace(&mut config.channels, profile.channels());
@@ -2162,7 +2209,15 @@ impl ChatWindow {
                     if channel_keys::keyed_channel_added(&before, profile) {
                         key_refreshes.push((id, profile.clone()));
                     }
-                    config.channel_encodings = channel_encodings(profile);
+                    // Channel settings count for the live connection too: the
+                    // next message already follows them.
+                    let old_encodings = std::mem::replace(
+                        &mut config.channel_encodings,
+                        channel_encodings(profile),
+                    );
+                    if let Some(connection) = &session.irc {
+                        follow_channel_settings(connection, &old_encodings, profile);
+                    }
                     // A new realname is sent at once with SETNAME when the
                     // connection has it; the server's answer says otherwise.
                     if config.realname != profile.realname {
@@ -3459,90 +3514,30 @@ impl ChatWindow {
         );
     }
 
-    /// Whether `channel` is an enabled auto-join entry of `network`'s server.
-    fn auto_join_enabled(&self, network: NetworkId, channel: &str) -> bool {
-        let mapping = self.state.casemapping(network);
-        self.sessions
-            .get(&network)
-            .and_then(|session| self.saved.profile(&session.profile_id))
-            .is_some_and(|profile| {
-                profile
-                    .channels()
-                    .iter()
-                    .any(|name| mapping.same(name, channel))
-            })
-    }
-
-    /// Adds (enables) or disables the menu's channel in its server's saved
-    /// auto-join list. Only the saved configuration changes: nothing is
-    /// joined or parted now, and a disabled entry stays in the list.
-    fn toggle_auto_join(&mut self, add: bool, cx: &mut Context<Self>) {
+    /// Opens the settings window on the channel settings of the channel the
+    /// context menu was opened on, in the server that channel belongs to. The
+    /// window saves them; nothing is joined or parted by that.
+    fn open_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(menu) = self.channel_menu.take() else {
             return;
         };
-        let Some(profile_id) = self
+        let Some(profile) = self
             .sessions
             .get(&menu.network)
             .map(|session| session.profile_id.clone())
         else {
             return;
         };
-        let mapping = self.state.casemapping(menu.network);
-        // Start from the file, which a settings window may have updated.
-        let mut settings = match settings_file::load() {
-            Ok(Some(settings)) => settings,
-            Ok(None) => self.saved.clone(),
-            Err(error) => {
-                // Saving over a file that cannot be read could destroy it.
-                self.report(Some(error), cx);
-                cx.notify();
-                return;
-            }
-        };
-        let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
+        if self.transfer_dialog_busy() {
             return;
-        };
-        let mut entries = profile.auto_join_entries();
-        let found = entries
-            .iter_mut()
-            .filter(|entry| mapping.same(&entry.name, &menu.channel))
-            .map(|entry| entry.enabled = add)
-            .count();
-        if found == 0 && add {
-            entries.push(AutoJoinEntry {
-                name: menu.channel.clone(),
-                enabled: true,
+        }
+        let mapping = self.state.casemapping(menu.network);
+        self.open_settings_for(Some(profile.clone()), window, cx);
+        if let Some(handle) = self.settings_window {
+            let _ = handle.update(cx, |settings, window, cx| {
+                settings.open_channel_settings(&profile, &menu.channel, mapping, window, cx)
             });
         }
-        profile.set_auto_join_entries(&entries);
-        let feedback = match settings_file::save(&settings) {
-            Ok(()) => {
-                if let Some(saved) = self.saved.servers.iter_mut().find(|p| p.id == profile_id) {
-                    saved.channels = settings
-                        .servers
-                        .iter()
-                        .find(|p| p.id == profile_id)
-                        .map(|p| p.channels.clone())
-                        .unwrap_or_default();
-                }
-                // The next reconnect joins the new list; nothing is sent now.
-                if let (Some(config), Some(profile)) = (
-                    self.sessions
-                        .get_mut(&menu.network)
-                        .and_then(|session| session.active_config.as_mut()),
-                    settings.servers.iter().find(|p| p.id == profile_id),
-                ) {
-                    let before = std::mem::replace(&mut config.channels, profile.channels());
-                    channel_keys::follow_channel_spelling(config);
-                    if channel_keys::keyed_channel_added(&before, profile) {
-                        self.refresh_stored_keys(menu.network, profile, cx);
-                    }
-                }
-                None
-            }
-            Err(error) => Some(error),
-        };
-        self.report(feedback, cx);
         cx.notify();
     }
 
@@ -3643,11 +3638,20 @@ impl ChatWindow {
                 }
                 shown
             }
-            charset_command::Request::Reset if current.is_none() => self
-                .i18n
-                .format("charset_reset_none", &[("channel", &shown_name)]),
+            charset_command::Request::Reset
+                if current
+                    .as_ref()
+                    .is_none_or(|entry| entry.decode.is_none() && entry.encode.is_none()) =>
+            {
+                self.i18n
+                    .format("charset_reset_none", &[("channel", &shown_name)])
+            }
             charset_command::Request::Reset | charset_command::Request::Set { .. } => {
                 let (decode, encode) = charset_command::apply(request, current.as_ref());
+                // Only the encodings are this command's: the channel's
+                // numeric character reference mode stays as it is.
+                let char_refs = current.as_ref().and_then(|entry| entry.char_refs);
+                let live_char_refs = char_refs.map(char_ref_mode);
                 let label = |side: Option<cayenchat_storage::TextEncoding>| {
                     side.map(cayenchat_storage::TextEncoding::label)
                 };
@@ -3659,7 +3663,7 @@ impl ChatWindow {
                     .and_then(|session| session.irc.as_ref());
                 if let Some(connection) = connection {
                     connection
-                        .set_channel_encoding(&name, label(decode), label(encode))
+                        .set_channel_encoding(&name, label(decode), label(encode), live_char_refs)
                         .map_err(|error| {
                             if connection.utf8_only() {
                                 self.i18n.text("charset_utf8only")
@@ -3678,6 +3682,7 @@ impl ChatWindow {
                             &name,
                             label(was_decode),
                             label(was_encode),
+                            live_char_refs,
                         );
                     }
                 };
@@ -3700,7 +3705,9 @@ impl ChatWindow {
                         revert(self);
                         not_channel()
                     })?;
-                if let Err(error) = saved.set_channel_charset(&name, decode, encode, same) {
+                if let Err(error) =
+                    saved.set_channel_charset(&name, decode, encode, char_refs, same)
+                {
                     revert(self);
                     return Err(error);
                 }
@@ -7662,27 +7669,19 @@ impl ChatWindow {
                         .when(!enabled, |d| d.text_color(theme.text_muted)),
                 );
             }
-            let auto_joined = self.auto_join_enabled(menu.network, &menu.channel);
             popup
                 .child(div().my_1().border_t_1().border_color(theme.separator))
                 .child(
                     div()
-                        .id("channel-menu-auto-join")
+                        .id("channel-menu-settings")
                         .px_2()
                         .py_1()
-                        .child(self.i18n.text(if auto_joined {
-                            "auto_join_remove_from"
-                        } else {
-                            "auto_join_add_to"
-                        }))
-                        .when(registered, |d| {
-                            d.cursor_pointer()
-                                .hover(|d| d.bg(theme.hover_strong))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_auto_join(!auto_joined, cx)
-                                }))
-                        })
-                        .when(!registered, |d| d.text_color(theme.text_muted)),
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme.hover_strong))
+                        .child(self.i18n.text("channel_settings_menu"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_channel_settings(window, cx)
+                        })),
                 )
                 .child(div().my_1().border_t_1().border_color(theme.separator))
                 .children(moves)

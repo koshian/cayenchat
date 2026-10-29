@@ -12,10 +12,12 @@ use crate::{
 };
 use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
+use cayenchat_model::{display, names::CaseMapping};
 use cayenchat_storage::{
-    Appearance, AutoJoinEntry, ChannelNumberModifier, CredentialBackendKind, CredentialStore,
-    DarkColors, Language, NoticeKey, Notifications, SaslMechanism, Secret, SecretKey, SendKey,
-    ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode, color_value,
+    Appearance, AutoJoinEntry, ChannelNumberModifier, CharRefMode, CredentialBackendKind,
+    CredentialStore, DarkColors, Language, NoticeKey, Notifications, SaslMechanism, Secret,
+    SecretKey, SendKey, ServerProfile, Settings, TextEncoding, TextKeyTheme, ThemeMode,
+    color_value,
 };
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, time::Duration};
@@ -1049,6 +1051,45 @@ pub(crate) struct AutoJoinRow {
     _subscription: Subscription,
 }
 
+/// The settings of one channel of the selected server (#680): joining it
+/// automatically, its encodings and its numeric character reference mode.
+/// Opened from the auto-join list or the channel menu. Nothing is written
+/// until Save, which does not join or part the channel either.
+pub(crate) struct ChannelSettingsDialog {
+    channel: String,
+    /// How the channel's network compares names, for finding its entries.
+    mapping: CaseMapping,
+    enabled: bool,
+    decode: Option<TextEncoding>,
+    encode: Option<TextEncoding>,
+    char_refs: Option<CharRefMode>,
+    /// The encoding list that is open.
+    open_list: Option<EncodingSide>,
+    error: Option<String>,
+    focus: FocusHandle,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EncodingSide {
+    Decode,
+    Encode,
+}
+
+/// The choices of a numeric character reference mode, with the label key of
+/// each. `inherit` adds the channel's "follow the server" choice.
+fn char_ref_choices(inherit: bool) -> Vec<(Option<CharRefMode>, &'static str)> {
+    let mut choices = Vec::new();
+    if inherit {
+        choices.push((None, "channel_settings_inherit"));
+    }
+    choices.extend([
+        (Some(CharRefMode::Auto), "char_refs_auto"),
+        (Some(CharRefMode::Iso2022Jp), "char_refs_iso2022jp"),
+        (Some(CharRefMode::Off), "char_refs_off"),
+    ]);
+    choices
+}
+
 /// The color picker open under one color row of the appearance settings.
 pub(crate) struct OpenColorPicker {
     /// The `#RRGGBB` field the picker edits.
@@ -1110,6 +1151,8 @@ pub(crate) struct SettingsWindow {
     pub(crate) avatar_editor: Option<avatar_editor::AvatarEditor>,
     /// The auto-join list being edited in its own dialog.
     pub(crate) auto_join: Option<AutoJoinDialog>,
+    /// The settings of one channel being edited in a dialog (#680).
+    pub(crate) channel_settings: Option<ChannelSettingsDialog>,
     /// An avatar image is being decoded or encoded.
     pub(crate) avatar_opening: bool,
     /// The quick icon section at the top of the Connection tab is expanded.
@@ -1351,6 +1394,7 @@ impl SettingsWindow {
             avatar_upload: AttachmentFlow::default(),
             avatar_editor: None,
             auto_join: None,
+            channel_settings: None,
             avatar_opening: false,
             avatar_quick_open: false,
             avatar_toggle_focus: cx.focus_handle().tab_stop(true),
@@ -1520,6 +1564,7 @@ impl SettingsWindow {
         self.font_picker = None;
         self.color_picker = None;
         self.auto_join = None;
+        self.channel_settings = None;
         self.shortcut_recording = None;
         self.refresh_upload_account(cx);
         cx.notify();
@@ -1943,7 +1988,14 @@ impl SettingsWindow {
             return;
         }
         cx.stop_propagation();
-        if self.auto_join.is_some() {
+        if let Some(dialog) = &mut self.channel_settings {
+            // An open list closes first; then the dialog, as Cancel.
+            if dialog.open_list.take().is_some() {
+                cx.notify();
+            } else {
+                self.cancel_channel_settings(window, cx);
+            }
+        } else if self.auto_join.is_some() {
             self.close_auto_join(window, cx);
         } else if self.avatar_editor.is_some() {
             self.avatar_editor = None;
@@ -2750,6 +2802,31 @@ impl SettingsWindow {
                     )
                     .child(div().flex_1().min_w_0().child(row.name.clone()))
                     .child(
+                        settings_theme::button(("auto-join-settings", index), false, cx)
+                            .child(self.i18n.text("channel_settings_button"))
+                            .when(
+                                !cayenchat_storage::valid_charset_channel(row.name.read(cx).text()),
+                                |d| d.opacity(0.4),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let Some(name) = this
+                                    .auto_join
+                                    .as_ref()
+                                    .and_then(|dialog| dialog.rows.get(index))
+                                    .map(|row| row.name.read(cx).text().to_owned())
+                                    .filter(|name| cayenchat_storage::valid_charset_channel(name))
+                                else {
+                                    return;
+                                };
+                                this.show_channel_settings(
+                                    &name,
+                                    CaseMapping::default(),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
                         settings_theme::button(("auto-join-up", index), false, cx)
                             .child(self.i18n.text("auto_join_move_up"))
                             .when(index == 0, |d| d.opacity(0.4))
@@ -3020,6 +3097,377 @@ impl SettingsWindow {
         window.focus(&input.read(cx).focus_handle(cx));
     }
 
+    /// Opens the settings of `channel` in the shown server, which must be
+    /// `profile`: the dialog writes to the shown server, so a different one
+    /// (the form could not leave the one it was on) opens nothing.
+    pub(crate) fn open_channel_settings(
+        &mut self,
+        profile: &str,
+        channel: &str,
+        mapping: CaseMapping,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .settings
+            .values
+            .selected_profile()
+            .is_none_or(|shown| shown.id != profile)
+        {
+            self.feedback = Some(self.i18n.text("channel_settings_other_server"));
+            cx.notify();
+            return;
+        }
+        self.show_channel_settings(channel, mapping, window, cx);
+    }
+
+    /// Opens the dialog on what the shown server holds for `channel`.
+    fn show_channel_settings(
+        &mut self,
+        channel: &str,
+        mapping: CaseMapping,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self.settings.values.selected_profile() else {
+            return;
+        };
+        let same = |left: &str, right: &str| mapping.same(left, right);
+        let enabled = profile
+            .auto_join_entries()
+            .iter()
+            .any(|entry| entry.enabled && same(&entry.name, channel));
+        let saved = profile.channel_charset(channel, same);
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        self.channel_settings = Some(ChannelSettingsDialog {
+            channel: channel.to_owned(),
+            mapping,
+            enabled,
+            decode: saved.and_then(|entry| entry.decode),
+            encode: saved.and_then(|entry| entry.encode),
+            char_refs: saved.and_then(|entry| entry.char_refs),
+            open_list: None,
+            error: None,
+            focus,
+        });
+        cx.notify();
+    }
+
+    /// Where the keyboard focus goes when the channel dialog closes: the
+    /// auto-join dialog it was opened from, or the settings categories.
+    fn leave_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.channel_settings = None;
+        match &self.auto_join {
+            Some(dialog) => window.focus(&dialog.focus),
+            None => window.focus(&self.nav_focus),
+        }
+        cx.notify();
+    }
+
+    /// Reset to default: the encodings and the reference mode follow the
+    /// server again, once saved. The auto-join choice is not one of them.
+    pub(crate) fn reset_channel_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.channel_settings {
+            dialog.decode = None;
+            dialog.encode = None;
+            dialog.char_refs = None;
+            dialog.open_list = None;
+        }
+        cx.notify();
+    }
+
+    /// Cancel: nothing changes.
+    pub(crate) fn cancel_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_channel_settings(window, cx);
+    }
+
+    /// Save: writes the encodings, the reference mode and the auto-join
+    /// choice of the channel together, then saves the settings as the
+    /// auto-join dialog does. The connection is not touched: the chat window
+    /// applies the saved channel settings, and a JOIN or PART is never sent.
+    pub(crate) fn save_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.channel_settings else {
+            return;
+        };
+        let (channel, mapping, enabled) = (dialog.channel.clone(), dialog.mapping, dialog.enabled);
+        let (decode, encode, char_refs) = (dialog.decode, dialog.encode, dialog.char_refs);
+        let same = |left: &str, right: &str| mapping.same(left, right);
+        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            return;
+        };
+        if let Err(error) = profile.set_channel_charset(&channel, decode, encode, char_refs, same) {
+            if let Some(dialog) = &mut self.channel_settings {
+                dialog.error = Some(error);
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(dialog) = &mut self.auto_join {
+            // The list being edited is the source: its rows write the field.
+            for row in &mut dialog.rows {
+                if same(row.name.read(cx).text(), &channel) {
+                    row.enabled = enabled;
+                }
+            }
+            self.sync_auto_join(cx);
+        } else {
+            let mut entries = profile.auto_join_entries();
+            let found = entries
+                .iter_mut()
+                .filter(|entry| same(&entry.name, &channel))
+                .map(|entry| entry.enabled = enabled)
+                .count();
+            // A channel that was never listed is not added just to be off.
+            if found == 0 && enabled {
+                entries.push(AutoJoinEntry {
+                    name: channel,
+                    enabled: true,
+                });
+            }
+            let text = cayenchat_storage::format_auto_join(&entries);
+            profile.channels = text.trim().to_owned();
+            self.settings
+                .channels
+                .update(cx, |field, cx| field.set_text(&text, cx));
+        }
+        self.leave_channel_settings(window, cx);
+        self.autosave_now(None, cx);
+    }
+
+    fn render_channel_settings_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let dialog = self.channel_settings.as_ref()?;
+        let theme = settings_theme::palette(cx);
+        let inherit = self.i18n.text("channel_settings_inherit");
+        let mut encodings = div().flex().flex_col().gap_1();
+        for (side, key, current) in [
+            (
+                EncodingSide::Decode,
+                "channel_settings_decode",
+                dialog.decode,
+            ),
+            (
+                EncodingSide::Encode,
+                "channel_settings_encode",
+                dialog.encode,
+            ),
+        ] {
+            let id = match side {
+                EncodingSide::Decode => "channel-decode",
+                EncodingSide::Encode => "channel-encode",
+            };
+            let open = dialog.open_list == Some(side);
+            let mut selector = div().flex().flex_col().child(
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .child(format!(
+                        "{}  ▾",
+                        current.map_or_else(|| inherit.clone(), |e| e.label().to_owned())
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.channel_settings {
+                            dialog.open_list = (dialog.open_list != Some(side)).then_some(side);
+                        }
+                        cx.notify();
+                    })),
+            );
+            if open {
+                let mut menu = div()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.surface);
+                let options = std::iter::once(None).chain(TextEncoding::ALL.into_iter().map(Some));
+                for (index, option) in options.enumerate() {
+                    menu = menu.child(
+                        div()
+                            .id((id, index))
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover))
+                            .when(current == option, |d| d.bg(theme.selected))
+                            .child(option.map_or(inherit.clone(), |e| e.label().to_owned()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(dialog) = &mut this.channel_settings {
+                                    match side {
+                                        EncodingSide::Decode => dialog.decode = option,
+                                        EncodingSide::Encode => dialog.encode = option,
+                                    }
+                                    dialog.open_list = None;
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+                selector = selector.child(menu);
+            }
+            encodings = encodings.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(settings_theme::LABEL_WIDTH)
+                            .flex_shrink_0()
+                            .child(self.i18n.text(key)),
+                    )
+                    .child(selector.flex_1().min_w_0()),
+            );
+        }
+        let mut modes = div().flex().flex_wrap().gap_1();
+        for (index, (mode, key)) in char_ref_choices(true).into_iter().enumerate() {
+            modes = modes.child(
+                settings_theme::button(("channel-char-refs", index), dialog.char_refs == mode, cx)
+                    .child(self.i18n.text(key))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.channel_settings {
+                            dialog.char_refs = mode;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        let panel = div()
+            .id("channel-settings-dialog")
+            .track_focus(&dialog.focus)
+            // Nothing behind the dialog takes the focus.
+            .on_action(cx.listener(|this, _: &FocusNextField, window, cx| {
+                if let Some(dialog) = &this.channel_settings {
+                    window.focus(&dialog.focus);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
+                if let Some(dialog) = &this.channel_settings {
+                    window.focus(&dialog.focus);
+                }
+                cx.notify();
+            }))
+            .occlude()
+            .w(px(560.))
+            .max_w_full()
+            .max_h_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_4()
+            .bg(theme.surface)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_md()
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(self.i18n.text("channel_settings_title")),
+            )
+            .child(
+                div()
+                    .id("channel-settings-name")
+                    .truncate()
+                    .child(display::neutralize_bidi(&dialog.channel).into_owned()),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("channel_settings_hint")),
+            )
+            .child(
+                div()
+                    .id("channel-settings-auto-join")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(settings_theme::checkbox(dialog.enabled, true, cx))
+                    .child(self.i18n.text("channel_settings_auto_join"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(dialog) = &mut this.channel_settings {
+                            dialog.enabled = !dialog.enabled;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(encodings)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(settings_theme::LABEL_WIDTH)
+                            .flex_shrink_0()
+                            .child(self.i18n.text("channel_settings_char_refs")),
+                    )
+                    .child(modes.flex_1().min_w_0()),
+            )
+            .child(
+                div()
+                    .ml(settings_theme::LABEL_INDENT)
+                    .text_color(theme.text_secondary)
+                    .child(self.i18n.text("iso2022jp_char_refs_hint")),
+            )
+            .children(dialog.error.clone().map(|error| {
+                div()
+                    .id("channel-settings-error")
+                    .text_color(theme.warning)
+                    .child(error)
+            }))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(
+                        settings_theme::button("channel-settings-reset", false, cx)
+                            .child(self.i18n.text("channel_settings_reset"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.reset_channel_settings(cx)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                settings_theme::button("channel-settings-cancel", false, cx)
+                                    .child(self.i18n.text("channel_settings_cancel"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.cancel_channel_settings(window, cx)
+                                    })),
+                            )
+                            .child(
+                                settings_theme::button("channel-settings-save", true, cx)
+                                    .child(self.i18n.text("channel_settings_save"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_channel_settings(window, cx)
+                                    })),
+                            ),
+                    ),
+            );
+        Some(
+            div()
+                .id("channel-settings-backdrop")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .bg(gpui::black().opacity(0.4))
+                .child(panel)
+                .into_any_element(),
+        )
+    }
+
     /// Adds a server, blank or filled in from a preset's `host`.
     fn choose_preset(&mut self, host: &str, cx: &mut Context<Self>) {
         self.settings
@@ -3054,6 +3502,7 @@ impl SettingsWindow {
         self.avatar_setup_link = false;
         self.avatar_editor = None;
         self.auto_join = None;
+        self.channel_settings = None;
         match self.settings.switch_server(change, &self.i18n, cx) {
             Ok(()) => self.feedback = None,
             Err(error) => self.feedback = Some(error),
@@ -3660,23 +4109,40 @@ impl SettingsWindow {
             .child(
                 div()
                     .id("iso2022jp-char-refs")
-                    .ml(settings_theme::LABEL_INDENT)
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap_2()
-                    .cursor_pointer()
-                    .child(settings_theme::checkbox(
-                        profile.iso2022jp_char_refs,
-                        true,
-                        cx,
-                    ))
-                    .child(self.i18n.text("iso2022jp_char_refs"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(profile) = this.settings.values.selected_profile_mut() {
-                            profile.iso2022jp_char_refs = !profile.iso2022jp_char_refs;
-                        }
-                        cx.notify();
-                    })),
+                    .child(
+                        div()
+                            .w(settings_theme::LABEL_WIDTH)
+                            .flex_shrink_0()
+                            .child(self.i18n.text("iso2022jp_char_refs")),
+                    )
+                    .child(div().flex().flex_wrap().gap_1().children(
+                        char_ref_choices(false).into_iter().enumerate().filter_map(
+                            |(index, (mode, key))| {
+                                let mode = mode?;
+                                Some(
+                                    settings_theme::button(
+                                        ("char-refs-mode", index),
+                                        profile.char_refs == mode,
+                                        cx,
+                                    )
+                                    .child(self.i18n.text(key))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            if let Some(profile) =
+                                                this.settings.values.selected_profile_mut()
+                                            {
+                                                profile.char_refs = mode;
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            },
+                        ),
+                    )),
             )
             .child(
                 div()
@@ -4888,6 +5354,7 @@ impl SettingsWindow {
             SettingsTab::Experimental => self.render_experimental_settings(cx).into_any_element(),
         };
         let auto_join = self.render_auto_join_dialog(cx);
+        let channel_settings = self.render_channel_settings_dialog(cx);
         self.reveal_focused(window, cx);
         div()
             .id("settings-screen")
@@ -4935,6 +5402,7 @@ impl SettingsWindow {
                     )),
             )
             .children(auto_join)
+            .children(channel_settings)
             .on_action(cx.listener(Self::open_settings_action))
             .when(
                 self.owner
@@ -5741,5 +6209,162 @@ mod escape_tests {
         let (_form, cx, app) = open(cx, settings);
         cx.simulate_keystrokes("escape");
         assert_eq!(app.clone().update(|app| app.windows().len()), 1);
+    }
+
+    use cayenchat_model::names::CaseMapping;
+    use cayenchat_storage::{CharRefMode, TextEncoding};
+
+    fn open_channel(
+        form: &gpui::Entity<SettingsWindow>,
+        channel: &str,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        let profile = form.read_with(cx, |form, _| {
+            form.settings.values.selected_profile().unwrap().id.clone()
+        });
+        form.update_in(cx, |form, window, cx| {
+            form.open_channel_settings(&profile, channel, CaseMapping::default(), window, cx)
+        });
+    }
+
+    fn saved_profile(form: &gpui::Entity<SettingsWindow>, cx: &gpui::VisualTestContext) -> String {
+        form.read_with(cx, |form, _| {
+            let profile = form.settings.values.selected_profile().unwrap();
+            format!("{} {:?}", profile.channels, profile.channel_charsets)
+        })
+    }
+
+    #[gpui::test]
+    fn channel_settings_save_cancel_and_reset(cx: &mut TestAppContext) {
+        let settings = crate::settings_with_channels("#a,-#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        let same = |left: &str, right: &str| CaseMapping::default().same(left, right);
+
+        // A disabled entry opens unchecked; Cancel changes nothing.
+        open_channel(&form, "#B", cx);
+        form.read_with(cx, |form, _| {
+            let dialog = form.channel_settings.as_ref().unwrap();
+            assert!(!dialog.enabled && dialog.decode.is_none() && dialog.char_refs.is_none());
+        });
+        let before = saved_profile(&form, cx);
+        form.update_in(cx, |form, window, cx| {
+            let dialog = form.channel_settings.as_mut().unwrap();
+            dialog.enabled = true;
+            dialog.decode = Some(TextEncoding::Gbk);
+            form.cancel_channel_settings(window, cx);
+        });
+        assert_eq!(saved_profile(&form, cx), before);
+        assert!(form.read_with(cx, |form, _| form.channel_settings.is_none()));
+
+        // Save writes the three settings and the auto-join state together,
+        // to the settings file as well.
+        open_channel(&form, "#b", cx);
+        form.update_in(cx, |form, window, cx| {
+            let dialog = form.channel_settings.as_mut().unwrap();
+            dialog.enabled = true;
+            dialog.decode = Some(TextEncoding::Gbk);
+            dialog.encode = Some(TextEncoding::Iso2022Jp);
+            dialog.char_refs = Some(CharRefMode::Iso2022Jp);
+            form.save_channel_settings(window, cx);
+        });
+        let on_file = crate::settings_file::load().unwrap().unwrap();
+        let profile = on_file.selected_profile().unwrap();
+        assert_eq!(profile.channels, "#a,#b");
+        let entry = profile.channel_charset("#b", same).unwrap();
+        assert_eq!(entry.decode, Some(TextEncoding::Gbk));
+        assert_eq!(entry.encode, Some(TextEncoding::Iso2022Jp));
+        assert_eq!(entry.char_refs, Some(CharRefMode::Iso2022Jp));
+
+        // Reset keeps the auto-join choice; saved, the channel follows the
+        // server again. Turning auto-join off keeps the other settings.
+        open_channel(&form, "#b", cx);
+        form.update_in(cx, |form, window, cx| {
+            assert!(form.channel_settings.as_ref().unwrap().enabled);
+            form.reset_channel_settings(cx);
+            let dialog = form.channel_settings.as_ref().unwrap();
+            assert!(dialog.enabled && dialog.decode.is_none() && dialog.encode.is_none());
+            assert!(dialog.char_refs.is_none());
+            form.channel_settings.as_mut().unwrap().char_refs = Some(CharRefMode::Off);
+            form.channel_settings.as_mut().unwrap().enabled = false;
+            form.save_channel_settings(window, cx);
+        });
+        let on_file = crate::settings_file::load().unwrap().unwrap();
+        let profile = on_file.selected_profile().unwrap();
+        assert_eq!(profile.channels, "#a,-#b");
+        let entry = profile.channel_charset("#b", same).unwrap();
+        assert_eq!(entry.decode, None);
+        assert_eq!(entry.char_refs, Some(CharRefMode::Off));
+
+        // A channel nobody listed gets its settings without being added.
+        open_channel(&form, "#new", cx);
+        form.update_in(cx, |form, window, cx| {
+            form.channel_settings.as_mut().unwrap().char_refs = Some(CharRefMode::Auto);
+            form.save_channel_settings(window, cx);
+        });
+        let on_file = crate::settings_file::load().unwrap().unwrap();
+        let profile = on_file.selected_profile().unwrap();
+        assert_eq!(profile.channels, "#a,-#b");
+        assert_eq!(profile.channel_charsets.len(), 2);
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn channel_settings_open_only_for_the_shown_server_and_escape_cancels(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        settings.add_server("other.example");
+        settings.selected_server = settings.servers[0].id.clone();
+        let (form, cx, _app) = open(cx, settings);
+        let other = form.read_with(cx, |form, _| form.settings.values.servers[1].id.clone());
+        form.update_in(cx, |form, window, cx| {
+            form.open_channel_settings(&other, "#a", CaseMapping::default(), window, cx)
+        });
+        assert!(form.read_with(cx, |form, _| form.channel_settings.is_none()));
+        assert!(form.read_with(cx, |form, _| form.feedback.is_some()));
+
+        open_channel(&form, "#a", cx);
+        form.update(cx, |form, _| {
+            form.channel_settings.as_mut().unwrap().decode = Some(TextEncoding::Big5);
+            form.channel_settings.as_mut().unwrap().open_list = Some(super::EncodingSide::Decode);
+        });
+        // An open list closes first, then the dialog without saving.
+        cx.simulate_keystrokes("escape");
+        assert!(form.read_with(cx, |form, _| form.channel_settings.is_some()));
+        cx.simulate_keystrokes("escape");
+        assert!(form.read_with(cx, |form, _| form.channel_settings.is_none()));
+        assert!(form.read_with(cx, |form, _| {
+            form.settings
+                .values
+                .selected_profile()
+                .unwrap()
+                .channel_charsets
+                .is_empty()
+        }));
+    }
+
+    #[gpui::test]
+    fn channel_settings_from_the_auto_join_list_follow_its_rows(cx: &mut TestAppContext) {
+        let settings = crate::settings_with_channels("#a,#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        form.update_in(cx, |form, window, cx| form.open_auto_join(window, cx));
+        open_channel(&form, "#b", cx);
+        form.update_in(cx, |form, window, cx| {
+            let dialog = form.channel_settings.as_mut().unwrap();
+            dialog.enabled = false;
+            dialog.char_refs = Some(CharRefMode::Iso2022Jp);
+            form.save_channel_settings(window, cx);
+            // The list stays open on the saved state.
+            assert!(form.auto_join.is_some());
+            assert!(!form.auto_join.as_ref().unwrap().rows[1].enabled);
+            assert!(form.auto_join.as_ref().unwrap().rows[0].enabled);
+        });
+        let on_file = crate::settings_file::load().unwrap().unwrap();
+        assert_eq!(on_file.selected_profile().unwrap().channels, "#a,-#b");
+        assert_eq!(
+            on_file.selected_profile().unwrap().channel_charsets[0].char_refs,
+            Some(CharRefMode::Iso2022Jp)
+        );
+        drop(file);
     }
 }

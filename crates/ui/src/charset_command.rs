@@ -167,6 +167,7 @@ mod tests {
             channel: "#a".into(),
             decode: Some(TextEncoding::Big5),
             encode: None,
+            char_refs: None,
         };
         let set = |request| apply(request, Some(&entry));
         assert_eq!(
