@@ -627,8 +627,9 @@ this delay.
    login password once however many passwords are saved, and opening settings
    afterwards should not ask again. Restart with startup connection on and verify
    they are used. Turn saving off (a registered server asks first) and verify the entries disappear right after confirming; for a new, unsaved server they disappear when **Save** is pressed.
-   A version 10 settings file with saved passwords should lose them from the
-   file on the next start and gain the store entries.
+   Settings versions 1–10 should be rejected without changing the file; startup
+   should keep an unreadable copy before any later save replaces it. Settings
+   from version 11 onward should continue to load.
 5. Close settings with its window close button and verify CayenChat stays open.
    Reopen settings from the menu and shortcut. Verify text editing, draft retention,
    and channel navigation in the chat window.
@@ -1043,9 +1044,8 @@ On Apple Silicon macOS (rustc 1.95.0), `cargo fmt --check`, workspace Clippy
 and workspace tests passed. Automated coverage: credential store get/set/delete,
 backend migration, unavailable backend without fallback, local file round trip
 with `0600`/`0700` permissions and re-tightening, sanitized errors, XDG path
-rules, redacted `Debug` output, settings version 11 migration (username from
-nickname, plaintext passwords moved to the store or to the local file when the
-system store is unavailable, never re-serialized), USER/NICK/PASS/SASL on the
+rules, redacted `Debug` output, rejection of settings versions 1–10 and settings
+version 11 migration (username from nickname), USER/NICK/PASS/SASL on the
 wire in local `irc-core` fixtures, multipart construction, ImgBB reply
 mapping, the attachment state machine, and GPUI tests for text paste, image
 paste, drop, confirmation/cancel, configure/reconnect guidance, failed upload

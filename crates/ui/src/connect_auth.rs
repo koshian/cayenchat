@@ -95,10 +95,12 @@ pub(crate) fn uses_key(config: &ConnectionConfig) -> bool {
 }
 
 /// Whether `config` still connects the way `profile` says: same server,
-/// port, TLS and SASL account and mechanism. The profile's stored secrets
-/// belong to that identity; a `config` that differs (the settings changed
-/// while the session kept its old connection) must not be given them, or a
-/// password or key could go to another server or into another mechanism.
+/// port, TLS and certificate policy, plaintext-password policy, and SASL
+/// account and mechanism. The profile's stored secrets belong to that
+/// configuration; a `config` that differs (the settings changed while the
+/// session kept its old connection) must not be given them, or a password or
+/// key could go to another server, into another mechanism, or under an
+/// outdated transport policy.
 pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig) -> bool {
     let sasl = match (&config.sasl, profile.sasl_enabled) {
         (None, false) => true,
@@ -111,6 +113,8 @@ pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig
     sasl && config.host == profile.host
         && config.port == profile.port
         && config.use_tls == profile.use_tls
+        && config.verify_tls_certificates == profile.verify_tls_certificates
+        && config.allow_plaintext_pass == profile.allow_plaintext_pass
 }
 
 /// The passwords `config` sends that the profile does not note as saved:
@@ -956,14 +960,15 @@ mod tests {
     /// The profile `config(sasl)` was made from.
     fn profile(sasl: bool) -> cayenchat_storage::ServerProfile {
         let config = config(sasl);
-        let mut profile = cayenchat_storage::ServerProfile::default();
-        profile.host = config.host;
-        profile.port = config.port;
-        profile.use_tls = config.use_tls;
-        profile.sasl_enabled = sasl;
-        profile.sasl_username = "acct".into();
-        profile.sasl_mechanism = cayenchat_storage::SaslMechanism::Plain;
-        profile
+        cayenchat_storage::ServerProfile {
+            host: config.host,
+            port: config.port,
+            use_tls: config.use_tls,
+            sasl_enabled: sasl,
+            sasl_username: "acct".into(),
+            sasl_mechanism: cayenchat_storage::SaslMechanism::Plain,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -992,6 +997,12 @@ mod tests {
         assert!(!matches_profile(&changed, &old));
         let mut changed = profile(true);
         changed.use_tls = !changed.use_tls;
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.verify_tls_certificates = !changed.verify_tls_certificates;
+        assert!(!matches_profile(&changed, &old));
+        let mut changed = profile(true);
+        changed.allow_plaintext_pass = !changed.allow_plaintext_pass;
         assert!(!matches_profile(&changed, &old));
         assert!(!matches_profile(&profile(false), &old));
         assert!(!matches_profile(&profile(true), &config(false)));

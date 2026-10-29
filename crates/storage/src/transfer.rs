@@ -87,21 +87,13 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         .and_then(serde_json::Value::as_u64)
         .and_then(|version| u32::try_from(version).ok())
         .unwrap_or(0);
-    // Version 1 has a single server in flat fields. Later ones list servers;
-    // a file without the list would otherwise read as "no servers" and
-    // empty the configuration.
-    if source_version >= 2
-        && !object
-            .get("servers")
-            .is_some_and(serde_json::Value::is_array)
+    if !object
+        .get("servers")
+        .is_some_and(serde_json::Value::is_array)
     {
         return Err("The file has no server list, so it is not a CayenChat settings file.".into());
     }
-    if source_version >= 2 {
-        check_servers(object)?;
-    } else {
-        check_version_1(object)?;
-    }
+    check_servers(object)?;
     let mut settings = parse_settings(bytes, "The current settings were left unchanged.")?;
     if settings.servers.len() > MAX_IMPORT_SERVERS {
         return Err(format!(
@@ -112,8 +104,6 @@ fn import_from_bytes(bytes: &[u8]) -> Result<Import, String> {
         .appearance
         .validate()
         .map_err(|error| format!("The file holds an invalid appearance setting: {error}"))?;
-    // Passwords of old versions are never carried over.
-    drop(settings.take_legacy_secrets());
     let dropped_local_paths = settings.experimental.debug_logging
         || settings.experimental.stderr_file.is_some()
         || settings.conversation_log.directory.is_some();
@@ -173,30 +163,6 @@ fn check_servers(object: &serde_json::Map<String, serde_json::Value>) -> Result<
         if server.get("port").and_then(serde_json::Value::as_u64) == Some(0) {
             return Err(format!("Server {number} has port 0."));
         }
-    }
-    Ok(())
-}
-
-/// Version 1 keeps its one server in flat fields. Loading fills in defaults
-/// for what is missing and drops a custom server without host or with port
-/// 0, which would restore a default or no server from a damaged file.
-fn check_version_1(object: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
-    let Some(choice) = object.get("server").and_then(serde_json::Value::as_str) else {
-        return Err("The file has no server, so it is not a CayenChat settings file.".into());
-    };
-    if !matches!(choice, "ircnet" | "ircnet_ipv6" | "custom") {
-        return Err(format!("The file names an unknown server \"{choice}\"."));
-    }
-    if choice == "custom"
-        && object
-            .get("custom_host")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|host| host.trim().is_empty())
-    {
-        return Err("The file's custom server has no host.".into());
-    }
-    if object.get("port").and_then(serde_json::Value::as_u64) == Some(0) {
-        return Err("The file's server has port 0.".into());
     }
     Ok(())
 }
@@ -299,11 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn an_export_holds_no_secret() {
+    fn plaintext_password_fields_are_rejected_during_import() {
         let directory = directory("secrets");
-        let path = directory.join("export.json");
+        let path = directory.join("import.json");
         let value = serde_json::json!({
-            "version": 10,
+            "version": 15,
             "selected_server": "custom-1",
             "servers": [{
                 "id": "custom-1", "host": "irc.example.org", "port": 6697,
@@ -311,37 +277,22 @@ mod tests {
                 "server_password": "hunter2-server", "sasl_password": "hunter2-sasl"
             }]
         });
-        fs::write(&path, value.to_string()).unwrap();
-        let import = read_import(&path).unwrap();
-        assert!(!import.settings.has_legacy_secrets());
-        export_to(&path, &import.settings).unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(!text.contains("hunter2"));
-        assert!(!text.contains("password\""));
+        let bytes = value.to_string();
+        fs::write(&path, &bytes).unwrap();
+        let error = read_import(&path).unwrap_err();
+        assert!(error.contains("plaintext password fields"));
+        assert!(!error.contains("hunter2"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn older_versions_are_migrated_and_newer_ones_refused() {
-        let old = serde_json::json!({
-            "version": 1, "server": "custom", "custom_host": "irc.example.org",
-            "port": 6667, "use_tls": false, "nickname": "bob", "channels": "#c"
-        });
-        let import = import_from_bytes(old.to_string().as_bytes()).unwrap();
-        assert_eq!(import.source_version, 1);
-        assert_eq!(import.settings.servers[0].nickname, "bob");
-        assert_eq!(import.settings.version, SETTINGS_VERSION);
-
-        for damaged in [
-            serde_json::json!({ "version": 1 }),
-            serde_json::json!({ "version": 1, "server": "custom", "custom_host": "", "port": 6667 }),
-            serde_json::json!({ "version": 1, "server": "custom", "custom_host": "h", "port": 0 }),
-            serde_json::json!({ "version": 1, "server": "nowhere" }),
-        ] {
-            let result = import_from_bytes(damaged.to_string().as_bytes());
-            assert!(result.is_err(), "{damaged}");
+    fn unsupported_versions_are_refused() {
+        for version in 1..11 {
+            let old = serde_json::json!({ "version": version, "servers": [] });
+            let error = import_from_bytes(old.to_string().as_bytes()).unwrap_err();
+            assert!(error.contains("older than this app supports"), "{error}");
         }
-
         let newer = serde_json::json!({ "version": SETTINGS_VERSION + 1, "servers": [] });
         let error = import_from_bytes(newer.to_string().as_bytes()).unwrap_err();
         assert!(error.contains("newer"), "{error}");

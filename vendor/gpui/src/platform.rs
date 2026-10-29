@@ -1,6 +1,10 @@
 mod app_menu;
+mod clipboard_data;
 mod keyboard;
 mod keystroke;
+
+#[cfg(target_os = "windows")]
+pub(crate) use clipboard_data::{decode_clipboard_utf16, with_locked_clipboard_data};
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;

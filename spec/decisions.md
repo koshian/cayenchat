@@ -179,8 +179,8 @@ CAP negotiation in `irc-core`. The initial implementation covered one network
 and manual reconnect; multi-server support is D017.
 
 Version 4 preferences store multiple server profiles and order user-added entries
-before built-in choices. Versions 1–3
-migrate on load with certificate verification enabled. Each profile owns its
+before built-in choices. Settings versions 1–10 are rejected (D074).
+Each profile owns its
 wire character encoding. RFC 2812 specifies no IRC charset, and channel names are
 protocol parameters whose encoded bytes identify the channel. Use the same selected
 encoding for full IRC lines, including Japanese channel names, rather than assuming
@@ -318,11 +318,12 @@ Linux desktops without a Secret Service must keep working.
 
 Rules: the backend is an explicit setting (default System); nothing falls back
 silently; choosing the local file needs confirmation; switching migrates known
-secrets. The one automatic move is migrating version ≤10 plaintext passwords
-out of `settings.json`: into the chosen store, or into the local file only if
-the system store is unavailable, since those passwords were already plaintext
-with the user's consent. Keys use stable internal IDs, never nicknames,
-hostnames or display names. `Secret`, `ConnectionConfig` and `SaslCredentials`
+secrets. Settings versions 1–10 are rejected; those pre-release formats can
+contain plaintext passwords and supporting them creates a lossy migration path
+when credential storage fails. The reader preserves unreadable settings and
+reports the error instead of replacing them with defaults. Keys use stable
+internal IDs, never nicknames, hostnames or display names. `Secret`,
+`ConnectionConfig` and `SaslCredentials`
 redact their `Debug` output; credential errors carry sanitized text only.
 
 The UI reads the store only from a GPUI global that startup installs before
@@ -1490,9 +1491,7 @@ D021 that stored typed passwords with Save of the server.
   fails is treated like an empty store: the dialog asks, and the saved
   passwords and their notes are left alone. Cancelling the dialog ends the
   "connecting" status (the server shows as disconnected); a configuration that is unusable raises the
-  error and opens that server's settings. The one-time migration of
-  pre-version-11 plaintext passwords (`migrate_legacy_secrets`) is the only
-  write at launch, and only when such passwords exist.
+  error and opens that server's settings. Startup does not migrate credentials.
 - **Memory.** `ServerSession::active_config` is kept without passwords
   (`ConnectionConfig::forget_secrets`, `zeroize`); only the fact that a server
   password was used is remembered. Typed dialog fields are emptied when the
@@ -1825,18 +1824,16 @@ does the work, `settings_transfer` draws the questions in the chat window
   the current versioned format to a file the user picks (default name
   `cayenchat-settings.json`), replacing it whole or not at all, user-only
   permissions. The settings file is not touched. Secrets cannot get in:
-  they are not in `Settings` (D014; the legacy plaintext fields are never
-  serialized) and nothing reads the credential store. A notice before the
+  they are not in `Settings` (D014) and nothing reads the credential store. A notice before the
   save dialog says what the file does contain (server, channel, nick and
   real names).
 - **Import** replaces the whole configuration; no merging, no selection of
   servers (future work). The file must be a regular file of at most 1 MiB,
-  an object with a supported `version` (older ones go through the normal
-  migration, a newer one is refused with the settings left alone), a server
+  an object with a supported `version` (11 through the current version; older
+  and newer ones are refused with the settings left alone), a server
   list (at most 256 servers) and valid values. A list that loading would
   quietly trim (a server without id or host, a repeated id, port 0) is
-  refused, as is a damaged version 1 file (no or unknown `server`, a custom
-  server without host, port 0), so an import never restores less than the file lists. It is read in the background
+  refused, so an import never restores less than the file lists. It is read in the background
   and only then confirmed: what is replaced, that every connection is
   dropped, that passwords are not carried over, how many servers connect on
   startup (none connects now), and that another OS's settings may not fit.
@@ -1856,8 +1853,9 @@ does the work, `settings_transfer` draws the questions in the chat window
 - **Credentials.** Every imported server gets a fresh `custom-<uuid>`
   profile id (the selection follows), so a credential-store entry of this
   computer can never be taken for an imported server's, even when ids
-  happened to match; plaintext passwords of old files are dropped, not
-  migrated. The credentials of the servers being replaced are left in the
+  happened to match. Supported imports cannot contain plaintext passwords;
+  old settings versions and files with password fields are refused. The
+  credentials of the servers being replaced are left in the
   store (not deleted, so restoring the backup still finds them); they are
   unused entries until removed by hand or by a later cleanup.
 - **Machine-specific values** stay as this computer has them: the
@@ -2472,8 +2470,9 @@ The maintainer approved this specification on the issue (2026-10-13).
   network names whose ID suffix would be cut) stay apart; no other name
   keeps a `~`, so a cut name never equals another name. The path is a join
   of escaped components below the folder, so a server cannot write outside
-  it; the folder, its parents and the directories below it may be symbolic
-  links the user made (only the log file itself is not followed).
+  it; the selected folder and its parents may be symbolic links the user
+  made, but every directory below the selected folder must be a real
+  directory (the log file itself is also never followed).
   The file is opened without following a symbolic link (`O_NOFOLLOW`, and a
   check on other platforms) and without waiting on a pipe (`O_NONBLOCK`),
   `0600` in `0700` directories. Before the first write to a file the opened
@@ -2535,6 +2534,10 @@ The maintainer approved this specification on the issue (2026-10-13).
   Application page; the file is reopened by the next record. The thread
   calls a `Notify` callback when it first fails or finds the folder locked,
   which wakes the chat window, so the notice does not wait for an IRC event.
+  There is no per-file size limit, rotation or retention period: conversation
+  log disk usage is managed by the user. A write failure does not stop the
+  writer or the application; the queued records continue to be handled, and
+  the file is retried on the next record.
   The thread takes an exclusive lock on `<folder>/.cayenchat-log.lock`
   (opened for writing, not append-only: Windows cannot lock an append-only
   handle, a regular file only, never waiting on a pipe; `File::try_lock`, so
@@ -3207,3 +3210,17 @@ list). The account name is the same field as for the other mechanisms.
   `Connection` follow the profile's channel entries (changed ones set,
   removed ones cleared). On a `UTF8ONLY` server the encodings that cannot be
   used are left out and the mode still applies.
+
+## D074 — Reject unsupported settings formats (#692)
+
+**Status:** Accepted
+
+2026-10-29. CayenChat has not released yet, so the startup migration for
+version 10 and earlier plaintext passwords is removed instead of adding a
+failure/retry transaction. Settings versions 1–10 are refused by both normal
+loading and import, and the source file remains unchanged by either reader.
+Plaintext password fields are not deserialized into `Settings`, and no startup
+credential-store migration runs. This removes the path where a later save could
+erase passwords after a store failure. Startup tries to keep a protected copy
+before a later save can replace an unreadable file. Versions 11 through the
+current version remain supported.

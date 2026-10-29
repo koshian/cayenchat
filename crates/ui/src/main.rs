@@ -1260,11 +1260,18 @@ impl ChatWindow {
             Some(ConnectionStatus::Connecting) => self.i18n.text("status_connecting"),
             Some(ConnectionStatus::TransportConnected) => self.i18n.text("status_registering"),
             Some(ConnectionStatus::Registered) => self.i18n.text("status_connected"),
-            Some(ConnectionStatus::Disconnected(reason)) => self
-                .i18n
-                .format("status_disconnected", &[("reason", reason)]),
+            Some(ConnectionStatus::Disconnected(reason)) => {
+                Self::disconnected_status_text(&self.i18n, reason)
+            }
             None => self.i18n.text("status_unknown"),
         }
+    }
+
+    /// A disconnection reason comes from the server; neutralize it where the
+    /// status row is drawn.
+    fn disconnected_status_text(i18n: &Localizer, reason: &str) -> String {
+        display::neutralize_bidi(&i18n.format("status_disconnected", &[("reason", reason)]))
+            .into_owned()
     }
 
     /// The label for a server: its saved display name when set, else the
@@ -2213,6 +2220,10 @@ impl ChatWindow {
             if let Some(session) = self.sessions.get_mut(&id) {
                 if let Some(config) = session.active_config.as_mut() {
                     config.ircv3 = ircv3_options(profile.ircv3);
+                    // Credential transport policy applies to automatic
+                    // reconnects too; the current connection is not changed.
+                    config.verify_tls_certificates = profile.verify_tls_certificates;
+                    config.allow_plaintext_pass = profile.allow_plaintext_pass;
                     // Read by the next connection, automatic reconnects
                     // included, so switching it off stops them at once.
                     config.regain_ops = profile.regain_ops;
@@ -9971,14 +9982,13 @@ fn is_first_run(loaded: &Result<Option<Settings>, String>) -> bool {
     }
 }
 
-/// Loads settings and moves plaintext passwords saved by older versions into
-/// the credential store. Returns a notice for the chat window, and whether
-/// there was no saved server (the first run, #521); a file that cannot be
-/// read is not a first run.
+/// Loads settings. Returns a notice for the chat window, and whether there was
+/// no saved server (the first run, #521); a file that cannot be read is not a
+/// first run.
 fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
     let loaded = cayenchat_storage::load();
     let first_run = is_first_run(&loaded);
-    let mut saved = match loaded {
+    let saved = match loaded {
         Ok(saved) => saved.unwrap_or_default(),
         Err(error) => {
             // The next save replaces the file, so keep what could not be read.
@@ -9993,17 +10003,7 @@ fn load_settings_at_startup() -> (Settings, Option<String>, bool) {
     let logging_error = diagnostics::configure(&saved.experimental)
         .err()
         .map(|error| i18n.format("debug_log_error", &[("error", &error)]));
-    let notice = match cayenchat_storage::migrate_legacy_secrets(&mut saved, &CredentialStore::open)
-    {
-        Ok(None) => None,
-        Ok(Some(report)) if report.used_local_file => Some(i18n.text("legacy_migrated_local")),
-        Ok(Some(_)) => Some(i18n.text("legacy_migrated")),
-        Err(error) => Some(i18n.format("credential_error", &[("error", &error)])),
-    };
-    let notice = match (notice, logging_error) {
-        (Some(first), Some(second)) => Some(format!("{first}\n{second}")),
-        (notice, logging_error) => notice.or(logging_error),
-    };
+    let notice = logging_error;
     (saved, notice, first_run)
 }
 
@@ -10430,3 +10430,7 @@ mod unread_log_position_tests;
 #[cfg(test)]
 #[path = "main_tests/send_key_tests.rs"]
 mod send_key_tests;
+
+#[cfg(test)]
+#[path = "../../../vendor/gpui/src/platform/clipboard_data.rs"]
+mod clipboard_data_regression_tests;

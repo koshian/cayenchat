@@ -2509,10 +2509,9 @@ fn the_insertion_line_compares_positions_within_the_server() {
 
 #[test]
 fn a_window_with_older_settings_follows_the_servers_order_in_the_file() {
-    let profile = |id: &str| {
-        let mut profile = cayenchat_storage::ServerProfile::default();
-        profile.id = id.to_owned();
-        profile
+    let profile = |id: &str| cayenchat_storage::ServerProfile {
+        id: id.to_owned(),
+        ..Default::default()
     };
     let ids = |servers: &[cayenchat_storage::ServerProfile]| -> Vec<String> {
         servers.iter().map(|p| p.id.clone()).collect()
@@ -4383,6 +4382,82 @@ fn the_regain_setting_reaches_an_automatic_reconnect(cx: &mut TestAppContext) {
         chat.apply_servers(on, cx);
         let config = chat.reconnect_config(NetworkId(1)).unwrap();
         assert!(config.regain_ops);
+    });
+}
+
+#[gpui::test]
+fn saved_credential_transport_policies_reach_an_automatic_reconnect(cx: &mut TestAppContext) {
+    use cayenchat_irc_core::Event;
+
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a");
+    settings.add_server("irc.example.org");
+    settings.language = cayenchat_storage::Language::English;
+    settings.servers[0].nickname = "alice".into();
+    settings.servers[0].username = "alice".into();
+    settings.servers[0].use_tls = true;
+    settings.servers[0].verify_tls_certificates = false;
+    settings.servers[1].nickname = "bob".into();
+    settings.servers[1].username = "bob".into();
+    settings.servers[1].allow_plaintext_pass = true;
+    let mut safer = settings.clone();
+    safer.servers[0].verify_tls_certificates = true;
+    safer.servers[1].allow_plaintext_pass = false;
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update(cx, |chat, cx| {
+        for (index, nickname) in ["alice", "bob"].into_iter().enumerate() {
+            let network = NetworkId(index as u32 + 1);
+            let config = crate::connection_config(
+                &settings.servers[index],
+                cayenchat_storage::Language::English,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(crate::connect_auth::matches_profile(
+                &settings.servers[index],
+                &config
+            ));
+            chat.sessions.get_mut(&network).unwrap().active_config = Some(config);
+            chat.handle_events(
+                network,
+                vec![
+                    Event::Registered {
+                        nickname: nickname.into(),
+                    },
+                    Event::Disconnected("connection reset".into()),
+                ],
+                Worker::Running,
+                cx,
+            );
+        }
+
+        chat.apply_servers(safer.clone(), cx);
+        for index in 0..2 {
+            let network = NetworkId(index as u32 + 1);
+            let config = chat.reconnect_config(network).unwrap();
+            assert_eq!(
+                config.verify_tls_certificates,
+                safer.servers[index].verify_tls_certificates
+            );
+            assert_eq!(
+                config.allow_plaintext_pass,
+                safer.servers[index].allow_plaintext_pass
+            );
+            assert!(crate::connect_auth::matches_profile(
+                &safer.servers[index],
+                &config
+            ));
+        }
     });
 }
 
