@@ -2789,12 +2789,7 @@ impl SettingsWindow {
                 .filter(|entry| entry.enabled)
                 .map(|entry| entry.name)
                 .collect();
-        const SHOWN: usize = 5;
-        match names.len() {
-            0 => self.i18n.text("auto_join_none"),
-            n if n > SHOWN => format!("{}, …", names[..SHOWN].join(", ")),
-            _ => names.join(", "),
-        }
+        join_summary(&names, self.i18n.text("auto_join_none"))
     }
 
     fn render_auto_join_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -5507,6 +5502,47 @@ impl Render for SettingsWindow {
         let title = self.i18n.text("settings_title");
         let content = self.render_settings(window, cx).into_any_element();
         decorations::window_frame(window, cx, title, content)
+    }
+}
+
+/// The auto-join line: up to five names, then an ellipsis. Names can come
+/// from an imported settings file, so each is neutralized on its own to keep
+/// the boundaries between names readable.
+fn join_summary(names: &[String], none: String) -> String {
+    const SHOWN: usize = 5;
+    let shown = names
+        .iter()
+        .take(SHOWN)
+        .map(|name| display::neutralize_bidi(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match names.len() {
+        0 => none,
+        n if n > SHOWN => format!("{shown}, …"),
+        _ => shown,
+    }
+}
+
+#[cfg(test)]
+mod join_summary_tests {
+    use super::join_summary;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn bidi_controls_in_names_are_neutralized() {
+        let summary = join_summary(&names(&["#a\u{202E}b", "#日本語"]), String::new());
+        assert_eq!(summary, "#a\u{200B}b, #日本語");
+    }
+
+    #[test]
+    fn plain_summaries_are_unchanged() {
+        assert_eq!(join_summary(&[], "(none)".into()), "(none)");
+        assert_eq!(join_summary(&names(&["#a", "#b"]), String::new()), "#a, #b");
+        let many = names(&["#1", "#2", "#3", "#4", "#5", "#6"]);
+        assert_eq!(join_summary(&many, String::new()), "#1, #2, #3, #4, #5, …");
     }
 }
 
