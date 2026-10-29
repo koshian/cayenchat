@@ -3230,6 +3230,80 @@ fn sasl_failure_stops_registration() {
 }
 
 #[test]
+fn welcome_before_sasl_success_stops_registration() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(socket.try_clone().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            lines.read_line(&mut line).unwrap();
+            if line.starts_with("USER ") {
+                break;
+            }
+        }
+        socket
+            .write_all(b":server CAP alice LS :sasl=PLAIN\r\n")
+            .unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "CAP REQ sasl");
+        socket
+            .write_all(b":server CAP alice ACK :sasl\r\n")
+            .unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "AUTHENTICATE PLAIN");
+        socket.write_all(b"AUTHENTICATE +\r\n").unwrap();
+        line.clear();
+        lines.read_line(&mut line).unwrap();
+        assert!(line.starts_with("AUTHENTICATE "));
+        socket.write_all(b":server 001 alice :Welcome\r\n").unwrap();
+        line.clear();
+        assert_eq!(lines.read_line(&mut line).unwrap(), 0);
+    });
+
+    let mut config = ConnectionConfig::tls("127.0.0.1".into(), "alice".into(), vec![]);
+    config.port = port;
+    config.use_tls = false; // The private worker is tested without a certificate.
+    config.sasl = Some(SaslCredentials {
+        mechanism: Default::default(),
+        username: "account".into(),
+        password: "secret".into(),
+    });
+    let (_commands, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel(EVENT_CAPACITY);
+    let worker = thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(config, command_rx, event_tx));
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut failure = None;
+    while Instant::now() < deadline {
+        match event_rx.try_recv() {
+            Ok(Event::Refused(reason)) => {
+                failure = Some(reason);
+                break;
+            }
+            Ok(Event::Disconnected(reason)) => panic!("retryable SASL refusal: {reason}"),
+            Ok(Event::Registered { .. }) => panic!("registered before SASL success"),
+            _ => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(failure.as_deref(), Some("SASL authentication failed."));
+    server.join().unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
 fn password_mismatch_is_refused_instead_of_retryable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
