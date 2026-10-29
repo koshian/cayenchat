@@ -237,3 +237,6 @@ reader rejects empty allocations, failed `GlobalLock`, odd byte lengths,
 buffers without an in-range UTF-16 NUL, and strings over 16 MiB. Current GPUI
 upstream has a locked-global guard, but its string reader still accepts missing
 terminators and has no size cap; this local patch also bounds the UTF-16 scan.
+The decoder and post-lock guard live in `src/platform/clipboard_data.rs`; the
+UI crate's workspace test target includes that same source so CI executes the
+regressions even though GPUI is a dependency rather than a workspace member.

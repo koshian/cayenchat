@@ -10412,3 +10412,7 @@ mod unread_log_position_tests;
 #[cfg(test)]
 #[path = "main_tests/send_key_tests.rs"]
 mod send_key_tests;
+
+#[cfg(test)]
+#[path = "../../../vendor/gpui/src/platform/clipboard_data.rs"]
+mod clipboard_data_regression_tests;

@@ -20,7 +20,7 @@ use windows_core::PCWSTR;
 
 use crate::{
     ClipboardEntry, ClipboardItem, ClipboardString, Image, ImageFormat, decode_clipboard_utf16,
-    hash,
+    hash, with_locked_clipboard_data,
 };
 
 // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragqueryfilew
@@ -369,32 +369,12 @@ where
 {
     let global = HGLOBAL(unsafe { GetClipboardData(format).ok() }?.0);
     let size = unsafe { GlobalSize(global) };
-    if size == 0 {
-        return None;
-    }
     let data_ptr = unsafe { GlobalLock(global) };
-    if !global_is_locked(data_ptr) {
-        return None;
+    let result = with_locked_clipboard_data(data_ptr, size, f);
+    if !data_ptr.is_null() {
+        unsafe { GlobalUnlock(global).ok() };
     }
-    let result = f(data_ptr, size);
-    unsafe { GlobalUnlock(global).ok() };
-    Some(result)
-}
-
-fn global_is_locked(data_ptr: *mut std::ffi::c_void) -> bool {
-    !data_ptr.is_null()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::global_is_locked;
-    use std::ffi::c_void;
-
-    #[test]
-    fn rejects_a_failed_global_lock() {
-        assert!(!global_is_locked(std::ptr::null_mut()));
-        assert!(global_is_locked(1usize as *mut c_void));
-    }
+    result
 }
 
 impl From<ImageFormat> for image::ImageFormat {
