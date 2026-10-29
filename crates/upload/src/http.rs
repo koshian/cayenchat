@@ -4,7 +4,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cayenchat_model::attachment::Attachment;
+use cayenchat_model::{attachment::Attachment, display::neutralize_bidi_owned};
 
 use crate::UploadError;
 
@@ -122,12 +122,15 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// A provider message made safe to show: no control characters, bounded.
+/// A provider message made safe to show: no control characters,
+/// bidirectional controls neutralized, bounded.
 pub(crate) fn display_message(text: &str) -> String {
-    text.chars()
+    let plain: String = text
+        .chars()
         .filter(|ch| !ch.is_control())
         .take(160)
-        .collect()
+        .collect();
+    neutralize_bidi_owned(plain)
 }
 
 #[cfg(test)]
@@ -154,5 +157,9 @@ mod tests {
         assert!(text.contains("Content-Type: image/png\r\n\r\n\u{fffd}PNG"));
         assert!(text.ends_with(&format!("\r\n--{boundary}--\r\n")));
         assert_eq!(display_message("a\r\nb"), "ab");
+        assert_eq!(
+            display_message("a\u{202E}b\u{2066}\x07\n"),
+            "a\u{200B}b\u{200B}"
+        );
     }
 }

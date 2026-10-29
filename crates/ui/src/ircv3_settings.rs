@@ -415,7 +415,7 @@ impl SettingsWindow {
                     div()
                         .ml(settings_theme::LABEL_INDENT)
                         .text_color(theme.warning)
-                        .child(feedback),
+                        .child(feedback_line(&feedback)),
                 )
             })
             .when(self.avatar_opening, |section| {
@@ -1119,6 +1119,17 @@ pub(crate) fn own_avatar_failure(failure: AvatarRequestFailure) -> Failure {
     }
 }
 
+/// A line of settings feedback that may carry text from a server or an upload
+/// service, made safe where it is drawn: controls (including line breaks)
+/// become spaces and bidirectional controls are neutralized.
+pub(crate) fn feedback_line(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    cayenchat_model::display::neutralize_bidi_owned(flat)
+}
+
 /// The line describing `outcome`, and whether it is a failure.
 pub(crate) fn outcome_text(
     i18n: &crate::localization::Localizer,
@@ -1156,7 +1167,7 @@ pub(crate) fn outcome_text(
                     i18n.format("ircv3_avatar_not_sent", &[("error", error)])
                 }
             };
-            (text, true)
+            (feedback_line(&text), true)
         }
     }
 }
@@ -1185,6 +1196,33 @@ mod tests {
     };
     use crate::session::PeerAvatarConnection;
     use cayenchat_storage::{Ircv3Preferences, Language, ServerProfile, Settings};
+
+    #[test]
+    fn rejected_outcome_shows_no_bidi_or_control_characters() {
+        use cayenchat_app::own_avatar::{Action, Failure, Outcome};
+        let i18n = crate::localization::Localizer::new(Language::System);
+        let spoofed = |code: &str, description: &str| {
+            let outcome = Outcome::Failed(
+                Action::Publish,
+                Failure::Rejected {
+                    code: code.into(),
+                    description: description.into(),
+                },
+            );
+            super::outcome_text(&i18n, &outcome)
+        };
+        let (text, failed) = spoofed("BAD\u{202E}", "no\u{2066}pe\x07\r\nx");
+        assert!(failed);
+        assert!(
+            !text
+                .chars()
+                .any(|ch| ch.is_control() || cayenchat_model::display::is_bidi_control(ch)),
+            "{text:?}"
+        );
+        assert!(text.contains("no\u{200B}pe"));
+        let (plain, _) = spoofed("INVALID", "Too large");
+        assert!(plain.contains("INVALID") && plain.contains("Too large"));
+    }
 
     #[test]
     fn server_label_prefers_the_display_name_over_host_and_port() {
