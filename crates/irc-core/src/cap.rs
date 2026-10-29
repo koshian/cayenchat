@@ -377,9 +377,14 @@ impl CapNegotiation {
             {
                 continue;
             }
-            let value = value
-                .filter(|value| value.len() <= MAX_VALUE_BYTES)
-                .map(str::to_owned);
+            let value = match value {
+                Some(value) if value.len() <= MAX_VALUE_BYTES => Some(value.to_owned()),
+                // An explicit `sasl` list that is too long to keep must not
+                // read as a bare `sasl` (any mechanism): keep it as an empty
+                // list, which offers none.
+                Some(_) if name == SASL => Some(String::new()),
+                _ => None,
+            };
             self.offered.insert(name.to_owned(), value);
         }
     }
@@ -804,6 +809,27 @@ mod tests {
             .observe(&line(":s CAP * LS :sasl=plain,scram-sha-256"))
             .unwrap();
         assert_eq!(sent(&step), ["CAP REQ sasl"]);
+    }
+
+    #[test]
+    fn an_oversized_sasl_list_does_not_read_as_a_bare_sasl() {
+        let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
+        cap.start();
+        let padding = "x".repeat(MAX_VALUE_BYTES + 8);
+        let error = cap
+            .observe(&line(&format!(":s CAP * LS :sasl=EXTERNAL,{padding}")))
+            .unwrap_err();
+        assert_eq!(error, "Server does not offer SASL PLAIN.");
+
+        // Bare `sasl` and a plain list are still accepted.
+        for offered in ["sasl", "sasl=PLAIN"] {
+            let mut cap = CapNegotiation::new(Ircv3Options::default(), Some(credentials()), true);
+            cap.start();
+            let step = cap
+                .observe(&line(&format!(":s CAP * LS :{offered}")))
+                .unwrap();
+            assert_eq!(sent(&step), ["CAP REQ sasl"]);
+        }
     }
 
     #[test]
