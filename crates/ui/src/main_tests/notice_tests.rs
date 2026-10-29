@@ -166,10 +166,12 @@ fn only_what_the_draft_said_is_answered_by_a_dialog(cx: &mut TestAppContext) {
         cayenchat_irc_core::ConnectionConfig::tls("127.0.0.1".into(), "me".into(), Vec::new());
     config.port = listener.local_addr().unwrap().port();
     config.use_tls = false;
-    let connection = cayenchat_irc_core::Connection::connect(config).unwrap();
+    let connection = cayenchat_irc_core::Connection::connect(config.clone()).unwrap();
     let network = NetworkId(1);
     chat.update(cx, |chat, cx| {
-        chat.sessions.get_mut(&network).unwrap().irc = Some(connection);
+        let session = chat.sessions.get_mut(&network).unwrap();
+        session.active_config = Some(config);
+        session.irc = Some(connection);
         chat.handle_events(
             network,
             vec![

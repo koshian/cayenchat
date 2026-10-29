@@ -115,6 +115,15 @@ pub struct ServerSession {
     pub watchdog_stage: u8,
     /// Invalidates the event pump and watchdog of a replaced connection.
     pub generation: u64,
+    /// Invalidates asynchronous channel-key reads after a key or auto-join
+    /// configuration changes within this connection.
+    pub channel_key_revision: u64,
+    /// Identifies the newest in-flight write for each channel, so an
+    /// unrelated channel's later write does not discard this one's result.
+    pub channel_key_write_revisions: HashMap<String, u64>,
+    /// Prevents a refresh from applying a snapshot while a key write is in
+    /// flight.
+    pub channel_key_writes_pending: usize,
     /// Our own avatar as this server confirmed it on the current
     /// connection; the draft URL lives in the settings profile.
     pub own_avatar: OwnAvatar,
@@ -170,6 +179,9 @@ impl ServerSession {
             disconnected_at: None,
             watchdog_stage: 0,
             generation: 0,
+            channel_key_revision: 0,
+            channel_key_write_revisions: HashMap::new(),
+            channel_key_writes_pending: 0,
             own_avatar: OwnAvatar::default(),
             metadata_requested: false,
             peer_avatars: PeerAvatarConnection::default(),

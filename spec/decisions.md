@@ -2125,10 +2125,20 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   dialog. Auto-join channels are added when the connection registers.
 - **Off the UI thread.** Reading saved keys for a manual `/join`, saving or
   deleting a key after our JOIN, and refreshing the running connection's keys
-  after the auto-join list changes run in background tasks; the results are
-  applied only if the session still belongs to the same profile. The keys of a
-  connection started from saved settings are read while its configuration is
-  built, like the passwords it already reads there.
+  after the auto-join list changes run in background tasks. A manual JOIN or
+  refresh read records its profile, connection generation, host, port and TLS
+  setting; its result is discarded if any differ when it completes. Both also
+  record the session's channel-key revision, so a key save, deletion or
+  auto-join list change while the read is in flight cannot send an older key or
+  restore an older snapshot to the running configuration or key notes. A
+  refresh is discarded while a key write is in flight. Completing a successful
+  key write also advances the shared read revision, so a refresh that began
+  during that write cannot apply a snapshot from before the change. A completed
+  save or deletion updates notes and the running configuration only while its
+  originating connection and that channel's latest write revision are still
+  current; writes to different channels each update their own result. The keys
+  of a connection started from saved settings are read while its configuration
+  is built, like the passwords it already reads there.
 - **Remember choice.** A dialog reopened after a refused typed key keeps the
   checkbox the user chose for that attempt.
 - **Storage name.** The channel is lowercased by ASCII only, because the

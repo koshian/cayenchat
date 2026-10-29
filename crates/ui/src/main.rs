@@ -2231,6 +2231,9 @@ impl ChatWindow {
                     config.shared_avatar = shared.clone();
                     // The auto-join list too: reconnects join the saved one.
                     let before = std::mem::replace(&mut config.channels, profile.channels());
+                    if before != config.channels {
+                        session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
+                    }
                     // The sleep QUIT reads these when the machine sleeps, so
                     // saved changes count for the current connection too.
                     // Settings saving does not validate them, and a bad one
