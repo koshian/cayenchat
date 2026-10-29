@@ -601,14 +601,13 @@ impl ChatWindow {
         // The prompt holds the configuration of when it opened. If the
         // settings changed since, what was typed would go to the old server
         // under the new settings' name.
-        let stale = matches!(resume, Resume::Reconnect { .. })
-            && self.sessions.get(&network).is_some_and(|session| {
-                self.saved
-                    .profile(&session.profile_id)
-                    .is_some_and(|profile| {
-                        !matches_profile(profile, &self.credential_prompts[index].config)
-                    })
-            });
+        let stale = self.sessions.get(&network).is_some_and(|session| {
+            self.saved
+                .profile(&session.profile_id)
+                .is_some_and(|profile| {
+                    !matches_profile(profile, &self.credential_prompts[index].config)
+                })
+        });
         if stale {
             self.close_credential_prompt(index, window, cx);
             let text = self.i18n.text("reconnect_settings_changed");

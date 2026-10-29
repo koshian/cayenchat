@@ -126,6 +126,40 @@ fn a_reconnect_after_the_settings_changed_does_not_use_the_new_secrets(cx: &mut 
 }
 
 #[gpui::test]
+fn a_dialog_open_while_the_settings_change_sends_and_saves_nothing(cx: &mut TestAppContext) {
+    for fresh in [false, true] {
+        let (chat, store, cx) = open_chat(cx);
+        let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
+        chat.update_in(cx, |chat, window, cx| {
+            if fresh {
+                let missing = crate::connect_auth::Missing {
+                    sasl: true,
+                    ..Default::default()
+                };
+                chat.connect_fresh(NET, config(true), missing, window, cx)
+                    .unwrap();
+            } else {
+                chat.start_reconnect(NET, false, cx);
+            }
+        });
+        cx.run_until_parked();
+        chat.update_in(cx, |chat, window, cx| {
+            assert_eq!(chat.credential_prompts.len(), 1);
+            chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
+            type_password(chat, true, "typed", cx);
+            chat.saved.servers[0].host = "other.example".into();
+            chat.submit_credential_prompt(NET, window, cx);
+        });
+        cx.run_until_parked();
+        chat.update(cx, |chat, _| {
+            assert!(chat.credential_prompts.is_empty(), "fresh: {fresh}");
+            assert!(chat.sessions[&NET].irc.is_none(), "fresh: {fresh}");
+        });
+        assert!(!store.contains(&key).unwrap(), "fresh: {fresh}");
+    }
+}
+
+#[gpui::test]
 fn a_password_typed_in_the_dialog_is_used_but_not_saved_or_kept(cx: &mut TestAppContext) {
     let (chat, store, cx) = open_chat(cx);
     let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
