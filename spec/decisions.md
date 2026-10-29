@@ -2130,12 +2130,13 @@ menus and prompts) and, at connection start, by the auto-join list; `/join
   setting; its result is discarded if any differ when it completes. Both also
   record the session's channel-key revision, so a key save, deletion or
   auto-join list change while the read is in flight cannot send an older key or
-  restore an older snapshot to the running configuration or key notes. Results
-  are held while a key write is in flight. A completed save or deletion updates
-  notes and the running configuration only while its originating connection
-  and channel-key revision are still current. The keys of a connection started
-  from saved settings are read while its configuration is built, like the
-  passwords it already reads there.
+  restore an older snapshot to the running configuration or key notes. A
+  refresh is discarded while a key write is in flight. A completed save or
+  deletion updates notes and the running configuration only while its
+  originating connection and that channel's latest write revision are still
+  current; writes to different channels each update their own result. The keys
+  of a connection started from saved settings are read while its configuration
+  is built, like the passwords it already reads there.
 - **Remember choice.** A dialog reopened after a refused typed key keeps the
   checkbox the user chose for that attempt.
 - **Storage name.** The channel is lowercased by ASCII only, because the

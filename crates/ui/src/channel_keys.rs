@@ -462,9 +462,13 @@ impl ChatWindow {
         let Some((target, revision)) = self.sessions.get_mut(&network).and_then(|session| {
             let target = JoinTarget::new(session)?;
             session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
+            let revision = session.channel_key_revision;
+            session
+                .channel_key_write_revisions
+                .insert(channel.to_ascii_lowercase(), revision);
             session.channel_key_writes_pending =
                 session.channel_key_writes_pending.saturating_add(1);
-            Some((target, session.channel_key_revision))
+            Some((target, revision))
         }) else {
             return;
         };
@@ -512,7 +516,10 @@ impl ChatWindow {
     ) {
         let current = self.sessions.get(&network).is_some_and(|session| {
             session.profile_id == write.profile
-                && session.channel_key_revision == write.revision
+                && session
+                    .channel_key_write_revisions
+                    .get(&write.channel.to_ascii_lowercase())
+                    == Some(&write.revision)
                 && write.target.matches(session)
         });
         if let Some(session) = self
@@ -522,8 +529,10 @@ impl ChatWindow {
         {
             session.channel_key_writes_pending =
                 session.channel_key_writes_pending.saturating_sub(1);
-            if session.channel_key_writes_pending == 0 {
-                session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
+            if current {
+                session
+                    .channel_key_write_revisions
+                    .remove(&write.channel.to_ascii_lowercase());
             }
         }
         if !current {

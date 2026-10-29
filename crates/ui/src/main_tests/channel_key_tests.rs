@@ -3,14 +3,11 @@ use super::{ChatWindow, Worker};
 use crate::channel_keys::{JoinTarget, KeyJoin};
 use cayenchat_irc_core::{ChannelActivityKind, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
-use cayenchat_storage::{
-    CredentialBackendKind, CredentialError, CredentialStore, Secret, SecretKey,
-    credentials::CredentialBackend,
-};
+use cayenchat_storage::{CredentialStore, Secret, SecretKey};
 use gpui::TestAppContext;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
-use std::sync::{Mutex, mpsc};
+use std::sync::mpsc;
 
 const NET: NetworkId = NetworkId(1);
 
@@ -94,12 +91,6 @@ fn key_of(store: &CredentialStore, chat: &ChatWindow) -> Option<String> {
         .map(|key| key.expose().to_owned())
 }
 
-struct DelayedRead {
-    ready: Mutex<Option<mpsc::Sender<()>>>,
-    release: Mutex<mpsc::Receiver<()>>,
-    finished: Mutex<Option<mpsc::Sender<()>>>,
-}
-
 fn local_connection() -> (
     cayenchat_irc_core::Connection,
     ConnectionConfig,
@@ -137,52 +128,6 @@ fn local_connection() -> (
     (connection, config, join_rx)
 }
 
-fn delayed_store() -> (
-    CredentialStore,
-    mpsc::Receiver<()>,
-    mpsc::Sender<()>,
-    mpsc::Receiver<()>,
-) {
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    let (finished_tx, finished_rx) = mpsc::channel();
-    let store = CredentialStore::with_backend(std::sync::Arc::new(DelayedRead {
-        ready: Mutex::new(Some(ready_tx)),
-        release: Mutex::new(release_rx),
-        finished: Mutex::new(Some(finished_tx)),
-    }));
-    (store, ready_rx, release_tx, finished_rx)
-}
-
-impl CredentialBackend for DelayedRead {
-    fn kind(&self) -> CredentialBackendKind {
-        CredentialBackendKind::System
-    }
-
-    fn is_memory(&self) -> bool {
-        true
-    }
-
-    fn get(&self, _key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
-        if let Some(ready) = self.ready.lock().unwrap().take() {
-            ready.send(()).unwrap();
-        }
-        self.release.lock().unwrap().recv().unwrap();
-        if let Some(finished) = self.finished.lock().unwrap().take() {
-            finished.send(()).unwrap();
-        }
-        Ok(Some(Secret::new("saved-key")))
-    }
-
-    fn set(&self, _key: &SecretKey, _value: &Secret) -> Result<(), CredentialError> {
-        Ok(())
-    }
-
-    fn delete(&self, _key: &SecretKey) -> Result<(), CredentialError> {
-        Ok(())
-    }
-}
-
 #[gpui::test]
 fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
     let (chat, _store, cx) = open_chat(None, cx);
@@ -209,9 +154,14 @@ fn only_475_for_our_own_join_opens_the_dialog(cx: &mut TestAppContext) {
 fn delayed_join_key_read_uses_the_registered_connection_and_drops_replaced_connection(
     cx: &mut TestAppContext,
 ) {
-    let (chat, _memory, cx) = open_chat(None, cx);
-    let (store, ready_rx, release_tx, finished_rx) = delayed_store();
-    cx.update(|cx| cx.set_global(crate::secrets::Credentials(store)));
+    let (chat, store, cx) = open_chat(None, cx);
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    store
+        .set(
+            &SecretKey::channel_key(&profile, "#Secret"),
+            &Secret::new("saved-key"),
+        )
+        .unwrap();
 
     let (old_connection, old_config, _old_join) = local_connection();
     chat.update(cx, |chat, cx| {
@@ -224,10 +174,6 @@ fn delayed_join_key_read_uses_the_registered_connection_and_drops_replaced_conne
         event(chat, registered(), cx);
         chat.join_channels(NET, &["#Secret".into()], cx).unwrap();
     });
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the real /join path reached the delayed credential read");
-
     let (new_connection, new_config, new_join) = local_connection();
     chat.update(cx, |chat, cx| {
         let session = chat.sessions.get_mut(&NET).unwrap();
@@ -238,10 +184,6 @@ fn delayed_join_key_read_uses_the_registered_connection_and_drops_replaced_conne
         session.irc = Some(new_connection);
         event(chat, registered(), cx);
     });
-    release_tx.send(()).unwrap();
-    finished_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the delayed backend returned the saved key");
     cx.run_until_parked();
 
     assert_eq!(
@@ -261,9 +203,14 @@ fn delayed_join_key_read_uses_the_registered_connection_and_drops_replaced_conne
 fn delayed_join_key_read_sends_the_key_when_its_connection_is_still_current(
     cx: &mut TestAppContext,
 ) {
-    let (chat, _memory, cx) = open_chat(None, cx);
-    let (store, ready_rx, release_tx, finished_rx) = delayed_store();
-    cx.update(|cx| cx.set_global(crate::secrets::Credentials(store)));
+    let (chat, store, cx) = open_chat(None, cx);
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    store
+        .set(
+            &SecretKey::channel_key(&profile, "#Secret"),
+            &Secret::new("saved-key"),
+        )
+        .unwrap();
     let (connection, config, join_rx) = local_connection();
     chat.update(cx, |chat, cx| {
         chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
@@ -275,13 +222,6 @@ fn delayed_join_key_read_sends_the_key_when_its_connection_is_still_current(
         event(chat, registered(), cx);
         chat.join_channels(NET, &["#Secret".into()], cx).unwrap();
     });
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the real /join path reached the delayed credential read");
-    release_tx.send(()).unwrap();
-    finished_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the delayed backend returned the saved key");
     cx.run_until_parked();
     assert_eq!(
         join_rx
@@ -293,19 +233,13 @@ fn delayed_join_key_read_sends_the_key_when_its_connection_is_still_current(
 
 #[gpui::test]
 fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext) {
-    let (chat, _memory, cx) = open_chat(Some("old-key"), cx);
-    let (store, ready_rx, release_tx, finished_rx) = delayed_store();
-    cx.update(|cx| cx.set_global(crate::secrets::Credentials(store)));
+    let (chat, _store, cx) = open_chat(Some("old-key"), cx);
     chat.update(cx, |chat, cx| {
         chat.saved.servers[0].keyed_channels = Some(vec!["#Secret".into()]);
         let profile_id = chat.sessions[&NET].profile_id.clone();
         let profile = chat.saved.profile(&profile_id).unwrap().clone();
         chat.refresh_stored_keys(NET, &profile, cx);
     });
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("refresh reached the delayed credential read");
-
     chat.update(cx, |chat, cx| {
         let session = chat.sessions.get_mut(&NET).unwrap();
         session.key_joins.push(KeyJoin {
@@ -328,10 +262,6 @@ fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext)
         );
     });
 
-    release_tx.send(()).unwrap();
-    finished_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("the delayed backend returned the stale key snapshot");
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
         assert!(
@@ -344,6 +274,70 @@ fn a_delayed_key_refresh_cannot_restore_a_forgotten_key(cx: &mut TestAppContext)
         );
         assert!(!chat.saved.servers[0].channel_key_noted("#Secret"));
     });
+}
+
+#[gpui::test]
+fn successful_key_writes_for_different_channels_both_update_the_config(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(None, cx);
+    let profile = chat.read_with(cx, |chat, _| chat.sessions[&NET].profile_id.clone());
+    store
+        .set(
+            &SecretKey::channel_key(&profile, "#a"),
+            &Secret::new("old-a"),
+        )
+        .unwrap();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].keyed_channels = Some(vec!["#a".into()]);
+        let session = chat.sessions.get_mut(&NET).unwrap();
+        let config = session.active_config.as_mut().unwrap();
+        config.channels = vec!["#a".into(), "#b".into()];
+        config.channel_keys.insert("#a".into(), "old-a".into());
+        session.key_joins = vec![
+            KeyJoin {
+                channel: "#a".into(),
+                typed: Some(Secret::new("rejected-a")),
+                remember: false,
+                stale: true,
+            },
+            KeyJoin {
+                channel: "#b".into(),
+                typed: Some(Secret::new("key-b")),
+                remember: true,
+                stale: false,
+            },
+        ];
+        chat.key_join_succeeded(NET, "#a", cx);
+        chat.key_join_succeeded(NET, "#b", cx);
+    });
+    cx.run_until_parked();
+
+    chat.update(cx, |chat, _| {
+        let session = &chat.sessions[&NET];
+        let config = session.active_config.as_ref().unwrap();
+        assert!(!config.channel_keys.contains_key("#a"));
+        assert_eq!(
+            config.channel_keys.get("#b").map(String::as_str),
+            Some("key-b")
+        );
+        assert!(!chat.saved.servers[0].channel_key_noted("#a"));
+        assert!(chat.saved.servers[0].channel_key_noted("#b"));
+    });
+    assert!(
+        store
+            .get(&SecretKey::channel_key(&profile, "#a"))
+            .unwrap()
+            .is_none()
+    );
+    for (channel, expected) in [("#b", "key-b")] {
+        assert_eq!(
+            store
+                .get(&SecretKey::channel_key(&profile, channel))
+                .unwrap()
+                .unwrap()
+                .expose(),
+            expected
+        );
+    }
 }
 
 #[test]
