@@ -1258,11 +1258,18 @@ impl ChatWindow {
             Some(ConnectionStatus::Connecting) => self.i18n.text("status_connecting"),
             Some(ConnectionStatus::TransportConnected) => self.i18n.text("status_registering"),
             Some(ConnectionStatus::Registered) => self.i18n.text("status_connected"),
-            Some(ConnectionStatus::Disconnected(reason)) => self
-                .i18n
-                .format("status_disconnected", &[("reason", reason)]),
+            Some(ConnectionStatus::Disconnected(reason)) => {
+                Self::disconnected_status_text(&self.i18n, reason)
+            }
             None => self.i18n.text("status_unknown"),
         }
+    }
+
+    /// A disconnection reason comes from the server; neutralize it where the
+    /// status row is drawn.
+    fn disconnected_status_text(i18n: &Localizer, reason: &str) -> String {
+        display::neutralize_bidi(&i18n.format("status_disconnected", &[("reason", reason)]))
+            .into_owned()
     }
 
     /// The label for a server: its saved display name when set, else the

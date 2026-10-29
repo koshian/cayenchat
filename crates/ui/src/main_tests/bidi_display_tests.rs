@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-use super::{ChannelDragPreview, MemberPromptKind, diagnostic_text, member_prompt_title};
+use super::{
+    ChannelDragPreview, ChatWindow, MemberPromptKind, diagnostic_text, member_prompt_title,
+};
 use crate::localization::Localizer;
 use cayenchat_storage::Language;
 
@@ -38,6 +40,14 @@ fn diagnostic_lines_neutralize_bidi_controls() {
         diagnostic_text("311 mal\u{202E}lory"),
         "311 mal\u{200B}lory"
     );
+}
+
+#[test]
+fn disconnected_status_reason_neutralizes_bidi_controls() {
+    let i18n = Localizer::new(Language::English);
+    let text = ChatWindow::disconnected_status_text(&i18n, "mal\u{202E}lory");
+    assert!(text.contains("mal\u{200B}lory"), "{text}");
+    assert!(!text.contains('\u{202E}'), "{text}");
 }
 
 #[test]
