@@ -1155,6 +1155,20 @@ impl ServerProfile {
             .collect()
     }
 
+    /// The store entries that may hold this profile's channel keys: the noted
+    /// channels, or the enabled auto-join channels while the first scan is
+    /// still pending (the set that scan reads).
+    pub fn channel_key_secret_keys(&self) -> Vec<SecretKey> {
+        let channels = match &self.keyed_channels {
+            Some(noted) => noted.clone(),
+            None => self.channels(),
+        };
+        channels
+            .iter()
+            .map(|channel| SecretKey::channel_key(&self.id, channel))
+            .collect()
+    }
+
     /// Whether the first connection must still look for saved keys.
     pub fn channel_key_scan_pending(&self) -> bool {
         self.keyed_channels.is_none()
@@ -1618,6 +1632,8 @@ impl Settings {
                     server.sasl_password_key(),
                     server.sasl_key_key(),
                 ]
+                .into_iter()
+                .chain(server.channel_key_secret_keys())
             })
             .collect()
     }
@@ -2111,6 +2127,45 @@ mod tests {
         );
         assert!(profile.channel_key_scan_pending());
         assert_eq!(profile.channels_to_read_keys_for(), ["#a", "#b"]);
+    }
+
+    #[test]
+    fn connection_secret_keys_include_channel_keys() {
+        let mut settings = Settings::default();
+        let profile = settings.add_server("irc.example.net");
+        profile.channels = "#a,-#b".into();
+        profile.keyed_channels = Some(vec!["#Noted".into()]);
+        let id = profile.id.clone();
+        let keys = settings.connection_secret_keys();
+        assert!(keys.contains(&SecretKey::channel_key(&id, "#noted")));
+        assert!(!keys.contains(&SecretKey::channel_key(&id, "#a")));
+        // A file from before the note: the channels the first scan reads.
+        settings.selected_profile_mut().unwrap().keyed_channels = None;
+        let keys = settings.connection_secret_keys();
+        assert!(keys.contains(&SecretKey::channel_key(&id, "#a")));
+        assert!(!keys.contains(&SecretKey::channel_key(&id, "#b")));
+    }
+
+    #[test]
+    fn switching_backends_moves_channel_keys_and_leaves_none_behind() {
+        use credentials::{CredentialStore, MemoryBackend, Secret};
+        use std::sync::Arc;
+        let mut settings = Settings::default();
+        let profile = settings.add_server("irc.example.net");
+        profile.channels = "#a".into();
+        profile.keyed_channels = Some(vec!["#a".into()]);
+        let key = SecretKey::channel_key(&profile.id, "#a");
+        let from = CredentialStore::with_backend(Arc::new(MemoryBackend::new(
+            CredentialBackendKind::LocalFile,
+        )));
+        let to = CredentialStore::with_backend(Arc::new(MemoryBackend::new(
+            CredentialBackendKind::System,
+        )));
+        from.set(&key, &Secret::new("hunter2")).unwrap();
+        let report = credentials::migrate(&from, &to, &settings.connection_secret_keys()).unwrap();
+        assert_eq!(report.moved, 1);
+        assert!(from.get(&key).unwrap().is_none());
+        assert_eq!(to.get(&key).unwrap().unwrap().expose(), "hunter2");
     }
 
     #[test]
