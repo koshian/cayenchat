@@ -6497,6 +6497,16 @@ mod escape_tests {
             assert_eq!(dialog.decode, Some(TextEncoding::Gbk));
             assert_eq!(dialog.char_refs, Some(CharRefMode::Auto));
         });
+        form.update_in(cx, |form, window, cx| {
+            form.cancel_channel_settings(window, cx)
+        });
+        // The context-menu route uses this same profile-checked entry point.
+        open_channel(&form, "#a[", cx);
+        form.read_with(cx, |form, _| {
+            let dialog = form.channel_settings.as_ref().unwrap();
+            assert_eq!(dialog.decode, Some(TextEncoding::Gbk));
+            assert_eq!(dialog.char_refs, Some(CharRefMode::Auto));
+        });
         drop(file);
     }
 
