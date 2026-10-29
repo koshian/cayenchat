@@ -2878,8 +2878,9 @@ message to ourselves is labeled only on the echo).
   later. A labeled message the server rewrote cannot be matched after the
   withdrawal and is reported unconfirmed when its 60 s expire.
 - **History boundary.** Echo matching receives the existing replay
-  classification. A replayed line cannot consume a pending send or provide
-  its msgid/server-time; a later live echo can still confirm it.
+  classification. A line inside a history batch cannot consume a pending
+  send or provide its msgid/server-time; a later live echo can still confirm
+  it. Ordinary live lines remain eligible for matching.
 - **Confirmation** (`Event::OutgoingConfirmed`): the final text replaces the
   local one only when it changed and the local line is the text itself (not a
   CTCP ACTION or a redacted service secret); msgid and time are stored and the

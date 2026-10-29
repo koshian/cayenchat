@@ -5016,9 +5016,9 @@ fn negotiated_batch_marks_history_until_it_is_withdrawn() {
             ("alice: unknown type", false),
             ("alice: other case", false),
             ("alice: after end", false),
+            ("alice: evicted old", true),
             ("alice: before del", true),
             ("alice: after del", false),
-            ("alice: evicted old", true),
         ])
     );
     // server-time was not requested, so its tag is ignored.

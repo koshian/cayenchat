@@ -640,10 +640,11 @@ impl HistoryRequests {
 
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
         let batch_tag = tags::tag_value(message, "batch");
-        if self
-            .outstanding
-            .as_ref()
-            .is_some_and(|outstanding| outstanding.nested_overflowed)
+        if !matches!(message.command, IrcCommand::BATCH(..))
+            && self
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
             && batch_tag.is_some_and(|reference| {
                 self.outstanding.as_ref().is_some_and(|outstanding| {
                     outstanding.reference.as_deref() != Some(reference)
@@ -718,14 +719,6 @@ impl HistoryRequests {
         parent: Option<&str>,
         end: bool,
     ) -> Observed {
-        if parent.is_some()
-            && self
-                .outstanding
-                .as_ref()
-                .is_some_and(|outstanding| outstanding.nested_overflowed)
-        {
-            return Observed::Consumed;
-        }
         if let Some(reference) = reference.strip_prefix('-') {
             if let Some(index) = self.discarding.iter().position(|open| open == reference) {
                 self.discarding.remove(index);
@@ -739,6 +732,14 @@ impl HistoryRequests {
                 return Observed::Consumed;
             }
             if outstanding.reference.as_deref() != Some(reference) {
+                if parent.is_some()
+                    && self
+                        .outstanding
+                        .as_ref()
+                        .is_some_and(|outstanding| outstanding.nested_overflowed)
+                {
+                    return Observed::Consumed;
+                }
                 return Observed::Unrelated;
             }
             let outstanding = self.outstanding.take().expect("outstanding request");
@@ -779,6 +780,14 @@ impl HistoryRequests {
                 failed: false,
                 note,
             });
+        }
+        if parent.is_some()
+            && self
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+        {
+            return Observed::Consumed;
         }
         let Some(reference) = reference.strip_prefix('+') else {
             return Observed::Unrelated;
@@ -1214,6 +1223,60 @@ mod tests {
             Observed::Finished(Finished { messages, .. })
                 if messages.iter().any(|message| message.text == "root history")
         ));
+    }
+
+    #[test]
+    fn wrapped_history_reply_finishes_after_nested_batch_limit() {
+        for depth in [MAX_NESTED, MAX_NESTED + 1] {
+            let mut requests = HistoryRequests::default();
+            let now = Instant::now();
+            requests.enqueue("#a");
+            requests.enqueue("#b");
+            sent(&mut requests, now);
+
+            assert_eq!(
+                requests.observe(&parse("@batch=outer :srv BATCH +r chathistory #a")),
+                Observed::Consumed
+            );
+            let mut parent = "r".to_owned();
+            for index in 0..depth {
+                let reference = format!("n{index}");
+                assert_eq!(
+                    requests.observe(&parse(&format!(
+                        "@batch={parent} :srv BATCH +{reference} draft/multiline #a"
+                    ))),
+                    Observed::Consumed
+                );
+                parent = reference;
+            }
+            assert_eq!(
+                requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
+                Observed::Consumed
+            );
+            for index in (0..depth).rev() {
+                let reference = format!("n{index}");
+                let parent = if index == 0 {
+                    "r".to_owned()
+                } else {
+                    format!("n{}", index - 1)
+                };
+                assert_eq!(
+                    requests.observe(&parse(&format!("@batch={parent} :srv BATCH -{reference}"))),
+                    Observed::Consumed
+                );
+            }
+            let Observed::Finished(Finished { messages, .. }) =
+                requests.observe(&parse("@batch=outer :srv BATCH -r"))
+            else {
+                panic!("wrapped reply at depth {depth} did not finish");
+            };
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].text, "root history");
+            assert_eq!(
+                sent(&mut requests, now).as_deref(),
+                Some("CHATHISTORY LATEST #b * 50")
+            );
+        }
     }
 
     #[test]
