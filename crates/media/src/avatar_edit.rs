@@ -2,8 +2,8 @@
 //! Preparing our own avatar image before it is uploaded: the user picks a
 //! square of a photo, which is scaled down to a small image.
 //!
-//! Decoding uses the preview limits (header checked before any pixel buffer,
-//! capped decoder allocation, one decode at a time in the process) and
+//! Decoding uses the preview limits (the header and metadata are parsed by
+//! the capped decoder under the process-wide decode lock) and
 //! follows the EXIF orientation, so phone photos are upright. The decoded
 //! image is kept at most [`MAX_WORKING_SIDE`] pixels a side while the editor
 //! is open. Nothing is fetched or uploaded here.
@@ -12,8 +12,7 @@ use std::io::Cursor;
 
 use cayenchat_model::attachment::ImageFormat as Sniffed;
 use image::{
-    DynamicImage, ImageDecoder, ImageFormat, ImageReader, codecs::jpeg::JpegEncoder,
-    imageops::FilterType,
+    DynamicImage, ImageDecoder, ImageFormat, codecs::jpeg::JpegEncoder, imageops::FilterType,
 };
 
 use crate::{Limits, LoadError, decode::Thumbnail};
@@ -73,32 +72,26 @@ pub fn open(bytes: &[u8]) -> Result<AvatarSource, LoadError> {
         None => return Err(LoadError::NotImage),
     };
     let limits = Limits::default();
-    let (width, height) = ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|_| LoadError::Malformed)?;
+    let _decoding = crate::decode::DECODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let failed = |error: image::ImageError| match error {
+        image::ImageError::Limits(_) => LoadError::TooLarge,
+        _ => LoadError::Malformed,
+    };
+    let decoder = crate::decode::limited_decoder(bytes, format, &limits).map_err(failed)?;
+    let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 {
         return Err(LoadError::Malformed);
     }
     if width > limits.max_source_side
         || height > limits.max_source_side
         || u64::from(width) * u64::from(height) > limits.max_source_pixels
+        || decoder.total_bytes() > limits.max_decode_bytes
     {
         return Err(LoadError::TooLarge);
     }
-    let _decoding = crate::decode::DECODE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut decoder_limits = image::Limits::default();
-    decoder_limits.max_image_width = Some(limits.max_source_side);
-    decoder_limits.max_image_height = Some(limits.max_source_side);
-    decoder_limits.max_alloc = Some(limits.max_decode_bytes);
-    reader.limits(decoder_limits);
-    let failed = |error: image::ImageError| match error {
-        image::ImageError::Limits(_) => LoadError::TooLarge,
-        _ => LoadError::Malformed,
-    };
-    let mut decoder = reader.into_decoder().map_err(failed)?;
+    let mut decoder = decoder;
     let orientation = decoder.orientation().ok();
     let mut image = DynamicImage::from_decoder(decoder).map_err(failed)?;
     if let Some(orientation) = orientation {

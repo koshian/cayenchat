@@ -918,6 +918,7 @@ version = "1.0.0-rc.8"
 dependencies = [
  "cayenchat-model",
  "image",
+ "png 0.18.1",
  "ureq",
  "url",
 ]

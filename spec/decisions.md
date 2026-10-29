@@ -495,10 +495,12 @@ NAT64/6to4 forms) before connecting, so names and redirects cannot reach
 local services either; no proxy, cookies, `Referer`, credentials or
 compression; 5 s to connect and 15 s per preview in total. The response must
 be 200 with an `image/*` type (not SVG), at most 8 MiB, and the content must
-sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. Dimensions are
-read from the header first (at most 8192 px a side and 16.7 megapixels), the
-decoder may allocate at most 48 MiB, one decode runs at a time in the whole
-process, and the full image is dropped as soon as the thumbnail (at most
+sniff as PNG, JPEG, GIF or WebP; the extension is only a hint. The process-wide
+decode gate is held while constructing the limited decoder, so header and
+compressed metadata parsing are serialized and covered by the 48 MiB
+allocation limit. Its dimensions (at most 8192 px a side and 16.7 megapixels)
+are checked before pixel decoding, and that same decoder supplies the pixels.
+The full image is dropped as soon as the thumbnail (at most
 400×200 px, shown at up to 200×100 logical px) exists. GIF and animated WebP
 show their first frame. There is no disk cache. Anything unsupported or
 failed leaves the ordinary text link.

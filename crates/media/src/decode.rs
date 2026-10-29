@@ -11,12 +11,29 @@
 use std::{io::Cursor, sync::Mutex};
 
 use cayenchat_model::attachment::ImageFormat as Sniffed;
-use image::{DynamicImage, ImageFormat, ImageReader};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 
 use crate::{CancelFlag, Limits, LoadError};
 
 /// Serializes decoding so full-size images never coexist.
 pub(crate) static DECODE: Mutex<()> = Mutex::new(());
+
+/// Construct a decoder with the per-image limits installed before it reads
+/// image metadata. Callers hold `DECODE` for this entire operation and while
+/// using the returned decoder.
+pub(crate) fn limited_decoder<'a>(
+    bytes: &'a [u8],
+    format: ImageFormat,
+    limits: &Limits,
+) -> image::ImageResult<impl ImageDecoder + 'a> {
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut decoder_limits = image::Limits::default();
+    decoder_limits.max_image_width = Some(limits.max_source_side);
+    decoder_limits.max_image_height = Some(limits.max_source_side);
+    decoder_limits.max_alloc = Some(limits.max_decode_bytes);
+    reader.limits(decoder_limits);
+    reader.into_decoder()
+}
 
 /// A decoded thumbnail in GPUI's BGRA byte order, not premultiplied.
 #[derive(Clone, PartialEq, Eq)]
@@ -76,17 +93,22 @@ pub fn fit(width: u32, height: u32, max_width: u32, max_height: u32) -> (u32, u3
 /// Whether `bytes` are a supported image small enough, in bytes and in
 /// header-declared pixels, to be kept as an avatar original.
 pub fn is_small_original(bytes: &[u8]) -> bool {
-    bytes.len() <= crate::ORIGINAL_MAX_BYTES
-        && format(bytes)
-            .ok()
-            .and_then(|format| {
-                ImageReader::with_format(Cursor::new(bytes), format)
-                    .into_dimensions()
-                    .ok()
-            })
-            .is_some_and(|(width, height)| {
-                width <= crate::ORIGINAL_MAX_SIDE && height <= crate::ORIGINAL_MAX_SIDE
-            })
+    if bytes.len() > crate::ORIGINAL_MAX_BYTES {
+        return false;
+    }
+    let Ok(format) = format(bytes) else {
+        return false;
+    };
+    let limits = Limits::avatar(1);
+    let _decoding = DECODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    limited_decoder(bytes, format, &limits)
+        .ok()
+        .map(|decoder| decoder.dimensions())
+        .is_some_and(|(width, height)| {
+            width <= crate::ORIGINAL_MAX_SIDE && height <= crate::ORIGINAL_MAX_SIDE
+        })
 }
 
 pub fn thumbnail(
@@ -95,9 +117,17 @@ pub fn thumbnail(
     cancel: &CancelFlag,
 ) -> Result<Thumbnail, LoadError> {
     let format = format(bytes)?;
-    let (width, height) = ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|_| LoadError::Malformed)?;
+    let _decoding = DECODE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cancel.is_cancelled() {
+        return Err(LoadError::Cancelled);
+    }
+    let decoder = limited_decoder(bytes, format, limits).map_err(|error| match error {
+        image::ImageError::Limits(_) => LoadError::TooLarge,
+        _ => LoadError::Malformed,
+    })?;
+    let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 {
         return Err(LoadError::Malformed);
     }
@@ -107,20 +137,14 @@ pub fn thumbnail(
     {
         return Err(LoadError::TooLarge);
     }
+    if decoder.total_bytes() > limits.max_decode_bytes {
+        return Err(LoadError::TooLarge);
+    }
 
-    let _decoding = DECODE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if cancel.is_cancelled() {
         return Err(LoadError::Cancelled);
     }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut decoder_limits = image::Limits::default();
-    decoder_limits.max_image_width = Some(limits.max_source_side);
-    decoder_limits.max_image_height = Some(limits.max_source_side);
-    decoder_limits.max_alloc = Some(limits.max_decode_bytes);
-    reader.limits(decoder_limits);
-    let image = reader.decode().map_err(|error| match error {
+    let image = DynamicImage::from_decoder(decoder).map_err(|error| match error {
         image::ImageError::Limits(_) => LoadError::TooLarge,
         _ => LoadError::Malformed,
     })?;
@@ -286,6 +310,35 @@ mod tests {
             thumbnail(&large, &frugal, &cancel),
             Err(LoadError::TooLarge)
         );
+    }
+
+    #[test]
+    fn compressed_png_icc_metadata_obeys_decode_allocation_limit() {
+        use std::borrow::Cow;
+
+        let profile = vec![0; 2 * 1024 * 1024];
+        let mut info = png::Info::with_size(1, 1);
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = Some(Cow::Owned(profile));
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::with_info(&mut bytes, info).unwrap();
+        encoder.set_compression(png::Compression::High);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255, 0, 0]).unwrap();
+        drop(writer);
+        assert!(bytes.windows(4).any(|chunk| chunk == b"iCCP"));
+        let mut raw_decoder =
+            png::Decoder::new_with_limits(Cursor::new(&bytes), png::Limits { bytes: 1024 * 1024 });
+        raw_decoder.set_ignore_iccp_chunk(false);
+        let raw_reader = raw_decoder.read_info().unwrap();
+        assert!(raw_reader.info().icc_profile.is_none());
+
+        let limits = Limits {
+            max_decode_bytes: 1024 * 1024,
+            ..Limits::default()
+        };
+        assert!(thumbnail(&bytes, &limits, &CancelFlag::default()).is_ok());
     }
 
     #[test]
