@@ -2472,8 +2472,9 @@ The maintainer approved this specification on the issue (2026-10-13).
   network names whose ID suffix would be cut) stay apart; no other name
   keeps a `~`, so a cut name never equals another name. The path is a join
   of escaped components below the folder, so a server cannot write outside
-  it; the folder, its parents and the directories below it may be symbolic
-  links the user made (only the log file itself is not followed).
+  it; the selected folder and its parents may be symbolic links the user
+  made, but every directory below the selected folder must be a real
+  directory (the log file itself is also never followed).
   The file is opened without following a symbolic link (`O_NOFOLLOW`, and a
   check on other platforms) and without waiting on a pipe (`O_NONBLOCK`),
   `0600` in `0700` directories. Before the first write to a file the opened
