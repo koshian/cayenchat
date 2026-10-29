@@ -1058,8 +1058,9 @@ Tags come from irc-proto 1.1.0's parsed `Message`, which splits and
 unescapes them. `irc-core::tags` adds what the library leaves out: the last
 occurrence of a key wins, an empty value equals a missing one, a value
 containing U+FFFD (bytes the line codec could not decode) is dropped instead
-of used, and a tag section over 8,191 bytes (measured on the re-escaped
-tags, including `@` and the trailing space) is ignored as a whole while the
+of used, and a tag section over 8,191 bytes (measured by the vendored parser
+on the received bytes, including `@` and the trailing space, so invalid
+escapes and `key=` cannot hide length) is parsed as no tags at all while the
 body is still processed. Neither limit truncates a line. The line codec
 (vendored irc-proto, `MAX_LINE_BYTES`) rejects a line over 16 KiB including
 its ending, whether or not its newline has arrived: the stream fails, the
