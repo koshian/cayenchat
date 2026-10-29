@@ -492,7 +492,7 @@
   "sasl_key_show_public": "Show public key",
   "sasl_key_copy": "Copy public key",
   "sasl_key_public": "Public key (register this with the network, for example with NickServ):",
-  "sasl_key_note": "A P-256 key signs the server's challenge; no password is sent. The private key stays in the credential store and is never shown, copied or exported. Only the public key can be copied.",
+  "sasl_key_note": "A P-256 key signs one 32-byte server challenge per connection; no password is sent. Use a key dedicated to this server and do not reuse or import a key used by another service or protocol: the server chooses the challenge, and this signature is not limited to an IRC context. The private key stays in the credential store and is never shown, copied or exported. Only the public key can be copied.",
   "sasl_key_server_unsaved": "Save the server first, then set its key.",
   "sasl_key_saved_done": "The key was saved. Register its public key with the network.",
   "sasl_key_deleted_done": "The key was deleted.",

@@ -7618,6 +7618,8 @@ enum EcdsaServer {
     Accepts,
     /// Sends a 32 byte challenge and answers the signature with 904.
     Refuses,
+    /// Sends a second challenge after receiving the first signature.
+    RepeatsChallenge,
     /// A challenge of this many bytes.
     ChallengeOf(usize),
     /// A challenge that is not base64.
@@ -7675,14 +7677,17 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
             EcdsaServer::ChallengeOf(length) => {
                 format!("AUTHENTICATE {}", STANDARD.encode(vec![1u8; length]))
             }
-            EcdsaServer::Accepts | EcdsaServer::Refuses => {
+            EcdsaServer::Accepts | EcdsaServer::Refuses | EcdsaServer::RepeatsChallenge => {
                 format!("AUTHENTICATE {}", STANDARD.encode(challenge))
             }
         };
         socket
             .write_all(format!("{challenge_line}\r\n").as_bytes())
             .unwrap();
-        if !matches!(scenario, EcdsaServer::Accepts | EcdsaServer::Refuses) {
+        if !matches!(
+            scenario,
+            EcdsaServer::Accepts | EcdsaServer::Refuses | EcdsaServer::RepeatsChallenge
+        ) {
             return;
         }
         let signature = read();
@@ -7692,6 +7697,19 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
         let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(&public).unwrap();
         let signature = p256::ecdsa::Signature::from_der(&der).unwrap();
         verifying.verify_prehash(&challenge, &signature).unwrap();
+        if scenario == EcdsaServer::RepeatsChallenge {
+            socket
+                .write_all(format!("AUTHENTICATE {}\r\n", STANDARD.encode(challenge)).as_bytes())
+                .unwrap();
+            let second_response = read();
+            let signature_count = 1 + usize::from(second_response.starts_with("AUTHENTICATE "));
+            assert_eq!(
+                second_response, "",
+                "the second challenge must not be signed"
+            );
+            assert_eq!(signature_count, 1);
+            return;
+        }
         if scenario == EcdsaServer::Refuses {
             socket
                 .write_all(b":server 904 alice :SASL authentication failed\r\n")
@@ -7789,6 +7807,18 @@ fn sasl_ecdsa_refusal_is_a_sasl_failure_without_leaks() {
     let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::Refuses);
     assert_eq!(refusal.as_deref(), Some(SASL_KEY_REFUSED), "{reported}");
     assert!(reported.contains("refused ECDSA-NIST256P-CHALLENGE with 904"));
+    assert_no_ecdsa_secret(&reported, &secrets);
+}
+
+#[test]
+fn sasl_ecdsa_signs_at_most_once_per_handshake() {
+    let (refusal, reported, secrets) = ecdsa_login(EcdsaServer::RepeatsChallenge);
+    assert!(
+        refusal
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Unexpected SASL challenge")),
+        "{reported}"
+    );
     assert_no_ecdsa_secret(&reported, &secrets);
 }
 
