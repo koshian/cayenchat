@@ -19,6 +19,16 @@ fn config(port: u16) -> ConnectionConfig {
     config
 }
 
+/// Makes the saved profile of `network` the one `config(port)` was made
+/// from, as a reconnect requires.
+fn match_profile(chat: &mut ChatWindow, network: NetworkId, port: u16) {
+    let id = chat.sessions[&network].profile_id.clone();
+    let profile = chat.saved.profile_mut(&id).unwrap();
+    profile.host = "127.0.0.1".into();
+    profile.port = port;
+    profile.use_tls = false;
+}
+
 /// Accepts one client and registers it; returns the lines it sends next.
 fn accept_registered(
     listener: &TcpListener,
@@ -125,6 +135,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
     let networks = [NetworkId(1), NetworkId(2), NetworkId(3)];
     chat.update(cx, |chat, _| {
         for (network, port) in networks.into_iter().zip(&ports) {
+            match_profile(chat, network, *port);
             let session = chat.sessions.get_mut(&network).unwrap();
             session.irc = Some(Connection::connect(config(*port)).unwrap());
             session.active_config = Some(config(*port));
@@ -290,6 +301,7 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
     let networks = [NetworkId(1), NetworkId(2), NetworkId(3)];
     chat.update(cx, |chat, _| {
         for (network, port) in networks.into_iter().zip(&ports) {
+            match_profile(chat, network, *port);
             let mut config = config(*port);
             config.quit_message = "Normal".into();
             if network == NetworkId(1) {
@@ -429,6 +441,7 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
     });
     let network = NetworkId(1);
     let generation = chat.update(cx, |chat, cx| {
+        match_profile(chat, network, 1);
         let session = chat.sessions.get_mut(&network).unwrap();
         session.active_config = Some(config(1));
         session.retry_pending = true;
