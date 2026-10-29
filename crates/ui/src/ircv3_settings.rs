@@ -1144,13 +1144,14 @@ pub(crate) fn server_label(
     profile: &ServerProfile,
     i18n: &crate::localization::Localizer,
 ) -> String {
-    if !profile.display_name.is_empty() {
+    let label = if !profile.display_name.is_empty() {
         profile.display_name.clone()
     } else if profile.host.is_empty() {
         i18n.text("new_server")
     } else {
         format!("{}:{}", profile.host, profile.port)
-    }
+    };
+    cayenchat_model::display::neutralize_bidi(&label).into_owned()
 }
 
 #[cfg(test)]
@@ -1172,6 +1173,24 @@ mod tests {
         assert_eq!(super::server_label(&profile, &i18n), "tiarra.example:6667");
         profile.display_name = "Tiarra".into();
         assert_eq!(super::server_label(&profile, &i18n), "Tiarra");
+    }
+
+    #[test]
+    fn server_label_neutralizes_bidi_controls_in_display_names_and_hosts() {
+        let i18n = crate::localization::Localizer::new(Language::System);
+        let mut profile = ServerProfile::default();
+        profile.host = "irc\u{202e}.evil.example".into();
+        profile.port = 6667;
+        assert_eq!(
+            super::server_label(&profile, &i18n),
+            "irc\u{200b}.evil.example:6667"
+        );
+
+        profile.display_name = "日本語\u{202e} Network".into();
+        assert_eq!(
+            super::server_label(&profile, &i18n),
+            "日本語\u{200b} Network"
+        );
     }
 
     #[test]
