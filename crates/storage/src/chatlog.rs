@@ -633,8 +633,7 @@ impl Writer {
 /// caller is told instead.
 fn open(root: &Path, path: &Path) -> io::Result<BufWriter<File>> {
     if let Some(parent) = path.parent() {
-        private_file::create_dir(parent)?;
-        check_private_directories(root, parent)?;
+        create_private_directories(root, parent)?;
     }
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(io::Error::new(
@@ -668,16 +667,40 @@ fn open(root: &Path, path: &Path) -> io::Result<BufWriter<File>> {
     Ok(file)
 }
 
-/// The directories from `root` (not included) down to `directory` must be
-/// the user's alone, as the ones made here are.
-fn check_private_directories(root: &Path, directory: &Path) -> io::Result<()> {
+/// Creates directories below `root` one at a time and checks each before
+/// creating its child, so a symbolic link is not traversed during creation.
+fn create_private_directories(root: &Path, directory: &Path) -> io::Result<()> {
+    let mut directories = Vec::new();
     let mut current = directory;
     while current != root && current.starts_with(root) {
-        check_private(&fs::metadata(current)?, "directory", "700")?;
+        directories.push(current);
         match current.parent() {
             Some(parent) => current = parent,
             None => break,
         }
+    }
+    directories.reverse();
+
+    for directory in directories {
+        match private_file::create_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        let metadata = fs::symlink_metadata(directory)?;
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a log directory is a symbolic link",
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a log path component is not a directory",
+            ));
+        }
+        check_private(&metadata, "directory", "700")?;
     }
     Ok(())
 }
@@ -1035,6 +1058,36 @@ mod tests {
         assert!(failure.contains("symbolic link"), "{failure}");
         drop(logger);
         assert_eq!(fs::read(&target).unwrap(), b"keep\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_in_a_log_directory_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("logs");
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+        let network = path.parent().unwrap().parent().unwrap().parent().unwrap();
+        let target = directory.path().join("target");
+        crate::private_file::create_dir(network).unwrap();
+        crate::private_file::create_dir(&target).unwrap();
+        fs::remove_dir(network).unwrap();
+        std::os::unix::fs::symlink(&target, network).unwrap();
+
+        let failure = open(&root, &path).unwrap_err();
+
+        assert!(failure.to_string().contains("symbolic link"), "{failure}");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn private_log_directories_are_allowed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("logs");
+        let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
+
+        let file = open(&root, &path).unwrap();
+
+        assert!(file.get_ref().metadata().unwrap().is_file());
     }
 
     #[test]
