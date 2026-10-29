@@ -15,7 +15,8 @@ use gpui::{prelude::*, *};
 use crate::{
     SettingsTab, SettingsWindow,
     ircv3_settings::{
-        OwnAvatarStatus, outcome_text, peer_avatar_url_problem, peer_reconnect_needed,
+        OwnAvatarStatus, feedback_line, outcome_text, peer_avatar_url_problem,
+        peer_reconnect_needed,
     },
     settings_theme,
 };
@@ -372,7 +373,11 @@ impl SettingsWindow {
                                 .child(text)
                         }))
                         .when_some(self.avatar_feedback.clone(), |d, feedback| {
-                            d.child(div().text_color(theme.warning).child(feedback))
+                            d.child(
+                                div()
+                                    .text_color(theme.warning)
+                                    .child(feedback_line(&feedback)),
+                            )
                         })
                         .when(self.avatar_opening, |d| {
                             d.child(
