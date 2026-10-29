@@ -1293,7 +1293,7 @@ mod tests {
     fn async_clipboard_reader_yields_while_waiting_and_closes_on_drop() {
         use std::{future::Future, io::Write as _, task::Context, time::Duration};
 
-        let pipe = filedescriptor::Pipe::new().unwrap();
+        let mut pipe = filedescriptor::Pipe::new().unwrap();
         let read = unsafe {
             read_fd_limited_async(
                 pipe.read,
@@ -1305,10 +1305,96 @@ mod tests {
         let mut read = Box::pin(read);
         let waker = futures::task::noop_waker();
         let mut context = Context::from_waker(&waker);
-        assert!(matches!(read.as_mut().poll(&mut context), std::task::Poll::Pending));
+        assert!(matches!(
+            read.as_mut().poll(&mut context),
+            std::task::Poll::Pending
+        ));
         drop(read);
         let error = pipe.write.write_all(b"x").unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn async_clipboard_reader_returns_data_after_eof() {
+        use std::io::Write as _;
+
+        let mut pipe = filedescriptor::Pipe::new().unwrap();
+        pipe.write.write_all(b"hello").unwrap();
+        drop(pipe.write);
+        let read = unsafe {
+            read_fd_limited_async(
+                pipe.read,
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+                None,
+                8,
+            )
+        };
+
+        assert_eq!(smol::block_on(read).unwrap(), b"hello");
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn async_clipboard_reader_allows_delayed_data() {
+        use std::{io::Write as _, time::Duration};
+
+        let mut pipe = filedescriptor::Pipe::new().unwrap();
+        let writer = pipe.write;
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            let mut writer = writer;
+            writer.write_all(b"hello").unwrap();
+        });
+        let read = unsafe {
+            read_fd_limited_async(
+                pipe.read,
+                std::time::Instant::now() + Duration::from_secs(1),
+                None,
+                8,
+            )
+        };
+
+        assert_eq!(smol::block_on(read).unwrap(), b"hello");
+        writer.join().unwrap();
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn async_clipboard_reader_times_out_when_writer_stays_open() {
+        use std::time::Duration;
+
+        let pipe = filedescriptor::Pipe::new().unwrap();
+        let read = unsafe {
+            read_fd_limited_async(
+                pipe.read,
+                std::time::Instant::now() + Duration::from_millis(30),
+                None,
+                8,
+            )
+        };
+
+        assert!(smol::block_on(read).is_err());
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    #[test]
+    fn async_clipboard_reader_rejects_data_over_the_limit() {
+        use std::io::Write as _;
+
+        let mut pipe = filedescriptor::Pipe::new().unwrap();
+        pipe.write.write_all(b"hello").unwrap();
+        drop(pipe.write);
+        let read = unsafe {
+            read_fd_limited_async(
+                pipe.read,
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+                None,
+                4,
+            )
+        };
+
+        assert!(smol::block_on(read).is_err());
     }
 
     #[test]
