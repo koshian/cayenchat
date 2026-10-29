@@ -80,7 +80,11 @@ impl SettingsWindow {
     }
 
     /// Moves saved secrets to the new backend and records the choice.
-    fn switch_credential_backend(&mut self, kind: CredentialBackendKind, cx: &mut Context<Self>) {
+    pub(crate) fn switch_credential_backend(
+        &mut self,
+        kind: CredentialBackendKind,
+        cx: &mut Context<Self>,
+    ) {
         let from = secrets::store(cx);
         let to = secrets::open(kind, cx);
         let mut saved = match settings_file::load() {

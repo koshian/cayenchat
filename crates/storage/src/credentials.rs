@@ -964,6 +964,58 @@ mod tests {
         assert_eq!(system.get(&key).unwrap().unwrap().expose(), "x");
     }
 
+    /// A backend whose writes start failing after `allowed` successes.
+    struct FailingAfter {
+        inner: MemoryBackend,
+        allowed: Mutex<usize>,
+    }
+
+    impl CredentialBackend for FailingAfter {
+        fn kind(&self) -> CredentialBackendKind {
+            self.inner.kind()
+        }
+
+        fn get(&self, key: &SecretKey) -> Result<Option<Secret>, CredentialError> {
+            self.inner.get(key)
+        }
+
+        fn set(&self, key: &SecretKey, value: &Secret) -> Result<(), CredentialError> {
+            let mut allowed = self.allowed.lock().unwrap();
+            if *allowed == 0 {
+                return Err(CredentialError::Unavailable("write refused".into()));
+            }
+            *allowed -= 1;
+            self.inner.set(key, value)
+        }
+
+        fn delete(&self, key: &SecretKey) -> Result<(), CredentialError> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[test]
+    fn a_copy_failing_midway_removes_the_copies_made_and_keeps_every_original() {
+        let system = memory(CredentialBackendKind::System);
+        let keys = [
+            SecretKey::sasl_password("ircnet"),
+            SecretKey::channel_key("ircnet", "#a"),
+            SecretKey::channel_key("ircnet", "#b"),
+        ];
+        for key in &keys {
+            system.set(key, &Secret::new("v")).unwrap();
+        }
+        let target = Arc::new(FailingAfter {
+            inner: MemoryBackend::new(CredentialBackendKind::LocalFile),
+            allowed: Mutex::new(2),
+        });
+        let to = CredentialStore::with_backend(target.clone());
+        assert!(copy_secrets(&system, &to, &keys).is_err());
+        for key in &keys {
+            assert!(system.contains(key).unwrap(), "original of {key:?} kept");
+            assert!(!to.contains(key).unwrap(), "copy of {key:?} removed");
+        }
+    }
+
     #[test]
     fn unavailable_backend_fails_without_fallback() {
         let broken = CredentialStore::with_backend(Arc::new(MemoryBackend::unavailable(
