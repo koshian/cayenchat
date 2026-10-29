@@ -18,6 +18,8 @@ use crate::{ChatWindow, button_order, dialog, settings_file, theme};
 const BOX_MAX_WIDTH: Pixels = px(420.);
 /// Longest name or host shown for an imported server, in characters.
 const SHOWN_NAME_MAX: usize = 64;
+/// Longest line of an import result shown in the dialog, in characters.
+const SHOWN_TEXT_MAX: usize = 2000;
 /// How many imported servers are listed whatever their settings; further ones
 /// are listed only when their connection settings are unsafe.
 const SERVERS_LISTED: usize = 16;
@@ -32,14 +34,27 @@ struct ServerRow {
 /// become spaces, bidirectional controls are neutralized and a long value is
 /// cut. Done where the value is drawn, whatever the import check allowed.
 fn shown(text: &str) -> String {
+    shown_with_limit(text, SHOWN_NAME_MAX)
+}
+
+/// A one-line value safe to draw in a result dialog, including errors from an
+/// import file. Keep it bounded even when the rejected value was large.
+fn shown_text(text: &str) -> String {
+    shown_with_limit(text, SHOWN_TEXT_MAX)
+}
+
+fn shown_with_limit(text: &str, limit: usize) -> String {
     let flat: String = text
         .chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect();
     let flat = display::neutralize_bidi_owned(flat);
     let mut chars = flat.trim().chars();
-    let mut out: String = chars.by_ref().take(SHOWN_NAME_MAX).collect();
+    let mut out: String = chars.by_ref().take(limit).collect();
     if chars.next().is_some() {
+        if limit > 0 {
+            out.pop();
+        }
         out.push('…');
     }
     out
@@ -507,7 +522,11 @@ impl ChatWindow {
                 vec![self.i18n.text("transfer_working")],
                 None,
             ),
-            Step::Result { title, lines } => (title.clone(), lines.clone(), None),
+            Step::Result { title, lines } => (
+                title.clone(),
+                lines.iter().map(|line| shown_text(line)).collect(),
+                None,
+            ),
         };
         let text_width = dialog::box_width(BOX_MAX_WIDTH, window) - px(26.);
         let theme = theme::current(cx);
@@ -678,13 +697,56 @@ mod tests {
         );
         let long = "a".repeat(500);
         let cut = super::shown(&long);
-        assert_eq!(cut.chars().count(), super::SHOWN_NAME_MAX + 1);
+        assert_eq!(cut.chars().count(), super::SHOWN_NAME_MAX);
         assert!(cut.ends_with('…'));
         assert_eq!(
             super::shown(&"b".repeat(super::SHOWN_NAME_MAX))
                 .chars()
                 .count(),
             64
+        );
+    }
+
+    #[test]
+    fn refused_import_errors_are_safe_to_draw_without_changing_plain_text() {
+        let directory = std::path::Path::new("target/tmp").join(format!(
+            "transfer-refusal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let cases = [
+            (
+                "unknown-server.json",
+                r#"{"version":1,"server":"irc\u202e\r\nforged\u0007"}"#,
+            ),
+            (
+                "duplicate-id.json",
+                r#"{"version":2,"servers":[{"id":"same\u2066\nforged\u0000","host":"irc.example","port":6667},{"id":"same\u2066\nforged\u0000","host":"irc.example","port":6667}]}"#,
+            ),
+        ];
+        for (filename, contents) in cases {
+            let path = directory.join(filename);
+            std::fs::write(&path, contents).unwrap();
+            let error = transfer::read_import(&path).unwrap_err();
+            let shown = super::shown_text(&error);
+            assert!(!shown.chars().any(char::is_control), "{shown:?}");
+            assert!(!shown.contains('\n'), "{shown:?}");
+            assert!(!shown.contains('\u{202e}'), "{shown:?}");
+            assert!(!shown.contains('\u{2066}'), "{shown:?}");
+        }
+        let no_server = directory.join("no-server.json");
+        std::fs::write(&no_server, r#"{"version":1}"#).unwrap();
+        let ordinary = transfer::read_import(&no_server).unwrap_err();
+        assert_eq!(super::shown_text(&ordinary), ordinary);
+        std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            super::shown_text(&"x".repeat(3000)).chars().count(),
+            super::SHOWN_TEXT_MAX
         );
     }
 

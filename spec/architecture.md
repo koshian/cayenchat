@@ -190,7 +190,7 @@ goes through its gate; a change that cannot should say why.
 | Names drawn in the app (nicknames, channel and server names, WHOIS fields) | `model::display::neutralize_bidi` at each draw site | Done, per site |
 | Connection status rows (server-provided disconnection reasons) | `model::display::neutralize_bidi` on the formatted row text | Done (#689) |
 | Dialogs, desktop notifications, window title | `model::display::os_title` / `os_body` (bidirectional and other controls, IRC formatting, length): every `Window::prompt` and `set_window_title` goes through `ui::os_text`, notifications through `Notifier::show`; Linux notification markup is also escaped there. Clippy enforces the gates: `clippy.toml` disallows `Window::prompt`, `Window::set_window_title` and `Notification::show`, and only `os_text.rs` and `notifier.rs` allow them | Done (#558) |
-| Settings import confirmation | Real hosts, ports and unsafe connection flags listed, sanitized when drawn (`settings_transfer`) | Done (#552) |
+| Settings import and result dialogs | Imported server values and result lines (including refusal errors) are sanitized and bounded when drawn (`settings_transfer`) | Done (#552, #691) |
 | Fetched URLs (previews, avatars) | `media::policy::check_request` on every request and redirect, and the resolver's public-address filter | Done |
 | Links opened | `app::links::find` (`http`/`https` only), opened by the OS without a shell | Done |
 | Localized text with values | `localization::fill`: one pass, values never read as placeholders | Done |
