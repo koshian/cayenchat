@@ -3358,10 +3358,14 @@ there is no network, bouncer or connection behind it.
   ServerSession` no longer holds them; the chat window only draws and copies
   what `AppState` returns. This is a move, not a copy: the behavior did not
   change.
-- **Why.** A line gets a `sequence` from the counter messages use, so a later
-  change can reuse the message rows' selection, `search::Hit` and
-  `search_goto` for diagnostics instead of building a second selection,
-  search result type and line identity in `ui`.
+- **Why.** A line gets a `sequence` from its own counter in `AppState`,
+  separate from the message counter, so a later change can reuse the message
+  rows' selection, `search::Hit` and `search_goto` for diagnostics instead of
+  building a second selection, search result type and line identity in `ui`.
+  The message counter is the change detector of the combined log and of the
+  all-logs search (`last_message_sequence`, `latest_sequence`, `search::
+  revision`); a diagnostic line must not advance it, or logging alone would
+  re-read every log and rebuild the combined log.
 - **Kept.** Newest 1,000 lines per server and view; cleared when a new
   connection attempt starts; the recorded local date and time and the time
   since the attempt began, shown and copied identically; the masked text the

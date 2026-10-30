@@ -25,8 +25,8 @@ pub enum DiagnosticsView {
 /// began, and its text.
 #[derive(Clone, Debug)]
 pub struct DiagnosticLine {
-    /// Identity and order key from the same counter as message sequences;
-    /// never reused.
+    /// Identity and order key from the diagnostics' own counter, which is
+    /// not the message counter; never reused.
     pub sequence: u64,
     pub at: SystemTime,
     pub elapsed: Option<Duration>,
@@ -180,6 +180,24 @@ mod tests {
             state
                 .diagnostics(NetworkId(1), DiagnosticsView::Protocol)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_line_leaves_the_message_change_detectors_alone() {
+        let mut state = state();
+        let last = state.last_message_sequence();
+        let latest = state.latest_sequence();
+        let log = state.log_revision();
+        let all = crate::search::revision(&state, crate::search::Scope::All);
+        record(&mut state, 1, DiagnosticsView::Protocol, "→ PING", 1);
+        record(&mut state, 1, DiagnosticsView::Overview, "note", 1);
+        assert_eq!(state.last_message_sequence(), last);
+        assert_eq!(state.latest_sequence(), latest);
+        assert_eq!(state.log_revision(), log);
+        assert_eq!(
+            crate::search::revision(&state, crate::search::Scope::All),
+            all
         );
     }
 

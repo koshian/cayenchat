@@ -157,6 +157,9 @@ pub struct AppState {
     system_messages: VecDeque<(NetworkId, Message)>,
     /// Connection diagnostics per network; not conversation logs.
     diagnostics: HashMap<NetworkId, diagnostics::ServerDiagnostics>,
+    /// Sequence source of the diagnostic lines. Kept apart from
+    /// `next_message_sequence`, which detects changes to the message logs.
+    next_diagnostic_sequence: u64,
     next_message_sequence: u64,
     /// Counts every access that may change a conversation's lines, so a view
     /// derived from them can tell it must be rebuilt.
@@ -283,6 +286,7 @@ impl AppState {
             server_messages: HashMap::new(),
             system_messages: VecDeque::new(),
             diagnostics: HashMap::new(),
+            next_diagnostic_sequence: 0,
             next_message_sequence: SEQUENCE_ORIGIN,
             log_revision: 0,
             next_conversation_id: 1,
@@ -744,7 +748,8 @@ impl AppState {
         if !self.networks.iter().any(|network| network.id == id) {
             return;
         }
-        let sequence = self.next_sequence();
+        let sequence = self.next_diagnostic_sequence;
+        self.next_diagnostic_sequence += 1;
         self.diagnostics.entry(id).or_default().push(
             view,
             DiagnosticLine {
