@@ -117,6 +117,26 @@ pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig
         && config.allow_plaintext_pass == profile.allow_plaintext_pass
 }
 
+/// Makes the channels, IRCv3 options, shared avatar and encodings of `config`
+/// follow `profile`, as saved now: a dialog holds the configuration of when it
+/// opened, and a change made while it was open belongs to the connection it
+/// starts (#723). Channel keys stay, under the spelling the list now has.
+pub(crate) fn follow_profile(
+    config: &mut ConnectionConfig,
+    profile: &ServerProfile,
+    language: cayenchat_storage::Language,
+) -> Result<(), String> {
+    let fresh = crate::connection_config_without_secrets(profile, language)?;
+    config.channels = fresh.channels;
+    crate::channel_keys::follow_channel_spelling(config);
+    config.ircv3 = fresh.ircv3;
+    config.shared_avatar = fresh.shared_avatar;
+    config.encoding = fresh.encoding;
+    config.char_refs = fresh.char_refs;
+    config.channel_encodings = fresh.channel_encodings;
+    Ok(())
+}
+
 /// The passwords `config` sends that the profile does not note as saved:
 /// the ones a refusal of the other password would otherwise lose.
 pub(crate) fn unsaved_secrets(
@@ -618,7 +638,15 @@ impl ChatWindow {
             self.raise_error(Some(network), text, crate::notices::Origin::User, cx);
             return;
         }
+        let followed = self.sessions.get(&network).and_then(|session| {
+            let profile = self.saved.profile(&session.profile_id)?;
+            Some(follow_profile(&mut config, profile, self.saved.language))
+        });
         self.close_credential_prompt(index, window, cx);
+        if let Some(Err(error)) = followed {
+            self.raise_error(Some(network), error, crate::notices::Origin::User, cx);
+            return;
+        }
         if let Some(account) = &account {
             self.save_sasl_account(network, account);
         }
@@ -969,6 +997,42 @@ mod tests {
             sasl_mechanism: cayenchat_storage::SaslMechanism::Plain,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_configuration_follows_the_channels_and_avatar_saved_since() {
+        let mut old = config(true);
+        old.channels = vec!["#a".into()];
+        old.shared_avatar = Some("https://example.invalid/old.png".into());
+        old.server_password = Some("kept".into());
+        let mut saved = profile(true);
+        saved.username = "me".into();
+        saved.set_auto_join_entries(&[cayenchat_storage::AutoJoinEntry {
+            name: "#b".into(),
+            enabled: true,
+        }]);
+        super::follow_profile(&mut old, &saved, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(old.channels, vec!["#b".to_owned()]);
+        assert_eq!(old.shared_avatar, None);
+        assert_eq!(old.server_password.as_deref(), Some("kept"));
+        assert!(matches_profile(&saved, &old), "transport is left alone");
+    }
+
+    #[test]
+    fn a_channel_key_follows_the_respelled_channel() {
+        let mut old = config(true);
+        old.channels = vec!["#a".into()];
+        old.channel_keys.insert("#a".into(), "key".into());
+        let mut saved = profile(true);
+        saved.username = "me".into();
+        saved.set_auto_join_entries(&[cayenchat_storage::AutoJoinEntry {
+            name: "#A".into(),
+            enabled: true,
+        }]);
+        super::follow_profile(&mut old, &saved, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(old.channels, vec!["#A".to_owned()]);
+        assert_eq!(old.channel_keys.get("#A").map(String::as_str), Some("key"));
+        assert!(!old.channel_keys.contains_key("#a"));
     }
 
     #[test]

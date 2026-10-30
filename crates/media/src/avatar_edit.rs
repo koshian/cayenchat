@@ -101,9 +101,21 @@ pub fn open(bytes: &[u8]) -> Result<AvatarSource, LoadError> {
         image.apply_orientation(orientation);
     }
     if image.width() > MAX_WORKING_SIDE || image.height() > MAX_WORKING_SIDE {
-        image = image.resize(MAX_WORKING_SIDE, MAX_WORKING_SIDE, FilterType::Triangle);
+        // A box filter writes straight into the smaller image; `resize`
+        // would add a floating-point intermediate several times the size of
+        // the result, outside the decode budget.
+        let (width, height) = crate::decode::fit(
+            image.width(),
+            image.height(),
+            MAX_WORKING_SIDE,
+            MAX_WORKING_SIDE,
+        );
+        image = image.thumbnail_exact(width, height);
     }
-    let has_alpha = image.color().has_alpha() && image.to_rgba8().pixels().any(|p| p[3] < 255);
+    let has_alpha = match &image {
+        DynamicImage::ImageRgba8(rgba) => rgba.pixels().any(|p| p[3] < 255),
+        other => other.color().has_alpha() && other.to_rgba8().pixels().any(|p| p[3] < 255),
+    };
     Ok(AvatarSource { image, has_alpha })
 }
 
