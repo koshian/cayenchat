@@ -29,6 +29,17 @@ pub enum DiagnosticsView {
     Protocol,
 }
 
+impl DiagnosticsView {
+    pub const ALL: [Self; 2] = [Self::Overview, Self::Protocol];
+
+    fn slot(self) -> usize {
+        match self {
+            Self::Overview => 0,
+            Self::Protocol => 1,
+        }
+    }
+}
+
 /// One connection log line: when it happened, the time since the attempt
 /// began, and its text.
 #[derive(Clone, Debug)]
@@ -108,6 +119,11 @@ pub struct ServerSession {
     pub diagnostics: VecDeque<DiagnosticLine>,
     /// Parsed IRC transcript, bounded.
     pub wire: VecDeque<DiagnosticLine>,
+    /// The id of the oldest line of each view (see `DiagnosticsView::slot`).
+    /// A line keeps its id while newer ones arrive and older ones are
+    /// trimmed or cleared, and an id is never given twice, so a selection or
+    /// a search hit names a line that is either still there or gone.
+    first_ids: [u64; 2],
     pub connection_started: Option<Instant>,
     /// When the connection was first lost since it last registered, so a
     /// reconnect can look for direct messages that arrived meanwhile.
@@ -175,6 +191,7 @@ impl ServerSession {
             key_joins: Vec::new(),
             diagnostics: VecDeque::new(),
             wire: VecDeque::new(),
+            first_ids: [0; 2],
             connection_started: None,
             disconnected_at: None,
             watchdog_stage: 0,
@@ -227,7 +244,19 @@ impl ServerSession {
         lines.push_back(line);
         if lines.len() > DIAGNOSTIC_LIMIT {
             lines.pop_front();
+            self.first_ids[view.slot()] += 1;
         }
+    }
+
+    /// The id of the oldest line of `view`; the next ones follow by one.
+    pub fn first_id(&self, view: DiagnosticsView) -> u64 {
+        self.first_ids[view.slot()]
+    }
+
+    /// The line of `view` with `id`, while the log still holds it.
+    pub fn line_by_id(&self, view: DiagnosticsView, id: u64) -> Option<&DiagnosticLine> {
+        let index = usize::try_from(id.checked_sub(self.first_id(view))?).ok()?;
+        self.lines(view).get(index)
     }
 
     pub fn lines(&self, view: DiagnosticsView) -> &VecDeque<DiagnosticLine> {
@@ -238,6 +267,8 @@ impl ServerSession {
     }
 
     pub fn clear_diagnostics(&mut self) {
+        self.first_ids[0] += self.diagnostics.len() as u64;
+        self.first_ids[1] += self.wire.len() as u64;
         self.diagnostics.clear();
         self.wire.clear();
     }
@@ -311,7 +342,23 @@ mod tests {
         let wire = session.lines(DiagnosticsView::Protocol);
         assert_eq!(wire.len(), DIAGNOSTIC_LIMIT);
         assert_eq!(wire[0].text, "→ 5");
+        // A line keeps its id as older ones are trimmed; ids are not reused
+        // after the log is cleared.
+        assert_eq!(session.first_id(DiagnosticsView::Protocol), 5);
+        assert_eq!(
+            session
+                .line_by_id(DiagnosticsView::Protocol, 5)
+                .unwrap()
+                .text,
+            "→ 5"
+        );
+        assert!(session.line_by_id(DiagnosticsView::Protocol, 4).is_none());
         session.clear_diagnostics();
+        assert_eq!(
+            session.first_id(DiagnosticsView::Protocol),
+            DIAGNOSTIC_LIMIT as u64 + 5
+        );
+        assert!(session.line_by_id(DiagnosticsView::Protocol, 5).is_none());
         assert!(session.lines(DiagnosticsView::Overview).is_empty());
         assert!(session.lines(DiagnosticsView::Protocol).is_empty());
     }

@@ -210,6 +210,20 @@ shows the local date and time it was recorded (milliseconds, UTC offset) and
 the time since the attempt began, and Copy Connection Diagnostics copies the
 shown view with these stamps; the time of copying is never used. After a
 failure or disconnect the log stays copyable.
+The shown lines can also be selected with the mouse, within a line or across
+lines, and copied with Cmd/Ctrl+C or the log menu's Copy (#790): only the
+selected part is copied, as drawn (with the stamps and with bidirectional
+controls neutralized, unlike the whole-view copy); without a selection Copy
+does nothing and never falls back to the whole view. Lines have ids that are
+never reused (`ServerSession::line_by_id`), so a selection or a search hit
+cannot point at another line after trimming, clearing or a reconnect; one made
+in another view, server or log is ignored.
+The log search (Cmd/Ctrl+F) also reads these lines, kept apart from the
+messages (they are not `Message`s): "this log" searches the rows being shown
+(the selected server's view in use), "all" every retained line of every
+server in both views. Matches come after the message matches when stepping.
+Going to a line that is not shown selects its server's log, switches to its
+view and turns the diagnostics on if needed.
 The library generates some maintenance traffic internally; PONG and configured
 JOIN are included, but the transcript is not a complete byte-for-byte capture.
 The trace is visible by default until registration succeeds and after failures;
