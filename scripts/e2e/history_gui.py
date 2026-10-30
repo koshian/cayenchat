@@ -356,7 +356,10 @@ def reconnect_gap(display, proxy, peer):
     positions = [text.index(line) for line in wanted]
     check(positions == sorted(positions), f"missed lines sit between A and D: {text[-10:]}")
     rejoined = [i for i, line in enumerate(text) if line.startswith("alice has joined")]
-    check(len(rejoined) == 1 and positions[2] < rejoined[0] < positions[3],
+    # The first join is shown once, after the history it asked for and before
+    # A; only the rejoin after the cut sits between C and D.
+    check(len(rejoined) == 2 and rejoined[0] < positions[0]
+          and positions[2] < rejoined[1] < positions[3],
           f"missed lines go where the log was cut off, before our rejoin: {text[-10:]}")
 
 
