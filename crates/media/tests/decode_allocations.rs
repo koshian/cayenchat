@@ -158,4 +158,22 @@ fn image_allocations_obey_decode_budgets() {
     assert!(!within_budget(24 * 1024 * 1024, || {
         decode::is_small_original(&original_png)
     }));
+
+    let (width, height) = (4096u32, 2800u32);
+    let mut info = png::Info::with_size(width, height);
+    info.color_type = png::ColorType::Rgba;
+    info.bit_depth = png::BitDepth::Eight;
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::with_info(&mut bytes, info).unwrap();
+    encoder.set_compression(png::Compression::High);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![255; width as usize * height as usize * 4])
+        .unwrap();
+    drop(writer);
+
+    // The decoded source (at most 48 MiB) plus the 2048 × 1400 result; no
+    // floating-point intermediate of the resize.
+    let source = within_budget(64 * 1024 * 1024, || avatar_edit::open(&bytes)).unwrap();
+    assert_eq!((source.width(), source.height()), (2048, 1400));
 }
