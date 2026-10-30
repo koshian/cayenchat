@@ -813,8 +813,9 @@ struct ChatWindow {
     tree_reveal_pending: bool,
     // The group name field was just opened; its row is scrolled into view.
     group_edit_reveal: bool,
-    // Selection and newest message sequence the combined log was built for.
-    sub_source: Option<(Option<ConversationId>, u64)>,
+    // Selection, newest message sequence and log revision the combined log was
+    // built for.
+    sub_source: Option<(Option<ConversationId>, u64, u64)>,
     // The Reiwa mode leads of the selected channel's lines, with what they
     // were derived from: rebuilt only when that changes, not on every redraw.
     reiwa_shapes: Option<(ReiwaShapeKey, Vec<u8>)>,
@@ -8879,13 +8880,18 @@ impl ChatWindow {
             .or_insert_with(LogList::new)
             .sync_shaped(prefix, &sequences, &shapes);
 
-        // The combined log shows the newest conversation lines from every other
-        // channel; JOIN/PART/QUIT/MODE activity stays in its own channel log.
-        // Only the tail of each channel can reach the combined tail. Rebuild it
-        // only when a message arrives or the selection changes, not on every
-        // redraw (each keystroke redraws the window).
+        // The combined log shows the newest lines every other conversation
+        // holds, whatever their provenance or kind. Only the tail of each
+        // channel can reach the combined tail. Rebuild it only when a message
+        // arrives, history is inserted or edited (the log revision; inserted
+        // history does not move the newest sequence) or the selection changes,
+        // not on every redraw (each keystroke redraws the window).
         let selected = self.state.selected_channel().map(|channel| channel.id);
-        let source = (selected, self.state.last_message_sequence());
+        let source = (
+            selected,
+            self.state.last_message_sequence(),
+            self.state.log_revision(),
+        );
         if self.sub_source == Some(source) {
             return;
         }
