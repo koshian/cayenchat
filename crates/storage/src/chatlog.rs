@@ -118,6 +118,12 @@ pub struct Record {
     pub body: String,
 }
 
+/// Creates the log root (and missing parents) as user-only, as the logger
+/// would. For the "open folder" action, which may run before any logging.
+pub fn create_root(path: &Path) -> io::Result<()> {
+    private_file::create_dir(path)
+}
+
 /// The default directory: `<data directory>/CayenChat/logs`.
 pub fn default_directory() -> Option<PathBuf> {
     dirs::data_dir().map(|dir| dir.join("CayenChat").join("logs"))
@@ -670,6 +676,23 @@ fn open(root: &Path, path: &Path) -> io::Result<BufWriter<File>> {
 /// Creates directories below `root` one at a time and checks each before
 /// creating its child, so a symbolic link is not traversed during creation.
 fn create_private_directories(root: &Path, directory: &Path) -> io::Result<()> {
+    // The root itself, which the user may have chosen (and may reach through a
+    // link), must not list the network folders to others either.
+    // A missing root is made user-only below.
+    match fs::metadata(root) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the log root is not a directory",
+                ));
+            }
+            check_private(&metadata, "root directory", "700")?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
     let mut directories = Vec::new();
     let mut current = directory;
     while current != root && current.starts_with(root) {
@@ -741,6 +764,18 @@ mod tests {
             nick: nick.into(),
             body: body.into(),
         }
+    }
+
+    /// A temporary directory fit to be a log root (the umask or a default ACL
+    /// may have made it open to others).
+    fn private_tempdir() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        directory
     }
 
     fn tokyo() -> FixedOffset {
@@ -875,7 +910,7 @@ mod tests {
 
     #[test]
     fn a_failure_is_notified_without_further_records() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         fs::write(directory.path().join("Libera"), b"").unwrap();
         let (sender, receiver) = mpsc::channel();
         let notify: Notify = Arc::new(move || {
@@ -889,7 +924,7 @@ mod tests {
 
     #[test]
     fn a_retired_logger_is_replaced_without_waiting_or_a_lock_clash() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let first = ChatLogger::start(directory.path().to_owned());
         first.log(record(Kind::Msg, "alice", "old"));
         wait_for(|| directory.path().join(LOCK_FILE).exists());
@@ -911,7 +946,7 @@ mod tests {
     fn a_log_file_that_others_can_read_is_not_appended_to() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
         crate::private_file::create_dir(path.parent().unwrap()).unwrap();
@@ -930,7 +965,7 @@ mod tests {
     fn a_conversation_directory_that_others_can_enter_is_not_used() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -946,7 +981,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_pipe_in_place_of_the_file_is_refused_without_waiting() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
         crate::private_file::create_dir(path.parent().unwrap()).unwrap();
@@ -962,7 +997,7 @@ mod tests {
 
     #[test]
     fn records_are_appended_to_one_file_with_a_single_header() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let first = ChatLogger::start(directory.path().to_owned());
         first.log(record(Kind::Msg, "alice", "one"));
         drop(first);
@@ -983,7 +1018,7 @@ mod tests {
 
     #[test]
     fn a_second_logger_on_a_directory_does_not_write() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let first = ChatLogger::start(directory.path().to_owned());
         // The first one holds the lock once its thread has opened it.
         wait_for(|| directory.path().join(LOCK_FILE).exists());
@@ -1013,7 +1048,7 @@ mod tests {
 
     #[test]
     fn a_failure_is_kept_and_announced_once() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         // A file where the network's directory must be.
         fs::write(directory.path().join("Libera"), b"").unwrap();
         let logger = ChatLogger::start(directory.path().to_owned());
@@ -1041,7 +1076,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symbolic_link_in_place_of_the_file_is_not_followed() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let target = directory.path().join("target.txt");
         fs::write(&target, b"keep\n").unwrap();
         let path = path_for(
@@ -1063,7 +1098,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symbolic_link_in_a_log_directory_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
         let network = path.parent().unwrap().parent().unwrap().parent().unwrap();
@@ -1081,7 +1116,7 @@ mod tests {
 
     #[test]
     fn private_log_directories_are_allowed() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         let path = path_for(&root, &record(Kind::Msg, "", ""), &Local);
 
@@ -1103,7 +1138,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_pipe_in_place_of_the_lock_file_is_refused_without_waiting() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         crate::private_file::create_dir(&root).unwrap();
         let name = std::ffi::CString::new(root.join(LOCK_FILE).to_str().unwrap()).unwrap();
@@ -1120,9 +1155,9 @@ mod tests {
     fn a_stuck_logger_does_not_hold_up_other_folders_or_pile_up() {
         // A pipe as the lock file's place is no way to stall `retire`, so a
         // logger that never ends is made from a held thread-less `Done`.
-        let stuck_directory = tempfile::tempdir().unwrap();
+        let stuck_directory = private_tempdir();
         let stuck = Retired(Arc::new(Done::default()), stuck_directory.path().to_owned());
-        let other = tempfile::tempdir().unwrap();
+        let other = private_tempdir();
         // Another folder does not wait for it.
         let logger =
             ChatLogger::start_after(other.path().to_owned(), std::slice::from_ref(&stuck), None);
@@ -1141,7 +1176,7 @@ mod tests {
     fn files_and_directories_are_for_the_user_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = private_tempdir();
         let root = directory.path().join("logs");
         let logger = ChatLogger::start(root.clone());
         logger.log(record(Kind::Msg, "alice", "private"));
@@ -1151,5 +1186,26 @@ mod tests {
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(path.parent().unwrap()), 0o700);
         assert_eq!(mode(&root), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_open_to_others_is_refused_and_the_folder_action_makes_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = private_tempdir();
+        let root = directory.path().join("shared");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let record = record(Kind::Msg, "alice", "private");
+        let path = path_for(&root, &record, &Local);
+        let error = open(&root, &path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!path.exists());
+
+        let created = directory.path().join("made").join("logs");
+        create_root(&created).unwrap();
+        let mode = fs::metadata(&created).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 }

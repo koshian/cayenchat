@@ -8,7 +8,7 @@
 //! `Referer`, no compression, and bounded time and bytes. Tests inject their
 //! own [`Fetcher`].
 
-use std::{io::Read, net::SocketAddr, sync::Arc};
+use std::{io::Read, net::SocketAddr, sync::Arc, time::Instant};
 
 use ureq::{
     config::Config,
@@ -83,10 +83,25 @@ impl HttpFetcher {
         Self { agent, rules }
     }
 
-    fn get(&self, url: &Url, limits: &Limits, cancel: &CancelFlag) -> Result<Step, LoadError> {
+    /// One hop. `deadline` is the end of the whole load, so the request's own
+    /// timeout (which also covers reading the body) is what is left of it.
+    fn get(
+        &self,
+        url: &Url,
+        limits: &Limits,
+        cancel: &CancelFlag,
+        deadline: Instant,
+    ) -> Result<Step, LoadError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(LoadError::Network);
+        }
         let response = self
             .agent
             .get(url.as_str())
+            .config()
+            .timeout_global(Some(remaining))
+            .build()
             .header("Accept", ACCEPT)
             .call()
             .map_err(|error| match error {
@@ -126,6 +141,9 @@ impl HttpFetcher {
             if cancel.is_cancelled() {
                 return Err(LoadError::Cancelled);
             }
+            if Instant::now() >= deadline {
+                return Err(LoadError::Network);
+            }
             let read = reader.read(&mut chunk).map_err(|error| {
                 if error.to_string().contains("limit") {
                     LoadError::TooLarge
@@ -157,6 +175,8 @@ impl Fetcher for HttpFetcher {
         cancel: &CancelFlag,
     ) -> Result<Vec<u8>, LoadError> {
         let MediaRef::Link(link) = source;
+        // `total_timeout` bounds the whole load, redirects included.
+        let deadline = Instant::now() + limits.total_timeout;
         let mut url = link.clone();
         let mut previous: Option<Url> = None;
         for _ in 0..=limits.max_redirects {
@@ -164,7 +184,7 @@ impl Fetcher for HttpFetcher {
                 return Err(LoadError::Cancelled);
             }
             policy::check_request(&url, previous.as_ref(), self.rules)?;
-            match self.get(&url, limits, cancel)? {
+            match self.get(&url, limits, cancel, deadline)? {
                 Step::Body(bytes) => return Ok(bytes),
                 Step::Redirect(next) => previous = Some(std::mem::replace(&mut url, next)),
             }
@@ -463,6 +483,29 @@ mod tests {
             resolver.resolve(&uri, &config, timeout),
             Err(ureq::Error::Other(_))
         ));
+    }
+
+    #[test]
+    fn total_timeout_covers_the_whole_redirect_chain() {
+        let hop = |next: &str| Route {
+            head_delay: Duration::from_millis(250),
+            ..Route::redirect(next)
+        };
+        let server = fixture(&[
+            ("/a", hop("/b")),
+            ("/b", hop("/c")),
+            (
+                "/c",
+                Route::image("image/png", encode(ImageFormat::Png, 4, 4)),
+            ),
+        ]);
+        let limits = Limits {
+            total_timeout: Duration::from_millis(400),
+            ..Limits::default()
+        };
+        let started = Instant::now();
+        assert_eq!(fetch(&server, "/a", &limits), Err(LoadError::Network));
+        assert!(started.elapsed() < Duration::from_millis(700));
     }
 
     #[test]
