@@ -1632,7 +1632,8 @@ rest is counted in a diagnostic); other commands, which servers must not
 send without event-playback, are dropped rather than applied. Lines are
 reported together when the batch ends, so a batch cut off by a disconnect
 reports nothing. A reply after its timeout is swallowed (the last 8
-abandoned channels are remembered) rather than shown as live or as
+abandoned channels are remembered; a reply that had already started is
+swallowed up to its closing line) rather than shown as live or as
 another request's reply. Other `chathistory` batches (bouncer playback)
 keep the existing replay handling. If a reply exceeds the 16 nested-batch
 tracking limit, batch-tagged lines are consumed until its root batch ends;
