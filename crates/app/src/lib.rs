@@ -1277,13 +1277,26 @@ impl AppState {
         else {
             return;
         };
-        if self.attention.back() == Some(&(id, sequence)) {
+        self.note_attention_at(id, sequence);
+    }
+
+    /// Remembers the line with `sequence` of conversation `id` as notified
+    /// about. A line inserted into the log later than newer ones (history)
+    /// goes before the conversation's newer entries, so each conversation
+    /// is still visited oldest first.
+    fn note_attention_at(&mut self, id: ConversationId, sequence: u64) {
+        if self.attention.contains(&(id, sequence)) {
             return;
         }
         if self.attention.len() >= MAX_ATTENTION {
             self.attention.pop_front();
         }
-        self.attention.push_back((id, sequence));
+        let at = self
+            .attention
+            .iter()
+            .position(|&(other, newer)| other == id && newer > sequence)
+            .unwrap_or(self.attention.len());
+        self.attention.insert(at, (id, sequence));
     }
 
     /// Whether a notified line is waiting to be visited.
@@ -1497,10 +1510,12 @@ impl AppState {
             next += 1;
             block.push(message);
         }
+        let mut notable = Vec::new();
         for line in lines {
             if next >= end {
                 break;
             }
+            let attention = line.attention;
             let mut message = new_message(
                 line.sender,
                 line.text,
@@ -1518,6 +1533,9 @@ impl AppState {
                 continue;
             }
             message.sequence = next;
+            if attention {
+                notable.push(next);
+            }
             next += 1;
             block.push(message);
         }
@@ -1526,7 +1544,11 @@ impl AppState {
         let messages = &mut self.conversations[position].messages;
         let at = messages.partition_point(|message| message.sequence < start);
         messages.splice(at..at, block);
-        if trim_retained(messages) {
+        let trimmed = trim_retained(messages);
+        for sequence in notable {
+            self.note_attention_at(id, sequence);
+        }
+        if trimmed {
             self.prune_attention(id);
         }
         added
@@ -1607,7 +1629,8 @@ impl AppState {
     /// repeated or overlapping page, recent history, playback) or recently
     /// received are skipped; the rest fills the log up to its bound, the
     /// oldest lines of the page giving way. Nothing is marked unread or
-    /// highlighted and nothing already shown moves or is renumbered. An
+    /// highlighted (lines flagged `attention` can be jumped to, though) and
+    /// nothing already shown moves or is renumbered. An
     /// answer to another request (a stale one: the session ended, the
     /// channel was left, the conversation was removed) changes nothing.
     /// `beginning` says the source has nothing older; a page that adds
@@ -1643,9 +1666,10 @@ impl AppState {
             near_top.admit(message);
         }
         let recent = self.duplicates.get(&id);
-        let mut block: Vec<Message> = lines
+        let mut block: Vec<(bool, Message)> = lines
             .into_iter()
             .map(|line| {
+                let attention = line.attention;
                 let mut message = new_message(
                     line.sender,
                     line.text,
@@ -1657,9 +1681,9 @@ impl AppState {
                 );
                 message.notice = line.notice;
                 message.action = line.action;
-                message
+                (attention, message)
             })
-            .filter(|message| {
+            .filter(|(_, message)| {
                 !recent.is_some_and(|filter| filter.contains(message)) && near_top.admit(message)
             })
             .collect();
@@ -1669,12 +1693,21 @@ impl AppState {
         }
         let added = block.len();
         let first = self.older_sequence_floor - added as u64;
-        for (offset, message) in block.iter_mut().enumerate() {
+        let mut notable = Vec::new();
+        for (offset, (attention, message)) in block.iter_mut().enumerate() {
             message.sequence = first + offset as u64;
+            if *attention {
+                notable.push(message.sequence);
+            }
         }
         self.older_sequence_floor = first;
         self.log_revision += 1;
-        self.conversations[position].messages.splice(0..0, block);
+        self.conversations[position]
+            .messages
+            .splice(0..0, block.into_iter().map(|(_, message)| message));
+        for sequence in notable {
+            self.note_attention_at(id, sequence);
+        }
         if beginning || added == 0 {
             self.older_history.insert(
                 id,

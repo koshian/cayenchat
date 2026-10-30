@@ -107,6 +107,10 @@ pub struct TimelineLine {
     pub notice: bool,
     /// A `/me` action; `text` is the action's own text.
     pub action: bool,
+    /// Worth a visit by the jump to notified lines
+    /// (`NotificationRules::attention`); registered under the sequence the
+    /// line gets when it is inserted.
+    pub attention: bool,
     pub meta: MessageMeta,
 }
 

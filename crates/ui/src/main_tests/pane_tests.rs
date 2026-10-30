@@ -1657,15 +1657,29 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
             ]
         );
         assert!(b.messages[0].is_history());
-        assert!(b.messages[0].highlights.is_empty());
-        let live = &b.messages[2];
-        let shown: Vec<_> = live
-            .highlights
-            .as_slice()
-            .iter()
-            .map(|r| &live.text[r.clone()])
-            .collect();
-        assert_eq!(shown, ["alice"]);
+        let shown_in = |message: &cayenchat_model::Message| -> Vec<String> {
+            message
+                .highlights
+                .as_slice()
+                .iter()
+                .map(|r| message.text[r.clone()].to_owned())
+                .collect()
+        };
+        // History is highlighted like a live line, a NOTICE is not.
+        assert_eq!(shown_in(&b.messages[0]), ["alice"]);
+        assert!(b.messages[1].highlights.is_empty());
+        assert_eq!(shown_in(&b.messages[2]), ["alice"]);
+        // Both mentions can be visited, the older one first, though only the
+        // live one was notified.
+        let (older, live) = (b.messages[0].sequence, b.messages[2].sequence);
+        let id = b.id;
+        chat.state
+            .dispatch(cayenchat_app::Command::NextNotifiedMessage);
+        assert_eq!(chat.state.take_reveal(), Some((id, older)));
+        chat.state
+            .dispatch(cayenchat_app::Command::NextNotifiedMessage);
+        assert_eq!(chat.state.take_reveal(), Some((id, live)));
+        let b = &chat.state.conversations()[1];
         // The combined log shows every line the conversation holds, history
         // included, in sequence order.
         let rows = super::newest_lines(chat.state.conversations(), None, 10);
@@ -1988,7 +2002,13 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         assert_eq!(texts, ["alice: older mention", "recent", "live"]);
         let older = &chat.state.conversations()[1].messages[0];
         assert!(older.is_history());
-        assert!(older.highlights.is_empty());
+        let marked: Vec<_> = older
+            .highlights
+            .as_slice()
+            .iter()
+            .map(|r| &older.text[r.clone()])
+            .collect();
+        assert_eq!(marked, ["alice"]);
         assert!(!chat.state.is_highlighted(b));
         let selection = chat.log_selection.unwrap();
         assert_eq!(
@@ -2932,7 +2952,7 @@ fn a_nickname_inside_a_link_is_not_a_mention(cx: &mut TestAppContext) {
             cx,
         );
         let found = |text: &str| {
-            let found = chat.find_mentions(NetworkId(1), "bob", text, false);
+            let found = chat.find_mentions(NetworkId(1), "bob", text);
             let shown: Vec<_> = found
                 .ranges
                 .iter()
@@ -2997,7 +3017,7 @@ fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppConte
             cx,
         );
         let found = |text: &str| {
-            let found = chat.find_mentions(NetworkId(1), "bob", text, false);
+            let found = chat.find_mentions(NetworkId(1), "bob", text);
             let shown: Vec<_> = found
                 .ranges
                 .iter()
@@ -3188,7 +3208,8 @@ fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext
         assert_eq!(b.messages[3].text, "deploys");
         assert_eq!(highlights(3), [(0, "deploy")]);
         assert!(b.messages[4].is_history());
-        assert!(highlights(4).is_empty());
+        // Replayed text is searched like live text.
+        assert_eq!(highlights(4), [(0, "alice"), (7, "deploy")]);
 
         // Replayed history leaves an unselected channel unmarked.
         let (a, b) = (a.id, b.id);

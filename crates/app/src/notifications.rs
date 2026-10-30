@@ -46,7 +46,8 @@ pub struct IncomingMessage {
     /// The text contains one of the rules' keywords.
     pub keyword: bool,
     /// History replayed by a bouncer or server, or a line the server or
-    /// bouncer sent itself; it was live, if ever, some time ago.
+    /// bouncer sent itself; it was live, if ever, some time ago. It still
+    /// counts for [`NotificationRules::attention`] but never notifies.
     pub replayed: bool,
 }
 
@@ -62,19 +63,20 @@ impl NotificationRules {
     /// notify, regardless of their nickname or keyword content.
     /// Replayed history never notifies either.
     pub fn trigger(&self, message: IncomingMessage) -> Option<Trigger> {
-        if self.enabled {
+        if self.enabled && !message.replayed {
             self.attention(message)
         } else {
             None
         }
     }
 
-    /// [`trigger`](Self::trigger) without the master switch: what a
-    /// notification would be for, whether or not desktop notifications are
-    /// on. The jump to notified lines uses it, so highlighted lines and
-    /// private messages can be visited with notifications off.
+    /// [`trigger`](Self::trigger) without the master switch and without
+    /// regard to replay: what a message is worth the user's attention for,
+    /// wherever it came from. The jump to notified lines uses it, so
+    /// highlighted lines and private messages, replayed ones included, can
+    /// be visited with notifications off.
     pub fn attention(&self, message: IncomingMessage) -> Option<Trigger> {
-        if message.from_self || message.replayed || message.notice {
+        if message.from_self || message.notice {
             None
         } else if !message.channel {
             self.private_messages.then_some(Trigger::PrivateMessage)
@@ -350,6 +352,19 @@ mod tests {
         assert_eq!(rules.trigger(replayed(channel("me: ping", true))), None);
         assert_eq!(rules.trigger(replayed(channel("Deploy done", false))), None);
         assert_eq!(rules.trigger(replayed(private(false))), None);
+        // Replayed lines are still worth a visit, only not a notification.
+        assert_eq!(
+            rules.attention(replayed(channel("me: ping", true))),
+            Some(Trigger::Mention)
+        );
+        assert_eq!(
+            rules.attention(replayed(channel("Deploy done", false))),
+            Some(Trigger::Keyword)
+        );
+        assert_eq!(
+            rules.attention(replayed(private(false))),
+            Some(Trigger::PrivateMessage)
+        );
         let off = NotificationRules {
             enabled: false,
             ..rules.clone()
