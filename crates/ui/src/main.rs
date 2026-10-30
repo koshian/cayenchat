@@ -2804,6 +2804,9 @@ impl ChatWindow {
         session.connection_starting(&config);
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
+        // A dialog from an earlier attempt would act on this connection.
+        self.credential_prompts
+            .retain(|prompt| prompt.network != network);
         self.state.set_status(network, ConnectionStatus::Connecting);
         self.state
             .append_server_message(network, self.i18n.text("event_reconnecting"));
@@ -5144,8 +5147,7 @@ impl ChatWindow {
                         session.sent_secrets = (None, None);
                     }
                     self.nick_prompts.retain(|prompt| prompt.network != network);
-                    // Another path connected: a dialog left over from a
-                    // refused attempt must not act on this connection (#722).
+                    // Connected, so a password dialog left open is stale.
                     self.credential_prompts
                         .retain(|prompt| prompt.network != network);
                     self.start_key_tracking(network);

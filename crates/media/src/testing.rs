@@ -57,6 +57,8 @@ pub struct Route {
     pub body: Vec<u8>,
     /// Pause after the headers and between 1 KiB body chunks.
     pub delay: Duration,
+    /// Pause before the headers.
+    pub head_delay: Duration,
     /// Send no Content-Length; the body ends when the connection closes.
     pub omit_length: bool,
 }
@@ -68,6 +70,7 @@ impl Route {
             headers: vec![("Content-Type".into(), content_type.into())],
             body,
             delay: Duration::ZERO,
+            head_delay: Duration::ZERO,
             omit_length: false,
         }
     }
@@ -78,6 +81,7 @@ impl Route {
             headers: vec![("Location".into(), location.into())],
             body: Vec::new(),
             delay: Duration::ZERO,
+            head_delay: Duration::ZERO,
             omit_length: false,
         }
     }
@@ -150,8 +154,10 @@ fn serve(
         headers: vec![("Content-Type".into(), "text/plain".into())],
         body: b"not found".to_vec(),
         delay: Duration::ZERO,
+        head_delay: Duration::ZERO,
         omit_length: false,
     });
+    thread::sleep(route.head_delay);
     let mut stream = stream;
     let mut response = format!("HTTP/1.1 {} Fixture\r\nConnection: close\r\n", route.status);
     let declares_length = route
