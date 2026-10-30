@@ -1125,7 +1125,10 @@ images that have transparency before the filter so transparent pixels leave
 no dark or light fringe (output stays straight alpha). Link previews share
 `thumbnail` but keep `thumbnail_exact`: the filter needs an RGBA copy of the
 source, which would exceed the 48 MiB decode budget for large previews.
-`avatar_edit.rs` (the own-avatar editor) also keeps `thumbnail_exact`. Crop,
+`avatar_edit.rs` (the own-avatar editor) also keeps `thumbnail_exact`, and
+uses it to reduce the decoded image to the 2048 px working size too: the
+Lanczos/Triangle `resize` allocated a floating-point intermediate (about
+90 MB for 4096×2800) outside the decode budget (#730). Crop,
 sizes, limits and cache budgets are unchanged; images are still never
 enlarged. Default avatars are rasterized by GPUI at the
 SVG's own pixel size, so `Avatars::default_sized(nick, pixels)` makes one
