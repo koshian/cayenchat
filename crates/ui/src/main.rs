@@ -8,6 +8,7 @@ mod avatar_editor;
 mod avatar_quick_setup;
 mod avatars;
 mod button_order;
+mod channel_groups;
 mod channel_keys;
 mod char_refs;
 mod charset_command;
@@ -74,8 +75,8 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, Kind, MessageMeta, Missing, MoveTo, NetworkConfig,
-    Selection, Unread,
+    AppState, Command, ConnectionStatus, GroupId, Kind, MessageMeta, Missing, MoveTo,
+    NetworkConfig, Parent, Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -96,6 +97,7 @@ use cayenchat_storage::{
     Language, NoticeKey, Notifications, Secret, SecretKey, SendKey, ServerProfile, Settings,
     TextKeyTheme, ThemeMode, UnreadLogPosition,
 };
+use channel_groups::{GroupEdit, GroupMenu, HeadingTarget};
 use futures_util::StreamExt;
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -806,6 +808,8 @@ struct ChatWindow {
     panes: Option<ChatPanes>,
     tree_list: LogList,
     tree_rows: Vec<TreeRow>,
+    /// Where each channel row of `tree_rows` is shown.
+    tree_parents: HashMap<ConversationId, Parent>,
     // The selection the tree last scrolled to; a different one is revealed.
     tree_revealed: Option<Selection>,
     // A channel a typed `/join` just selected; the window catches up (focus,
@@ -844,6 +848,10 @@ struct ChatWindow {
     server_menu: Option<ServerMenu>,
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
+    /// The menu of a right click on a group heading (D075).
+    group_menu: Option<GroupMenu>,
+    /// The name field of a group being created or renamed in the tree.
+    group_edit: Option<GroupEdit>,
     /// The menu of a right click in the channel log.
     log_menu: Option<LogMenu>,
     member_prompt: Option<MemberPrompt>,
@@ -904,6 +912,8 @@ struct ChatWindow {
     dragging_channel: Option<ConversationId>,
     /// The tree row under the pointer during that drag.
     drop_target: Option<ConversationId>,
+    /// The group or server heading under the pointer during that drag.
+    drop_heading: Option<HeadingTarget>,
     layout_save: Option<Task<()>>,
     /// Layout writes made so far, and the number of the newest one written.
     /// A write that is late finds a newer one done and leaves it alone.
@@ -1065,6 +1075,10 @@ struct ChannelMenu {
     joined: bool,
     /// A private conversation offers Close instead of Join and Part.
     private: bool,
+    /// The channel is shown in a group (D075): offer to return it.
+    grouped: bool,
+    /// The list of groups to move to replaces the menu.
+    groups_open: bool,
 }
 
 /// The menu of a right click in the log of a channel or private
@@ -1417,6 +1431,7 @@ impl ChatWindow {
             panes: None,
             tree_list: LogList::new_top(),
             tree_rows: Vec::new(),
+            tree_parents: HashMap::new(),
             tree_revealed: None,
             join_selected: None,
             tree_reveal_pending: false,
@@ -1444,6 +1459,9 @@ impl ChatWindow {
             sessions,
             next_network_id,
             server_menu: None,
+            group_menu: None,
+            group_edit: None,
+            drop_heading: None,
             member_menu: None,
             channel_menu: None,
             log_menu: None,
@@ -2074,19 +2092,7 @@ impl ChatWindow {
         let Some(network) = self.state.move_conversation(id, to) else {
             return;
         };
-        if let Some(profile_id) = self.sessions.get(&network).map(|s| s.profile_id.clone()) {
-            self.channel_orders
-                .set(&profile_id, self.state.channel_order(network));
-            self.channel_orders
-                .retain_servers(|id| self.sessions.values().any(|s| s.profile_id == id));
-            if let Some(path) = &self.order_file
-                && let Err(error) =
-                    cayenchat_storage::order::save_orders_to(path, &self.channel_orders)
-            {
-                self.raise_error(Some(network), error, notices::Origin::User, cx);
-            }
-        }
-        cx.notify();
+        self.save_channel_layout(Some(network), cx);
     }
 
     /// Moves a server one place up or down the tree by reordering the saved
@@ -3210,7 +3216,8 @@ impl ChatWindow {
         let member = self.member_menu.take().is_some();
         let channel = self.channel_menu.take().is_some();
         let log = self.log_menu.take().is_some();
-        server || member || channel || log
+        let group = self.group_menu.take().is_some();
+        server || member || channel || log || group
     }
 
     /// Whether `source` has a non-empty text selection in its log.
@@ -3274,6 +3281,7 @@ impl ChatWindow {
         self.inputs
             .values()
             .chain(self.member_prompt.iter().map(|prompt| &prompt.input))
+            .chain(self.group_edit.iter().map(|edit| &edit.input))
             .chain(self.part_prompt.iter().map(|prompt| &prompt.input))
             .chain(self.paste_prompt.iter().flat_map(|prompt| prompt.inputs()))
             .chain(self.nick_prompts.iter().map(|prompt| &prompt.input))
@@ -4831,11 +4839,15 @@ impl ChatWindow {
         let current = self.tree_rows.iter().position(|row| match *row {
             TreeRow::Server(id) => selection == Selection::Server(id),
             TreeRow::Channel(id, _) => selection == Selection::Channel(id),
+            TreeRow::Group(_) | TreeRow::NewGroup => false,
         });
         let target = match (key, current) {
+            // A channel's parent is its server; one shown in a group has no
+            // selectable parent row.
             (ListKey::Parent, Some(at)) => self.tree_rows[..at]
                 .iter()
-                .rposition(|row| matches!(row, TreeRow::Server(_)))
+                .rposition(|row| !matches!(row, TreeRow::Channel(..)))
+                .filter(|&parent| matches!(self.tree_rows[parent], TreeRow::Server(_)))
                 .filter(|_| matches!(self.tree_rows[at], TreeRow::Channel(..))),
             (ListKey::Child, Some(at)) => (at + 1 < self.tree_rows.len()
                 && matches!(self.tree_rows[at], TreeRow::Server(_))
@@ -4850,6 +4862,15 @@ impl ChatWindow {
             }
         };
         cx.stop_propagation();
+        // Group headings are not selectable: the movement goes on to the
+        // next row that is, in the direction of the key.
+        let forward = matches!(key, ListKey::Next | ListKey::PageDown | ListKey::Last);
+        let selectable = |row: &TreeRow| matches!(row, TreeRow::Server(_) | TreeRow::Channel(..));
+        let target = target.and_then(|at| match key {
+            ListKey::Activate => Some(at),
+            _ if forward => (at..self.tree_rows.len()).find(|&i| selectable(&self.tree_rows[i])),
+            _ => (0..=at).rev().find(|&i| selectable(&self.tree_rows[i])),
+        });
         let Some(row) = target.and_then(|at| self.tree_rows.get(at).copied().map(|r| (at, r)))
         else {
             return;
@@ -4857,6 +4878,7 @@ impl ChatWindow {
         let command = match row.1 {
             TreeRow::Server(id) => Command::SelectServer(id),
             TreeRow::Channel(id, _) => Command::SelectChannel(id),
+            TreeRow::Group(_) | TreeRow::NewGroup => return,
         };
         if key == ListKey::Activate {
             self.dispatch(command, window, cx);
@@ -6156,6 +6178,8 @@ impl ChatWindow {
     fn submit_with(&mut self, press: Submit, window: &mut Window, cx: &mut Context<Self>) {
         if self.wizard_nickname_focused(window, cx) {
             self.wizard_connect(window, cx);
+        } else if self.group_edit_focused(window, cx) {
+            self.commit_group_edit(window, cx);
         } else if self.part_prompt_field_focused(window, cx) {
             self.confirm_part_prompt(window, cx);
         } else if self.submit_paste_prompt_field(window, cx) {
@@ -6788,30 +6812,56 @@ impl ChatWindow {
         if !cx.has_active_drag() {
             self.dragging_channel = None;
             self.drop_target = None;
+            self.drop_heading = None;
         }
         self.tree_rows.clear();
+        self.tree_parents.clear();
         let mut keys = Vec::new();
-        for (index, network) in self.state.networks().iter().enumerate() {
+        // One order for the rows, the shortcuts and the drag guides (D075):
+        // the groups first, then each server with what is left under it.
+        let display = self.state.display_tree();
+        let privates: std::collections::HashSet<ConversationId> = self
+            .state
+            .conversations()
+            .iter()
+            .filter(|c| c.is_private())
+            .map(|c| c.id)
+            .collect();
+        let selected = self.state.selection();
+        for (group, children) in &display.groups {
+            self.tree_rows.push(TreeRow::Group(*group));
+            keys.push(GROUP_KEY | u64::from(group.0));
+            let collapsed = self.state.group(*group).is_some_and(|g| g.collapsed);
+            for (position, id) in children.iter().enumerate() {
+                self.tree_parents.insert(*id, Parent::Group(*group));
+                // A collapsed group still shows the selected channel.
+                if collapsed && selected != Selection::Channel(*id) {
+                    continue;
+                }
+                self.tree_rows.push(TreeRow::Channel(*id, position));
+                keys.push(GROUP_CHANNEL_KEY | (u64::from(id.0) + 1));
+            }
+        }
+        if self
+            .group_edit
+            .as_ref()
+            .is_some_and(|edit| matches!(edit.target, channel_groups::GroupEditTarget::New(_)))
+        {
+            self.tree_rows.push(TreeRow::NewGroup);
+            keys.push(GROUP_KEY | NEW_GROUP_KEY);
+        }
+        for (index, (network, children)) in display.servers.iter().enumerate() {
             let base = (index as u64) << 32;
-            self.tree_rows.push(TreeRow::Server(network.id));
+            self.tree_rows.push(TreeRow::Server(*network));
             keys.push(base);
-            for (position, conversation) in self
-                .state
-                .conversations()
-                .iter()
-                .filter(|c| c.network == network.id)
-                .enumerate()
-            {
-                self.tree_rows
-                    .push(TreeRow::Channel(conversation.id, position));
+            for (position, id) in children.iter().enumerate() {
+                self.tree_parents.insert(*id, Parent::Server(*network));
+                let private = privates.contains(id);
+                self.tree_rows.push(TreeRow::Channel(*id, position));
                 // Private conversations follow the network's channels; the
                 // bit keeps keys ascending in that order.
-                let private = if conversation.is_private() {
-                    1 << 31
-                } else {
-                    0
-                };
-                keys.push(base | private | (u64::from(conversation.id.0) + 1));
+                let private = if private { 1 << 31 } else { 0 };
+                keys.push(base | private | (u64::from(id.0) + 1));
             }
         }
         self.tree_list.sync_unordered(0, &keys);
@@ -6825,6 +6875,7 @@ impl ChatWindow {
             let at = self.tree_rows.iter().position(|row| match *row {
                 TreeRow::Server(id) => selection == Selection::Server(id),
                 TreeRow::Channel(id, _) => selection == Selection::Channel(id),
+                TreeRow::Group(_) | TreeRow::NewGroup => false,
             });
             self.tree_reveal_pending = false;
             if let Some(at) = at {
@@ -6913,7 +6964,28 @@ impl ChatWindow {
                         d.bg(theme.selected)
                     })
                     .hover(|d| d.bg(theme.hover_strong))
+                    .when(
+                        self.drop_heading == Some(HeadingTarget::Server(server_id)),
+                        |d| d.bg(theme.selected),
+                    )
                     .child(format!("{}{}", self.network_label(network), status_mark))
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
+                            let dragged = event.drag(cx);
+                            let inside = event.bounds.contains(&event.event.position)
+                                && channel_groups::server_accepts(
+                                    dragged,
+                                    server_id,
+                                    this.state.is_grouped(dragged.id),
+                                );
+                            this.set_heading_target(HeadingTarget::Server(server_id), inside, cx);
+                        },
+                    ))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedChannel, _, cx| {
+                        this.dragging_channel = None;
+                        this.drop_target = None;
+                        this.drop_on_server(dragged, server_id, cx);
+                    }))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -6933,6 +7005,7 @@ impl ChatWindow {
                             });
                             this.member_menu = None;
                             this.channel_menu = None;
+                            this.group_menu = None;
                             this.log_menu = None;
                             this.member_prompt = None;
                             cx.stop_propagation();
@@ -6949,10 +7022,24 @@ impl ChatWindow {
                     }))
                     .into_any_element()
             }
+            Some(TreeRow::Group(group)) => self.render_group_row(group, cx),
+            Some(TreeRow::NewGroup) => self.render_new_group_row(cx),
             Some(TreeRow::Channel(id, index)) => {
                 let Some(conversation) = self.state.conversation(id) else {
                     return div().into_any_element();
                 };
+                let parent = self.tree_parents.get(&id).copied();
+                let grouped = matches!(parent, Some(Parent::Group(_)));
+                // Channels of one name on several servers are told apart by
+                // the server shown after the name.
+                let server_label = grouped.then(|| {
+                    self.state
+                        .networks()
+                        .iter()
+                        .find(|n| n.id == conversation.network)
+                        .map(|n| display::neutralize_bidi(&self.network_label(n)).into_owned())
+                        .unwrap_or_default()
+                });
                 let unread = self.state.is_unread(id);
                 let highlighted = self.state.is_highlighted(id);
                 let name = conversation.name.clone();
@@ -6968,7 +7055,14 @@ impl ChatWindow {
                     .dragging_channel
                     .zip(self.drop_target)
                     .filter(|(dragged, target)| dragged != target && *target == id)
-                    .and_then(|(dragged, _)| drop_line_on_top(&self.tree_rows, dragged, index));
+                    .and_then(|(dragged, _)| {
+                        // From another parent the dragged channel goes
+                        // before the row.
+                        if self.tree_parents.get(&dragged) != parent.as_ref() {
+                            return Some(true);
+                        }
+                        drop_line_on_top(&self.tree_rows, dragged, index)
+                    });
                 let dragged = DraggedChannel {
                     id,
                     network,
@@ -6982,7 +7076,8 @@ impl ChatWindow {
                     // The whole row width is the drop area, also while the
                     // digit gutter makes it a flex row.
                     .w_full()
-                    .when(dragging, |d| d.flex().pl_1())
+                    .when(dragging || grouped, |d| d.flex())
+                    .when(dragging, |d| d.pl_1())
                     .when(!dragging, |d| d.pl_4())
                     .pr_2()
                     .py(px(2.))
@@ -7008,6 +7103,15 @@ impl ChatWindow {
                         if unread { "● " } else { "" },
                         display::neutralize_bidi(&conversation.name)
                     ))
+                    .when_some(server_label, |d, label| {
+                        d.child(
+                            div()
+                                .ml_2()
+                                .flex_none()
+                                .text_color(theme.text_muted)
+                                .child(label),
+                        )
+                    })
                     .when_some(drop_line_on_top, |d, on_top| {
                         d.child(
                             div()
@@ -7032,9 +7136,14 @@ impl ChatWindow {
                     .on_drag_move(cx.listener(
                         move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
                             let dragged = event.drag(cx);
-                            let target = (event.bounds.contains(&event.event.position)
-                                && dragged.network == network
-                                && dragged.private == private)
+                            // Into a group from anywhere, but a server row
+                            // takes only channels of that server.
+                            let accepts = if grouped {
+                                !dragged.private && !private
+                            } else {
+                                dragged.network == network && dragged.private == private
+                            };
+                            let target = (event.bounds.contains(&event.event.position) && accepts)
                                 .then_some(id);
                             if target.is_some() && this.drop_target != target {
                                 this.drop_target = target;
@@ -7048,7 +7157,12 @@ impl ChatWindow {
                     .on_drop(cx.listener(move |this, dragged: &DraggedChannel, _, cx| {
                         this.dragging_channel = None;
                         this.drop_target = None;
-                        if dragged.network == network && dragged.private == private {
+                        let accepts = if grouped {
+                            !dragged.private && !private
+                        } else {
+                            dragged.network == network && dragged.private == private
+                        };
+                        if accepts {
                             this.move_conversation(dragged.id, MoveTo::Place(id), cx);
                         }
                         cx.notify();
@@ -7073,8 +7187,11 @@ impl ChatWindow {
                                 channel: name.clone(),
                                 joined,
                                 private,
+                                grouped,
+                                groups_open: false,
                             });
                             this.server_menu = None;
+                            this.group_menu = None;
                             this.member_menu = None;
                             this.log_menu = None;
                             this.member_prompt = None;
@@ -7664,91 +7781,127 @@ impl ChatWindow {
                         },
                     ))
             });
-        let channel_menu = self.channel_menu.as_ref().map(|menu| {
-            let registered = self.registered_connection(menu.network).is_ok();
-            let mut popup = div()
-                .id("channel-context-menu")
-                .occlude()
-                .w(px(176.))
-                .p_1()
-                .bg(theme.surface)
-                .border_1()
-                .border_color(border)
-                .shadow_md();
-            let moves = [
-                (MoveTo::Up, "tree_move_up"),
-                (MoveTo::Down, "tree_move_down"),
-                (MoveTo::First, "tree_move_first"),
-                (MoveTo::Last, "tree_move_last"),
-            ]
-            .map(|(to, key)| {
-                div()
-                    .id(key)
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme.hover_strong))
-                    .child(self.i18n.text(key))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.move_menu_conversation(to, cx)),
-                    )
-            });
-            if menu.private {
-                return popup
-                    .child(
-                        div()
-                            .id("channel-menu-close")
-                            .px_2()
-                            .py_1()
-                            .cursor_pointer()
-                            .hover(|d| d.bg(theme.hover_strong))
-                            .child(self.i18n.text("conversation_close"))
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.close_private_conversation(cx)),
-                            ),
-                    )
-                    .child(div().my_1().border_t_1().border_color(theme.separator))
-                    .children(moves);
-            }
-            for (join, key) in [(true, "channel_join"), (false, "channel_part")] {
-                let enabled = registered && menu.joined != join;
-                popup = popup.child(
+        let channel_menu =
+            self.channel_menu.as_ref().map(|menu| {
+                let registered = self.registered_connection(menu.network).is_ok();
+                let mut popup = div()
+                    .id("channel-context-menu")
+                    .occlude()
+                    .w(px(176.))
+                    .p_1()
+                    .bg(theme.surface)
+                    .border_1()
+                    .border_color(border)
+                    .shadow_md();
+                let moves = [
+                    (MoveTo::Up, "tree_move_up"),
+                    (MoveTo::Down, "tree_move_down"),
+                    (MoveTo::First, "tree_move_first"),
+                    (MoveTo::Last, "tree_move_last"),
+                ]
+                .map(|(to, key)| {
                     div()
-                        .id(if join {
-                            "channel-menu-join"
-                        } else {
-                            "channel-menu-part"
-                        })
-                        .px_2()
-                        .py_1()
-                        .child(self.i18n.text(key))
-                        .when(enabled, |d| {
-                            d.cursor_pointer()
-                                .hover(|d| d.bg(theme.hover_strong))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.channel_menu_command(join, cx)
-                                }))
-                        })
-                        .when(!enabled, |d| d.text_color(theme.text_muted)),
-                );
-            }
-            popup
-                .child(div().my_1().border_t_1().border_color(theme.separator))
-                .child(
-                    div()
-                        .id("channel-menu-settings")
+                        .id(key)
                         .px_2()
                         .py_1()
                         .cursor_pointer()
                         .hover(|d| d.bg(theme.hover_strong))
-                        .child(self.i18n.text("channel_settings_menu"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_channel_settings(window, cx)
-                        })),
-                )
-                .child(div().my_1().border_t_1().border_color(theme.separator))
-                .children(moves)
-        });
+                        .child(self.i18n.text(key))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.move_menu_conversation(to, cx)),
+                        )
+                });
+                if menu.groups_open && !menu.private {
+                    return self.render_group_choices(popup, cx);
+                }
+                if menu.private {
+                    return popup
+                        .child(
+                            div()
+                                .id("channel-menu-close")
+                                .px_2()
+                                .py_1()
+                                .cursor_pointer()
+                                .hover(|d| d.bg(theme.hover_strong))
+                                .child(self.i18n.text("conversation_close"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.close_private_conversation(cx)
+                                })),
+                        )
+                        .child(div().my_1().border_t_1().border_color(theme.separator))
+                        .children(moves)
+                        .into_any_element();
+                }
+                for (join, key) in [(true, "channel_join"), (false, "channel_part")] {
+                    let enabled = registered && menu.joined != join;
+                    popup = popup.child(
+                        div()
+                            .id(if join {
+                                "channel-menu-join"
+                            } else {
+                                "channel-menu-part"
+                            })
+                            .px_2()
+                            .py_1()
+                            .child(self.i18n.text(key))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .hover(|d| d.bg(theme.hover_strong))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.channel_menu_command(join, cx)
+                                    }))
+                            })
+                            .when(!enabled, |d| d.text_color(theme.text_muted)),
+                    );
+                }
+                popup
+                    .child(div().my_1().border_t_1().border_color(theme.separator))
+                    .child(
+                        div()
+                            .id("channel-menu-group")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover_strong))
+                            .child(format!("{} ›", self.i18n.text("group_move")))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(menu) = this.channel_menu.as_mut() {
+                                    menu.groups_open = true;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .when(menu.grouped, |d| {
+                        d.child(
+                            div()
+                                .id("channel-menu-ungroup")
+                                .px_2()
+                                .py_1()
+                                .cursor_pointer()
+                                .hover(|d| d.bg(theme.hover_strong))
+                                .child(self.i18n.text("group_return"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.return_menu_channel_to_server(cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("channel-menu-settings")
+                            .px_2()
+                            .py_1()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme.hover_strong))
+                            .child(self.i18n.text("channel_settings_menu"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_channel_settings(window, cx)
+                            })),
+                    )
+                    .child(div().my_1().border_t_1().border_color(theme.separator))
+                    .children(moves)
+                    .into_any_element()
+            });
+        let group_menu = self.render_group_menu(cx);
         let log_menu = self.log_menu.as_ref().map(|menu| {
             let registered = self.registered_connection(menu.network).is_ok();
             let mut groups = vec![vec![
@@ -8214,6 +8367,9 @@ impl ChatWindow {
             .when_some(self.log_menu.as_ref().zip(log_menu), |d, (at, menu)| {
                 d.child(snapped_menu(at.position, menu))
             })
+            .when_some(self.group_menu.as_ref().zip(group_menu), |d, (at, menu)| {
+                d.child(snapped_menu(at.position, menu))
+            })
             .when_some(member_prompt, |d, prompt| d.child(prompt))
             .when_some(nick_prompts, |d, prompts| d.child(prompts))
             .when_some(key_prompts, |d, prompts| d.child(prompts))
@@ -8311,10 +8467,20 @@ impl ChatWindow {
     }
 }
 
+/// Keys of the tree's rows (`LogList::sync_unordered`): a server's rows have
+/// its position in the high half, a group's rows carry these bits.
+const GROUP_KEY: u64 = 1 << 63;
+const GROUP_CHANNEL_KEY: u64 = 1 << 62;
+const NEW_GROUP_KEY: u64 = 1 << 40;
+
 /// A row of the channel tree.
 #[derive(Clone, Copy)]
 enum TreeRow {
     Server(NetworkId),
+    /// The heading of a group (D075).
+    Group(GroupId),
+    /// The row where the name of a group being created is typed.
+    NewGroup,
     /// The conversation and its position within its server's channels (D009).
     Channel(ConversationId, usize),
 }
@@ -10192,6 +10358,7 @@ fn main() {
                     chat.order_file = cayenchat_storage::order::order_path().ok();
                     chat.channel_orders = cayenchat_storage::order::load_orders();
                     chat.restore_channel_orders();
+                    chat.restore_channel_groups();
                     chat.apply_layout(&layout);
                     cx.set_menus(app_menus(
                         false,
@@ -10442,6 +10609,10 @@ mod dblclick_confirm_tests;
 #[cfg(test)]
 #[path = "main_tests/paste_dialog_tests.rs"]
 mod paste_dialog_tests;
+
+#[cfg(test)]
+#[path = "main_tests/channel_group_tests.rs"]
+mod channel_group_tests;
 
 #[cfg(test)]
 #[path = "main_tests/tree_reveal_tests.rs"]

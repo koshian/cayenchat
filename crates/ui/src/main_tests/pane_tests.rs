@@ -2467,6 +2467,8 @@ fn private_messages_get_their_own_conversations(cx: &mut TestAppContext) {
             channel: "bob".into(),
             joined: true,
             private: true,
+            grouped: false,
+            groups_open: false,
         });
         chat.close_private_conversation(cx);
         assert!(chat.state.private_id(one, "bob").is_none());
