@@ -386,6 +386,22 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
         assert!(!chat.sessions[&NetworkId(3)].asleep);
         assert!(chat.sessions[&NetworkId(3)].manual_disconnect);
         assert!(!chat.sessions[&NetworkId(1)].retry_pending);
+        // The overview records the notice and the result of the wait, with
+        // the connection generation, for the next sleep that goes wrong.
+        let notes = |network| -> Vec<String> {
+            chat.sessions[&network]
+                .diagnostics
+                .iter()
+                .map(|line| line.text.clone())
+                .filter(|text| text.contains("Sleep"))
+                .collect()
+        };
+        let first = notes(NetworkId(1));
+        assert!(first[0].contains("sending QUIT"), "{first:?}");
+        // Whether the worker ended in time depends on the order of the shared
+        // wait, which the silent server uses up.
+        assert!(first[1].starts_with("Sleep QUIT"), "{first:?}");
+        assert!(notes(NetworkId(3))[0].contains("disconnected by the user"));
     });
 
     // The wake: the networks ended for sleep connect again, the other not.
