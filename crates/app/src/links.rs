@@ -131,11 +131,22 @@ mod tests {
     /// larger should take about 8 times longer (a quadratic scan 64 times),
     /// so the limit of 24 times sits between them whatever the host speed.
     /// The small time has a floor so timer granularity cannot inflate the ratio.
+    /// A loaded host can still stall one measurement for milliseconds (a CI
+    /// run saw 1 ms and 32 ms), so the pair is measured again and only a
+    /// ratio that stays over the limit every time fails. A quadratic scan
+    /// does, since it is slow in every attempt.
     fn assert_linear(build: &dyn Fn(usize) -> String, small: usize) {
         let floor = std::time::Duration::from_micros(200);
-        let base = best_time(build, small).max(floor);
-        let large = best_time(build, small * 8);
-        assert!(large < base * 24, "{base:?} for {small}, {large:?} for 8x");
+        let mut last = String::new();
+        for _ in 0..4 {
+            let base = best_time(build, small).max(floor);
+            let large = best_time(build, small * 8);
+            if large < base * 24 {
+                return;
+            }
+            last = format!("{base:?} for {small}, {large:?} for 8x");
+        }
+        panic!("{last}");
     }
 
     #[test]
