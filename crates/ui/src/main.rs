@@ -5144,6 +5144,10 @@ impl ChatWindow {
                         session.sent_secrets = (None, None);
                     }
                     self.nick_prompts.retain(|prompt| prompt.network != network);
+                    // Another path connected: a dialog left over from a
+                    // refused attempt must not act on this connection (#722).
+                    self.credential_prompts
+                        .retain(|prompt| prompt.network != network);
                     self.start_key_tracking(network);
                 }
                 Event::Joined { channel } | Event::JoinedReplayed { channel } => {
