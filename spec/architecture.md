@@ -1477,8 +1477,9 @@ protocol:
 - `provenance` (`model::Provenance`): `Live`, `Replayed` (history the server
   or bouncer sent by itself: bouncer log replay, history batches nobody
   asked for) or `Requested` (history this client asked for; see Recent
-  channel history). Only live messages notify or highlight
-  (`Message::is_history`).
+  channel history). Only live messages notify (`Message::is_history`);
+  mentions and keywords are found and highlighted, and lines worth a visit
+  are registered for the jump to notified lines, whatever the provenance.
 
 `app::timeline::DuplicateFilter` (one per conversation, created only when a
 conversation receives a message with a native identifier or timestamp)
@@ -1660,7 +1661,12 @@ every line that arrived after the request, so unrelated live lines are
 never reordered and logs stay in ascending sequence order (`LogList`
 replaces only the inserted rows). Lines the duplicate filter recognizes
 (a live line the reply repeats, bouncer playback) are skipped. Nothing is
-marked unread or highlighted, nothing notifies, and requested history is
+marked unread or highlighted and nothing notifies, but each line is
+searched for mentions and keywords by the same code as a live line
+(`ChatWindow::find_mentions`): its ranges become `Message::highlights`, and
+a line the notification rules call attention-worthy
+(`TimelineLine::attention`) is queued for the jump to notified lines under
+the sequence it was given, in order within its conversation. Requested history is
 left out of the combined subwindow. A reply without a pending reservation
 is ignored: the reservation is dropped when the network disconnects, is
 reset or removed, and the UI already drops events of an old connection

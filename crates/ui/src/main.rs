@@ -665,31 +665,60 @@ fn received_kind(text: &str, notice: bool) -> (Kind, &str) {
     }
 }
 
-/// Requested history lines as timeline items: history, never news.
-fn history_lines(messages: Vec<HistoryMessage>) -> Vec<TimelineLine> {
-    messages
-        .into_iter()
-        .map(|message| {
-            let (kind, shown) = received_kind(&message.text, message.notice);
-            let action = kind.is_action().then(|| shown.to_owned());
-            TimelineLine {
-                action: action.is_some(),
-                text: match action {
-                    Some(action) => action,
-                    None if message.notice => format!("[NOTICE] {}", message.text),
-                    None => message.text,
-                },
-                sender: message.sender,
-                notice: message.notice,
-                meta: irc_message_meta(
-                    message.server_time,
-                    message.msgid.as_deref(),
-                    message.account.as_deref(),
-                    Provenance::Replayed,
-                ),
-            }
-        })
-        .collect()
+impl ChatWindow {
+    /// Requested history lines as timeline items: found and highlighted like
+    /// live lines, but never news (no notification, unread or highlighted
+    /// mark). `channel` is whether they belong to a channel.
+    fn history_lines(
+        &self,
+        network: NetworkId,
+        channel: bool,
+        messages: Vec<HistoryMessage>,
+    ) -> Vec<TimelineLine> {
+        messages
+            .into_iter()
+            .map(|message| {
+                let (kind, shown) = received_kind(&message.text, message.notice);
+                let found = if kind.is_notice() {
+                    Found::default()
+                } else {
+                    self.find_mentions(network, &message.sender, shown)
+                };
+                let attention = self
+                    .notification_rules
+                    .attention(IncomingMessage {
+                        channel,
+                        notice: kind.is_notice(),
+                        from_self: self.is_own_nickname(network, &message.sender),
+                        mentioned: found.mentioned,
+                        keyword: found.keyword,
+                        replayed: true,
+                    })
+                    .is_some();
+                let action = kind.is_action().then(|| shown.to_owned());
+                TimelineLine {
+                    attention,
+                    action: action.is_some(),
+                    text: match action {
+                        Some(action) => action,
+                        None if message.notice => format!("[NOTICE] {}", message.text),
+                        None => message.text,
+                    },
+                    sender: message.sender,
+                    notice: message.notice,
+                    meta: MessageMeta {
+                        highlights: found.ranges,
+                        ..irc_message_meta(
+                            message.server_time,
+                            message.msgid.as_deref(),
+                            message.account.as_deref(),
+                            Provenance::Replayed,
+                        )
+                    },
+                }
+            })
+            .collect()
+    }
 }
 
 /// Shown where a reconnect recovered only the most recent missed lines of a
@@ -1840,11 +1869,11 @@ impl ChatWindow {
 
     /// Mentions of our nickname and keywords in an incoming message, looked
     /// for in its text (the action's own text for a `/me`) without formatting
-    /// codes. Our own lines and replayed history have none.
-    fn find_mentions(&self, network: NetworkId, sender: &str, body: &str, replayed: bool) -> Found {
+    /// codes. Our own lines have none; where a line came from does not matter.
+    fn find_mentions(&self, network: NetworkId, sender: &str, body: &str) -> Found {
         use cayenchat_irc_core::text::{mention_ranges, plain_ranges};
 
-        if replayed || self.is_own_nickname(network, sender) {
+        if self.is_own_nickname(network, sender) {
             return Found::default();
         }
         let own = self.own_nickname(network);
@@ -1921,7 +1950,8 @@ impl ChatWindow {
         if let (Some(conversation), false) = (conversation, visible) {
             self.state.note_attention(conversation);
         }
-        if !self.notification_rules.enabled {
+        // Replayed history is visitable but never shown to the desktop.
+        if !self.notification_rules.enabled || replayed {
             return;
         }
         let plain = display::neutralize_bidi_owned(if kind.is_action() {
@@ -5465,7 +5495,7 @@ impl ChatWindow {
                 let found = if kind.is_notice() {
                     Found::default()
                 } else {
-                    self.find_mentions(network, &sender, text, replayed)
+                    self.find_mentions(network, &sender, text)
                 };
                 let meta = MessageMeta {
                     highlights: found.ranges.clone(),
@@ -5508,7 +5538,9 @@ impl ChatWindow {
                         replayed,
                     },
                 );
-                if found.mentioned || found.keyword {
+                // Replayed lines are marked unread like any, but a channel
+                // is not flagged as mentioning us for old news.
+                if !replayed && (found.mentioned || found.keyword) {
                     self.state.mark_highlighted(network, &channel);
                 }
             }
@@ -5557,7 +5589,7 @@ impl ChatWindow {
                 let found = if kind.is_notice() {
                     Found::default()
                 } else {
-                    self.find_mentions(network, &sender, text, replayed)
+                    self.find_mentions(network, &sender, text)
                 };
                 let meta = MessageMeta {
                     highlights: found.ranges.clone(),
@@ -5728,7 +5760,7 @@ impl ChatWindow {
                 messages,
                 incomplete,
             } => {
-                let lines = history_lines(messages);
+                let lines = self.history_lines(network, valid_channel(&channel), messages);
                 let gap = incomplete.then(|| HISTORY_GAP_NOTE.to_owned());
                 if valid_channel(&channel) {
                     self.state
@@ -5756,7 +5788,7 @@ impl ChatWindow {
                         let added = self.state.insert_older_history(
                             id,
                             request,
-                            history_lines(messages),
+                            self.history_lines(network, true, messages),
                             status == OlderHistoryStatus::Beginning,
                         );
                         // A text selection names rows by index; keep it on

@@ -1089,6 +1089,7 @@ fn line(text: &str, millis: Option<u64>, msgid: Option<&str>) -> timeline::Timel
         text: text.into(),
         notice: false,
         action: false,
+        attention: false,
         meta: meta(millis, msgid, Provenance::Live),
     }
 }
@@ -1640,6 +1641,46 @@ fn ascending(state: &AppState, index: usize) -> bool {
         .messages
         .windows(2)
         .all(|pair| pair[0].sequence < pair[1].sequence)
+}
+
+#[test]
+fn history_lines_flagged_for_attention_are_visited_at_their_own_place() {
+    let (mut state, network, id) = paging_channel();
+    let index = state
+        .conversations()
+        .iter()
+        .position(|conversation| conversation.id == id)
+        .unwrap();
+    state.append_channel_message(
+        network,
+        "#a",
+        "dave",
+        "live mention",
+        Kind::Message,
+        Provenance::Live,
+    );
+    state.note_attention(id);
+    let live = state.conversations()[index]
+        .messages
+        .last()
+        .unwrap()
+        .sequence;
+
+    let request = state.request_older_history(id).expect("a page");
+    let mut lines = page(400..404);
+    lines[1].attention = true;
+    lines[3].attention = true;
+    state.insert_older_history(id, request.request, lines, false);
+    let held = &state.conversations()[index].messages;
+    let seq = |text: &str| held.iter().find(|m| m.text == text).unwrap().sequence;
+    let (first, second) = (seq("p401"), seq("p403"));
+
+    for expected in [first, second, live] {
+        state.dispatch(Command::NextNotifiedMessage);
+        assert_eq!(state.take_reveal(), Some((id, expected)));
+    }
+    state.dispatch(Command::NextNotifiedMessage);
+    assert_eq!(state.take_reveal(), None);
 }
 
 #[test]
