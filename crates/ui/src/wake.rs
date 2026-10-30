@@ -122,9 +122,12 @@ pub fn install() -> Notices {
         .name("wake-clock".into())
         .spawn(move || {
             let mut clock = ClockWatch::new(interval, SystemTime::now);
+            let mut held = HeldJump::default();
             loop {
                 std::thread::sleep(interval);
-                if clock.jumped() && sender.unbounded_send(WakeSource::Clock).is_err()
+                let jumped = clock.jumped();
+                if held.offer(jumped, dark_wake())
+                    && sender.unbounded_send(WakeSource::Clock).is_err()
                     || sender.is_closed()
                 {
                     return;
@@ -161,6 +164,42 @@ impl<F: Fn() -> SystemTime> ClockWatch<F> {
         let elapsed = now.duration_since(self.last).unwrap_or_default();
         self.last = now;
         elapsed >= self.interval + SLACK
+    }
+}
+
+/// A clock jump seen while the machine is only in a DarkWake (issue #780): a
+/// short background wake with the displays off, in which nobody is there and
+/// the machine soon sleeps again without the UI getting a sleep notice. The
+/// jump is held back until a tick finds the machine fully awake, so the
+/// fallback for a missed wake notice still works but a DarkWake alone
+/// reconnects nothing.
+#[derive(Default)]
+struct HeldJump {
+    pending: bool,
+}
+
+impl HeldJump {
+    /// Whether the clock check should report a wake-up now.
+    fn offer(&mut self, jumped: bool, dark_wake: bool) -> bool {
+        self.pending |= jumped;
+        if dark_wake {
+            return false;
+        }
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// Whether the machine is awake only for a DarkWake. Known on macOS, where the
+/// displays stay asleep through a DarkWake and wake with the user; elsewhere
+/// (and on a Mac without a display) a wake is taken as a full one.
+fn dark_wake() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        platform::displays_asleep()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }
 
@@ -364,6 +403,18 @@ mod platform {
         fn IOAllowPowerChange(root_port: IoConnect, notification_id: isize) -> IoReturn;
     }
 
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayIsAsleep(display: u32) -> u32;
+    }
+
+    /// Whether the main display is asleep, as it is through a DarkWake.
+    pub fn displays_asleep() -> bool {
+        // SAFETY: plain queries without pointers; any display id is accepted.
+        unsafe { CGDisplayIsAsleep(CGMainDisplayID()) != 0 }
+    }
+
     /// What the power callback needs; leaked, as the registration lasts as
     /// long as the process.
     struct Context {
@@ -552,6 +603,24 @@ mod tests {
         let late = Registration::from_ready(receiver.recv_timeout(Duration::from_millis(1)));
         assert_eq!(late, Registration::Pending);
         assert!(!late.is_registered());
+    }
+
+    #[test]
+    fn a_clock_jump_in_a_dark_wake_waits_for_a_full_wake() {
+        let mut held = HeldJump::default();
+        // Ordinary tick, awake or not.
+        assert!(!held.offer(false, false));
+        assert!(!held.offer(false, true));
+        // A full wake is reported at once.
+        assert!(held.offer(true, false));
+        assert!(!held.offer(false, false));
+        // A DarkWake is held, also over further DarkWake ticks, then reported
+        // once when the machine is fully awake.
+        assert!(!held.offer(true, true));
+        assert!(!held.offer(true, true));
+        assert!(!held.offer(false, true));
+        assert!(held.offer(false, false));
+        assert!(!held.offer(false, false));
     }
 
     #[test]

@@ -1795,8 +1795,22 @@ clock like a full wake, so the clock check can report it; whether
 The wake channel now carries its source (`WakeSource::Os` or `Clock`), shown in
 the `Wake-up (connection #n, Os|Clock)` Overview line and in the application log
 line `wake notice (…) received by the UI`, so the next report says which one
-caused the reconnect. Behaviour is unchanged until that is known (a clock-only
+caused the reconnect. Behaviour was unchanged until that was known (a clock-only
 wake must still be acted on, since it is the fallback for missed notices).
+
+Result (2026-10-31, ~50 min test): three DarkWakes (05:30, 05:47, 06:04) each
+produced `Wake-up (…, Clock)`; macOS sent no `NSWorkspaceDidWakeNotification`
+for them, while the ordinary `Wake` (UserActivity) at 05:08 gave `Os`. The
+first DarkWake reconnected the connection that the sleep QUIT had closed, the
+Mac slept again without a sleep notice, and the next DarkWakes took the PING
+path, whose 15 s timeout ran into the sleep. Fix: on macOS a clock jump seen
+while the main display is asleep (`CGDisplayIsAsleep`, true through a DarkWake)
+is held (`HeldJump` in `wake.rs`) and reported at the first clock tick that
+finds the display awake. A missed `Os` notice at a real wake is still caught by
+the clock check, at most one poll interval (60 s) later; a Mac without a
+display is taken as awake, as before. By a person on a Mac: leave it
+connected until a DarkWake (`pmset -g log`) happens; the Overview must show
+no `Wake-up` line for it, and the user's wake must reconnect once.
 
 Reading a report: a "Sleep notice" line before the sleep and then a reconnect
 on wake is the #445 path working. No "Sleep notice" line and a "Wake-up …
