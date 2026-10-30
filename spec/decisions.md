@@ -3312,3 +3312,34 @@ there is no network, bouncer or connection behind it.
   read as before.
 - **Not done.** Reordering groups themselves, grouping private conversations,
   and group names in the settings window.
+
+## D076 — The channel menu's settings dialog is drawn in the chat window (#781)
+
+**Status:** Accepted
+
+2026-10-30. Refines D073's "Channel settings dialog".
+
+- **Where.** "Channel Settings…" in the channel context menu no longer opens
+  the settings window. It shows the channel's dialog over the chat window
+  (`ChatWindow::channel_settings`), for the server the channel belongs to, so
+  a channel of another server needs no switching. The auto-join list's
+  "Settings…" button keeps opening the same dialog inside the settings window.
+- **One dialog.** `channel_settings_dialog::ChannelSettingsView` holds the
+  state, drawing, keyboard handling and validation of both; it only edits a
+  copy and reports Save or Cancel. The hosts write with the same
+  `apply_charsets` (UTF8ONLY check, `set_channel_charset`) and
+  `apply_auto_join`. Opening reads the settings file first, so `/charset` and
+  other windows' saves are seen.
+- **Saving from the chat window** starts from the settings file, changes only
+  that channel's entry and auto-join state, saves the file and applies it
+  through `apply_settings_change` (the live connection follows as in D073); it
+  never sends JOIN or PART. An open settings window takes over just that
+  channel's values (`follow_channel_save`), so its next autosave does not write
+  the old ones back and its other unsaved edits stay.
+- **Behavior.** Header "Settings for #channel" with the server name; the body
+  scrolls inside the panel and the footer (Reset left, Cancel and Save right)
+  stays visible; an open encoding list scrolls inside its own box. The first
+  control has the focus; Tab and Shift+Tab stay in the dialog; Up/Down, Enter
+  and Space work in the lists; Escape closes an open list, then cancels. A
+  click outside does not close it, so edits are not lost by accident. Nothing
+  behind it receives input.
