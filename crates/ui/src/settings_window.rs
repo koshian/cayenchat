@@ -2319,6 +2319,9 @@ impl SettingsWindow {
                     which.note(server, saved);
                     let _ = settings_file::save(&file);
                 }
+                let _ = self.owner.update(cx, |owner, _, _| {
+                    owner.follow_credential_note(profile, which, saved)
+                });
                 self.schedule_autosave(cx);
                 self.feedback = Some(self.i18n.text(done));
             }
