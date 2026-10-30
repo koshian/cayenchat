@@ -10,6 +10,7 @@ mod avatars;
 mod button_order;
 mod channel_groups;
 mod channel_keys;
+mod channel_settings_dialog;
 mod char_refs;
 mod charset_command;
 mod color_picker;
@@ -893,6 +894,8 @@ struct ChatWindow {
     setup_wizard: setup_wizard::SetupWizard,
     /// The question a double click on a joined channel row opens (#451).
     part_prompt: Option<part_dialog::PartPrompt>,
+    /// The channel menu's settings dialog (#781).
+    channel_settings: Option<channel_settings_dialog::ChannelSettingsPrompt>,
     /// The question a double click on a registered server row opens (#625).
     disconnect_prompt: Option<disconnect_dialog::DisconnectPrompt>,
     /// Ask before a double click disconnects a server / leaves a channel
@@ -1490,6 +1493,7 @@ impl ChatWindow {
             transfer_dialog: settings_transfer::TransferDialog::new(cx),
             setup_wizard: setup_wizard::SetupWizard::new(cx),
             part_prompt: None,
+            channel_settings: None,
             disconnect_prompt: None,
             confirm_server_dblclick_disconnect: saved.confirm_server_dblclick_disconnect,
             confirm_channel_dblclick_part: saved.confirm_channel_dblclick_part,
@@ -2339,6 +2343,13 @@ impl ChatWindow {
                 self.part_prompt = None;
             }
             if self
+                .channel_settings
+                .as_ref()
+                .is_some_and(|prompt| prompt.network() == id)
+            {
+                self.channel_settings = None;
+            }
+            if self
                 .disconnect_prompt
                 .as_ref()
                 .is_some_and(|prompt| prompt.network() == id)
@@ -2463,6 +2474,13 @@ impl ChatWindow {
             .is_some_and(|prompt| prompt.network() == network)
         {
             self.part_prompt = None;
+        }
+        if self
+            .channel_settings
+            .as_ref()
+            .is_some_and(|prompt| prompt.network() == network)
+        {
+            self.channel_settings = None;
         }
         if self
             .disconnect_prompt
@@ -3623,30 +3641,19 @@ impl ChatWindow {
         );
     }
 
-    /// Opens the settings window on the channel settings of the channel the
-    /// context menu was opened on, in the server that channel belongs to. The
-    /// window saves them; nothing is joined or parted by that.
+    /// Shows the settings of the channel the context menu was opened on, in
+    /// the server that channel belongs to, in a dialog over the chat window.
+    /// The dialog saves them; nothing is joined or parted by that.
     fn open_channel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(menu) = self.channel_menu.take() else {
             return;
         };
-        let Some(profile) = self
-            .sessions
-            .get(&menu.network)
-            .map(|session| session.profile_id.clone())
-        else {
-            return;
-        };
+        // A settings window opened while a transfer writes would save its
+        // older form over the result; so would this dialog's save.
         if self.transfer_dialog_busy() {
             return;
         }
-        let mapping = self.state.casemapping(menu.network);
-        self.open_settings_for(Some(profile.clone()), window, cx);
-        if let Some(handle) = self.settings_window {
-            let _ = handle.update(cx, |settings, window, cx| {
-                settings.open_channel_settings(&profile, &menu.channel, mapping, window, cx)
-            });
-        }
+        self.show_channel_settings(menu.network, &menu.channel, window, cx);
         cx.notify();
     }
 
@@ -4820,6 +4827,7 @@ impl ChatWindow {
     fn dialog_open(&self) -> bool {
         self.quit_prompt_open
             || self.part_prompt.is_some()
+            || self.channel_settings.is_some()
             || self.disconnect_prompt.is_some()
             || self.paste_prompt.is_some()
             || self.member_prompt.is_some()
@@ -8480,6 +8488,9 @@ impl ChatWindow {
             .when_some(key_prompts, |d, prompts| d.child(prompts))
             .when_some(credential_prompts, |d, prompts| d.child(prompts))
             .when_some(part_prompt, |d, dialog| d.child(dialog))
+            .when_some(self.channel_settings.as_ref(), |d, prompt| {
+                d.child(prompt.view().clone())
+            })
             .when_some(disconnect_prompt, |d, dialog| d.child(dialog))
             .when_some(paste_prompt, |d, dialog| d.child(dialog))
             .when_some(setup_wizard, |d, dialog| d.child(dialog))
@@ -10190,6 +10201,14 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
             FocusPreviousField,
             Some("PartDialog > TextInput"),
         ),
+        // The channel settings dialog, in the chat window and in the settings
+        // window (later wins over the settings window's Tab above).
+        KeyBinding::new("tab", FocusNextField, Some("ChannelSettingsDialog")),
+        KeyBinding::new(
+            "shift-tab",
+            FocusPreviousField,
+            Some("ChannelSettingsDialog"),
+        ),
         KeyBinding::new("tab", FocusNextField, Some("PasteDialog")),
         KeyBinding::new("shift-tab", FocusPreviousField, Some("PasteDialog")),
         KeyBinding::new("tab", FocusNextField, Some("PasteDialog > TextInput")),
@@ -10672,6 +10691,10 @@ mod toolbar_tests;
 #[cfg(test)]
 #[path = "main_tests/wake_tests.rs"]
 mod wake_tests;
+
+#[cfg(test)]
+#[path = "main_tests/channel_settings_dialog_tests.rs"]
+mod channel_settings_dialog_tests;
 
 #[cfg(test)]
 #[path = "main_tests/charset_command_tests.rs"]

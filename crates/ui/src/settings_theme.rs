@@ -261,6 +261,32 @@ pub fn tooltip(text: SharedString, cx: &App) -> Div {
         .child(text)
 }
 
+/// The frame of a standalone dialog panel: the platform's dialog corner
+/// radius and line width (a neutral fallback without the native theme), a
+/// surface one step above the window and a soft shadow. The caller sets the
+/// size and the content.
+pub fn dialog_panel(cx: &App) -> Div {
+    let palette = palette(cx);
+    let panel = div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .bg(palette.surface)
+        .text_color(palette.text)
+        .border_1()
+        .border_color(palette.border)
+        .rounded(px(8.))
+        .shadow_lg();
+    let Some(native) = current(cx) else {
+        return panel;
+    };
+    let border = &native.dialog.border;
+    panel
+        .rounded(px(border.corner_radius))
+        .border(px(border.line_width))
+        .border_color(color(border.color))
+}
+
 pub fn checkbox(checked: bool, enabled: bool, cx: &App) -> Div {
     let fallback = crate::theme::current(cx);
     let mut indicator = div()
