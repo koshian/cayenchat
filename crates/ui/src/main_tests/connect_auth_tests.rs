@@ -671,6 +671,38 @@ fn the_profile_mechanism_reaches_the_connection_config() {
 }
 
 #[gpui::test]
+fn a_dialog_sends_the_channels_and_avatar_saved_after_it_opened(cx: &mut TestAppContext) {
+    // A fresh connection keeps its configuration as `active_config`, which
+    // shows what the dialog sent (and what reconnects start from).
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        let mut old = config(true);
+        old.channels = vec!["#a".into()];
+        old.shared_avatar = Some("https://example.invalid/old.png".into());
+        chat.connect_fresh(NET, old, missing, window, cx).unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        assert_eq!(chat.credential_prompts.len(), 1);
+        type_password(chat, true, "typed", cx);
+        chat.saved.servers[0].channels = "#b".into();
+        chat.saved.servers[0].ircv3.peer_avatars = false;
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        let config = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(config.channels, vec!["#b".to_owned()]);
+        assert_eq!(config.shared_avatar, None);
+        stop(chat);
+    });
+}
+
+#[gpui::test]
 fn a_dialog_left_open_does_not_outlive_a_reconnect_by_another_path(cx: &mut TestAppContext) {
     let (chat, store, cx) = open_chat(cx);
     let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
