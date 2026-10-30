@@ -3345,3 +3345,28 @@ there is no network, bouncer or connection behind it.
   footer, so it is always visible; Escape closes an open list, then cancels. A
   click outside does not close it, so edits are not lost by accident. Nothing
   behind it receives input.
+
+## D077 — Connection diagnostics are kept in `app` (#790)
+
+**Status:** Accepted
+
+2026-10-31. Refines the connection diagnostics above (#670).
+
+- **Where.** `app::AppState` keeps each server's diagnostic lines, one log
+  for the overview and one for the IRC protocol view
+  (`record_diagnostic`, `diagnostics`, `clear_diagnostics`). `ui::session::
+  ServerSession` no longer holds them; the chat window only draws and copies
+  what `AppState` returns. This is a move, not a copy: the behavior did not
+  change.
+- **Why.** A line gets a `sequence` from the counter messages use, so a later
+  change can reuse the message rows' selection, `search::Hit` and
+  `search_goto` for diagnostics instead of building a second selection,
+  search result type and line identity in `ui`.
+- **Kept.** Newest 1,000 lines per server and view; cleared when a new
+  connection attempt starts; the recorded local date and time and the time
+  since the attempt began, shown and copied identically; the masked text the
+  IRC layer produced; an established session records IRC lines only while the
+  transcript is on.
+- **Kept apart from conversations.** Diagnostic lines are not in the server
+  log, the combined log, the conversation log files, the unread counts or
+  notifications. A removed server drops them with its other state.

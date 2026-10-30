@@ -2,7 +2,7 @@
 //! A simulated wake-up against local servers: which connections are checked,
 //! what a silent one turns into, and that it reconnects.
 use super::{ChatWindow, Worker, wake::WakeSource};
-use cayenchat_app::ConnectionStatus;
+use cayenchat_app::{ConnectionStatus, DiagnosticsView};
 use cayenchat_irc_core::{Connection, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
 use gpui::TestAppContext;
@@ -389,8 +389,8 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
         // The overview records the notice and the result of the wait, with
         // the connection generation, for the next sleep that goes wrong.
         let notes = |network| -> Vec<String> {
-            chat.sessions[&network]
-                .diagnostics
+            chat.state
+                .diagnostics(network, DiagnosticsView::Overview)
                 .iter()
                 .map(|line| line.text.clone())
                 .filter(|text| text.contains("Sleep"))
