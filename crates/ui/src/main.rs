@@ -4815,15 +4815,10 @@ impl ChatWindow {
         self.scroll_main_log_to_latest(cx);
     }
 
-    /// Scrolls the selected conversation's main log to its newest line and
-    /// follows new lines again. The one place the shortcut and the button
-    /// (and, later, #545) go through. Nothing else changes: not the draft,
-    /// the focus, the selection or the search; nothing happens under a
-    /// question that has the window's attention.
-    fn scroll_main_log_to_latest(&mut self, cx: &mut Context<Self>) {
-        // The shortcut runs before a dialog's own key handling, so every
-        // dialog drawn over the window has to be excluded here.
-        if self.quit_prompt_open
+    /// Whether a dialog is drawn over the window, so nothing behind it may
+    /// be operated.
+    fn dialog_open(&self) -> bool {
+        self.quit_prompt_open
             || self.part_prompt.is_some()
             || self.disconnect_prompt.is_some()
             || self.paste_prompt.is_some()
@@ -4833,7 +4828,17 @@ impl ChatWindow {
             || !self.credential_prompts.is_empty()
             || !self.transfer_dialog.is_idle()
             || self.setup_wizard_visible()
-        {
+    }
+
+    /// Scrolls the selected conversation's main log to its newest line and
+    /// follows new lines again. The one place the shortcut and the button
+    /// (and, later, #545) go through. Nothing else changes: not the draft,
+    /// the focus, the selection or the search; nothing happens under a
+    /// question that has the window's attention.
+    fn scroll_main_log_to_latest(&mut self, cx: &mut Context<Self>) {
+        // The shortcut runs before a dialog's own key handling, so every
+        // dialog drawn over the window has to be excluded here.
+        if self.dialog_open() {
             return;
         }
         self.sync_log_lists();
@@ -6683,6 +6688,16 @@ impl Render for ChatWindow {
         }
         self.check_double_enter(window, cx);
         let content = self.render_chat(window, cx);
+        // The dialogs' backdrops start below the menu bar and the toolbar,
+        // so a strip over both keeps them from being operated meanwhile.
+        let blocked_height = self.dialog_open().then(|| {
+            let bar = self.menu_bar.height().max(px(menu_bar::HOT_ZONE));
+            if self.toolbar_shown {
+                bar + toolbar::HEIGHT
+            } else {
+                bar
+            }
+        });
         let content = if self.toolbar_shown {
             let bar = match &self.toolbar {
                 Some(bar) => bar.clone(),
@@ -6715,10 +6730,28 @@ impl Render for ChatWindow {
             menu_access_keys(&self.i18n),
             content,
             |this| &mut this.menu_bar,
-            |this, cx| this.is_composing(cx),
+            // Access keys stay off under a dialog, as under a composition.
+            |this, cx| this.dialog_open() || this.is_composing(cx),
             window,
             cx,
         );
+        let content =
+            div()
+                .relative()
+                .size_full()
+                .child(content)
+                .when_some(blocked_height, |d, height| {
+                    d.child(
+                        div()
+                            .id("dialog-bar-blocker")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(height)
+                            .occlude(),
+                    )
+                });
         decorations::window_frame(window, cx, title, content)
     }
 }
