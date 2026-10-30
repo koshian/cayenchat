@@ -247,6 +247,13 @@ impl LogList {
         }
     }
 
+    /// Scrolls so the fixed row `row` (one of the `prefix` rows) is at the top.
+    pub fn scroll_to_fixed_row(&self, row: usize) {
+        if row < self.prefix {
+            self.scroll_to_row(row, px(0.));
+        }
+    }
+
     /// Scrolls to the newest line and follows the bottom again, the same
     /// state as a list that was never scrolled.
     pub fn scroll_to_end(&self) {

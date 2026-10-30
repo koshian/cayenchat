@@ -1237,6 +1237,11 @@ struct LogPosition {
 struct LogSelection {
     /// The log the rows belong to: a conversation or a server's own log.
     source: Selection,
+    /// Set when the rows are the connection diagnostics shown above `source`'s
+    /// messages, in this view. Their rows are `DiagnosticLine::position`s,
+    /// not indexes, so trimming or a new connection cannot move a selection
+    /// onto other lines.
+    diagnostics: Option<DiagnosticsView>,
     anchor: LogPosition,
     cursor: LogPosition,
 }
@@ -4752,6 +4757,7 @@ impl ChatWindow {
     fn start_log_selection(
         &mut self,
         source: Selection,
+        diagnostics: Option<DiagnosticsView>,
         row: usize,
         byte: usize,
         window: &mut Window,
@@ -4760,6 +4766,7 @@ impl ChatWindow {
         let position = LogPosition { row, byte };
         self.log_selection = Some(LogSelection {
             source,
+            diagnostics,
             anchor: position,
             cursor: position,
         });
@@ -4771,6 +4778,7 @@ impl ChatWindow {
     fn extend_log_selection(
         &mut self,
         source: Selection,
+        diagnostics: Option<DiagnosticsView>,
         row: usize,
         byte: usize,
         cx: &mut Context<Self>,
@@ -4778,6 +4786,7 @@ impl ChatWindow {
         if self.log_dragging
             && let Some(selection) = self.log_selection.as_mut()
             && selection.source == source
+            && selection.diagnostics == diagnostics
         {
             selection.cursor = LogPosition { row, byte };
             cx.notify();
@@ -4797,6 +4806,33 @@ impl ChatWindow {
         }
         let (start, end) = selection.bounds();
         if start == end {
+            return;
+        }
+        if let Some(view) = selection.diagnostics {
+            // The lines as drawn, still in the view and on the server the
+            // selection was made in.
+            let Some(network) = self.selected_network_id() else {
+                return;
+            };
+            if view != self.diagnostics_view {
+                return;
+            }
+            let pieces: Vec<_> = self
+                .state
+                .diagnostics(network, view)
+                .iter()
+                .filter(|line| (start.row..=end.row).contains(&line.position()))
+                .map(|line| {
+                    let text = line.render();
+                    let range = selection.range(line.position(), text.len());
+                    text.get(range.unwrap_or(0..0))
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .collect();
+            if !pieces.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
+            }
             return;
         }
         let Some(channel) = self.state.selected_channel() else {
@@ -5795,6 +5831,7 @@ impl ChatWindow {
                         // the same lines.
                         if let Some(selection) = self.log_selection.as_mut()
                             && selection.source == Selection::Channel(id)
+                            && selection.diagnostics.is_none()
                         {
                             selection.anchor.row += added;
                             selection.cursor.row += added;
@@ -8973,20 +9010,7 @@ impl ChatWindow {
                 .font_weight(FontWeight::BOLD)
                 .child(self.i18n.text("diagnostics_heading"))
                 .into_any_element(),
-            MainRow::Diagnostic(index) => div()
-                .w_full()
-                .text_color(theme.text_secondary)
-                .child(
-                    self.selected_network_id()
-                        .and_then(|network| {
-                            self.state
-                                .diagnostics(network, self.diagnostics_view)
-                                .get(index)
-                        })
-                        .map(|line| diagnostic_text(&line.render()))
-                        .unwrap_or_default(),
-                )
-                .into_any_element(),
+            MainRow::Diagnostic(index) => self.render_diagnostic_row(index, &style, cx),
             MainRow::Message(index) => match self.state.selected_channel() {
                 Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
                 None => {
@@ -9000,7 +9024,9 @@ impl ChatWindow {
                     let source = Selection::Server(network);
                     let selected = self
                         .log_selection
-                        .filter(|selection| selection.source == source)
+                        .filter(|selection| {
+                            selection.source == source && selection.diagnostics.is_none()
+                        })
                         .and_then(|selection| selection.range(index, message.text.len()));
                     let text_len = message.text.len();
                     let styled = styled_log_text(
@@ -9037,7 +9063,7 @@ impl ChatWindow {
                                     .index_for_position(event.position)
                                     .unwrap_or_else(|index| index)
                                     .min(text_len);
-                                this.start_log_selection(source, index, byte, window, cx);
+                                this.start_log_selection(source, None, index, byte, window, cx);
                             }),
                         )
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -9045,7 +9071,7 @@ impl ChatWindow {
                                 .index_for_position(event.position)
                                 .unwrap_or_else(|index| index)
                                 .min(text_len);
-                            this.extend_log_selection(source, index, byte, cx);
+                            this.extend_log_selection(source, None, index, byte, cx);
                         }));
                     div()
                         .w_full()
@@ -9069,6 +9095,87 @@ impl ChatWindow {
                 }
             },
         }
+    }
+
+    /// A connection diagnostics line, selectable and searchable like a
+    /// message. The text is the line as `copy_diagnostics` copies it; only
+    /// bidirectional controls are neutralized, byte for byte.
+    fn render_diagnostic_row(
+        &self,
+        index: usize,
+        style: &LogStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(network) = self.selected_network_id() else {
+            return div().into_any_element();
+        };
+        let view = self.diagnostics_view;
+        let Some(line) = self.state.diagnostics(network, view).get(index) else {
+            return div().into_any_element();
+        };
+        let text = line.render();
+        let shown = diagnostic_text(&text);
+        let (found, current) = self.search_ranges(&text, line.sequence);
+        let source = self.state.selection();
+        let row = line.position();
+        let selected = self
+            .log_selection
+            .filter(|selection| selection.source == source && selection.diagnostics == Some(view))
+            .and_then(|selection| selection.range(row, text.len()));
+        let text_len = text.len();
+        let styled = styled_log_text(
+            "",
+            &shown,
+            &[],
+            &[],
+            &[],
+            &found,
+            current,
+            selected,
+            &style.theme,
+        );
+        let layout = styled.layout().clone();
+        let probe = (!found.is_empty())
+            .then(|| {
+                self.search_probe_canvas(
+                    line.sequence,
+                    layout.clone(),
+                    found.first().map(|range| range.start),
+                )
+            })
+            .flatten();
+        let down_layout = layout.clone();
+        div()
+            .w_full()
+            .text_color(style.theme.text_secondary)
+            .cursor(CursorStyle::IBeam)
+            .child(styled)
+            .children(probe)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    let byte = down_layout
+                        .index_for_position(event.position)
+                        .unwrap_or_else(|index| index)
+                        .min(text_len);
+                    this.start_log_selection(source, Some(view), row, byte, window, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                let byte = layout
+                    .index_for_position(event.position)
+                    .unwrap_or_else(|index| index)
+                    .min(text_len);
+                this.extend_log_selection(source, Some(view), row, byte, cx);
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_log_menu(event.position, None, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .into_any_element()
     }
 
     fn render_channel_message(
@@ -9122,7 +9229,10 @@ impl ChatWindow {
         let chips: Vec<_> = compact.linked().collect();
         let selected_range = self
             .log_selection
-            .filter(|selection| selection.source == Selection::Channel(selected_channel))
+            .filter(|selection| {
+                selection.source == Selection::Channel(selected_channel)
+                    && selection.diagnostics.is_none()
+            })
             .and_then(|selection| selection.range(index, message.text.len()))
             .map(|range| compact.shown_range(range));
         let highlights: Vec<_> = message
@@ -9376,6 +9486,7 @@ impl ChatWindow {
                         let byte = down_compact.original(byte);
                         this.start_log_selection(
                             Selection::Channel(selected_channel),
+                            None,
                             index,
                             byte,
                             window,
@@ -9389,6 +9500,7 @@ impl ChatWindow {
                     let byte = raw.saturating_sub(prefix_len).min(text_len);
                     this.extend_log_selection(
                         Selection::Channel(selected_channel),
+                        None,
                         index,
                         move_compact.original(byte),
                         cx,

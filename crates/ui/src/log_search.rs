@@ -12,7 +12,7 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use cayenchat_app::{
-    Command, Selection,
+    Command, DiagnosticsView, Selection,
     search::{self, Hit, Query, Scan, Scope, Source},
 };
 use gpui::{prelude::*, *};
@@ -72,7 +72,7 @@ pub struct LogSearch {
     _input_changed: Subscription,
 }
 
-type Revision = ((u64, u64, usize), Option<Selection>);
+type Revision = (search::Revision, Option<Selection>, Option<DiagnosticsView>);
 
 /// A jump whose match may still be out of view, and how many frames were
 /// spent bringing it in.
@@ -256,10 +256,20 @@ impl ChatWindow {
         }
     }
 
+    /// The connection diagnostics view a search reads: the one shown, while
+    /// the diagnostics are on. Off, nothing of them is drawn, so none is
+    /// searched.
+    fn search_diagnostics(&self) -> Option<DiagnosticsView> {
+        self.debug_enabled.then_some(self.diagnostics_view)
+    }
+
     pub(crate) fn search_revision(&self, scope: Scope) -> Revision {
+        let diagnostics = self.search_diagnostics();
         (
-            search::revision(&self.state, scope),
+            search::revision(&self.state, scope, diagnostics),
             (scope == Scope::Selected).then(|| self.state.selection()),
+            // The view only decides what the selected scope reads.
+            diagnostics.filter(|_| scope == Scope::Selected),
         )
     }
 
@@ -281,7 +291,7 @@ impl ChatWindow {
             return;
         };
         let scope = search.scope;
-        let scan = Scan::new(&self.state, scope, query);
+        let scan = Scan::new(&self.state, scope, self.search_diagnostics(), query);
         let revision = self.search_revision(scope);
         let Some(search) = self.search.as_mut() else {
             return;
@@ -380,6 +390,7 @@ impl ChatWindow {
         };
         let scope = search.scope;
         let revision = self.search_revision(scope);
+        let diagnostics = self.search_diagnostics();
         let Some(search) = self.search.as_mut() else {
             return false;
         };
@@ -392,7 +403,7 @@ impl ChatWindow {
             return false;
         }
         search.revision = Some(revision);
-        search.pending = Some(Scan::new(&self.state, scope, query));
+        search.pending = Some(Scan::new(&self.state, scope, diagnostics, query));
         true
     }
 
@@ -438,7 +449,7 @@ impl ChatWindow {
                 break;
             };
             at = Some(next);
-            if search::hit_message(&self.state, next).is_some() {
+            if search::hit_exists(&self.state, next) {
                 found = Some(next);
                 break;
             }
@@ -465,18 +476,49 @@ impl ChatWindow {
     fn search_goto(&mut self, hit: Hit, window: &mut Window, cx: &mut Context<Self>) {
         let (selection, command) = match hit.source {
             Source::Conversation(id) => (Selection::Channel(id), Command::SelectChannel(id)),
-            Source::Server(network) => (Selection::Server(network), Command::SelectServer(network)),
+            Source::Server(network) | Source::Diagnostics(network, _) => {
+                (Selection::Server(network), Command::SelectServer(network))
+            }
         };
+        if let Source::Diagnostics(_, view) = hit.source {
+            // The rows exist only while the diagnostics are on, in the view
+            // being shown.
+            if !self.debug_enabled {
+                return;
+            }
+            if self.diagnostics_view != view {
+                self.diagnostics_view = view;
+                self.refresh_menus(cx);
+            }
+        }
         if self.state.selection() != selection {
             self.dispatch_keeping_focus(command, window, cx);
         }
         self.sync_log_lists();
+        // A diagnostics line is one of the fixed rows above the messages.
+        let fixed_row = match hit.source {
+            Source::Diagnostics(network, view) => {
+                let layout = self.main_layout();
+                self.state
+                    .diagnostics(network, view)
+                    .binary_search_by_key(&hit.sequence, |line| line.sequence)
+                    .ok()
+                    .filter(|at| layout.diagnostics.contains(at))
+                    .map(|at| {
+                        layout.prefix() - layout.diagnostics.len() + at - layout.diagnostics.start
+                    })
+            }
+            _ => None,
+        };
         if let Some(list) = self.main_lists.get_mut(&selection) {
             // The hit's own row goes to the top: rows above it may be taller
             // than the log and would push the match out of view. If the row
             // itself is taller than the log, `search_reveal_step` moves on to
             // where the row painted the match.
-            list.scroll_to_sequence(hit.sequence);
+            match fixed_row {
+                Some(row) => list.scroll_to_fixed_row(row),
+                None => list.scroll_to_sequence(hit.sequence),
+            }
             if let Some(search) = self.search.as_mut() {
                 search.probe.set(None);
                 search.reveal_shown = false;
