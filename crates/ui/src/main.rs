@@ -3045,7 +3045,16 @@ impl ChatWindow {
             let Some(session) = self.sessions.get_mut(&network) else {
                 continue;
             };
+            let generation = session.generation;
             if session.manual_disconnect || session.asleep {
+                session.push_diagnostic(format!(
+                    "Sleep notice (connection #{generation}): left alone, {}",
+                    if session.manual_disconnect {
+                        "disconnected by the user"
+                    } else {
+                        "already asleep"
+                    }
+                ));
                 continue;
             }
             let Some(connection) = &session.irc else {
@@ -3056,23 +3065,50 @@ impl ChatWindow {
                     session.asleep = true;
                     session.retry_pending = false;
                     session.retry_token += 1;
+                    session.push_diagnostic(format!(
+                        "Sleep notice (connection #{generation}): retry held until wake-up"
+                    ));
+                } else {
+                    session.push_diagnostic(format!(
+                        "Sleep notice (connection #{generation}): no connection"
+                    ));
                 }
                 continue;
             };
             session.asleep = true;
             // The worker closes a connection that is not registered yet
             // without QUIT, whatever the queues hold.
-            match &session.active_config {
-                Some(config) => connection.sleep(&config.checked_sleep_quit_message()),
-                None => connection.shutdown(),
-            }
+            let note = match &session.active_config {
+                Some(config) => {
+                    connection.sleep(&config.checked_sleep_quit_message());
+                    "sending QUIT"
+                }
+                None => {
+                    connection.shutdown();
+                    "closing without QUIT"
+                }
+            };
+            session.push_diagnostic(format!("Sleep notice (connection #{generation}): {note}"));
             closing.push(network);
         }
         let deadline = Instant::now() + SLEEP_WAIT;
         for network in &closing {
-            if let Some(connection) = self.sessions.get(network).and_then(|s| s.irc.as_ref()) {
-                connection.wait_closed(deadline.saturating_duration_since(Instant::now()));
-            }
+            let Some(session) = self.sessions.get_mut(network) else {
+                continue;
+            };
+            let Some(connection) = &session.irc else {
+                continue;
+            };
+            let closed = connection.wait_closed(deadline.saturating_duration_since(Instant::now()));
+            let generation = session.generation;
+            session.push_diagnostic(format!(
+                "Sleep QUIT (connection #{generation}): {}",
+                if closed {
+                    "worker ended"
+                } else {
+                    "worker still open when the wait ran out"
+                }
+            ));
         }
         cx.notify();
     }
@@ -3090,17 +3126,32 @@ impl ChatWindow {
                 session.asleep = false;
                 continue;
             }
+            let generation = session.generation;
             if session.asleep {
                 // Retries restart from the shortest wait if this fails.
                 session.retry_attempt = 0;
                 session.retry_token += 1;
+                session.push_diagnostic(format!(
+                    "Wake-up (connection #{generation}): reconnecting after the sleep QUIT"
+                ));
                 self.start_reconnect(network, false, cx);
                 continue;
             }
-            if let Ok(connection) = self.registered_connection(network)
-                && let Err(error) = connection.check_alive()
-            {
-                self.push_diagnostic(network, error);
+            match self.registered_connection(network) {
+                Ok(connection) => {
+                    let checked = connection.check_alive();
+                    let note = match checked {
+                        Ok(()) => format!(
+                            "Wake-up (connection #{generation}): no sleep notice was handled, checking the connection with PING"
+                        ),
+                        Err(error) => error,
+                    };
+                    self.push_diagnostic(network, note);
+                }
+                Err(_) => self.push_diagnostic(
+                    network,
+                    format!("Wake-up (connection #{generation}): not registered, nothing to check"),
+                ),
             }
         }
         cx.notify();
@@ -10357,6 +10408,7 @@ fn main() {
             cx.spawn(async move |cx| {
                 while let Some(notice) = sleeps.next().await {
                     let prepared = chat_window.update(cx, |chat, _, cx| {
+                        log::info!("sleep notice received by the UI");
                         chat.prepare_for_sleep(cx);
                     });
                     // The system goes on to sleep once this is dropped.
@@ -10369,6 +10421,7 @@ fn main() {
             .detach();
             cx.spawn(async move |cx| {
                 while wake_ups.next().await.is_some() {
+                    log::info!("wake notice received by the UI, checking in {WAKE_GRACE:?}");
                     Timer::after(WAKE_GRACE).await;
                     // Notices that arrived meanwhile belong to this check.
                     while wake_ups.try_recv().is_ok() {}

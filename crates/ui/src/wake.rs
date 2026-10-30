@@ -70,12 +70,43 @@ fn announce_sleep(
         .map(|()| finished)
 }
 
+/// How far the registration for the OS sleep notices got when the start waited
+/// for it.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum Registration {
+    /// The OS accepted it.
+    Registered,
+    /// The OS refused it, or the thread ended without an answer.
+    Failed,
+    /// No answer within the wait; it may still come, or never.
+    Pending,
+}
+
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+impl Registration {
+    fn from_ready(ready: Result<bool, std::sync::mpsc::RecvTimeoutError>) -> Self {
+        use std::sync::mpsc::RecvTimeoutError;
+        match ready {
+            Ok(true) => Self::Registered,
+            Ok(false) | Err(RecvTimeoutError::Disconnected) => Self::Failed,
+            Err(RecvTimeoutError::Timeout) => Self::Pending,
+        }
+    }
+
+    /// Only a confirmed registration lets the clock check slow down.
+    fn is_registered(&self) -> bool {
+        *self == Self::Registered
+    }
+}
+
 /// Starts watching.
 pub fn install() -> Notices {
     let (sender, wake) = mpsc::unbounded();
     let (sleep_sender, sleep) = mpsc::unbounded();
     let native = platform::watch(sender.clone(), sleep_sender);
     let interval = if native { NATIVE_POLL } else { FALLBACK_POLL };
+    log::info!("wake watching: OS notices {native}, clock check every {interval:?}");
     let spawned = std::thread::Builder::new()
         .name("wake-clock".into())
         .spawn(move || {
@@ -334,18 +365,30 @@ mod platform {
         message_type: u32,
         argument: *mut c_void,
     ) {
+        // Other messages (sleep refused, wake steps) need no answer; the log
+        // keeps the order of the ones that do, for a sleep that went by
+        // without a QUIT.
         if message_type != CAN_SYSTEM_SLEEP && message_type != SYSTEM_WILL_SLEEP {
+            log::debug!("IOKit power message {message_type:#x} ignored");
             return;
         }
         // SAFETY: `refcon` is the leaked `Context` given at registration, which
         // is never freed.
         let context = unsafe { &*refcon.cast::<Context>() };
-        if message_type == SYSTEM_WILL_SLEEP
-            && let Some(finished) = announce_sleep(&context.sleep)
-        {
-            // This is the dedicated power thread, not the UI thread, so it may
-            // block until the UI is done or the limit passes.
-            let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
+        if message_type == SYSTEM_WILL_SLEEP {
+            match announce_sleep(&context.sleep) {
+                Some(finished) => {
+                    log::info!("IOKit: system will sleep, waiting for the UI");
+                    // This is the dedicated power thread, not the UI thread,
+                    // so it may block until the UI is done or the limit
+                    // passes.
+                    let result = finished.recv_timeout(SLEEP_ACK_LIMIT);
+                    log::info!("IOKit: UI done or limit reached ({result:?}), allowing sleep");
+                }
+                None => log::info!("IOKit: system will sleep, the UI no longer listens"),
+            }
+        } else {
+            log::info!("IOKit: idle-sleep query, allowed");
         }
         // Exactly once per message, also when the UI is gone: without it the
         // sleep is held back for 30 s. An idle-sleep query is never refused.
@@ -428,12 +471,14 @@ mod platform {
             .spawn(move || power_thread(sleep, ready_tx));
         if let Err(error) = spawned {
             log::warn!("could not watch for sleep: {error}");
-            return true;
+            return false;
         }
-        // A failed registration leaves the clock check to find the wake-up;
-        // the wake notice above still works.
-        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
-        true
+        // Only a confirmed registration earns the slow clock check; a failed
+        // or unanswered one keeps the short interval, so a wake-up the
+        // notices miss is still found soon.
+        let registration = Registration::from_ready(ready_rx.recv_timeout(Duration::from_secs(2)));
+        log::info!("sleep notices from IOKit: {registration:?}");
+        registration.is_registered()
     }
 }
 
@@ -473,6 +518,27 @@ mod tests {
         // The jump is reported once.
         time.set(19 + 3605);
         assert!(!clock.jumped());
+    }
+
+    #[test]
+    fn only_a_confirmed_registration_slows_the_clock_check() {
+        use std::sync::mpsc::{RecvTimeoutError, channel};
+        let (sender, receiver) = channel();
+        sender.send(true).unwrap();
+        let registered = Registration::from_ready(receiver.recv_timeout(Duration::ZERO));
+        assert_eq!(registered, Registration::Registered);
+        assert!(registered.is_registered());
+        // Refused, or the thread ended without answering.
+        let refused = Registration::from_ready(Ok(false));
+        assert_eq!(refused, Registration::Failed);
+        assert!(!refused.is_registered());
+        let gone = Registration::from_ready(Err(RecvTimeoutError::Disconnected));
+        assert_eq!(gone, Registration::Failed);
+        // Unanswered is not the same as failed, but is not trusted either.
+        let (_held, receiver) = channel::<bool>();
+        let late = Registration::from_ready(receiver.recv_timeout(Duration::from_millis(1)));
+        assert_eq!(late, Registration::Pending);
+        assert!(!late.is_registered());
     }
 
     #[test]

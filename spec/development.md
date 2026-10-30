@@ -1756,3 +1756,52 @@ Report the OS and version, the desktop, the suspend length, the network, and
 the connection diagnostics and server log lines around the wake-up (success
 and failure alike). On Linux also say whether logind is in use; without it
 the clock fallback notices the wake-up within about 5 s.
+
+### Sleep without a QUIT (2026-10-30, issue #780)
+
+A Mac that entered "Maintenance Sleep" (`pmset -g log`) showed "No response from
+the server after waking from sleep." instead of a QUIT-and-reconnect, so the
+wake went down the PING path of #437/#505 and not the `asleep` path of #445.
+The cause is **not confirmed**: whether IOKit sent `kIOMessageSystemWillSleep`
+for that sleep, whether registration had failed, or whether the UI missed the
+notice cannot be told from the code. The change only makes the next case
+readable and stops one wrong choice:
+
+- On macOS the clock check slows to 60 s only when `IORegisterForSystemPower`
+  was confirmed. A refused registration, a thread that ended, a thread that
+  did not answer in 2 s, or a thread that could not start keep the 5 s
+  check (`Registration`, unit-tested). Before, all of these counted as native.
+  The clock check still only finds a wake-up; it cannot send the QUIT after
+  the fact.
+- The connection's diagnostics (Overview) get lines stamped with the local
+  time of the event and the connection generation: the sleep notice and what
+  was done (`sending QUIT`, `closing without QUIT`, retry held, left alone for
+  a manual disconnect or already asleep), whether the worker ended within the
+  shared 1 s wait, and at the wake whether the connection was reconnected
+  after its sleep QUIT (`asleep`) or checked with PING because no sleep notice
+  had been handled. The stamp is when the UI handled the event, not the
+  `server-time` of a message, so it separates the display time of a log line
+  from when this machine did anything.
+- The application log (`log::info`) has the OS side: the clock-check interval
+  chosen and the IOKit registration result at start, each `CanSystemSleep` and
+  `WillSleep` with whether the UI acknowledged within 1.5 s, and the
+  notices reaching the UI task.
+
+Reading a report: a "Sleep notice" line before the sleep and then a reconnect
+on wake is the #445 path working. No "Sleep notice" line and a "Wake-up …
+checking the connection with PING" line means the UI never got the notice; the
+application log then says whether IOKit sent `WillSleep` (and the UI was late
+or gone) or sent nothing (the OS does not announce that kind of sleep to
+this registration). Compare with `pmset -g log` for the sleep's reason.
+
+The history part: the reconnect's CAP exchange is in the IRC protocol
+diagnostics (`CAP LS`, `CAP REQ`, `CAP ACK` with `draft/chathistory` and
+`batch`, then `CHATHISTORY LATEST` after the own JOIN). History is off by
+default and a local bouncer may replay by itself; no `CHATHISTORY` there is
+not a sleep defect by itself.
+
+By a person on a Mac (not verifiable here): enable the protocol diagnostics,
+connect, leave the Mac idle until a Maintenance Sleep happens (or run
+`pmset sleepnow` and wake it for the ordinary case), then give the Overview and
+Protocol diagnostics, the application log lines containing `IOKit` and
+`wake`, and `pmset -g log | grep -E "Sleep|Wake"` for the period.
