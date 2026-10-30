@@ -48,6 +48,7 @@ fn selection_visible(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) -> b
             .position(|row| match *row {
                 crate::TreeRow::Server(id) => selection == Selection::Server(id),
                 crate::TreeRow::Channel(id, _) => selection == Selection::Channel(id),
+                crate::TreeRow::Group(_) | crate::TreeRow::NewGroup => false,
             })
             .expect("selected row");
         let view = chat.tree_list.state.viewport_bounds();
@@ -124,4 +125,42 @@ fn reveal_stops_behind_a_row_taller_than_the_viewport(cx: &mut TestAppContext) {
     select(&chat, Command::SelectChannelAt(1), cx);
     assert!(selection_visible(&chat, cx), "row after the tall one");
     assert!(chat.read_with(cx, |chat, _| !chat.tree_reveal_pending));
+}
+
+/// Naming a new group while the tree is scrolled down brings the name field
+/// into view; a field that is not laid out would lose the typed text.
+#[gpui::test]
+fn new_group_field_is_revealed_in_a_scrolled_tree(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    select(&chat, Command::SelectChannelAt(CHANNELS - 1), cx);
+    assert!(top(&chat, cx) > 0);
+    chat.update_in(cx, |chat, window, cx| {
+        let network = cayenchat_model::NetworkId(1);
+        let name = format!("#c{:03}", CHANNELS - 1);
+        let conversation = chat.state.channel_id(network, &name).unwrap();
+        chat.channel_menu = Some(crate::ChannelMenu {
+            position: gpui::point(px(0.), px(0.)),
+            network,
+            conversation,
+            channel: name,
+            joined: true,
+            private: false,
+            grouped: false,
+            groups_open: true,
+        });
+        chat.begin_new_group(window, cx);
+    });
+    settle(cx);
+    cx.run_until_parked();
+    chat.read_with(cx, |chat, _| {
+        let at = chat
+            .tree_rows
+            .iter()
+            .position(|row| matches!(row, crate::TreeRow::NewGroup))
+            .expect("name row");
+        let view = chat.tree_list.state.viewport_bounds();
+        let bounds = chat.tree_list.state.bounds_for_item(at).expect("laid out");
+        assert!(bounds.top() >= view.top() - px(0.5) && bounds.bottom() <= view.bottom() + px(0.5));
+        assert!(!chat.group_edit_reveal);
+    });
 }

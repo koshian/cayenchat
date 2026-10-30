@@ -8,6 +8,10 @@
 //! server profile ID and hold channel names compared ASCII case-insensitively
 //! (stored lowercased), including channels that are currently parted, so a
 //! channel joined again returns to its place.
+//!
+//! The channel groups (D075) are saved here too: display-only parents that
+//! hold channels of several servers. A grouped channel is named by its server
+//! profile ID and lowercased name, never by a connection or conversation.
 
 use std::{
     collections::BTreeMap,
@@ -23,6 +27,9 @@ const ORDER_VERSION: u32 = 1;
 const MAX_SERVERS: usize = 256;
 const MAX_NAMES: usize = 2_000;
 const MAX_NAME_BYTES: usize = 512;
+const MAX_GROUPS: usize = 64;
+const MAX_GROUP_MEMBERS: usize = 2_000;
+const MAX_GROUP_NAME_BYTES: usize = 512;
 /// Larger files are damage and are not parsed.
 const MAX_FILE_BYTES: u64 = 1 << 20;
 
@@ -32,6 +39,25 @@ pub struct ChannelOrders {
     pub version: u32,
     /// Server profile ID to the channels in tree order.
     pub servers: BTreeMap<String, Vec<String>>,
+    /// The channel groups in tree order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<StoredGroup>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoredGroup {
+    pub name: String,
+    pub collapsed: bool,
+    pub members: Vec<StoredMember>,
+}
+
+/// A channel of a group: server profile ID and lowercased channel name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoredMember {
+    pub server: String,
+    pub channel: String,
 }
 
 impl ChannelOrders {
@@ -68,12 +94,29 @@ impl ChannelOrders {
         }
         servers.retain(|_, names| !names.is_empty());
         self.servers = servers;
+        self.groups.retain(|group| {
+            !group.name.trim().is_empty() && group.name.len() <= MAX_GROUP_NAME_BYTES
+        });
+        self.groups.truncate(MAX_GROUPS);
+        let mut seen = std::collections::HashSet::new();
+        for group in &mut self.groups {
+            group.members.retain(|member| {
+                !member.channel.is_empty()
+                    && member.channel.len() <= MAX_NAME_BYTES
+                    && member.server.len() <= MAX_NAME_BYTES
+                    && seen.insert((member.server.clone(), member.channel.clone()))
+            });
+            group.members.truncate(MAX_GROUP_MEMBERS);
+        }
         self
     }
 
     /// Forgets servers that are no longer configured.
     pub fn retain_servers(&mut self, keep: impl Fn(&str) -> bool) {
         self.servers.retain(|id, _| keep(id));
+        for group in &mut self.groups {
+            group.members.retain(|member| keep(&member.server));
+        }
     }
 }
 
@@ -145,6 +188,47 @@ mod tests {
         assert_eq!(load_orders_from(&path), ChannelOrders::default());
         fs::write(&path, br##"{"version":1,"servers":{"a":["#x","#x",""]}}"##).unwrap();
         assert_eq!(load_orders_from(&path).order("a"), ["#x"]);
+    }
+
+    #[test]
+    fn groups_read_back_and_damage_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel-order.json");
+        let member = |server: &str, channel: &str| StoredMember {
+            server: server.into(),
+            channel: channel.into(),
+        };
+        let group = |name: &str, members| StoredGroup {
+            name: name.into(),
+            collapsed: true,
+            members,
+        };
+        let orders = ChannelOrders {
+            groups: vec![
+                group(
+                    "daily",
+                    vec![member("a", "#x"), member("b", "#y"), member("a", "#x")],
+                ),
+                group("  ", vec![member("a", "#z")]),
+                group("other", vec![member("a", "#x"), member("a", "")]),
+            ],
+            ..Default::default()
+        };
+        save_orders_to(&path, &orders).unwrap();
+        let loaded = load_orders_from(&path);
+        assert_eq!(loaded.groups.len(), 2);
+        assert_eq!(
+            loaded.groups[0].members,
+            [member("a", "#x"), member("b", "#y")]
+        );
+        assert!(loaded.groups[0].collapsed);
+        assert!(loaded.groups[1].members.is_empty());
+        let mut loaded = loaded;
+        loaded.retain_servers(|id| id == "a");
+        assert_eq!(loaded.groups[0].members, [member("a", "#x")]);
+        // A file without groups, as older versions wrote, still reads.
+        fs::write(&path, br##"{"version":1,"servers":{"a":["#x"]}}"##).unwrap();
+        assert!(load_orders_from(&path).groups.is_empty());
     }
 
     #[test]
