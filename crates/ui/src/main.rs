@@ -767,10 +767,9 @@ fn sub_rows(
     rows
 }
 
-/// The newest `limit` conversation lines (not channel activity or requested
-/// history, which is context rather than news) across every conversation
-/// except `excluded`, oldest first, as (sequence, conversation,
-/// message index). Merges the conversation tails newest-first, so the cost
+/// The newest `limit` lines held by every conversation except `excluded`
+/// (whatever their activity flag or provenance), oldest first, as (sequence,
+/// conversation, message index). Merges the conversation tails newest-first, so the cost
 /// grows with `limit` and the number of conversations, not with every
 /// retained line (with several servers there are many conversations).
 fn newest_lines(
@@ -780,19 +779,13 @@ fn newest_lines(
 ) -> Vec<(u64, ConversationId, usize)> {
     use std::collections::BinaryHeap;
 
-    fn previous_line(messages: &[cayenchat_model::Message], before: usize) -> Option<usize> {
-        messages[..before].iter().rposition(|message| {
-            !message.activity && message.provenance != cayenchat_model::Provenance::Requested
-        })
-    }
-
     // (sequence, conversation position, message index), newest on top.
     let mut heads: BinaryHeap<(u64, usize, usize)> = conversations
         .iter()
         .enumerate()
         .filter(|(_, conversation)| Some(conversation.id) != excluded)
         .filter_map(|(position, conversation)| {
-            let index = previous_line(&conversation.messages, conversation.messages.len())?;
+            let index = conversation.messages.len().checked_sub(1)?;
             Some((conversation.messages[index].sequence, position, index))
         })
         .collect();
@@ -802,7 +795,7 @@ fn newest_lines(
     {
         let conversation = &conversations[position];
         rows.push((sequence, conversation.id, index));
-        if let Some(previous) = previous_line(&conversation.messages, index) {
+        if let Some(previous) = index.checked_sub(1) {
             heads.push((conversation.messages[previous].sequence, position, previous));
         }
     }
@@ -849,8 +842,9 @@ struct ChatWindow {
     tree_reveal_pending: bool,
     // The group name field was just opened; its row is scrolled into view.
     group_edit_reveal: bool,
-    // Selection and newest message sequence the combined log was built for.
-    sub_source: Option<(Option<ConversationId>, u64)>,
+    // Selection, newest message sequence and log revision the combined log was
+    // built for.
+    sub_source: Option<(Option<ConversationId>, u64, u64)>,
     // The Reiwa mode leads of the selected channel's lines, with what they
     // were derived from: rebuilt only when that changes, not on every redraw.
     reiwa_shapes: Option<(ReiwaShapeKey, Vec<u8>)>,
@@ -8918,13 +8912,18 @@ impl ChatWindow {
             .or_insert_with(LogList::new)
             .sync_shaped(prefix, &sequences, &shapes);
 
-        // The combined log shows the newest conversation lines from every other
-        // channel; JOIN/PART/QUIT/MODE activity stays in its own channel log.
-        // Only the tail of each channel can reach the combined tail. Rebuild it
-        // only when a message arrives or the selection changes, not on every
-        // redraw (each keystroke redraws the window).
+        // The combined log shows the newest lines every other conversation
+        // holds, whatever their provenance or kind. Only the tail of each
+        // channel can reach the combined tail. Rebuild it only when a message
+        // arrives, history is inserted or edited (the log revision; inserted
+        // history does not move the newest sequence) or the selection changes,
+        // not on every redraw (each keystroke redraws the window).
         let selected = self.state.selected_channel().map(|channel| channel.id);
-        let source = (selected, self.state.last_message_sequence());
+        let source = (
+            selected,
+            self.state.last_message_sequence(),
+            self.state.log_revision(),
+        );
         if self.sub_source == Some(source) {
             return;
         }

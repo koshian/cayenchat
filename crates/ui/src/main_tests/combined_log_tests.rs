@@ -16,9 +16,6 @@ fn collect_and_sort(
                 .iter()
                 .enumerate()
                 .rev()
-                .filter(|(_, m)| {
-                    !m.activity && m.provenance != cayenchat_model::Provenance::Requested
-                })
                 .take(limit)
                 .map(move |(index, m)| (m.sequence, c.id, index))
         })
@@ -31,7 +28,7 @@ fn collect_and_sort(
 #[test]
 fn merged_tails_match_collecting_and_sorting() {
     // Interleaved arrivals across three conversations on two networks,
-    // with activity lines and an empty conversation.
+    // with activity and requested-history lines and an empty conversation.
     let mut conversations: Vec<Conversation> = (0..4)
         .map(|id| Conversation {
             id: ConversationId(id + 1),

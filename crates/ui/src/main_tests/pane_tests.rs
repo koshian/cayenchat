@@ -1680,10 +1680,81 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
             .dispatch(cayenchat_app::Command::NextNotifiedMessage);
         assert_eq!(chat.state.take_reveal(), Some((id, live)));
         let b = &chat.state.conversations()[1];
-        // The combined log shows the live line only.
+        // The combined log shows every line the conversation holds, history
+        // included, in sequence order.
         let rows = super::newest_lines(chat.state.conversations(), None, 10);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, b.messages[2].sequence);
+        let expected: Vec<_> = b.messages.iter().map(|m| m.sequence).collect();
+        assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), expected);
+    });
+}
+
+#[gpui::test]
+fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
+    use cayenchat_irc_core::{Event, HistoryMessage};
+
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a,#b");
+    settings.language = cayenchat_storage::Language::English;
+    let (chat, cx) =
+        cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
+    chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "alice".into(),
+                },
+                Event::Joined {
+                    channel: "#a".into(),
+                },
+                Event::Joined {
+                    channel: "#b".into(),
+                },
+                Event::HistoryRequested {
+                    channel: "#b".into(),
+                    resumed: false,
+                },
+            ],
+            Worker::Running,
+            cx,
+        );
+        let a = chat.state.channel_id(NetworkId(1), "#a").unwrap();
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(a));
+        chat.sync_log_lists();
+        let before = chat.sub_rows.len();
+        // The history fills a sequence range reserved earlier, so the newest
+        // sequence does not move; the combined log must still be rebuilt.
+        let sequence = chat.state.last_message_sequence();
+        chat.handle_events(
+            NetworkId(1),
+            vec![Event::ChannelHistory {
+                channel: "#b".into(),
+                incomplete: false,
+                messages: vec![HistoryMessage {
+                    sender: "bob".into(),
+                    text: "from yesterday".into(),
+                    notice: false,
+                    server_time: Some(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_550_000),
+                    ),
+                    msgid: Some("old1".into()),
+                    account: None,
+                }],
+            }],
+            Worker::Running,
+            cx,
+        );
+        assert_eq!(chat.state.last_message_sequence(), sequence);
+        chat.sync_log_lists();
+        assert_eq!(chat.sub_rows.len(), before + 1);
     });
 }
 
