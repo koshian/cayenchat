@@ -3,6 +3,7 @@
 pub mod amazon;
 pub mod attachments;
 pub mod avatars;
+pub mod diagnostics;
 pub mod groups;
 pub mod links;
 pub mod notifications;
@@ -12,13 +13,14 @@ pub mod timeline;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use cayenchat_model::{
     Conversation, ConversationId, ConversationKind, Highlights, Links, Message, NativeMessageId,
     Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
+pub use diagnostics::{DIAGNOSTIC_LIMIT, DiagnosticLine, DiagnosticsView};
 pub use groups::{ChannelGroup, DisplayTree, GroupId, GroupMember, GroupSpec, Parent};
 use timeline::DuplicateFilter;
 pub use timeline::{Kind, MessageMeta};
@@ -153,6 +155,11 @@ pub struct AppState {
     /// Server lines that are also shown in the combined log (CTCP requests
     /// and replies), oldest first; the same lines stay in `server_messages`.
     system_messages: VecDeque<(NetworkId, Message)>,
+    /// Connection diagnostics per network; not conversation logs.
+    diagnostics: HashMap<NetworkId, diagnostics::ServerDiagnostics>,
+    /// Sequence source of the diagnostic lines. Kept apart from
+    /// `next_message_sequence`, which detects changes to the message logs.
+    next_diagnostic_sequence: u64,
     next_message_sequence: u64,
     /// Counts every access that may change a conversation's lines, so a view
     /// derived from them can tell it must be rebuilt.
@@ -278,6 +285,8 @@ impl AppState {
             statuses: HashMap::new(),
             server_messages: HashMap::new(),
             system_messages: VecDeque::new(),
+            diagnostics: HashMap::new(),
+            next_diagnostic_sequence: 0,
             next_message_sequence: SEQUENCE_ORIGIN,
             log_revision: 0,
             next_conversation_id: 1,
@@ -334,6 +343,7 @@ impl AppState {
             removed.extend(self.remove_conversations(id));
             self.statuses.remove(&id);
             self.server_messages.remove(&id);
+            self.diagnostics.remove(&id);
             self.system_messages.retain(|(network, _)| *network != id);
             self.active_servers.remove(&id);
             self.avatars.remove_network(id);
@@ -722,6 +732,47 @@ impl AppState {
             self.system_messages.pop_front();
         }
         push_bounded(self.server_messages.entry(id).or_default(), message);
+    }
+
+    /// Adds a connection diagnostic line to `id`'s `view`, stamped `at`,
+    /// keeping the newest `DIAGNOSTIC_LIMIT`. It is not a conversation line:
+    /// no log file, unread mark, notification or combined log.
+    pub fn record_diagnostic(
+        &mut self,
+        id: NetworkId,
+        view: DiagnosticsView,
+        at: SystemTime,
+        elapsed: Option<Duration>,
+        text: String,
+    ) {
+        if !self.networks.iter().any(|network| network.id == id) {
+            return;
+        }
+        let sequence = self.next_diagnostic_sequence;
+        self.next_diagnostic_sequence += 1;
+        self.diagnostics.entry(id).or_default().push(
+            view,
+            DiagnosticLine {
+                sequence,
+                at,
+                elapsed,
+                text,
+            },
+        );
+    }
+
+    /// `id`'s connection diagnostic lines in `view`, oldest first.
+    pub fn diagnostics(&self, id: NetworkId, view: DiagnosticsView) -> &VecDeque<DiagnosticLine> {
+        static NONE: VecDeque<DiagnosticLine> = VecDeque::new();
+        self.diagnostics
+            .get(&id)
+            .map_or(&NONE, |diagnostics| diagnostics.lines(view))
+    }
+
+    /// Forgets `id`'s diagnostic lines of both views, as a new connection
+    /// attempt begins.
+    pub fn clear_diagnostics(&mut self, id: NetworkId) {
+        self.diagnostics.remove(&id);
     }
 
     /// System lines for the combined log, oldest first.

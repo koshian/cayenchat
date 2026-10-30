@@ -758,8 +758,9 @@ connected or not, in the order added. With no servers the selection is
 `Selection::None`: the tree is empty, the main log explains how to add one
 and the first run shows the setup wizard (settings do not open at startup). `ui::session::ServerSession`
 holds everything per connection: the `Connection`, the configuration reused by
-reconnects, retry state, the current nickname, pending WHOIS nicknames and a
-bounded transcript (1,000 lines per server). The chat window keys sessions by
+reconnects, retry state, the current nickname and pending WHOIS nicknames.
+The connection diagnostics (1,000 lines per server and view) are kept in
+`app::AppState`, apart from the conversation logs (D077). The chat window keys sessions by
 `NetworkId`; a profile keeps its network for the whole run. Events carry no
 network, so each event pump applies its batch to the network it was started
 for. Context menus, prompts and WHOIS windows remember their network and act

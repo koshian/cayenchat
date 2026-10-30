@@ -3485,8 +3485,12 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
         // Same channel name on two servers: separate conversations.
         assert_eq!(texts(chat, custom_net), ["custom"]);
         assert_eq!(texts(chat, ircnet), ["ircnet"]);
-        assert_eq!(chat.sessions[&custom_net].wire.len(), 1);
-        assert_eq!(chat.sessions[&ircnet].wire.len(), 1);
+        let wire = |network| {
+            chat.state
+                .diagnostics(network, cayenchat_app::DiagnosticsView::Protocol)
+        };
+        assert_eq!(wire(custom_net).len(), 1);
+        assert_eq!(wire(ircnet).len(), 1);
 
         // A disconnect on one server leaves the other registered.
         chat.handle_events(

@@ -76,8 +76,8 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, GroupId, Kind, MessageMeta, Missing, MoveTo,
-    NetworkConfig, Parent, Selection, Unread,
+    AppState, Command, ConnectionStatus, DiagnosticLine, DiagnosticsView, GroupId, Kind,
+    MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -107,7 +107,7 @@ use localization::Localizer;
 use log_list::LogList;
 use notifier::{DesktopNotification, Notifier};
 use os_text::WindowOsText;
-use session::{DiagnosticsView, ServerSession};
+use session::ServerSession;
 use settings_window::{SettingsTab, SettingsWindow, settings_field};
 use std::ops::Range;
 use std::{
@@ -2065,7 +2065,7 @@ impl ChatWindow {
                             && connecting;
                         if waiting && stage > session.watchdog_stage {
                             session.watchdog_stage = stage;
-                            session.push_diagnostic(
+                            session.push_diagnostic(&mut this.state, network,
                                 "UI is still waiting for the transport worker; inspect the latest diagnostic stage.".into(),
                             );
                             cx.notify();
@@ -2475,7 +2475,7 @@ impl ChatWindow {
         session.sent_secrets =
             connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.connection_starting(&config);
-        session.clear_diagnostics();
+        self.state.clear_diagnostics(network);
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
@@ -2960,7 +2960,7 @@ impl ChatWindow {
             session
                 .disconnected_at
                 .get_or_insert_with(std::time::SystemTime::now);
-            session.push_diagnostic(format!("Disconnected: {reason}"));
+            session.push_diagnostic(&mut self.state, network, format!("Disconnected: {reason}"));
             session.pending_whois.clear();
         }
         let reason = self.i18n.reason(reason);
@@ -3071,14 +3071,18 @@ impl ChatWindow {
             };
             let generation = session.generation;
             if session.manual_disconnect || session.asleep {
-                session.push_diagnostic(format!(
-                    "Sleep notice (connection #{generation}): left alone, {}",
-                    if session.manual_disconnect {
-                        "disconnected by the user"
-                    } else {
-                        "already asleep"
-                    }
-                ));
+                session.push_diagnostic(
+                    &mut self.state,
+                    network,
+                    format!(
+                        "Sleep notice (connection #{generation}): left alone, {}",
+                        if session.manual_disconnect {
+                            "disconnected by the user"
+                        } else {
+                            "already asleep"
+                        }
+                    ),
+                );
                 continue;
             }
             let Some(connection) = &session.irc else {
@@ -3089,13 +3093,19 @@ impl ChatWindow {
                     session.asleep = true;
                     session.retry_pending = false;
                     session.retry_token += 1;
-                    session.push_diagnostic(format!(
-                        "Sleep notice (connection #{generation}): retry held until wake-up"
-                    ));
+                    session.push_diagnostic(
+                        &mut self.state,
+                        network,
+                        format!(
+                            "Sleep notice (connection #{generation}): retry held until wake-up"
+                        ),
+                    );
                 } else {
-                    session.push_diagnostic(format!(
-                        "Sleep notice (connection #{generation}): no connection"
-                    ));
+                    session.push_diagnostic(
+                        &mut self.state,
+                        network,
+                        format!("Sleep notice (connection #{generation}): no connection"),
+                    );
                 }
                 continue;
             };
@@ -3112,7 +3122,11 @@ impl ChatWindow {
                     "closing without QUIT"
                 }
             };
-            session.push_diagnostic(format!("Sleep notice (connection #{generation}): {note}"));
+            session.push_diagnostic(
+                &mut self.state,
+                network,
+                format!("Sleep notice (connection #{generation}): {note}"),
+            );
             closing.push(network);
         }
         let deadline = Instant::now() + SLEEP_WAIT;
@@ -3125,14 +3139,18 @@ impl ChatWindow {
             };
             let closed = connection.wait_closed(deadline.saturating_duration_since(Instant::now()));
             let generation = session.generation;
-            session.push_diagnostic(format!(
-                "Sleep QUIT (connection #{generation}): {}",
-                if closed {
-                    "worker ended"
-                } else {
-                    "worker still open when the wait ran out"
-                }
-            ));
+            session.push_diagnostic(
+                &mut self.state,
+                *network,
+                format!(
+                    "Sleep QUIT (connection #{generation}): {}",
+                    if closed {
+                        "worker ended"
+                    } else {
+                        "worker still open when the wait ran out"
+                    }
+                ),
+            );
         }
         cx.notify();
     }
@@ -3155,7 +3173,7 @@ impl ChatWindow {
                 // Retries restart from the shortest wait if this fails.
                 session.retry_attempt = 0;
                 session.retry_token += 1;
-                session.push_diagnostic(format!(
+                session.push_diagnostic(&mut self.state, network, format!(
                     "Wake-up (connection #{generation}, {source:?}): reconnecting after the sleep QUIT"
                 ));
                 self.start_reconnect(network, false, cx);
@@ -4664,20 +4682,16 @@ impl ChatWindow {
     }
 
     fn diagnostics_text(&self) -> String {
-        self.selected_session()
-            .map(|session| {
-                session
-                    .lines(self.diagnostics_view)
+        self.selected_network_id()
+            .map(|network| {
+                self.state
+                    .diagnostics(network, self.diagnostics_view)
                     .iter()
-                    .map(session::DiagnosticLine::render)
+                    .map(DiagnosticLine::render)
                     .collect::<Vec<_>>()
                     .join("\n")
             })
             .unwrap_or_default()
-    }
-
-    fn selected_session(&self) -> Option<&ServerSession> {
-        self.sessions.get(&self.selected_network_id()?)
     }
 
     fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5038,21 +5052,13 @@ impl ChatWindow {
         elapsed: Duration,
         text: String,
     ) {
-        if let Some(session) = self.sessions.get_mut(&network) {
-            session.record(
-                view,
-                session::DiagnosticLine {
-                    at,
-                    elapsed: Some(elapsed),
-                    text,
-                },
-            );
-        }
+        self.state
+            .record_diagnostic(network, view, at, Some(elapsed), text);
     }
 
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
-        if let Some(session) = self.sessions.get_mut(&network) {
-            session.push_diagnostic(line);
+        if let Some(session) = self.sessions.get(&network) {
+            session.push_diagnostic(&mut self.state, network, line);
         }
     }
 
@@ -8831,9 +8837,9 @@ impl MainLayout {
 
 impl ChatWindow {
     fn main_layout(&self) -> MainLayout {
-        let count = self
-            .selected_session()
-            .map_or(0, |session| session.lines(self.diagnostics_view).len());
+        let count = self.selected_network_id().map_or(0, |network| {
+            self.state.diagnostics(network, self.diagnostics_view).len()
+        });
         let registration_incomplete = self
             .selected_network_id()
             .and_then(|network| self.state.status(network))
@@ -8971,8 +8977,12 @@ impl ChatWindow {
                 .w_full()
                 .text_color(theme.text_secondary)
                 .child(
-                    self.selected_session()
-                        .and_then(|session| session.lines(self.diagnostics_view).get(index))
+                    self.selected_network_id()
+                        .and_then(|network| {
+                            self.state
+                                .diagnostics(network, self.diagnostics_view)
+                                .get(index)
+                        })
                         .map(|line| diagnostic_text(&line.render()))
                         .unwrap_or_default(),
                 )
