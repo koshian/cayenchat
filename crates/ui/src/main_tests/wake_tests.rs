@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! A simulated wake-up against local servers: which connections are checked,
 //! what a silent one turns into, and that it reconnects.
-use super::{ChatWindow, Worker};
+use super::{ChatWindow, Worker, wake::WakeSource};
 use cayenchat_app::ConnectionStatus;
 use cayenchat_irc_core::{Connection, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
@@ -183,8 +183,8 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
             .unwrap()
             .manual_disconnect = true;
         // A duplicate notice reaches the same checks, not more of them.
-        chat.check_connections_after_wake(cx);
-        chat.check_connections_after_wake(cx);
+        chat.check_connections_after_wake(WakeSource::Os, cx);
+        chat.check_connections_after_wake(WakeSource::Os, cx);
     });
     let mut disconnected = Vec::new();
     while disconnected.is_empty() {
@@ -407,9 +407,9 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
     // The wake: the networks ended for sleep connect again, the other not.
     let generations = chat.update(cx, |chat, cx| {
         let generations = [NetworkId(1), NetworkId(2)].map(|n| chat.sessions[&n].generation);
-        chat.check_connections_after_wake(cx);
+        chat.check_connections_after_wake(WakeSource::Os, cx);
         // A duplicate notice reconnects nothing more.
-        chat.check_connections_after_wake(cx);
+        chat.check_connections_after_wake(WakeSource::Os, cx);
         generations
     });
     // The reconnects read their passwords first.
@@ -471,7 +471,7 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
         assert!(session.irc.is_none());
         // The wake reconnects it, as it does the connections quit for sleep.
         let generation = session.generation;
-        chat.check_connections_after_wake(cx);
+        chat.check_connections_after_wake(WakeSource::Os, cx);
         generation
     });
     cx.run_until_parked();
