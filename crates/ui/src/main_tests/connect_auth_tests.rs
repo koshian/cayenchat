@@ -701,3 +701,28 @@ fn a_dialog_sends_the_channels_and_avatar_saved_after_it_opened(cx: &mut TestApp
         stop(chat);
     });
 }
+
+#[gpui::test]
+fn a_dialog_left_open_does_not_outlive_a_reconnect_by_another_path(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| assert_eq!(chat.credential_prompts.len(), 1));
+    // The password reaches the store while the dialog is open.
+    store.set(&key, &Secret::new("saved")).unwrap();
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        assert!(chat.credential_prompts.is_empty(), "the dialog is gone");
+        assert!(chat.sessions[&NET].irc.is_some());
+        // What a stale dialog's buttons would have done is nothing.
+        chat.cancel_credential_prompt(NET, window, cx);
+        assert!(!chat.sessions[&NET].manual_disconnect);
+        stop(chat);
+    });
+    assert_eq!(store.get(&key).unwrap().unwrap().expose(), "saved");
+}

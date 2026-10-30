@@ -117,10 +117,10 @@ pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig
         && config.allow_plaintext_pass == profile.allow_plaintext_pass
 }
 
-/// Makes the settings of `config` that carry no secret and no transport
-/// policy follow `profile`, as saved now: a dialog holds the configuration of
-/// when it opened, and a change made while it was open (channels, IRCv3,
-/// shared avatar, encodings) belongs to the connection it starts (#723).
+/// Makes the channels, IRCv3 options, shared avatar and encodings of `config`
+/// follow `profile`, as saved now: a dialog holds the configuration of when it
+/// opened, and a change made while it was open belongs to the connection it
+/// starts (#723). Channel keys stay, under the spelling the list now has.
 pub(crate) fn follow_profile(
     config: &mut ConnectionConfig,
     profile: &ServerProfile,
@@ -128,6 +128,7 @@ pub(crate) fn follow_profile(
 ) -> Result<(), String> {
     let fresh = crate::connection_config_without_secrets(profile, language)?;
     config.channels = fresh.channels;
+    crate::channel_keys::follow_channel_spelling(config);
     config.ircv3 = fresh.ircv3;
     config.shared_avatar = fresh.shared_avatar;
     config.encoding = fresh.encoding;
@@ -1015,6 +1016,23 @@ mod tests {
         assert_eq!(old.shared_avatar, None);
         assert_eq!(old.server_password.as_deref(), Some("kept"));
         assert!(matches_profile(&saved, &old), "transport is left alone");
+    }
+
+    #[test]
+    fn a_channel_key_follows_the_respelled_channel() {
+        let mut old = config(true);
+        old.channels = vec!["#a".into()];
+        old.channel_keys.insert("#a".into(), "key".into());
+        let mut saved = profile(true);
+        saved.username = "me".into();
+        saved.set_auto_join_entries(&[cayenchat_storage::AutoJoinEntry {
+            name: "#A".into(),
+            enabled: true,
+        }]);
+        super::follow_profile(&mut old, &saved, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(old.channels, vec!["#A".to_owned()]);
+        assert_eq!(old.channel_keys.get("#A").map(String::as_str), Some("key"));
+        assert!(!old.channel_keys.contains_key("#a"));
     }
 
     #[test]
