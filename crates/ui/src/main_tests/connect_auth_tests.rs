@@ -670,6 +670,112 @@ fn the_profile_mechanism_reaches_the_connection_config() {
     }
 }
 
+/// A dialog is open for a refused connection, then another reconnect finds
+/// the password in the store and registers (#722). Returns the store key of
+/// the SASL password.
+fn dialog_left_open_by_a_reconnect_that_registers(
+    chat: &gpui::Entity<ChatWindow>,
+    store: &CredentialStore,
+    cx: &mut gpui::VisualTestContext,
+) -> cayenchat_storage::SecretKey {
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    let key = chat.update(cx, |chat, cx| {
+        assert_eq!(chat.credential_prompts.len(), 1);
+        // The password is saved by another path, then Reconnect uses it.
+        let key = chat.saved.servers[0].sasl_password_key();
+        store.set(&key, &Secret::new("stored")).unwrap();
+        chat.saved.servers[0].set_sasl_password_saved(true);
+        chat.start_reconnect(NET, false, cx);
+        key
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, cx| {
+        assert!(chat.sessions[&NET].irc.is_some(), "the reconnect ran");
+        chat.handle_events(
+            NET,
+            vec![Event::Registered {
+                nickname: "me".into(),
+            }],
+            Worker::Running,
+            cx,
+        );
+    });
+    key
+}
+
+#[gpui::test]
+fn a_dialog_does_not_outlive_a_reconnect_that_registers(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    dialog_left_open_by_a_reconnect_that_registers(&chat, &store, cx);
+    chat.update(cx, |chat, _| {
+        assert!(chat.credential_prompts.is_empty(), "#722");
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn cancelling_a_leftover_dialog_does_not_stop_the_running_session(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    dialog_left_open_by_a_reconnect_that_registers(&chat, &store, cx);
+    chat.update_in(cx, |chat, window, cx| {
+        chat.cancel_credential_prompt(NET, window, cx)
+    });
+    chat.update(cx, |chat, _| {
+        assert!(!chat.sessions[&NET].manual_disconnect, "#722");
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn submitting_a_leftover_dialog_does_not_overwrite_the_store(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    let key = dialog_left_open_by_a_reconnect_that_registers(&chat, &store, cx);
+    chat.update_in(cx, |chat, window, cx| {
+        if chat.credential_prompts.is_empty() {
+            return;
+        }
+        chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
+        type_password(chat, true, "old-input", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(store.get(&key).unwrap().unwrap().expose(), "stored", "#722");
+    chat.update(cx, |chat, _| stop(chat));
+}
+
+// Reproduces #723, still open: the dialog connects with the configuration it
+// opened with, and only host, port, TLS and SASL changes are caught as stale.
+#[gpui::test]
+#[ignore = "#723: the dialog's configuration snapshot ignores later channel changes"]
+fn a_dialog_connects_with_the_settings_saved_while_it_was_open(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        chat.connect_fresh(NET, config(true), missing, window, cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        assert_eq!(chat.credential_prompts.len(), 1);
+        type_password(chat, true, "typed", cx);
+        let mut settings = chat.saved.clone();
+        settings.servers[0].channels = "#b".into();
+        chat.saved = settings.clone();
+        chat.apply_servers(settings, cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        let used = &chat.sessions[&NET].active_config.as_ref().unwrap().channels;
+        assert_eq!(used, &["#b".to_owned()], "#723");
+        stop(chat);
+    });
+}
+
 #[gpui::test]
 fn a_dialog_sends_the_channels_and_avatar_saved_after_it_opened(cx: &mut TestAppContext) {
     // A fresh connection keeps its configuration as `active_config`, which
