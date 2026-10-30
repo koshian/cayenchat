@@ -985,9 +985,6 @@ struct ChatWindow {
     members_focus: FocusHandle,
     members_scroll: UniformListScrollHandle,
     log_selection: Option<LogSelection>,
-    /// A selection in the connection diagnostics rows; at most one of this
-    /// and `log_selection` is set.
-    diagnostics_selection: Option<DiagnosticsSelection>,
     log_dragging: bool,
     /// The main log row whose URL the pointer is over; it shows a hand.
     url_hover: Option<(ConversationId, usize)>,
@@ -1270,16 +1267,6 @@ impl LogSelection {
         };
         (from < to).then_some(from..to)
     }
-}
-
-/// A selection in the diagnostics rows of the log `inner.source`. Its rows
-/// are line ids (`ServerSession::line_by_id`), not indexes, so lines that
-/// arrive or are trimmed cannot move it onto another line.
-#[derive(Clone, Copy)]
-struct DiagnosticsSelection {
-    inner: LogSelection,
-    network: NetworkId,
-    view: DiagnosticsView,
 }
 
 impl ChatWindow {
@@ -1577,7 +1564,6 @@ impl ChatWindow {
             members_focus: cx.focus_handle(),
             members_scroll: UniformListScrollHandle::new(),
             log_selection: None,
-            diagnostics_selection: None,
             log_split: DEFAULT_LOG_SPLIT,
             log_split_dragging: false,
             left_column_bounds: Rc::new(Cell::new(None)),
@@ -3335,19 +3321,6 @@ impl ChatWindow {
         self.log_selection.is_some_and(|selection| {
             let (start, end) = selection.bounds();
             selection.source == source && start != end
-        }) || self.diagnostics_selection().is_some_and(|selection| {
-            let (start, end) = selection.inner.bounds();
-            selection.inner.source == source && start != end
-        })
-    }
-
-    /// The diagnostics selection, while the rows it names are the ones on
-    /// show: same log, same server, same view.
-    fn diagnostics_selection(&self) -> Option<DiagnosticsSelection> {
-        self.diagnostics_selection.filter(|selection| {
-            selection.inner.source == self.state.selection()
-                && selection.view == self.diagnostics_view
-                && self.selected_network_id() == Some(selection.network)
         })
     }
 
@@ -4776,75 +4749,9 @@ impl ChatWindow {
             anchor: position,
             cursor: position,
         });
-        self.diagnostics_selection = None;
         self.log_dragging = true;
         window.focus(&self.log_focus);
         cx.notify();
-    }
-
-    /// Starts a selection in diagnostics line `id` of the server being shown.
-    fn start_diagnostics_selection(
-        &mut self,
-        id: u64,
-        byte: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(network) = self.selected_network_id() else {
-            return;
-        };
-        let position = LogPosition {
-            row: id as usize,
-            byte,
-        };
-        self.diagnostics_selection = Some(DiagnosticsSelection {
-            inner: LogSelection {
-                source: self.state.selection(),
-                anchor: position,
-                cursor: position,
-            },
-            network,
-            view: self.diagnostics_view,
-        });
-        self.log_selection = None;
-        self.log_dragging = true;
-        window.focus(&self.log_focus);
-        cx.notify();
-    }
-
-    fn extend_diagnostics_selection(&mut self, id: u64, byte: usize, cx: &mut Context<Self>) {
-        if self.log_dragging
-            && self.diagnostics_selection().is_some()
-            && let Some(selection) = self.diagnostics_selection.as_mut()
-        {
-            selection.inner.cursor = LogPosition {
-                row: id as usize,
-                byte,
-            };
-            cx.notify();
-        }
-    }
-
-    /// Copies the selected diagnostics lines as shown (`diagnostic_text`),
-    /// only the selected part of the first and last.
-    fn copy_selected_diagnostics(&self, selection: DiagnosticsSelection, cx: &mut Context<Self>) {
-        let Some(session) = self.sessions.get(&selection.network) else {
-            return;
-        };
-        let (start, end) = selection.inner.bounds();
-        // Lines trimmed since the selection began are no longer there.
-        let from = start.row.max(session.first_id(selection.view) as usize);
-        let pieces: Vec<_> = (from..=end.row)
-            .filter_map(|id| {
-                let line = session.line_by_id(selection.view, id as u64)?;
-                let text = diagnostic_text(&line.render());
-                let range = selection.inner.range(id, text.len()).unwrap_or(0..0);
-                Some(text.get(range).unwrap_or_default().to_owned())
-            })
-            .collect();
-        if !pieces.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
-        }
     }
 
     fn extend_log_selection(
@@ -4868,13 +4775,6 @@ impl ChatWindow {
     }
 
     fn copy_selected_log(&mut self, cx: &mut Context<Self>) {
-        if let Some(selection) = self.diagnostics_selection() {
-            let (start, end) = selection.inner.bounds();
-            if start != end {
-                self.copy_selected_diagnostics(selection, cx);
-            }
-            return;
-        }
         let Some(selection) = self.log_selection else {
             return;
         };
@@ -5188,7 +5088,6 @@ impl ChatWindow {
         let selection_before = self.state.selection();
         self.state.dispatch(command);
         self.log_selection = None;
-        self.diagnostics_selection = None;
         self.prompt_feedback = None;
         if let Some((id, sequence)) = self.state.take_reveal() {
             self.reveal_message(id, sequence, cx);
@@ -9068,60 +8967,16 @@ impl ChatWindow {
                 .font_weight(FontWeight::BOLD)
                 .child(self.i18n.text("diagnostics_heading"))
                 .into_any_element(),
-            MainRow::Diagnostic(index) => {
-                let view = self.diagnostics_view;
-                let Some((network, session)) =
-                    self.selected_network_id().zip(self.selected_session())
-                else {
-                    return div().into_any_element();
-                };
-                let Some(line) = session.lines(view).get(index) else {
-                    return div().into_any_element();
-                };
-                let id = session.first_id(view) + index as u64;
-                let text = diagnostic_text(&line.render());
-                let text_len = text.len();
-                let (found, current) = self.search_diagnostic_ranges(&text, network, view, id);
-                let selected = self
-                    .diagnostics_selection()
-                    .and_then(|selection| selection.inner.range(id as usize, text_len));
-                let styled = styled_log_text(
-                    "",
-                    &text,
-                    &[],
-                    &[],
-                    &[],
-                    &found,
-                    current,
-                    selected,
-                    &style.theme,
-                );
-                let layout = styled.layout().clone();
-                let down_layout = layout.clone();
-                div()
-                    .w_full()
-                    .text_color(theme.text_secondary)
-                    .cursor(CursorStyle::IBeam)
-                    .child(styled)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            let byte = down_layout
-                                .index_for_position(event.position)
-                                .unwrap_or_else(|index| index)
-                                .min(text_len);
-                            this.start_diagnostics_selection(id, byte, window, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        let byte = layout
-                            .index_for_position(event.position)
-                            .unwrap_or_else(|index| index)
-                            .min(text_len);
-                        this.extend_diagnostics_selection(id, byte, cx);
-                    }))
-                    .into_any_element()
-            }
+            MainRow::Diagnostic(index) => div()
+                .w_full()
+                .text_color(theme.text_secondary)
+                .child(
+                    self.selected_session()
+                        .and_then(|session| session.lines(self.diagnostics_view).get(index))
+                        .map(|line| diagnostic_text(&line.render()))
+                        .unwrap_or_default(),
+                )
+                .into_any_element(),
             MainRow::Message(index) => match self.state.selected_channel() {
                 Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
                 None => {
@@ -10891,10 +10746,6 @@ mod help_command_tests;
 #[cfg(test)]
 #[path = "main_tests/search_tests.rs"]
 mod search_tests;
-
-#[cfg(test)]
-#[path = "main_tests/diagnostics_selection_tests.rs"]
-mod diagnostics_selection_tests;
 
 #[cfg(test)]
 #[path = "main_tests/latest_button_tests.rs"]

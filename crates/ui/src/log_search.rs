@@ -15,26 +15,13 @@ use cayenchat_app::{
     Command, Selection,
     search::{self, Hit, Query, Scan, Scope, Source},
 };
-use cayenchat_model::NetworkId;
 use gpui::{prelude::*, *};
 
 use crate::{
     ChatWindow, CloseSearch, CompleteNickname, FindInLog, HistoryNext, HistoryPrevious, SearchNext,
-    SearchPrevious, SendMessage, SendMessageWithCtrl, SendNotice, diagnostic_text,
-    input::TextInput, session::DiagnosticsView, theme::Theme, tooltip::TextTooltip, yield_now,
+    SearchPrevious, SendMessage, SendMessageWithCtrl, SendNotice, input::TextInput, theme::Theme,
+    tooltip::TextTooltip, yield_now,
 };
-
-/// A connection diagnostics line that matches. Connection diagnostics are
-/// kept per server session, not as messages, so they are listed apart from
-/// the message hits and come after them when moving through the matches.
-/// `id` is `ServerSession::line_by_id`'s, so a trimmed or cleared line is
-/// never mistaken for another.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DiagnosticHit {
-    pub network: NetworkId,
-    pub view: DiagnosticsView,
-    pub id: u64,
-}
 
 /// Height of the bar, including its bottom border.
 pub const BAR_HEIGHT: f32 = 36.;
@@ -69,10 +56,6 @@ pub struct LogSearch {
     revision: Option<Revision>,
     /// The line the search stands on.
     current: Option<Hit>,
-    /// The connection diagnostics lines that match, and the one the search
-    /// stands on instead of `current`, when it stands on one of them.
-    pub(crate) diagnostics: Vec<DiagnosticHit>,
-    pub(crate) current_diagnostic: Option<DiagnosticHit>,
     /// The scan finished or was replaced: scroll to the hit it finds.
     jump_pending: bool,
     /// A jump to this line is not finished: its first match must still be
@@ -89,14 +72,7 @@ pub struct LogSearch {
     _input_changed: Subscription,
 }
 
-/// The logs' revision, the selection (for [`Scope::Selected`]) and the
-/// diagnostics lines searched: how many were ever recorded, and for
-/// [`Scope::Selected`] which view and rows are shown.
-type Revision = (
-    (u64, u64, usize),
-    Option<Selection>,
-    (u64, DiagnosticsView, (usize, usize)),
-);
+type Revision = ((u64, u64, usize), Option<Selection>);
 
 /// A jump whose match may still be out of view, and how many frames were
 /// spent bringing it in.
@@ -182,8 +158,6 @@ impl ChatWindow {
                 pending: None,
                 revision: None,
                 current: None,
-                diagnostics: Vec::new(),
-                current_diagnostic: None,
                 jump_pending: false,
                 reveal: None,
                 reveal_shown: false,
@@ -242,8 +216,6 @@ impl ChatWindow {
         search.running = false;
         search.jump_pending = false;
         search.reveal = None;
-        search.diagnostics.clear();
-        search.current_diagnostic = None;
         if let Some(input) = self.inputs.get(&self.state.selection()) {
             window.focus(&input.focus_handle(cx));
         }
@@ -285,104 +257,10 @@ impl ChatWindow {
     }
 
     pub(crate) fn search_revision(&self, scope: Scope) -> Revision {
-        let recorded = |network: NetworkId, view| {
-            self.sessions.get(&network).map_or(0, |session| {
-                session.first_id(view) + session.lines(view).len() as u64
-            })
-        };
-        let diagnostics = if scope == Scope::Selected {
-            let shown = self.main_layout().diagnostics;
-            (
-                self.selected_network_id()
-                    .map_or(0, |network| recorded(network, self.diagnostics_view)),
-                self.diagnostics_view,
-                (shown.start, shown.end),
-            )
-        } else {
-            let total = self
-                .state
-                .networks()
-                .iter()
-                .flat_map(|network| DiagnosticsView::ALL.map(|view| recorded(network.id, view)))
-                .sum();
-            (total, DiagnosticsView::default(), (0, 0))
-        };
         (
             search::revision(&self.state, scope),
             (scope == Scope::Selected).then(|| self.state.selection()),
-            diagnostics,
         )
-    }
-
-    /// The diagnostics lines `query` matches, in the text they are drawn
-    /// and copied with. [`Scope::Selected`] covers the rows being shown;
-    /// [`Scope::All`] every line each server holds, in both views (a hit in
-    /// the other view is reached by switching to it, see `search_goto`).
-    /// At most a thousand short lines per view and server, so it is read in
-    /// one go.
-    fn search_diagnostics(&self, scope: Scope, query: &Query) -> Vec<DiagnosticHit> {
-        let mut found = Vec::new();
-        let mut read = |network: NetworkId, view, range: std::ops::Range<usize>| {
-            let Some(session) = self.sessions.get(&network) else {
-                return;
-            };
-            let first = session.first_id(view);
-            for (index, line) in session
-                .lines(view)
-                .iter()
-                .enumerate()
-                .skip(range.start)
-                .take(range.len())
-            {
-                if query.is_match(&diagnostic_text(&line.render())) {
-                    found.push(DiagnosticHit {
-                        network,
-                        view,
-                        id: first + index as u64,
-                    });
-                }
-            }
-        };
-        match scope {
-            Scope::Selected => {
-                if let Some(network) = self.selected_network_id() {
-                    read(
-                        network,
-                        self.diagnostics_view,
-                        self.main_layout().diagnostics,
-                    );
-                }
-            }
-            Scope::All => {
-                for network in self.state.networks() {
-                    for view in DiagnosticsView::ALL {
-                        read(network.id, view, 0..usize::MAX);
-                    }
-                }
-            }
-        }
-        found
-    }
-
-    /// The matches of the open search in a diagnostics line's drawn `text`,
-    /// and whether the search stands on the line.
-    pub(crate) fn search_diagnostic_ranges(
-        &self,
-        text: &str,
-        network: NetworkId,
-        view: DiagnosticsView,
-        id: u64,
-    ) -> (Vec<std::ops::Range<usize>>, bool) {
-        match self.search.as_ref().and_then(LogSearch::highlight) {
-            Some((query, _)) => (
-                query.ranges(text),
-                self.search
-                    .as_ref()
-                    .and_then(|search| search.current_diagnostic)
-                    == Some(DiagnosticHit { network, view, id }),
-            ),
-            None => (Vec::new(), false),
-        }
     }
 
     /// Starts a scan for the committed term, replacing any running one.
@@ -399,8 +277,6 @@ impl ChatWindow {
             search.scan = None;
             search.revision = None;
             search.current = None;
-            search.diagnostics.clear();
-            search.current_diagnostic = None;
             cx.notify();
             return;
         };
@@ -477,41 +353,19 @@ impl ChatWindow {
     /// driver goes on with it. The hits are published first, so a log that
     /// keeps changing cannot hold the result back.
     fn search_finish(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(search) = self.search.as_ref() else {
-            return false;
-        };
-        let diagnostics = search
-            .query
-            .as_ref()
-            .map(|query| self.search_diagnostics(search.scope, query))
-            .unwrap_or_default();
         let Some(search) = self.search.as_mut() else {
             return false;
         };
-        search.diagnostics = diagnostics;
         let hits = search.scan.as_ref().map_or(&[][..], |scan| scan.hits());
-        let still_there = match search.current_diagnostic {
-            Some(current) => search.diagnostics.contains(&current),
-            None => search
-                .current
-                .is_some_and(|current| search::position(hits, current).is_some()),
-        };
+        let still_there = search
+            .current
+            .is_some_and(|current| search::position(hits, current).is_some());
         let jump = std::mem::take(&mut search.jump_pending);
         if jump || !still_there {
-            // Messages first; the newest diagnostics line when there is no
-            // message.
             let chosen = search::initial_hit(hits, search.current);
             search.current = chosen;
-            search.current_diagnostic = chosen
-                .is_none()
-                .then(|| search.diagnostics.last().copied())
-                .flatten();
-            if jump {
-                if let Some(hit) = chosen {
-                    self.search_goto(hit, window, cx);
-                } else if let Some(hit) = self.search.as_ref().and_then(|s| s.current_diagnostic) {
-                    self.search_goto_diagnostic(hit, window, cx);
-                }
+            if let (true, Some(hit)) = (jump, chosen) {
+                self.search_goto(hit, window, cx);
             }
         }
         cx.notify();
@@ -570,112 +424,32 @@ impl ChatWindow {
         let Some(scan) = search.scan.as_ref() else {
             return;
         };
-        // The message hits, then the diagnostics lines, as one ring.
         let hits = scan.hits();
-        let total = hits.len() + search.diagnostics.len();
-        if total == 0 {
-            return;
-        }
-        let mut at = match search.current_diagnostic {
-            Some(current) => search
-                .diagnostics
-                .iter()
-                .position(|hit| *hit == current)
-                .map(|index| hits.len() + index),
-            None => search
-                .current
-                .and_then(|current| search::position(hits, current))
-                .map(|position| position - 1),
-        };
+        let mut at = search.current;
         let mut found = None;
         // Lines the log has dropped since the scan are skipped.
-        for _ in 0..total.min(64) + 1 {
-            let next = match (forward, at) {
-                (true, Some(at)) => (at + 1) % total,
-                (true, None) => 0,
-                (false, Some(at)) => (at + total - 1) % total,
-                (false, None) => total - 1,
+        for _ in 0..hits.len().min(64) + 1 {
+            let next = if forward {
+                search::next_hit(hits, at)
+            } else {
+                search::previous_hit(hits, at)
+            };
+            let Some(next) = next else {
+                break;
             };
             at = Some(next);
-            let entry = match hits.get(next) {
-                Some(hit) => Ok(*hit),
-                None => Err(search.diagnostics[next - hits.len()]),
-            };
-            let alive = match entry {
-                Ok(hit) => search::hit_message(&self.state, hit).is_some(),
-                Err(hit) => self
-                    .sessions
-                    .get(&hit.network)
-                    .is_some_and(|session| session.line_by_id(hit.view, hit.id).is_some()),
-            };
-            if alive {
-                found = Some(entry);
+            if search::hit_message(&self.state, next).is_some() {
+                found = Some(next);
                 break;
             }
         }
-        let Some(entry) = found else {
+        let Some(hit) = found else {
             return;
         };
         if let Some(search) = self.search.as_mut() {
-            (search.current, search.current_diagnostic) = match entry {
-                Ok(hit) => (Some(hit), None),
-                Err(hit) => (None, Some(hit)),
-            };
+            search.current = Some(hit);
         }
-        match entry {
-            Ok(hit) => self.search_goto(hit, window, cx),
-            Err(hit) => self.search_goto_diagnostic(hit, window, cx),
-        }
-    }
-
-    /// Shows the diagnostics line `hit`. A line that is not on show is
-    /// brought on: its server's log is selected, the view it belongs to is
-    /// switched to, and the diagnostics are turned on if they were off, as
-    /// the View menu's toggle does. Then the log scrolls to the line.
-    fn search_goto_diagnostic(
-        &mut self,
-        hit: DiagnosticHit,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.sessions.get(&hit.network) else {
-            return;
-        };
-        let Some(index) = hit
-            .id
-            .checked_sub(session.first_id(hit.view))
-            .and_then(|index| usize::try_from(index).ok())
-            .filter(|index| *index < session.lines(hit.view).len())
-        else {
-            return;
-        };
-        let on_show = self.selected_network_id() == Some(hit.network)
-            && self.diagnostics_view == hit.view
-            && self.main_layout().diagnostics.contains(&index);
-        if !on_show {
-            if self.diagnostics_view != hit.view {
-                self.diagnostics_view = hit.view;
-                self.refresh_menus(cx);
-            }
-            if self.state.selection() != Selection::Server(hit.network) {
-                self.dispatch_keeping_focus(Command::SelectServer(hit.network), window, cx);
-            }
-            if !self.main_layout().diagnostics.contains(&index) && !self.debug_enabled {
-                self.set_debug(true, cx);
-            }
-        }
-        self.sync_log_lists();
-        let layout = self.main_layout();
-        if layout.diagnostics.contains(&index)
-            && let Some(list) = self.main_lists.get(&self.state.selection())
-        {
-            list.state.scroll_to(ListOffset {
-                item_ix: layout.prefix() - layout.diagnostics.len() + index
-                    - layout.diagnostics.start,
-                offset_in_item: px(0.),
-            });
-        }
-        cx.notify();
+        self.search_goto(hit, window, cx);
     }
 
     fn search_next(&mut self, _: &SearchNext, window: &mut Window, cx: &mut Context<Self>) {
@@ -826,23 +600,15 @@ impl ChatWindow {
         if !scan.is_done() {
             return "…".to_owned();
         }
-        let total = hits.len() + search.diagnostics.len();
-        if total == 0 {
+        if hits.is_empty() {
             return self.i18n.text("search_none");
         }
-        let position = match search.current_diagnostic {
-            Some(current) => search
-                .diagnostics
-                .iter()
-                .position(|hit| *hit == current)
-                .map(|index| hits.len() + index + 1),
-            None => search
-                .current
-                .and_then(|current| search::position(hits, current)),
-        }
-        .map_or("–".to_owned(), |position| position.to_string());
+        let position = search
+            .current
+            .and_then(|current| search::position(hits, current))
+            .map_or("–".to_owned(), |position| position.to_string());
         let more = if scan.is_truncated() { "+" } else { "" };
-        format!("{position}/{total}{more}")
+        format!("{position}/{}{more}", hits.len())
     }
 
     /// The bar, or nothing while it is closed.
@@ -852,11 +618,10 @@ impl ChatWindow {
         let scope = search.scope;
         let input = search.input.clone();
         let has_term = search.query.is_some();
-        let has_hits = !search.diagnostics.is_empty()
-            || search
-                .scan
-                .as_ref()
-                .is_some_and(|scan| !scan.hits().is_empty());
+        let has_hits = search
+            .scan
+            .as_ref()
+            .is_some_and(|scan| !scan.hits().is_empty());
         let status = self.search_status();
         let on_server = matches!(self.state.selection(), Selection::Server(_));
         let selected_label = self.i18n.text(if on_server {
