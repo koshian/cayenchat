@@ -1456,14 +1456,20 @@ fn an_endless_line_disconnects_with_the_reason() {
     config.use_tls = false;
     let mut connection = Connection::connect(config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
+    let mut diagnostics = String::new();
     let reason = loop {
         assert!(Instant::now() < deadline, "the client kept reading");
         match connection.try_recv() {
             Some(Event::Disconnected(reason)) => break reason,
+            Some(Event::Diagnostic { message, .. }) => diagnostics.push_str(&message),
             _ => thread::sleep(Duration::from_millis(10)),
         }
     };
-    assert!(reason.contains("longer than 16384 bytes"), "{reason}");
+    assert_eq!(reason, "A communication error occurred.");
+    assert!(
+        diagnostics.contains("longer than 16384 bytes"),
+        "{diagnostics}"
+    );
     drop(connection);
     server.join().unwrap();
 }
@@ -8003,4 +8009,66 @@ fn sasl_ecdsa_with_a_missing_or_unreadable_key_never_starts() {
     let notes = sasl.take_failure_notes().join("\n");
     assert!(notes.contains("missing or unreadable"), "{notes}");
     assert!(!notes.contains("not a key"));
+}
+
+#[test]
+fn link_failures_get_short_reasons_without_library_text() {
+    use std::io::{Error as IoError, ErrorKind};
+    let close_notify = irc::error::Error::Io(IoError::new(
+        ErrorKind::UnexpectedEof,
+        "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/0.23/rustls/manual/_03_howto/index.html#unexpected-eof",
+    ));
+    assert_eq!(
+        user_reason(&close_notify),
+        "The connection to the server was lost."
+    );
+    assert_eq!(
+        user_reason(&irc::error::Error::Io(IoError::from(ErrorKind::TimedOut))),
+        "No response from the server."
+    );
+    assert_eq!(
+        user_reason(&irc::error::Error::PingTimeout),
+        "No response from the server."
+    );
+    // A handshake failure is an `io::Error` wrapping the rustls error.
+    let certificate = IoError::new(
+        ErrorKind::InvalidData,
+        rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+    );
+    assert_eq!(
+        user_reason(&irc::error::Error::Io(certificate)),
+        "The server's certificate could not be verified."
+    );
+    assert_eq!(
+        user_reason(&irc::error::Error::Tls(
+            rustls::Error::NoCertificatesPresented
+        )),
+        "The server's certificate could not be verified."
+    );
+    // Unknown errors are not guessed at.
+    let unknown = irc::error::Error::Io(IoError::other("failed to lookup address information"));
+    assert_eq!(user_reason(&unknown), "A communication error occurred.");
+    for error in [&close_notify, &unknown] {
+        let reason = user_reason(error);
+        assert!(
+            !reason.contains("rustls") && !reason.contains("docs.rs"),
+            "{reason}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn link_failure_keeps_the_technical_cause_in_diagnostics_only() {
+    let (sender, mut received) = mpsc::channel(8);
+    let events = EventSender::new(sender);
+    let error = irc::error::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "peer closed connection without sending TLS close_notify",
+    ));
+    let reason = link_failure(&events, Instant::now(), "Transport failed", &error).await;
+    assert_eq!(reason, "The connection to the server was lost.");
+    let Some(Event::Diagnostic { message, .. }) = received.recv().await else {
+        panic!("no diagnostic");
+    };
+    assert!(message.contains("close_notify"), "{message}");
 }

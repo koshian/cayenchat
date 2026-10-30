@@ -53,9 +53,9 @@ fn network_error(error: &ureq::Error) -> String {
         ureq::Error::HostNotFound => "the server name could not be resolved".into(),
         ureq::Error::ConnectionFailed => "the connection failed".into(),
         ureq::Error::BodyExceedsLimit(_) => "the reply was too large".into(),
-        // Other errors describe the transport. Providers keep credentials in
-        // the request body, so URLs carry no secret.
-        other => other.to_string(),
+        // The text of other errors names the library and may carry its
+        // documentation URLs, so it is not shown.
+        _ => "a communication error occurred".into(),
     }
 }
 
@@ -137,6 +137,18 @@ pub(crate) fn display_message(text: &str) -> String {
 mod tests {
     use super::*;
     use cayenchat_model::attachment::AttachmentSource;
+
+    #[test]
+    fn unclassified_transport_errors_show_no_library_text() {
+        let error = ureq::Error::Io(std::io::Error::other(
+            "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/",
+        ));
+        assert_eq!(network_error(&error), "a communication error occurred");
+        assert_eq!(
+            network_error(&ureq::Error::HostNotFound),
+            "the server name could not be resolved"
+        );
+    }
 
     #[test]
     fn multipart_carries_fields_and_named_file() {

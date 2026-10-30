@@ -734,6 +734,12 @@ until registration completes, and afterwards while the debug transcript is on
 for each new one). Stage diagnostics are always sent. A worker panic produces a disconnected event; the UI also handles a closed
 event channel with no terminal event. A terminal disconnection reason is included
 in the transcript and clipboard export.
+The reason of a failed link (`Disconnected`, `Send failed`) is a short fixed
+sentence chosen from the error's types and kinds (connection lost, no response,
+certificate not verified, otherwise "A communication error occurred."), never the
+text of a library error, which can name the library and carry its documentation
+URLs. A failed name lookup is a plain `io::Error` and is not told apart. The full
+error chain goes to the diagnostics only. Upload transport errors follow the same rule.
 Connection diagnostics are reached through the View menu (Alt+V or hovering
 below the title bar reveals the menu bar on Linux/Windows; F10 only toggles whether it is hidden) or keyboard shortcuts. There are no permanent diagnostic
 buttons. Displaying diagnostics selects the server view, enables the transcript
