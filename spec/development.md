@@ -1787,6 +1787,17 @@ readable and stops one wrong choice:
   `WillSleep` with whether the UI acknowledged within 1.5 s, and the
   notices reaching the UI task.
 
+DarkWake (2026-10-31, issue #780): a Mac reconnected at 02:51, right after a
+`DarkWake` (rtc/Maintenance) at 02:50:52 and four minutes before the next
+Maintenance Sleep, with no person at the machine. A DarkWake moves the wall
+clock like a full wake, so the clock check can report it; whether
+`NSWorkspaceDidWakeNotification` also fires for a DarkWake is **not confirmed**.
+The wake channel now carries its source (`WakeSource::Os` or `Clock`), shown in
+the `Wake-up (connection #n, Os|Clock)` Overview line and in the application log
+line `wake notice (…) received by the UI`, so the next report says which one
+caused the reconnect. Behaviour is unchanged until that is known (a clock-only
+wake must still be acted on, since it is the fallback for missed notices).
+
 Reading a report: a "Sleep notice" line before the sleep and then a reconnect
 on wake is the #445 path working. No "Sleep notice" line and a "Wake-up …
 checking the connection with PING" line means the UI never got the notice; the

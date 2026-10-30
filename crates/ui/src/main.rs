@@ -3156,7 +3156,7 @@ impl ChatWindow {
     /// end prove it is alive. The worker disconnects those that stay silent,
     /// which reconnects them like any other lost connection; the others are
     /// not touched.
-    fn check_connections_after_wake(&mut self, cx: &mut Context<Self>) {
+    fn check_connections_after_wake(&mut self, source: wake::WakeSource, cx: &mut Context<Self>) {
         let networks: Vec<_> = self.sessions.keys().copied().collect();
         for network in networks {
             let session = self.sessions.get_mut(&network).expect("listed above");
@@ -3170,7 +3170,7 @@ impl ChatWindow {
                 session.retry_attempt = 0;
                 session.retry_token += 1;
                 session.push_diagnostic(format!(
-                    "Wake-up (connection #{generation}): reconnecting after the sleep QUIT"
+                    "Wake-up (connection #{generation}, {source:?}): reconnecting after the sleep QUIT"
                 ));
                 self.start_reconnect(network, false, cx);
                 continue;
@@ -3180,7 +3180,7 @@ impl ChatWindow {
                     let checked = connection.check_alive();
                     let note = match checked {
                         Ok(()) => format!(
-                            "Wake-up (connection #{generation}): no sleep notice was handled, checking the connection with PING"
+                            "Wake-up (connection #{generation}, {source:?}): no sleep notice was handled, checking the connection with PING"
                         ),
                         Err(error) => error,
                     };
@@ -10629,13 +10629,21 @@ fn main() {
             })
             .detach();
             cx.spawn(async move |cx| {
-                while wake_ups.next().await.is_some() {
-                    log::info!("wake notice received by the UI, checking in {WAKE_GRACE:?}");
+                while let Some(first) = wake_ups.next().await {
+                    log::info!(
+                        "wake notice ({first:?}) received by the UI, checking in {WAKE_GRACE:?}"
+                    );
                     Timer::after(WAKE_GRACE).await;
-                    // Notices that arrived meanwhile belong to this check.
-                    while wake_ups.try_recv().is_ok() {}
+                    // Notices that arrived meanwhile belong to this check; an
+                    // OS notice among them is the one reported.
+                    let mut source = first;
+                    while let Ok(next) = wake_ups.try_recv() {
+                        if next == wake::WakeSource::Os {
+                            source = next;
+                        }
+                    }
                     let checked = chat_window.update(cx, |chat, _, cx| {
-                        chat.check_connections_after_wake(cx);
+                        chat.check_connections_after_wake(source, cx);
                     });
                     if checked.is_err() {
                         return;

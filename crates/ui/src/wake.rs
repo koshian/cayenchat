@@ -42,10 +42,21 @@ const SLEEP_ACK_LIMIT: Duration = Duration::from_millis(1500);
 /// What [`install`] watches for.
 pub struct Notices {
     /// One `()` per wake-up notice, possibly several for one wake-up.
-    pub wake: mpsc::UnboundedReceiver<()>,
+    pub wake: mpsc::UnboundedReceiver<WakeSource>,
     /// One notice before each sleep that the OS announces. A sleep that is
     /// not announced (forced, no logind) gives none.
     pub sleep: mpsc::UnboundedReceiver<SleepNotice>,
+}
+
+/// What noticed a wake-up. A DarkWake (issue #780) moves the wall clock like
+/// any other wake, so the source tells whether the OS announced it or only the
+/// clock check saw it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WakeSource {
+    /// An OS wake notice.
+    Os,
+    /// The wall clock jumped.
+    Clock,
 }
 
 /// The machine is about to sleep. The OS goes on when this is dropped (or
@@ -113,7 +124,9 @@ pub fn install() -> Notices {
             let mut clock = ClockWatch::new(interval, SystemTime::now);
             loop {
                 std::thread::sleep(interval);
-                if clock.jumped() && sender.unbounded_send(()).is_err() || sender.is_closed() {
+                if clock.jumped() && sender.unbounded_send(WakeSource::Clock).is_err()
+                    || sender.is_closed()
+                {
                     return;
                 }
             }
@@ -160,7 +173,7 @@ mod platform {
     /// Subscribes to logind's `PrepareForSleep` on the system bus; `false`
     /// when there is no logind to ask.
     pub fn watch(
-        sender: mpsc::UnboundedSender<()>,
+        sender: mpsc::UnboundedSender<WakeSource>,
         sleep: mpsc::UnboundedSender<SleepNotice>,
     ) -> bool {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -201,7 +214,7 @@ mod platform {
     }
 
     fn listen(
-        sender: &mpsc::UnboundedSender<()>,
+        sender: &mpsc::UnboundedSender<WakeSource>,
         sleep: &mpsc::UnboundedSender<SleepNotice>,
         ready: &std::sync::mpsc::Sender<bool>,
     ) -> zbus::Result<()> {
@@ -234,7 +247,7 @@ mod platform {
                     if lock.is_none() {
                         lock = delay_sleep(&manager);
                     }
-                    if sender.unbounded_send(()).is_err() {
+                    if sender.unbounded_send(WakeSource::Os).is_err() {
                         break;
                     }
                 }
@@ -258,7 +271,7 @@ mod platform {
     };
 
     struct Senders {
-        wake: mpsc::UnboundedSender<()>,
+        wake: mpsc::UnboundedSender<WakeSource>,
         sleep: mpsc::UnboundedSender<SleepNotice>,
     }
 
@@ -276,13 +289,13 @@ mod platform {
                 let _ = finished.recv_timeout(SLEEP_ACK_LIMIT);
             }
         } else if kind == PBT_APMRESUMEAUTOMATIC || kind == PBT_APMRESUMESUSPEND {
-            let _ = senders.wake.unbounded_send(());
+            let _ = senders.wake.unbounded_send(WakeSource::Os);
         }
         0
     }
 
     pub fn watch(
-        sender: mpsc::UnboundedSender<()>,
+        sender: mpsc::UnboundedSender<WakeSource>,
         sleep: mpsc::UnboundedSender<SleepNotice>,
     ) -> bool {
         let context = Box::into_raw(Box::new(Senders {
@@ -444,12 +457,12 @@ mod platform {
     }
 
     pub fn watch(
-        sender: mpsc::UnboundedSender<()>,
+        sender: mpsc::UnboundedSender<WakeSource>,
         sleep: mpsc::UnboundedSender<SleepNotice>,
     ) -> bool {
         let center = NSWorkspace::sharedWorkspace().notificationCenter();
         let woke = RcBlock::new(move |_: NonNull<NSNotification>| {
-            let _ = sender.unbounded_send(());
+            let _ = sender.unbounded_send(WakeSource::Os);
         });
         // SAFETY: the name is a valid notification name, no object or queue
         // is given (the block runs on the posting thread) and the block is
@@ -487,7 +500,7 @@ mod platform {
     use super::*;
 
     pub fn watch(
-        _sender: mpsc::UnboundedSender<()>,
+        _sender: mpsc::UnboundedSender<WakeSource>,
         _sleep: mpsc::UnboundedSender<SleepNotice>,
     ) -> bool {
         false
