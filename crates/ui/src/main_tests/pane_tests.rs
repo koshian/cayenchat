@@ -1666,10 +1666,11 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
             .map(|r| &live.text[r.clone()])
             .collect();
         assert_eq!(shown, ["alice"]);
-        // The combined log shows the live line only.
+        // The combined log shows every line the conversation holds, history
+        // included, in sequence order.
         let rows = super::newest_lines(chat.state.conversations(), None, 10);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, b.messages[2].sequence);
+        let expected: Vec<_> = b.messages.iter().map(|m| m.sequence).collect();
+        assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), expected);
     });
 }
 

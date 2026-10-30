@@ -738,10 +738,9 @@ fn sub_rows(
     rows
 }
 
-/// The newest `limit` conversation lines (not channel activity or requested
-/// history, which is context rather than news) across every conversation
-/// except `excluded`, oldest first, as (sequence, conversation,
-/// message index). Merges the conversation tails newest-first, so the cost
+/// The newest `limit` lines held by every conversation except `excluded`
+/// (whatever their activity flag or provenance), oldest first, as (sequence,
+/// conversation, message index). Merges the conversation tails newest-first, so the cost
 /// grows with `limit` and the number of conversations, not with every
 /// retained line (with several servers there are many conversations).
 fn newest_lines(
@@ -751,19 +750,13 @@ fn newest_lines(
 ) -> Vec<(u64, ConversationId, usize)> {
     use std::collections::BinaryHeap;
 
-    fn previous_line(messages: &[cayenchat_model::Message], before: usize) -> Option<usize> {
-        messages[..before].iter().rposition(|message| {
-            !message.activity && message.provenance != cayenchat_model::Provenance::Requested
-        })
-    }
-
     // (sequence, conversation position, message index), newest on top.
     let mut heads: BinaryHeap<(u64, usize, usize)> = conversations
         .iter()
         .enumerate()
         .filter(|(_, conversation)| Some(conversation.id) != excluded)
         .filter_map(|(position, conversation)| {
-            let index = previous_line(&conversation.messages, conversation.messages.len())?;
+            let index = conversation.messages.len().checked_sub(1)?;
             Some((conversation.messages[index].sequence, position, index))
         })
         .collect();
@@ -773,7 +766,7 @@ fn newest_lines(
     {
         let conversation = &conversations[position];
         rows.push((sequence, conversation.id, index));
-        if let Some(previous) = previous_line(&conversation.messages, index) {
+        if let Some(previous) = index.checked_sub(1) {
             heads.push((conversation.messages[previous].sequence, position, previous));
         }
     }
