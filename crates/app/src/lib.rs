@@ -186,6 +186,9 @@ pub struct AppState {
     /// Channels whose log a disconnect cut off, until the missed lines
     /// arrive or recovery is given up.
     resume_points: HashMap<ConversationId, ResumePoint>,
+    /// Sequences reserved just before our own JOIN line, where the first
+    /// `LATEST *` reply of that join goes (see [`AppState::reserve_join_history`]).
+    join_reserves: HashMap<ConversationId, u64>,
     /// The channel order the user chose per network (lowercased names, parted
     /// channels included so a rejoined one returns to its place).
     channel_orders: HashMap<NetworkId, Vec<String>>,
@@ -298,6 +301,7 @@ impl AppState {
             next_history_request: 0,
             older_sequence_floor: SEQUENCE_ORIGIN,
             resume_points: HashMap::new(),
+            join_reserves: HashMap::new(),
             channel_orders: HashMap::new(),
             channel_ranks: HashMap::new(),
             groups: Vec::new(),
@@ -426,6 +430,7 @@ impl AppState {
             self.pending_history.remove(id);
             self.older_history.remove(id);
             self.resume_points.remove(id);
+            self.join_reserves.remove(id);
             self.unread.remove(id);
             self.highlighted.remove(id);
             self.active_channels.remove(id);
@@ -910,6 +915,7 @@ impl AppState {
         self.pending_history.remove(&id);
         self.older_history.remove(&id);
         self.resume_points.remove(&id);
+        self.join_reserves.remove(&id);
         self.unread.remove(&id);
         self.highlighted.remove(&id);
         self.attention
@@ -1097,6 +1103,7 @@ impl AppState {
             // and a channel left on purpose has nothing to recover.
             self.older_history.remove(&id);
             self.resume_points.remove(&id);
+            self.join_reserves.remove(&id);
             if let Some(channel) = self.conversation_mut(id) {
                 channel.members.clear();
                 channel.modes = None;
@@ -1461,6 +1468,7 @@ impl AppState {
         };
         match self.resume_points.get(&id) {
             Some(point) => {
+                self.join_reserves.remove(&id);
                 self.pending_history.insert(id, point.start);
             }
             None => self.history_requested_for(id),
@@ -1482,9 +1490,31 @@ impl AppState {
     /// private one found by the source's target discovery.
     pub fn history_requested_for(&mut self, id: ConversationId) {
         self.resume_points.remove(&id);
+        let start = match self.join_reserves.remove(&id) {
+            Some(start) => start,
+            None => {
+                let start = self.next_message_sequence + 1;
+                self.next_message_sequence += HISTORY_RESERVE as u64;
+                start
+            }
+        };
+        self.pending_history.insert(id, start);
+    }
+
+    /// Our own JOIN of a channel is about to be logged: the recent history
+    /// asked for after it goes before the JOIN line, as the lines recovered
+    /// after a reconnect go before the rejoin. Call it before the line is
+    /// appended. A channel with a resume point recovers there instead.
+    pub fn reserve_join_history(&mut self, network: NetworkId, name: &str) {
+        let Some(id) = self.channel_id(network, name) else {
+            return;
+        };
+        if self.resume_points.contains_key(&id) {
+            return;
+        }
         let start = self.next_message_sequence + 1;
         self.next_message_sequence += HISTORY_RESERVE as u64;
-        self.pending_history.insert(id, start);
+        self.join_reserves.insert(id, start);
     }
 
     /// Inserts the reply to [`AppState::history_requested`], oldest first,
@@ -1638,8 +1668,9 @@ impl AppState {
             return None;
         }
         // The oldest line by source time near the top: recent history is
-        // placed after the lines that arrived before it was asked for (our
-        // own JOIN), so the first line is not necessarily the oldest.
+        // placed after the lines that arrived before it was asked for (a
+        // non-replayed join reserves its slot), so the first line is not
+        // necessarily the oldest.
         let head =
             &conversation.messages[..conversation.messages.len().min(OLDER_PAGE_OVERLAP_WINDOW)];
         let oldest = head

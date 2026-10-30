@@ -2560,3 +2560,29 @@ fn system_messages_reach_the_server_log_and_stay_bounded() {
     }
     assert_eq!(state.system_messages().len(), MAX_SYSTEM_MESSAGES);
 }
+
+#[test]
+fn first_join_history_goes_before_the_join_line() {
+    let mut state = live_state("irc.example".into(), vec!["#a".into()]);
+    let network = NetworkId(1);
+    state.joined_channel(network, "#a");
+    state.reserve_join_history(network, "#a");
+    state.append_channel_activity(network, "#a", "alice has joined".into());
+    // The request goes out after the join line, with lines already logged.
+    state.append_channel_activity(network, "#a", "topic".into());
+    state.history_requested(network, "#a");
+    live(&mut state, "new", 3_000, Some("m3000"));
+    let added = state.insert_channel_history(
+        network,
+        "#a",
+        vec![
+            line("A", Some(1_000), Some("m1000")),
+            line("B", Some(2_000), Some("m2000")),
+        ],
+    );
+    assert_eq!(added, 2);
+    assert_eq!(
+        texts(&state, 0),
+        ["A", "B", "alice has joined", "topic", "new"]
+    );
+}
