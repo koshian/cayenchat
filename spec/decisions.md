@@ -3380,8 +3380,9 @@ there is no network, bouncer or connection behind it.
   moves it onto other lines), `search::Source::Diagnostics`, `search::Hit` and
   `search_goto`. Only the selected part is copied, as drawn; with nothing
   selected Ctrl/Cmd+C copies nothing, and View → Copy Connection Diagnostics
-  stays the whole-view copy. Diagnostic sequences start at 2^63 so they never
-  equal a message's, which keeps `Hit` ordering and the "current line"
+  stays the whole-view copy. Diagnostic sequences start at 0, below the
+  messages' (2^62 and around), so they never equal a message's and a search
+  still starts at the newest message, which keeps `Hit` ordering and the "current line"
   emphasis keyed by sequence alone. They are searched only while the
   diagnostics are on; "this log" reads the selected server's diagnostics in
   the view shown, "all" every server's in both views, and going to a hit in the

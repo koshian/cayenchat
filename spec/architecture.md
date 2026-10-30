@@ -2339,9 +2339,10 @@ text) and only while the View menu's diagnostics are on, because they are not
 drawn otherwise. "This log" reads the selected server's log and, with the
 server selected, its diagnostics in the view being shown; "all" reads every
 server's diagnostics in both views. A diagnostic sequence comes from a counter
-that starts at 2^63 (`app::diagnostics::FIRST_SEQUENCE`), so a sequence names
-one line of the messages or of the diagnostics, `Hit`s stay ordered by sequence
-alone and the diagnostics sort after the messages. `search::revision` counts the
+that starts at 0 (`app::diagnostics::FIRST_SEQUENCE`; messages count from 2^62
+up and older history down), so a sequence names one line of the messages or of
+the diagnostics, `Hit`s stay ordered by sequence alone and the diagnostics sort
+before the messages: a search's first stop is still the newest message. `search::revision` counts the
 diagnostic lines only while they are searched. Going to a diagnostics hit
 selects the server, switches to the hit's view (the menu label follows) and
 scrolls the fixed row to the top; the row paints its highlights and the

@@ -756,10 +756,16 @@ mod tests {
         let sources: Vec<_> = hits.iter().map(|hit| hit.source).collect();
         assert_eq!(
             sources,
-            [Source::Server(one), Source::Diagnostics(one, Overview)]
+            [Source::Diagnostics(one, Overview), Source::Server(one)]
+        );
+        // The diagnostics sort before the messages, so a search starts at the
+        // newest message, not at a diagnostic line.
+        assert_eq!(
+            initial_hit(&hits, None).unwrap().source,
+            Source::Server(one)
         );
         let hits = scan(&state, Scope::Selected, Some(Protocol), "sleep notice");
-        assert_eq!(hits[1].source, Source::Diagnostics(one, Protocol));
+        assert_eq!(hits[0].source, Source::Diagnostics(one, Protocol));
 
         // All logs: every server, both views, in log order.
         let hits = scan(&state, Scope::All, Some(Overview), "sleep notice");

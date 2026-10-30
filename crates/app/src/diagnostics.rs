@@ -11,11 +11,12 @@ use std::{
 /// Newest lines kept per server and view.
 pub const DIAGNOSTIC_LIMIT: usize = 1000;
 
-/// The first diagnostic sequence. Messages count up from 0 and would need
-/// 2^63 lines to get here, so a sequence names one line of the messages or one
-/// of the diagnostics, never both, and a search orders the diagnostics after
-/// the messages.
-pub(crate) const FIRST_SEQUENCE: u64 = 1 << 63;
+/// The first diagnostic sequence. Messages count from `SEQUENCE_ORIGIN`
+/// (2^62) up and older history from there down, so 0 up is never reached by
+/// either: a sequence names one line of the messages or one of the
+/// diagnostics, and a search orders the diagnostics before the messages, so
+/// its first stop is the newest message, as the screen's order reads.
+pub(crate) const FIRST_SEQUENCE: u64 = 0;
 
 /// Which connection log the View menu shows and copies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
