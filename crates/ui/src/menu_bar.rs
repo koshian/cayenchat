@@ -6,7 +6,7 @@ use std::time::Duration;
 const HEIGHT: f32 = 28.;
 /// Invisible strip at the top of the content that reveals the bar on hover.
 /// Alt alone is not treated as a menu request; Alt+letter and hover remain available.
-const HOT_ZONE: f32 = 6.;
+pub const HOT_ZONE: f32 = 6.;
 const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(400);
 /// How often a hover-revealed bar checks whether the pointer has left it.
 const HOVER_POLL: Duration = Duration::from_millis(150);
