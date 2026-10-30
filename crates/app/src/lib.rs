@@ -3,6 +3,7 @@
 pub mod amazon;
 pub mod attachments;
 pub mod avatars;
+pub mod groups;
 pub mod links;
 pub mod notifications;
 pub mod own_avatar;
@@ -18,6 +19,7 @@ use cayenchat_model::{
     Conversation, ConversationId, ConversationKind, Highlights, Links, Message, NativeMessageId,
     Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
+pub use groups::{ChannelGroup, DisplayTree, GroupId, GroupMember, GroupSpec, Parent};
 use timeline::DuplicateFilter;
 pub use timeline::{Kind, MessageMeta};
 
@@ -182,6 +184,9 @@ pub struct AppState {
     channel_orders: HashMap<NetworkId, Vec<String>>,
     /// Each name of `channel_orders` to its position there.
     channel_ranks: HashMap<NetworkId, HashMap<String, usize>>,
+    /// Display-only channel groups (D075), shown above the servers.
+    groups: Vec<ChannelGroup>,
+    next_group_id: u32,
 }
 
 /// Where a channel or private conversation moves within its group.
@@ -286,6 +291,8 @@ impl AppState {
             resume_points: HashMap::new(),
             channel_orders: HashMap::new(),
             channel_ranks: HashMap::new(),
+            groups: Vec::new(),
+            next_group_id: 0,
         };
         for config in networks {
             state.networks.push(Network {
@@ -332,6 +339,9 @@ impl AppState {
             self.avatars.remove_network(id);
             self.channel_orders.remove(&id);
             self.channel_ranks.remove(&id);
+            for group in &mut self.groups {
+                group.members.retain(|member| member.network != id);
+            }
         }
         self.networks = networks
             .iter()
@@ -454,35 +464,52 @@ impl AppState {
         Some(start..end)
     }
 
-    /// Moves a conversation within its network's channels (or private
-    /// conversations); channels never cross servers or pass private
-    /// conversations. Returns the network when the order changed, after
+    /// Moves a conversation within where it is shown: its server's channels
+    /// (or private conversations) or its group. Channels never cross servers
+    /// or pass private conversations, except into a group or back from one
+    /// to their own server. Returns the network when the order changed, after
     /// recording it as that network's chosen order.
     pub fn move_conversation(&mut self, id: ConversationId, to: MoveTo) -> Option<NetworkId> {
+        let network = self.conversation(id)?.network;
+        if !self.groups.is_empty() {
+            if let MoveTo::Place(other) = to
+                && self.display_parent(id)? != self.display_parent(other)?
+            {
+                return self.relocate(id, other).then_some(network);
+            }
+            if self.is_grouped(id) {
+                return self.move_in_group(id, to)?.then_some(network);
+            }
+        }
         let range = self.group_range(id)?;
-        let from = self.conversations[range.clone()]
-            .iter()
-            .position(|c| c.id == id)?;
-        let last = range.len() - 1;
-        let target = match to {
-            MoveTo::Up => from.saturating_sub(1),
-            MoveTo::Down => (from + 1).min(last),
-            MoveTo::First => 0,
-            MoveTo::Last => last,
-            MoveTo::Place(other) => self.conversations[range.clone()]
-                .iter()
-                .position(|c| c.id == other)?,
+        // Channels shown in a group are not in the server's part of the tree.
+        let shown: Vec<usize> = {
+            let tree = self.display_tree();
+            range
+                .clone()
+                .filter(|&i| {
+                    tree.parent_of(self.conversations[i].id) == Some(Parent::Server(network))
+                })
+                .collect()
         };
+        let from_shown = shown.iter().position(|&i| self.conversations[i].id == id)?;
+        let last = shown.len() - 1;
+        let target = match to {
+            MoveTo::Up => shown[from_shown.saturating_sub(1)],
+            MoveTo::Down => shown[(from_shown + 1).min(last)],
+            MoveTo::First => shown[0],
+            MoveTo::Last => shown[last],
+            MoveTo::Place(other) => *shown.iter().find(|&&i| self.conversations[i].id == other)?,
+        };
+        let from = shown[from_shown];
         if target == from {
             return None;
         }
-        let group = &mut self.conversations[range];
         if from < target {
-            group[from..=target].rotate_left(1);
+            self.conversations[from..=target].rotate_left(1);
         } else {
-            group[target..=from].rotate_right(1);
+            self.conversations[target..=from].rotate_right(1);
         }
-        let network = self.conversation(id)?.network;
         if !self.conversation(id)?.is_private() {
             let order = self.merged_channel_order(network);
             self.store_channel_order(network, order);
@@ -1820,25 +1847,22 @@ impl AppState {
     }
 
     fn cycle_channel(&mut self, forward: bool, filter: ChannelFilter) {
-        let len = self.conversations.len();
+        // The order the tree shows, groups first (D075).
+        let tree = self.display_tree();
+        let order: Vec<ConversationId> = tree.conversations().collect();
+        let len = order.len();
         if len == 0 {
             return;
         }
         let current = match self.selected {
-            Selection::Channel(id) => self
-                .conversations
+            Selection::Channel(id) => order
                 .iter()
-                .position(|channel| channel.id == id)
+                .position(|channel| *channel == id)
                 .expect("selected channel exists"),
             Selection::Server(network_id) => {
-                let first = self
-                    .conversations
-                    .iter()
-                    .position(|c| c.network == network_id);
-                let last = self
-                    .conversations
-                    .iter()
-                    .rposition(|c| c.network == network_id);
+                let own = tree.children(Parent::Server(network_id));
+                let first = order.iter().position(|c| own.first() == Some(c));
+                let last = order.iter().rposition(|c| own.last() == Some(c));
                 if forward {
                     first
                         .map(|index| (index + len - 1) % len)
@@ -1862,7 +1886,7 @@ impl AppState {
             } else {
                 (current + len - step) % len
             };
-            let id = self.conversations[index].id;
+            let id = order[index];
             let matches = match filter {
                 ChannelFilter::All => true,
                 ChannelFilter::Active => self.active_channels.contains(&id),
@@ -1924,17 +1948,10 @@ impl AppState {
             Command::NextServer => self.cycle_server(true, false),
             Command::PreviousServer => self.cycle_server(false, false),
             Command::SelectChannelAt(index) => {
-                // Numbers count within the selected server (D009).
-                if let Some(network) = self.selected_network().map(|network| network.id) {
-                    let id = self
-                        .conversations
-                        .iter()
-                        .filter(|channel| channel.network == network)
-                        .nth(index)
-                        .map(|channel| channel.id);
-                    if let Some(id) = id {
-                        self.select_channel(id);
-                    }
+                // Numbers count within what the selection is shown under:
+                // its group or its server (D009, D075).
+                if let Some(id) = self.numbered_targets().get(index).copied() {
+                    self.select_channel(id);
                 }
             }
             Command::SelectServerAt(index) => {
