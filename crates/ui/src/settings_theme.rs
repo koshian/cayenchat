@@ -46,6 +46,13 @@ impl Variant {
 /// other platforms runs in the background; controls use the old palette
 /// (or the app fallback) while it is pending. No polling or watcher thread.
 pub fn refresh(cx: &mut App) {
+    // GPUI's test dispatcher runs "background" tasks on the test thread, so a
+    // D-Bus read with no answering portal would hang the test (#741), and the
+    // host's real theme must not decide test results. Tests install the
+    // cache themselves.
+    if cfg!(test) {
+        return;
+    }
     if !cx.has_global::<NativeSettingsTheme>() {
         cx.set_global(NativeSettingsTheme::default());
     }
