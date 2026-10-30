@@ -817,6 +817,8 @@ struct ChatWindow {
     join_selected: Option<ConversationId>,
     // The reveal waits for the rows up to the selection to be laid out.
     tree_reveal_pending: bool,
+    // The group name field was just opened; its row is scrolled into view.
+    group_edit_reveal: bool,
     // Selection and newest message sequence the combined log was built for.
     sub_source: Option<(Option<ConversationId>, u64)>,
     // The Reiwa mode leads of the selected channel's lines, with what they
@@ -1435,6 +1437,7 @@ impl ChatWindow {
             tree_revealed: None,
             join_selected: None,
             tree_reveal_pending: false,
+            group_edit_reveal: false,
             sub_source: None,
             reiwa_shapes: None,
             sub_rows: Vec::new(),
@@ -6870,7 +6873,25 @@ impl ChatWindow {
         // tree by hand later is left alone.
         let selection = self.state.selection();
         let changed = self.tree_revealed != Some(selection);
-        if changed || self.tree_reveal_pending {
+        if self.group_edit_reveal {
+            // The name field takes keys only while it is laid out, so its row
+            // goes into view first, with the same follow-up passes.
+            let at = self.group_edit.as_ref().and_then(|edit| {
+                self.tree_rows
+                    .iter()
+                    .position(|row| match (row, &edit.target) {
+                        (TreeRow::NewGroup, channel_groups::GroupEditTarget::New(_)) => true,
+                        (TreeRow::Group(id), channel_groups::GroupEditTarget::Rename(target)) => {
+                            id == target
+                        }
+                        _ => false,
+                    })
+            });
+            self.group_edit_reveal = at.is_some_and(|at| self.tree_list.reveal(at));
+            if self.group_edit_reveal {
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
+            }
+        } else if changed || self.tree_reveal_pending {
             self.tree_revealed = Some(selection);
             let at = self.tree_rows.iter().position(|row| match *row {
                 TreeRow::Server(id) => selection == Selection::Server(id),

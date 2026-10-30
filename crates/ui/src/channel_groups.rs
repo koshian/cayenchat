@@ -229,6 +229,7 @@ impl ChatWindow {
             _blur: blur,
         });
         window.focus(&handle);
+        self.group_edit_reveal = true;
         cx.notify();
     }
 
