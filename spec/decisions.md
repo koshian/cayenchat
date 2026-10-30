@@ -2641,7 +2641,7 @@ Status: implemented.
 The tree order is also the order of channel navigation and of the numbered
 channel shortcuts (D009), so the user can change it.
 
-- **Scope.** Channels move only within their own server, and private
+- **Scope.** (D075 adds channel groups, the one exception.) Channels move only within their own server, and private
   conversations only among themselves (they stay after the channels). Nothing
   moves between servers. Servers are reordered one place at a time with
   Move up / Move down in the server's context menu (no dragging: the
@@ -3259,3 +3259,56 @@ credential-store migration runs. This removes the path where a later save could
 erase passwords after a store failure. Startup tries to keep a protected copy
 before a later save can replace an unreadable file. Versions 11 through the
 current version remain supported.
+
+## D075 — Channel groups: display-only parents in the channel tree (#778)
+
+Status: implemented.
+
+A channel group is a heading beside the real servers that shows channels of
+several servers in one list. It is only a place and an order in the tree;
+there is no network, bouncer or connection behind it.
+
+- **Move, not copy.** A channel is shown in exactly one place. Moving it into
+  a group removes it from its server's part of the tree. The server heading
+  stays even when it has no channels left, so the server log, the connection
+  state and connect/disconnect remain reachable. A group heading has no
+  connection state or connect/disconnect.
+- **Nothing is sent.** Creating, renaming, deleting a group and moving
+  channels never send JOIN, PART or QUIT. The connection, encoding, CAP,
+  join state, logs and unread state of a channel stay with its real server
+  (`NetworkId` is never the display parent).
+- **Identity.** A grouped channel is the pair of server (profile ID when
+  saved) and lowercased channel name, not a conversation, so it keeps its
+  place through a reconnect, a part and rejoin, and a restart. New JOINs not
+  listed in any group are shown under their server, as before. Private
+  conversations cannot be grouped in this first scope.
+- **One order model.** `AppState::display_tree` gives the groups (in
+  creation order, above the servers), then each server with its remaining
+  conversations. The tree rows, previous/next channel navigation, numbered
+  shortcuts and the drag digits all read it.
+- **Numbers.** Cmd+digit (D009) counts within the display parent of the
+  selection: the group, or the server. Across networks inside a group.
+  Server numbers (Cmd+Ctrl+digit) do not count groups. With a server row
+  selected only the channels still under that server count. Group headings
+  are not selectable; Up/Down skip them.
+- **Collapse.** Clicking a heading folds or opens the group (saved). A folded
+  group still shows its selected channel, and its heading shows unread and
+  mention state of its channels. Channel rows in a group show their server
+  name after the channel name, to tell same-named channels apart.
+- **Operations.** Channel menu: Move to group (existing groups or New
+  group…), Return to original server. "New group…" adds a row in the tree
+  with a name field; Enter creates the group and moves the channel, Escape or
+  leaving the field changes nothing. Dragging a channel into a group (row or
+  heading; a heading appends) or within it reorders it, across servers. A
+  grouped channel can be dragged back only to its own server (row or
+  heading); other servers do not accept it. The group menu renames and
+  deletes; deleting a group that holds channels first says that they return
+  to their servers and that nothing is sent. Empty groups are never removed
+  automatically.
+- **Saving.** `channel-order.json` gains an optional `groups` list (name,
+  collapsed, members as server profile ID and channel). Same bounds and
+  damage handling as the order (groups ≤ 64, members ≤ 2,000 each, repeated
+  members dropped, unknown servers dropped at save). Files without groups
+  read as before.
+- **Not done.** Reordering groups themselves, grouping private conversations,
+  and group names in the settings window.
