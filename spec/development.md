@@ -145,9 +145,27 @@ failures. Accepted advisories are listed there with a reason. The same job
 checks every dependency's license against the allow list in `deny.toml`:
 permissive licenses and MPL-2.0, no GPL-only or LGPL-only crate, so the
 MPL-2.0 core stays usable by front ends under any license (D042). The
-workspace's own crates are private and skipped. Locally:
+workspace's own crates are private and skipped. It also runs `bans` and
+`sources`: every dependency must come from crates.io or a path (the vendored
+crates), so a git dependency or another registry fails. Several versions of
+one crate (94 crates at the time of #726, mostly GPUI generations) only warn;
+that is an inventory, not a gate, since forbidding them would force GPUI-wide
+updates. Locally:
 `cargo install --locked cargo-deny --root target/tmp/tools` and
-`target/tmp/tools/bin/cargo-deny --locked check advisories licenses`. The packaging
+`target/tmp/tools/bin/cargo-deny --locked check advisories licenses bans sources`.
+
+RustSec does not list every advisory: GitHub-only ones (GHSA, such as
+grid's GHSA-38c5-483c-4qqp) are absent, and unmaintained or unsound
+transitive crates pass on purpose. The weekly "OSV advisories" workflow
+(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock`
+against OSV, which includes GHSA. It is not a pull request check, so a
+finding in a transitive GPUI dependency does not block unrelated changes. When
+it fails, decide whether the crate is reachable from our code: update it, or
+record the finding and why it is accepted in the issue. Nothing detects an
+advisory in the five vendored crates (`gpui`, `irc`, `irc-proto`, `zed-xim`,
+`native-theme`), which are path dependencies outside any database; when the
+OSV job runs, also check their upstreams' releases and security advisories and
+compare with `vendor/README.md`. The packaging
 workflow installs a pinned cargo-deb version, since it writes the published
 `.deb`.
 
