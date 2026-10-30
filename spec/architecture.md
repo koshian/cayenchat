@@ -121,12 +121,14 @@ preview candidates and which explicitly supplied avatar URLs may be fetched
 (`policy`), fetching (`fetch::Fetcher`; `HttpFetcher` for public HTTP(S)
 links), decoding into small thumbnails (`decode`), and the bounded record of
 loads (`cache::PreviewCache`, one instance for previews and a separate small
-one for avatars). It does not upload and does not use `upload`.
+one for avatars). It does not upload and does not use `upload` (`upload` uses its URL policy).
 
 ### upload
 
 IRC's external image hosting: the `ExternalUploader` trait, provider
-registry, provider implementations (ImgBB) and a fake for tests. It is not
+registry, provider implementations (ImgBB) and a fake for tests. Reply URLs
+must pass `media::policy::publishable_avatar_url` before they reach a draft
+(`checked_url`). It is not
 part of the IRC wire implementation and must not depend on GPUI or `irc`.
 Protocols with native media must not route through it.
 
@@ -397,7 +399,7 @@ The visual treatment should follow `spec/project.md`: compact, direct, and Choco
 
 The seven workspace members use the `cayenchat-` package prefix. Dependencies include
 `ui -> app -> model`, `ui -> irc-core`, `ui -> storage`, `ui -> notify-rust`, `ui -> upload ->
-storage/model`, `ui -> media -> model`, `storage -> keyring`, `upload -> ureq`,
+storage/model/media`, `ui -> media -> model`, `storage -> keyring`, `upload -> ureq`,
 `media -> ureq/url/image` and `irc-core -> irc/Tokio`.
 There are no dependency cycles and GPUI occurs only in `ui`.
 
