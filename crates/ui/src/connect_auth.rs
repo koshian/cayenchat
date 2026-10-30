@@ -378,6 +378,20 @@ impl ChatWindow {
         }
     }
 
+    /// The settings window saved or deleted a password and wrote the note to
+    /// the settings file. This window's copy follows, so that a reconnect
+    /// reads the store even when no other setting changed.
+    pub(crate) fn follow_credential_note(
+        &mut self,
+        profile_id: &str,
+        which: crate::settings_window::Credential,
+        saved: bool,
+    ) {
+        if let Some(profile) = self.saved.profile_mut(profile_id) {
+            which.note(profile, saved);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // One attempt's state and the read result.
     fn stored_secrets_read(
         &mut self,
