@@ -3339,7 +3339,8 @@ there is no network, bouncer or connection behind it.
 - **Behavior.** Header "Settings for #channel" with the server name; the body
   scrolls inside the panel and the footer (Reset left, Cancel and Save right)
   stays visible; an open encoding list scrolls inside its own box. The first
-  control has the focus; Tab and Shift+Tab stay in the dialog; Up/Down, Enter
-  and Space work in the lists; Escape closes an open list, then cancels. A
-  click outside does not close it, so edits are not lost by accident. Nothing
+  control has the focus; Tab and Shift+Tab stay in the dialog; Up/Down move
+  through an open list; Enter and Space act as GPUI keyboard clicks (on
+  key-up) on the focused control; a save error shows between the body and the
+  footer, so it is always visible; Escape closes an open list, then cancels. A
   behind it receives input.

@@ -277,36 +277,18 @@ impl ChannelSettingsView {
         cx.notify();
     }
 
-    /// What Enter or Space does on control `index`.
-    fn press(&mut self, index: usize, cx: &mut Context<Self>) {
-        match index {
-            AUTO_JOIN => self.toggle_enabled(cx),
-            DECODE | ENCODE => {
-                let side = if index == DECODE {
-                    EncodingSide::Decode
-                } else {
-                    EncodingSide::Encode
-                };
-                match self.open_list {
-                    Some(open) if open == side => {
-                        let option = self
-                            .highlight
-                            .checked_sub(1)
-                            .map(|at| TextEncoding::ALL[at]);
-                        self.choose(side, option, cx);
-                    }
-                    _ => self.toggle_list(side, cx),
-                }
-            }
-            CHAR_REFS..RESET => {
-                if let Some((mode, _)) = char_ref_choices(true).get(index - CHAR_REFS) {
-                    self.set_char_refs(*mode, cx);
-                }
-            }
-            RESET => self.reset(cx),
-            CANCEL => cx.emit(ChannelSettingsEvent::Cancel),
-            SAVE => cx.emit(ChannelSettingsEvent::Save),
-            _ => {}
+    /// A click on a selector. Enter and Space reach it as keyboard clicks (on
+    /// key-up), so they are not handled in `key_down`; with the list open they
+    /// choose the highlighted entry, a mouse click closes the list.
+    fn click_selector(&mut self, side: EncodingSide, keyboard: bool, cx: &mut Context<Self>) {
+        if keyboard && self.open_list == Some(side) {
+            let option = self
+                .highlight
+                .checked_sub(1)
+                .map(|at| TextEncoding::ALL[at]);
+            self.choose(side, option, cx);
+        } else {
+            self.toggle_list(side, cx);
         }
     }
 
@@ -347,7 +329,7 @@ impl ChannelSettingsView {
         cx.notify();
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         if keystroke.modifiers.modified() || keystroke.is_ime_in_progress() {
             return;
@@ -356,16 +338,6 @@ impl ChannelSettingsView {
             "escape" => self.escape(cx),
             "up" => self.move_highlight(false, cx),
             "down" => self.move_highlight(true, cx),
-            "enter" | "space" => {
-                let Some(index) = self
-                    .controls
-                    .iter()
-                    .position(|handle| handle.is_focused(window))
-                else {
-                    return;
-                };
-                self.press(index, cx);
-            }
             _ => return,
         }
         cx.stop_propagation();
@@ -419,7 +391,9 @@ impl ChannelSettingsView {
                         .child(current.map_or_else(|| inherit.clone(), |e| e.label().to_owned())),
                 )
                 .child(div().text_color(palette.text_secondary).child("▾"))
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle_list(side, cx))),
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                    this.click_selector(side, event.is_keyboard(), cx)
+                })),
         );
         if open {
             let hover = palette.hover;
@@ -544,13 +518,20 @@ impl Render for ChannelSettingsView {
                 &palette,
                 cx,
             ))
-            .child(char_refs)
-            .children(self.error.clone().map(|error| {
-                div()
-                    .id("channel-settings-error")
-                    .text_color(palette.warning)
-                    .child(error)
-            }));
+            .child(char_refs);
+
+        // Outside the scrolling body, so a rejected save is always visible.
+        let error = self.error.clone().map(|error| {
+            div()
+                .id("channel-settings-error")
+                .debug_selector(|| "channel-settings-error".into())
+                .px_4()
+                .py_2()
+                .border_t_1()
+                .border_color(palette.border)
+                .text_color(palette.warning)
+                .child(error)
+        });
 
         let footer = div()
             .flex()
@@ -625,6 +606,7 @@ impl Render for ChannelSettingsView {
             .max_h_full()
             .child(header)
             .child(body)
+            .children(error)
             .child(footer);
         // The backdrop takes every click and key, so nothing behind the
         // dialog changes; a click outside the panel does not close it.
@@ -640,9 +622,7 @@ impl Render for ChannelSettingsView {
             .on_action(cx.listener(|this, _: &FocusPreviousField, window, cx| {
                 this.step_focus(false, window, cx)
             }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                this.key_down(event, window, cx)
-            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.key_down(event, cx)))
             .absolute()
             .inset_0()
             .occlude()
