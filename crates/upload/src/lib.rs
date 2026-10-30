@@ -65,9 +65,16 @@ pub enum UploadError {
     Authentication,
     /// The provider refused the upload; the text is safe to show.
     Rejected(String),
-    /// The request did not complete.
+    /// The request did not complete. The text is one of the `NETWORK_*`
+    /// constants, which the UI replaces with its own translation.
     Network(String),
 }
+
+pub const NETWORK_TIMEOUT: &str = "the request timed out";
+pub const NETWORK_HOST_NOT_FOUND: &str = "the server name could not be resolved";
+pub const NETWORK_CONNECTION_FAILED: &str = "the connection failed";
+pub const NETWORK_REPLY_TOO_LARGE: &str = "the reply was too large";
+pub const NETWORK_OTHER: &str = "a communication error occurred";
 
 impl fmt::Display for UploadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

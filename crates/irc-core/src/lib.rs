@@ -895,6 +895,13 @@ pub enum Event {
         nickname: String,
     },
     ServerLine(String),
+    /// A line or command of ours was not sent. `reason` is a short text or
+    /// one of the `REASON_*` constants, never a library error; the technical
+    /// cause is in the diagnostics. `command` tells a command from a message.
+    SendFailed {
+        command: bool,
+        reason: String,
+    },
     /// The server refused a command with 417 `ERR_INPUTTOOLONG` or 400
     /// `ERR_UNKNOWNERROR`. The line also stays a [`Event::ServerLine`]. It is
     /// not tied to anything we sent: the UI decides whether a user action
@@ -1549,6 +1556,12 @@ struct Transcript {
 }
 
 impl Transcript {
+    /// Puts the technical cause of a failed link in the diagnostics and
+    /// returns the short reason for the user-facing events.
+    async fn failure(&self, context: &str, error: &(dyn std::error::Error + 'static)) -> String {
+        link_failure(&self.events, self.started, context, error).await
+    }
+
     /// The line to record for `message`, if lines are recorded now.
     fn line(&self, message: &IrcMessage) -> Option<String> {
         (!self.registered || self.requested.load(Ordering::Relaxed)).then(|| {
@@ -1576,6 +1589,76 @@ impl Transcript {
                 .await;
         }
     }
+}
+
+/// Reports a failed link: the full error chain goes to the diagnostics only,
+/// and the returned reason is the short one shown to the user.
+async fn link_failure(
+    events: &EventSender,
+    started: Instant,
+    context: &str,
+    error: &(dyn std::error::Error + 'static),
+) -> String {
+    diagnostic(
+        events,
+        started,
+        format!("{context}: {}", error_chain(error)),
+    )
+    .await;
+    user_reason(error).into()
+}
+
+/// A short reason for a failed link that names no library, URL or error
+/// chain. It looks at the error's types and kinds, never its text; what
+/// cannot be told apart (a failed name lookup is a plain `io::Error`) gets
+/// the generic reason rather than a guess.
+///
+/// The reasons are the `REASON_*` constants; the UI shows them in the user's
+/// language by comparing with these.
+fn user_reason(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    use std::io::ErrorKind;
+    const LOST: &str = REASON_LOST;
+    const CERTIFICATE: &str = REASON_CERTIFICATE;
+    const TIMEOUT: &str = REASON_TIMEOUT;
+    let mut found = REASON_GENERIC;
+    let mut source = Some(error);
+    for _ in 0..8 {
+        let Some(current) = source else { break };
+        let mut tls = current.downcast_ref::<rustls::Error>();
+        let io = current.downcast_ref::<std::io::Error>();
+        // `io::Error::source()` skips the error it wraps, so look inside.
+        if let Some(inner) = io.and_then(std::io::Error::get_ref) {
+            tls = tls.or(inner.downcast_ref::<rustls::Error>());
+        }
+        if matches!(
+            tls,
+            Some(
+                rustls::Error::InvalidCertificate(_)
+                    | rustls::Error::NoCertificatesPresented
+                    | rustls::Error::UnsupportedNameType
+            )
+        ) {
+            return CERTIFICATE;
+        }
+        if let Some(io) = io {
+            match io.kind() {
+                ErrorKind::UnexpectedEof
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::BrokenPipe
+                | ErrorKind::NotConnected => found = LOST,
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => found = TIMEOUT,
+                _ => {}
+            }
+        }
+        match current.downcast_ref::<irc::error::Error>() {
+            Some(irc::error::Error::PingTimeout) => return TIMEOUT,
+            Some(irc::error::Error::OutgoingQueueFull) => return REASON_QUEUE_FULL,
+            _ => {}
+        }
+        source = current.source();
+    }
+    found
 }
 
 fn error_chain(error: &dyn std::error::Error) -> String {
@@ -1610,6 +1693,41 @@ fn stream_error_detail(error: &irc::error::Error) -> String {
             "Invalid IRC line; unparsed line omitted.".into()
         }
         _ => error_chain(error),
+    }
+}
+
+/// The reason shown for a failed stream: an undecodable line and the limits
+/// of the vendored `irc` keep their own short text, which names no library;
+/// the rest is classified.
+fn stream_error_reason(error: &irc::error::Error) -> String {
+    match error {
+        irc::error::Error::CodecFailed { .. } | irc::error::Error::InvalidMessage { .. } => {
+            stream_error_detail(error)
+        }
+        irc::error::Error::ChannelListLimit(_) => error.to_string(),
+        _ => user_reason(error).into(),
+    }
+}
+
+/// The reasons of a failed link or send that are not worded by the server
+/// (see [`Event::Disconnected`], [`Event::OutgoingFailed`]). They are fixed
+/// English texts; the UI replaces them with its own translations.
+pub const REASON_LOST: &str = "The connection to the server was lost.";
+pub const REASON_CERTIFICATE: &str = "The server's certificate could not be verified.";
+pub const REASON_TIMEOUT: &str = "No response from the server.";
+pub const REASON_GENERIC: &str = "A communication error occurred.";
+pub const REASON_QUEUE_FULL: &str = "The outgoing queue is full.";
+
+impl Transcript {
+    /// Puts the technical cause of a refused send in the diagnostics; the
+    /// user sees [`stream_error_reason`] of it.
+    async fn send_refused(&self, context: &str, error: &irc::error::Error) {
+        diagnostic(
+            &self.events,
+            self.started,
+            format!("{context}: {}", error_chain(error)),
+        )
+        .await;
     }
 }
 
@@ -2096,7 +2214,8 @@ impl Connection {
                             worker_charsets,
                         )),
                         Err(error) => {
-                            let _ = event_tx.blocking_send(Event::Disconnected(error.to_string()));
+                            let _ = event_tx
+                                .blocking_send(Event::Disconnected(user_reason(&error).into()));
                         }
                     }
                 }));
@@ -2745,9 +2864,8 @@ async fn run_cancellable(
     let mut client = match result {
         Some(Ok(client)) => client,
         Some(Err(error)) => {
-            let detail = error_chain(&error);
-            diagnostic(&events, started, format!("Transport failed: {detail}")).await;
-            let _ = events.send(Event::Disconnected(detail)).await;
+            let reason = link_failure(&events, started, "Transport failed", &error).await;
+            let _ = events.send(Event::Disconnected(reason)).await;
             return;
         }
         None => {
@@ -2776,14 +2894,8 @@ async fn run_cancellable(
     let mut stream = match client.stream() {
         Ok(stream) => stream,
         Err(error) => {
-            let detail = error_chain(&error);
-            diagnostic(
-                &events,
-                started,
-                format!("Could not open IRC stream: {detail}"),
-            )
-            .await;
-            let _ = events.send(Event::Disconnected(detail)).await;
+            let reason = link_failure(&events, started, "Could not open IRC stream", &error).await;
+            let _ = events.send(Event::Disconnected(reason)).await;
             return;
         }
     };
@@ -2816,14 +2928,8 @@ async fn run_cancellable(
         let message = IrcMessage::from(command);
         let line = transcript.line(&message);
         if let Err(error) = client.send(message) {
-            let detail = error_chain(&error);
-            diagnostic(
-                &events,
-                started,
-                format!("Registration send failed: {detail}"),
-            )
-            .await;
-            let _ = events.send(Event::Disconnected(detail)).await;
+            let reason = link_failure(&events, started, "Registration send failed", &error).await;
+            let _ = events.send(Event::Disconnected(reason)).await;
             return;
         }
         transcript.record(WireDirection::Sent, line).await;
@@ -3406,6 +3512,7 @@ impl Worker {
             "the server requires UTF-8 (UTF8ONLY); the message was accepted in another character encoding"
                 .to_owned()
         });
+        let mut cause = None;
         let result = refused
             .map_or(Ok(()), Err)
             .and_then(|()| validate_tagged_wire(&message, wire))
@@ -3413,9 +3520,14 @@ impl Worker {
                 self.charsets.pin(&written, encoder);
                 self.client.send(message).map_err(|error| {
                     self.charsets.unpin(&written);
-                    error.to_string()
+                    let reason = stream_error_reason(&error);
+                    cause = Some(error);
+                    reason
                 })
             });
+        if let Some(error) = &cause {
+            self.transcript.send_refused("Send failed", error).await;
+        }
         let event = match result {
             Ok(()) => {
                 self.transcript.record(WireDirection::Sent, line).await;
@@ -3429,7 +3541,10 @@ impl Worker {
             }
             Err(error) => {
                 self.echoes.untrack(local_id);
-                Event::ServerLine(format!("Send failed: {error}"))
+                Event::SendFailed {
+                    command: false,
+                    reason: error,
+                }
             }
         };
         self.emit(event).await
@@ -3445,8 +3560,17 @@ impl Worker {
             IrcCommand::PART(channels, _) => channels.clone(),
             _ => String::new(),
         };
-        let result = validate_wire(&message.to_string(), self.wire())
-            .and_then(|_| self.client.send(message).map_err(|error| error.to_string()));
+        let mut cause = None;
+        let result = validate_wire(&message.to_string(), self.wire()).and_then(|_| {
+            self.client.send(message).map_err(|error| {
+                let reason = stream_error_reason(&error);
+                cause = Some(error);
+                reason
+            })
+        });
+        if let Some(error) = &cause {
+            self.transcript.send_refused("Command failed", error).await;
+        }
         match result {
             Ok(()) => {
                 self.transcript.record(WireDirection::Sent, line).await;
@@ -3464,8 +3588,11 @@ impl Worker {
                 ControlFlow::Continue(())
             }
             Err(error) => {
-                self.emit(Event::ServerLine(format!("Command failed: {error}")))
-                    .await
+                self.emit(Event::SendFailed {
+                    command: true,
+                    reason: error,
+                })
+                .await
             }
         }
     }
@@ -3595,7 +3722,8 @@ impl Worker {
                 let message = IrcMessage::from(command);
                 let line = self.transcript.line(&message);
                 if let Err(error) = self.client.send(message) {
-                    return self.disconnect(error_chain(&error)).await;
+                    let reason = self.transcript.failure("Send failed", &error).await;
+                    return self.disconnect(reason).await;
                 }
                 self.transcript.record(WireDirection::Sent, line).await;
                 ControlFlow::Continue(())
@@ -3618,9 +3746,18 @@ impl Worker {
                 )],
             ));
             let line = self.transcript.line(&message);
-            match validate_wire(&message.to_string(), &self.wire_encoding)
-                .and_then(|_| self.client.send(message).map_err(|error| error.to_string()))
-            {
+            let mut cause = None;
+            let sent = validate_wire(&message.to_string(), &self.wire_encoding).and_then(|_| {
+                self.client.send(message).map_err(|error| {
+                    let reason = stream_error_reason(&error);
+                    cause = Some(error);
+                    reason
+                })
+            });
+            if let Some(error) = &cause {
+                self.transcript.send_refused("Send failed", error).await;
+            }
+            match sent {
                 Ok(()) => {
                     self.pending_setname += 1;
                     self.transcript.record(WireDirection::Sent, line).await;
@@ -3716,6 +3853,7 @@ impl Worker {
                 self.report_held().await;
                 let detail = stream_error_detail(&error);
                 self.note(format!("IRC stream failed: {detail}")).await;
+                let detail = stream_error_reason(&error);
                 let event = self
                     .refusal
                     .take()
@@ -4595,7 +4733,9 @@ async fn send_all(
     for command in commands {
         let message = IrcMessage::from(command);
         let line = transcript.line(&message);
-        client.send(message).map_err(|error| error_chain(&error))?;
+        if let Err(error) = client.send(message) {
+            return Err(transcript.failure("Send failed", &error).await);
+        }
         transcript.record(WireDirection::Sent, line).await;
     }
     Ok(())
