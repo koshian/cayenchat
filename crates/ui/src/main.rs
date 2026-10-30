@@ -2912,6 +2912,7 @@ impl ChatWindow {
             session.push_diagnostic(format!("Disconnected: {reason}"));
             session.pending_whois.clear();
         }
+        let reason = self.i18n.reason(reason);
         // Only a lost registered connection marks the conversations; failed
         // retries would repeat the line in every log.
         let was_registered = self.state.is_registered(network);
@@ -5713,6 +5714,16 @@ impl ChatWindow {
                 }
             }
             Event::ServerLine(line) => self.state.append_server_message(network, line),
+            Event::SendFailed { command, reason } => {
+                let key = if command {
+                    "event_command_failed"
+                } else {
+                    "event_send_failed"
+                };
+                let reason = self.i18n.reason(reason);
+                let line = self.i18n.format(key, &[("reason", &reason)]);
+                self.state.append_server_message(network, line);
+            }
             Event::CommandRejected {
                 code,
                 command,
@@ -5745,9 +5756,11 @@ impl ChatWindow {
                 let line = match failure {
                     RealNameFailure::Unsupported => self.i18n.text("event_realname_unsupported"),
                     RealNameFailure::Busy => self.i18n.text("event_realname_busy"),
-                    RealNameFailure::Rejected(reason) => self
-                        .i18n
-                        .format("event_realname_rejected", &[("reason", &reason)]),
+                    RealNameFailure::Rejected(reason) => {
+                        let reason = self.i18n.reason(reason);
+                        self.i18n
+                            .format("event_realname_rejected", &[("reason", &reason)])
+                    }
                 };
                 self.state.append_server_message(network, line);
             }
@@ -5890,6 +5903,7 @@ impl ChatWindow {
                 if let Some((id, sequence, _)) = pending {
                     self.state.fail_message(id, sequence);
                 }
+                let reason = self.i18n.reason(reason);
                 let line = self
                     .i18n
                     .format("event_message_failed", &[("reason", &reason)]);

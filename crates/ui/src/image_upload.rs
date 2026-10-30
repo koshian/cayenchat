@@ -201,6 +201,7 @@ pub(crate) fn upload_failure_text(
         UploadFailure::Rejected(error) => ("upload_failed_rejected", error),
         UploadFailure::Authentication => ("upload_reconnect_title", String::new()),
     };
+    let error = i18n.reason(error);
     i18n.format(key, &[("provider", provider), ("error", &error)])
 }
 

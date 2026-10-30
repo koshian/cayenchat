@@ -6,7 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cayenchat_model::{attachment::Attachment, display::neutralize_bidi_owned};
 
-use crate::UploadError;
+use crate::{
+    NETWORK_CONNECTION_FAILED, NETWORK_HOST_NOT_FOUND, NETWORK_OTHER, NETWORK_REPLY_TOO_LARGE,
+    NETWORK_TIMEOUT, UploadError,
+};
 
 /// Replies are small JSON documents; anything larger is not trusted.
 pub(crate) const RESPONSE_LIMIT: u64 = 64 * 1024;
@@ -49,13 +52,13 @@ pub(crate) fn post_form(
 
 fn network_error(error: &ureq::Error) -> String {
     match error {
-        ureq::Error::Timeout(_) => "the request timed out".into(),
-        ureq::Error::HostNotFound => "the server name could not be resolved".into(),
-        ureq::Error::ConnectionFailed => "the connection failed".into(),
-        ureq::Error::BodyExceedsLimit(_) => "the reply was too large".into(),
+        ureq::Error::Timeout(_) => NETWORK_TIMEOUT.into(),
+        ureq::Error::HostNotFound => NETWORK_HOST_NOT_FOUND.into(),
+        ureq::Error::ConnectionFailed => NETWORK_CONNECTION_FAILED.into(),
+        ureq::Error::BodyExceedsLimit(_) => NETWORK_REPLY_TOO_LARGE.into(),
         // The text of other errors names the library and may carry its
         // documentation URLs, so it is not shown.
-        _ => "a communication error occurred".into(),
+        _ => NETWORK_OTHER.into(),
     }
 }
 

@@ -50,6 +50,28 @@ impl Localizer {
         fill(&self.text(key), values)
     }
 
+    /// The reason of a failed link or send in this language. The core and
+    /// upload crates give a fixed English text for what they classify; any
+    /// other reason (a server's own wording) is returned as it is.
+    pub fn reason(&self, reason: String) -> String {
+        use cayenchat_irc_core as irc;
+        use cayenchat_upload as upload;
+        let key = match reason.as_str() {
+            irc::REASON_LOST => "reason_lost",
+            irc::REASON_CERTIFICATE => "reason_certificate",
+            irc::REASON_TIMEOUT => "reason_timeout",
+            irc::REASON_GENERIC => "reason_generic",
+            irc::REASON_QUEUE_FULL => "reason_queue_full",
+            upload::NETWORK_TIMEOUT => "upload_net_timeout",
+            upload::NETWORK_HOST_NOT_FOUND => "upload_net_host_not_found",
+            upload::NETWORK_CONNECTION_FAILED => "upload_net_connection_failed",
+            upload::NETWORK_REPLY_TOO_LARGE => "upload_net_reply_too_large",
+            upload::NETWORK_OTHER => "upload_net_other",
+            _ => return reason,
+        };
+        self.text(key)
+    }
+
     /// Fills `{nickname}` for display: the nickname comes from a server, so
     /// bidirectional controls are neutralized. Callers keep the raw value.
     pub fn format_nickname(&self, key: &str, nickname: &str) -> String {
@@ -151,6 +173,47 @@ mod tests {
         assert_eq!(language_for_tag(Some("ja-JP")), Language::Japanese);
         assert_eq!(language_for_tag(Some("en-US")), Language::English);
         assert_eq!(language_for_tag(None), Language::English);
+    }
+
+    #[test]
+    fn classified_reasons_are_translated_and_other_reasons_kept() {
+        for (catalog, expected) in [(JAPANESE, "サーバーとの接続が切れました。"), (ENGLISH, "")]
+        {
+            let strings = Arc::new(parse(catalog));
+            let localizer = Localizer {
+                strings: strings.clone(),
+                bundled: strings.clone(),
+                fallback: Arc::new(parse(ENGLISH)),
+            };
+            let lost = localizer.reason(cayenchat_irc_core::REASON_LOST.into());
+            if expected.is_empty() {
+                assert_eq!(lost, cayenchat_irc_core::REASON_LOST);
+            } else {
+                assert_eq!(lost, expected);
+            }
+            for reason in [
+                cayenchat_irc_core::REASON_CERTIFICATE,
+                cayenchat_irc_core::REASON_TIMEOUT,
+                cayenchat_irc_core::REASON_GENERIC,
+                cayenchat_irc_core::REASON_QUEUE_FULL,
+                cayenchat_upload::NETWORK_TIMEOUT,
+                cayenchat_upload::NETWORK_HOST_NOT_FOUND,
+                cayenchat_upload::NETWORK_CONNECTION_FAILED,
+                cayenchat_upload::NETWORK_REPLY_TOO_LARGE,
+                cayenchat_upload::NETWORK_OTHER,
+            ] {
+                let shown = localizer.reason(reason.into());
+                assert!(
+                    !shown.is_empty() && !shown.starts_with("reason_"),
+                    "{shown}"
+                );
+                assert!(!shown.starts_with("upload_net_"), "{shown}");
+            }
+            assert_eq!(
+                localizer.reason("Nickname in use".into()),
+                "Nickname in use"
+            );
+        }
     }
 
     #[test]
