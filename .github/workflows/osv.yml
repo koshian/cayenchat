@@ -1,0 +1,33 @@
+name: OSV advisories
+
+# Weekly OSV scan of Cargo.lock. cargo-deny reads only the RustSec database;
+# OSV also carries GitHub advisories (GHSA) that RustSec lacks, such as the
+# one for grid (#726). A new advisory can appear without any change here, so
+# this runs on a schedule and by hand. It is not a pull request check: a
+# finding in a transitive GPUI dependency would block unrelated changes.
+# Triage findings in spec/development.md, "Dependency advisories".
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  osv:
+    name: OSV scan of Cargo.lock
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scan Cargo.lock
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --lockfile=Cargo.lock
