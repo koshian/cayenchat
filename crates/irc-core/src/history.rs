@@ -598,10 +598,16 @@ impl HistoryRequests {
             return None;
         }
         let outstanding = self.outstanding.take()?;
-        if self.abandoned.len() >= MAX_ABANDONED {
-            self.abandoned.pop_front();
+        if let Some(reference) = outstanding.reference.clone() {
+            // The reply already started: swallow the rest of its batch.
+            self.discarding.push(reference);
+            self.discarding.extend(outstanding.nested.iter().cloned());
+        } else {
+            if self.abandoned.len() >= MAX_ABANDONED {
+                self.abandoned.pop_front();
+            }
+            self.abandoned.push_back(outstanding.channel.clone());
         }
-        self.abandoned.push_back(outstanding.channel.clone());
         let note = format!(
             "History for {} was not answered within {} s.",
             outstanding.channel,
@@ -1341,6 +1347,34 @@ mod tests {
         assert!(
             matches!(&observed[4], Observed::Finished(Finished { channel, .. }) if channel == "#next")
         );
+    }
+
+    #[test]
+    fn the_rest_of_a_started_reply_is_swallowed_after_the_timeout() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        requests.enqueue("#slow");
+        sent(&mut requests, now);
+        let before = feed(
+            &mut requests,
+            &[
+                ":srv BATCH +r chathistory #slow",
+                "@batch=r :bob!u@h PRIVMSG #slow :before",
+            ],
+        );
+        assert!(before.iter().all(|o| *o == Observed::Consumed));
+        assert!(requests.tick(now + RESPONSE_TIMEOUT).is_some());
+        let after = feed(
+            &mut requests,
+            &[
+                "@batch=r :bob!u@h PRIVMSG #slow :late history",
+                ":srv BATCH -r",
+                "@batch=r :bob!u@h PRIVMSG #slow :live",
+            ],
+        );
+        assert_eq!(after[..2], [Observed::Consumed, Observed::Consumed]);
+        assert_eq!(after[2], Observed::Unrelated);
+        assert!(requests.discarding.is_empty());
     }
 
     #[test]
