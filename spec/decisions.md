@@ -3343,4 +3343,5 @@ there is no network, bouncer or connection behind it.
   through an open list; Enter and Space act as GPUI keyboard clicks (on
   key-up) on the focused control; a save error shows between the body and the
   footer, so it is always visible; Escape closes an open list, then cancels. A
+  click outside does not close it, so edits are not lost by accident. Nothing
   behind it receives input.
