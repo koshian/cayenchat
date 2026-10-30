@@ -131,6 +131,18 @@ mod tests {
             )
             .is_err()
         );
+        for url in [
+            "https://i.ibb.co@evil.example/x.png",
+            "https://127.0.0.1:8443/x.png",
+            "https://i.ibb.co:8443/x.png",
+            "https://[2001:4860:{size}::8888]/x.png",
+        ] {
+            let body = format!(r#"{{"data":{{"url":"{url}"}},"success":true}}"#);
+            assert!(
+                matches!(interpret(200, &body), Err(UploadError::Rejected(_))),
+                "{url}"
+            );
+        }
         assert!(
             interpret(
                 200,
