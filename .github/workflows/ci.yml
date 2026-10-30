@@ -195,7 +195,8 @@ jobs:
           if-no-files-found: error
 
   # Security advisories (RustSec) for every locked dependency, and their
-  # licenses against the allow list in deny.toml (D042). Runs on every pull
+  # licenses against the allow list in deny.toml (D042), and that every
+  # dependency comes from crates.io or a path. Runs on every pull
   # request and push, since new advisories appear without any change here;
   # accepted ones are listed with reasons in deny.toml.
   advisories:
@@ -208,10 +209,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check advisories and licenses
+      - name: Check advisories, licenses, bans and sources
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          command: check advisories licenses
+          command: check advisories licenses bans sources
 
   # The real app under a virtual X display (Xvfb, software Vulkan) against a
   # local Ergo: older history pages keep the view in place, and a reconnect

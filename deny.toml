@@ -1,14 +1,33 @@
-# cargo-deny configuration. CI runs `cargo deny check advisories licenses`
-# (the "Dependency advisories" job); bans and sources are not checked.
+# cargo-deny configuration. CI runs `cargo deny check advisories licenses bans
+# sources` (the "Dependency advisories" job).
 #
-# Every vulnerability fails the check. Unmaintained crates fail only when a
-# workspace crate depends on them directly: most of the dependency tree comes
-# through GPUI, where nothing here can replace them. Ignored advisories need a
-# reason and are removed once they no longer apply.
+# Every RustSec vulnerability fails the check; advisories that only GitHub
+# (GHSA) lists are not in RustSec and are covered by the weekly OSV scan
+# (.github/workflows/osv.yml). Unmaintained crates fail only when a workspace
+# crate depends on them directly: most of the dependency tree comes through
+# GPUI, where nothing here can replace them. That is deliberate, and so is
+# letting unsound (informational) advisories on transitive crates pass (git2
+# through gpui_util); the OSV scan lists what passes through. Ignored
+# advisories need a reason and are removed once they no longer apply.
 
 [advisories]
 unmaintained = "workspace"
 ignore = []
+
+# Several versions of one crate exist (mostly separate GPUI generations of
+# hashbrown, ttf-parser, getrandom, syn and others). Forbidding them would
+# force GPUI-wide updates, so they only warn; the warnings are the inventory.
+# Wildcard requirements are allowed because path dependencies have none.
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+# Every dependency comes from crates.io. The vendored crates are path
+# dependencies (`[patch.crates-io]`, vendor/README.md) and pass; a git
+# dependency or another registry fails until it is added here on purpose.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
 
 # Licenses of every dependency (D042). The core crates are MPL-2.0 and must
 # stay usable by front ends under other licenses, so no GPL-only or LGPL-only
