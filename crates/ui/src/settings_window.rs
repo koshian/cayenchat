@@ -1602,8 +1602,6 @@ impl SettingsWindow {
     ) -> Result<Settings, String> {
         let store = secrets::store(cx);
         settings.servers.retain(|server| !server.host.is_empty());
-        forget_removed_profiles(previous, &settings, &store)
-            .map_err(|error| secrets::error_text(&self.i18n, &error))?;
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
@@ -1611,6 +1609,11 @@ impl SettingsWindow {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
         }
+        // After the save: a failed save must not cost the secrets of profiles
+        // the file still holds (#760). A failed deletion leaves `previous`
+        // unchanged, so the next Save retries it.
+        forget_removed_profiles(previous, &settings, &store)
+            .map_err(|error| secrets::error_text(&self.i18n, &error))?;
         Ok(settings)
     }
 
@@ -6576,5 +6579,39 @@ mod escape_tests {
             Some(TextEncoding::ShiftJis),
             None
         ));
+    }
+
+    #[gpui::test]
+    fn failed_save_keeps_the_secrets_of_removed_profiles(cx: &mut TestAppContext) {
+        use cayenchat_storage::Secret;
+        let (form, cx, _app) = open(cx, crate::settings_with_channels("#a"));
+        let mut previous = cayenchat_storage::Settings::default();
+        previous.add_server("");
+        previous.selected_profile_mut().unwrap().host = "irc.example.org".into();
+        previous
+            .selected_profile_mut()
+            .unwrap()
+            .set_server_password_saved(true);
+        let removed = previous.selected_profile().unwrap().clone();
+        let mut next = previous.clone();
+        next.remove_selected_server();
+        let store = form.update(cx, |_, cx| crate::secrets::store(cx));
+        store
+            .set(&removed.server_password_key(), &Secret::new("x"))
+            .unwrap();
+
+        let _file = crate::settings_file::TestFile::with(&previous);
+        crate::settings_file::fail_saves(true);
+        let result = form.update(cx, |form, cx| {
+            form.commit_settings(&previous, next.clone(), cx)
+        });
+        assert!(result.is_err());
+        assert!(store.contains(&removed.server_password_key()).unwrap());
+
+        // A later successful save forgets it.
+        crate::settings_file::fail_saves(false);
+        let result = form.update(cx, |form, cx| form.commit_settings(&previous, next, cx));
+        assert!(result.is_ok());
+        assert!(!store.contains(&removed.server_password_key()).unwrap());
     }
 }
