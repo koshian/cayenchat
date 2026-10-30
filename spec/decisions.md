@@ -3374,3 +3374,15 @@ there is no network, bouncer or connection behind it.
 - **Kept apart from conversations.** Diagnostic lines are not in the server
   log, the combined log, the conversation log files, the unread counts or
   notifications. A removed server drops them with its other state.
+- **Selection, copy and search (second step).** The diagnostics rows use the
+  message rows' machinery: `LogSelection` (with the view it was made in; its
+  rows are `DiagnosticLine::position`s, so trimming or a new connection never
+  moves it onto other lines), `search::Source::Diagnostics`, `search::Hit` and
+  `search_goto`. Only the selected part is copied, as drawn; with nothing
+  selected Ctrl/Cmd+C copies nothing, and View → Copy Connection Diagnostics
+  stays the whole-view copy. Diagnostic sequences start at 2^63 so they never
+  equal a message's, which keeps `Hit` ordering and the "current line"
+  emphasis keyed by sequence alone. They are searched only while the
+  diagnostics are on; "this log" reads the selected server's diagnostics in
+  the view shown, "all" every server's in both views, and going to a hit in the
+  other view switches views.

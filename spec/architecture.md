@@ -2333,6 +2333,21 @@ are not searched, but match ranges are mapped to the drawn text with
 `Compact::shown_range`, so the highlight lands on the right characters.
 Sender names are not searched.
 
+The connection diagnostics (D077) are a source too, `Source::Diagnostics(network,
+view)`, read as drawn (`DiagnosticLine::render`: date, time, elapsed time and
+text) and only while the View menu's diagnostics are on, because they are not
+drawn otherwise. "This log" reads the selected server's log and, with the
+server selected, its diagnostics in the view being shown; "all" reads every
+server's diagnostics in both views. A diagnostic sequence comes from a counter
+that starts at 2^63 (`app::diagnostics::FIRST_SEQUENCE`), so a sequence names
+one line of the messages or of the diagnostics, `Hit`s stay ordered by sequence
+alone and the diagnostics sort after the messages. `search::revision` counts the
+diagnostic lines only while they are searched. Going to a diagnostics hit
+selects the server, switches to the hit's view (the menu label follows) and
+scrolls the fixed row to the top; the row paints its highlights and the
+reveal probe like a message. A channel's own search does not read them (its
+view shows at most a few of the rows).
+
 `ui::log_search` owns the bar (`ChatWindow::search`, created on first open): a
 single row across the full content width above both columns (under the menu bar and toolbar), so the log is pushed down, not
 covered, and keeps its scroll position (the log list is bottom-anchored). It
