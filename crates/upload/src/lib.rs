@@ -149,4 +149,39 @@ mod tests {
             assert!(checked_url(bad).is_none(), "{bad}");
         }
     }
+
+    #[test]
+    fn checked_url_verdicts_do_not_depend_on_the_avatar_template_check() {
+        let too_long = format!("https://i.ibb.co/{}", "a".repeat(2048));
+        let at_limit = format!(
+            "https://i.ibb.co/{}",
+            "a".repeat(2048 - "https://i.ibb.co/".len())
+        );
+        for (url, accepted) in [
+            ("https://i.ibb.co/a.png", true),
+            (at_limit.as_str(), true),
+            ("http://i.ibb.co/a.png", false),
+            ("https://user:pw@i.ibb.co/a.png", false),
+            ("https://i.ibb.co:8443/a.png", false),
+            ("https://10.0.0.1/a.png", false),
+            ("https://127.0.0.1/a.png", false),
+            ("https://localhost/a.png", false),
+            ("https://i.ibb.co/a.png?token=abc", false),
+            ("https://i.ibb.co/a.png?API-KEY=x", false),
+            ("https://i.ibb.co/a.png#access_token=x", false),
+            ("https://i.ibb.co/{a}.png", false),
+            ("https://i.ibb.co/{size}.png", false),
+            ("https://i.ibb.co/a b.png", false),
+            ("https://i.ibb.co/a\tb.png", false),
+            ("https://i.ibb.co/a\u{0}.png", false),
+            (too_long.as_str(), false),
+        ] {
+            let verdict = checked_url(url);
+            if accepted {
+                assert_eq!(verdict.as_deref(), Some(url), "{url}");
+            } else {
+                assert_eq!(verdict, None, "{url}");
+            }
+        }
+    }
 }

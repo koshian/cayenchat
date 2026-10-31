@@ -404,6 +404,30 @@ mod tests {
     }
 
     #[test]
+    fn plain_urls_are_checked_without_template_expansion() {
+        // Characterization of the shared checks, through the avatar entry
+        // point; the commit that splits them out reads this against the
+        // plain-URL function.
+        for ok in ["https://example.com/a.png", "https://example.com/a?v=2#x"] {
+            assert_eq!(publishable_avatar_url(ok), Ok(()), "{ok}");
+        }
+        for (url, problem) in [
+            (
+                "https://user@example.com/a.png",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://example.com/a.png?token=x",
+                PublishProblem::Credentials,
+            ),
+            ("https://example.com:8443/a.png", PublishProblem::Blocked),
+            ("https://example.com/a b", PublishProblem::Invalid),
+        ] {
+            assert_eq!(publishable_avatar_url(url), Err(problem), "{url}");
+        }
+    }
+
+    #[test]
     fn avatar_urls_need_no_extension_but_stay_safe() {
         let url = |text: &str| avatar_url(text, 32).map(|MediaRef::Link(url)| url.to_string());
         assert_eq!(
