@@ -517,7 +517,7 @@ fn with_diagnostics(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
     chat.update(cx, |chat, cx| {
         chat.debug_enabled = true;
         record(chat, DiagnosticsView::Overview, "Sleep notice: idle");
-        record(chat, DiagnosticsView::Overview, "Registered");
+        record(chat, DiagnosticsView::Overview, "Handshake done");
         record(chat, DiagnosticsView::Protocol, "← :s NOTICE * :Wake-up");
         chat.state
             .dispatch(cayenchat_app::Command::SelectServer(NetworkId(1)));
@@ -581,7 +581,7 @@ fn diagnostics_are_not_searched_while_they_are_off(cx: &mut TestAppContext) {
     chat.update_in(cx, |chat, window, cx| {
         chat.search_set_scope(Scope::All, window, cx)
     });
-    cx.simulate_input("registered");
+    cx.simulate_input("handshake");
     settle(cx);
     assert_eq!(search_state(&chat, cx).0, 0);
 }
