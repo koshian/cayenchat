@@ -664,12 +664,15 @@ fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestA
             .chain(
                 messages[..messages.len() - 1]
                     .iter()
-                    .map(|message| message.text.clone()),
+                    .map(|message| format!("{} {}", message.time, message.text)),
             )
-            .chain(std::iter::once("second".to_owned()))
+            .chain(std::iter::once(format!(
+                "{} second",
+                messages[messages.len() - 1].time
+            )))
             .collect();
         let expected = expected.join("\n");
-        assert!(expected.contains("\nfirst line\nsecond"));
+        assert!(expected.contains(" first line\n"));
         // The last diagnostics line to the middle of the second message.
         chat.log_selection = Some(crate::LogSelection {
             source,
@@ -753,7 +756,7 @@ fn a_channel_selection_copies_only_the_diagnostics_line_shown(cx: &mut TestAppCo
         // The hidden line is not copied; the channel's earlier lines are.
         let copied = copied.unwrap();
         assert!(copied.starts_with(&format!("{drawn}\n")), "{copied}");
-        assert!(copied.ends_with("\nhello"), "{copied}");
+        assert!(copied.ends_with(" bob: hello"), "{copied}");
         assert!(!copied.contains("Sleep notice"), "{copied}");
     });
 }

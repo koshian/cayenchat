@@ -130,7 +130,8 @@ class Display:
 
     def visible_text(self):
         """The main log's visible message bodies, through its own selection
-        and copy: drag across the pane, Ctrl+C, read the clipboard."""
+        and copy: drag across the pane, Ctrl+C, read the clipboard. The time
+        and sender the copy adds to each line are removed again."""
         self.run("xclip", "-selection", "clipboard", "-i", "/dev/null", check=False)
         x0, y0, x1, y1 = LOG_BOX
         # Press on the first row's text, drag to the end of the last one.
@@ -149,7 +150,9 @@ class Display:
         # A click clears the selection again.
         self.xdo("mousemove", *map(str, LOG_POINT))
         self.xdo("click", "1")
-        return text.splitlines()
+        # A copy over several lines carries each line's drawn time and sender
+        # (D078); keep the message bodies, which are what is checked here.
+        return [re.sub(r"^\d{2}:\d{2} (?:\S+: )?", "", line) for line in text.splitlines()]
 
 
 # -------------------------------------------------------------------- proxy

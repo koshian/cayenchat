@@ -316,3 +316,123 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
     assert_eq!(copied(1, 4, cx).as_deref(), Some("ave"));
     assert_eq!(copied(1, 5, cx).as_deref(), Some("aves"));
 }
+
+#[gpui::test]
+fn copying_several_lines_carries_the_time_and_sender_drawn_on_each(cx: &mut TestAppContext) {
+    use std::time::{Duration, UNIX_EPOCH};
+    cx.update(|cx| {
+        crate::secrets::install_memory(cx);
+        cx.set_global(crate::theme::Theme::new(
+            cayenchat_storage::ThemeMode::Light,
+            gpui::WindowAppearance::Light,
+            &cayenchat_storage::Appearance::default(),
+        ));
+    });
+    let mut settings = crate::settings_with_channels("#a");
+    settings.appearance.decode_char_refs = true;
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    let at = |seconds: u64| Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000 + seconds));
+    let message = |text: &str, seconds: u64| Event::ChannelMessage {
+        channel: "#a".into(),
+        sender: "bob".into(),
+        text: text.into(),
+        notice: false,
+        server_time: at(seconds),
+        msgid: None,
+        account: None,
+        replayed: false,
+    };
+    let id = chat.update(cx, |chat, cx| {
+        chat.handle_events(
+            NetworkId(1),
+            vec![
+                Event::Registered {
+                    nickname: "me".into(),
+                },
+                Event::Joined {
+                    channel: "#a".into(),
+                },
+                message("one &#127826;", 0),
+                message("two", 10),
+                message("three", 120),
+                message("\u{1}ACTION waves\u{1}", 130),
+            ],
+            Worker::Running,
+            cx,
+        );
+        let id = chat.state.conversations()[0].id;
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectChannel(id));
+        chat.state
+            .append_channel_activity(NetworkId(1), "#a", "carol joined".into());
+        id
+    });
+    let times: Vec<String> = chat.update(cx, |chat, _| {
+        let channel = chat.state.selected_channel().unwrap();
+        assert_eq!(channel.messages.len(), 5);
+        channel
+            .messages
+            .iter()
+            .map(|m| m.time.to_string())
+            .collect()
+    });
+    let copied = |from: (usize, usize),
+                  to: (usize, usize),
+                  reiwa: bool,
+                  cx: &mut gpui::VisualTestContext| {
+        chat.update(cx, |chat, cx| {
+            chat.appearance.reiwa_mode = reiwa;
+            let sequences: Vec<u64> = chat
+                .state
+                .selected_channel()
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| m.sequence)
+                .collect();
+            chat.log_selection = Some(crate::LogSelection {
+                source: cayenchat_app::Selection::Channel(id),
+                anchor: crate::LogPosition {
+                    row: sequences[from.0],
+                    byte: from.1,
+                },
+                cursor: crate::LogPosition {
+                    row: sequences[to.0],
+                    byte: to.1,
+                },
+                diagnostics_end: u64::MAX,
+            });
+            chat.copy_selected_log(cx);
+        });
+        cx.read_from_clipboard().and_then(|item| item.text())
+    };
+    let t = &times;
+    assert_eq!(
+        copied((0, 0), (4, 12), false, cx),
+        Some(format!(
+            "{0} bob: one 🍒\n{1} bob: two\n{2} bob: three\n{3} * bob waves\n{4} carol joined",
+            t[0], t[1], t[2], t[3], t[4]
+        ))
+    );
+    // Reiwa mode: a continuation in the same minute has neither, another
+    // minute only the time; the header line and the others as drawn.
+    assert_eq!(
+        copied((0, 0), (4, 12), true, cx),
+        Some(format!(
+            "{0} bob: one 🍒\ntwo\n{1} three\n{2} * bob waves\n{3} carol joined",
+            t[0], t[2], t[3], t[4]
+        ))
+    );
+    // Partial first and last lines keep their time and sender.
+    assert_eq!(
+        copied((0, 1), (3, 2), false, cx),
+        Some(format!(
+            "{0} bob: ne 🍒\n{1} bob: two\n{2} bob: three\n{3} * bob wa",
+            t[0], t[1], t[2], t[3]
+        ))
+    );
+    // One line is still only the selected part of the body.
+    assert_eq!(copied((2, 1), (2, 4), true, cx).as_deref(), Some("hre"));
+}
