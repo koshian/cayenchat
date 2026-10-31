@@ -2841,6 +2841,14 @@ change).
   scale factors the position may still be off, because GPUI converts the
   bounds with the scale of the display the window is first created on; this
   was not verified on Windows.
+- **Frame, not content (#795).** The saved rectangle is the window frame
+  (title bar included), and clamping to the display relies on that. GPUI on
+  macOS reported the frame but opened a window with it as the content rect,
+  so every restart made the window taller by the title bar and its bottom
+  edge went below the display. The vendored GPUI now opens the window with
+  the bounds as its frame (`vendor/gpui/PATCHES.md`). Not verified on a Mac;
+  a window.json saved by the old behaviour may be a title bar too tall once.
+  The display's work area (Dock, menu bar) is not used.
 - **When.** Moves and resizes, pane drags, closing the window and quitting the
   application (Cmd+Q does not ask the window to close) write it, after a 0.5 s
   pause for moves and drags. The window's bounds are noted as they change, so
