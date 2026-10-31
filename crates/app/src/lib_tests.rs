@@ -2465,6 +2465,80 @@ fn a_line_is_noted_once_and_the_list_is_bounded() {
 }
 
 #[test]
+fn history_cannot_push_an_unvisited_live_line_out_of_the_full_list() {
+    let (mut state, network, id) = paging_channel();
+    let index = state
+        .conversations()
+        .iter()
+        .position(|conversation| conversation.id == id)
+        .unwrap();
+    state.append_channel_message(
+        network,
+        "#a",
+        "dave",
+        "live mention",
+        Kind::Message,
+        Provenance::Live,
+    );
+    state.note_attention(id);
+    let live = state.conversations()[index]
+        .messages
+        .last()
+        .unwrap()
+        .sequence;
+
+    // More flagged history lines than the list holds, page by page.
+    let mut next = 1_000;
+    while next < 1_000 + 2 * MAX_ATTENTION as u64 {
+        let request = state.request_older_history(id).expect("a page");
+        let mut lines = page(next..next + OLDER_PAGE_LIMIT as u64);
+        lines.iter_mut().for_each(|line| line.attention = true);
+        state.insert_older_history(id, request.request, lines, false);
+        next += OLDER_PAGE_LIMIT as u64;
+    }
+    assert_eq!(state.attention.len(), MAX_ATTENTION);
+
+    // The live line is still there, and still the last one visited in its
+    // conversation (history sits before it).
+    let mut visited = Vec::new();
+    while state.has_attention() {
+        state.dispatch(Command::NextNotifiedMessage);
+        visited.push(state.take_reveal().unwrap());
+    }
+    assert_eq!(visited.last(), Some(&(id, live)));
+    assert!(visited.windows(2).all(|pair| pair[0].1 < pair[1].1));
+
+    // With only live lines queued, a history line is not kept.
+    let (mut state, network, id) = paging_channel();
+    for n in 0..MAX_ATTENTION {
+        state.append_channel_message(
+            network,
+            "#a",
+            "dave",
+            &format!("live {n}"),
+            Kind::Message,
+            Provenance::Live,
+        );
+        state.note_attention(id);
+    }
+    let request = state.request_older_history(id).expect("a page");
+    let mut lines = page(400..404);
+    lines[0].attention = true;
+    state.insert_older_history(id, request.request, lines, false);
+    assert_eq!(state.attention.len(), MAX_ATTENTION);
+    state.dispatch(Command::NextNotifiedMessage);
+    let (_, sequence) = state.take_reveal().unwrap();
+    let first = state
+        .conversation(id)
+        .unwrap()
+        .messages
+        .iter()
+        .find(|m| m.sequence == sequence)
+        .unwrap();
+    assert_eq!(first.text, "live 0");
+}
+
+#[test]
 fn trimmed_lines_and_closed_conversations_leave_the_list() {
     let mut state = live_state("irc.example.org".into(), vec!["#a".into(), "#b".into()]);
     notified(&mut state, "#a", "old");

@@ -1360,7 +1360,23 @@ impl AppState {
             return;
         }
         if self.attention.len() >= MAX_ATTENTION {
-            self.attention.pop_front();
+            // Full: the oldest history line goes first, so a page of
+            // history cannot push out a live line not yet visited. With no
+            // history queued, a history line is not kept; otherwise the
+            // oldest line goes.
+            let victim = self
+                .attention
+                .iter()
+                .position(|&(other, seen)| self.is_history_line(other, seen));
+            match victim {
+                Some(at) => {
+                    self.attention.remove(at);
+                }
+                None if self.is_history_line(id, sequence) => return,
+                None => {
+                    self.attention.pop_front();
+                }
+            }
         }
         let at = self
             .attention
@@ -1368,6 +1384,17 @@ impl AppState {
             .position(|&(other, newer)| other == id && newer > sequence)
             .unwrap_or(self.attention.len());
         self.attention.insert(at, (id, sequence));
+    }
+
+    /// Whether the line with `sequence` of conversation `id` is held and is
+    /// history (replayed or requested).
+    fn is_history_line(&self, id: ConversationId, sequence: u64) -> bool {
+        self.conversation(id).is_some_and(|conversation| {
+            conversation
+                .messages
+                .binary_search_by_key(&sequence, |message| message.sequence)
+                .is_ok_and(|at| conversation.messages[at].is_history())
+        })
     }
 
     /// Whether a notified line is waiting to be visited.
