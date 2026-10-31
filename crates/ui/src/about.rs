@@ -58,6 +58,20 @@ pub fn rows(info: &BuildInfo, i18n: &Localizer) -> Vec<(String, String)> {
     rows
 }
 
+/// Height of the macOS title bar. GPUI's macOS backend takes the opening
+/// bounds as the frame, title bar included (`vendor/gpui/PATCHES.md`, #801),
+/// so a window sized for its content adds this to keep that content (#809).
+const MACOS_TITLEBAR_HEIGHT: f32 = 28.;
+
+/// `content` grown by the title bar on macOS; unchanged elsewhere.
+pub(crate) fn frame_size(content: Size<Pixels>) -> Size<Pixels> {
+    if cfg!(target_os = "macos") {
+        size(content.width, content.height + px(MACOS_TITLEBAR_HEIGHT))
+    } else {
+        content
+    }
+}
+
 /// The window currently open, so a second request raises it.
 #[derive(Default)]
 struct OpenAbout(Option<WindowHandle<AboutWindow>>);
@@ -74,7 +88,7 @@ pub fn open(i18n: &Localizer, cx: &mut App) {
         return;
     }
     let i18n = i18n.clone();
-    let bounds = Bounds::centered(None, size(px(420.), px(360.)), cx);
+    let bounds = Bounds::centered(None, frame_size(size(px(420.), px(360.))), cx);
     let title = i18n.text("about_title");
     let opened = cx.open_window(
         WindowOptions {

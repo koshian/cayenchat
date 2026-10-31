@@ -66,7 +66,7 @@ impl WhoisWindow {
         i18n: Localizer,
         cx: &mut App,
     ) -> Result<WindowHandle<Self>, String> {
-        let bounds = Bounds::centered(None, size(px(460.), px(480.)), cx);
+        let bounds = Bounds::centered(None, crate::about::frame_size(size(px(460.), px(480.))), cx);
         let title = window_title(&info);
         cx.open_window(
             WindowOptions {
