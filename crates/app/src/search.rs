@@ -188,24 +188,23 @@ fn diagnostic_sources(
     state: &AppState,
     scope: Scope,
     diagnostics: Option<DiagnosticsView>,
-) -> Vec<Source> {
-    let Some(shown) = diagnostics else {
-        return Vec::new();
+) -> impl Iterator<Item = Source> + '_ {
+    let views: &[DiagnosticsView] = match (diagnostics, scope) {
+        (None, _) => &[],
+        (Some(_), Scope::All) => &[DiagnosticsView::Overview, DiagnosticsView::Protocol],
+        (Some(DiagnosticsView::Overview), Scope::Selected) => &[DiagnosticsView::Overview],
+        (Some(DiagnosticsView::Protocol), Scope::Selected) => &[DiagnosticsView::Protocol],
     };
-    match scope {
-        Scope::Selected => match state.selection() {
-            Selection::Server(network) => vec![Source::Diagnostics(network, shown)],
-            _ => Vec::new(),
-        },
-        Scope::All => state
-            .networks()
-            .iter()
-            .flat_map(|network| {
-                [DiagnosticsView::Overview, DiagnosticsView::Protocol]
-                    .map(|view| Source::Diagnostics(network.id, view))
-            })
-            .collect(),
-    }
+    let selection = state.selection();
+    state
+        .networks()
+        .iter()
+        .filter(move |network| scope == Scope::All || selection == Selection::Server(network.id))
+        .flat_map(move |network| {
+            views
+                .iter()
+                .map(move |&view| Source::Diagnostics(network.id, view))
+        })
 }
 
 /// What a search of a scope looked at: see [`revision`].
@@ -222,6 +221,8 @@ pub struct Revision {
 /// [`Scan::new`]; the diagnostic lines are only counted when searched, so
 /// they never make a search of the messages stale.
 pub fn revision(state: &AppState, scope: Scope, diagnostics: Option<DiagnosticsView>) -> Revision {
+    // Sequences only grow, so a line recorded after a clear or a trim moves
+    // the newest one even when the count comes back to the same value.
     let mut diagnostic_lines = (0, 0);
     for source in diagnostic_sources(state, scope, diagnostics) {
         if let Source::Diagnostics(network, view) = source {
@@ -848,6 +849,25 @@ mod tests {
         let two = state.networks()[1].id;
         note(&mut state, two, DiagnosticsView::Protocol, "y");
         assert_ne!(revision(&state, Scope::All, Some(Overview)), all);
+    }
+
+    #[test]
+    fn revision_changes_when_diagnostics_are_cleared_and_rerecorded() {
+        use DiagnosticsView::Overview;
+        let (mut state, _, _) = state_with_two_channels();
+        let one = state.networks()[0].id;
+        state.dispatch(crate::Command::SelectServer(one));
+        for scope in [Scope::Selected, Scope::All] {
+            note(&mut state, one, Overview, "a");
+            note(&mut state, one, Overview, "b");
+            let before = revision(&state, scope, Some(Overview));
+            state.clear_diagnostics(one);
+            assert_ne!(revision(&state, scope, Some(Overview)), before);
+            note(&mut state, one, Overview, "a");
+            note(&mut state, one, Overview, "b");
+            assert_ne!(revision(&state, scope, Some(Overview)), before);
+            state.clear_diagnostics(one);
+        }
     }
 
     #[test]
