@@ -57,6 +57,9 @@ fn record_allocation(size: usize) {
     }
 }
 
+/// The counters are process-wide, so each test holds this for its whole run.
+static MEASURING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn within_budget<T>(budget: usize, decode: impl FnOnce() -> T) -> T {
     let baseline = LIVE.load(Ordering::SeqCst);
     PEAK.store(baseline, Ordering::SeqCst);
@@ -108,6 +111,7 @@ fn png_with_text(width: u32, height: u32, text_bytes: usize) -> Vec<u8> {
 
 #[test]
 fn image_allocations_obey_decode_budgets() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
     let png = png_with_icc(2 * 1024 * 1024);
     let preview_budget = 1024 * 1024;
     let limits = Limits {
@@ -176,4 +180,23 @@ fn image_allocations_obey_decode_budgets() {
     // floating-point intermediate of the resize.
     let source = within_budget(64 * 1024 * 1024, || avatar_edit::open(&bytes)).unwrap();
     assert_eq!((source.width(), source.height()), (2048, 1400));
+}
+
+#[test]
+fn decoder_construction_does_not_allocate_raster_sized_memory() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // The header declares a 4096 × 2800 RGBA raster (about 44 MiB) while the
+    // data itself compresses to a few kilobytes. Rejecting it against a
+    // 16 MiB decode budget must not allocate anything near the raster size,
+    // so the decoder's construction itself is cheap.
+    let png = png_with_text(4096, 2800, 0);
+    assert!(png.len() < 256 * 1024);
+    let limits = Limits {
+        max_decode_bytes: 16 * 1024 * 1024,
+        ..Limits::default()
+    };
+    let result = within_budget(1024 * 1024, || {
+        decode::thumbnail(&png, &limits, &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
 }
