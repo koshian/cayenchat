@@ -17,6 +17,16 @@ by a simpler approach, not by more exceptions). A guess that can never be
 exact (which command a numeric reply answers, where a URL ends in prose) is
 kept narrow, or the feature is changed so it is not needed.
 
+**Key a check by what it guards.** A check that turns away stale results
+or other state (a generation, a revision, a size limit) is keyed by the
+thing it protects: this connection, this channel, this batch. A shared
+counter or window is coarser and catches unrelated work: a revision shared
+by every channel made a key write on one channel drop another channel's
+result (#740), and an overflow flag set for the whole connection marked
+live batches as replayed (#811, from the fix for #705). Copies of state are
+the same problem: each copy of the settings needs a mechanism to keep it in
+sync, so first ask whether the copy can go instead.
+
 **Don't repeat yourself (DRY).** Each rule lives in one place: a check, a
 conversion, a limit, a list of names or a piece of wording. Reuse the
 existing helper instead of writing a second one, and when two places must
