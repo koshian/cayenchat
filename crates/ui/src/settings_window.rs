@@ -5755,14 +5755,7 @@ mod escape_tests {
 
     #[gpui::test]
     fn escape_closes_layers_first_then_the_window(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let settings = crate::settings_with_channels("#a");
         let owner = cx.add_window(|window, cx| {
             crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -5807,14 +5800,7 @@ mod escape_tests {
         &mut gpui::VisualTestContext,
         TestAppContext,
     ) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let owner = cx.add_window({
             let settings = settings.clone();
             move |window, cx| crate::ChatWindow::with_settings(settings, None, window, cx)

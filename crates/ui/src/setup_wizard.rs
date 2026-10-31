@@ -605,10 +605,11 @@ impl ChatWindow {
 
 #[cfg(test)]
 mod tests {
-    use cayenchat_storage::{Language, Settings, TextEncoding, ThemeMode, transfer};
+    use cayenchat_storage::{Language, Settings, TextEncoding, transfer};
     use gpui::TestAppContext;
 
     use super::add_easy_server;
+    use crate::support::window;
     use crate::{ChatWindow, settings_file, settings_file::TestFile, settings_with_channels};
 
     /// Whether the wizard is on screen. Not read from `debug_bounds`, which
@@ -621,26 +622,6 @@ mod tests {
         let mut settings = Settings::default();
         settings.language = Language::English;
         settings
-    }
-
-    fn window<'a>(
-        settings: &Settings,
-        cx: &'a mut TestAppContext,
-    ) -> (gpui::Entity<ChatWindow>, &'a mut gpui::VisualTestContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
-            cx.set_global(crate::theme::Theme::new(
-                ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
-        let (chat, cx) = cx.add_window_view(|window, cx| {
-            ChatWindow::with_settings(settings.clone(), None, window, cx)
-        });
-        cx.run_until_parked();
-        (chat, cx)
     }
 
     #[test]

@@ -14,42 +14,22 @@
 //! suffix, and every URL points at example.com: nothing is fetched.
 
 use std::{
-    io::{BufRead, BufReader, Write},
-    net::TcpStream,
+    io::BufRead,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use cayenchat_irc_core::{
-    AvatarRequestFailure, Connection, ConnectionConfig, Event, Ircv3Options, WireDirection,
-};
+use cayenchat_irc_core::{AvatarRequestFailure, Event, Ircv3Options, WireDirection};
 
-const TIMEOUT: Duration = Duration::from_secs(20);
-
-fn server() -> Option<(String, u16)> {
-    let address = std::env::var("CAYENCHAT_INTEROP_IRC").ok()?;
-    let (host, port) = address.rsplit_once(':')?;
-    Some((host.to_owned(), port.parse().ok()?))
-}
+mod common;
+use common::{Raw, TIMEOUT, server};
 
 /// Another user, speaking raw IRC with `batch` and `draft/metadata-2`.
-struct Peer {
-    name: String,
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
-}
+type Peer = Raw;
 
 impl Peer {
     fn connect(host: &str, port: u16, nick: &str) -> Self {
-        let writer = TcpStream::connect((host, port)).unwrap();
-        writer
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        let mut peer = Self {
-            name: nick.to_owned(),
-            reader: BufReader::new(writer.try_clone().unwrap()),
-            writer,
-        };
+        let mut peer = Raw::open(host, port, nick, TIMEOUT);
         for line in [
             "CAP LS 302".to_owned(),
             format!("NICK {nick}"),
@@ -63,40 +43,6 @@ impl Peer {
         peer.send("METADATA * SUB avatar");
         peer.expect(|line| line.contains(" 770 "));
         peer
-    }
-
-    fn send(&mut self, line: &str) {
-        println!("{} >> {line}", self.name);
-        self.writer
-            .write_all(format!("{line}\r\n").as_bytes())
-            .unwrap();
-    }
-
-    /// Reads until a line matches, answering PINGs.
-    fn expect(&mut self, matches: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "{}: expected line did not arrive",
-                self.name
-            );
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => panic!("{}: server closed the connection", self.name),
-                Ok(_) => {}
-                Err(_) => continue,
-            }
-            let line = line.trim_end().to_owned();
-            println!("{} << {line}", self.name);
-            if let Some(token) = line.strip_prefix("PING ") {
-                self.send(&format!("PONG {token}"));
-                continue;
-            }
-            if matches(&line) {
-                return line;
-            }
-        }
     }
 
     /// Reads for `period`, returning every line.
@@ -121,61 +67,17 @@ impl Peer {
 }
 
 /// CayenChat's connection and everything it reported.
-struct Client {
-    connection: Connection,
-    events: Vec<Event>,
-}
+type Client = common::Client;
 
 impl Client {
     fn connect(host: &str, port: u16, nick: &str, channel: &str) -> Self {
-        let mut config = ConnectionConfig::tls(host.into(), nick.into(), vec![channel.into()]);
-        config.port = port;
-        config.use_tls = false;
+        let mut config = Self::config(host, port, nick, vec![channel.into()]);
         config.ircv3 = Ircv3Options {
             batch: true,
             metadata: true,
             ..Ircv3Options::default()
         };
-        let connection = Connection::connect(config).unwrap();
-        // The checks read IRC lines sent after registration.
-        connection.set_transcript(true);
-        Self {
-            connection,
-            events: Vec::new(),
-        }
-    }
-
-    /// Waits for an event, keeping every event seen.
-    fn wait(&mut self, what: &str, matches: impl Fn(&Event) -> bool) -> Event {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "CayenChat: {what} did not arrive"
-            );
-            let Some(event) = self.connection.try_recv() else {
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            };
-            match &event {
-                Event::Wire {
-                    direction, line, ..
-                } => println!(
-                    "cayenchat {} {line}",
-                    if *direction == WireDirection::Sent {
-                        ">>"
-                    } else {
-                        "<<"
-                    }
-                ),
-                Event::Diagnostic { .. } => {}
-                other => println!("cayenchat event {other:?}"),
-            }
-            self.events.push(event.clone());
-            if matches(&event) {
-                return event;
-            }
-        }
+        Self::start(config)
     }
 
     /// Waits for the answer to our request `request`.

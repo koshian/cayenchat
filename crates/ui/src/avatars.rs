@@ -1142,14 +1142,7 @@ mod tests {
         let mut settings = crate::settings_with_channels("#a");
         settings.servers[0].user_avatars = true;
         let file = crate::settings_file::TestFile::with(&settings);
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let owner = cx.add_window({
             let (settings, fetcher) = (settings.clone(), fetcher.clone());
             move |window, cx| {

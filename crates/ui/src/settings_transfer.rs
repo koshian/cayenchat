@@ -650,27 +650,8 @@ mod tests {
     use cayenchat_storage::{Language, Settings, ThemeMode, transfer};
     use gpui::TestAppContext;
 
-    use crate::{ChatWindow, settings_file, settings_file::TestFile, settings_with_channels};
-
-    fn window<'a>(
-        settings: &Settings,
-        cx: &'a mut TestAppContext,
-    ) -> (gpui::Entity<ChatWindow>, &'a mut gpui::VisualTestContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            crate::apply_shortcuts(crate::ShortcutPrefs::default(), cx);
-            cx.set_global(crate::theme::Theme::new(
-                ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
-        let (chat, cx) = cx.add_window_view(|window, cx| {
-            ChatWindow::with_settings(settings.clone(), None, window, cx)
-        });
-        cx.run_until_parked();
-        (chat, cx)
-    }
+    use crate::support::window;
+    use crate::{settings_file, settings_file::TestFile, settings_with_channels};
 
     fn directory(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(

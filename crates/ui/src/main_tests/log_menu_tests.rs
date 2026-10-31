@@ -5,14 +5,7 @@ use cayenchat_model::NetworkId;
 use gpui::{ClipboardItem, EntityInputHandler, Focusable, TestAppContext, point, px};
 
 fn open_chat(cx: &mut TestAppContext) -> (gpui::Entity<ChatWindow>, &mut gpui::VisualTestContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)

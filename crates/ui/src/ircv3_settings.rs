@@ -1614,14 +1614,7 @@ mod own_avatar_tests {
 
     #[gpui::test]
     fn servers_that_never_enable_avatars_are_reported_as_unsupported(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let settings = crate::settings_with_channels("");
         let (chat, cx) = cx.add_window_view(|window, cx| {
             ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -1709,14 +1702,7 @@ mod own_avatar_tests {
             assert!(read_line(&mut lines).starts_with("QUIT"));
         });
 
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let mut settings = crate::settings_with_channels("");
         settings.servers[0].nickname = "me".into();
         settings.servers[0].ircv3.peer_avatars = true;
@@ -1839,14 +1825,7 @@ mod own_avatar_tests {
             assert!(read_line(&mut lines).starts_with("QUIT"));
         });
 
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let mut settings = crate::settings_with_channels("");
         settings.servers[0].user_avatars = true;
         settings.servers[0].nickname = "me".into();

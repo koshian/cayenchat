@@ -493,27 +493,24 @@ impl AppState {
     /// recording it as that network's chosen order.
     pub fn move_conversation(&mut self, id: ConversationId, to: MoveTo) -> Option<NetworkId> {
         let network = self.conversation(id)?.network;
+        // Built once: the moves below only read it before changing anything.
+        let tree = self.display_tree();
         if !self.groups.is_empty() {
             if let MoveTo::Place(other) = to
-                && self.display_parent(id)? != self.display_parent(other)?
+                && tree.parent_of(id)? != tree.parent_of(other)?
             {
-                return self.relocate(id, other).then_some(network);
+                return self.relocate(&tree, id, other).then_some(network);
             }
             if self.is_grouped(id) {
-                return self.move_in_group(id, to)?.then_some(network);
+                return self.move_in_group(&tree, id, to)?.then_some(network);
             }
         }
         let range = self.group_range(id)?;
         // Channels shown in a group are not in the server's part of the tree.
-        let shown: Vec<usize> = {
-            let tree = self.display_tree();
-            range
-                .clone()
-                .filter(|&i| {
-                    tree.parent_of(self.conversations[i].id) == Some(Parent::Server(network))
-                })
-                .collect()
-        };
+        let shown: Vec<usize> = range
+            .clone()
+            .filter(|&i| tree.parent_of(self.conversations[i].id) == Some(Parent::Server(network)))
+            .collect();
         let from_shown = shown.iter().position(|&i| self.conversations[i].id == id)?;
         let last = shown.len() - 1;
         let target = match to {
@@ -1360,7 +1357,23 @@ impl AppState {
             return;
         }
         if self.attention.len() >= MAX_ATTENTION {
-            self.attention.pop_front();
+            // Full: the oldest history line goes first, so a page of
+            // history cannot push out a live line not yet visited. With no
+            // history queued, a history line is not kept; otherwise the
+            // oldest line goes.
+            let victim = self
+                .attention
+                .iter()
+                .position(|&(other, seen)| self.is_history_line(other, seen));
+            match victim {
+                Some(at) => {
+                    self.attention.remove(at);
+                }
+                None if self.is_history_line(id, sequence) => return,
+                None => {
+                    self.attention.pop_front();
+                }
+            }
         }
         let at = self
             .attention
@@ -1368,6 +1381,17 @@ impl AppState {
             .position(|&(other, newer)| other == id && newer > sequence)
             .unwrap_or(self.attention.len());
         self.attention.insert(at, (id, sequence));
+    }
+
+    /// Whether the line with `sequence` of conversation `id` is held and is
+    /// history (replayed or requested).
+    fn is_history_line(&self, id: ConversationId, sequence: u64) -> bool {
+        self.conversation(id).is_some_and(|conversation| {
+            conversation
+                .messages
+                .binary_search_by_key(&sequence, |message| message.sequence)
+                .is_ok_and(|at| conversation.messages[at].is_history())
+        })
     }
 
     /// Whether a notified line is waiting to be visited.

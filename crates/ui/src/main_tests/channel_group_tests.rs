@@ -5,14 +5,7 @@ use gpui::{Entity, TestAppContext, VisualTestContext};
 use super::{ChatWindow, TreeRow};
 
 fn open_chat(cx: &mut TestAppContext) -> (Entity<ChatWindow>, &mut VisualTestContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings
         .add_server(cayenchat_storage::PRESETS[1].host)

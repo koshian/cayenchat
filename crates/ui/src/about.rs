@@ -88,7 +88,7 @@ pub fn open(i18n: &Localizer, cx: &mut App) {
         return;
     }
     let i18n = i18n.clone();
-    let bounds = Bounds::centered(None, frame_size(size(px(420.), px(320.))), cx);
+    let bounds = Bounds::centered(None, frame_size(size(px(420.), px(360.))), cx);
     let title = i18n.text("about_title");
     let opened = cx.open_window(
         WindowOptions {
@@ -160,7 +160,7 @@ impl Render for AboutWindow {
                     .gap_3()
                     .child(
                         div()
-                            .w(px(110.))
+                            .w(px(90.))
                             .flex_shrink_0()
                             .text_color(theme.text_secondary)
                             .child(label),
@@ -182,22 +182,48 @@ impl Render for AboutWindow {
             .p_4()
             .bg(theme.window)
             .text_color(theme.text)
-            .child(div().text_xl().child("CayenChat"))
-            .child(details)
+            // The content scrolls when the window is small, so the close
+            // button below stays reachable.
             .child(
                 div()
-                    .text_color(theme.text_secondary)
-                    .child(self.i18n.text("about_copyright")),
+                    .id("about-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div().flex().flex_col().items_center().child(
+                            div()
+                                .text_2xl()
+                                .font_weight(FontWeight::BOLD)
+                                .child("CayenChat"),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .p_3()
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.surface)
+                            .child(details),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_secondary)
+                            .child(self.i18n.text("about_copyright")),
+                    )
+                    .child(
+                        div()
+                            .id("about-repository")
+                            .text_color(theme.link)
+                            .cursor_pointer()
+                            .child(REPOSITORY_URL)
+                            .on_click(|_, _, cx| cx.open_url(REPOSITORY_URL)),
+                    ),
             )
-            .child(
-                div()
-                    .id("about-repository")
-                    .text_color(theme.link)
-                    .cursor_pointer()
-                    .child(REPOSITORY_URL)
-                    .on_click(|_, _, cx| cx.open_url(REPOSITORY_URL)),
-            )
-            .child(div().flex_1())
             .child(
                 div().flex().justify_end().child(
                     div()

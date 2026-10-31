@@ -14,44 +14,25 @@
 //! Nicknames and the channel carry a per-run suffix.
 
 use std::{
-    io::{BufRead, BufReader, Write},
-    net::TcpStream,
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use cayenchat_irc_core::{
-    ChannelActivityKind, Connection, ConnectionConfig, Event, Ircv3Options, PeerAvatarCache,
-    WireDirection,
+    ChannelActivityKind, Event, Ircv3Options, PeerAvatarCache, WireDirection,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(20);
+mod common;
+use common::{Raw, TIMEOUT, server};
+
 const PICTURE: &str = "https://example.com/bot.png";
 
-fn server() -> Option<(String, u16)> {
-    let address = std::env::var("CAYENCHAT_INTEROP_IRC").ok()?;
-    let (host, port) = address.rsplit_once(':')?;
-    Some((host.to_owned(), port.parse().ok()?))
-}
-
 /// A bot speaking raw IRC whose realname carries KVIrc's avatar mark.
-struct Bot {
-    name: String,
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
-}
+type Bot = Raw;
 
 impl Bot {
     fn connect(host: &str, port: u16, nick: &str, user: &str, channel: &str) -> Self {
-        let writer = TcpStream::connect((host, port)).unwrap();
-        writer
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        let mut bot = Self {
-            name: nick.to_owned(),
-            reader: BufReader::new(writer.try_clone().unwrap()),
-            writer,
-        };
+        let mut bot = Raw::open(host, port, nick, TIMEOUT);
         bot.send(&format!("NICK {nick}"));
         bot.send(&format!("USER {user} 0 * :\u{3}4\u{f}Bot"));
         bot.expect(|line| line.contains(" 376 ") || line.contains(" 422 "));
@@ -59,104 +40,20 @@ impl Bot {
         bot.expect(|line| line.contains(" 366 "));
         bot
     }
-
-    fn send(&mut self, line: &str) {
-        println!("{} >> {line}", self.name);
-        self.writer
-            .write_all(format!("{line}\r\n").as_bytes())
-            .unwrap();
-    }
-
-    fn read(&mut self) -> Option<String> {
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
-            Ok(0) => panic!("{}: server closed the connection", self.name),
-            Ok(_) => {}
-            Err(_) => return None,
-        }
-        let line = line.trim_end().to_owned();
-        println!("{} << {line}", self.name);
-        if let Some(token) = line.strip_prefix("PING ") {
-            self.send(&format!("PONG {token}"));
-        }
-        Some(line)
-    }
-
-    fn expect(&mut self, matches: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "{}: expected line did not arrive",
-                self.name
-            );
-            if let Some(line) = self.read()
-                && matches(&line)
-            {
-                return line;
-            }
-        }
-    }
 }
 
 /// CayenChat's connection and everything it reported.
-struct Client {
-    connection: Connection,
-    events: Vec<Event>,
-}
+type Client = common::Client;
 
 impl Client {
     fn connect(host: &str, port: u16, nick: &str, channel: &str, cache: &PeerAvatarCache) -> Self {
-        let mut config = ConnectionConfig::tls(host.into(), nick.into(), vec![channel.into()]);
-        config.port = port;
-        config.use_tls = false;
+        let mut config = Self::config(host, port, nick, vec![channel.into()]);
         config.ircv3 = Ircv3Options {
             peer_avatars: true,
             ..Ircv3Options::default()
         };
         config.peer_avatar_cache = cache.clone();
-        let connection = Connection::connect(config).unwrap();
-        connection.set_transcript(true);
-        Self {
-            connection,
-            events: Vec::new(),
-        }
-    }
-
-    fn wait(&mut self, what: &str, matches: impl Fn(&Event) -> bool) -> Event {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "CayenChat: {what} did not arrive"
-            );
-            let Some(event) = self.connection.try_recv() else {
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            };
-            match &event {
-                Event::Wire {
-                    direction, line, ..
-                } => println!(
-                    "cayenchat {} {line}",
-                    if *direction == WireDirection::Sent {
-                        ">>"
-                    } else {
-                        "<<"
-                    }
-                ),
-                Event::Diagnostic { .. } => {}
-                other => println!("cayenchat event {other:?}"),
-            }
-            assert!(
-                !matches!(event, Event::Disconnected(_)),
-                "CayenChat was disconnected: {event:?}"
-            );
-            self.events.push(event.clone());
-            if matches(&event) {
-                return event;
-            }
-        }
+        Self::start(config)
     }
 
     /// Lines sent so far that start with `prefix`.

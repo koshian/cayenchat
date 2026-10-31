@@ -15,14 +15,7 @@ fn open_chat<'a>(
     &'a mut VisualTestContext,
     TestFile,
 ) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels(channels);
     settings.servers[0].encoding = TextEncoding::EucJp;
     let file = TestFile::with(&settings);
