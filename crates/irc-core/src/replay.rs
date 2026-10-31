@@ -40,6 +40,11 @@ pub(crate) struct ReplayTracker {
     /// still name history. Keep unknown batch-tagged lines replayed until the
     /// connection resets rather than letting one become live by eviction.
     overflowed: bool,
+    /// While `overflowed`, references of batches opened after the overflow
+    /// that are known not to be history (live multiline, netsplit, ...), so
+    /// the overflow does not turn them into replayed lines. Bounded like
+    /// `history_batches`; a dropped entry fails closed (replayed).
+    live_batches: Vec<String>,
 }
 
 impl ReplayTracker {
@@ -68,6 +73,11 @@ impl ReplayTracker {
                     self.overflowed = true;
                 }
                 self.history_batches.push(reference.to_owned());
+            } else if self.overflowed {
+                if self.live_batches.len() >= MAX_OPEN_BATCHES {
+                    self.live_batches.remove(0);
+                }
+                self.live_batches.push(reference.to_owned());
             }
         }
     }
@@ -77,6 +87,7 @@ impl ReplayTracker {
     pub(crate) fn reset(&mut self) {
         self.history_batches = Vec::new();
         self.overflowed = false;
+        self.live_batches = Vec::new();
     }
 
     /// Whether a PRIVMSG or NOTICE is not a live message from a user: it is
@@ -104,12 +115,14 @@ impl ReplayTracker {
 
     pub(crate) fn in_history_batch(&self, message: &IrcMessage) -> bool {
         tag_value(message, "batch").is_some_and(|reference| {
-            self.overflowed || self.history_batches.iter().any(|open| open == reference)
+            self.history_batches.iter().any(|open| open == reference)
+                || (self.overflowed && !self.live_batches.iter().any(|open| open == reference))
         })
     }
 
     fn forget(&mut self, reference: &str) {
         self.history_batches.retain(|open| open != reference);
+        self.live_batches.retain(|open| open != reference);
     }
 }
 
@@ -268,8 +281,27 @@ mod tests {
         assert!(tracker.replayed(&tagged("batch=child")));
         assert_eq!(tracker.history_batches.len(), MAX_OPEN_BATCHES);
 
+        // A live batch opened after the overflow stays live, and a reused
+        // reference or its end drops that.
+        tracker.observe(&parse(":srv BATCH +ml draft/multiline #chan"));
+        assert!(!tracker.replayed(&tagged("batch=ml")));
+        assert!(tracker.replayed(&tagged("batch=unknown")));
+        tracker.observe(&parse(":srv BATCH -ml"));
+        assert!(tracker.replayed(&tagged("batch=ml")));
+        tracker.observe(&parse(":srv BATCH +ml draft/multiline #chan"));
+        tracker.observe(&parse(":srv BATCH +ml chathistory #chan"));
+        assert!(tracker.replayed(&tagged("batch=ml")));
+        // Live batches are bounded and fail closed.
+        for index in 0..MAX_OPEN_BATCHES + 1 {
+            tracker.observe(&parse(&format!(":srv BATCH +l{index} netsplit a b")));
+        }
+        assert!(tracker.live_batches.len() <= MAX_OPEN_BATCHES);
+        assert!(tracker.replayed(&tagged("batch=l0")));
+        assert!(!tracker.replayed(&tagged(&format!("batch=l{MAX_OPEN_BATCHES}"))));
+
         tracker.reset();
         assert!(tracker.history_batches.is_empty());
+        assert!(tracker.live_batches.is_empty());
         assert!(!tracker.overflowed);
         assert!(!tracker.replayed(&tagged("batch=child")));
         assert!(!tracker.replayed(&tagged("batch=unknown")));
