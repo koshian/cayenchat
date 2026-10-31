@@ -3,7 +3,7 @@
 
 use crate::channel_settings_dialog::{
     CHAR_REF_CHOICES, ChannelSettingsEvent, ChannelSettingsView, Choices, apply_auto_join,
-    apply_charsets,
+    save_channel_choices,
 };
 use crate::os_text::WindowOsText;
 use crate::{
@@ -3183,27 +3183,44 @@ impl SettingsWindow {
             let view = view.read(cx);
             (view.channel().to_owned(), view.mapping(), view.choices)
         };
-        let profile_id = self
+        let Some(profile_id) = self
             .settings
             .values
             .selected_profile()
-            .map(|profile| profile.id.clone());
-        let utf8_only = profile_id.as_deref().is_some_and(|profile_id| {
-            self.owner
-                .update(cx, |owner, _, _| {
-                    owner.channel_settings_context(profile_id).1
-                })
-                .unwrap_or(false)
-        });
-        let i18n = self.i18n.clone();
-        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            .map(|profile| profile.id.clone())
+        else {
             return;
         };
-        if let Err(error) = apply_charsets(profile, &channel, mapping, choices, utf8_only, &i18n) {
-            view.update(cx, |view, cx| view.set_error(Some(error), cx));
-            return;
+        let utf8_only = self
+            .owner
+            .update(cx, |owner, _, _| {
+                owner.channel_settings_context(&profile_id).1
+            })
+            .unwrap_or(false);
+        let i18n = self.i18n.clone();
+        let profile = match save_channel_choices(
+            &mut self.settings.values,
+            &profile_id,
+            &channel,
+            mapping,
+            choices,
+            utf8_only,
+            &i18n,
+        ) {
+            Ok(profile) => profile,
+            Err(error) => {
+                view.update(cx, |view, cx| view.set_error(Some(error), cx));
+                return;
+            }
+        };
+        if self.auto_join.is_some() {
+            // The list being edited is the source: its rows write the field.
+            self.set_channel_auto_join(&channel, mapping, choices.enabled, cx);
+        } else {
+            self.settings
+                .channels
+                .update(cx, |field, cx| field.set_text(&profile.channels, cx));
         }
-        self.set_channel_auto_join(&channel, mapping, choices.enabled, cx);
         self.leave_channel_settings(window, cx);
         self.autosave_now(None, cx);
     }
@@ -6415,6 +6432,7 @@ mod escape_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
@@ -6427,7 +6445,10 @@ mod escape_tests {
             while Instant::now() < deadline {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
-                    Ok(_) => lines.push(std::mem::take(&mut line)),
+                    Ok(_) => {
+                        lines.push(std::mem::take(&mut line));
+                        let _ = first_tx.send(());
+                    }
                     Err(error)
                         if matches!(
                             error.kind(),
@@ -6479,7 +6500,11 @@ mod escape_tests {
             .unwrap();
         assert_eq!(file_profile().channels, "-#a,#b");
 
-        // Closing the connection ends the recording.
+        // Closing the connection ends the recording. Wait for the first line
+        // so a slow connection thread is not closed before it wrote anything.
+        first_rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("the connection sent its first line");
         owner
             .update(cx, |chat, _, _| {
                 chat.sessions

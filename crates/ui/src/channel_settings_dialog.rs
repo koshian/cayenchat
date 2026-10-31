@@ -3,12 +3,12 @@
 //! encodings and its numeric character reference mode, in one dialog that
 //! the chat window (channel menu) and the settings window (auto-join list)
 //! both show. The dialog only edits a copy: it reports Save or Cancel, and
-//! the host writes the values with [`apply_charsets`] and
-//! [`apply_auto_join`]. Saving never joins or parts the channel.
+//! the host writes the values with [`save_channel_choices`] (built from
+//! [`apply_charsets`] and [`apply_auto_join`]). Saving never joins or parts the channel.
 
 use cayenchat_model::{NetworkId, display, names::CaseMapping};
 use cayenchat_storage::{
-    AutoJoinEntry, CharRefMode, ServerProfile, TextEncoding, format_auto_join,
+    AutoJoinEntry, CharRefMode, ServerProfile, Settings, TextEncoding, format_auto_join,
 };
 use gpui::{prelude::*, *};
 
@@ -129,6 +129,27 @@ pub(crate) fn apply_auto_join(
     let text = format_auto_join(&entries);
     profile.channels = text.trim().to_owned();
     text
+}
+
+/// Applies the dialog's `choices` for `channel` to the profile `profile_id`
+/// of `settings`: the encodings and the reference mode, then the auto-join
+/// choice. Returns a copy of the updated profile. It reads and writes no file
+/// and touches no host copy; an error leaves `settings` as it was.
+pub(crate) fn save_channel_choices(
+    settings: &mut Settings,
+    profile_id: &str,
+    channel: &str,
+    mapping: CaseMapping,
+    choices: Choices,
+    utf8_only: bool,
+    i18n: &Localizer,
+) -> Result<ServerProfile, String> {
+    let profile = settings
+        .profile_mut(profile_id)
+        .ok_or_else(|| format!("unknown server profile: {profile_id}"))?;
+    apply_charsets(profile, channel, mapping, choices, utf8_only, i18n)?;
+    apply_auto_join(profile, channel, mapping, choices.enabled);
+    Ok(profile.clone())
 }
 
 /// The "inherit" radio plus one per `CHAR_REF_CHOICES` entry.
@@ -780,17 +801,22 @@ impl ChatWindow {
             Err(error) => return fail(error, cx),
         };
         let utf8_only = self.channel_settings_context(&profile_id).1;
-        let Some(profile) = settings.profile_mut(&profile_id) else {
+        if settings.profile(&profile_id).is_none() {
             self.close_channel_settings_prompt(window, cx);
             return;
-        };
-        if let Err(error) =
-            apply_charsets(profile, &channel, mapping, choices, utf8_only, &self.i18n)
-        {
-            return fail(error, cx);
         }
-        apply_auto_join(profile, &channel, mapping, choices.enabled);
-        let profile = profile.clone();
+        let profile = match save_channel_choices(
+            &mut settings,
+            &profile_id,
+            &channel,
+            mapping,
+            choices,
+            utf8_only,
+            &self.i18n,
+        ) {
+            Ok(profile) => profile,
+            Err(error) => return fail(error, cx),
+        };
         if let Err(error) = settings_file::save(&settings) {
             return fail(error, cx);
         }
