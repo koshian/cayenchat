@@ -8105,3 +8105,28 @@ async fn a_refused_send_keeps_the_queue_reason_and_logs_the_cause() {
     );
     assert_eq!(stream_error_reason(&error), REASON_LOST);
 }
+
+#[tokio::test]
+async fn refused_sends_get_the_same_short_reasons() {
+    let (sender, mut received) = mpsc::channel(8);
+    let transcript = Transcript {
+        events: EventSender::new(sender),
+        started: Instant::now(),
+        registered: true,
+        requested: Arc::new(AtomicBool::new(false)),
+    };
+    let full = irc::error::Error::OutgoingQueueFull;
+    let broken = irc::error::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "write failed in the vendored library",
+    ));
+    for (error, reason) in [(&full, REASON_QUEUE_FULL), (&broken, REASON_LOST)] {
+        transcript.send_refused("Send failed", error).await;
+        let Some(Event::Diagnostic { message, .. }) = received.recv().await else {
+            panic!("no diagnostic");
+        };
+        assert!(message.starts_with("Send failed:"), "{message}");
+        assert!(!reason.contains("vendored"), "{reason}");
+        assert_eq!(stream_error_reason(error), reason);
+    }
+}
