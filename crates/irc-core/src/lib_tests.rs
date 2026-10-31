@@ -1100,14 +1100,11 @@ fn the_transcript_follows_registration_and_the_ui() {
 
 #[test]
 fn iso_2022_jp_channel_name_and_message_round_trip() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut reader = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            mut reader,
+        } = io;
         loop {
             let mut line = Vec::new();
             reader.read_until(b'\n', &mut line).unwrap();
@@ -1627,14 +1624,9 @@ fn safe_channel_targets_and_commands_keep_the_full_name() {
 
 #[test]
 fn safe_channel_join_names_messages_and_part_round_trip() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         let read = |lines: &mut std::io::Lines<BufReader<std::net::TcpStream>>| {
             loop {
                 let line = lines.next().expect("client closed the connection").unwrap();
@@ -1743,14 +1735,9 @@ fn safe_channel_join_names_messages_and_part_round_trip() {
 
 #[test]
 fn rejoining_after_a_kick_lists_each_member_once() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
@@ -1786,14 +1773,9 @@ fn rejoining_after_a_kick_lists_each_member_once() {
 
 #[test]
 fn joining_queries_the_channel_modes_and_follows_changes_without_arguments() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
@@ -1907,14 +1889,9 @@ fn a_join_burst_sends_only_a_few_mode_queries_until_they_are_answered() {
 
 #[test]
 fn modes_after_rejoining_from_a_kick_reach_the_roster() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
@@ -1968,14 +1945,9 @@ fn roster_after_script_as(
     script: &'static [u8],
     settle_events: usize,
 ) -> Vec<String> {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(
@@ -2037,14 +2009,9 @@ fn a_kick_of_someone_using_our_old_nick_keeps_the_roster() {
 /// QUIT reach it, and a second end of MOTD joins nothing (#597).
 #[test]
 fn unjoined_names_are_ignored_and_a_repeated_names_rebuilds_the_roster() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
@@ -2167,14 +2134,9 @@ fn a_kick_of_us_spelled_in_another_ascii_case_is_ours() {
 
 #[test]
 fn kicks_and_refused_joins_reach_the_channel_log() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
@@ -2238,14 +2200,11 @@ fn kicks_and_refused_joins_reach_the_channel_log() {
 
 #[test]
 fn local_server_registration_join_receive_and_send() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = String::new();
         let mut registration = Vec::new();
         loop {
@@ -2616,14 +2575,11 @@ fn plaintext_server_password_requires_opt_in_and_sasl_still_requires_tls() {
 
 #[test]
 fn opted_in_plaintext_connection_sends_server_password() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut received = Vec::new();
         let mut line = String::new();
         loop {
@@ -2711,14 +2667,11 @@ fn quit_line_after_flood(
     flood: usize,
     read_delay: Duration,
 ) -> Vec<u8> {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -3044,14 +2997,11 @@ fn the_quit_line_may_use_the_whole_512_bytes() {
 
 #[test]
 fn sasl_plain_waits_for_success_before_ending_cap_negotiation() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let read = |reader: &mut BufReader<std::net::TcpStream>| {
             loop {
                 let mut line = String::new();
@@ -3163,14 +3113,11 @@ fn sasl_plain_waits_for_success_before_ending_cap_negotiation() {
 
 #[test]
 fn sasl_failure_stops_registration() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = String::new();
         loop {
             line.clear();
@@ -3237,14 +3184,11 @@ fn sasl_failure_stops_registration() {
 
 #[test]
 fn welcome_before_sasl_success_stops_registration() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = String::new();
         loop {
             line.clear();
@@ -3314,14 +3258,11 @@ fn welcome_before_sasl_success_stops_registration() {
 
 #[test]
 fn password_mismatch_is_refused_instead_of_retryable() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = String::new();
         loop {
             line.clear();
@@ -3370,14 +3311,11 @@ fn password_mismatch_is_refused_instead_of_retryable() {
 
 #[test]
 fn nickname_in_use_waits_for_another_nickname() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = String::new();
         loop {
             line.clear();
@@ -3453,6 +3391,32 @@ fn read_client_line(reader: &mut BufReader<std::net::TcpStream>) -> String {
             break line.trim_end().to_owned();
         }
     }
+}
+
+/// What a fake server's script gets once the client has connected: the
+/// socket to answer on and a buffered reader of the same connection.
+struct FakeServerIo {
+    socket: std::net::TcpStream,
+    reader: BufReader<std::net::TcpStream>,
+}
+
+/// Binds a fake server on a free port and runs `script` on its own thread
+/// after accepting the one client and arming `read_timeout` on the socket.
+/// Only this set-up is shared; what the server says and checks stays in the
+/// script. Returns the port and the script's thread.
+fn spawn_fake_server<T: Send + 'static>(
+    read_timeout: Duration,
+    script: impl FnOnce(FakeServerIo) -> T + Send + 'static,
+) -> (u16, thread::JoinHandle<T>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(read_timeout)).unwrap();
+        let reader = BufReader::new(socket.try_clone().unwrap());
+        script(FakeServerIo { socket, reader })
+    });
+    (port, server)
 }
 
 /// Runs one connection against a fixture until `done` sees its events,
@@ -3569,14 +3533,11 @@ fn register_with(
 
 #[test]
 fn chathistory_requests_latest_lines_and_contains_over_nested_batches() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let requested = register_with(
             &mut socket,
             &mut lines,
@@ -3691,14 +3652,11 @@ fn sending_options() -> Ircv3Options {
 
 #[test]
 fn labeled_messages_are_confirmed_by_their_echo_batch_and_errors() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let requested = register_with(
             &mut socket,
             &mut lines,
@@ -3888,14 +3846,11 @@ fn tagged_messages_have_separate_limits_for_tags_and_message() {
 
 #[test]
 fn withdrawing_labeled_response_keeps_echo_message_and_settles_pending_messages() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let requested = register_with(
             &mut socket,
             &mut lines,
@@ -4032,14 +3987,11 @@ fn without_labels_an_identical_echo_confirms_and_without_echo_nothing_is_tracked
 
 #[test]
 fn user_accounts_follow_joins_account_changes_and_one_whox_query() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let requested = register_with(
             &mut socket,
             &mut lines,
@@ -4112,14 +4064,11 @@ fn user_accounts_follow_joins_account_changes_and_one_whox_query() {
 
 #[test]
 fn a_whox_reply_that_arrives_after_a_user_left_does_not_bring_them_back() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(
             &mut socket,
             &mut lines,
@@ -4201,14 +4150,11 @@ fn user_accounts_are_not_tracked_unless_asked_for() {
 
 #[test]
 fn targets_discover_direct_messages_and_their_latest_lines_follow() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         // Registration by hand: the TARGETS reply is not empty here.
         assert_eq!(read_client_line(&mut lines), "CAP LS 302");
         let _ = (read_client_line(&mut lines), read_client_line(&mut lines));
@@ -4360,14 +4306,11 @@ fn older_request(request: u64, msgid: &str) -> Outgoing {
 
 #[test]
 fn older_history_asks_before_the_oldest_message_and_reports_the_page_once() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(
             &mut socket,
             &mut lines,
@@ -4471,14 +4414,11 @@ fn older_history_asks_before_the_oldest_message_and_reports_the_page_once() {
 
 #[test]
 fn older_history_fails_at_once_without_chathistory() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(&mut socket, &mut lines, "batch server-time", "CHANTYPES=#");
         // Nothing is asked of the server: the next line is QUIT.
         assert!(read_client_line(&mut lines).starts_with("QUIT"));
@@ -4506,14 +4446,11 @@ fn older_history_fails_at_once_without_chathistory() {
 
 #[test]
 fn a_reconnect_asks_only_for_the_lines_after_the_cut() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(
             &mut socket,
             &mut lines,
@@ -4581,14 +4518,11 @@ fn a_reconnect_asks_only_for_the_lines_after_the_cut() {
 
 #[test]
 fn chathistory_is_not_requested_from_servers_without_it() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let requested = register_with(
             &mut socket,
             &mut lines,
@@ -4614,14 +4548,11 @@ fn chathistory_is_not_requested_from_servers_without_it() {
 
 #[test]
 fn a_reply_cut_off_by_a_disconnect_reports_nothing() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(&mut socket, &mut lines, "batch draft/chathistory", "");
         assert_eq!(
             read_client_line(&mut lines),
@@ -4677,14 +4608,11 @@ fn a_reply_cut_off_by_a_disconnect_reports_nothing() {
 
 #[test]
 fn disabled_ircv3_sends_plain_cap_end_and_ignores_tags() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let initial: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
         assert_eq!(initial[0], "CAP END", "no CAP LS when nothing is enabled");
         assert!(!initial.iter().any(|line| line.contains("CAP REQ")));
@@ -5054,14 +4982,11 @@ fn negotiated_batch_marks_history_until_it_is_withdrawn() {
 
 #[test]
 fn unsolicited_history_batches_keep_their_compatibility_handling() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let initial: Vec<String> = (0..3).map(|_| read_client_line(&mut lines)).collect();
         assert_eq!(initial[0], "CAP END", "batch off: nothing is negotiated");
         socket
@@ -5119,14 +5044,11 @@ fn avatar_events(events: &[Event]) -> Vec<String> {
 
 #[test]
 fn metadata_avatars_follow_subscription_updates_and_withdrawal() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         assert_eq!(read_client_line(&mut lines), "CAP LS 302");
         socket
             .write_all(b":srv CAP * LS :batch draft/metadata-2=max-subs=10 metadata-notify\r\n")
@@ -5441,14 +5363,11 @@ fn a_reconnect_gives_a_remembered_mask_its_picture_and_asks_once() {
 
 #[test]
 fn ircnet_who_reply_with_server_id_leads_to_an_avatar_query() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(10), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         assert_eq!(read_client_line(&mut lines), "CAP END");
         assert_eq!(read_client_line(&mut lines), "NICK alice");
         read_client_line(&mut lines);
@@ -5705,14 +5624,11 @@ fn remembered_pictures_follow_the_servers_casemapping() {
 
 #[test]
 fn ctcp_requests_are_answered_privately_and_shown_readably() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         assert_eq!(read_client_line(&mut lines), "CAP END");
         assert_eq!(read_client_line(&mut lines), "NICK alice");
         read_client_line(&mut lines);
@@ -5778,14 +5694,11 @@ fn ctcp_requests_are_answered_privately_and_shown_readably() {
 
 #[test]
 fn peer_avatars_off_leaves_ctcp_avatar_unanswered() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         assert_eq!(read_client_line(&mut lines), "CAP END");
         assert_eq!(read_client_line(&mut lines), "NICK alice");
         // No mark, even with a URL configured.
@@ -6493,14 +6406,11 @@ fn channel_keys_stay_out_of_the_transcript_and_mode_activity() {
 
 #[test]
 fn received_channel_keys_reach_no_event() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(&mut socket, &mut lines, "message-tags", "NETWORK=t");
         socket
             .write_all(
@@ -6594,14 +6504,11 @@ fn privilege_changes_are_dropped_when_pairing_is_uncertain() {
 
 #[test]
 fn channel_mode_in_a_history_batch_is_marked_replayed() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(&mut socket, &mut lines, "batch message-tags", "NETWORK=t");
         socket
             .write_all(
@@ -6642,14 +6549,11 @@ fn channel_mode_in_a_history_batch_is_marked_replayed() {
 
 #[test]
 fn own_join_in_a_history_batch_is_marked_replayed() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         register_with(&mut socket, &mut lines, "batch message-tags", "NETWORK=t");
         socket
             .write_all(
@@ -6764,14 +6668,9 @@ fn utf8_only_announced_after_acceptance_keeps_legacy_bytes_off_the_wire() {
 
 #[test]
 fn channel_keys_are_sent_with_the_join_and_475_is_told_apart() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 alice :Welcome\r\n:server 376 alice :End of MOTD\r\n")
@@ -7202,14 +7101,9 @@ fn sleep_closes_an_unregistered_connection_while_the_event_queue_is_full() {
 /// the key) are put back, once.
 #[test]
 fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(b":server 001 me :Welcome\r\n:server 376 me :End of MOTD\r\n")
@@ -7297,14 +7191,11 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
 /// Joins `#test` with metadata, gets a deferred synchronization (774), then
 /// sees `leave`. Returns whether the client still sends `METADATA #test SYNC`.
 fn sync_survives(leave: &'static str) -> bool {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         assert_eq!(read_client_line(&mut lines), "CAP LS 302");
         socket
             .write_all(b":srv CAP * LS :batch draft/metadata-2=max-subs=10 metadata-notify\r\n")
@@ -7391,14 +7282,9 @@ fn metadata_sync_stops_when_we_leave_or_are_kicked() {
 
 #[test]
 fn input_too_long_and_unknown_error_replies_are_reported_and_kept_in_the_log() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(
@@ -7600,14 +7486,11 @@ fn disconnect_after_the_worker_has_ended_is_not_an_error() {
 /// reported, as debug text.
 fn scram_login(forge: bool) -> (Option<String>, String) {
     use crate::scram::{Hash, mock};
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut read = move || loop {
             let mut line = String::new();
             if lines.read_line(&mut line).unwrap() == 0 {
@@ -7765,14 +7648,11 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
         .decode(crate::sasl_public_key(&secret).unwrap())
         .unwrap();
     let challenge = [0x5au8; 32];
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut read = move || loop {
             let mut line = String::new();
             if lines.read_line(&mut line).unwrap() == 0 {
