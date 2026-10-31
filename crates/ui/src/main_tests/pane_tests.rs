@@ -9,14 +9,7 @@ use gpui::{Focusable, TestAppContext};
 fn the_title_shows_the_member_count_of_a_channel(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -73,14 +66,7 @@ fn rosters_around_a_case_mapping_change_update_both_conversations(cx: &mut TestA
     use cayenchat_irc_core::Event;
     use cayenchat_model::names::CaseMapping;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#foo[1],#foo{1}");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -152,14 +138,7 @@ fn clicking_members_selects_them_and_the_menu_keeps_a_chosen_group(cx: &mut Test
     use cayenchat_irc_core::Event;
     use gpui::{Modifiers, MouseButton, point, px};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     // A menu bar above the panes would move the rows clicked below.
     let mut settings = crate::settings_with_channels("#a");
     settings.menu_bar_auto_hide = true;
@@ -403,14 +382,7 @@ fn member_rows_do_not_overlap(cx: &mut TestAppContext) {
 fn focused_lists_take_the_standard_movement_keys(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.menu_bar_auto_hide = true;
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -505,14 +477,7 @@ fn focused_lists_take_the_standard_movement_keys(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn typing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -532,14 +497,7 @@ fn typing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn composing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -562,14 +520,7 @@ fn composing_in_the_log_goes_to_the_draft(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn the_log_input_handler_mirrors_a_non_empty_draft(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -601,14 +552,7 @@ fn the_log_input_handler_mirrors_a_non_empty_draft(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn the_list_panes_forward_typing_and_candidate_position(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -652,14 +596,7 @@ fn the_list_panes_forward_typing_and_candidate_position(cx: &mut TestAppContext)
 fn member_keys_scroll_only_when_the_row_leaves_the_view(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.menu_bar_auto_hide = true;
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -769,14 +706,7 @@ fn a_member_who_leaves_stays_unchosen_when_the_nickname_is_taken_again(cx: &mut 
     use cayenchat_irc_core::Event;
     use gpui::{Modifiers, MouseButton, point, px};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.menu_bar_auto_hide = true;
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -903,14 +833,7 @@ fn a_member_who_leaves_stays_unchosen_when_the_nickname_is_taken_again(cx: &mut 
 fn the_color_picker_and_palette_edit_the_color_fields(cx: &mut TestAppContext) {
     use crate::color_picker::{ColorChanged, format_hex};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let owner =
         cx.add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
@@ -1011,14 +934,7 @@ fn the_color_picker_and_palette_edit_the_color_fields(cx: &mut TestAppContext) {
 fn login_startup_is_set_without_a_server_and_follows_the_system(cx: &mut TestAppContext) {
     use crate::autostart::{AutostartStatus, fake};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     *fake::STATE.lock().unwrap() = Ok(AutostartStatus::Disabled);
     *fake::FAIL_CHANGES.lock().unwrap() = false;
     // No server is registered, so the server form is not drawn at all.
@@ -1076,14 +992,7 @@ fn dragging_the_splitters_resizes_the_right_column_within_limits(cx: &mut TestAp
     use super::{LEFT_MIN_WIDTH, RIGHT_PANE_MIN_HEIGHT, RIGHT_WIDTH_MIN};
     use gpui::{Modifiers, MouseButton, point, px};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -1166,14 +1075,7 @@ fn the_window_layout_is_saved_after_changes_and_applied_at_startup(cx: &mut Test
     use cayenchat_storage::layout::{Layout, load_layout_from};
     use gpui::{Modifiers, MouseButton, point, px};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -1257,14 +1159,7 @@ fn the_window_layout_is_saved_after_changes_and_applied_at_startup(cx: &mut Test
 fn an_older_layout_write_never_replaces_a_newer_one(cx: &mut TestAppContext) {
     use cayenchat_storage::layout::load_layout_from;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -1296,14 +1191,7 @@ fn an_older_layout_write_never_replaces_a_newer_one(cx: &mut TestAppContext) {
 fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestAppContext) {
     use super::{MemberPromptKind, ServerMenu};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.servers[0].nickname = "alice".into();
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -1345,14 +1233,7 @@ fn server_prompts_open_where_the_menu_was_and_need_a_connection(cx: &mut TestApp
 fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Ircv3Options;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.servers[0].nickname = "me".into();
     settings.servers[0].username = "me".into();
@@ -1440,14 +1321,7 @@ fn ircv3_choices_are_per_server_and_wait_for_the_next_connection(cx: &mut TestAp
 
 #[gpui::test]
 fn disconnect_is_offered_only_while_there_is_something_to_stop(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -1468,14 +1342,7 @@ fn disconnect_is_offered_only_while_there_is_something_to_stop(cx: &mut TestAppC
 #[gpui::test]
 fn a_connection_the_user_ended_is_not_reconnected(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{ConnectionConfig, Event};
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -1517,14 +1384,7 @@ fn a_connection_the_user_ended_is_not_reconnected(cx: &mut TestAppContext) {
 fn repeated_message_ids_are_shown_and_notified_once(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -1582,14 +1442,7 @@ fn repeated_message_ids_are_shown_and_notified_once(cx: &mut TestAppContext) {
 fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{Event, HistoryMessage};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -1692,14 +1545,7 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
 fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{Event, HistoryMessage};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -1762,14 +1608,7 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
 fn discovered_direct_messages_open_quietly_and_overlap_is_dropped(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{Event, HistoryMessage};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -1877,14 +1716,7 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         Connection, ConnectionConfig, Event, HistoryMessage, OlderHistoryStatus,
     };
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -2054,14 +1886,7 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
 fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -2172,14 +1997,7 @@ fn sent_messages_are_confirmed_in_place_and_unconfirmed_ones_are_marked(cx: &mut
 fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{Event, WhoisInfo};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -2240,14 +2058,7 @@ fn tracked_accounts_fill_whois_and_are_forgotten_with_the_connection(cx: &mut Te
 fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{ConnectionConfig, Event, HistoryMessage};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -2369,14 +2180,7 @@ fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppC
 fn private_messages_get_their_own_conversations(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     settings.add_server("two.example");
@@ -2638,14 +2442,7 @@ fn a_window_with_older_settings_follows_the_servers_order_in_the_file() {
 
 #[gpui::test]
 fn moving_channels_is_saved_per_server_and_restored(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a,#b,#c");
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("channel-order.json");
@@ -2680,14 +2477,7 @@ fn moving_channels_is_saved_per_server_and_restored(cx: &mut TestAppContext) {
 fn colored_mentions_highlight_where_they_are_drawn(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.notifications.keywords = vec!["deploy".into()];
     let (chat, cx) =
@@ -2732,14 +2522,7 @@ fn colored_mentions_highlight_where_they_are_drawn(cx: &mut TestAppContext) {
 fn notices_are_shown_without_highlight_or_unread(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.notifications.keywords = vec!["deploy".into()];
     let (chat, cx) =
@@ -2861,14 +2644,7 @@ fn notices_are_shown_without_highlight_or_unread(cx: &mut TestAppContext) {
 fn action_verbs_and_senders_are_not_keywords_and_old_lines_stay(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.notifications.keywords = vec!["action".into(), "bob".into(), "deploy".into()];
     let (chat, cx) =
@@ -2936,14 +2712,7 @@ fn action_verbs_and_senders_are_not_keywords_and_old_lines_stay(cx: &mut TestApp
 fn a_nickname_inside_a_link_is_not_a_mention(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(crate::settings_with_channels("#a"), None, window, cx)
     });
@@ -2998,14 +2767,7 @@ fn a_nickname_inside_a_link_is_not_a_mention(cx: &mut TestAppContext) {
 fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.notifications.keywords = vec!["Dalk".into(), "ビルド".into()];
     settings.notifications.exclude_keywords =
@@ -3057,14 +2819,7 @@ fn excluded_text_cancels_overlapping_mentions_and_keywords(cx: &mut TestAppConte
 fn highlights_and_private_messages_notify_unless_visible(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     settings.notifications.keywords = vec!["deploy".into()];
@@ -3251,14 +3006,7 @@ fn old_server_times_display_locally_and_still_notify(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a,#b");
     settings.language = cayenchat_storage::Language::English;
     let (chat, cx) =
@@ -3333,14 +3081,7 @@ fn old_server_times_display_locally_and_still_notify(cx: &mut TestAppContext) {
 fn safe_channel_events_keep_messages_and_members_in_the_channel(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("");
     let (chat, cx) =
         cx.add_window_view(|window, cx| ChatWindow::with_settings(settings, None, window, cx));
@@ -3430,14 +3171,7 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
     use cayenchat_irc_core::{Event, WireDirection};
     use std::time::Duration;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.add_server("");
     settings.selected_profile_mut().unwrap().host = "irc.example.org".into();
@@ -3545,14 +3279,7 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
 fn each_server_that_rejects_a_nickname_gets_its_own_field(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.add_server("");
     settings.selected_profile_mut().unwrap().host = "irc.example.org".into();
@@ -3726,14 +3453,7 @@ fn the_window_lays_out_at_its_smallest_size_and_recovers(cx: &mut TestAppContext
     use super::MIN_WINDOW_SIZE;
     use gpui::px;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -3752,14 +3472,7 @@ fn the_window_lays_out_at_its_smallest_size_and_recovers(cx: &mut TestAppContext
 
 #[gpui::test]
 fn switching_settings_tabs_resets_only_the_pane_scroll(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let owner =
         cx.add_window(|window, cx| ChatWindow::with_settings(settings.clone(), None, window, cx));
@@ -4102,14 +3815,7 @@ fn quit_question_lays_out_confirm_and_cancel_per_os(cx: &mut TestAppContext) {
 fn actions_are_kept_as_their_own_text_on_every_path(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{Event, HistoryMessage};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(crate::settings_with_channels("#a"), None, window, cx)
     });
@@ -4329,14 +4035,7 @@ fn quit_question_sits_near_the_top_of_the_window(cx: &mut TestAppContext) {
 fn the_title_leads_with_the_known_modes_of_the_selected_channel(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -4402,14 +4101,7 @@ fn the_title_leads_with_the_known_modes_of_the_selected_channel(cx: &mut TestApp
 fn server_settings_open_the_clicked_server_not_the_selected_one(cx: &mut TestAppContext) {
     use super::ServerMenu;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.add_server("two.example");
     let first = settings.servers[0].id.clone();
@@ -4451,14 +4143,7 @@ fn server_settings_open_the_clicked_server_not_the_selected_one(cx: &mut TestApp
 fn the_regain_setting_reaches_an_automatic_reconnect(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{ConnectionConfig, Event};
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.language = cayenchat_storage::Language::English;
     let on = settings.clone();
@@ -4497,14 +4182,7 @@ fn the_regain_setting_reaches_an_automatic_reconnect(cx: &mut TestAppContext) {
 fn saved_credential_transport_policies_reach_an_automatic_reconnect(cx: &mut TestAppContext) {
     use cayenchat_irc_core::Event;
 
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.add_server("irc.example.org");
     settings.language = cayenchat_storage::Language::English;
