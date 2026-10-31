@@ -1945,14 +1945,9 @@ fn roster_after_script_as(
     script: &'static [u8],
     settle_events: usize,
 ) -> Vec<String> {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap()).lines();
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo { mut socket, reader } = io;
+        let mut lines = reader.lines();
         while !lines.next().unwrap().unwrap().starts_with("USER ") {}
         socket
             .write_all(
@@ -2672,14 +2667,11 @@ fn quit_line_after_flood(
     flood: usize,
     read_delay: Duration,
 ) -> Vec<u8> {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -7199,14 +7191,11 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
 /// Joins `#test` with metadata, gets a deferred synchronization (774), then
 /// sees `leave`. Returns whether the client still sends `METADATA #test SYNC`.
 fn sync_survives(leave: &'static str) -> bool {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         assert_eq!(read_client_line(&mut lines), "CAP LS 302");
         socket
             .write_all(b":srv CAP * LS :batch draft/metadata-2=max-subs=10 metadata-notify\r\n")
@@ -7497,14 +7486,11 @@ fn disconnect_after_the_worker_has_ended_is_not_an_error() {
 /// reported, as debug text.
 fn scram_login(forge: bool) -> (Option<String>, String) {
     use crate::scram::{Hash, mock};
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut read = move || loop {
             let mut line = String::new();
             if lines.read_line(&mut line).unwrap() == 0 {
@@ -7662,14 +7648,11 @@ fn ecdsa_login(scenario: EcdsaServer) -> (Option<String>, String, Vec<String>) {
         .decode(crate::sasl_public_key(&secret).unwrap())
         .unwrap();
     let challenge = [0x5au8; 32];
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut lines = BufReader::new(socket.try_clone().unwrap());
+    let (port, server) = spawn_fake_server(Duration::from_secs(5), move |io| {
+        let FakeServerIo {
+            mut socket,
+            reader: mut lines,
+        } = io;
         let mut read = move || loop {
             let mut line = String::new();
             if lines.read_line(&mut line).unwrap() == 0 {
