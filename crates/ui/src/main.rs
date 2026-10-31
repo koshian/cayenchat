@@ -652,6 +652,16 @@ fn sender_prefix(message: &cayenchat_model::Message) -> String {
     }
 }
 
+/// One line of a copy across several log lines: the time as drawn, then what
+/// leads the text, then the selected text. A part that is not drawn on the
+/// line (`None`, empty) is left out.
+fn copied_log_line(time: Option<TimeOfDay>, prefix: &str, body: &str) -> String {
+    match time {
+        Some(time) => format!("{time} {prefix}{body}"),
+        None => format!("{prefix}{body}"),
+    }
+}
+
 /// The kind of a received PRIVMSG or NOTICE and the text it shows: a
 /// PRIVMSG that is a CTCP ACTION (`/me`) is told apart here, once, and shown
 /// by its action text. A NOTICE is never an action.
@@ -4809,7 +4819,12 @@ impl ChatWindow {
                 .filter_map(|row| {
                     let message = messages.get(row)?;
                     let range = selection.range(row, message.text.len()).unwrap_or(0..0);
-                    Some(message.text.get(range).unwrap_or_default().to_owned())
+                    let body = message.text.get(range).unwrap_or_default();
+                    Some(if start.row == end.row {
+                        body.to_owned()
+                    } else {
+                        copied_log_line(Some(message.time), "", body)
+                    })
                 })
                 .collect();
             if !pieces.is_empty() {
@@ -4818,32 +4833,54 @@ impl ChatWindow {
             return;
         };
         let decode = self.appearance.decode_char_refs;
+        let reiwa = self.appearance.reiwa_mode;
+        let mapping = self.state.casemapping(channel.network);
+        let several = start.row != end.row;
         let pieces: Vec<_> = (start.row..=end.row)
             .filter_map(|row| {
                 channel.messages.get(row).map(|message| {
                     let range = selection.range(row, message.text.len()).unwrap_or(0..0);
-                    // An action copied whole keeps the `* alice` that makes it
-                    // a `/me`; a part of it is copied as selected.
-                    let lead = if message.action
-                        && range.start == 0
-                        && range.end == message.text.len()
-                        && !range.is_empty()
-                    {
-                        sender_prefix(message)
+                    let whole =
+                        range.start == 0 && range.end == message.text.len() && !range.is_empty();
+                    let body = if decode {
+                        // Decoded references are copied as the characters shown.
+                        compact_urls::Compact::new(
+                            &message.text,
+                            message.links.as_slice(),
+                            false,
+                            true,
+                        )
+                        .copy_text(&message.text, range)
                     } else {
-                        String::new()
+                        message.text[range].to_owned()
                     };
-                    if !decode {
-                        return lead + &message.text[range];
+                    if !several {
+                        // An action copied whole keeps the `* alice` that makes
+                        // it a `/me`; a part of it is copied as selected.
+                        let lead = if message.action && whole {
+                            sender_prefix(message)
+                        } else {
+                            String::new()
+                        };
+                        return lead + &body;
                     }
-                    // Decoded references are copied as the characters shown.
-                    lead + &compact_urls::Compact::new(
-                        &message.text,
-                        message.links.as_slice(),
-                        false,
-                        true,
-                    )
-                    .copy_text(&message.text, range)
+                    // Across lines each one carries the time and sender as
+                    // drawn, and nothing that is not drawn on it.
+                    let lead = if reiwa && !message.activity {
+                        let above = row
+                            .checked_sub(1)
+                            .and_then(|above| channel.messages.get(above));
+                        reiwa_group::lead(above, message, mapping)
+                    } else {
+                        reiwa_group::Lead::Header
+                    };
+                    let time = (lead != reiwa_group::Lead::Text).then_some(message.time);
+                    let prefix = if message.activity || lead != reiwa_group::Lead::Header {
+                        String::new()
+                    } else {
+                        sender_prefix(message)
+                    };
+                    copied_log_line(time, &prefix, &body)
                 })
             })
             .collect();

@@ -3374,3 +3374,30 @@ there is no network, bouncer or connection behind it.
 - **Kept apart from conversations.** Diagnostic lines are not in the server
   log, the combined log, the conversation log files, the unread counts or
   notifications. A removed server drops them with its other state.
+
+## D078 — Copying several log lines adds the time and sender drawn on each (#800)
+
+**Status:** Accepted
+
+2026-10-31. Refines D012, whose "log selection copies message-body text" is
+kept for a selection inside one line.
+
+- **One line.** A selection inside one line copies the selected part of its
+  text only, as before (a `/me` selected whole keeps its `* alice `).
+- **Two lines or more.** Each line is copied as
+  `<time> <sender prefix><selected text>`, with the time and the prefix
+  exactly as that line draws them: the time is the `TimeOfDay` string of the
+  time column (no date, no seconds), the prefix is `sender_prefix` (`alice: `,
+  `* alice ` for a `/me`, also for NOTICE). Activity lines (joins, parts) and
+  server log lines have no prefix. In Reiwa mode a continuation line draws
+  less, so it copies less: the same speaker in another minute has the time
+  only, in the same minute the text only. The lead is derived with
+  `reiwa_group::lead`, as drawing does. Nothing that is not drawn on a line is
+  added. The first and last line keep their time and prefix and copy only the
+  selected part of the text.
+- **Text.** The sender goes through `display::neutralize_bidi` like the drawn
+  one; the text is already neutralized when stored, and decoded character
+  references are copied as drawn (`decode_char_refs`). The time and the
+  separator between time and prefix are a single space.
+- **Shared.** Lines are joined by `copied_log_line`, so a later selection
+  across messages and diagnostics (#799) can reuse it.

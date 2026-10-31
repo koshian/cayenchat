@@ -290,9 +290,14 @@ fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppCo
         chat.open_log_menu(point(px(5.), px(5.)), None, window, cx);
         assert!(chat.log_menu.is_some());
         chat.log_menu_choice(LogMenuChoice::Copy, window, cx);
+        // Several lines carry the time drawn on each.
+        let times: Vec<_> = chat.state.server_messages(NetworkId(1))[base..]
+            .iter()
+            .map(|m| m.time.to_string())
+            .collect();
         assert_eq!(
-            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
-            Some("line\nsecond")
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            Some(format!("{} line\n{} second", times[0], times[1]))
         );
         // Another log never copies it.
         chat.state
