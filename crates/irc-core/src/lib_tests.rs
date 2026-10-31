@@ -8060,12 +8060,17 @@ fn link_failures_get_short_reasons_without_library_text() {
 #[tokio::test]
 async fn link_failure_keeps_the_technical_cause_in_diagnostics_only() {
     let (sender, mut received) = mpsc::channel(8);
-    let events = EventSender::new(sender);
+    let transcript = Transcript {
+        events: EventSender::new(sender),
+        started: Instant::now(),
+        registered: false,
+        requested: Arc::new(AtomicBool::new(false)),
+    };
     let error = irc::error::Error::Io(std::io::Error::new(
         std::io::ErrorKind::UnexpectedEof,
         "peer closed connection without sending TLS close_notify",
     ));
-    let reason = link_failure(&events, Instant::now(), "Transport failed", &error).await;
+    let reason = transcript.failure("Transport failed", &error).await;
     assert_eq!(reason, "The connection to the server was lost.");
     let Some(Event::Diagnostic { message, .. }) = received.recv().await else {
         panic!("no diagnostic");
@@ -8104,4 +8109,29 @@ async fn a_refused_send_keeps_the_queue_reason_and_logs_the_cause() {
         "{message}"
     );
     assert_eq!(stream_error_reason(&error), REASON_LOST);
+}
+
+#[tokio::test]
+async fn refused_sends_get_the_same_short_reasons() {
+    let (sender, mut received) = mpsc::channel(8);
+    let transcript = Transcript {
+        events: EventSender::new(sender),
+        started: Instant::now(),
+        registered: true,
+        requested: Arc::new(AtomicBool::new(false)),
+    };
+    let full = irc::error::Error::OutgoingQueueFull;
+    let broken = irc::error::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "write failed in the vendored library",
+    ));
+    for (error, reason) in [(&full, REASON_QUEUE_FULL), (&broken, REASON_LOST)] {
+        transcript.send_refused("Send failed", error).await;
+        let Some(Event::Diagnostic { message, .. }) = received.recv().await else {
+            panic!("no diagnostic");
+        };
+        assert!(message.starts_with("Send failed:"), "{message}");
+        assert!(!reason.contains("vendored"), "{reason}");
+        assert_eq!(stream_error_reason(error), reason);
+    }
 }
