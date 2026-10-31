@@ -1481,6 +1481,7 @@ impl SettingsWindow {
                 }
             }
         }
+        self.follow_channel_values(&file.servers, cx);
         if let Some(profile) = self.settings.values.selected_profile() {
             let (server, sasl) = saved_passwords(profile);
             for (which, saved) in [(Credential::Server, server), (Credential::Sasl, sasl)] {
@@ -1502,6 +1503,65 @@ impl SettingsWindow {
         );
         if follow_server_order(&mut self.saved.servers, &file.servers) {
             follow_server_order(&mut self.settings.values.servers, &file.servers);
+        }
+    }
+
+    /// Takes over the per-channel encodings and the auto-join list the file
+    /// holds, which `/charset` and the chat window's channel dialog write
+    /// without this window. Each of the two is taken whole, unless the form
+    /// holds a change of it that is not saved yet; that change then wins over
+    /// the file's value as a whole.
+    fn follow_channel_values(&mut self, file: &[ServerProfile], cx: &mut Context<Self>) {
+        let shown = self
+            .settings
+            .values
+            .selected_profile()
+            .map(|profile| profile.id.clone());
+        let mut shown_list = None;
+        for theirs in file {
+            let Some(saved) = self.saved.profile_mut(&theirs.id) else {
+                continue;
+            };
+            let old = std::mem::replace(&mut saved.channels, theirs.channels.clone());
+            let old_charsets =
+                std::mem::replace(&mut saved.channel_charsets, theirs.channel_charsets.clone());
+            let is_shown = shown.as_deref() == Some(theirs.id.as_str());
+            let edited = if is_shown {
+                self.settings.channels.read(cx).text().trim() != old
+            } else {
+                self.settings
+                    .values
+                    .profile(&theirs.id)
+                    .is_some_and(|profile| profile.channels != old)
+            };
+            if let Some(profile) = self.settings.values.profile_mut(&theirs.id) {
+                if profile.channel_charsets == old_charsets {
+                    profile
+                        .channel_charsets
+                        .clone_from(&theirs.channel_charsets);
+                }
+                if !edited {
+                    profile.channels.clone_from(&theirs.channels);
+                }
+            }
+            if is_shown && !edited && theirs.channels != old {
+                shown_list = Some(theirs.channels.clone());
+            }
+        }
+        if let Some(list) = shown_list {
+            self.settings
+                .channels
+                .update(cx, |field, cx| field.set_text(&list, cx));
+            if self.auto_join.is_some() {
+                let rows = cayenchat_storage::parse_auto_join(&list)
+                    .iter()
+                    .map(|entry| self.auto_join_row(&entry.name, entry.enabled, cx))
+                    .collect();
+                if let Some(dialog) = &mut self.auto_join {
+                    dialog.rows = rows;
+                }
+            }
+            cx.notify();
         }
     }
 
@@ -3109,27 +3169,9 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(profile_id) = self
-            .settings
-            .values
-            .selected_profile()
-            .map(|profile| profile.id.clone())
-        else {
-            return;
-        };
-        // `/charset` writes the profile directly while this window may stay
-        // open. Refresh just that shared store, preserving unrelated edits in
-        // the settings form.
-        if let Ok(Some(latest)) = settings_file::load()
-            && let Some(latest) = latest.profile(&profile_id)
-        {
-            if let Some(profile) = self.settings.values.selected_profile_mut() {
-                profile.channel_charsets = latest.channel_charsets.clone();
-            }
-            if let Some(profile) = self.saved.profile_mut(&profile_id) {
-                profile.channel_charsets = latest.channel_charsets.clone();
-            }
-        }
+        // `/charset` and the chat window write the file while this window may
+        // stay open; take that over, keeping unrelated edits in the form.
+        self.follow_saved_server_order(cx);
         let Some(profile) = self.settings.values.selected_profile() else {
             return;
         };
@@ -3197,6 +3239,9 @@ impl SettingsWindow {
                 owner.channel_settings_context(&profile_id).1
             })
             .unwrap_or(false);
+        // Start from what the file holds now, so `/charset` or the chat
+        // window's dialog is not written back.
+        self.follow_saved_server_order(cx);
         let i18n = self.i18n.clone();
         let profile = match save_channel_choices(
             &mut self.settings.values,
@@ -3247,39 +3292,6 @@ impl SettingsWindow {
                 .channels
                 .update(cx, |field, cx| field.set_text(&text, cx));
         }
-    }
-
-    /// The chat window saved the settings of `channel` in `profile` (the
-    /// channel menu's dialog). The form and its saved copy take that over,
-    /// and only that, so that no later save of this window writes the old
-    /// values back over it; the other edits of the form stay as they are.
-    pub(crate) fn follow_channel_save(
-        &mut self,
-        profile: &ServerProfile,
-        channel: &str,
-        mapping: CaseMapping,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(other) = self.saved.profile_mut(&profile.id) {
-            other.channel_charsets = profile.channel_charsets.clone();
-            apply_auto_join(other, channel, mapping, enabled);
-        }
-        if self
-            .settings
-            .values
-            .selected_profile()
-            .is_some_and(|shown| shown.id == profile.id)
-        {
-            if let Some(shown) = self.settings.values.selected_profile_mut() {
-                shown.channel_charsets = profile.channel_charsets.clone();
-            }
-            self.set_channel_auto_join(channel, mapping, enabled, cx);
-        } else if let Some(other) = self.settings.values.profile_mut(&profile.id) {
-            other.channel_charsets = profile.channel_charsets.clone();
-            apply_auto_join(other, channel, mapping, enabled);
-        }
-        cx.notify();
     }
 
     /// Adds a server, blank or filled in from a preset's `host`.
@@ -6568,6 +6580,37 @@ mod escape_tests {
         assert_eq!(from_menu.channels, from_settings.channels);
         assert_eq!(from_menu.channel_charsets, from_settings.channel_charsets);
         assert_eq!(from_menu.channel_charsets.len(), 1);
+    }
+
+    #[gpui::test]
+    fn an_open_settings_window_does_not_write_back_the_channel_menus_save(cx: &mut TestAppContext) {
+        let settings = crate::settings_with_channels("#a,-#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        let owner = form.read_with(cx, |form, _| form.owner);
+        owner
+            .update(cx, |chat, window, cx| {
+                chat.show_channel_settings(cayenchat_model::NetworkId(1), "#b", window, cx);
+                let view = chat.channel_settings.as_ref().unwrap().view().clone();
+                view.update(cx, |view, cx| {
+                    view.choices.enabled = true;
+                    view.choices.decode = Some(TextEncoding::Gbk);
+                    view.save(cx);
+                });
+            })
+            .unwrap();
+        // An unrelated edit of the window saves the form.
+        let nickname = form.read_with(cx, |form, _| form.settings.nickname.clone());
+        nickname.update(cx, |field, cx| field.set_text("someone-else", cx));
+        form.update(cx, |form, cx| form.autosave_now(None, cx));
+        let profile = file_profile();
+        assert_eq!(profile.channels, "#a,#b");
+        assert_eq!(profile.channel_charsets.len(), 1);
+        assert_eq!(profile.nickname, "someone-else");
+        form.read_with(cx, |form, cx| {
+            assert_eq!(form.settings.channels.read(cx).text(), "#a,#b");
+        });
+        drop(file);
     }
 
     #[test]

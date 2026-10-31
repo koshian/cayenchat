@@ -3362,15 +3362,20 @@ there is no network, bouncer or connection behind it.
 - **One dialog.** `channel_settings_dialog::ChannelSettingsView` holds the
   state, drawing, keyboard handling and validation of both; it only edits a
   copy and reports Save or Cancel. The hosts write with the same
-  `apply_charsets` (UTF8ONLY check, `set_channel_charset`) and
-  `apply_auto_join`. Opening reads the settings file first, so `/charset` and
-  other windows' saves are seen.
+  `save_channel_choices` (`apply_charsets`: UTF8ONLY check,
+  `set_channel_charset`, then `apply_auto_join`). Opening reads the settings
+  file first, so `/charset` and other windows' saves are seen.
 - **Saving from the chat window** starts from the settings file, changes only
   that channel's entry and auto-join state, saves the file and applies it
   through `apply_settings_change` (the live connection follows as in D073); it
-  never sends JOIN or PART. An open settings window takes over just that
-  channel's values (`follow_channel_save`), so its next autosave does not write
-  the old ones back and its other unsaved edits stay.
+  never sends JOIN or PART. An open settings window has no special call: like
+  the other values the chat window writes, it takes the file's channel
+  encodings and auto-join list over when it opens the dialog, saves or
+  reloads (`follow_channel_values`), whole and per profile. It keeps a
+  change of its own that is not saved yet; then that value wins as a whole,
+  so a channel menu save made meanwhile to the same list or encodings is
+  overwritten (accepted limitation). The settings window's own dialog saves
+  into its form the same way and autosaves.
 - **Behavior.** Header "Settings for #channel" with the server name; the body
   scrolls inside the panel and the footer (Reset left, Cancel and Save right)
   stays visible; an open encoding list scrolls inside its own box. The first
