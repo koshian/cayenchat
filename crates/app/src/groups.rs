@@ -765,6 +765,70 @@ mod tests {
     }
 
     #[test]
+    fn damaged_group_data_is_repaired_without_losing_valid_groups() {
+        let mut state = state();
+        let member = |network, key: &str| GroupMember {
+            network: NetworkId(network),
+            key: key.into(),
+        };
+        let spec = |name: &str, members| GroupSpec {
+            name: name.into(),
+            collapsed: false,
+            members,
+        };
+        state.set_groups(vec![
+            spec("keep", vec![member(9, "#z"), member(1, "#a")]),
+            spec("KEEP", vec![member(1, "#b")]),
+            spec("other", vec![member(2, "#c"), member(8, "#y")]),
+        ]);
+        let groups = state.group_specs();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].name, "keep");
+        assert_eq!(groups[0].members, [member(1, "#a")]);
+        assert_eq!(groups[1].members, [member(2, "#c")]);
+        // What is left can be shown.
+        assert_eq!(state.display_tree().groups.len(), 2);
+    }
+
+    #[test]
+    fn a_channel_ends_up_in_at_most_one_group() {
+        let mut state = state();
+        let first = state.create_group("first").unwrap();
+        let second = state.create_group("second").unwrap();
+        let a = id(&state, 1, "#a");
+        assert!(state.move_to_group(a, first, None));
+        assert!(state.move_to_group(a, second, None));
+        assert!(state.move_to_group(a, first, None));
+        assert!(state.move_to_group(a, first, None));
+        let holding = state
+            .groups()
+            .iter()
+            .filter(|g| g.members.iter().any(|m| m.key == "#a"))
+            .count();
+        assert_eq!(holding, 1);
+        assert_eq!(state.display_parent(a), Some(Parent::Group(first)));
+        assert_eq!(state.group(first).unwrap().members.len(), 1);
+    }
+
+    #[test]
+    fn leaving_a_group_removes_only_that_membership() {
+        let mut state = state();
+        let first = mixed(&mut state);
+        let second = state.create_group("second").unwrap();
+        let b = id(&state, 1, "#b");
+        let w = id(&state, 3, "#w");
+        assert!(state.move_to_group(b, second, None));
+        assert!(state.move_to_group(w, second, None));
+        let before = state.group(first).unwrap().members.clone();
+        assert!(state.return_to_server(b));
+        assert_eq!(state.group(first).unwrap().members, before);
+        assert_eq!(state.group(second).unwrap().members.len(), 1);
+        assert_eq!(state.display_parent(w), Some(Parent::Group(second)));
+        // A channel in no group stays out of every group.
+        assert!(!state.return_to_server(b));
+    }
+
+    #[test]
     fn removing_a_server_drops_its_channels_from_groups() {
         let mut state = state();
         let group = mixed(&mut state);

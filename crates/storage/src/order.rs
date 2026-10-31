@@ -234,6 +234,28 @@ mod tests {
     }
 
     #[test]
+    fn group_names_and_counts_are_bounded_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel-order.json");
+        let group = |name: String| StoredGroup {
+            name,
+            collapsed: false,
+            members: Vec::new(),
+        };
+        let mut groups = vec![group("x".repeat(MAX_GROUP_NAME_CHARS + 1))];
+        groups.extend((0..MAX_GROUPS + 5).map(|n| group(format!("g{n}"))));
+        let orders = ChannelOrders {
+            groups,
+            ..Default::default()
+        };
+        save_orders_to(&path, &orders).unwrap();
+        let loaded = load_orders_from(&path);
+        // The long name is dropped, not shortened.
+        assert_eq!(loaded.groups.len(), MAX_GROUPS);
+        assert_eq!(loaded.groups[0].name, "g0");
+    }
+
+    #[test]
     fn a_file_over_the_size_limit_is_not_parsed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("channel-order.json");
