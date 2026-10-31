@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, FindInLog, Worker, themed_bindings};
-use cayenchat_app::{Kind, Selection, search::Scope};
+use cayenchat_app::{
+    DiagnosticsView, Kind, Selection,
+    search::{Scope, Source},
+};
 use cayenchat_irc_core::Event;
 use cayenchat_model::{NetworkId, Provenance};
 use cayenchat_storage::ChannelNumberModifier;
@@ -496,4 +499,138 @@ fn the_toolbar_magnifier_toggles_the_bar(cx: &mut TestAppContext) {
     assert!(!open(&chat, cx));
     chat.update_in(cx, |chat, window, cx| chat.toggle_search(window, cx));
     assert!(open(&chat, cx));
+}
+
+fn record(chat: &mut ChatWindow, view: DiagnosticsView, text: &str) {
+    chat.state.record_diagnostic(
+        NetworkId(1),
+        view,
+        std::time::SystemTime::UNIX_EPOCH,
+        None,
+        text.into(),
+    );
+}
+
+/// The server selected, the connection diagnostics on, and a line each of
+/// the two views.
+fn with_diagnostics(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
+    chat.update(cx, |chat, cx| {
+        chat.debug_enabled = true;
+        record(chat, DiagnosticsView::Overview, "Sleep notice: idle");
+        record(chat, DiagnosticsView::Overview, "Handshake done");
+        record(chat, DiagnosticsView::Protocol, "← :s NOTICE * :Wake-up");
+        chat.state
+            .dispatch(cayenchat_app::Command::SelectServer(NetworkId(1)));
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn this_log_searches_the_diagnostics_view_shown_and_all_reaches_the_other(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    with_diagnostics(&chat, cx);
+    chat.update_in(cx, |chat, window, cx| {
+        chat.open_search(&FindInLog, window, cx)
+    });
+    cx.simulate_input("sleep notice");
+    settle(cx);
+    for _ in 0..4 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    chat.read_with(cx, |chat, _| {
+        let search = chat.search.as_ref().unwrap();
+        assert_eq!(search.hits().len(), 1);
+        assert_eq!(
+            search.hits()[0].source,
+            Source::Diagnostics(NetworkId(1), DiagnosticsView::Overview)
+        );
+        assert!(search.revealed(), "the diagnostics line was painted");
+    });
+    // The IRC protocol view is not shown, so "this log" does not read it.
+    cx.simulate_input(" ");
+    chat.update_in(cx, |chat, window, cx| chat.search_clear(window, cx));
+    cx.simulate_input("wake-up");
+    settle(cx);
+    assert_eq!(search_state(&chat, cx).0, 0);
+    // All logs: the hit is in the other view; going to it switches views.
+    chat.update_in(cx, |chat, window, cx| {
+        chat.search_set_scope(Scope::All, window, cx)
+    });
+    settle(cx);
+    for _ in 0..4 {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(chat.search.as_ref().unwrap().hits().len(), 1);
+        assert_eq!(chat.diagnostics_view, DiagnosticsView::Protocol);
+        assert!(chat.search.as_ref().unwrap().revealed());
+    });
+}
+
+#[gpui::test]
+fn diagnostics_are_not_searched_while_they_are_off(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    with_diagnostics(&chat, cx);
+    chat.update(cx, |chat, _| chat.debug_enabled = false);
+    chat.update_in(cx, |chat, window, cx| {
+        chat.open_search(&FindInLog, window, cx)
+    });
+    chat.update_in(cx, |chat, window, cx| {
+        chat.search_set_scope(Scope::All, window, cx)
+    });
+    cx.simulate_input("handshake");
+    settle(cx);
+    assert_eq!(search_state(&chat, cx).0, 0);
+}
+
+#[gpui::test]
+fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    with_diagnostics(&chat, cx);
+    chat.update(cx, |chat, cx| {
+        let source = chat.state.selection();
+        let rows: Vec<_> = chat
+            .state
+            .diagnostics(NetworkId(1), DiagnosticsView::Overview)
+            .iter()
+            .map(|line| (line.sequence as usize, line.render()))
+            .collect();
+        // From the middle of the first line to the middle of the second.
+        let from = rows[0].1.find("Sleep").unwrap();
+        chat.log_selection = Some(crate::LogSelection {
+            source,
+            diagnostics: Some(DiagnosticsView::Overview),
+            anchor: crate::LogPosition {
+                row: rows[0].0,
+                byte: from,
+            },
+            cursor: crate::LogPosition {
+                row: rows[1].0,
+                byte: rows[1].1.len() - 3,
+            },
+        });
+        chat.copy_selected_log(cx);
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(
+            copied.as_deref(),
+            Some(format!("Sleep notice: idle\n{}", &rows[1].1[..rows[1].1.len() - 3]).as_str())
+        );
+        // Another view, or lines of a new connection, copy nothing more.
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("kept".into()));
+        chat.diagnostics_view = DiagnosticsView::Protocol;
+        chat.copy_selected_log(cx);
+        chat.diagnostics_view = DiagnosticsView::Overview;
+        chat.state.clear_diagnostics(NetworkId(1));
+        record(chat, DiagnosticsView::Overview, "new connection");
+        chat.copy_selected_log(cx);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("kept")
+        );
+    });
 }

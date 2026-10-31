@@ -289,7 +289,7 @@ impl AppState {
             server_messages: HashMap::new(),
             system_messages: VecDeque::new(),
             diagnostics: HashMap::new(),
-            next_diagnostic_sequence: 0,
+            next_diagnostic_sequence: diagnostics::FIRST_SEQUENCE,
             next_message_sequence: SEQUENCE_ORIGIN,
             log_revision: 0,
             next_conversation_id: 1,

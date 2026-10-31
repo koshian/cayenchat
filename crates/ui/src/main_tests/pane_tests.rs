@@ -1962,6 +1962,7 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         // The user has selected text in the line that is on screen.
         chat.log_selection = Some(LogSelection {
             source: Selection::Channel(b),
+            diagnostics: None,
             anchor: LogPosition { row: 0, byte: 0 },
             cursor: LogPosition { row: 0, byte: 3 },
         });

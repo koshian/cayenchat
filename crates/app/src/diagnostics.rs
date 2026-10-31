@@ -11,6 +11,13 @@ use std::{
 /// Newest lines kept per server and view.
 pub const DIAGNOSTIC_LIMIT: usize = 1000;
 
+/// The first diagnostic sequence. Messages count from `SEQUENCE_ORIGIN`
+/// (2^62) up and older history from there down, so 0 up is never reached by
+/// either: a sequence names one line of the messages or one of the
+/// diagnostics, and a search orders the diagnostics before the messages, so
+/// its first stop is the newest message, as the screen's order reads.
+pub(crate) const FIRST_SEQUENCE: u64 = 0;
+
 /// Which connection log the View menu shows and copies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DiagnosticsView {
@@ -189,14 +196,14 @@ mod tests {
         let last = state.last_message_sequence();
         let latest = state.latest_sequence();
         let log = state.log_revision();
-        let all = crate::search::revision(&state, crate::search::Scope::All);
+        let all = crate::search::revision(&state, crate::search::Scope::All, None);
         record(&mut state, 1, DiagnosticsView::Protocol, "→ PING", 1);
         record(&mut state, 1, DiagnosticsView::Overview, "note", 1);
         assert_eq!(state.last_message_sequence(), last);
         assert_eq!(state.latest_sequence(), latest);
         assert_eq!(state.log_revision(), log);
         assert_eq!(
-            crate::search::revision(&state, crate::search::Scope::All),
+            crate::search::revision(&state, crate::search::Scope::All, None),
             all
         );
     }
