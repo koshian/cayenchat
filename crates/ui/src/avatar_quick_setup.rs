@@ -507,14 +507,7 @@ mod tests {
         cx: &mut TestAppContext,
         settings: Settings,
     ) -> (Entity<SettingsWindow>, &mut VisualTestContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let owner = cx.add_window({
             let settings = settings.clone();
             move |window, cx| crate::ChatWindow::with_settings(settings, None, window, cx)
