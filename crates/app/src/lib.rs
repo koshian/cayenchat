@@ -2055,29 +2055,59 @@ impl AppState {
     }
 
     fn cycle_server(&mut self, forward: bool, active_only: bool) {
-        let len = self.networks.len();
+        // Parent headings in the order the tree shows them: groups with
+        // channels, then real servers (D075). A selected channel counts as
+        // its group's, not as its connection's server.
+        let tree = self.display_tree();
+        let headings: Vec<Parent> = tree
+            .groups
+            .iter()
+            .filter(|(_, children)| !children.is_empty())
+            .map(|(id, _)| Parent::Group(*id))
+            .chain(tree.servers.iter().map(|(id, _)| Parent::Server(*id)))
+            .collect();
+        let len = headings.len();
         if len == 0 {
             return;
         }
-        let Some(selected_network) = self.selected_network().map(|network| network.id) else {
-            self.select_server(self.networks[0].id);
+        let current_parent = match self.selected {
+            Selection::Server(id) => Some(Parent::Server(id)),
+            Selection::Channel(id) => tree.parent_of(id),
+            Selection::None => None,
+        };
+        let Some(current) = current_parent.and_then(|p| headings.iter().position(|h| *h == p))
+        else {
+            if let Some(first) = self.networks.first().map(|network| network.id) {
+                self.select_server(first);
+            }
             return;
         };
-        let current = self
-            .networks
-            .iter()
-            .position(|server| server.id == selected_network)
-            .expect("selected server exists");
         for step in 1..=len {
             let index = if forward {
                 (current + step) % len
             } else {
                 (current + len - step) % len
             };
-            let id = self.networks[index].id;
-            if !active_only || self.active_servers.contains(&id) {
-                self.select_server(id);
-                return;
+            match headings[index] {
+                Parent::Server(id) => {
+                    if !active_only || self.active_servers.contains(&id) {
+                        self.select_server(id);
+                        return;
+                    }
+                }
+                // A group has no log of its own: go to its first channel
+                // (its first active one when only active ones count).
+                Parent::Group(id) => {
+                    let target = tree
+                        .children(Parent::Group(id))
+                        .iter()
+                        .find(|c| !active_only || self.active_channels.contains(c))
+                        .copied();
+                    if let Some(target) = target {
+                        self.select_channel(target);
+                        return;
+                    }
+                }
             }
         }
     }
