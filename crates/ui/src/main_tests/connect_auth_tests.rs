@@ -744,10 +744,9 @@ fn submitting_a_leftover_dialog_does_not_overwrite_the_store(cx: &mut TestAppCon
     chat.update(cx, |chat, _| stop(chat));
 }
 
-// Reproduces #723, still open: the dialog connects with the configuration it
-// opened with, and only host, port, TLS and SASL changes are caught as stale.
+// #723: a change made while the dialog was open belongs to the connection it
+// starts.
 #[gpui::test]
-#[ignore = "#723: the dialog's configuration snapshot ignores later channel changes"]
 fn a_dialog_connects_with_the_settings_saved_while_it_was_open(cx: &mut TestAppContext) {
     let (chat, _store, cx) = open_chat(cx);
     chat.update_in(cx, |chat, window, cx| {
@@ -804,6 +803,49 @@ fn a_dialog_sends_the_channels_and_avatar_saved_after_it_opened(cx: &mut TestApp
         let config = chat.sessions[&NET].active_config.as_ref().unwrap();
         assert_eq!(config.channels, vec!["#b".to_owned()]);
         assert_eq!(config.shared_avatar, None);
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn a_dialog_keeps_the_channel_key_when_the_spelling_changes_while_it_is_open(
+    cx: &mut TestAppContext,
+) {
+    let (chat, store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let profile = &mut chat.saved.servers[0];
+        profile.keyed_channels = Some(vec!["#a".into()]);
+        store
+            .set(
+                &cayenchat_storage::SecretKey::channel_key(&profile.id, "#a"),
+                &Secret::new("key"),
+            )
+            .unwrap();
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        let mut old = config(true);
+        old.channels = vec!["#a".into()];
+        old.channel_keys.insert("#a".into(), "key".into());
+        chat.connect_fresh(NET, old, missing, window, cx).unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        assert_eq!(chat.credential_prompts.len(), 1);
+        type_password(chat, true, "typed", cx);
+        chat.saved.servers[0].channels = "#A".into();
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        let config = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(config.channels, vec!["#A".to_owned()]);
+        assert_eq!(
+            config.channel_keys.get("#A").map(String::as_str),
+            Some("key")
+        );
+        assert_eq!(config.channel_keys.len(), 1);
         stop(chat);
     });
 }
