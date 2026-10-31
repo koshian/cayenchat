@@ -138,6 +138,24 @@ mod tests {
         assert_ne!(early, lines[1].render());
     }
 
+    #[test]
+    fn a_line_without_elapsed_time_renders_without_the_bracket() {
+        let mut state = state();
+        state.record_diagnostic(
+            NetworkId(1),
+            DiagnosticsView::Overview,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+            None,
+            "note".into(),
+        );
+        let line = state.diagnostics(NetworkId(1), DiagnosticsView::Overview)[0].render();
+        assert!(shape(&line), "{line}");
+        assert!(line.ends_with(" note"), "{line}");
+        assert!(!line.contains('['), "{line}");
+        // Exactly the 30-byte time prefix and one space precede the text.
+        assert_eq!(line.len(), 31 + "note".len(), "{line}");
+    }
+
     /// `YYYY-MM-DD HH:MM:SS.mmm ±HH:MM ` at the start.
     fn shape(text: &str) -> bool {
         let bytes = text.as_bytes();
