@@ -12,7 +12,7 @@ use std::{borrow::Cow, ops::Range};
 
 use cayenchat_model::{ConversationId, Message, NetworkId};
 
-use crate::{AppState, DiagnosticsView, Selection};
+use crate::{AppState, DiagnosticsView, LineKey, LineKind, Selection};
 
 /// The most hits one scan keeps. Past it the scan stops and says so.
 pub const MAX_HITS: usize = 10_000;
@@ -24,8 +24,8 @@ pub enum Source {
     /// A server's own log.
     Server(NetworkId),
     /// A server's connection diagnostics in one view, searched as drawn
-    /// (`DiagnosticLine::text`). Their sequences come from a counter that
-    /// never meets the messages', so a sequence names one line in any hit.
+    /// (`DiagnosticLine::text`). Their sequences come from their own counter,
+    /// so a hit's order is its [`LineKey`], not the sequence alone.
     Diagnostics(NetworkId, DiagnosticsView),
 }
 
@@ -34,6 +34,17 @@ pub enum Source {
 pub struct Hit {
     pub source: Source,
     pub sequence: u64,
+}
+
+impl Hit {
+    /// Where the hit sorts: the diagnostics before the messages.
+    pub fn key(self) -> LineKey {
+        let kind = match self.source {
+            Source::Diagnostics(..) => LineKind::Diagnostic,
+            _ => LineKind::Message,
+        };
+        (kind, self.sequence)
+    }
 }
 
 /// What a search covers.
@@ -387,7 +398,7 @@ impl Scan {
             }
         }
         if self.sources.len() > 1 && self.hits.len() != before {
-            self.hits.sort_unstable_by_key(|hit| hit.sequence);
+            self.hits.sort_unstable_by_key(|hit| hit.key());
         }
         // Keep the newest MAX_HITS: the oldest matches go, once per step.
         if self.hits.len() > MAX_HITS {
@@ -400,7 +411,7 @@ impl Scan {
 
 /// Where `current` stands among `hits`, counting from 1.
 pub fn position(hits: &[Hit], current: Hit) -> Option<usize> {
-    hits.binary_search_by_key(&current.sequence, |hit| hit.sequence)
+    hits.binary_search_by_key(&current.key(), |hit| hit.key())
         .ok()
         .map(|index| index + 1)
 }
@@ -409,7 +420,7 @@ pub fn position(hits: &[Hit], current: Hit) -> Option<usize> {
 /// current hit, the first.
 pub fn next_hit(hits: &[Hit], current: Option<Hit>) -> Option<Hit> {
     let after = match current {
-        Some(current) => hits.partition_point(|hit| hit.sequence <= current.sequence),
+        Some(current) => hits.partition_point(|hit| hit.key() <= current.key()),
         None => 0,
     };
     hits.get(after).or(hits.first()).copied()
@@ -419,7 +430,7 @@ pub fn next_hit(hits: &[Hit], current: Option<Hit>) -> Option<Hit> {
 /// the last.
 pub fn previous_hit(hits: &[Hit], current: Option<Hit>) -> Option<Hit> {
     let before = match current {
-        Some(current) => hits.partition_point(|hit| hit.sequence < current.sequence),
+        Some(current) => hits.partition_point(|hit| hit.key() < current.key()),
         None => hits.len(),
     };
     before
@@ -432,8 +443,7 @@ pub fn previous_hit(hits: &[Hit], current: Option<Hit>) -> Option<Hit> {
 /// The hit to show when a new set of hits arrives: the nearest one at or
 /// after where the previous search stood, else the newest.
 pub fn initial_hit(hits: &[Hit], previous: Option<Hit>) -> Option<Hit> {
-    let index =
-        previous.map(|previous| hits.partition_point(|hit| hit.sequence < previous.sequence));
+    let index = previous.map(|previous| hits.partition_point(|hit| hit.key() < previous.key()));
     index
         .and_then(|index| hits.get(index))
         .or(hits.last())

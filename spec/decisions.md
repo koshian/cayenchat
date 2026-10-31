@@ -3430,6 +3430,14 @@ there is no network, bouncer or connection behind it.
   diagnostics sequence), so reconnects, protocol lines and the channel
   view's replaced newest line never join or move it. Diagnostics stay a separate type, not
   `Message`: a message has only a time of day.
+- **Order key (#826).** The two earlier bullets' "keyed by sequence alone" and
+  the halfway-point test `is_diagnostic_sequence` are gone: `Hit` and
+  `LogPosition::row` are ordered by `LineKey = (LineKind, sequence)`, the
+  diagnostics before the messages, and the kind is read from the value
+  (`Source::Diagnostics`, the key's own kind). The counters are unchanged
+  (messages still count from `SEQUENCE_ORIGIN`, which older pages need to
+  count down from), as is the selection's snapshot of the next diagnostic
+  sequence.
 
 ## D078 — Copying several log lines adds the time and sender drawn on each (#800)
 

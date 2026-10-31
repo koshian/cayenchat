@@ -596,7 +596,12 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
             .state
             .diagnostics(NetworkId(1), DiagnosticsView::Overview)
             .iter()
-            .map(|line| (line.sequence, line.text.clone()))
+            .map(|line| {
+                (
+                    (cayenchat_app::LineKind::Diagnostic, line.sequence),
+                    line.text.clone(),
+                )
+            })
             .collect();
         // From the middle of the first line to the middle of the second.
         let from = rows[0].1.find("Sleep").unwrap();
@@ -656,7 +661,10 @@ fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestA
             .diagnostics(NetworkId(1), DiagnosticsView::Overview)[1]
             .clone();
         let messages = chat.state.server_messages(NetworkId(1));
-        let second = messages[messages.len() - 1].sequence;
+        let second = (
+            cayenchat_app::LineKind::Message,
+            messages[messages.len() - 1].sequence,
+        );
         let text = diagnostic.text.clone();
         let from = text.find("Handshake").unwrap();
         // The messages the server log already held lie between, whole.
@@ -677,7 +685,7 @@ fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestA
         chat.log_selection = Some(crate::LogSelection {
             source,
             anchor: crate::LogPosition {
-                row: diagnostic.sequence,
+                row: (cayenchat_app::LineKind::Diagnostic, diagnostic.sequence),
                 byte: from,
             },
             cursor: crate::LogPosition {
@@ -729,15 +737,17 @@ fn a_channel_selection_copies_only_the_diagnostics_line_shown(cx: &mut TestAppCo
         let lines = chat
             .state
             .diagnostics(NetworkId(1), DiagnosticsView::Overview);
-        let hidden = lines[0].sequence;
-        let row = chat
-            .state
-            .selected_channel()
-            .unwrap()
-            .messages
-            .last()
-            .unwrap()
-            .sequence;
+        let hidden = (cayenchat_app::LineKind::Diagnostic, lines[0].sequence);
+        let row = (
+            cayenchat_app::LineKind::Message,
+            chat.state
+                .selected_channel()
+                .unwrap()
+                .messages
+                .last()
+                .unwrap()
+                .sequence,
+        );
         chat.log_selection = Some(crate::LogSelection {
             source: chat.state.selection(),
             anchor: crate::LogPosition {
