@@ -646,19 +646,27 @@ impl HistoryRequests {
 
     pub(crate) fn observe(&mut self, message: &IrcMessage) -> Observed {
         let batch_tag = tags::tag_value(message, "batch");
-        if !matches!(message.command, IrcCommand::BATCH(..))
-            && self
-                .outstanding
-                .as_ref()
-                .is_some_and(|outstanding| outstanding.nested_overflowed)
-            && batch_tag.is_some_and(|reference| {
-                self.outstanding.as_ref().is_some_and(|outstanding| {
-                    outstanding.reference.as_deref() != Some(reference)
-                        && !outstanding.nested.iter().any(|open| open == reference)
-                })
-            })
+        // Past the nesting limit the reply's deeper batches are not tracked:
+        // swallow every line (BATCH open and close included) that hangs off
+        // one. A line is let through when the batch it belongs to (the batch a
+        // BATCH close ends, otherwise its batch tag) is the root, a tracked
+        // batch or a discarded reply, so the root close still finishes the
+        // reply even when it carries a batch tag.
+        if let (Some(outstanding), Some(parent)) = (&self.outstanding, batch_tag)
+            && outstanding.nested_overflowed
         {
-            return Observed::Consumed;
+            let closed = match &message.command {
+                IrcCommand::BATCH(reference, ..) => reference.strip_prefix('-'),
+                _ => None,
+            };
+            let known = |reference: &str| {
+                outstanding.reference.as_deref() == Some(reference)
+                    || outstanding.nested.iter().any(|open| open == reference)
+                    || self.discarding.iter().any(|open| open == reference)
+            };
+            if !known(closed.unwrap_or(parent)) {
+                return Observed::Consumed;
+            }
         }
         if let IrcCommand::BATCH(reference, kind, params) = &message.command {
             return self.observe_batch(
@@ -738,14 +746,6 @@ impl HistoryRequests {
                 return Observed::Consumed;
             }
             if outstanding.reference.as_deref() != Some(reference) {
-                if parent.is_some()
-                    && self
-                        .outstanding
-                        .as_ref()
-                        .is_some_and(|outstanding| outstanding.nested_overflowed)
-                {
-                    return Observed::Consumed;
-                }
                 return Observed::Unrelated;
             }
             let outstanding = self.outstanding.take().expect("outstanding request");
@@ -786,14 +786,6 @@ impl HistoryRequests {
                 failed: false,
                 note,
             });
-        }
-        if parent.is_some()
-            && self
-                .outstanding
-                .as_ref()
-                .is_some_and(|outstanding| outstanding.nested_overflowed)
-        {
-            return Observed::Consumed;
         }
         let Some(reference) = reference.strip_prefix('+') else {
             return Observed::Unrelated;
