@@ -696,6 +696,47 @@ mod tests {
     }
 
     #[test]
+    fn multiline_ack_applies_only_the_requested_capabilities() {
+        let mut cap = CapNegotiation::new(options(true, true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :server-time message-tags multi-prefix"))
+            .unwrap();
+        cap.observe(&line(":s CAP * ACK * :multi-prefix server-time"))
+            .unwrap();
+        cap.observe(&line(":s CAP * ACK * :away-notify unknown/x"))
+            .unwrap();
+        assert!(!cap.enabled(SERVER_TIME));
+        let step = cap.observe(&line(":s CAP * ACK :message-tags")).unwrap();
+        assert_eq!(sent(&step), ["CAP END"]);
+        assert!(cap.enabled(SERVER_TIME) && cap.enabled(MESSAGE_TAGS));
+        assert!(!cap.enabled("multi-prefix"));
+        assert!(!cap.enabled("away-notify"));
+        assert!(!cap.enabled("unknown/x"));
+    }
+
+    // Pins only that retention stays bounded (audit #686). Whether the flood
+    // ends the negotiation with an error or is ignored is not pinned here.
+    #[test]
+    fn multiline_ack_retention_stays_bounded_under_a_flood() {
+        let mut cap = CapNegotiation::new(options(true, true), None, true);
+        cap.start();
+        cap.observe(&line(":s CAP * LS :server-time message-tags"))
+            .unwrap();
+        let token = "x".repeat(MAX_VALUE_BYTES);
+        for n in 0..(4 * MAX_OFFERED) {
+            let tokens = format!("{token} unrequested{n}");
+            if cap
+                .observe(&line(&format!(":s CAP * ACK * :{tokens}")))
+                .is_err()
+            {
+                break;
+            }
+            assert!(cap.ack_lines.len() <= MAX_OFFERED);
+        }
+        assert!(cap.ack_lines.len() <= MAX_OFFERED);
+    }
+
+    #[test]
     fn multiline_ack_limits_total_bytes_and_token_length() {
         let mut cap = CapNegotiation::new(options(true, true), None, true);
         cap.start();
