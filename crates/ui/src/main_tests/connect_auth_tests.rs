@@ -125,8 +125,12 @@ fn a_reconnect_after_the_settings_changed_does_not_use_the_new_secrets(cx: &mut 
     });
 }
 
+// #723: the typed password goes only to the server saved when it is sent, and
+// nothing is written to the store unless the box was checked.
 #[gpui::test]
-fn a_dialog_open_while_the_settings_change_sends_and_saves_nothing(cx: &mut TestAppContext) {
+fn a_dialog_open_while_the_host_changes_connects_to_the_new_host_with_the_typed_password(
+    cx: &mut TestAppContext,
+) {
     for fresh in [false, true] {
         let (chat, store, cx) = open_chat(cx);
         let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
@@ -145,18 +149,113 @@ fn a_dialog_open_while_the_settings_change_sends_and_saves_nothing(cx: &mut Test
         cx.run_until_parked();
         chat.update_in(cx, |chat, window, cx| {
             assert_eq!(chat.credential_prompts.len(), 1);
-            chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
             type_password(chat, true, "typed", cx);
-            chat.saved.servers[0].host = "other.example".into();
+            chat.saved.servers[0].host = "127.0.0.2".into();
             chat.submit_credential_prompt(NET, window, cx);
         });
         cx.run_until_parked();
         chat.update(cx, |chat, _| {
             assert!(chat.credential_prompts.is_empty(), "fresh: {fresh}");
-            assert!(chat.sessions[&NET].irc.is_none(), "fresh: {fresh}");
+            assert!(chat.sessions[&NET].irc.is_some(), "fresh: {fresh}");
+            assert_eq!(
+                sent(chat).1.as_deref(),
+                Some("typed"),
+                "the password is for the saved server, fresh: {fresh}"
+            );
+            if fresh {
+                let used = chat.sessions[&NET].active_config.as_ref().unwrap();
+                assert_eq!(used.host, "127.0.0.2");
+            }
+            stop(chat);
         });
         assert!(!store.contains(&key).unwrap(), "fresh: {fresh}");
     }
+}
+
+#[gpui::test]
+fn a_dialog_does_not_carry_passwords_to_a_host_changed_while_it_was_open(cx: &mut TestAppContext) {
+    // The server password the refused connection sent is not asked for again;
+    // it goes on only while the server it was sent to is the one saved.
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let mut old = config(true);
+        old.server_password = Some("old-server-password".into());
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        chat.connect_fresh(NET, old, missing, window, cx).unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, true, "typed", cx);
+        chat.saved.servers[0].host = "127.0.0.2".into();
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        let used = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(used.server_password, None);
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn a_dialog_uses_the_nickname_saved_while_it_was_open(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        chat.connect_fresh(NET, config(true), missing, window, cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, true, "typed", cx);
+        chat.saved.servers[0].nickname = "renamed".into();
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        let used = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(used.nickname, "renamed");
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn a_connection_started_from_the_dialog_reads_the_noted_channel_keys(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let profile = &mut chat.saved.servers[0];
+        profile.keyed_channels = Some(vec!["#a".into()]);
+        store
+            .set(
+                &cayenchat_storage::SecretKey::channel_key(&profile.id, "#a"),
+                &Secret::new("key"),
+            )
+            .unwrap();
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        // The configuration the dialog opened with holds no key.
+        chat.connect_fresh(NET, config(true), missing, window, cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, true, "typed", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        let used = chat.sessions[&NET].active_config.as_ref().unwrap();
+        assert_eq!(used.channel_keys.get("#a").map(String::as_str), Some("key"));
+        stop(chat);
+    });
 }
 
 #[gpui::test]

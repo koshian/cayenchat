@@ -578,12 +578,14 @@ history). A reconnect keeps the server, port, TLS and SASL account and
 mechanism of the last connection, so it only reads the profile's stored
 secrets while the profile still says the same; if the settings changed since
 (for example SASL moved to ECDSA), nothing is read or sent and the user
-connects again with the new settings (#679), as does a credential dialog that
-was opened before the change. A credential dialog is also closed when another
-attempt starts or the connection registers (#722), so it never acts on a newer
-connection. A credential dialog that was opened before a
-change to the auto-join channels, IRCv3 options, shared avatar or encodings
-connects with the saved values of when it is answered (#723). A complete
+connects again with the new settings (#679). A credential dialog is also closed
+when another attempt starts or the connection registers (#722), so it never
+acts on a newer connection. A credential dialog builds its connection again
+from the profile as saved when it is answered (#723, #848): any setting changed
+while it was open, including the nickname and the server, applies, and the
+typed passwords go to the server saved then. Passwords the dialog did not ask
+for are carried on only while the server settings are those it opened with, and
+channel keys are read from the store as for any connection. A complete
 membership event reducer remains future work.
 The core emits fresh member snapshots after NAMES completion and incoming JOIN,
 PART, KICK, QUIT, NICK and channel MODE changes. Application state sorts each
