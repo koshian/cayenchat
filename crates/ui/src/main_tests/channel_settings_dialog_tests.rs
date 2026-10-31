@@ -128,3 +128,33 @@ fn press(cx: &mut gpui::VisualTestContext, key: &str) {
         keystroke: gpui::Keystroke::parse(key).unwrap(),
     });
 }
+
+#[test]
+fn char_ref_choices_keep_their_order_and_ids() {
+    use crate::channel_settings_dialog::char_ref_choices;
+    // The channel dialog starts with "follow the server"; its buttons are
+    // numbered by position.
+    assert_eq!(
+        char_ref_choices(true),
+        [
+            (None, "channel_settings_inherit"),
+            (Some(CharRefMode::Auto), "char_refs_auto"),
+            (Some(CharRefMode::Iso2022Jp), "char_refs_iso2022jp"),
+            (Some(CharRefMode::Off), "char_refs_off"),
+        ]
+    );
+    // The settings window has no such choice; its button ids count from 0.
+    let settings: Vec<_> = char_ref_choices(false)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(id, (mode, key))| Some((id, mode?, key)))
+        .collect();
+    assert_eq!(
+        settings,
+        [
+            (0, CharRefMode::Auto, "char_refs_auto"),
+            (1, CharRefMode::Iso2022Jp, "char_refs_iso2022jp"),
+            (2, CharRefMode::Off, "char_refs_off"),
+        ]
+    );
+}
