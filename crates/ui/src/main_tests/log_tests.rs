@@ -81,12 +81,33 @@ fn channel_activity_uses_english_phrases_with_optional_details() {
 }
 
 #[test]
+fn log_selection_leaves_out_diagnostics_recorded_after_it() {
+    let origin = 1u64 << 62;
+    let selection = LogSelection {
+        source: cayenchat_app::Selection::Server(cayenchat_model::NetworkId(1)),
+        anchor: LogPosition { row: 1, byte: 0 },
+        cursor: LogPosition {
+            row: origin + 2,
+            byte: 3,
+        },
+        // Lines 0 to 2 existed when it was made.
+        diagnostics_end: 3,
+    };
+    assert_eq!(selection.range(2, 5), Some(0..5));
+    // Newer diagnostics lie between the ends but are not selected.
+    assert_eq!(selection.range(3, 5), None);
+    assert!(!selection.covers(40));
+    // Messages in the range are.
+    assert_eq!(selection.range(origin, 5), Some(0..5));
+}
+
+#[test]
 fn log_selection_spans_partial_messages() {
     let selection = LogSelection {
         source: cayenchat_app::Selection::Channel(ConversationId(1)),
-        diagnostics: None,
         anchor: LogPosition { row: 2, byte: 3 },
         cursor: LogPosition { row: 0, byte: 2 },
+        diagnostics_end: u64::MAX,
     };
     assert_eq!(selection.range(0, 5), Some(2..5));
     assert_eq!(selection.range(1, 5), Some(0..5));

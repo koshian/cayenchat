@@ -596,13 +596,12 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
             .state
             .diagnostics(NetworkId(1), DiagnosticsView::Overview)
             .iter()
-            .map(|line| (line.sequence as usize, line.render()))
+            .map(|line| (line.sequence, line.render()))
             .collect();
         // From the middle of the first line to the middle of the second.
         let from = rows[0].1.find("Sleep").unwrap();
         chat.log_selection = Some(crate::LogSelection {
             source,
-            diagnostics: Some(DiagnosticsView::Overview),
             anchor: crate::LogPosition {
                 row: rows[0].0,
                 byte: from,
@@ -611,6 +610,7 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
                 row: rows[1].0,
                 byte: rows[1].1.len() - 3,
             },
+            diagnostics_end: chat.state.next_diagnostic_sequence(),
         });
         chat.copy_selected_log(cx);
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
@@ -618,13 +618,19 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
             copied.as_deref(),
             Some(format!("Sleep notice: idle\n{}", &rows[1].1[..rows[1].1.len() - 3]).as_str())
         );
-        // Another view, or lines of a new connection, copy nothing more.
+        // Another view, diagnostics turned off or lines of a new connection
+        // end the selection: nothing more is copied.
         cx.write_to_clipboard(gpui::ClipboardItem::new_string("kept".into()));
+        let selection = chat.log_selection;
         chat.diagnostics_view = DiagnosticsView::Protocol;
-        chat.copy_selected_log(cx);
+        chat.drop_diagnostics_selection(None);
+        assert!(chat.log_selection.is_none());
         chat.diagnostics_view = DiagnosticsView::Overview;
-        chat.state.clear_diagnostics(NetworkId(1));
-        record(chat, DiagnosticsView::Overview, "new connection");
+        chat.log_selection = selection;
+        chat.drop_diagnostics_selection(Some(NetworkId(2)));
+        assert!(chat.log_selection.is_some(), "another server's attempt");
+        chat.drop_diagnostics_selection(Some(NetworkId(1)));
+        assert!(chat.log_selection.is_none());
         chat.copy_selected_log(cx);
         assert_eq!(
             cx.read_from_clipboard()
@@ -632,5 +638,125 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
                 .as_deref(),
             Some("kept")
         );
+    });
+}
+
+#[gpui::test]
+fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    with_diagnostics(&chat, cx);
+    chat.update(cx, |chat, cx| {
+        chat.state
+            .append_server_message(NetworkId(1), "first line".into());
+        chat.state
+            .append_server_message(NetworkId(1), "second line".into());
+        let source = chat.state.selection();
+        let diagnostic = chat
+            .state
+            .diagnostics(NetworkId(1), DiagnosticsView::Overview)[1]
+            .clone();
+        let messages = chat.state.server_messages(NetworkId(1));
+        let second = messages[messages.len() - 1].sequence;
+        let text = diagnostic.render();
+        let from = text.find("Handshake").unwrap();
+        // The messages the server log already held lie between, whole.
+        let expected: Vec<_> = std::iter::once("Handshake done".to_owned())
+            .chain(
+                messages[..messages.len() - 1]
+                    .iter()
+                    .map(|message| format!("{} {}", message.time, message.text)),
+            )
+            .chain(std::iter::once(format!(
+                "{} second",
+                messages[messages.len() - 1].time
+            )))
+            .collect();
+        let expected = expected.join("\n");
+        assert!(expected.contains(" first line\n"));
+        // The last diagnostics line to the middle of the second message.
+        chat.log_selection = Some(crate::LogSelection {
+            source,
+            anchor: crate::LogPosition {
+                row: diagnostic.sequence,
+                byte: from,
+            },
+            cursor: crate::LogPosition {
+                row: second,
+                byte: 6,
+            },
+            diagnostics_end: chat.state.next_diagnostic_sequence(),
+        });
+        chat.copy_selected_log(cx);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(expected.as_str())
+        );
+        // The same range from the other end copies the same.
+        let selection = chat.log_selection.as_mut().unwrap();
+        std::mem::swap(&mut selection.anchor, &mut selection.cursor);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into()));
+        chat.copy_selected_log(cx);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(expected.as_str())
+        );
+    });
+}
+
+#[gpui::test]
+fn a_channel_selection_copies_only_the_diagnostics_line_shown(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| {
+        chat.debug_enabled = true;
+        record(chat, DiagnosticsView::Overview, "Sleep notice: idle");
+        record(chat, DiagnosticsView::Overview, "Handshake done");
+        let channel = chat.state.selected_channel().unwrap().id;
+        chat.state.append_conversation_message(
+            channel,
+            "bob",
+            "hello world",
+            cayenchat_app::Kind::Message,
+            Default::default(),
+            cayenchat_app::Unread::Leave,
+        );
+        // Registered: only the newest diagnostics line is drawn.
+        let shown = chat.main_layout().diagnostics;
+        assert_eq!(shown, 1..2);
+        let lines = chat
+            .state
+            .diagnostics(NetworkId(1), DiagnosticsView::Overview);
+        let hidden = lines[0].sequence;
+        let row = chat
+            .state
+            .selected_channel()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .sequence;
+        chat.log_selection = Some(crate::LogSelection {
+            source: chat.state.selection(),
+            anchor: crate::LogPosition {
+                row: hidden,
+                byte: 0,
+            },
+            cursor: crate::LogPosition { row, byte: 5 },
+            diagnostics_end: chat.state.next_diagnostic_sequence(),
+        });
+        chat.copy_selected_log(cx);
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        let drawn = chat
+            .state
+            .diagnostics(NetworkId(1), DiagnosticsView::Overview)[1]
+            .render();
+        // The hidden line is not copied; the channel's earlier lines are.
+        let copied = copied.unwrap();
+        assert!(copied.starts_with(&format!("{drawn}\n")), "{copied}");
+        assert!(copied.ends_with(" bob: hello"), "{copied}");
+        assert!(!copied.contains("Sleep notice"), "{copied}");
     });
 }

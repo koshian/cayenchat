@@ -652,6 +652,16 @@ fn sender_prefix(message: &cayenchat_model::Message) -> String {
     }
 }
 
+/// One line of a copy across several log lines: the time as drawn, then what
+/// leads the text, then the selected text. A part that is not drawn on the
+/// line (`None`, empty) is left out.
+fn copied_log_line(time: Option<TimeOfDay>, prefix: &str, body: &str) -> String {
+    match time {
+        Some(time) => format!("{time} {prefix}{body}"),
+        None => format!("{prefix}{body}"),
+    }
+}
+
 /// The kind of a received PRIVMSG or NOTICE and the text it shows: a
 /// PRIVMSG that is a CTCP ACTION (`/me`) is told apart here, once, and shown
 /// by its action text. A NOTICE is never an action.
@@ -1231,7 +1241,11 @@ struct MemberPrompt {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct LogPosition {
-    row: usize,
+    /// The line's `sequence`, not its index: trimming, older history or a
+    /// new connection cannot move a selection onto other lines. Diagnostic
+    /// lines (below the messages' range, as on screen) and messages share
+    /// the one order.
+    row: u64,
     byte: usize,
 }
 
@@ -1239,16 +1253,23 @@ struct LogPosition {
 struct LogSelection {
     /// The log the rows belong to: a conversation or a server's own log.
     source: Selection,
-    /// Set when the rows are the connection diagnostics shown above `source`'s
-    /// messages, in this view. Their rows are `DiagnosticLine::position`s,
-    /// not indexes, so trimming or a new connection cannot move a selection
-    /// onto other lines.
-    diagnostics: Option<DiagnosticsView>,
     anchor: LogPosition,
     cursor: LogPosition,
+    /// The next diagnostic sequence when the selection last started or
+    /// moved. Diagnostic lines recorded later lie outside it, however far
+    /// the range reaches: the user never saw them.
+    diagnostics_end: u64,
 }
 
 impl LogSelection {
+    /// Whether the line with `sequence` can be part of the range.
+    fn covers(self, sequence: u64) -> bool {
+        let (start, end) = self.bounds();
+        (start.row..=end.row).contains(&sequence)
+            && !(cayenchat_app::is_diagnostic_sequence(sequence)
+                && sequence >= self.diagnostics_end)
+    }
+
     fn bounds(self) -> (LogPosition, LogPosition) {
         if self.anchor <= self.cursor {
             (self.anchor, self.cursor)
@@ -1257,11 +1278,11 @@ impl LogSelection {
         }
     }
 
-    fn range(self, row: usize, len: usize) -> Option<std::ops::Range<usize>> {
-        let (start, end) = self.bounds();
-        if row < start.row || row > end.row {
+    fn range(self, row: u64, len: usize) -> Option<std::ops::Range<usize>> {
+        if !self.covers(row) {
             return None;
         }
+        let (start, end) = self.bounds();
         let from = if row == start.row {
             start.byte.min(len)
         } else {
@@ -2472,6 +2493,9 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        // The attempt clears the diagnostics below; the lines a range named
+        // are gone, so it ends.
+        self.drop_diagnostics_selection(Some(network));
         let Some(session) = self.sessions.get_mut(&network) else {
             return Err(self.i18n.text("not_connected"));
         };
@@ -3350,6 +3374,22 @@ impl ChatWindow {
         let log = self.log_menu.take().is_some();
         let group = self.group_menu.take().is_some();
         server || member || channel || log || group
+    }
+
+    /// Drops a text selection that reaches into the connection diagnostics,
+    /// because the lines it names are no longer the ones drawn: another view,
+    /// diagnostics turned off, or a new connection attempt. Sequences are
+    /// shared by both views and later lines, so a range kept would cover
+    /// others. `network` limits this to the selection of that server.
+    fn drop_diagnostics_selection(&mut self, network: Option<NetworkId>) {
+        if network.is_some_and(|network| self.selected_network_id() != Some(network)) {
+            return;
+        }
+        if self.log_selection.is_some_and(|selection| {
+            cayenchat_app::is_diagnostic_sequence(selection.bounds().0.row)
+        }) {
+            self.log_selection = None;
+        }
     }
 
     /// Whether `source` has a non-empty text selection in its log.
@@ -4663,6 +4703,9 @@ impl ChatWindow {
     /// registration only while it is on.
     fn set_debug(&mut self, on: bool, cx: &mut Context<Self>) {
         self.debug_enabled = on;
+        if !on {
+            self.drop_diagnostics_selection(None);
+        }
         self.refresh_menus(cx);
         for connection in self
             .sessions
@@ -4684,6 +4727,7 @@ impl ChatWindow {
             DiagnosticsView::Overview => DiagnosticsView::Protocol,
             DiagnosticsView::Protocol => DiagnosticsView::Overview,
         };
+        self.drop_diagnostics_selection(None);
         self.refresh_menus(cx);
         if !self.debug_enabled {
             self.show_diagnostics(window, cx);
@@ -4770,8 +4814,7 @@ impl ChatWindow {
     fn start_log_selection(
         &mut self,
         source: Selection,
-        diagnostics: Option<DiagnosticsView>,
-        row: usize,
+        row: u64,
         byte: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -4779,9 +4822,9 @@ impl ChatWindow {
         let position = LogPosition { row, byte };
         self.log_selection = Some(LogSelection {
             source,
-            diagnostics,
             anchor: position,
             cursor: position,
+            diagnostics_end: self.state.next_diagnostic_sequence(),
         });
         self.log_dragging = true;
         window.focus(&self.log_focus);
@@ -4791,17 +4834,16 @@ impl ChatWindow {
     fn extend_log_selection(
         &mut self,
         source: Selection,
-        diagnostics: Option<DiagnosticsView>,
-        row: usize,
+        row: u64,
         byte: usize,
         cx: &mut Context<Self>,
     ) {
         if self.log_dragging
             && let Some(selection) = self.log_selection.as_mut()
             && selection.source == source
-            && selection.diagnostics == diagnostics
         {
             selection.cursor = LogPosition { row, byte };
+            selection.diagnostics_end = self.state.next_diagnostic_sequence();
             cx.notify();
         }
     }
@@ -4821,81 +4863,111 @@ impl ChatWindow {
         if start == end {
             return;
         }
-        if let Some(view) = selection.diagnostics {
-            // The lines as drawn, still in the view and on the server the
-            // selection was made in.
-            let Some(network) = self.selected_network_id() else {
-                return;
-            };
-            if view != self.diagnostics_view {
-                return;
-            }
-            let pieces: Vec<_> = self
-                .state
-                .diagnostics(network, view)
-                .iter()
-                .filter(|line| (start.row..=end.row).contains(&(line.sequence as usize)))
-                .map(|line| {
-                    let text = line.render();
-                    let range = selection.range(line.sequence as usize, text.len());
-                    text.get(range.unwrap_or(0..0))
-                        .unwrap_or_default()
-                        .to_owned()
-                })
-                .collect();
-            if !pieces.is_empty() {
-                cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
-            }
-            return;
+        let in_range = |sequence: u64| selection.covers(sequence);
+        // The connection diagnostics drawn above the messages come first,
+        // as drawn: only the rows the layout shows now.
+        let mut pieces: Vec<String> = Vec::new();
+        if let Some(network) = self.selected_network_id() {
+            let shown = self.main_layout().diagnostics;
+            pieces.extend(
+                self.state
+                    .diagnostics(network, self.diagnostics_view)
+                    .range(shown)
+                    .filter(|line| in_range(line.sequence))
+                    .map(|line| {
+                        let text = line.render();
+                        let range = selection.range(line.sequence, text.len());
+                        text.get(range.unwrap_or(0..0))
+                            .unwrap_or_default()
+                            .to_owned()
+                    }),
+            );
         }
         let Some(channel) = self.state.selected_channel() else {
             // A server's log shows its lines as they are.
             let Selection::Server(network) = selection.source else {
                 return;
             };
-            let messages = self.state.server_messages(network);
-            let pieces: Vec<_> = (start.row..=end.row)
-                .filter_map(|row| {
-                    let message = messages.get(row)?;
-                    let range = selection.range(row, message.text.len()).unwrap_or(0..0);
-                    Some(message.text.get(range).unwrap_or_default().to_owned())
-                })
-                .collect();
+            let several = start.row != end.row;
+            pieces.extend(
+                self.state
+                    .server_messages(network)
+                    .iter()
+                    .filter(|message| in_range(message.sequence))
+                    .map(|message| {
+                        let range = selection
+                            .range(message.sequence, message.text.len())
+                            .unwrap_or(0..0);
+                        let body = message.text.get(range).unwrap_or_default();
+                        if several {
+                            copied_log_line(Some(message.time), "", body)
+                        } else {
+                            body.to_owned()
+                        }
+                    }),
+            );
             if !pieces.is_empty() {
                 cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
             }
             return;
         };
         let decode = self.appearance.decode_char_refs;
-        let pieces: Vec<_> = (start.row..=end.row)
-            .filter_map(|row| {
-                channel.messages.get(row).map(|message| {
-                    let range = selection.range(row, message.text.len()).unwrap_or(0..0);
-                    // An action copied whole keeps the `* alice` that makes it
-                    // a `/me`; a part of it is copied as selected.
-                    let lead = if message.action
-                        && range.start == 0
-                        && range.end == message.text.len()
-                        && !range.is_empty()
-                    {
-                        sender_prefix(message)
+        let reiwa = self.appearance.reiwa_mode;
+        let mapping = self.state.casemapping(channel.network);
+        let several = start.row != end.row;
+        pieces.extend(
+            channel
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| in_range(message.sequence))
+                .map(|(row, message)| {
+                    let range = selection
+                        .range(message.sequence, message.text.len())
+                        .unwrap_or(0..0);
+                    let whole =
+                        range.start == 0 && range.end == message.text.len() && !range.is_empty();
+                    let body = if decode {
+                        // Decoded references are copied as the characters shown.
+                        compact_urls::Compact::new(
+                            &message.text,
+                            message.links.as_slice(),
+                            false,
+                            true,
+                        )
+                        .copy_text(&message.text, range)
                     } else {
-                        String::new()
+                        message.text[range].to_owned()
                     };
-                    if !decode {
-                        return lead + &message.text[range];
+                    if !several {
+                        // An action copied whole keeps the `* alice` that makes
+                        // it a `/me`; a part of it is copied as selected.
+                        let lead = if message.action && whole {
+                            sender_prefix(message)
+                        } else {
+                            String::new()
+                        };
+                        return lead + &body;
                     }
-                    // Decoded references are copied as the characters shown.
-                    lead + &compact_urls::Compact::new(
-                        &message.text,
-                        message.links.as_slice(),
-                        false,
-                        true,
-                    )
-                    .copy_text(&message.text, range)
-                })
-            })
-            .collect();
+                    // Across lines each one carries the time and sender as
+                    // drawn, and nothing that is not drawn on it.
+                    let lead = if reiwa && !message.activity {
+                        let above = row
+                            .checked_sub(1)
+                            .and_then(|above| channel.messages.get(above));
+                        reiwa_group::lead(above, message, mapping)
+                    } else {
+                        reiwa_group::Lead::Header
+                    };
+                    let time = (lead != reiwa_group::Lead::Text).then_some(message.time);
+                    let prefix = if message.activity || lead != reiwa_group::Lead::Header {
+                        String::new()
+                    } else {
+                        sender_prefix(message)
+                    };
+                    copied_log_line(time, &prefix, &body)
+                }),
+        );
         if !pieces.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(pieces.join("\n")));
         }
@@ -5837,21 +5909,12 @@ impl ChatWindow {
                     if status == OlderHistoryStatus::Failed {
                         self.state.older_history_failed(id, request);
                     } else {
-                        let added = self.state.insert_older_history(
+                        self.state.insert_older_history(
                             id,
                             request,
                             self.history_lines(network, true, messages),
                             status == OlderHistoryStatus::Beginning,
                         );
-                        // A text selection names rows by index; keep it on
-                        // the same lines.
-                        if let Some(selection) = self.log_selection.as_mut()
-                            && selection.source == Selection::Channel(id)
-                            && selection.diagnostics.is_none()
-                        {
-                            selection.anchor.row += added;
-                            selection.cursor.row += added;
-                        }
                     }
                 }
             }
@@ -9038,12 +9101,11 @@ impl ChatWindow {
                     };
                     let (found, current) = self.search_ranges(&message.text, message.sequence);
                     let source = Selection::Server(network);
+                    let row = message.sequence;
                     let selected = self
                         .log_selection
-                        .filter(|selection| {
-                            selection.source == source && selection.diagnostics.is_none()
-                        })
-                        .and_then(|selection| selection.range(index, message.text.len()));
+                        .filter(|selection| selection.source == source)
+                        .and_then(|selection| selection.range(row, message.text.len()));
                     let text_len = message.text.len();
                     let styled = styled_log_text(
                         "",
@@ -9079,7 +9141,7 @@ impl ChatWindow {
                                     .index_for_position(event.position)
                                     .unwrap_or_else(|index| index)
                                     .min(text_len);
-                                this.start_log_selection(source, None, index, byte, window, cx);
+                                this.start_log_selection(source, row, byte, window, cx);
                             }),
                         )
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -9087,7 +9149,7 @@ impl ChatWindow {
                                 .index_for_position(event.position)
                                 .unwrap_or_else(|index| index)
                                 .min(text_len);
-                            this.extend_log_selection(source, None, index, byte, cx);
+                            this.extend_log_selection(source, row, byte, cx);
                         }));
                     div()
                         .w_full()
@@ -9133,10 +9195,10 @@ impl ChatWindow {
         let shown = diagnostic_text(&text);
         let (found, current) = self.search_ranges(&text, line.sequence);
         let source = self.state.selection();
-        let row = line.sequence as usize;
+        let row = line.sequence;
         let selected = self
             .log_selection
-            .filter(|selection| selection.source == source && selection.diagnostics == Some(view))
+            .filter(|selection| selection.source == source)
             .and_then(|selection| selection.range(row, text.len()));
         let text_len = text.len();
         let styled = styled_log_text(
@@ -9174,7 +9236,7 @@ impl ChatWindow {
                         .index_for_position(event.position)
                         .unwrap_or_else(|index| index)
                         .min(text_len);
-                    this.start_log_selection(source, Some(view), row, byte, window, cx);
+                    this.start_log_selection(source, row, byte, window, cx);
                 }),
             )
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -9182,7 +9244,7 @@ impl ChatWindow {
                     .index_for_position(event.position)
                     .unwrap_or_else(|index| index)
                     .min(text_len);
-                this.extend_log_selection(source, Some(view), row, byte, cx);
+                this.extend_log_selection(source, row, byte, cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,
@@ -9209,6 +9271,7 @@ impl ChatWindow {
         let Some(message) = channel.messages.get(index) else {
             return div().into_any_element();
         };
+        let sequence = message.sequence;
         let urls = message.links.as_slice();
         // Channel activity lines stay text-only.
         let preview = if message.activity {
@@ -9245,11 +9308,8 @@ impl ChatWindow {
         let chips: Vec<_> = compact.linked().collect();
         let selected_range = self
             .log_selection
-            .filter(|selection| {
-                selection.source == Selection::Channel(selected_channel)
-                    && selection.diagnostics.is_none()
-            })
-            .and_then(|selection| selection.range(index, message.text.len()))
+            .filter(|selection| selection.source == Selection::Channel(selected_channel))
+            .and_then(|selection| selection.range(message.sequence, message.text.len()))
             .map(|range| compact.shown_range(range));
         let highlights: Vec<_> = message
             .highlights
@@ -9502,8 +9562,7 @@ impl ChatWindow {
                         let byte = down_compact.original(byte);
                         this.start_log_selection(
                             Selection::Channel(selected_channel),
-                            None,
-                            index,
+                            sequence,
                             byte,
                             window,
                             cx,
@@ -9516,8 +9575,7 @@ impl ChatWindow {
                     let byte = raw.saturating_sub(prefix_len).min(text_len);
                     this.extend_log_selection(
                         Selection::Channel(selected_channel),
-                        None,
-                        index,
+                        sequence,
                         move_compact.original(byte),
                         cx,
                     );
