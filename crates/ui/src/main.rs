@@ -5065,7 +5065,7 @@ impl ChatWindow {
         let current = self.tree_rows.iter().position(|row| match *row {
             TreeRow::Server(id) => selection == Selection::Server(id),
             TreeRow::Channel(id, _) => selection == Selection::Channel(id),
-            TreeRow::Group(_) | TreeRow::NewGroup => false,
+            TreeRow::Group(..) | TreeRow::NewGroup => false,
         });
         let target = match (key, current) {
             // A channel's parent is its server; one shown in a group has no
@@ -5104,7 +5104,7 @@ impl ChatWindow {
         let command = match row.1 {
             TreeRow::Server(id) => Command::SelectServer(id),
             TreeRow::Channel(id, _) => Command::SelectChannel(id),
-            TreeRow::Group(_) | TreeRow::NewGroup => return,
+            TreeRow::Group(..) | TreeRow::NewGroup => return,
         };
         if key == ListKey::Activate {
             self.dispatch(command, window, cx);
@@ -7072,7 +7072,8 @@ impl ChatWindow {
             .collect();
         let selected = self.state.selection();
         for (group, children) in &display.groups {
-            self.tree_rows.push(TreeRow::Group(*group));
+            let marks = self.state.group_unread(children);
+            self.tree_rows.push(TreeRow::Group(*group, marks));
             keys.push(GROUP_KEY | u64::from(group.0));
             let collapsed = self.state.group(*group).is_some_and(|g| g.collapsed);
             for (position, id) in children.iter().enumerate() {
@@ -7121,9 +7122,10 @@ impl ChatWindow {
                     .iter()
                     .position(|row| match (row, &edit.target) {
                         (TreeRow::NewGroup, channel_groups::GroupEditTarget::New(_)) => true,
-                        (TreeRow::Group(id), channel_groups::GroupEditTarget::Rename(target)) => {
-                            id == target
-                        }
+                        (
+                            TreeRow::Group(id, _),
+                            channel_groups::GroupEditTarget::Rename(target),
+                        ) => id == target,
                         _ => false,
                     })
             });
@@ -7136,7 +7138,7 @@ impl ChatWindow {
             let at = self.tree_rows.iter().position(|row| match *row {
                 TreeRow::Server(id) => selection == Selection::Server(id),
                 TreeRow::Channel(id, _) => selection == Selection::Channel(id),
-                TreeRow::Group(_) | TreeRow::NewGroup => false,
+                TreeRow::Group(..) | TreeRow::NewGroup => false,
             });
             self.tree_reveal_pending = false;
             if let Some(at) = at {
@@ -7283,7 +7285,7 @@ impl ChatWindow {
                     }))
                     .into_any_element()
             }
-            Some(TreeRow::Group(group)) => self.render_group_row(group, cx),
+            Some(TreeRow::Group(group, marks)) => self.render_group_row(group, marks, cx),
             Some(TreeRow::NewGroup) => self.render_new_group_row(cx),
             Some(TreeRow::Channel(id, index)) => {
                 let Some(conversation) = self.state.conversation(id) else {
@@ -8742,7 +8744,9 @@ const NEW_GROUP_KEY: u64 = 1 << 40;
 enum TreeRow {
     Server(NetworkId),
     /// The heading of a group (D075).
-    Group(GroupId),
+    /// With whether any of its channels is unread and whether any holds a
+    /// mention, which a collapsed heading shows.
+    Group(GroupId, (bool, bool)),
     /// The row where the name of a group being created is typed.
     NewGroup,
     /// The conversation and its position within its server's channels (D009).
