@@ -81,36 +81,6 @@ fn announce_sleep(
         .map(|()| finished)
 }
 
-/// How far the registration for the OS sleep notices got when the start waited
-/// for it.
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-#[derive(Debug, PartialEq, Eq)]
-enum Registration {
-    /// The OS accepted it.
-    Registered,
-    /// The OS refused it, or the thread ended without an answer.
-    Failed,
-    /// No answer within the wait; it may still come, or never.
-    Pending,
-}
-
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
-impl Registration {
-    fn from_ready(ready: Result<bool, std::sync::mpsc::RecvTimeoutError>) -> Self {
-        use std::sync::mpsc::RecvTimeoutError;
-        match ready {
-            Ok(true) => Self::Registered,
-            Ok(false) | Err(RecvTimeoutError::Disconnected) => Self::Failed,
-            Err(RecvTimeoutError::Timeout) => Self::Pending,
-        }
-    }
-
-    /// Only a confirmed registration lets the clock check slow down.
-    fn is_registered(&self) -> bool {
-        *self == Self::Registered
-    }
-}
-
 /// Starts watching.
 pub fn install() -> Notices {
     let (sender, wake) = mpsc::unbounded();
@@ -540,9 +510,9 @@ mod platform {
         // Only a confirmed registration earns the slow clock check; a failed
         // or unanswered one keeps the short interval, so a wake-up the
         // notices miss is still found soon.
-        let registration = Registration::from_ready(ready_rx.recv_timeout(Duration::from_secs(2)));
-        log::info!("sleep notices from IOKit: {registration:?}");
-        registration.is_registered()
+        let ready = ready_rx.recv_timeout(Duration::from_secs(2));
+        log::info!("sleep notices from IOKit: {ready:?}");
+        ready == Ok(true)
     }
 }
 
@@ -582,27 +552,6 @@ mod tests {
         // The jump is reported once.
         time.set(19 + 3605);
         assert!(!clock.jumped());
-    }
-
-    #[test]
-    fn only_a_confirmed_registration_slows_the_clock_check() {
-        use std::sync::mpsc::{RecvTimeoutError, channel};
-        let (sender, receiver) = channel();
-        sender.send(true).unwrap();
-        let registered = Registration::from_ready(receiver.recv_timeout(Duration::ZERO));
-        assert_eq!(registered, Registration::Registered);
-        assert!(registered.is_registered());
-        // Refused, or the thread ended without answering.
-        let refused = Registration::from_ready(Ok(false));
-        assert_eq!(refused, Registration::Failed);
-        assert!(!refused.is_registered());
-        let gone = Registration::from_ready(Err(RecvTimeoutError::Disconnected));
-        assert_eq!(gone, Registration::Failed);
-        // Unanswered is not the same as failed, but is not trusted either.
-        let (_held, receiver) = channel::<bool>();
-        let late = Registration::from_ready(receiver.recv_timeout(Duration::from_millis(1)));
-        assert_eq!(late, Registration::Pending);
-        assert!(!late.is_registered());
     }
 
     #[test]
