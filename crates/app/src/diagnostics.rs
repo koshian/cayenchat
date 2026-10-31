@@ -41,12 +41,6 @@ pub struct DiagnosticLine {
 }
 
 impl DiagnosticLine {
-    /// Where the line stands in the order of all diagnostic lines ever
-    /// recorded: a row number for a selection that survives trimming.
-    pub fn position(&self) -> usize {
-        (self.sequence - FIRST_SEQUENCE) as usize
-    }
-
     /// The line as drawn and copied: local date and time with milliseconds
     /// and UTC offset, then the elapsed time.
     pub fn render(&self) -> String {

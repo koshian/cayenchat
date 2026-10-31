@@ -3376,7 +3376,7 @@ there is no network, bouncer or connection behind it.
   notifications. A removed server drops them with its other state.
 - **Selection, copy and search (second step).** The diagnostics rows use the
   message rows' machinery: `LogSelection` (with the view it was made in; its
-  rows are `DiagnosticLine::position`s, so trimming or a new connection never
+  rows are the lines' `sequence`s, so trimming or a new connection never
   moves it onto other lines), `search::Source::Diagnostics`, `search::Hit` and
   `search_goto`. Only the selected part is copied, as drawn; with nothing
   selected Ctrl/Cmd+C copies nothing, and View → Copy Connection Diagnostics

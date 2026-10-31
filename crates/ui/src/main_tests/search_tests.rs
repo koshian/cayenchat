@@ -596,7 +596,7 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
             .state
             .diagnostics(NetworkId(1), DiagnosticsView::Overview)
             .iter()
-            .map(|line| (line.position(), line.render()))
+            .map(|line| (line.sequence as usize, line.render()))
             .collect();
         // From the middle of the first line to the middle of the second.
         let from = rows[0].1.find("Sleep").unwrap();

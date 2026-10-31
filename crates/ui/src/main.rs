@@ -4821,10 +4821,10 @@ impl ChatWindow {
                 .state
                 .diagnostics(network, view)
                 .iter()
-                .filter(|line| (start.row..=end.row).contains(&line.position()))
+                .filter(|line| (start.row..=end.row).contains(&(line.sequence as usize)))
                 .map(|line| {
                     let text = line.render();
-                    let range = selection.range(line.position(), text.len());
+                    let range = selection.range(line.sequence as usize, text.len());
                     text.get(range.unwrap_or(0..0))
                         .unwrap_or_default()
                         .to_owned()
@@ -9120,7 +9120,7 @@ impl ChatWindow {
         let shown = diagnostic_text(&text);
         let (found, current) = self.search_ranges(&text, line.sequence);
         let source = self.state.selection();
-        let row = line.position();
+        let row = line.sequence as usize;
         let selected = self
             .log_selection
             .filter(|selection| selection.source == source && selection.diagnostics == Some(view))
