@@ -2091,7 +2091,8 @@ IRCv3 metadata, need not be handled that strictly.
 **Status:** Accepted
 
 - The OS's wake-up notice is the main signal (macOS, Windows, Linux with
-  logind); a wall-clock jump check is the fallback for missed notices and for
+  logind); a wall-clock jump check (not on macOS, where it reported DarkWakes
+  as wakes, #780/#808) is the fallback for missed notices and for
   systems without logind. Both only say "woke up"; `ui/src/wake.rs` has no
   knowledge of connections.
 - A woken connection is not presumed dead. `Connection::check_alive` sends an

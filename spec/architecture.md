@@ -887,7 +887,8 @@ systemd-logind's `PrepareForSleep(false)` over the system bus (zbus) on
 Linux, where no logind means no OS notice. A thread also compares the wall
 clock with the time it slept, and a jump of 10 s or more over the interval
 counts as a wake-up: every 60 s next to an OS notice, every 5 s without one.
-Duplicate notices are harmless.
+Not on macOS (#808): the clock cannot tell a DarkWake from a full wake, so
+only the OS notice counts there. Duplicate notices are harmless.
 
 The UI waits 3 s (`WAKE_GRACE`, the network may still be coming back; notices
 during the wait join the same check) and calls `Connection::check_alive()` on
@@ -917,8 +918,8 @@ registration whose run loop source sits on a thread of its own (the main thread
 is never blocked and no run loop is nested; `kIOMessageSystemWillSleep` waits
 for the UI, `kIOMessageCanSystemSleep` is allowed at once, and
 `IOAllowPowerChange` is called exactly once per message; a failed registration
-is logged and left to the clock check, which then keeps its 5 s interval, as does
-a registration that did not answer in time; #780), `PBT_APMSUSPEND` in the same Windows callback, and logind's
+is logged and, off macOS, left to the clock check, which then keeps its 5 s
+interval, as does a registration that did not answer in time; #780), `PBT_APMSUSPEND` in the same Windows callback, and logind's
 `PrepareForSleep(true)` on Linux (not FreeBSD, which has no logind and takes the
 clock check alone), where a `delay` inhibitor lock
 (`Inhibit("sleep", "CayenChat", …)`) is held while running, released once the
