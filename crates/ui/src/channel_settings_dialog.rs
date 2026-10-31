@@ -131,16 +131,53 @@ pub(crate) fn apply_auto_join(
     text
 }
 
-/// The dialog. Its controls, in Tab order.
-const AUTO_JOIN: usize = 0;
-const DECODE: usize = 1;
-const ENCODE: usize = 2;
-const CHAR_REFS: usize = 3;
+/// The "inherit" radio plus one per `CHAR_REF_CHOICES` entry.
 const CHAR_REF_COUNT: usize = 4;
-const RESET: usize = CHAR_REFS + CHAR_REF_COUNT;
-const CANCEL: usize = RESET + 1;
-const SAVE: usize = CANCEL + 1;
-const CONTROLS: usize = SAVE + 1;
+
+/// The focus handles of the dialog's controls.
+struct Controls {
+    auto_join: FocusHandle,
+    decode: FocusHandle,
+    encode: FocusHandle,
+    char_refs: [FocusHandle; CHAR_REF_COUNT],
+    reset: FocusHandle,
+    cancel: FocusHandle,
+    save: FocusHandle,
+}
+
+impl Controls {
+    fn new(cx: &mut App) -> Self {
+        let handle = || cx.focus_handle().tab_stop(true);
+        Self {
+            auto_join: handle(),
+            decode: handle(),
+            encode: handle(),
+            char_refs: std::array::from_fn(|_| handle()),
+            reset: handle(),
+            cancel: handle(),
+            save: handle(),
+        }
+    }
+
+    /// The controls in Tab order, each with the body child to scroll into
+    /// view when it takes the focus. The body's children are the hint, then
+    /// one per control group.
+    fn tab_order(&self) -> [(&FocusHandle, Option<usize>); 6 + CHAR_REF_COUNT] {
+        let [r0, r1, r2, r3] = &self.char_refs;
+        [
+            (&self.auto_join, Some(1)),
+            (&self.decode, Some(2)),
+            (&self.encode, Some(3)),
+            (r0, Some(4)),
+            (r1, Some(4)),
+            (r2, Some(4)),
+            (r3, Some(4)),
+            (&self.reset, None),
+            (&self.cancel, None),
+            (&self.save, None),
+        ]
+    }
+}
 
 pub(crate) struct ChannelSettingsView {
     channel: String,
@@ -153,7 +190,7 @@ pub(crate) struct ChannelSettingsView {
     pub(crate) open_list: Option<EncodingSide>,
     highlight: usize,
     pub(crate) error: Option<String>,
-    controls: Vec<FocusHandle>,
+    controls: Controls,
     /// The first control takes the focus on the first draw.
     focus_pending: bool,
     body_scroll: ScrollHandle,
@@ -180,9 +217,7 @@ impl ChannelSettingsView {
             open_list: None,
             highlight: 0,
             error: None,
-            controls: (0..CONTROLS)
-                .map(|_| cx.focus_handle().tab_stop(true))
-                .collect(),
+            controls: Controls::new(cx),
             focus_pending: true,
             body_scroll: ScrollHandle::new(),
             menu_scroll: ScrollHandle::new(),
@@ -302,22 +337,18 @@ impl ChannelSettingsView {
 
     /// Tab / Shift+Tab: only the dialog's own controls are reachable.
     fn step_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let step = if forward { 1 } else { CONTROLS - 1 };
-        let at = self
-            .controls
+        let order = self.controls.tab_order();
+        let len = order.len();
+        let step = if forward { 1 } else { len - 1 };
+        let at = order
             .iter()
-            .position(|handle| handle.is_focused(window));
-        let next = at.map_or(0, |at| (at + step) % CONTROLS);
+            .position(|(handle, _)| handle.is_focused(window));
+        let (handle, scroll_to) = order[at.map_or(0, |at| (at + step) % len)];
         // An open list belongs to its selector.
         self.open_list = None;
-        window.focus(&self.controls[next]);
-        // The body's children: the hint, then one per control group.
-        match next {
-            AUTO_JOIN => self.body_scroll.scroll_to_item(1),
-            DECODE => self.body_scroll.scroll_to_item(2),
-            ENCODE => self.body_scroll.scroll_to_item(3),
-            CHAR_REFS..RESET => self.body_scroll.scroll_to_item(4),
-            _ => {}
+        window.focus(handle);
+        if let Some(child) = scroll_to {
+            self.body_scroll.scroll_to_item(child);
         }
         cx.notify();
     }
@@ -355,8 +386,8 @@ impl ChannelSettingsView {
         cx: &mut Context<Self>,
     ) -> Div {
         let (id, control) = match side {
-            EncodingSide::Decode => ("channel-decode", DECODE),
-            EncodingSide::Encode => ("channel-encode", ENCODE),
+            EncodingSide::Decode => ("channel-decode", &self.controls.decode),
+            EncodingSide::Encode => ("channel-encode", &self.controls.encode),
         };
         let inherit = self.i18n.text("channel_settings_inherit");
         let current = self.encoding(side);
@@ -365,7 +396,7 @@ impl ChannelSettingsView {
             div()
                 .id(id)
                 .debug_selector(|| id.into())
-                .track_focus(&self.controls[control])
+                .track_focus(control)
                 .flex()
                 .items_center()
                 .justify_between()
@@ -392,7 +423,7 @@ impl ChannelSettingsView {
             let hover = palette.hover;
             let selected = palette.selected;
             let mut menu = div()
-                .id(("channel-encoding-list", control))
+                .id("channel-encoding-list")
                 .debug_selector(|| "channel-encoding-list".into())
                 .track_scroll(&self.menu_scroll)
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
@@ -427,7 +458,7 @@ impl Render for ChannelSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.focus_pending {
             self.focus_pending = false;
-            window.focus(&self.controls[AUTO_JOIN]);
+            window.focus(&self.controls.auto_join);
         }
         let palette = settings_theme::palette(cx);
         let ring = settings_theme::current(cx).map_or(palette.text, |native| {
@@ -445,7 +476,7 @@ impl Render for ChannelSettingsView {
         let auto_join = div()
             .id("channel-settings-auto-join")
             .debug_selector(|| "channel-settings-auto-join".into())
-            .track_focus(&self.controls[AUTO_JOIN])
+            .track_focus(&self.controls.auto_join)
             .flex()
             .items_center()
             .gap_2()
@@ -467,7 +498,7 @@ impl Render for ChannelSettingsView {
             let selected = self.choices.char_refs == mode;
             modes = modes.child(
                 settings_theme::button(("channel-char-refs", index), selected, cx)
-                    .track_focus(&self.controls[CHAR_REFS + index])
+                    .track_focus(&self.controls.char_refs[index])
                     .focus(move |style| style.border_color(ring))
                     .child(self.i18n.text(key))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_char_refs(mode, cx))),
@@ -541,7 +572,7 @@ impl Render for ChannelSettingsView {
             .border_color(palette.border)
             .child(
                 settings_theme::button("channel-settings-reset", false, cx)
-                    .track_focus(&self.controls[RESET])
+                    .track_focus(&self.controls.reset)
                     .focus(move |style| style.border_color(ring))
                     .child(self.i18n.text("channel_settings_reset"))
                     .on_click(cx.listener(|this, _, _, cx| this.reset(cx))),
@@ -552,7 +583,7 @@ impl Render for ChannelSettingsView {
                     .gap_2()
                     .child(
                         settings_theme::button("channel-settings-cancel", false, cx)
-                            .track_focus(&self.controls[CANCEL])
+                            .track_focus(&self.controls.cancel)
                             .focus(move |style| style.border_color(ring))
                             .child(self.i18n.text("channel_settings_cancel"))
                             .on_click(
@@ -561,7 +592,7 @@ impl Render for ChannelSettingsView {
                     )
                     .child(
                         settings_theme::button("channel-settings-save", true, cx)
-                            .track_focus(&self.controls[SAVE])
+                            .track_focus(&self.controls.save)
                             .focus(move |style| style.border_color(ring))
                             .child(self.i18n.text("channel_settings_save"))
                             .on_click(
