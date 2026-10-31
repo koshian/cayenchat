@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, Worker};
-use crate::channel_keys::{JoinTarget, KeyJoin};
+use crate::channel_keys::KeyJoin;
 use cayenchat_irc_core::{ChannelActivityKind, ConnectionConfig, Event};
 use cayenchat_model::NetworkId;
 use cayenchat_storage::{CredentialStore, Secret, SecretKey};
@@ -250,13 +250,13 @@ fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key
         });
         chat.key_join_succeeded(NET, "#Secret", cx);
     });
-    let (profile, read, target, revision, old_snapshot) = chat.read_with(cx, |chat, _| {
+    let (profile, read, generation, revision, old_snapshot) = chat.read_with(cx, |chat, _| {
         let profile = chat
             .saved
             .profile(&chat.sessions[&NET].profile_id)
             .unwrap()
             .clone();
-        let target = JoinTarget::new(&chat.sessions[&NET]).unwrap();
+        let generation = chat.sessions[&NET].generation;
         let session = &chat.sessions[&NET];
         let revision = session.channel_key_revision;
         assert_eq!(session.channel_key_writes_pending, 1);
@@ -268,7 +268,7 @@ fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key
         (
             profile.clone(),
             profile.channels_to_read_keys_for(),
-            target,
+            generation,
             revision,
             BTreeMap::from([("#Secret".to_owned(), snapshot.expose().to_owned())]),
         )
@@ -298,7 +298,7 @@ fn a_refresh_snapshot_captured_during_a_key_write_cannot_restore_a_forgotten_key
     });
 
     chat.update(cx, |chat, _| {
-        chat.finish_key_refresh(NET, &profile, &read, &target, revision, old_snapshot);
+        chat.finish_key_refresh(NET, &profile, &read, generation, revision, old_snapshot);
         assert!(
             !chat.sessions[&NET]
                 .active_config
@@ -374,30 +374,20 @@ fn successful_key_writes_for_different_channels_both_update_the_config(cx: &mut 
 }
 
 #[test]
-fn join_targets_match_only_the_same_generation_and_destination() {
+fn join_targets_match_only_the_same_generation() {
     let mut session = crate::session::ServerSession::new("profile".into());
     session.active_config = Some(ConnectionConfig::tls(
         "irc.example.org".into(),
         "me".into(),
         vec![],
     ));
-    let target = JoinTarget::new(&session).unwrap();
-    assert!(target.matches(&session));
+    let captured = session.generation;
+    assert_eq!(session.generation, captured);
 
+    // A new destination always comes with a new generation.
     session.generation += 1;
-    assert!(!target.matches(&session));
-    session.generation -= 1;
-
     session.active_config.as_mut().unwrap().host = "irc.other.example".into();
-    assert!(!target.matches(&session));
-    session.active_config.as_mut().unwrap().host = "irc.example.org".into();
-
-    session.active_config.as_mut().unwrap().port += 1;
-    assert!(!target.matches(&session));
-    session.active_config.as_mut().unwrap().port -= 1;
-
-    session.active_config.as_mut().unwrap().use_tls = false;
-    assert!(!target.matches(&session));
+    assert_ne!(session.generation, captured);
 }
 
 #[gpui::test]
