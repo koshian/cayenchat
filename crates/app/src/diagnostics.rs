@@ -28,28 +28,24 @@ pub enum DiagnosticsView {
     Protocol,
 }
 
-/// One connection log line: when it happened, the time since the attempt
-/// began, and its text.
+/// One connection log line, formatted when it was recorded.
 #[derive(Clone, Debug)]
 pub struct DiagnosticLine {
     /// Identity and order key from the diagnostics' own counter, which is
     /// not the message counter; never reused.
     pub sequence: u64,
-    pub at: SystemTime,
-    pub elapsed: Option<Duration>,
+    /// The line as drawn, copied and searched; see `format_line`.
     pub text: String,
 }
 
-impl DiagnosticLine {
-    /// The line as drawn and copied: local date and time with milliseconds
-    /// and UTC offset, then the elapsed time.
-    pub fn render(&self) -> String {
-        let at =
-            chrono::DateTime::<chrono::Local>::from(self.at).format("%Y-%m-%d %H:%M:%S%.3f %:z");
-        match self.elapsed {
-            Some(elapsed) => format!("{at} [{:.1}s] {}", elapsed.as_secs_f32(), self.text),
-            None => format!("{at} {}", self.text),
-        }
+/// The line as drawn and copied: local date and time with milliseconds and
+/// UTC offset, then the time since the attempt began in brackets (if any),
+/// then the text. Done once, when the line is recorded.
+pub(crate) fn format_line(at: SystemTime, elapsed: Option<Duration>, text: &str) -> String {
+    let at = chrono::DateTime::<chrono::Local>::from(at).format("%Y-%m-%d %H:%M:%S%.3f %:z");
+    match elapsed {
+        Some(elapsed) => format!("{at} [{:.1}s] {text}", elapsed.as_secs_f32()),
+        None => format!("{at} {text}"),
     }
 }
 
@@ -130,12 +126,32 @@ mod tests {
             1_000_086_400,
         );
         let lines = state.diagnostics(NetworkId(1), DiagnosticsView::Protocol);
-        let early = lines[0].render();
+        let early = lines[0].text.clone();
         // Date, time with milliseconds and offset, then the elapsed time.
         assert!(shape(&early), "{early}");
         assert!(early.ends_with(" [1.2s] ← :s 001 me :hi"), "{early}");
         // The time is the recorded one: a day later changes the line.
-        assert_ne!(early, lines[1].render());
+        assert_ne!(early, lines[1].text);
+    }
+
+    #[test]
+    fn a_line_without_elapsed_time_renders_without_the_bracket() {
+        let mut state = state();
+        state.record_diagnostic(
+            NetworkId(1),
+            DiagnosticsView::Overview,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+            None,
+            "note".into(),
+        );
+        let line = state.diagnostics(NetworkId(1), DiagnosticsView::Overview)[0]
+            .text
+            .clone();
+        assert!(shape(&line), "{line}");
+        assert!(line.ends_with(" note"), "{line}");
+        assert!(!line.contains('['), "{line}");
+        // Exactly the 30-byte time prefix and one space precede the text.
+        assert_eq!(line.len(), 31 + "note".len(), "{line}");
     }
 
     /// `YYYY-MM-DD HH:MM:SS.mmm ±HH:MM ` at the start.
@@ -170,7 +186,7 @@ mod tests {
         );
         let wire = state.diagnostics(NetworkId(1), DiagnosticsView::Protocol);
         assert_eq!(wire.len(), DIAGNOSTIC_LIMIT);
-        assert_eq!(wire[0].text, "→ 5");
+        assert!(wire[0].text.ends_with(" → 5"), "{}", wire[0].text);
         // Sequences only grow and are never reused after trimming.
         assert!(
             wire.iter()

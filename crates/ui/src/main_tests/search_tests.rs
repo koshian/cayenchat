@@ -596,7 +596,7 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
             .state
             .diagnostics(NetworkId(1), DiagnosticsView::Overview)
             .iter()
-            .map(|line| (line.sequence, line.render()))
+            .map(|line| (line.sequence, line.text.clone()))
             .collect();
         // From the middle of the first line to the middle of the second.
         let from = rows[0].1.find("Sleep").unwrap();
@@ -657,7 +657,7 @@ fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestA
             .clone();
         let messages = chat.state.server_messages(NetworkId(1));
         let second = messages[messages.len() - 1].sequence;
-        let text = diagnostic.render();
+        let text = diagnostic.text.clone();
         let from = text.find("Handshake").unwrap();
         // The messages the server log already held lie between, whole.
         let expected: Vec<_> = std::iter::once("Handshake done".to_owned())
@@ -752,7 +752,8 @@ fn a_channel_selection_copies_only_the_diagnostics_line_shown(cx: &mut TestAppCo
         let drawn = chat
             .state
             .diagnostics(NetworkId(1), DiagnosticsView::Overview)[1]
-            .render();
+            .text
+            .clone();
         // The hidden line is not copied; the channel's earlier lines are.
         let copied = copied.unwrap();
         assert!(copied.starts_with(&format!("{drawn}\n")), "{copied}");

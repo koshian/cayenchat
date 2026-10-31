@@ -386,7 +386,7 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
         assert!(first[0].contains("sending QUIT"), "{first:?}");
         // Whether the worker ended in time depends on the order of the shared
         // wait, which the silent server uses up.
-        assert!(first[1].starts_with("Sleep QUIT"), "{first:?}");
+        assert!(first[1].contains("Sleep QUIT"), "{first:?}");
         assert!(notes(NetworkId(3))[0].contains("disconnected by the user"));
     });
 
