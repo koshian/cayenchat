@@ -2344,7 +2344,7 @@ are not searched, but match ranges are mapped to the drawn text with
 Sender names are not searched.
 
 The connection diagnostics (D077) are a source too, `Source::Diagnostics(network,
-view)`, read as drawn (`DiagnosticLine::render`: date, time, elapsed time and
+view)`, read as drawn (`DiagnosticLine::text`, formatted once when recorded: date, time, elapsed time and
 text) and only while the View menu's diagnostics are on, because they are not
 drawn otherwise. "This log" reads the selected server's log and, with the
 server selected, its diagnostics in the view being shown; "all" reads every

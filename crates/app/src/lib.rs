@@ -763,9 +763,7 @@ impl AppState {
             view,
             DiagnosticLine {
                 sequence,
-                at,
-                elapsed,
-                text,
+                text: diagnostics::format_line(at, elapsed, &text),
             },
         );
     }

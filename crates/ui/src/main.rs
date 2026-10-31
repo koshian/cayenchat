@@ -76,8 +76,8 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, DiagnosticLine, DiagnosticsView, GroupId, Kind,
-    MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
+    AppState, Command, ConnectionStatus, DiagnosticsView, GroupId, Kind, MessageMeta, Missing,
+    MoveTo, NetworkConfig, Parent, Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -4749,7 +4749,7 @@ impl ChatWindow {
                 self.state
                     .diagnostics(network, self.diagnostics_view)
                     .iter()
-                    .map(DiagnosticLine::render)
+                    .map(|line| line.text.as_str())
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -4875,7 +4875,7 @@ impl ChatWindow {
                     .range(shown)
                     .filter(|line| in_range(line.sequence))
                     .map(|line| {
-                        let text = line.render();
+                        let text = &line.text;
                         let range = selection.range(line.sequence, text.len());
                         text.get(range.unwrap_or(0..0))
                             .unwrap_or_default()
@@ -9195,9 +9195,9 @@ impl ChatWindow {
         let Some(line) = self.state.diagnostics(network, view).get(index) else {
             return div().into_any_element();
         };
-        let text = line.render();
-        let shown = diagnostic_text(&text);
-        let (found, current) = self.search_ranges(&text, line.sequence);
+        let text = &line.text;
+        let shown = diagnostic_text(text);
+        let (found, current) = self.search_ranges(text, line.sequence);
         let source = self.state.selection();
         let row = line.sequence;
         let selected = self

@@ -24,7 +24,7 @@ pub enum Source {
     /// A server's own log.
     Server(NetworkId),
     /// A server's connection diagnostics in one view, searched as drawn
-    /// (`DiagnosticLine::render`). Their sequences come from a counter that
+    /// (`DiagnosticLine::text`). Their sequences come from a counter that
     /// never meets the messages', so a sequence names one line in any hit.
     Diagnostics(NetworkId, DiagnosticsView),
 }
@@ -364,7 +364,7 @@ impl Scan {
                         lines
                             .iter()
                             .skip(start)
-                            .map(|line| (line.sequence, Cow::Owned(line.render()))),
+                            .map(|line| (line.sequence, Cow::Borrowed(line.text.as_str()))),
                         &mut budget,
                     )
                 }
