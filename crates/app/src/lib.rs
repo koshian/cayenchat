@@ -83,6 +83,13 @@ const OLDER_PAGE_OVERLAP_WINDOW: usize = HISTORY_RESERVE;
 /// renumbering what is already shown.
 const SEQUENCE_ORIGIN: u64 = 1 << 62;
 
+/// Whether `sequence` names a connection diagnostic line and not a message.
+/// Diagnostics count up from 0 and messages around 2^62, so the halfway
+/// point separates them for any realistic number of lines.
+pub fn is_diagnostic_sequence(sequence: u64) -> bool {
+    sequence < SEQUENCE_ORIGIN / 2
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Selection {
     Server(NetworkId),

@@ -1960,11 +1960,17 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
     });
     chat.update(cx, |chat, cx| {
         // The user has selected text in the line that is on screen.
+        let on_screen = chat.state.conversation(b).unwrap().messages[0].sequence;
         chat.log_selection = Some(LogSelection {
             source: Selection::Channel(b),
-            diagnostics: None,
-            anchor: LogPosition { row: 0, byte: 0 },
-            cursor: LogPosition { row: 0, byte: 3 },
+            anchor: LogPosition {
+                row: on_screen,
+                byte: 0,
+            },
+            cursor: LogPosition {
+                row: on_screen,
+                byte: 3,
+            },
         });
         let before = chat.notifier.shown.len();
         chat.handle_events(
@@ -2012,9 +2018,11 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         assert_eq!(marked, ["alice"]);
         assert!(!chat.state.is_highlighted(b));
         let selection = chat.log_selection.unwrap();
+        let recent = &chat.state.conversations()[1].messages[1];
+        assert_eq!(recent.text, "recent");
         assert_eq!(
             (selection.anchor.row, selection.cursor.row),
-            (1, 1),
+            (recent.sequence, recent.sequence),
             "still on \"recent\""
         );
         chat.sync_log_lists();

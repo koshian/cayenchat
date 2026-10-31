@@ -3387,3 +3387,16 @@ there is no network, bouncer or connection behind it.
   diagnostics are on; "this log" reads the selected server's diagnostics in
   the view shown, "all" every server's in both views, and going to a hit in the
   other view switches views.
+- **One selection across both (#799).** `LogPosition::row` is a line's
+  `sequence` for messages too, so one `LogSelection` runs from a diagnostics
+  row down into the messages; the selection no longer records a view. Copy
+  joins the lines with newlines, the diagnostics shown now (the layout's rows:
+  all of them, or only the newest while a channel is open and registered) as
+  drawn, then the messages as a message selection copies them. A range keeps
+  its lines when messages are trimmed or older history is added (no index
+  shifting). It ends when the diagnostics view changes, the diagnostics go
+  off, or the server starts a new connection attempt (sequences are shared by
+  both views and never reused, so a kept range would cover other lines);
+  a new diagnostics line recorded inside a range while it is held is part
+  of it, as it is drawn selected. Diagnostics stay a separate type, not
+  `Message`: a message has only a time of day.

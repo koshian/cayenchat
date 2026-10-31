@@ -488,6 +488,7 @@ impl ChatWindow {
             }
             if self.diagnostics_view != view {
                 self.diagnostics_view = view;
+                self.drop_diagnostics_selection(None);
                 self.refresh_menus(cx);
             }
         }

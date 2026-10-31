@@ -233,14 +233,12 @@ fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
         chat.state
             .dispatch(cayenchat_app::Command::SelectChannel(channel));
         let id = chat.state.conversations()[0].id;
-        let end = chat.state.selected_channel().unwrap().messages[0]
-            .text
-            .len();
+        let first = &chat.state.selected_channel().unwrap().messages[0];
+        let (row, end) = (first.sequence, first.text.len());
         chat.log_selection = Some(crate::LogSelection {
             source: cayenchat_app::Selection::Channel(id),
-            diagnostics: None,
-            anchor: crate::LogPosition { row: 0, byte: 0 },
-            cursor: crate::LogPosition { row: 0, byte: end },
+            anchor: crate::LogPosition { row, byte: 0 },
+            cursor: crate::LogPosition { row, byte: end },
         });
         chat.copy_selected_log(cx);
     });
@@ -301,11 +299,11 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
     });
     let copied = |from: usize, to: usize, cx: &mut gpui::VisualTestContext| {
         chat.update(cx, |chat, cx| {
+            let row = chat.state.selected_channel().unwrap().messages[0].sequence;
             chat.log_selection = Some(crate::LogSelection {
                 source: cayenchat_app::Selection::Channel(id),
-                diagnostics: None,
-                anchor: crate::LogPosition { row: 0, byte: from },
-                cursor: crate::LogPosition { row: 0, byte: to },
+                anchor: crate::LogPosition { row, byte: from },
+                cursor: crate::LogPosition { row, byte: to },
             });
             chat.copy_selected_log(cx);
         });
