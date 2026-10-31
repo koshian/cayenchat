@@ -276,9 +276,23 @@ impl AppState {
         tree
     }
 
-    /// Where the conversation is shown now.
+    /// Where the conversation is shown now: its group, else its server.
+    /// Answers what [`DisplayTree::parent_of`] would, without building the tree.
     pub fn display_parent(&self, id: ConversationId) -> Option<Parent> {
-        self.display_tree().parent_of(id)
+        let conversation = self.conversation(id)?;
+        let group = if conversation.is_private() {
+            None
+        } else {
+            self.group_index_of(conversation)
+        };
+        match group {
+            Some(at) => Some(Parent::Group(self.groups[at].id)),
+            None => self
+                .networks
+                .iter()
+                .any(|n| n.id == conversation.network)
+                .then_some(Parent::Server(conversation.network)),
+        }
     }
 
     /// The group that holds the channel, by its identity.
@@ -376,8 +390,12 @@ impl AppState {
     /// Moves a channel from one parent to another for `MoveTo::Place`: into
     /// the group of `other`, or back to the server of `other`, which must be
     /// the channel's own server. The channel goes before `other`.
-    pub(crate) fn relocate(&mut self, id: ConversationId, other: ConversationId) -> bool {
-        let tree = self.display_tree();
+    pub(crate) fn relocate(
+        &mut self,
+        tree: &DisplayTree,
+        id: ConversationId,
+        other: ConversationId,
+    ) -> bool {
         let (Some(from), Some(to)) = (tree.parent_of(id), tree.parent_of(other)) else {
             return false;
         };
@@ -414,10 +432,14 @@ impl AppState {
 
     /// Reorders within a group for [`AppState::move_conversation`]. `None`
     /// when the channel is not in a group or nothing moves.
-    pub(crate) fn move_in_group(&mut self, id: ConversationId, to: MoveTo) -> Option<bool> {
+    pub(crate) fn move_in_group(
+        &mut self,
+        tree: &DisplayTree,
+        id: ConversationId,
+        to: MoveTo,
+    ) -> Option<bool> {
         let conversation = self.conversation(id)?.clone();
         let at = self.group_index_of(&conversation)?;
-        let tree = self.display_tree();
         let siblings = tree.children(Parent::Group(self.groups[at].id));
         let from = siblings.iter().position(|c| *c == id)?;
         let last = siblings.len() - 1;
