@@ -105,11 +105,12 @@ fn opening_the_menu_keeps_the_selection_and_copy_uses_it(cx: &mut TestAppContext
             Default::default(),
             cayenchat_app::Unread::Leave,
         );
+        let row = chat.state.selected_channel().unwrap().messages[0].sequence;
         let selection = LogSelection {
             source: cayenchat_app::Selection::Channel(channel),
-            diagnostics: None,
-            anchor: LogPosition { row: 0, byte: 6 },
-            cursor: LogPosition { row: 0, byte: 11 },
+            anchor: LogPosition { row, byte: 6 },
+            cursor: LogPosition { row, byte: 11 },
+            diagnostics_end: u64::MAX,
         };
         chat.log_selection = Some(selection);
         cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
@@ -272,20 +273,27 @@ fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppCo
         let channel = chat.state.selected_channel().unwrap().id;
         chat.state
             .dispatch(cayenchat_app::Command::SelectServer(NetworkId(1)));
-        let base = chat.state.server_messages(NetworkId(1)).len();
         chat.state
             .append_server_message(NetworkId(1), "first line".into());
         chat.state
             .append_server_message(NetworkId(1), "second line".into());
+        let messages = chat.state.server_messages(NetworkId(1));
+        let (first, second) = (
+            messages[messages.len() - 2].sequence,
+            messages[messages.len() - 1].sequence,
+        );
         let source = cayenchat_app::Selection::Server(NetworkId(1));
         chat.log_selection = Some(LogSelection {
             source,
-            diagnostics: None,
-            anchor: LogPosition { row: base, byte: 6 },
-            cursor: LogPosition {
-                row: base + 1,
+            anchor: LogPosition {
+                row: first,
                 byte: 6,
             },
+            cursor: LogPosition {
+                row: second,
+                byte: 6,
+            },
+            diagnostics_end: u64::MAX,
         });
         assert!(chat.has_log_selection(source));
         cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
@@ -293,7 +301,8 @@ fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppCo
         assert!(chat.log_menu.is_some());
         chat.log_menu_choice(LogMenuChoice::Copy, window, cx);
         // Several lines carry the time drawn on each.
-        let times: Vec<_> = chat.state.server_messages(NetworkId(1))[base..]
+        let all = chat.state.server_messages(NetworkId(1));
+        let times: Vec<_> = all[all.len() - 2..]
             .iter()
             .map(|m| m.time.to_string())
             .collect();

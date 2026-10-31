@@ -233,14 +233,13 @@ fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
         chat.state
             .dispatch(cayenchat_app::Command::SelectChannel(channel));
         let id = chat.state.conversations()[0].id;
-        let end = chat.state.selected_channel().unwrap().messages[0]
-            .text
-            .len();
+        let first = &chat.state.selected_channel().unwrap().messages[0];
+        let (row, end) = (first.sequence, first.text.len());
         chat.log_selection = Some(crate::LogSelection {
             source: cayenchat_app::Selection::Channel(id),
-            diagnostics: None,
-            anchor: crate::LogPosition { row: 0, byte: 0 },
-            cursor: crate::LogPosition { row: 0, byte: end },
+            anchor: crate::LogPosition { row, byte: 0 },
+            cursor: crate::LogPosition { row, byte: end },
+            diagnostics_end: u64::MAX,
         });
         chat.copy_selected_log(cx);
     });
@@ -301,11 +300,12 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
     });
     let copied = |from: usize, to: usize, cx: &mut gpui::VisualTestContext| {
         chat.update(cx, |chat, cx| {
+            let row = chat.state.selected_channel().unwrap().messages[0].sequence;
             chat.log_selection = Some(crate::LogSelection {
                 source: cayenchat_app::Selection::Channel(id),
-                diagnostics: None,
-                anchor: crate::LogPosition { row: 0, byte: from },
-                cursor: crate::LogPosition { row: 0, byte: to },
+                anchor: crate::LogPosition { row, byte: from },
+                cursor: crate::LogPosition { row, byte: to },
+                diagnostics_end: u64::MAX,
             });
             chat.copy_selected_log(cx);
         });
@@ -384,17 +384,25 @@ fn copying_several_lines_carries_the_time_and_sender_drawn_on_each(cx: &mut Test
                   cx: &mut gpui::VisualTestContext| {
         chat.update(cx, |chat, cx| {
             chat.appearance.reiwa_mode = reiwa;
+            let sequences: Vec<u64> = chat
+                .state
+                .selected_channel()
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| m.sequence)
+                .collect();
             chat.log_selection = Some(crate::LogSelection {
                 source: cayenchat_app::Selection::Channel(id),
-                diagnostics: None,
                 anchor: crate::LogPosition {
-                    row: from.0,
+                    row: sequences[from.0],
                     byte: from.1,
                 },
                 cursor: crate::LogPosition {
-                    row: to.0,
+                    row: sequences[to.0],
                     byte: to.1,
                 },
+                diagnostics_end: u64::MAX,
             });
             chat.copy_selected_log(cx);
         });
