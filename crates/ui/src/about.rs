@@ -74,7 +74,7 @@ pub fn open(i18n: &Localizer, cx: &mut App) {
         return;
     }
     let i18n = i18n.clone();
-    let bounds = Bounds::centered(None, size(px(420.), px(320.)), cx);
+    let bounds = Bounds::centered(None, size(px(420.), px(360.)), cx);
     let title = i18n.text("about_title");
     let opened = cx.open_window(
         WindowOptions {
@@ -146,7 +146,7 @@ impl Render for AboutWindow {
                     .gap_3()
                     .child(
                         div()
-                            .w(px(110.))
+                            .w(px(90.))
                             .flex_shrink_0()
                             .text_color(theme.text_secondary)
                             .child(label),
@@ -180,21 +180,12 @@ impl Render for AboutWindow {
                     .flex_col()
                     .gap_3()
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_2xl()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("CayenChat"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(theme.text_secondary)
-                                    .child(format!("v{}", self.info.version)),
-                            ),
+                        div().flex().flex_col().items_center().child(
+                            div()
+                                .text_2xl()
+                                .font_weight(FontWeight::BOLD)
+                                .child("CayenChat"),
+                        ),
                     )
                     .child(
                         div()
