@@ -240,3 +240,10 @@ terminators and has no size cap; this local patch also bounds the UTF-16 scan.
 The decoder and post-lock guard live in `src/platform/clipboard_data.rs`; the
 UI crate's workspace test target includes that same source so CI executes the
 regressions even though GPUI is a dependency rather than a workspace member.
+
+In `src/platform/mac/window.rs`, `MacWindow::open` takes `WindowParams::bounds`
+as the window frame (title bar included), the same rectangle
+`MacWindowState::bounds` reports, and derives the content size from it with
+`contentRectForFrameRect:styleMask:`. Upstream took it as the content rect, so
+a window reopened with its saved bounds was taller by the title bar each time
+and its bottom went below the display (CayenChat #795).
