@@ -173,3 +173,57 @@ fn link_colors_apply_to_log_urls_only_and_default_to_the_old_look() {
     assert_eq!(theme.panes.log_link, rgb(0x00ff00));
     assert_eq!(theme.panes.log_link_background, None);
 }
+
+#[gpui::test]
+fn copy_selection_excludes_diagnostics_recorded_after_the_selection_started(
+    cx: &mut gpui::TestAppContext,
+) {
+    use cayenchat_app::{Command, DiagnosticsView, Selection};
+    use cayenchat_model::NetworkId;
+
+    crate::support::install_test_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        super::ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update_in(cx, |chat, window, cx| {
+        let network = NetworkId(1);
+        let record = |chat: &mut super::ChatWindow, text: &str| {
+            chat.state.record_diagnostic(
+                network,
+                DiagnosticsView::Overview,
+                std::time::SystemTime::UNIX_EPOCH,
+                None,
+                text.into(),
+            );
+        };
+        chat.debug_enabled = true;
+        chat.state.dispatch(Command::SelectServer(network));
+        chat.state.append_server_message(network, "message".into());
+        record(chat, "old one");
+        record(chat, "old two");
+        let first = chat.state.diagnostics(network, chat.diagnostics_view)[0].sequence;
+        let message = chat.state.server_messages(network).last().unwrap().sequence;
+
+        // The selection starts here; this diagnostic comes after it.
+        let source = Selection::Server(network);
+        chat.start_log_selection(source, first, 0, window, cx);
+        record(chat, "new one");
+        let selection = chat.log_selection.as_mut().unwrap();
+        selection.cursor = LogPosition {
+            row: message,
+            byte: 7,
+        };
+
+        chat.copy_selected_log(cx);
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        let copied = copied.expect("something was copied");
+        // Lines carry a time prefix, so check order by content.
+        let lines: Vec<&str> = copied.lines().collect();
+        assert_eq!(lines.len(), 3, "{copied:?}");
+        assert!(lines[0].ends_with("old one"), "{copied:?}");
+        assert!(lines[1].ends_with("old two"), "{copied:?}");
+        assert!(lines[2].ends_with("message"), "{copied:?}");
+        assert!(!copied.contains("new one"), "{copied:?}");
+    });
+}
