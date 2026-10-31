@@ -468,14 +468,18 @@ impl ChatWindow {
     }
 
     /// A group heading, or the heading of the group being renamed.
-    pub(crate) fn render_group_row(&mut self, id: GroupId, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_group_row(
+        &mut self,
+        id: GroupId,
+        (unread, highlighted): (bool, bool),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme::current(cx);
         let Some(group) = self.state.group(id) else {
             return div().into_any_element();
         };
         let collapsed = group.collapsed;
         let name = display::neutralize_bidi(&group.name).into_owned();
-        let (unread, highlighted) = self.state.group_unread(id);
         let renaming = self
             .group_edit
             .as_ref()
