@@ -43,7 +43,7 @@ fn channel_rows(chat: &ChatWindow) -> Vec<String> {
         .iter()
         .map(|row| match *row {
             TreeRow::Server(_) => "server".into(),
-            TreeRow::Group(_) => "group".into(),
+            TreeRow::Group(..) => "group".into(),
             TreeRow::NewGroup => "new".into(),
             TreeRow::Channel(id, at) => {
                 format!("{}@{at}", chat.state.conversation(id).unwrap().name)
@@ -165,4 +165,22 @@ fn deleting_a_group_asks_when_it_holds_channels_and_returns_them(cx: &mut TestAp
             Some(Parent::Server(cayenchat_model::NetworkId(1)))
         );
     });
+}
+
+/// `storage` cannot depend on `app`, so each keeps its own group limits; they
+/// must stay equal.
+#[test]
+fn storage_and_app_share_the_group_limits() {
+    assert_eq!(
+        cayenchat_storage::order::MAX_GROUPS,
+        cayenchat_app::groups::MAX_GROUPS
+    );
+    assert_eq!(
+        cayenchat_storage::order::MAX_GROUP_MEMBERS,
+        cayenchat_app::groups::MAX_GROUP_MEMBERS
+    );
+    assert_eq!(
+        cayenchat_storage::order::MAX_GROUP_NAME_CHARS,
+        cayenchat_app::groups::MAX_GROUP_NAME_CHARS
+    );
 }

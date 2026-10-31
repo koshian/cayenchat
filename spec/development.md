@@ -1780,7 +1780,7 @@ readable and stops one wrong choice:
 - On macOS the clock check slows to 60 s only when `IORegisterForSystemPower`
   was confirmed. A refused registration, a thread that ended, a thread that
   did not answer in 2 s, or a thread that could not start keep the 5 s
-  check (`Registration`, unit-tested). Before, all of these counted as native.
+  check (only `Ok(true)` from `recv_timeout` counts). Before, all of these counted as native.
   The clock check still only finds a wake-up; it cannot send the QUIT after
   the fact.
 - The connection's diagnostics (Overview) get lines stamped with the local

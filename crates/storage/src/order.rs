@@ -27,9 +27,11 @@ const ORDER_VERSION: u32 = 1;
 const MAX_SERVERS: usize = 256;
 const MAX_NAMES: usize = 2_000;
 const MAX_NAME_BYTES: usize = 512;
-const MAX_GROUPS: usize = 64;
-const MAX_GROUP_MEMBERS: usize = 2_000;
-const MAX_GROUP_NAME_BYTES: usize = 512;
+pub const MAX_GROUPS: usize = 64;
+pub const MAX_GROUP_MEMBERS: usize = 2_000;
+/// The longest group name, in characters. `app` keeps the same three limits;
+/// `storage` does not depend on it, so a `ui` test keeps them equal.
+pub const MAX_GROUP_NAME_CHARS: usize = 64;
 /// Larger files are damage and are not parsed.
 const MAX_FILE_BYTES: u64 = 1 << 20;
 
@@ -95,7 +97,7 @@ impl ChannelOrders {
         servers.retain(|_, names| !names.is_empty());
         self.servers = servers;
         self.groups.retain(|group| {
-            !group.name.trim().is_empty() && group.name.len() <= MAX_GROUP_NAME_BYTES
+            !group.name.trim().is_empty() && group.name.chars().count() <= MAX_GROUP_NAME_CHARS
         });
         self.groups.truncate(MAX_GROUPS);
         let mut seen = std::collections::HashSet::new();
