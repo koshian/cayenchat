@@ -1813,14 +1813,32 @@ produced `Wake-up (…, Clock)`; macOS sent no `NSWorkspaceDidWakeNotification`
 for them, while the ordinary `Wake` (UserActivity) at 05:08 gave `Os`. The
 first DarkWake reconnected the connection that the sleep QUIT had closed, the
 Mac slept again without a sleep notice, and the next DarkWakes took the PING
-path, whose 15 s timeout ran into the sleep. Fix: on macOS a clock jump seen
-while the main display is asleep (`CGDisplayIsAsleep`, true through a DarkWake)
-is held (`HeldJump` in `wake.rs`) and reported at the first clock tick that
-finds the display awake. A missed `Os` notice at a real wake is still caught by
-the clock check, at most one poll interval (60 s) later; a Mac without a
-display is taken as awake, as before. By a person on a Mac: leave it
-connected until a DarkWake (`pmset -g log`) happens; the Overview must show
-no `Wake-up` line for it, and the user's wake must reconnect once.
+path, whose 15 s timeout ran into the sleep. A first fix (#793) held a clock
+jump while `CGDisplayIsAsleep` was true (`HeldJump`); it was removed by #808
+(below).
+
+#### macOS without the clock check (2026-10-31, issue #808)
+
+`CGDisplayIsAsleep` is also true when only the display sleeps on a fully awake
+Mac, so a missed `Os` notice there held the clock jump until someone lit the
+screen. Rather than distinguish the two (an IOPMrootDomain capability read
+was considered and not taken: unstable key, or SPI), macOS now has **no clock
+check**: `install()` starts no `wake-clock` thread, and `HeldJump`,
+`dark_wake()` and the CoreGraphics calls are gone. Other OSes keep the clock
+check unchanged. On macOS a wake is `NSWorkspaceDidWakeNotification`
+(`WakeSource::Os`) only, and a DarkWake reconnects nothing; a display-only
+sleep changes nothing, and the existing PING/timeout/retry paths stay.
+
+Accepted limitation: if macOS misses the `Os` notice at a real wake after a
+sleep QUIT, nothing finds the wake-up, and the servers stay disconnected until
+the user reconnects them or another existing path (retry, PING timeout) acts.
+The ~50 min test saw `Os` for every user wake. If misses show up, add a check
+when the window becomes active (not done).
+
+By a person on a Mac: sleep, several DarkWakes (`pmset -g log`), then a user
+wake. The Overview must show no `Wake-up` line for the DarkWakes and one
+`Wake-up (…, Os)` line for the user wake, which reconnects once. With
+`pmset displaysleepnow` on a connected Mac, the connection stays up.
 
 Reading a report: a "Sleep notice" line before the sleep and then a reconnect
 on wake is the #445 path working. No "Sleep notice" line and a "Wake-up …
