@@ -1907,7 +1907,7 @@ impl ChatWindow {
                 owner.restore_layout = restore_layout;
                 // Turning it on remembers where the window is shortly, in the
                 // background like any other layout change.
-                owner.note_window_bounds(window);
+                owner.note_window_bounds(window, cx);
                 owner.schedule_layout_save(cx);
             }
             if owner.auto_phrase != saved.experimental.auto_phrase {

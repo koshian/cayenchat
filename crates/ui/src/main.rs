@@ -949,6 +949,8 @@ struct ChatWindow {
     layout_written: Arc<std::sync::Mutex<u64>>,
     /// Where the window was last seen, for writing the layout without it.
     window_bounds: Option<WindowBounds>,
+    /// UUID of the display `window_bounds` is relative to (macOS only, #130).
+    window_display: Option<String>,
     /// The native window title last set from `render`.
     shown_title: String,
     /// Keep every CayenChat window above ordinary windows (Windows only).
@@ -1537,6 +1539,7 @@ impl ChatWindow {
             layout_writes: 0,
             layout_written: Default::default(),
             window_bounds: None,
+            window_display: None,
             shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
@@ -1628,7 +1631,7 @@ impl ChatWindow {
         // also be written where no window is at hand: when the application
         // quits (Cmd+Q) without the window being asked to close.
         cx.observe_window_bounds(window, |this, window, cx| {
-            this.note_window_bounds(window);
+            this.note_window_bounds(window, cx);
             this.schedule_layout_save(cx);
         })
         .detach();
@@ -1649,7 +1652,7 @@ impl ChatWindow {
             async {}
         })
         .detach();
-        this.note_window_bounds(window);
+        this.note_window_bounds(window, cx);
         this
     }
 
@@ -1719,8 +1722,17 @@ impl ChatWindow {
     }
 
     /// Remembers where the window is, for the next layout write.
-    fn note_window_bounds(&mut self, window: &Window) {
+    fn note_window_bounds(&mut self, window: &Window, cx: &App) {
         self.window_bounds = Some(window.window_bounds());
+        // GPUI on macOS reports the bounds relative to the window's display
+        // (#130), so the display is part of the position. Elsewhere they are
+        // desktop coordinates and no display is kept.
+        if cfg!(target_os = "macos") {
+            self.window_display = window
+                .display(cx)
+                .and_then(|display| display.uuid().ok())
+                .map(|uuid| uuid.to_string());
+        }
     }
 
     /// Takes over the pane sizes of a saved layout. They are clamped when
@@ -1786,6 +1798,7 @@ impl ChatWindow {
                 width: f32::from(bounds.size.width),
                 height: f32::from(bounds.size.height),
             }),
+            display: self.window_display.clone(),
             maximized,
             right_width: Some(self.right_width),
             members_height: self.members_height,
@@ -10556,15 +10569,29 @@ fn main() {
             };
             let displays = cx.displays();
             let display_bounds: Vec<_> = displays.iter().map(|display| display.bounds()).collect();
-            let restored = window_layout::restored_bounds(&layout, &display_bounds, min_size);
+            let restored = if cfg!(target_os = "macos") {
+                let uuids: Vec<_> = displays
+                    .iter()
+                    .map(|display| display.uuid().ok().map(|uuid| uuid.to_string()))
+                    .collect();
+                window_layout::restored_on_named_display(&layout, &display_bounds, &uuids, min_size)
+            } else {
+                window_layout::restored_bounds(&layout, &display_bounds, min_size)
+            };
             // Windows opens a window on the primary display unless told which
             // one, and replaces bounds off that display with a centered default
             // (#125). Its displays share one desktop coordinate space, so the
-            // display chosen above is the one to name. macOS and X11 report every
-            // display at the origin, so there it would be a guess.
+            // display chosen above is the one to name. macOS reports every
+            // display at the origin with window coordinates relative to the
+            // display, so it names the display the layout was saved with
+            // (#130); a layout without one (saved before that) names none.
+            // X11 cannot tell its monitors apart, so it names none.
             let display_id = restored
                 .as_ref()
-                .filter(|_| cfg!(target_os = "windows"))
+                .filter(|_| {
+                    cfg!(target_os = "windows")
+                        || (cfg!(target_os = "macos") && layout.display.is_some())
+                })
                 .map(|restored| displays[restored.display].id());
             let window_bounds = restored.map(|restored| restored.bounds).unwrap_or_else(|| {
                 WindowBounds::Windowed(Bounds::centered(None, size(px(960.), px(600.)), cx))

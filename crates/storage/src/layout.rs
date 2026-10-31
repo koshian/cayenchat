@@ -45,6 +45,11 @@ pub struct Layout {
     /// The window's normal rectangle: where it returns to when not
     /// maximized.
     pub window: Option<WindowRect>,
+    /// The display the rectangle is relative to, as its UUID. Set only where
+    /// GPUI's window coordinates are relative to the window's display (macOS,
+    /// #130); `None` means `window` is in desktop coordinates (Windows) or
+    /// the file predates this field.
+    pub display: Option<String>,
     pub maximized: bool,
     /// Width of the right column (members and channel tree).
     pub right_width: Option<f32>,
@@ -59,6 +64,7 @@ impl Default for Layout {
         Self {
             version: LAYOUT_VERSION,
             window: None,
+            display: None,
             maximized: false,
             right_width: None,
             members_height: None,
@@ -75,6 +81,12 @@ impl Layout {
             self.window = None;
             self.maximized = false;
         }
+        // Only a UUID's characters; anything else is damage.
+        self.display = self.display.filter(|id| {
+            !id.is_empty()
+                && id.len() <= 64
+                && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        });
         let sane = |value: Option<f32>| value.filter(|v| v.is_finite() && *v > 0. && *v <= LIMIT);
         self.right_width = sane(self.right_width);
         self.members_height = sane(self.members_height);
@@ -195,6 +207,12 @@ mod tests {
         assert_eq!(cleaned.right_width, None);
         assert_eq!(cleaned.members_height, None);
         assert_eq!(cleaned.log_split, None);
+
+        let mut named = layout();
+        named.display = Some("0E1F2A3B-0000-4C5D-8E9F-A0B1C2D3E4F5".into());
+        assert_eq!(named.clone().sanitized(), named);
+        named.display = Some("../etc".into());
+        assert_eq!(named.sanitized().display, None);
 
         let mut zero = layout();
         zero.window.as_mut().unwrap().width = 0.;

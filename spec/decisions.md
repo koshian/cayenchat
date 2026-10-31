@@ -2837,7 +2837,18 @@ change).
   otherwise creates the window on the primary display and replaces bounds
   off it with a centered default size, so a window left on another monitor
   came back on the primary (#125). macOS and X11 report every display at the
-  origin, so the display is not named there. With displays at different
+  origin, so the display cannot be found by position there.
+  On macOS GPUI's window coordinates are relative to the window's display
+  (`window_frame.origin - screen_frame.origin`, and the same way back when
+  opening), so `window.json` also keeps that display's UUID (`display`,
+  `PlatformDisplay::uuid`; optional, so the file version stays 1) and the
+  rectangle is relative to it (#130). At startup the display with that UUID
+  is passed as `display_id` and the rectangle is fitted to it alone; if it is
+  gone the window opens in the usual centered place on the primary. A file
+  without `display` (saved earlier) restores as before, without naming a
+  display. Windows keeps desktop coordinates and no `display`. X11 is not
+  covered: its display is the X screen, and Xinerama/RandR monitors are not
+  told apart. With displays at different
   scale factors the position may still be off, because GPUI converts the
   bounds with the scale of the display the window is first created on; this
   was not verified on Windows.

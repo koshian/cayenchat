@@ -70,6 +70,34 @@ pub fn restored_bounds(
     })
 }
 
+/// Like [`restored_bounds`] for a layout whose rectangle is relative to the
+/// display named by `layout.display` (macOS, where GPUI reports every display
+/// at the origin and window coordinates are display-relative, #130).
+/// `uuids[i]` is the UUID of `displays[i]`. The window goes on the named
+/// display only; when it is gone (or the rectangle no longer overlaps it) the
+/// result is `None`, the usual place, rather than coordinates that mean
+/// something else on another display. A layout without a display falls back to
+/// [`restored_bounds`].
+pub fn restored_on_named_display(
+    layout: &Layout,
+    displays: &[Bounds<Pixels>],
+    uuids: &[Option<String>],
+    min: Size<Pixels>,
+) -> Option<Restored> {
+    let Some(name) = &layout.display else {
+        return restored_bounds(layout, displays, min);
+    };
+    let index = uuids.iter().position(|uuid| {
+        uuid.as_deref()
+            .is_some_and(|uuid| uuid.eq_ignore_ascii_case(name))
+    })?;
+    let restored = restored_bounds(layout, &displays[index..=index], min)?;
+    Some(Restored {
+        display: index,
+        ..restored
+    })
+}
+
 /// How much of the owner's top (title bar and a little more) a window placed
 /// below or above it overlaps.
 const OWNER_OVERLAP: f32 = 48.;
@@ -293,6 +321,29 @@ mod tests {
         let got = restored_bounds(&saved(-1500., 300., 1000., 700., true), &screens, MIN());
         assert_eq!(got.as_ref().map(|restored| restored.display), Some(2));
         assert_eq!(windowed(got), (-1500., 300., 1000., 700.));
+    }
+
+    #[test]
+    fn a_relative_rectangle_goes_to_the_display_it_names() {
+        // macOS: every display at the origin, coordinates relative to it.
+        let screens = [display(0., 0., 1920., 1080.), display(0., 0., 1440., 900.)];
+        let uuids = [Some("AAAA".to_string()), Some("BBBB".to_string())];
+        let mut layout = saved(100., 80., 960., 600., false);
+        layout.display = Some("bbbb".into());
+        let got = restored_on_named_display(&layout, &screens, &uuids, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(1));
+        assert_eq!(windowed(got), (100., 80., 960., 600.));
+        // Fitted to the named display, not the first.
+        layout.window.as_mut().unwrap().x = 1200.;
+        let got = restored_on_named_display(&layout, &screens, &uuids, MIN());
+        assert_eq!(windowed(got), (480., 80., 960., 600.));
+        // The display is gone: the usual place, not the first display.
+        layout.display = Some("CCCC".into());
+        assert!(restored_on_named_display(&layout, &screens, &uuids, MIN()).is_none());
+        // No display saved: as before.
+        layout.display = None;
+        let got = restored_on_named_display(&layout, &screens, &uuids, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(0));
     }
 
     #[test]
