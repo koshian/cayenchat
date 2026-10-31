@@ -849,6 +849,28 @@ mod tests {
         note(&mut state, two, DiagnosticsView::Protocol, "y");
         assert_ne!(revision(&state, Scope::All, Some(Overview)), all);
     }
+
+    #[test]
+    fn revision_ignores_diagnostics_when_they_are_not_searched() {
+        use DiagnosticsView::{Overview, Protocol};
+        let (mut state, _, _) = state_with_two_channels();
+        let one = state.networks()[0].id;
+        let two = state.networks()[1].id;
+        state.dispatch(crate::Command::SelectServer(one));
+        let selected = revision(&state, Scope::Selected, None);
+        let all = revision(&state, Scope::All, None);
+        for n in 0..3 {
+            note(&mut state, one, Overview, &format!("a{n}"));
+            note(&mut state, one, Protocol, &format!("b{n}"));
+            note(&mut state, two, Overview, &format!("c{n}"));
+        }
+        assert_eq!(revision(&state, Scope::Selected, None), selected);
+        assert_eq!(revision(&state, Scope::All, None), all);
+        // Clearing them changes nothing for a search that never read them.
+        state.clear_diagnostics(one);
+        assert_eq!(revision(&state, Scope::Selected, None), selected);
+        assert_eq!(revision(&state, Scope::All, None), all);
+    }
 }
 
 #[cfg(test)]
