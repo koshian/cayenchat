@@ -104,11 +104,14 @@ impl DisplayTree {
 }
 
 /// A usable group name: trimmed, not empty, without control characters and
-/// not longer than [`MAX_GROUP_NAME_CHARS`].
-pub fn clean_group_name(name: &str) -> Option<String> {
+/// not longer than [`MAX_GROUP_NAME_CHARS`]. A longer name is refused, not
+/// shortened (the saved file drops such names the same way).
+fn clean_group_name(name: &str) -> Option<String> {
     let name = name.trim();
-    (!name.is_empty() && !name.chars().any(char::is_control))
-        .then(|| name.chars().take(MAX_GROUP_NAME_CHARS).collect())
+    (!name.is_empty()
+        && !name.chars().any(char::is_control)
+        && name.chars().count() <= MAX_GROUP_NAME_CHARS)
+        .then(|| name.to_owned())
 }
 
 impl AppState {
@@ -132,33 +135,25 @@ impl AppState {
             .collect()
     }
 
-    /// Adopts saved groups, replacing the present ones. Damage is repaired:
-    /// unusable names, repeated names, channels of unknown servers and
-    /// channels listed twice are dropped, and the counts are bounded.
+    /// Adopts saved groups, replacing the present ones. The saved file's
+    /// format and sizes (usable names, counts, repeated channels) are checked
+    /// when it is read (`storage::order`); what only the running state knows
+    /// is dropped here: repeated names and channels of unknown servers.
     pub fn set_groups(&mut self, specs: Vec<GroupSpec>) {
         self.groups.clear();
-        let mut seen = HashSet::new();
         for spec in specs {
-            if self.groups.len() >= MAX_GROUPS {
-                break;
-            }
-            let Some(name) = clean_group_name(&spec.name) else {
-                continue;
-            };
-            if self.group_named(&name).is_some() {
+            if self.group_named(&spec.name).is_some() {
                 continue;
             }
             let members = spec
                 .members
                 .into_iter()
                 .filter(|m| self.networks.iter().any(|n| n.id == m.network))
-                .filter(|m| !m.key.is_empty() && seen.insert((m.network, m.key.clone())))
-                .take(MAX_GROUP_MEMBERS)
                 .collect();
             let id = self.new_group_id();
             self.groups.push(ChannelGroup {
                 id,
-                name,
+                name: spec.name,
                 collapsed: spec.collapsed,
                 members,
             });
@@ -305,14 +300,12 @@ impl AppState {
 
     /// Takes the channel out of the group that holds it. Whether it was in one.
     fn leave_group(&mut self, conversation: &Conversation) -> bool {
+        let Some(at) = self.group_index_of(conversation) else {
+            return false;
+        };
         let member = GroupMember::of(conversation);
-        let mut found = false;
-        for group in &mut self.groups {
-            let before = group.members.len();
-            group.members.retain(|m| *m != member);
-            found |= group.members.len() != before;
-        }
-        found
+        self.groups[at].members.retain(|m| *m != member);
+        true
     }
 
     /// Shows the channel in `group`, before `before` (a channel of that
@@ -676,11 +669,12 @@ mod tests {
             collapsed: false,
             members,
         };
+        // Format and size damage is repaired when the file is read; here only
+        // repeated names and unknown servers are.
         next.set_groups(vec![
-            spec("x", vec![member(1, "#a"), member(9, "#z"), member(1, "#a")]),
+            spec("x", vec![member(1, "#a"), member(9, "#z")]),
             spec("X", vec![member(1, "#b")]),
-            spec("  ", vec![]),
-            spec("y", vec![member(1, "#a"), member(1, "#b")]),
+            spec("y", vec![member(1, "#b")]),
         ]);
         let groups = next.group_specs();
         assert_eq!(groups.len(), 2);
@@ -696,6 +690,16 @@ mod tests {
         assert_eq!(state.create_group("daily"), Some(a));
         assert_eq!(state.create_group("a\u{7}b"), None);
         assert_eq!(state.create_group(" "), None);
+        // Too long is refused, not shortened.
+        assert_eq!(
+            state.create_group(&"n".repeat(MAX_GROUP_NAME_CHARS + 1)),
+            None
+        );
+        let longest = "n".repeat(MAX_GROUP_NAME_CHARS);
+        let long = state.create_group(&longest).unwrap();
+        assert_eq!(state.group(long).unwrap().name, longest);
+        assert!(!state.rename_group(long, &"m".repeat(MAX_GROUP_NAME_CHARS + 1)));
+        assert!(state.delete_group(long));
         let b = state.create_group("Other").unwrap();
         assert!(!state.rename_group(b, "DAILY"));
         assert!(state.rename_group(a, "daily"));
@@ -762,6 +766,70 @@ mod tests {
         state.mark_highlighted(NetworkId(1), "#a");
         assert_eq!(state.group_unread(&children(&state)), (true, true));
         assert_eq!(state.group_unread(&[]), (false, false));
+    }
+
+    #[test]
+    fn damaged_group_data_is_repaired_without_losing_valid_groups() {
+        let mut state = state();
+        let member = |network, key: &str| GroupMember {
+            network: NetworkId(network),
+            key: key.into(),
+        };
+        let spec = |name: &str, members| GroupSpec {
+            name: name.into(),
+            collapsed: false,
+            members,
+        };
+        state.set_groups(vec![
+            spec("keep", vec![member(9, "#z"), member(1, "#a")]),
+            spec("KEEP", vec![member(1, "#b")]),
+            spec("other", vec![member(2, "#c"), member(8, "#y")]),
+        ]);
+        let groups = state.group_specs();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].name, "keep");
+        assert_eq!(groups[0].members, [member(1, "#a")]);
+        assert_eq!(groups[1].members, [member(2, "#c")]);
+        // What is left can be shown.
+        assert_eq!(state.display_tree().groups.len(), 2);
+    }
+
+    #[test]
+    fn a_channel_ends_up_in_at_most_one_group() {
+        let mut state = state();
+        let first = state.create_group("first").unwrap();
+        let second = state.create_group("second").unwrap();
+        let a = id(&state, 1, "#a");
+        assert!(state.move_to_group(a, first, None));
+        assert!(state.move_to_group(a, second, None));
+        assert!(state.move_to_group(a, first, None));
+        assert!(state.move_to_group(a, first, None));
+        let holding = state
+            .groups()
+            .iter()
+            .filter(|g| g.members.iter().any(|m| m.key == "#a"))
+            .count();
+        assert_eq!(holding, 1);
+        assert_eq!(state.display_parent(a), Some(Parent::Group(first)));
+        assert_eq!(state.group(first).unwrap().members.len(), 1);
+    }
+
+    #[test]
+    fn leaving_a_group_removes_only_that_membership() {
+        let mut state = state();
+        let first = mixed(&mut state);
+        let second = state.create_group("second").unwrap();
+        let b = id(&state, 1, "#b");
+        let w = id(&state, 3, "#w");
+        assert!(state.move_to_group(b, second, None));
+        assert!(state.move_to_group(w, second, None));
+        let before = state.group(first).unwrap().members.clone();
+        assert!(state.return_to_server(b));
+        assert_eq!(state.group(first).unwrap().members, before);
+        assert_eq!(state.group(second).unwrap().members.len(), 1);
+        assert_eq!(state.display_parent(w), Some(Parent::Group(second)));
+        // A channel in no group stays out of every group.
+        assert!(!state.return_to_server(b));
     }
 
     #[test]

@@ -96,8 +96,17 @@ impl ChannelOrders {
         }
         servers.retain(|_, names| !names.is_empty());
         self.servers = servers;
-        self.groups.retain(|group| {
-            !group.name.trim().is_empty() && group.name.chars().count() <= MAX_GROUP_NAME_CHARS
+        // A name is kept trimmed; one that is empty, too long or holds a
+        // control character is damage and the group is dropped, not shortened.
+        self.groups.retain_mut(|group| {
+            let name = group.name.trim();
+            let usable = !name.is_empty()
+                && name.chars().count() <= MAX_GROUP_NAME_CHARS
+                && !name.chars().any(char::is_control);
+            if usable && name.len() != group.name.len() {
+                group.name = name.to_owned();
+            }
+            usable
         });
         self.groups.truncate(MAX_GROUPS);
         let mut seen = std::collections::HashSet::new();
@@ -231,6 +240,37 @@ mod tests {
         // A file without groups, as older versions wrote, still reads.
         fs::write(&path, br##"{"version":1,"servers":{"a":["#x"]}}"##).unwrap();
         assert!(load_orders_from(&path).groups.is_empty());
+    }
+
+    #[test]
+    fn group_names_and_counts_are_bounded_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel-order.json");
+        let group = |name: String| StoredGroup {
+            name,
+            collapsed: false,
+            members: Vec::new(),
+        };
+        let mut groups = vec![group("x".repeat(MAX_GROUP_NAME_CHARS + 1))];
+        groups.extend((0..MAX_GROUPS + 5).map(|n| group(format!("g{n}"))));
+        let orders = ChannelOrders {
+            groups,
+            ..Default::default()
+        };
+        save_orders_to(&path, &orders).unwrap();
+        let loaded = load_orders_from(&path);
+        // The long name is dropped, not shortened.
+        assert_eq!(loaded.groups.len(), MAX_GROUPS);
+        assert_eq!(loaded.groups[0].name, "g0");
+        // Names are kept trimmed, and one with a control character is dropped.
+        let orders = ChannelOrders {
+            groups: vec![group("  spaced ".into()), group("bell\u{7}".into())],
+            ..Default::default()
+        };
+        save_orders_to(&path, &orders).unwrap();
+        let loaded = load_orders_from(&path);
+        assert_eq!(loaded.groups.len(), 1);
+        assert_eq!(loaded.groups[0].name, "spaced");
     }
 
     #[test]
