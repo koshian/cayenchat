@@ -3449,3 +3449,18 @@ kept for a selection inside one line.
   separator between time and prefix are a single space.
 - **Shared.** Lines are joined by `copied_log_line`, so a later selection
   across messages and diagnostics (#799) can reuse it.
+
+## D079 — A full notified-line list drops history before live lines (#807)
+
+2026-10-31. Refines the jump to notified lines (#789, `AppState::attention`,
+at most `MAX_ATTENTION` entries).
+
+- When the list is full, the oldest entry whose line is history (replayed or
+  requested) is dropped to make room. With no history entry queued, a new
+  history line is not kept at all; a new live line drops the oldest entry as
+  before.
+- So a page of history (bouncer replay, CHATHISTORY) full of matching lines
+  cannot push out a live mention or private message not yet visited. Which
+  entries are history is read from the line in the log at that moment, so the
+  list gains no second structure; the order (per conversation, oldest first)
+  is unchanged.
