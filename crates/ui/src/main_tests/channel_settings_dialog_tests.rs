@@ -143,3 +143,142 @@ fn char_ref_choices_keep_their_order_and_ids() {
         ]
     );
 }
+
+/// Opens the dialog for `#b` (auto-join off) on a settings file and returns
+/// the window, its view and the file guard.
+fn open_dialog_for_b(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<ChatWindow>,
+    gpui::Entity<crate::channel_settings_dialog::ChannelSettingsView>,
+    crate::settings_file::TestFile,
+    &mut gpui::VisualTestContext,
+) {
+    install_globals(cx);
+    let settings = crate::settings_with_channels("#a,-#b");
+    let file = crate::settings_file::TestFile::with(&settings);
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update_in(cx, |chat, window, cx| {
+        chat.show_channel_settings(NetworkId(1), "#b", window, cx);
+    });
+    let view = chat.read_with(cx, |chat, _| {
+        chat.channel_settings.as_ref().unwrap().view().clone()
+    });
+    cx.run_until_parked();
+    // The first draw asks for the focus on auto-join; the next shows it.
+    for _ in 0..2 {
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+    }
+    (chat, view, file, cx)
+}
+
+#[gpui::test]
+fn the_dialog_opens_with_auto_join_focused(cx: &mut TestAppContext) {
+    let (_chat, view, _file, cx) = open_dialog_for_b(cx);
+    view.read_with(cx, |view, _| assert!(!view.choices.enabled));
+    press(cx, "space");
+    view.read_with(cx, |view, _| assert!(view.choices.enabled));
+}
+
+#[gpui::test]
+fn tab_wraps_from_the_last_control_back_to_auto_join(cx: &mut TestAppContext) {
+    let (_chat, view, _file, cx) = open_dialog_for_b(cx);
+    // Auto-join, decode, encode, four character references, reset, cancel
+    // and save: ten stops. Ten Tabs make a full circle.
+    for _ in 0..10 {
+        tab(cx);
+    }
+    press(cx, "space");
+    view.read_with(cx, |view, _| assert!(view.choices.enabled));
+}
+
+#[gpui::test]
+fn tab_visits_the_controls_in_order(cx: &mut TestAppContext) {
+    let (chat, view, _file, cx) = open_dialog_for_b(cx);
+    // Decode: Space opens its list; Tab closes it and moves to encode.
+    cx.dispatch_action(crate::FocusNextField);
+    press(cx, "space");
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.open_list,
+            Some(crate::channel_settings_dialog::EncodingSide::Decode)
+        );
+    });
+    cx.dispatch_action(crate::FocusNextField);
+    press(cx, "space");
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.open_list,
+            Some(crate::channel_settings_dialog::EncodingSide::Encode)
+        );
+    });
+    // Encode, then four character-reference stops, reset and cancel: six
+    // more Tabs reach Cancel, whose Enter closes the dialog unsaved.
+    for _ in 0..6 {
+        tab(cx);
+    }
+    press(cx, "enter");
+    chat.read_with(cx, |chat, _| assert!(chat.channel_settings.is_none()));
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert!(
+        on_file
+            .selected_profile()
+            .unwrap()
+            .channel_charsets
+            .is_empty()
+    );
+}
+
+#[gpui::test]
+fn shift_tab_from_auto_join_wraps_to_save(cx: &mut TestAppContext) {
+    let (chat, view, _file, cx) = open_dialog_for_b(cx);
+    view.update(cx, |view, _| view.choices.enabled = true);
+    cx.dispatch_action(crate::FocusPreviousField);
+    press(cx, "enter");
+    chat.read_with(cx, |chat, _| assert!(chat.channel_settings.is_none()));
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(on_file.selected_profile().unwrap().channels, "#a,#b");
+}
+
+#[gpui::test]
+fn tab_closes_an_open_encoding_list_and_moves_on(cx: &mut TestAppContext) {
+    let (_chat, view, _file, cx) = open_dialog_for_b(cx);
+    cx.dispatch_action(crate::FocusNextField);
+    press(cx, "space");
+    view.read_with(cx, |view, _| assert!(view.open_list.is_some()));
+    cx.dispatch_action(crate::FocusNextField);
+    view.read_with(cx, |view, _| assert!(view.open_list.is_none()));
+    // The focus moved on to the encode selector: Space opens its list.
+    press(cx, "space");
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.open_list,
+            Some(crate::channel_settings_dialog::EncodingSide::Encode)
+        );
+    });
+}
+
+#[gpui::test]
+fn escape_closes_the_list_before_the_dialog(cx: &mut TestAppContext) {
+    let (chat, view, _file, cx) = open_dialog_for_b(cx);
+    cx.dispatch_action(crate::FocusNextField);
+    press(cx, "space");
+    view.read_with(cx, |view, _| assert!(view.open_list.is_some()));
+    cx.simulate_keystrokes("escape");
+    view.read_with(cx, |view, _| assert!(view.open_list.is_none()));
+    chat.read_with(cx, |chat, _| assert!(chat.channel_settings.is_some()));
+    cx.simulate_keystrokes("escape");
+    chat.read_with(cx, |chat, _| assert!(chat.channel_settings.is_none()));
+}
+
+/// Tab, as the platform delivers it: the focus change shows after a draw.
+fn tab(cx: &mut gpui::VisualTestContext) {
+    cx.dispatch_action(crate::FocusNextField);
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+}
