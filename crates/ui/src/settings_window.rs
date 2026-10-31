@@ -3,7 +3,7 @@
 
 use crate::channel_settings_dialog::{
     CHAR_REF_CHOICES, ChannelSettingsEvent, ChannelSettingsView, Choices, apply_auto_join,
-    apply_charsets,
+    save_channel_choices,
 };
 use crate::os_text::WindowOsText;
 use crate::{
@@ -3183,27 +3183,44 @@ impl SettingsWindow {
             let view = view.read(cx);
             (view.channel().to_owned(), view.mapping(), view.choices)
         };
-        let profile_id = self
+        let Some(profile_id) = self
             .settings
             .values
             .selected_profile()
-            .map(|profile| profile.id.clone());
-        let utf8_only = profile_id.as_deref().is_some_and(|profile_id| {
-            self.owner
-                .update(cx, |owner, _, _| {
-                    owner.channel_settings_context(profile_id).1
-                })
-                .unwrap_or(false)
-        });
-        let i18n = self.i18n.clone();
-        let Some(profile) = self.settings.values.selected_profile_mut() else {
+            .map(|profile| profile.id.clone())
+        else {
             return;
         };
-        if let Err(error) = apply_charsets(profile, &channel, mapping, choices, utf8_only, &i18n) {
-            view.update(cx, |view, cx| view.set_error(Some(error), cx));
-            return;
+        let utf8_only = self
+            .owner
+            .update(cx, |owner, _, _| {
+                owner.channel_settings_context(&profile_id).1
+            })
+            .unwrap_or(false);
+        let i18n = self.i18n.clone();
+        let profile = match save_channel_choices(
+            &mut self.settings.values,
+            &profile_id,
+            &channel,
+            mapping,
+            choices,
+            utf8_only,
+            &i18n,
+        ) {
+            Ok(profile) => profile,
+            Err(error) => {
+                view.update(cx, |view, cx| view.set_error(Some(error), cx));
+                return;
+            }
+        };
+        if self.auto_join.is_some() {
+            // The list being edited is the source: its rows write the field.
+            self.set_channel_auto_join(&channel, mapping, choices.enabled, cx);
+        } else {
+            self.settings
+                .channels
+                .update(cx, |field, cx| field.set_text(&profile.channels, cx));
         }
-        self.set_channel_auto_join(&channel, mapping, choices.enabled, cx);
         self.leave_channel_settings(window, cx);
         self.autosave_now(None, cx);
     }
