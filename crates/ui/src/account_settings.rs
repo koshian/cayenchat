@@ -117,15 +117,15 @@ impl SettingsWindow {
             cx.notify();
             return;
         }
-        let report = copied.remove_originals(&from);
+        copied.remove_originals(&from);
         self.settings.values.credential_backend = kind;
         cx.set_global(secrets::Credentials(to));
-        self.feedback = Some(if report.source_unavailable {
+        self.feedback = Some(if copied.source_unavailable {
             self.i18n.text("credential_switched_source_unavailable")
         } else {
             self.i18n.format(
                 "credential_switched",
-                &[("count", &report.moved.to_string())],
+                &[("count", &copied.count().to_string())],
             )
         });
         self.show_selected_server(cx);

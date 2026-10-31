@@ -254,14 +254,6 @@ impl CredentialStore {
     }
 }
 
-/// Result of moving secrets between backends.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Migration {
-    pub moved: usize,
-    /// The old backend could not be read, so nothing was moved from it.
-    pub source_unavailable: bool,
-}
-
 /// Secrets copied by [`copy_secrets`] whose originals are still in the source.
 #[derive(Debug, Default)]
 pub struct Copied {
@@ -277,13 +269,9 @@ impl Copied {
 
     /// Deletes the originals from `from`. A leftover original is harmless
     /// compared with failing the whole switch, so errors are ignored.
-    pub fn remove_originals(&self, from: &CredentialStore) -> Migration {
+    pub fn remove_originals(&self, from: &CredentialStore) {
         for key in &self.keys {
             let _ = from.delete(key);
-        }
-        Migration {
-            moved: self.keys.len(),
-            source_unavailable: self.source_unavailable,
         }
     }
 
@@ -329,16 +317,6 @@ pub fn copy_secrets(
         copied.keys.push((*key).clone());
     }
     Ok(copied)
-}
-
-/// Copies `keys` from `from` to `to`, then deletes them from `from`. Nothing is
-/// deleted unless every copy succeeded.
-pub fn migrate(
-    from: &CredentialStore,
-    to: &CredentialStore,
-    keys: &[SecretKey],
-) -> Result<Migration, CredentialError> {
-    Ok(copy_secrets(from, to, keys)?.remove_originals(from))
 }
 
 /// Raw named entries in the operating system store, below the layouts that
