@@ -1243,9 +1243,21 @@ struct LogSelection {
     source: Selection,
     anchor: LogPosition,
     cursor: LogPosition,
+    /// The next diagnostic sequence when the selection last started or
+    /// moved. Diagnostic lines recorded later lie outside it, however far
+    /// the range reaches: the user never saw them.
+    diagnostics_end: u64,
 }
 
 impl LogSelection {
+    /// Whether the line with `sequence` can be part of the range.
+    fn covers(self, sequence: u64) -> bool {
+        let (start, end) = self.bounds();
+        (start.row..=end.row).contains(&sequence)
+            && !(cayenchat_app::is_diagnostic_sequence(sequence)
+                && sequence >= self.diagnostics_end)
+    }
+
     fn bounds(self) -> (LogPosition, LogPosition) {
         if self.anchor <= self.cursor {
             (self.anchor, self.cursor)
@@ -1255,10 +1267,10 @@ impl LogSelection {
     }
 
     fn range(self, row: u64, len: usize) -> Option<std::ops::Range<usize>> {
-        let (start, end) = self.bounds();
-        if row < start.row || row > end.row {
+        if !self.covers(row) {
             return None;
         }
+        let (start, end) = self.bounds();
         let from = if row == start.row {
             start.byte.min(len)
         } else {
@@ -2458,8 +2470,8 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        // The attempt clears the diagnostics below; a range over them would
-        // cover the new lines.
+        // The attempt clears the diagnostics below; the lines a range named
+        // are gone, so it ends.
         self.drop_diagnostics_selection(Some(network));
         let Some(session) = self.sessions.get_mut(&network) else {
             return Err(self.i18n.text("not_connected"));
@@ -4789,6 +4801,7 @@ impl ChatWindow {
             source,
             anchor: position,
             cursor: position,
+            diagnostics_end: self.state.next_diagnostic_sequence(),
         });
         self.log_dragging = true;
         window.focus(&self.log_focus);
@@ -4807,6 +4820,7 @@ impl ChatWindow {
             && selection.source == source
         {
             selection.cursor = LogPosition { row, byte };
+            selection.diagnostics_end = self.state.next_diagnostic_sequence();
             cx.notify();
         }
     }
@@ -4826,7 +4840,7 @@ impl ChatWindow {
         if start == end {
             return;
         }
-        let in_range = |sequence: u64| (start.row..=end.row).contains(&sequence);
+        let in_range = |sequence: u64| selection.covers(sequence);
         // The connection diagnostics drawn above the messages come first,
         // as drawn: only the rows the layout shows now.
         let mut pieces: Vec<String> = Vec::new();

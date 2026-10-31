@@ -610,6 +610,7 @@ fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppConte
                 row: rows[1].0,
                 byte: rows[1].1.len() - 3,
             },
+            diagnostics_end: chat.state.next_diagnostic_sequence(),
         });
         chat.copy_selected_log(cx);
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
@@ -680,6 +681,7 @@ fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestA
                 row: second,
                 byte: 6,
             },
+            diagnostics_end: chat.state.next_diagnostic_sequence(),
         });
         chat.copy_selected_log(cx);
         assert_eq!(
@@ -740,6 +742,7 @@ fn a_channel_selection_copies_only_the_diagnostics_line_shown(cx: &mut TestAppCo
                 byte: 0,
             },
             cursor: crate::LogPosition { row, byte: 5 },
+            diagnostics_end: chat.state.next_diagnostic_sequence(),
         });
         chat.copy_selected_log(cx);
         let copied = cx.read_from_clipboard().and_then(|item| item.text());

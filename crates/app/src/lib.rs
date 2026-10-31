@@ -773,6 +773,12 @@ impl AppState {
         );
     }
 
+    /// The sequence the next diagnostic line will get: lines already
+    /// recorded, in any view, are below it.
+    pub fn next_diagnostic_sequence(&self) -> u64 {
+        self.next_diagnostic_sequence
+    }
+
     /// `id`'s connection diagnostic lines in `view`, oldest first.
     pub fn diagnostics(&self, id: NetworkId, view: DiagnosticsView) -> &VecDeque<DiagnosticLine> {
         static NONE: VecDeque<DiagnosticLine> = VecDeque::new();

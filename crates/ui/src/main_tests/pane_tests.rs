@@ -1971,6 +1971,7 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
                 row: on_screen,
                 byte: 3,
             },
+            diagnostics_end: u64::MAX,
         });
         let before = chat.notifier.shown.len();
         chat.handle_events(

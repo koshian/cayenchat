@@ -3405,6 +3405,8 @@ there is no network, bouncer or connection behind it.
   shifting). It ends when the diagnostics view changes, the diagnostics go
   off, or the server starts a new connection attempt (sequences are shared by
   both views and never reused, so a kept range would cover other lines);
-  a new diagnostics line recorded inside a range while it is held is part
-  of it, as it is drawn selected. Diagnostics stay a separate type, not
+  a diagnostics line recorded after the range was made or last moved is
+  outside it, drawn and copied alike (the selection keeps the next
+  diagnostics sequence), so reconnects, protocol lines and the channel
+  view's replaced newest line never join or move it. Diagnostics stay a separate type, not
   `Message`: a message has only a time of day.
