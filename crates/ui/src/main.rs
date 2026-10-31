@@ -7108,8 +7108,13 @@ impl ChatWindow {
             let base = (index as u64) << 32;
             self.tree_rows.push(TreeRow::Server(*network));
             keys.push(base);
+            let collapsed = self.server_collapsed(*network);
             for (position, id) in children.iter().enumerate() {
                 self.tree_parents.insert(*id, Parent::Server(*network));
+                // A folded server still shows the selected channel.
+                if collapsed && selected != Selection::Channel(*id) {
+                    continue;
+                }
                 let private = privates.contains(id);
                 self.tree_rows.push(TreeRow::Channel(*id, position));
                 // Private conversations follow the network's channels; the
@@ -7240,6 +7245,24 @@ impl ChatWindow {
                     .when(
                         self.drop_heading == Some(HeadingTarget::Server(server_id)),
                         |d| d.bg(theme.selected),
+                    )
+                    .flex()
+                    .child(
+                        // The arrow alone folds the server; a click on it
+                        // does not reach the heading (select, double click).
+                        div()
+                            .id(("server-fold", server_id.0))
+                            .pr_1()
+                            .child(if self.server_collapsed(server_id) {
+                                "▶"
+                            } else {
+                                "▼"
+                            })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_server(server_id, cx);
+                            })),
                     )
                     .child(format!("{}{}", self.network_label(network), status_mark))
                     .on_drag_move(cx.listener(

@@ -3345,6 +3345,15 @@ there is no network, bouncer or connection behind it.
   the tree that is over 64 characters is refused the same way, not shortened).
   The running state only drops what the file cannot tell: repeated names and
   channels of servers that no longer exist.
+- **Server folding (#866).** A real server heading also has a ▶/▼ arrow. Only
+  the arrow folds or opens the server's channels and private conversations;
+  the rest of the heading keeps its click (select the log) and double click
+  (connect/disconnect), and the arrow's click does not reach it. A folded
+  server still shows its selected channel. Nothing else changes: numbers,
+  unread state and membership follow the full list. The state is saved as
+  `collapsed_servers` (profile IDs) in `channel-order.json`; an absent entry
+  means open, files without the field read as before, and profiles that no
+  longer exist are dropped at save.
 - **Not done.** Reordering groups themselves, grouping private conversations,
   and group names in the settings window.
 
