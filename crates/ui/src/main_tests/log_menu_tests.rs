@@ -107,6 +107,7 @@ fn opening_the_menu_keeps_the_selection_and_copy_uses_it(cx: &mut TestAppContext
         );
         let selection = LogSelection {
             source: cayenchat_app::Selection::Channel(channel),
+            diagnostics: None,
             anchor: LogPosition { row: 0, byte: 6 },
             cursor: LogPosition { row: 0, byte: 11 },
         };
@@ -279,6 +280,7 @@ fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppCo
         let source = cayenchat_app::Selection::Server(NetworkId(1));
         chat.log_selection = Some(LogSelection {
             source,
+            diagnostics: None,
             anchor: LogPosition { row: base, byte: 6 },
             cursor: LogPosition {
                 row: base + 1,
