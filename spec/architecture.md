@@ -1154,7 +1154,10 @@ that already recognized history, follows them:
   oldest when the table is full) and references of at most 64 bytes (longer
   ones are not followed). If the table overflows, unknown batch-tagged lines
   are treated as replayed until the tracker resets, so an evicted history
-  reference cannot become live. Before overflow, a reused open reference
+  reference cannot become live. Batches opened after the overflow that are
+  not history (live multiline, netsplit, ...) are remembered in a second
+  table of at most 64 references and stay live; when it is full the oldest
+  falls back to replayed. Before overflow, a reused open reference
   replaces its entry, so a stale history batch cannot mute a later live one;
   an unknown `BATCH -` is ignored.
 - The tracker lives in the connection's worker, so disconnects and

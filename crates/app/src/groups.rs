@@ -352,9 +352,9 @@ impl AppState {
 
     /// Whether any channel of the group is unread, and whether any of them
     /// holds a mention: what a collapsed heading shows.
-    pub fn group_unread(&self, id: GroupId) -> (bool, bool) {
-        let tree = self.display_tree();
-        let children = tree.children(Parent::Group(id));
+    /// `children` are the group's conversations from the display tree the
+    /// caller already has.
+    pub fn group_unread(&self, children: &[ConversationId]) -> (bool, bool) {
         (
             children.iter().any(|c| self.is_unread(*c)),
             children.iter().any(|c| self.is_highlighted(*c)),
@@ -692,9 +692,11 @@ mod tests {
         let a = id(&state, 1, "#a");
         state.dispatch(crate::Command::SelectServer(NetworkId(3)));
         state.mark_unread(a);
-        assert_eq!(state.group_unread(group), (true, false));
+        let children =
+            |state: &AppState| state.display_tree().children(Parent::Group(group)).to_vec();
+        assert_eq!(state.group_unread(&children(&state)), (true, false));
         state.mark_highlighted(NetworkId(2), "#c");
-        assert_eq!(state.group_unread(group), (true, true));
+        assert_eq!(state.group_unread(&children(&state)), (true, true));
     }
 
     #[test]

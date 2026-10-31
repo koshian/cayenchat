@@ -247,3 +247,19 @@ as the window frame (title bar included), the same rectangle
 `contentRectForFrameRect:styleMask:`. Upstream took it as the content rect, so
 a window reopened with its saved bounds was taller by the title bar each time
 and its bottom went below the display (CayenChat #795).
+
+In `src/platform/linux/wayland/clipboard.rs`, `src/platform/linux/wayland/client.rs`,
+`src/platform/linux/platform.rs`, `src/platform.rs` and `src/app.rs`, the
+Wayland clipboard can be read without blocking the UI thread and with bounds
+(CayenChat #684, PR #734). Upstream reads the offer's pipe synchronously and
+without a limit, so a slow or huge selection froze the UI and grew memory
+without bound. The new `App::read_from_clipboard_async` (backed by the new
+`Platform::read_from_clipboard_async` and `LinuxClient::read_from_clipboard_async`;
+the `Platform` default wraps the synchronous read in `Task::ready`) returns a
+`Task`; Wayland implements it with `Clipboard::read_async`, which reads text and
+then image formats through `DataOffer::read_bytes_async`. The pipe is read by
+`read_fd_limited_async` (non-blocking, yields while waiting) with a 32 MiB limit
+counted across all formats of one read and a 5 second deadline for the whole
+read. Dropping the `Task` cancels the read and closes the pipe. The synchronous
+`read_from_clipboard` is kept. When re-applying, keep these bounds and call the
+async API from CayenChat's paste paths.
