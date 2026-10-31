@@ -156,7 +156,17 @@ fn open_chat<'a>(
     )
 }
 
+/// The notes this window holds.
 fn noted(chat: &ChatWindow) -> Option<Vec<String>> {
+    chat.saved
+        .profile(&chat.sessions[&NET].profile_id)
+        .unwrap()
+        .keyed_channels
+        .clone()
+}
+
+/// The notes in the settings file.
+fn noted_on_file(chat: &ChatWindow) -> Option<Vec<String>> {
     settings_file::load()
         .unwrap()
         .unwrap()
@@ -357,5 +367,90 @@ fn a_corrected_note_still_lets_the_connection_use_the_key(cx: &mut TestAppContex
         let again = connect(&chat.saved, &opened.store);
         assert_eq!(again.channel_keys.len(), 1);
         assert_eq!(again.channel_keys["#b"], "secret");
+    });
+}
+
+#[gpui::test]
+fn reading_the_store_does_not_save_the_settings_file(cx: &mut TestAppContext) {
+    let (opened, cx) = open_chat(
+        settings("#a,#b", Some(&["#a", "#b"])),
+        &[("#b", "secret")],
+        cx,
+    );
+    let before = settings_file::load().unwrap().unwrap();
+    opened.chat.update(cx, |chat, cx| {
+        let config = chat.sessions.get_mut(&NET).unwrap().active_config.as_mut();
+        config
+            .unwrap()
+            .channel_keys
+            .insert("#b".into(), "secret".into());
+        registered(chat, cx);
+        // Corrected here, not in the file.
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
+        assert_eq!(
+            noted_on_file(chat),
+            Some(vec!["#a".to_owned(), "#b".to_owned()])
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(settings_file::load().unwrap().unwrap(), before);
+}
+
+#[gpui::test]
+fn corrected_notes_are_written_with_the_next_settings_save(cx: &mut TestAppContext) {
+    let (opened, cx) = open_chat(
+        settings("#a,#b", Some(&["#a", "#b"])),
+        &[("#b", "secret")],
+        cx,
+    );
+    opened.chat.update(cx, |chat, cx| {
+        let config = chat.sessions.get_mut(&NET).unwrap().active_config.as_mut();
+        config
+            .unwrap()
+            .channel_keys
+            .insert("#b".into(), "secret".into());
+        registered(chat, cx);
+        // What the settings window does when it saves.
+        let mut file = settings_file::load().unwrap().unwrap();
+        chat.overlay_pending_notes(&mut file);
+        settings_file::save(&file).unwrap();
+        chat.notes_written();
+        assert_eq!(noted_on_file(chat), Some(vec!["#b".to_owned()]));
+        assert!(chat.pending_notes.is_empty());
+    });
+}
+
+#[gpui::test]
+fn notes_converge_on_the_first_scan_after_a_restart(cx: &mut TestAppContext) {
+    // The corrections of the last run never reached the file: it still has
+    // no notes, and the key is saved.
+    let (opened, cx) = open_chat(settings("#a,#b", None), &[("#b", "secret")], cx);
+    let restarted = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings_file::load().unwrap().unwrap(), None, window, cx)
+    });
+    let (restarted, cx) = restarted;
+    restarted.update(cx, |chat, _| {
+        let profile = chat.saved.selected_profile().unwrap();
+        assert!(profile.channel_key_scan_pending());
+        let config = connect(&chat.saved, &opened.store);
+        assert_eq!(config.channel_keys["#b"], "secret");
+    });
+    restarted.update(cx, |chat, cx| {
+        let config = ConnectionConfig::tls(
+            "irc.example.org".into(),
+            "me".into(),
+            "#a,#b".split(',').map(str::to_owned).collect(),
+        );
+        chat.sessions.get_mut(&NET).unwrap().active_config = Some(config);
+        chat.sessions
+            .get_mut(&NET)
+            .unwrap()
+            .active_config
+            .as_mut()
+            .unwrap()
+            .channel_keys
+            .insert("#b".into(), "secret".into());
+        registered(chat, cx);
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
     });
 }

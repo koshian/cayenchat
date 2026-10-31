@@ -618,10 +618,11 @@ impl ChatWindow {
         self.correct_key_notes(&profile.id, read, &keys);
     }
 
-    /// Writes down in the settings file which of `read` (channels whose key
-    /// was looked up) have one in `found`, when that differs from the note;
-    /// the first scan of a file without notes ends here too. Failing to write
-    /// is harmless: the note is corrected at the next connection.
+    /// Corrects the notes of which of `read` (channels whose key was looked
+    /// up) have a key in `found`, when that differs from the note; the first
+    /// scan of a file without notes ends here too. The file follows with the
+    /// next settings save; a note lost before that is corrected at the next
+    /// connection.
     pub(crate) fn correct_key_notes(
         &mut self,
         profile_id: &str,
@@ -644,31 +645,39 @@ impl ChatWindow {
         });
     }
 
-    /// Applies `change` to the profile in the settings file (and in the copy
-    /// this window keeps) and saves when it says it changed something.
-    fn update_profile_note(
+    /// Applies `change` to the profile in the copy this window keeps. The
+    /// settings file is not written: the profile is remembered as pending
+    /// and the settings window's next save writes it (`overlay_pending_notes`).
+    pub(crate) fn update_profile_note(
         &mut self,
         profile_id: &str,
         change: impl FnOnce(&mut ServerProfile) -> bool,
     ) {
-        let mut settings = match crate::settings_file::load() {
-            Ok(Some(settings)) => settings,
-            Ok(None) => self.saved.clone(),
-            // Saving over a file that cannot be read could destroy it.
-            Err(_) => return,
-        };
-        let Some(profile) = settings.servers.iter_mut().find(|p| p.id == profile_id) else {
-            return;
-        };
-        if !change(profile) {
-            return;
-        }
-        let notes = profile.keyed_channels.clone();
-        if crate::settings_file::save(&settings).is_ok()
-            && let Some(saved) = self.saved.servers.iter_mut().find(|p| p.id == profile_id)
+        if let Some(profile) = self.saved.profile_mut(profile_id)
+            && change(profile)
         {
-            saved.keyed_channels = notes;
+            self.pending_notes.insert(profile_id.to_owned());
         }
+    }
+
+    /// Puts the corrected notes into `settings`, about to be written by a
+    /// save that started from the file or the settings form. Nothing is
+    /// pending afterwards (`notes_written`).
+    pub(crate) fn overlay_pending_notes(&self, settings: &mut cayenchat_storage::Settings) {
+        for id in &self.pending_notes {
+            if let (Some(ours), Some(theirs)) = (self.saved.profile(id), settings.profile_mut(id)) {
+                theirs.server_saved = ours.server_saved;
+                theirs.sasl_saved = ours.sasl_saved;
+                theirs.sasl_key_saved = ours.sasl_key_saved;
+                theirs.remember_passwords = ours.remember_passwords;
+                theirs.keyed_channels.clone_from(&ours.keyed_channels);
+            }
+        }
+    }
+
+    /// The overlaid notes reached the settings file.
+    pub(crate) fn notes_written(&mut self) {
+        self.pending_notes.clear();
     }
 
     /// Keeps the configuration reconnects reuse in step with the store.

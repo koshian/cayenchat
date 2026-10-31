@@ -1567,10 +1567,15 @@ impl SettingsWindow {
         let previous_logging = diagnostics::configuration();
         diagnostics::configure(&settings.experimental)
             .map_err(|error| self.i18n.format("debug_log_error", &[("error", &error)]))?;
+        // The notes the chat window corrected without writing ride along.
+        let _ = self
+            .owner
+            .update(cx, |owner, _, _| owner.overlay_pending_notes(&mut settings));
         if let Err(error) = settings_file::save(&settings) {
             let _ = diagnostics::configure(&previous_logging);
             return Err(error);
         }
+        let _ = self.owner.update(cx, |owner, _, _| owner.notes_written());
         // After the save: a failed save must not cost the secrets of profiles
         // the file still holds (#760). A failed deletion leaves `previous`
         // unchanged, so the next Save retries it.
@@ -6294,6 +6299,40 @@ mod escape_tests {
             Some(TextEncoding::ShiftJis),
             None
         ));
+    }
+
+    #[gpui::test]
+    fn a_settings_save_writes_the_notes_the_chat_window_corrected(cx: &mut TestAppContext) {
+        let mut settings = crate::settings_with_channels("#a");
+        settings.selected_profile_mut().unwrap().keyed_channels = Some(Vec::new());
+        let id = settings.selected_profile().unwrap().id.clone();
+        let _file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings.clone());
+        let owner = form.read_with(cx, |form, _| form.owner);
+        let _ = owner.update(cx, |owner, _, _| {
+            owner.update_profile_note(&id, |p| p.note_channel_key("#a", true));
+        });
+        let noted =
+            |file: &cayenchat_storage::Settings| file.profile(&id).unwrap().keyed_channels.clone();
+        assert_eq!(
+            noted(&crate::settings_file::load().unwrap().unwrap()),
+            Some(Vec::new())
+        );
+        let mut next = settings.clone();
+        next.selected_profile_mut().unwrap().quit_message = "bye".into();
+        let previous = settings.clone();
+        let saved = form
+            .update(cx, |form, cx| form.commit_settings(&previous, next, cx))
+            .unwrap();
+        assert_eq!(noted(&saved), Some(vec!["#a".to_owned()]));
+        assert_eq!(
+            noted(&crate::settings_file::load().unwrap().unwrap()),
+            Some(vec!["#a".to_owned()])
+        );
+        let pending = owner
+            .read_with(cx, |owner, _| owner.pending_notes.is_empty())
+            .unwrap();
+        assert!(pending, "nothing is left to write");
     }
 
     #[gpui::test]

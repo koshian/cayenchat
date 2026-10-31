@@ -361,21 +361,16 @@ impl ChatWindow {
     /// A read of the credential store showed which passwords of the profile
     /// it holds (`None`: not read). The note in the settings file, which
     /// lets the settings window show the state without reading the store,
-    /// is corrected when it differs. A failed write leaves it: it is only a
-    /// note, and the next read corrects it again.
+    /// is corrected when it differs, in this window's copy only: the file is
+    /// written by the settings window's next save, and a note lost before
+    /// that is corrected again by the next read.
     pub(crate) fn note_stored_passwords(
         &mut self,
         profile_id: &str,
         server: Option<bool>,
         sasl: Option<bool>,
     ) {
-        let mut settings = self.saved.clone();
-        let Some(profile) = settings.profile_mut(profile_id) else {
-            return;
-        };
-        if note_found(profile, server, sasl) && settings_file::save(&settings).is_ok() {
-            self.saved = settings;
-        }
+        self.update_profile_note(profile_id, |profile| note_found(profile, server, sasl));
     }
 
     /// The settings window saved or deleted a password and wrote the note to

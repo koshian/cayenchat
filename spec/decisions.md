@@ -1458,7 +1458,12 @@ D021 that stored typed passwords with Save of the server.
   the file before it saves, so a save made there never writes back a note a
   connection changed meanwhile. An import clears the notes, as the passwords
   do not travel. A note can differ from the store (a store emptied
-  elsewhere); Connect then asks for the password. Removing a server deletes
+  elsewhere); Connect then asks for the password. A correction made by a
+  connection (or a channel-key read) changes only the chat window's copy of the
+  settings and marks the profile pending; the file is not written on a read.
+  The settings window's next save (`commit_settings`) writes the pending
+  notes, and after a restart that never saved, the notes are corrected again
+  by the next read (channel keys: the first scan). Removing a server deletes
   the passwords noted as saved.
 - **The store is touched only when the note says saved, or on request.**
   A connection (launch, tree, reconnect, Connect in settings) reads the server

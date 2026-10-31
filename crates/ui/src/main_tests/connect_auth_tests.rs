@@ -874,3 +874,25 @@ fn a_dialog_left_open_does_not_outlive_a_reconnect_by_another_path(cx: &mut Test
     });
     assert_eq!(store.get(&key).unwrap().unwrap().expose(), "saved");
 }
+
+#[gpui::test]
+fn a_reconnect_that_notes_a_password_does_not_rewrite_the_settings_file(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    let _file =
+        crate::settings_file::TestFile::with(&chat.read_with(cx, |chat, _| chat.saved.clone()));
+    let before = crate::settings_file::load().unwrap().unwrap();
+    // Noted as saved, but the store holds nothing: the note is wrong.
+    let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
+    assert!(store.get(&key).unwrap().is_none());
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(!chat.saved.servers[0].sasl_secret_saved(), "corrected here");
+        assert_eq!(chat.pending_notes.len(), 1);
+        stop(chat);
+    });
+    assert_eq!(crate::settings_file::load().unwrap().unwrap(), before);
+}
