@@ -6,14 +6,7 @@ use gpui::{Modifiers, TestAppContext, point, px};
 
 #[gpui::test]
 fn the_pointer_is_a_hand_over_a_url_in_the_channel_log(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -66,14 +59,7 @@ fn the_pointer_is_a_hand_over_a_url_in_the_channel_log(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a,#b");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -124,14 +110,7 @@ fn the_combined_log_flows_channel_network_and_nickname_into_the_text(cx: &mut Te
 
 #[gpui::test]
 fn a_decoded_reference_shows_its_original_and_copies_only_that(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.appearance.decode_char_refs = true;
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -192,14 +171,7 @@ fn a_decoded_reference_shows_its_original_and_copies_only_that(cx: &mut TestAppC
 
 #[gpui::test]
 fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.appearance.decode_char_refs = true;
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -253,14 +225,7 @@ fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -320,14 +285,7 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
 #[gpui::test]
 fn copying_several_lines_carries_the_time_and_sender_drawn_on_each(cx: &mut TestAppContext) {
     use std::time::{Duration, UNIX_EPOCH};
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.appearance.decode_char_refs = true;
     let (chat, cx) = cx.add_window_view(|window, cx| {
