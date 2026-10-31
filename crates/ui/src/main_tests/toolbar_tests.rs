@@ -64,14 +64,7 @@ fn the_view_menu_offers_the_menu_bar_apart_from_the_toolbar() {
 
 #[gpui::test]
 fn buttons_follow_the_connection_and_the_selection(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -197,14 +190,7 @@ fn buttons_follow_the_connection_and_the_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn topic_mode_and_nick_open_the_shared_prompt_from_the_toolbar(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -298,14 +284,7 @@ fn topic_mode_and_nick_open_the_shared_prompt_from_the_toolbar(cx: &mut TestAppC
 
 #[gpui::test]
 fn a_toolbar_click_opens_the_prompt_and_an_unavailable_one_ignores_it(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -375,14 +354,7 @@ fn a_toolbar_click_opens_the_prompt_and_an_unavailable_one_ignores_it(cx: &mut T
 
 #[gpui::test]
 fn the_first_button_follows_a_connection_or_a_pending_retry(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -401,14 +373,7 @@ fn the_first_button_follows_a_connection_or_a_pending_retry(cx: &mut TestAppCont
 
 #[gpui::test]
 fn disconnecting_everything_targets_only_connected_or_retrying_servers(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -428,14 +393,7 @@ fn disconnecting_everything_targets_only_connected_or_retrying_servers(cx: &mut 
 
 #[gpui::test]
 fn the_upload_button_explains_a_missing_service_before_asking_for_a_file(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -458,14 +416,7 @@ fn the_file_dialog_offers_the_images_the_upload_accepts() {
 
 #[gpui::test]
 fn double_clicking_a_server_leaves_one_waiting_to_retry_alone(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
