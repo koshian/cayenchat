@@ -700,6 +700,49 @@ mod tests {
     }
 
     #[test]
+    fn display_parent_agrees_with_the_tree() {
+        let mut state = state();
+        mixed(&mut state);
+        let query = id(&state, 1, "#a");
+        state.dispatch(Command::SelectServer(NetworkId(3)));
+        // A private conversation and a grouped one beside plain channels.
+        state.private_conversation(NetworkId(1), "bob", "Bob", crate::Missing::Create);
+        let tree = state.display_tree();
+        let all: Vec<ConversationId> = state.conversations().iter().map(|c| c.id).collect();
+        assert!(all.len() > 5);
+        for conversation in all {
+            assert_eq!(
+                state.display_parent(conversation),
+                tree.parent_of(conversation)
+            );
+        }
+        assert!(matches!(
+            state.display_parent(query),
+            Some(Parent::Group(_))
+        ));
+        assert_eq!(
+            state.display_parent(id(&state, 1, "#b")),
+            Some(Parent::Server(NetworkId(1)))
+        );
+        assert_eq!(state.display_parent(ConversationId(u32::MAX)), None);
+    }
+
+    #[test]
+    fn group_unread_agrees_with_the_tree() {
+        let mut state = state();
+        let group = mixed(&mut state);
+        state.dispatch(crate::Command::SelectServer(NetworkId(3)));
+        let children =
+            |state: &AppState| state.display_tree().children(Parent::Group(group)).to_vec();
+        assert_eq!(state.group_unread(&children(&state)), (false, false));
+        state.mark_unread(id(&state, 2, "#a"));
+        assert_eq!(state.group_unread(&children(&state)), (true, false));
+        state.mark_highlighted(NetworkId(1), "#a");
+        assert_eq!(state.group_unread(&children(&state)), (true, true));
+        assert_eq!(state.group_unread(&[]), (false, false));
+    }
+
+    #[test]
     fn removing_a_server_drops_its_channels_from_groups() {
         let mut state = state();
         let group = mixed(&mut state);
