@@ -312,6 +312,38 @@ fn saving_a_key_notes_it_and_forgetting_it_removes_the_note(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn a_key_saved_on_join_is_noted_in_the_file_for_the_next_start(cx: &mut TestAppContext) {
+    let (opened, cx) = open_chat(settings("#a", Some(&[])), &[], cx);
+    opened.chat.update(cx, |chat, cx| {
+        registered(chat, cx);
+        let joins = &mut chat.sessions.get_mut(&NET).unwrap().key_joins;
+        joins.clear();
+        joins.push(KeyJoin {
+            channel: "#a".into(),
+            typed: Some(Secret::new("hunter2")),
+            remember: true,
+            stale: false,
+        });
+        chat.handle_events(
+            NET,
+            vec![Event::Joined {
+                channel: "#a".into(),
+            }],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    opened.chat.update(cx, |chat, _| {
+        assert_eq!(noted_on_file(chat), Some(vec!["#a".to_owned()]));
+        // A restart reads the key the store holds.
+        let restarted = settings_file::load().unwrap().unwrap();
+        let config = connect(&restarted, &opened.store);
+        assert_eq!(config.channel_keys["#a"], "hunter2");
+    });
+}
+
+#[gpui::test]
 fn renaming_a_channel_only_in_case_keeps_its_key_without_reading(cx: &mut TestAppContext) {
     let (opened, cx) = open_chat(settings("#a", Some(&["#a"])), &[("#a", "secret")], cx);
     opened.chat.update(cx, |chat, _| {

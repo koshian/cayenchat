@@ -767,7 +767,9 @@ impl ChatWindow {
                 first = first.and(Err(error));
             }
         }
+        // The store was written: the file notes it at once.
         self.note_stored_passwords(&profile.id, saved.0, saved.1);
+        self.write_pending_notes();
         if let Err(error) = first {
             let text = self.i18n.format(
                 "credential_save_failed",

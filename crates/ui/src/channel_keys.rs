@@ -528,6 +528,7 @@ impl ChatWindow {
                 self.update_profile_note(&write.profile, |p| {
                     p.note_channel_key(&write.channel, write.key.is_some())
                 });
+                self.write_pending_notes();
                 // Only the connection the key was confirmed on is updated.
                 if self
                     .sessions
@@ -672,6 +673,23 @@ impl ChatWindow {
                 theirs.remember_passwords = ours.remember_passwords;
                 theirs.keyed_channels.clone_from(&ours.keyed_channels);
             }
+        }
+    }
+
+    /// Writes the pending notes to the settings file now. Used when the
+    /// store was written or emptied (not merely read): a restart must find
+    /// the note, as nothing else corrects it. A failed write leaves them
+    /// pending for the next save.
+    pub(crate) fn write_pending_notes(&mut self) {
+        let mut settings = match crate::settings_file::load() {
+            Ok(Some(settings)) => settings,
+            Ok(None) => self.saved.clone(),
+            // Saving over a file that cannot be read could destroy it.
+            Err(_) => return,
+        };
+        self.overlay_pending_notes(&mut settings);
+        if crate::settings_file::save(&settings).is_ok() {
+            self.notes_written();
         }
     }
 

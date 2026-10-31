@@ -905,8 +905,8 @@ pub(crate) fn follow_server_order(servers: &mut [ServerProfile], file: &[ServerP
 }
 
 /// Takes over the notes of saved passwords the file holds for the servers
-/// both have. Only an explicit save or a connection changes them, and both
-/// write the file at once, so the file is the newer one.
+/// both have. Only an explicit save or a connection changes them; the file
+/// is the newer one, with the chat window's unwritten corrections laid over it.
 fn follow_password_notes(servers: &mut [ServerProfile], file: &[ServerProfile]) {
     for server in servers {
         if let Some(theirs) = file.iter().find(|p| p.id == server.id) {
@@ -1442,9 +1442,13 @@ impl SettingsWindow {
     /// saved one (D068) wrote the file, and a save from this window must not
     /// write the older note back.
     fn follow_saved_server_order(&mut self, cx: &mut Context<Self>) {
-        let Ok(Some(file)) = settings_file::load() else {
+        let Ok(Some(mut file)) = settings_file::load() else {
             return;
         };
+        // Notes the chat window corrected and has not written are newer.
+        let _ = self
+            .owner
+            .update(cx, |owner, _, _| owner.overlay_pending_notes(&mut file));
         follow_password_notes(&mut self.saved.servers, &file.servers);
         follow_password_notes(&mut self.settings.values.servers, &file.servers);
         // A SASL account corrected in the connection dialog (D068) is taken

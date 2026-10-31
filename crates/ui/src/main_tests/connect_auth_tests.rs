@@ -1021,6 +1021,27 @@ fn a_reconnect_that_notes_a_password_does_not_rewrite_the_settings_file(cx: &mut
 }
 
 #[gpui::test]
+fn a_password_saved_in_the_dialog_is_noted_in_the_file_for_the_next_start(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    let _file =
+        crate::settings_file::TestFile::with(&chat.read_with(cx, |chat, _| chat.saved.clone()));
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
+        type_password(chat, true, "typed", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert!(on_file.servers[0].sasl_secret_saved());
+    chat.update(cx, |chat, _| {
+        assert!(chat.pending_notes.is_empty());
+        stop(chat);
+    });
+}
+
+#[gpui::test]
 fn a_dialog_that_cannot_carry_the_sasl_password_to_a_changed_host_stays_open(
     cx: &mut TestAppContext,
 ) {

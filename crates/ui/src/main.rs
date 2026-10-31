@@ -4563,6 +4563,8 @@ impl ChatWindow {
                 return;
             }
         };
+        // Notes corrected by a read and not written yet are newer.
+        self.overlay_pending_notes(&mut settings);
         if let Some(profile) = profile
             && settings.profile(&profile).is_some()
         {
