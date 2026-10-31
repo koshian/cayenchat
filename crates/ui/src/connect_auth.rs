@@ -117,24 +117,29 @@ pub(crate) fn matches_profile(profile: &ServerProfile, config: &ConnectionConfig
         && config.allow_plaintext_pass == profile.allow_plaintext_pass
 }
 
-/// Makes the channels, IRCv3 options, shared avatar and encodings of `config`
-/// follow `profile`, as saved now: a dialog holds the configuration of when it
-/// opened, and a change made while it was open belongs to the connection it
-/// starts (#723). Channel keys stay, under the spelling the list now has.
-pub(crate) fn follow_profile(
-    config: &mut ConnectionConfig,
+/// The configuration a dialog connects with: built again from `profile`, as
+/// saved now, because a change made while the dialog was open belongs to the
+/// connection it starts (#723). `opened` is the configuration of when the
+/// dialog opened. It supplies what the profile does not hold: the state of the
+/// session being resumed, and the passwords the dialog did not ask for. Those
+/// passwords are taken only while `opened` still connects the way `profile`
+/// says; otherwise they would go to another server or under another policy.
+pub(crate) fn rebuild_config(
     profile: &ServerProfile,
+    opened: &ConnectionConfig,
     language: cayenchat_storage::Language,
-) -> Result<(), String> {
-    let fresh = crate::connection_config_without_secrets(profile, language)?;
-    config.channels = fresh.channels;
-    crate::channel_keys::follow_channel_spelling(config);
-    config.ircv3 = fresh.ircv3;
-    config.shared_avatar = fresh.shared_avatar;
-    config.encoding = fresh.encoding;
-    config.char_refs = fresh.char_refs;
-    config.channel_encodings = fresh.channel_encodings;
-    Ok(())
+) -> Result<ConnectionConfig, String> {
+    let mut config = crate::connection_config_without_secrets(profile, language)?;
+    config.peer_avatar_cache = opened.peer_avatar_cache.clone();
+    if matches_profile(profile, opened) {
+        config.resume_history.clone_from(&opened.resume_history);
+        config.history_targets_since = opened.history_targets_since;
+        config.server_password.clone_from(&opened.server_password);
+        if let (Some(new), Some(old)) = (config.sasl.as_mut(), opened.sasl.as_ref()) {
+            new.password.clone_from(&old.password);
+        }
+    }
+    Ok(config)
 }
 
 /// The passwords `config` sends that the profile does not note as saved:
@@ -611,51 +616,78 @@ impl ChatWindow {
             return;
         }
         let prompt = &self.credential_prompts[index];
-        // A SASL password not asked for, because the store had it, is read
-        // by the reconnect that follows; here the fields cover the rest.
-        let mut config = prompt.config.clone();
+        // The connection is built from the settings as saved now, not from
+        // those of when the dialog opened. The dialog stays open if they
+        // cannot be had.
+        let Some(profile) = self
+            .sessions
+            .get(&network)
+            .and_then(|session| self.saved.profile(&session.profile_id))
+        else {
+            self.credential_prompts[index].error = Some(self.i18n.text("not_connected"));
+            cx.notify();
+            return;
+        };
+        let mut config = match rebuild_config(profile, &prompt.config, self.saved.language) {
+            Ok(config) => config,
+            Err(error) => {
+                self.credential_prompts[index].error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        // The settings changed how the connection is made since the dialog
+        // opened: what it asked for belongs to the old settings.
+        let changed = !matches_profile(profile, &prompt.config);
+        let profile = profile.clone();
+        let prompt = &self.credential_prompts[index];
+        // An account left as the dialog showed it does not replace one
+        // saved since.
+        let opened_account = prompt.config.sasl.as_ref().map(|c| c.username.as_str());
+        let account = account.filter(|account| !changed || opened_account != Some(account));
         apply_secrets(&mut config, server.as_ref(), sasl.as_ref());
         if let (Some(account), Some(credentials)) = (&account, config.sasl.as_mut()) {
             credentials.username.clone_from(account);
         }
         let remember = |field: &Option<PasswordField>| field.as_ref().is_some_and(|f| f.remember);
-        let saves = (
-            remember(&prompt.server).then(|| server.clone()).flatten(),
-            remember(&prompt.sasl).then(|| sasl.clone()).flatten(),
-        );
-        let resume = prompt.resume;
-        let validated =
-            crate::connect_auth::while_incomplete(&mut config, |config| config.validate());
+        // A password is saved only for the server it was asked for.
+        let saves = if changed {
+            (None, None)
+        } else {
+            (
+                remember(&prompt.server).then(|| server.clone()).flatten(),
+                remember(&prompt.sasl).then(|| sasl.clone()).flatten(),
+            )
+        };
+        // The connection is a new one when it goes to other settings.
+        let resume = if changed {
+            Resume::Fresh
+        } else {
+            prompt.resume
+        };
+        // A password the dialog did not ask for, and that could not be
+        // carried over, is not there to send.
+        if changed
+            && !uses_key(&config)
+            && config.sasl.as_ref().is_some_and(|c| c.password.is_empty())
+        {
+            self.credential_prompts[index].error =
+                Some(self.i18n.text("reconnect_settings_changed"));
+            cx.notify();
+            return;
+        }
+        // The channel keys are read from the store as a connection starts.
+        let store = secrets::store(cx);
+        let validated = crate::connect_auth::while_incomplete(&mut config, |config| {
+            crate::channel_keys::use_stored_keys(config, &profile, &store);
+            config.validate()
+        });
         if let Err(error) = validated {
             self.credential_prompts[index].error = Some(error);
             cx.notify();
             return;
         }
-        // The prompt holds the configuration of when it opened. If the
-        // settings changed since, what was typed would go to the old server
-        // under the new settings' name.
-        let stale = self.sessions.get(&network).is_some_and(|session| {
-            self.saved
-                .profile(&session.profile_id)
-                .is_some_and(|profile| {
-                    !matches_profile(profile, &self.credential_prompts[index].config)
-                })
-        });
-        if stale {
-            self.close_credential_prompt(index, window, cx);
-            let text = self.i18n.text("reconnect_settings_changed");
-            self.raise_error(Some(network), text, crate::notices::Origin::User, cx);
-            return;
-        }
-        let followed = self.sessions.get(&network).and_then(|session| {
-            let profile = self.saved.profile(&session.profile_id)?;
-            Some(follow_profile(&mut config, profile, self.saved.language))
-        });
         self.close_credential_prompt(index, window, cx);
-        if let Some(Err(error)) = followed {
-            self.raise_error(Some(network), error, crate::notices::Origin::User, cx);
-            return;
-        }
         if let Some(account) = &account {
             self.save_sasl_account(network, account);
         }
@@ -976,7 +1008,7 @@ fn saved_keys(
 #[cfg(test)]
 mod tests {
     use super::{
-        Missing, apply_secrets, fill, matches_profile, note_found, unsaved_secrets,
+        Missing, apply_secrets, fill, matches_profile, note_found, rebuild_config, unsaved_secrets,
         while_incomplete,
     };
     use cayenchat_irc_core::{ConnectionConfig, SaslCredentials};
@@ -1009,39 +1041,38 @@ mod tests {
     }
 
     #[test]
-    fn a_configuration_follows_the_channels_and_avatar_saved_since() {
+    fn a_rebuilt_configuration_takes_the_settings_saved_since() {
         let mut old = config(true);
         old.channels = vec!["#a".into()];
+        old.nickname = "old".into();
         old.shared_avatar = Some("https://example.invalid/old.png".into());
         old.server_password = Some("kept".into());
         let mut saved = profile(true);
         saved.username = "me".into();
+        saved.nickname = "new".into();
         saved.set_auto_join_entries(&[cayenchat_storage::AutoJoinEntry {
             name: "#b".into(),
             enabled: true,
         }]);
-        super::follow_profile(&mut old, &saved, cayenchat_storage::Language::English).unwrap();
-        assert_eq!(old.channels, vec!["#b".to_owned()]);
-        assert_eq!(old.shared_avatar, None);
-        assert_eq!(old.server_password.as_deref(), Some("kept"));
-        assert!(matches_profile(&saved, &old), "transport is left alone");
+        let new = rebuild_config(&saved, &old, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(new.channels, vec!["#b".to_owned()]);
+        assert_eq!(new.nickname, "new");
+        assert_eq!(new.shared_avatar, None);
+        assert_eq!(new.server_password.as_deref(), Some("kept"));
     }
 
     #[test]
-    fn a_channel_key_follows_the_respelled_channel() {
+    fn a_rebuilt_configuration_does_not_carry_passwords_to_another_server() {
         let mut old = config(true);
-        old.channels = vec!["#a".into()];
-        old.channel_keys.insert("#a".into(), "key".into());
+        old.server_password = Some("old".into());
+        old.sasl.as_mut().unwrap().password = "old".into();
         let mut saved = profile(true);
         saved.username = "me".into();
-        saved.set_auto_join_entries(&[cayenchat_storage::AutoJoinEntry {
-            name: "#A".into(),
-            enabled: true,
-        }]);
-        super::follow_profile(&mut old, &saved, cayenchat_storage::Language::English).unwrap();
-        assert_eq!(old.channels, vec!["#A".to_owned()]);
-        assert_eq!(old.channel_keys.get("#A").map(String::as_str), Some("key"));
-        assert!(!old.channel_keys.contains_key("#a"));
+        saved.host = "other.example".into();
+        let new = rebuild_config(&saved, &old, cayenchat_storage::Language::English).unwrap();
+        assert_eq!(new.host, "other.example");
+        assert_eq!(new.server_password, None);
+        assert_eq!(new.sasl.unwrap().password, "");
     }
 
     #[test]
