@@ -200,3 +200,29 @@ fn decoder_construction_does_not_allocate_raster_sized_memory() {
     });
     assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
 }
+
+#[test]
+fn retained_exif_is_charged_to_the_decode_budget() {
+    let _serial = MEASURING.lock().unwrap_or_else(|e| e.into_inner());
+    // `png` retains eXIf twice for the decoder's lifetime and its internal
+    // allocation limit is fixed at construction, so the 6 MiB of eXIf must be
+    // charged (twice) before the 44 MiB raster, which then no longer fits.
+    let (width, height) = (4096u32, 2800u32);
+    let mut info = png::Info::with_size(width, height);
+    info.color_type = png::ColorType::Rgba;
+    info.bit_depth = png::BitDepth::Eight;
+    info.exif_metadata = Some(Cow::Owned(vec![0; 6 * 1024 * 1024]));
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::with_info(&mut bytes, info).unwrap();
+    encoder.set_compression(png::Compression::High);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&vec![0; width as usize * height as usize * 4])
+        .unwrap();
+    drop(writer);
+
+    let result = within_budget(48 * 1024 * 1024, || {
+        decode::thumbnail(&bytes, &Limits::default(), &CancelFlag::default())
+    });
+    assert_eq!(result, Err(cayenchat_media::LoadError::TooLarge));
+}

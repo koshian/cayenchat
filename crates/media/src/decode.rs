@@ -32,7 +32,10 @@ pub(crate) fn limited_decoder<'a>(
     // so remove them before handing PNG data to it. The input copy and source
     // raster are charged afterwards by `reserve_source_image`, from the
     // constructed decoder's `total_bytes`: constructing a decoder does not
-    // allocate raster-sized memory, so only the input copy is charged here.
+    // allocate raster-sized memory, so only the input copy and the eXIf
+    // data `png` retains are charged here. `png`'s own allocation limit
+    // cannot change after construction, so what it retains must be reserved
+    // before the raster is known.
     let metadata_copy_bytes = png_metadata_copy_bytes(bytes, format);
     if metadata_copy_bytes > limits.max_decode_bytes {
         return Err(insufficient_memory());
@@ -63,43 +66,56 @@ fn insufficient_memory() -> image::ImageError {
 /// Reserves the full source length before filtering allocates its output.
 /// This is conservative because metadata chunks are removed, but guarantees
 /// the copy's capacity is budgeted even when most of the input is discarded.
+///
+/// It also reserves twice the length of every eXIf chunk. `png` keeps eXIf
+/// (which we do not strip: avatar orientation uses it) twice while the decoder
+/// lives, in its raw buffer and in the parsed info, and its internal
+/// allocation limit is fixed when the decoder is constructed, so that memory
+/// cannot be left to the remaining-budget check done later.
 fn png_metadata_copy_bytes(bytes: &[u8], format: ImageFormat) -> u64 {
-    if format != ImageFormat::Png || !has_png_metadata(bytes) {
-        0
-    } else {
-        bytes.len() as u64
+    if format != ImageFormat::Png {
+        return 0;
     }
+    let (has_metadata, exif_bytes) = scan_png_chunks(bytes);
+    let copy = if has_metadata { bytes.len() as u64 } else { 0 };
+    copy.saturating_add(exif_bytes.saturating_mul(2))
 }
 
-fn has_png_metadata(bytes: &[u8]) -> bool {
+/// Walks well-framed PNG chunks, returning whether any is metadata that
+/// `strip_png_metadata` removes and the total length of eXIf chunks.
+fn scan_png_chunks(bytes: &[u8]) -> (bool, u64) {
     const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    let mut has_metadata = false;
+    let mut exif_bytes = 0u64;
     if !bytes.starts_with(SIGNATURE) {
-        return false;
+        return (false, 0);
     }
     let mut offset = SIGNATURE.len();
     while offset < bytes.len() {
         let Some(header_end) = offset.checked_add(8) else {
-            return false;
+            break;
         };
         let Some(header) = bytes.get(offset..header_end) else {
-            return false;
+            break;
         };
         let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
         let Some(chunk_end) = header_end
             .checked_add(length)
             .and_then(|n| n.checked_add(4))
         else {
-            return false;
+            break;
         };
         if chunk_end > bytes.len() {
-            return false;
+            break;
         }
-        if matches!(&header[4..8], b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt") {
-            return true;
+        match &header[4..8] {
+            b"iCCP" | b"tEXt" | b"zTXt" | b"iTXt" => has_metadata = true,
+            b"eXIf" => exif_bytes += length as u64,
+            _ => {}
         }
         offset = chunk_end;
     }
-    false
+    (has_metadata, exif_bytes)
 }
 
 /// Drops compressed and uncompressed PNG metadata chunks that the media
