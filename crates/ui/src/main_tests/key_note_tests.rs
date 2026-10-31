@@ -335,3 +335,27 @@ fn a_join_reads_the_store_only_for_a_noted_channel() {
     assert_eq!(found[0].1.as_ref().map(|k| k.expose()), Some("secret"));
     assert_eq!(reads.load(Ordering::SeqCst), 1);
 }
+
+#[gpui::test]
+fn a_corrected_note_still_lets_the_connection_use_the_key(cx: &mut TestAppContext) {
+    // The key is saved but the file has no note of it.
+    let (opened, cx) = open_chat(settings("#a,#b", None), &[("#b", "secret")], cx);
+    opened.chat.update(cx, |chat, cx| {
+        let first = connect(&chat.saved, &opened.store);
+        assert_eq!(first.channel_keys["#b"], "secret");
+        chat.sessions
+            .get_mut(&NET)
+            .unwrap()
+            .active_config
+            .as_mut()
+            .unwrap()
+            .channel_keys
+            .extend(first.channel_keys);
+        registered(chat, cx);
+        assert_eq!(noted(chat), Some(vec!["#b".to_owned()]));
+        // The reconnect, which reads the corrected note, finds the same key.
+        let again = connect(&chat.saved, &opened.store);
+        assert_eq!(again.channel_keys.len(), 1);
+        assert_eq!(again.channel_keys["#b"], "secret");
+    });
+}
