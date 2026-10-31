@@ -110,21 +110,28 @@ const SECRET_PARAMETERS: [&str; 17] = [
 ];
 
 /// Checks a URL the user wants to publish as their avatar (for IRC, the
-/// value of the `avatar` metadata key, which may contain `{size}`). The
-/// rules are those of [`avatar_url`], so what we publish is what other
-/// CayenChat users would load, plus a refusal of anything that looks like
-/// a credential. Nothing is fetched.
+/// value of the `avatar` metadata key, which may contain `{size}`): the
+/// template is expanded, then checked by [`publishable_url`].
 pub fn publishable_avatar_url(template: &str) -> Result<(), PublishProblem> {
-    if template.is_empty()
-        || template.len() > MAX_URL_LEN
-        || template
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace())
+    // The expanded text is shorter, so a long template is refused here.
+    if template.len() > MAX_URL_LEN {
+        return Err(PublishProblem::Invalid);
+    }
+    publishable_url(&template.replace(AVATAR_SIZE_PLACEHOLDER, "32"))
+}
+
+/// Checks a URL as given, without expanding any template: it must be one
+/// other CayenChat users could fetch (the rules of [`avatar_url`]) and
+/// carry no credential. Nothing is fetched, and the text checked is the
+/// text the caller keeps.
+pub fn publishable_url(text: &str) -> Result<(), PublishProblem> {
+    if text.is_empty()
+        || text.len() > MAX_URL_LEN
+        || text.chars().any(|ch| ch.is_control() || ch.is_whitespace())
     {
         return Err(PublishProblem::Invalid);
     }
-    let parsed = Url::parse(&template.replace(AVATAR_SIZE_PLACEHOLDER, "32"))
-        .map_err(|_| PublishProblem::Invalid)?;
+    let parsed = Url::parse(text).map_err(|_| PublishProblem::Invalid)?;
     let secret = |name: &str| {
         let name = name.to_ascii_lowercase().replace('-', "_");
         SECRET_PARAMETERS.contains(&name.as_str())
@@ -143,9 +150,7 @@ pub fn publishable_avatar_url(template: &str) -> Result<(), PublishProblem> {
     {
         return Err(PublishProblem::Credentials);
     }
-    avatar_url(template, 32)
-        .map(|_| ())
-        .ok_or(PublishProblem::Blocked)
+    check_request(&parsed, None, Rules::default()).map_err(|_| PublishProblem::Blocked)
 }
 
 /// Checks a URL before it is requested. `previous` is the URL that
@@ -401,6 +406,37 @@ mod tests {
         }
         let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
         assert_eq!(publishable_avatar_url(&long), Err(PublishProblem::Invalid));
+    }
+
+    #[test]
+    fn plain_urls_are_checked_without_template_expansion() {
+        for ok in ["https://example.com/a.png", "https://example.com/a?v=2#x"] {
+            assert_eq!(publishable_url(ok), Ok(()), "{ok}");
+        }
+        // `{size}` is not expanded: the braces make the host invalid.
+        assert_eq!(
+            publishable_url("https://[2001:4860:{size}::8888]/x.png"),
+            Err(PublishProblem::Invalid)
+        );
+        assert_eq!(
+            publishable_url("https://example.com/{size}.png"),
+            Ok(()),
+            "braces in a path are legal URL text; callers that insert the text reject them"
+        );
+        for (url, problem) in [
+            (
+                "https://user@example.com/a.png",
+                PublishProblem::Credentials,
+            ),
+            (
+                "https://example.com/a.png?token=x",
+                PublishProblem::Credentials,
+            ),
+            ("https://example.com:8443/a.png", PublishProblem::Blocked),
+            ("https://example.com/a b", PublishProblem::Invalid),
+        ] {
+            assert_eq!(publishable_avatar_url(url), Err(problem), "{url}");
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@
 
 use std::{fmt, sync::Arc};
 
-use cayenchat_media::policy::publishable_avatar_url;
+use cayenchat_media::policy::publishable_url;
 use cayenchat_model::attachment::Attachment;
 use cayenchat_storage::Secret;
 
@@ -97,11 +97,11 @@ pub trait ExternalUploader: Send + Sync {
 
 /// Accepts only an `https` URL without whitespace or control characters, as
 /// the link is inserted into IRC text. The reply is untrusted, so the URL
-/// must also pass the check used for published avatar links: it parses, has
-/// no userinfo or credential-like parameters, no non-default port, and a
-/// public host. That check expands the avatar `{size}` template before
-/// parsing, so braces are refused: the string checked is then the string
-/// inserted.
+/// must also pass the plain public-URL check: it parses, has no userinfo
+/// or credential-like parameters, no non-default port, and a public host.
+/// That check expands nothing, so the string checked is the string
+/// inserted. Braces stay refused, as before, so no template syntax reaches
+/// the chat.
 pub(crate) fn checked_url(url: &str) -> Option<String> {
     let valid = url.starts_with("https://")
         && url.len() > "https://".len()
@@ -109,7 +109,7 @@ pub(crate) fn checked_url(url: &str) -> Option<String> {
         && !url
             .chars()
             .any(|ch| ch.is_whitespace() || ch.is_control() || ch == '{' || ch == '}')
-        && publishable_avatar_url(url).is_ok();
+        && publishable_url(url).is_ok();
     valid.then(|| url.to_owned())
 }
 
@@ -147,6 +147,41 @@ mod tests {
             "https://i.ibb.co/{size}.png",
         ] {
             assert!(checked_url(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn checked_url_verdicts_do_not_depend_on_the_avatar_template_check() {
+        let too_long = format!("https://i.ibb.co/{}", "a".repeat(2048));
+        let at_limit = format!(
+            "https://i.ibb.co/{}",
+            "a".repeat(2048 - "https://i.ibb.co/".len())
+        );
+        for (url, accepted) in [
+            ("https://i.ibb.co/a.png", true),
+            (at_limit.as_str(), true),
+            ("http://i.ibb.co/a.png", false),
+            ("https://user:pw@i.ibb.co/a.png", false),
+            ("https://i.ibb.co:8443/a.png", false),
+            ("https://10.0.0.1/a.png", false),
+            ("https://127.0.0.1/a.png", false),
+            ("https://localhost/a.png", false),
+            ("https://i.ibb.co/a.png?token=abc", false),
+            ("https://i.ibb.co/a.png?API-KEY=x", false),
+            ("https://i.ibb.co/a.png#access_token=x", false),
+            ("https://i.ibb.co/{a}.png", false),
+            ("https://i.ibb.co/{size}.png", false),
+            ("https://i.ibb.co/a b.png", false),
+            ("https://i.ibb.co/a\tb.png", false),
+            ("https://i.ibb.co/a\u{0}.png", false),
+            (too_long.as_str(), false),
+        ] {
+            let verdict = checked_url(url);
+            if accepted {
+                assert_eq!(verdict.as_deref(), Some(url), "{url}");
+            } else {
+                assert_eq!(verdict, None, "{url}");
+            }
         }
     }
 }
