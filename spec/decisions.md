@@ -2844,7 +2844,8 @@ change).
   `PlatformDisplay::uuid`; optional, so the file version stays 1) and the
   rectangle is relative to it (#130). At startup the display with that UUID
   is passed as `display_id` and the rectangle is fitted to it alone; if it is
-  gone the window opens in the usual centered place on the primary. A file
+  gone the saved size is kept and the rectangle is moved and, if larger,
+  shrunk to lie within the primary display, not reset to the default. A file
   without `display` (saved earlier) restores as before, without naming a
   display. Windows keeps desktop coordinates and no `display`. X11 is not
   covered: its display is the X screen, and Xinerama/RandR monitors are not

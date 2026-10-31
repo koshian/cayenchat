@@ -7,7 +7,7 @@
 //! used only where it still overlaps a display, and is moved and shrunk to fit
 //! that display; otherwise the caller opens the window in its usual place.
 
-use cayenchat_storage::layout::Layout;
+use cayenchat_storage::layout::{Layout, WindowRect};
 use gpui::{Bounds, Pixels, Size, WindowBounds, point, px, size};
 
 /// Where to open the window again.
@@ -26,7 +26,6 @@ pub fn restored_bounds(
     min: Size<Pixels>,
 ) -> Option<Restored> {
     let saved = layout.window?;
-    let (min_width, min_height) = (f32::from(min.width), f32::from(min.height));
     // The display showing most of the saved rectangle.
     let overlap = |display: &Bounds<Pixels>| {
         let (left, top) = (f32::from(display.left()), f32::from(display.top()));
@@ -47,6 +46,18 @@ pub fn restored_bounds(
         .max_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, index, display)| (index, *display))?;
 
+    Some(fit_on_display(layout.maximized, saved, index, display, min))
+}
+
+/// `saved` moved and shrunk to lie within `display` (the display at `index`).
+fn fit_on_display(
+    maximized: bool,
+    saved: WindowRect,
+    index: usize,
+    display: Bounds<Pixels>,
+    min: Size<Pixels>,
+) -> Restored {
+    let (min_width, min_height) = (f32::from(min.width), f32::from(min.height));
     let (left, top) = (f32::from(display.left()), f32::from(display.top()));
     let (screen_width, screen_height) = (
         f32::from(display.size.width),
@@ -60,42 +71,55 @@ pub fn restored_bounds(
     let x = saved.x.min(left + screen_width - width).max(left);
     let y = saved.y.min(top + screen_height - height).max(top);
     let bounds = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
-    Some(Restored {
-        bounds: if layout.maximized {
+    Restored {
+        bounds: if maximized {
             WindowBounds::Maximized(bounds)
         } else {
             WindowBounds::Windowed(bounds)
         },
         display: index,
-    })
+    }
 }
 
 /// Like [`restored_bounds`] for a layout whose rectangle is relative to the
 /// display named by `layout.display` (macOS, where GPUI reports every display
 /// at the origin and window coordinates are display-relative, #130).
 /// `uuids[i]` is the UUID of `displays[i]`. The window goes on the named
-/// display only; when it is gone (or the rectangle no longer overlaps it) the
-/// result is `None`, the usual place, rather than coordinates that mean
-/// something else on another display. A layout without a display falls back to
-/// [`restored_bounds`].
+/// display only (never another display's overlap). When it is gone (or the
+/// rectangle no longer overlaps it) the saved size is kept and the rectangle is
+/// moved to lie within the `primary` display, instead of a default size. A
+/// layout without a display falls back to [`restored_bounds`].
 pub fn restored_on_named_display(
     layout: &Layout,
     displays: &[Bounds<Pixels>],
     uuids: &[Option<String>],
+    primary: usize,
     min: Size<Pixels>,
 ) -> Option<Restored> {
     let Some(name) = &layout.display else {
         return restored_bounds(layout, displays, min);
     };
-    let index = uuids.iter().position(|uuid| {
+    let saved = layout.window?;
+    let named = uuids.iter().position(|uuid| {
         uuid.as_deref()
             .is_some_and(|uuid| uuid.eq_ignore_ascii_case(name))
-    })?;
-    let restored = restored_bounds(layout, &displays[index..=index], min)?;
-    Some(Restored {
-        display: index,
-        ..restored
-    })
+    });
+    if let Some(index) = named
+        && let Some(restored) = restored_bounds(layout, &displays[index..=index], min)
+    {
+        return Some(Restored {
+            display: index,
+            ..restored
+        });
+    }
+    let display = *displays.get(primary)?;
+    Some(fit_on_display(
+        layout.maximized,
+        saved,
+        primary,
+        display,
+        min,
+    ))
 }
 
 /// How much of the owner's top (title bar and a little more) a window placed
@@ -330,19 +354,25 @@ mod tests {
         let uuids = [Some("AAAA".to_string()), Some("BBBB".to_string())];
         let mut layout = saved(100., 80., 960., 600., false);
         layout.display = Some("bbbb".into());
-        let got = restored_on_named_display(&layout, &screens, &uuids, MIN());
+        let got = restored_on_named_display(&layout, &screens, &uuids, 0, MIN());
         assert_eq!(got.as_ref().map(|restored| restored.display), Some(1));
         assert_eq!(windowed(got), (100., 80., 960., 600.));
         // Fitted to the named display, not the first.
         layout.window.as_mut().unwrap().x = 1200.;
-        let got = restored_on_named_display(&layout, &screens, &uuids, MIN());
+        let got = restored_on_named_display(&layout, &screens, &uuids, 0, MIN());
         assert_eq!(windowed(got), (480., 80., 960., 600.));
-        // The display is gone: the usual place, not the first display.
+        // The display is gone: the saved size, kept on the primary display.
         layout.display = Some("CCCC".into());
-        assert!(restored_on_named_display(&layout, &screens, &uuids, MIN()).is_none());
+        let got = restored_on_named_display(&layout, &screens, &uuids, 1, MIN());
+        assert_eq!(got.as_ref().map(|restored| restored.display), Some(1));
+        assert_eq!(windowed(got), (480., 80., 960., 600.));
+        // Larger than the primary display: shrunk to it.
+        layout.window = saved(1000., 500., 3000., 2000., false).window;
+        let got = restored_on_named_display(&layout, &screens, &uuids, 0, MIN());
+        assert_eq!(windowed(got), (0., 0., 1920., 1080.));
         // No display saved: as before.
         layout.display = None;
-        let got = restored_on_named_display(&layout, &screens, &uuids, MIN());
+        let got = restored_on_named_display(&layout, &screens, &uuids, 0, MIN());
         assert_eq!(got.as_ref().map(|restored| restored.display), Some(0));
     }
 

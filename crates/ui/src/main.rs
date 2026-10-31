@@ -10574,7 +10574,17 @@ fn main() {
                     .iter()
                     .map(|display| display.uuid().ok().map(|uuid| uuid.to_string()))
                     .collect();
-                window_layout::restored_on_named_display(&layout, &display_bounds, &uuids, min_size)
+                let primary = cx
+                    .primary_display()
+                    .and_then(|primary| displays.iter().position(|d| d.id() == primary.id()))
+                    .unwrap_or(0);
+                window_layout::restored_on_named_display(
+                    &layout,
+                    &display_bounds,
+                    &uuids,
+                    primary,
+                    min_size,
+                )
             } else {
                 window_layout::restored_bounds(&layout, &display_bounds, min_size)
             };
