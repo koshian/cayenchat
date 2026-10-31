@@ -6,14 +6,7 @@ use cayenchat_model::NetworkId;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
 fn install_globals(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
 }
 
 /// A window whose first server is registered and has joined `#a`; the

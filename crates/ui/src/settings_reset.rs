@@ -306,14 +306,7 @@ mod tests {
         tab: SettingsTab,
         cx: &mut gpui::TestAppContext,
     ) -> (gpui::Entity<SettingsWindow>, &mut gpui::VisualTestContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let settings = crate::settings_with_channels("#a");
         let owner = cx.add_window(|window, cx| {
             crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -630,14 +623,7 @@ mod tests {
 
     #[gpui::test]
     fn the_connection_button_becomes_disconnect_in_the_same_place(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let settings = crate::settings_with_channels("#a");
         let owner = cx.add_window(|window, cx| {
             crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -672,14 +658,7 @@ mod tests {
     fn the_chat_window_opens_the_settings_from_its_own_update(cx: &mut gpui::TestAppContext) {
         use gpui::AppContext as _;
 
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let settings = crate::settings_with_channels("#a");
         let owner = cx.add_window(|window, cx| {
             crate::ChatWindow::with_settings(settings.clone(), None, window, cx)

@@ -45,14 +45,7 @@ fn day_file(conversation: &str) -> String {
 
 #[gpui::test]
 fn enabled_logs_save_live_lines_only(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let directory = private_tempdir();
     let mut settings = crate::settings_with_channels("#Rust");
     settings.conversation_log.channels = true;
@@ -200,14 +193,7 @@ fn enabled_logs_save_live_lines_only(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn logs_are_off_by_default(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     assert!(!settings.conversation_log.enabled());
     let (chat, cx) = cx.add_window_view(|window, cx| {
@@ -219,14 +205,7 @@ fn logs_are_off_by_default(cx: &mut TestAppContext) {
 }
 
 fn install_globals(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
 }
 
 fn accepted(local_id: u64, channel: &str, text: &str, action: Option<&str>) -> Event {

@@ -64,14 +64,7 @@ fn next_line(reader: &mut BufReader<std::net::TcpStream>, prefix: &str) -> Optio
 
 #[gpui::test]
 fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.add_server("irc.example.org");
     settings.add_server("irc.example.net");
@@ -242,14 +235,7 @@ fn a_wake_checks_only_live_connections_and_reconnects_the_silent_one(cx: &mut Te
 
 #[gpui::test]
 fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let mut settings = crate::settings_with_channels("#a");
     settings.add_server("irc.example.org");
     settings.add_server("irc.example.net");
@@ -443,14 +429,7 @@ fn sleep_quits_the_live_servers_and_the_wake_reconnects_only_those(cx: &mut Test
 
 #[gpui::test]
 fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)
@@ -486,14 +465,7 @@ fn sleep_holds_back_a_pending_retry_until_the_wake(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn saved_leaving_messages_reach_the_open_connection(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        crate::secrets::install_memory(cx);
-        cx.set_global(crate::theme::Theme::new(
-            cayenchat_storage::ThemeMode::Light,
-            gpui::WindowAppearance::Light,
-            &cayenchat_storage::Appearance::default(),
-        ));
-    });
+    crate::support::install_test_globals(cx);
     let settings = crate::settings_with_channels("#a");
     let (chat, cx) = cx.add_window_view(|window, cx| {
         ChatWindow::with_settings(settings.clone(), None, window, cx)

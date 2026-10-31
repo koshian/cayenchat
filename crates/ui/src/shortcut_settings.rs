@@ -249,14 +249,7 @@ mod tests {
     use crate::SettingsTab;
     #[gpui::test]
     fn shortcuts_are_changed_by_keys(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            crate::secrets::install_memory(cx);
-            cx.set_global(crate::theme::Theme::new(
-                cayenchat_storage::ThemeMode::Light,
-                gpui::WindowAppearance::Light,
-                &cayenchat_storage::Appearance::default(),
-            ));
-        });
+        crate::support::install_test_globals(cx);
         let settings = crate::settings_with_channels("#a");
         let owner = cx.add_window(|window, cx| {
             crate::ChatWindow::with_settings(settings.clone(), None, window, cx)
