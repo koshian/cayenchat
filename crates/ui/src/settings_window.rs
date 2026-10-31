@@ -6432,6 +6432,7 @@ mod escape_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
@@ -6444,7 +6445,10 @@ mod escape_tests {
             while Instant::now() < deadline {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
-                    Ok(_) => lines.push(std::mem::take(&mut line)),
+                    Ok(_) => {
+                        lines.push(std::mem::take(&mut line));
+                        let _ = first_tx.send(());
+                    }
                     Err(error)
                         if matches!(
                             error.kind(),
@@ -6496,7 +6500,11 @@ mod escape_tests {
             .unwrap();
         assert_eq!(file_profile().channels, "-#a,#b");
 
-        // Closing the connection ends the recording.
+        // Closing the connection ends the recording. Wait for the first line
+        // so a slow connection thread is not closed before it wrote anything.
+        first_rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("the connection sent its first line");
         owner
             .update(cx, |chat, _, _| {
                 chat.sessions
