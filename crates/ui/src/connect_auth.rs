@@ -131,9 +131,9 @@ pub(crate) fn rebuild_config(
 ) -> Result<ConnectionConfig, String> {
     let mut config = crate::connection_config_without_secrets(profile, language)?;
     config.peer_avatar_cache = opened.peer_avatar_cache.clone();
-    config.resume_history.clone_from(&opened.resume_history);
-    config.history_targets_since = opened.history_targets_since;
     if matches_profile(profile, opened) {
+        config.resume_history.clone_from(&opened.resume_history);
+        config.history_targets_since = opened.history_targets_since;
         config.server_password.clone_from(&opened.server_password);
         if let (Some(new), Some(old)) = (config.sasl.as_mut(), opened.sasl.as_ref()) {
             new.password.clone_from(&old.password);
@@ -641,18 +641,46 @@ impl ChatWindow {
                 return;
             }
         };
+        // The settings changed how the connection is made since the dialog
+        // opened: what it asked for belongs to the old settings.
+        let changed = !matches_profile(profile, &prompt.config);
         let profile = profile.clone();
         let prompt = &self.credential_prompts[index];
+        // An account left as the dialog showed it does not replace one
+        // saved since.
+        let opened_account = prompt.config.sasl.as_ref().map(|c| c.username.as_str());
+        let account = account.filter(|account| !changed || opened_account != Some(account));
         apply_secrets(&mut config, server.as_ref(), sasl.as_ref());
         if let (Some(account), Some(credentials)) = (&account, config.sasl.as_mut()) {
             credentials.username.clone_from(account);
         }
         let remember = |field: &Option<PasswordField>| field.as_ref().is_some_and(|f| f.remember);
-        let saves = (
-            remember(&prompt.server).then(|| server.clone()).flatten(),
-            remember(&prompt.sasl).then(|| sasl.clone()).flatten(),
-        );
-        let resume = prompt.resume;
+        // A password is saved only for the server it was asked for.
+        let saves = if changed {
+            (None, None)
+        } else {
+            (
+                remember(&prompt.server).then(|| server.clone()).flatten(),
+                remember(&prompt.sasl).then(|| sasl.clone()).flatten(),
+            )
+        };
+        // The connection is a new one when it goes to other settings.
+        let resume = if changed {
+            Resume::Fresh
+        } else {
+            prompt.resume
+        };
+        // A password the dialog did not ask for, and that could not be
+        // carried over, is not there to send.
+        if changed
+            && !uses_key(&config)
+            && config.sasl.as_ref().is_some_and(|c| c.password.is_empty())
+        {
+            self.credential_prompts[index].error =
+                Some(self.i18n.text("reconnect_settings_changed"));
+            cx.notify();
+            return;
+        }
         // The channel keys are read from the store as a connection starts.
         let store = secrets::store(cx);
         let validated = crate::connect_auth::while_incomplete(&mut config, |config| {

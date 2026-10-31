@@ -150,6 +150,7 @@ fn a_dialog_open_while_the_host_changes_connects_to_the_new_host_with_the_typed_
         chat.update_in(cx, |chat, window, cx| {
             assert_eq!(chat.credential_prompts.len(), 1);
             type_password(chat, true, "typed", cx);
+            chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
             chat.saved.servers[0].host = "127.0.0.2".into();
             chat.submit_credential_prompt(NET, window, cx);
         });
@@ -162,10 +163,8 @@ fn a_dialog_open_while_the_host_changes_connects_to_the_new_host_with_the_typed_
                 Some("typed"),
                 "the password is for the saved server, fresh: {fresh}"
             );
-            if fresh {
-                let used = chat.sessions[&NET].active_config.as_ref().unwrap();
-                assert_eq!(used.host, "127.0.0.2");
-            }
+            let used = chat.sessions[&NET].active_config.as_ref().unwrap();
+            assert_eq!(used.host, "127.0.0.2", "fresh: {fresh}");
             stop(chat);
         });
         assert!(!store.contains(&key).unwrap(), "fresh: {fresh}");
@@ -194,8 +193,33 @@ fn a_dialog_does_not_carry_passwords_to_a_host_changed_while_it_was_open(cx: &mu
     });
     cx.run_until_parked();
     chat.update(cx, |chat, _| {
+        assert_eq!(sent(chat).0, None);
+        stop(chat);
+    });
+}
+
+#[gpui::test]
+fn a_dialog_keeps_the_account_saved_while_it_was_open(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update_in(cx, |chat, window, cx| {
+        let missing = crate::connect_auth::Missing {
+            sasl: true,
+            ..Default::default()
+        };
+        chat.connect_fresh(NET, config(true), missing, window, cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, true, "typed", cx);
+        chat.saved.servers[0].sasl_username = "newacct".into();
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
         let used = chat.sessions[&NET].active_config.as_ref().unwrap();
-        assert_eq!(used.server_password, None);
+        assert_eq!(used.sasl.as_ref().unwrap().username, "newacct");
+        assert_eq!(chat.saved.servers[0].sasl_username, "newacct");
         stop(chat);
     });
 }
@@ -972,4 +996,39 @@ fn a_dialog_left_open_does_not_outlive_a_reconnect_by_another_path(cx: &mut Test
         stop(chat);
     });
     assert_eq!(store.get(&key).unwrap().unwrap().expose(), "saved");
+}
+
+#[gpui::test]
+fn a_dialog_that_cannot_carry_the_sasl_password_to_a_changed_host_stays_open(
+    cx: &mut TestAppContext,
+) {
+    let (chat, _store, cx) = open_chat(cx);
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, true, "typed", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, cx| {
+        stop(chat);
+        chat.handle_events(
+            NET,
+            vec![Event::Refused(PASSWORD_REFUSED.into())],
+            Worker::Running,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        type_password(chat, false, "server", cx);
+        chat.saved.servers[0].host = "127.0.0.2".into();
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert_eq!(chat.credential_prompts.len(), 1, "still open");
+        assert!(chat.credential_prompts[0].error.is_some());
+        assert!(chat.sessions[&NET].irc.is_none());
+    });
 }
