@@ -167,8 +167,13 @@ updates. Locally:
 RustSec does not list every advisory: GitHub-only ones (GHSA, such as
 grid's GHSA-38c5-483c-4qqp) are absent, and unmaintained or unsound
 transitive crates pass on purpose. The weekly "OSV advisories" workflow
-(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock`
-against OSV, which includes GHSA. It is not a pull request check, so a
+(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock` and
+`vendor/gpui/Cargo.lock` against OSV, which includes GHSA. The second one
+belongs to the separate GPUI workspace that CI builds its GPUI unit tests
+from; it pins some versions differently (libc, for example) and never ships.
+cargo-deny does not read it: the job checks the root workspace only, and
+`deny.toml` (license and ban policy) is written for that tree, so for the GPUI
+test build the OSV scan is the only advisory check. It is not a pull request check, so a
 finding in a transitive GPUI dependency does not block unrelated changes. When
 it fails, decide whether the crate is reachable from our code: update it, or
 record the finding and why it is accepted in the issue. Nothing detects an
@@ -1813,14 +1818,32 @@ produced `Wake-up (…, Clock)`; macOS sent no `NSWorkspaceDidWakeNotification`
 for them, while the ordinary `Wake` (UserActivity) at 05:08 gave `Os`. The
 first DarkWake reconnected the connection that the sleep QUIT had closed, the
 Mac slept again without a sleep notice, and the next DarkWakes took the PING
-path, whose 15 s timeout ran into the sleep. Fix: on macOS a clock jump seen
-while the main display is asleep (`CGDisplayIsAsleep`, true through a DarkWake)
-is held (`HeldJump` in `wake.rs`) and reported at the first clock tick that
-finds the display awake. A missed `Os` notice at a real wake is still caught by
-the clock check, at most one poll interval (60 s) later; a Mac without a
-display is taken as awake, as before. By a person on a Mac: leave it
-connected until a DarkWake (`pmset -g log`) happens; the Overview must show
-no `Wake-up` line for it, and the user's wake must reconnect once.
+path, whose 15 s timeout ran into the sleep. A first fix (#793) held a clock
+jump while `CGDisplayIsAsleep` was true (`HeldJump`); it was removed by #808
+(below).
+
+#### macOS without the clock check (2026-10-31, issue #808)
+
+`CGDisplayIsAsleep` is also true when only the display sleeps on a fully awake
+Mac, so a missed `Os` notice there held the clock jump until someone lit the
+screen. Rather than distinguish the two (an IOPMrootDomain capability read
+was considered and not taken: unstable key, or SPI), macOS now has **no clock
+check**: `install()` starts no `wake-clock` thread, and `HeldJump`,
+`dark_wake()` and the CoreGraphics calls are gone. Other OSes keep the clock
+check unchanged. On macOS a wake is `NSWorkspaceDidWakeNotification`
+(`WakeSource::Os`) only, and a DarkWake reconnects nothing; a display-only
+sleep changes nothing, and the existing PING/timeout/retry paths stay.
+
+Accepted limitation: if macOS misses the `Os` notice at a real wake after a
+sleep QUIT, nothing finds the wake-up, and the servers stay disconnected until
+the user reconnects them or another existing path (retry, PING timeout) acts.
+The ~50 min test saw `Os` for every user wake. If misses show up, add a check
+when the window becomes active (not done).
+
+By a person on a Mac: sleep, several DarkWakes (`pmset -g log`), then a user
+wake. The Overview must show no `Wake-up` line for the DarkWakes and one
+`Wake-up (…, Os)` line for the user wake, which reconnects once. With
+`pmset displaysleepnow` on a connected Mac, the connection stays up.
 
 Reading a report: a "Sleep notice" line before the sleep and then a reconnect
 on wake is the #445 path working. No "Sleep notice" line and a "Wake-up …
