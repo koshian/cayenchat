@@ -127,7 +127,7 @@ one for avatars). It does not upload and does not use `upload` (`upload` uses it
 
 IRC's external image hosting: the `ExternalUploader` trait, provider
 registry, provider implementations (ImgBB) and a fake for tests. Reply URLs
-must pass `media::policy::publishable_avatar_url` before they reach a draft
+must pass `media::policy::publishable_url` before they reach a draft
 (`checked_url`). It is not
 part of the IRC wire implementation and must not depend on GPUI or `irc`.
 Protocols with native media must not route through it.
