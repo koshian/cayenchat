@@ -167,8 +167,13 @@ updates. Locally:
 RustSec does not list every advisory: GitHub-only ones (GHSA, such as
 grid's GHSA-38c5-483c-4qqp) are absent, and unmaintained or unsound
 transitive crates pass on purpose. The weekly "OSV advisories" workflow
-(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock`
-against OSV, which includes GHSA. It is not a pull request check, so a
+(`.github/workflows/osv.yml`, also runnable by hand) scans `Cargo.lock` and
+`vendor/gpui/Cargo.lock` against OSV, which includes GHSA. The second one
+belongs to the separate GPUI workspace that CI builds its GPUI unit tests
+from; it pins some versions differently (libc, for example) and never ships.
+cargo-deny does not read it: the job checks the root workspace only, and
+`deny.toml` (license and ban policy) is written for that tree, so for the GPUI
+test build the OSV scan is the only advisory check. It is not a pull request check, so a
 finding in a transitive GPUI dependency does not block unrelated changes. When
 it fails, decide whether the crate is reachable from our code: update it, or
 record the finding and why it is accepted in the issue. Nothing detects an
