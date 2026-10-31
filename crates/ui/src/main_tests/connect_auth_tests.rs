@@ -999,6 +999,49 @@ fn a_dialog_left_open_does_not_outlive_a_reconnect_by_another_path(cx: &mut Test
 }
 
 #[gpui::test]
+fn a_reconnect_that_notes_a_password_does_not_rewrite_the_settings_file(cx: &mut TestAppContext) {
+    let (chat, store, cx) = open_chat(cx);
+    let _file =
+        crate::settings_file::TestFile::with(&chat.read_with(cx, |chat, _| chat.saved.clone()));
+    let before = crate::settings_file::load().unwrap().unwrap();
+    // Noted as saved, but the store holds nothing: the note is wrong.
+    let key = chat.read_with(cx, |chat, _| chat.saved.servers[0].sasl_password_key());
+    assert!(store.get(&key).unwrap().is_none());
+    chat.update(cx, |chat, cx| {
+        chat.saved.servers[0].set_sasl_password_saved(true);
+        chat.start_reconnect(NET, false, cx);
+    });
+    cx.run_until_parked();
+    chat.update(cx, |chat, _| {
+        assert!(!chat.saved.servers[0].sasl_secret_saved(), "corrected here");
+        assert_eq!(chat.pending_notes.len(), 1);
+        stop(chat);
+    });
+    assert_eq!(crate::settings_file::load().unwrap().unwrap(), before);
+}
+
+#[gpui::test]
+fn a_password_saved_in_the_dialog_is_noted_in_the_file_for_the_next_start(cx: &mut TestAppContext) {
+    let (chat, _store, cx) = open_chat(cx);
+    let _file =
+        crate::settings_file::TestFile::with(&chat.read_with(cx, |chat, _| chat.saved.clone()));
+    chat.update(cx, |chat, cx| chat.start_reconnect(NET, false, cx));
+    cx.run_until_parked();
+    chat.update_in(cx, |chat, window, cx| {
+        chat.credential_prompts[0].sasl.as_mut().unwrap().remember = true;
+        type_password(chat, true, "typed", cx);
+        chat.submit_credential_prompt(NET, window, cx);
+    });
+    cx.run_until_parked();
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert!(on_file.servers[0].sasl_secret_saved());
+    chat.update(cx, |chat, _| {
+        assert!(chat.pending_notes.is_empty());
+        stop(chat);
+    });
+}
+
+#[gpui::test]
 fn a_dialog_that_cannot_carry_the_sasl_password_to_a_changed_host_stays_open(
     cx: &mut TestAppContext,
 ) {

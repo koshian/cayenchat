@@ -881,6 +881,11 @@ struct ChatWindow {
     next_network_id: u32,
     /// Saved settings; their server profiles define the networks.
     saved: Settings,
+    /// Profiles whose notes of stored credentials were corrected in `saved`
+    /// but are not in the settings file yet (K-03). The next save by the
+    /// settings window writes them, or a first scan after a restart
+    /// corrects them again.
+    pending_notes: std::collections::BTreeSet<String>,
     server_menu: Option<ServerMenu>,
     member_menu: Option<MemberMenu>,
     channel_menu: Option<ChannelMenu>,
@@ -1585,6 +1590,7 @@ impl ChatWindow {
             toolbar: None,
             search: None,
             saved,
+            pending_notes: Default::default(),
             i18n,
             log_focus: cx.focus_handle(),
             tree_focus: cx.focus_handle(),
@@ -2434,6 +2440,8 @@ impl ChatWindow {
         // for the cache is shared by URL), and all off cancels everything.
         self.avatars
             .set_enabled(settings.servers.iter().any(|profile| profile.user_avatars));
+        // `saved` is replaced by what was written: no correction is pending.
+        self.pending_notes.clear();
         self.saved = settings;
         self.refresh_whois_avatars(cx);
         cx.notify();
@@ -4555,6 +4563,8 @@ impl ChatWindow {
                 return;
             }
         };
+        // Notes corrected by a read and not written yet are newer.
+        self.overlay_pending_notes(&mut settings);
         if let Some(profile) = profile
             && settings.profile(&profile).is_some()
         {
