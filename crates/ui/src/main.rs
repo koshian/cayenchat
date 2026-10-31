@@ -5463,6 +5463,9 @@ impl ChatWindow {
                 // A join from a history batch never confirms a typed `/join`.
                 if !replayed {
                     self.join_confirmed_switch(network, &channel);
+                    // The join line follows this event; recent history goes
+                    // before it.
+                    self.state.reserve_join_history(network, &channel);
                 }
                 self.state.append_server_message(
                     network,

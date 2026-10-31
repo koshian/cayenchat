@@ -1673,8 +1673,14 @@ is ignored: the reservation is dropped when the network disconnects, is
 reset or removed, and the UI already drops events of an old connection
 generation. Limitations: a live line that arrived after the request and is
 repeated in the reply without msgid or matching server-time appears twice;
-and the reply is placed after lines received before the request (for
-example our own JOIN line).
+and the reply is placed after lines received before the request, except
+that the slot is reserved when our own JOIN is logged
+(`AppState::reserve_join_history`, on a non-replayed `Event::Joined` of a
+channel without a resume point), so the reply goes right before our JOIN
+line: history, `has joined`, then new lines, as after a reconnect. The JOIN
+line keeps its own time and is neither moved nor duplicated; without a
+request (option off, failure, no history) the reservation is simply unused,
+and PART, KICK, reset or removal drops it.
 
 ### Older pages
 
@@ -1719,8 +1725,8 @@ the conversation is closed or replaced (reset, removed server); the next
 session may page again.
 
 Reference: among the oldest 256 lines, the one with the earliest source
-time (recent history is placed after our own JOIN line, so the first line
-is not necessarily the oldest), or else the first with a msgid. The
+time (lines such as the server's own notices may precede recent history,
+so the first line is not necessarily the oldest), or else the first with a msgid. The
 application hands over its `NativeMessageId` and `Timestamp`
 (`OlderHistoryRequest`); `irc-core` picks the wire form: `msgid=` when the
 server accepts msgid references and the identifier is 1–128 bytes of
