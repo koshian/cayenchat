@@ -1057,9 +1057,10 @@ kept, always including the names this connection may request), and sends one
 a declined optional extension cannot take SASL down with it. Only
 implemented, opted-in extensions that the server offered are requested, plus
 `sasl` when SASL is configured. A NAK of an optional extension is a
-diagnostic, not an error. A multiline ACK is applied at its last line and is
-bounded to 256 capability tokens, 8,191 total bytes, and 512 bytes per token;
-exceeding a limit fails negotiation. CAP END goes out once every request is
+diagnostic, not an error. A multiline ACK is applied at its last line; only
+requested capabilities (and `-name` for enabled ones) are kept while it
+builds up, so its retention is bounded by the request count and an oversized
+or unrequested ACK is ignored rather than failing negotiation. CAP END goes out once every request is
 answered and SASL has finished; SASL failures
 and a missing offer of the chosen mechanism remain terminal refusals; a `sasl=`
 list over 512 bytes is not kept and counts as offering no mechanism, unlike a
