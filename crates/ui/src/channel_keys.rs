@@ -27,19 +27,14 @@ const MAX_TRACKED: usize = 256;
 /// Channels one `/join` may name for a stored key to be looked up for each.
 const MAX_JOIN_CHANNELS: usize = 32;
 
-/// The connection a manual JOIN was requested on. A profile can reconnect to
-/// a different destination without changing its `NetworkId`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct JoinTarget {
-    generation: u64,
-    host: String,
-    port: u16,
-    use_tls: bool,
-}
+// The `generation` captured by the structs below is the connection an
+// asynchronous key operation started on. A profile can reconnect to a
+// different destination without changing its `NetworkId`, but that always
+// bumps `ServerSession::generation`, so comparing it alone is enough.
 
 struct KeyStoreWrite {
     profile: String,
-    target: JoinTarget,
+    generation: u64,
     revision: u64,
     channel: String,
     key: Option<String>,
@@ -47,25 +42,9 @@ struct KeyStoreWrite {
 
 struct JoinRead {
     profile: String,
-    target: JoinTarget,
+    generation: u64,
     revision: u64,
     channels: Vec<(String, bool)>,
-}
-
-impl JoinTarget {
-    pub(super) fn new(session: &ServerSession) -> Option<Self> {
-        let config = session.active_config.as_ref()?;
-        Some(Self {
-            generation: session.generation,
-            host: config.host.clone(),
-            port: config.port,
-            use_tls: config.use_tls,
-        })
-    }
-
-    pub(super) fn matches(&self, session: &ServerSession) -> bool {
-        Self::new(session).as_ref() == Some(self)
-    }
 }
 
 /// A JOIN waiting for the server's answer.
@@ -221,7 +200,7 @@ impl ChatWindow {
             .get(&network)
             .ok_or_else(|| self.i18n.text("not_connected"))?;
         let profile = session.profile_id.clone();
-        let target = JoinTarget::new(session).ok_or_else(|| self.i18n.text("not_connected"))?;
+        let generation = session.generation;
         let revision = session.channel_key_revision;
         self.registered_connection(network)?;
         let store = secrets::store(cx);
@@ -241,7 +220,7 @@ impl ChatWindow {
             network,
             JoinRead {
                 profile,
-                target,
+                generation,
                 revision,
                 channels,
             },
@@ -261,7 +240,7 @@ impl ChatWindow {
     ) {
         let JoinRead {
             profile,
-            target,
+            generation,
             revision,
             channels,
         } = request;
@@ -272,7 +251,7 @@ impl ChatWindow {
         cx.spawn(async move |this, cx| {
             let keyed = reading.await;
             let _ = this.update(cx, |this, cx| {
-                this.send_joins(network, &profile, &target, revision, keyed, cx)
+                this.send_joins(network, &profile, generation, revision, keyed, cx)
             });
         })
         .detach();
@@ -284,7 +263,7 @@ impl ChatWindow {
         &mut self,
         network: NetworkId,
         profile: &str,
-        target: &JoinTarget,
+        generation: u64,
         revision: u64,
         keyed: Vec<(String, Option<Secret>)>,
         cx: &mut Context<Self>,
@@ -293,7 +272,7 @@ impl ChatWindow {
             session.profile_id != profile
                 || session.channel_key_revision != revision
                 || session.channel_key_writes_pending != 0
-                || !target.matches(session)
+                || session.generation != generation
         }) {
             return;
         }
@@ -459,8 +438,7 @@ impl ChatWindow {
         let store = secrets::store(cx);
         let key = SecretKey::channel_key(&profile, channel);
         let channel = channel.to_owned();
-        let Some((target, revision)) = self.sessions.get_mut(&network).and_then(|session| {
-            let target = JoinTarget::new(session)?;
+        let Some((generation, revision)) = self.sessions.get_mut(&network).map(|session| {
             session.channel_key_revision = session.channel_key_revision.wrapping_add(1);
             let revision = session.channel_key_revision;
             session
@@ -468,7 +446,7 @@ impl ChatWindow {
                 .insert(channel.to_ascii_lowercase(), revision);
             session.channel_key_writes_pending =
                 session.channel_key_writes_pending.saturating_add(1);
-            Some((target, revision))
+            (session.generation, revision)
         }) else {
             return;
         };
@@ -493,7 +471,7 @@ impl ChatWindow {
                     network,
                     KeyStoreWrite {
                         profile,
-                        target,
+                        generation,
                         revision,
                         channel,
                         key: remembered,
@@ -520,7 +498,7 @@ impl ChatWindow {
                     .channel_key_write_revisions
                     .get(&write.channel.to_ascii_lowercase())
                     == Some(&write.revision)
-                && write.target.matches(session)
+                && session.generation == write.generation
         });
         if let Some(session) = self
             .sessions
@@ -592,11 +570,11 @@ impl ChatWindow {
         }
         let store = secrets::store(cx);
         let profile = profile.clone();
-        let Some((target, revision)) = self.sessions.get(&network).and_then(|session| {
+        let Some((generation, revision)) = self.sessions.get(&network).and_then(|session| {
             if session.profile_id != profile.id {
                 return None;
             }
-            Some((JoinTarget::new(session)?, session.channel_key_revision))
+            Some((session.generation, session.channel_key_revision))
         }) else {
             return;
         };
@@ -607,7 +585,7 @@ impl ChatWindow {
         cx.spawn(async move |this, cx| {
             let keys = reading.await;
             let _ = this.update(cx, |this, _| {
-                this.finish_key_refresh(network, &profile, &read, &target, revision, keys);
+                this.finish_key_refresh(network, &profile, &read, generation, revision, keys);
             });
         })
         .detach();
@@ -620,7 +598,7 @@ impl ChatWindow {
         network: NetworkId,
         profile: &ServerProfile,
         read: &[String],
-        target: &JoinTarget,
+        generation: u64,
         revision: u64,
         keys: BTreeMap<String, String>,
     ) {
@@ -630,7 +608,7 @@ impl ChatWindow {
         if session.profile_id != profile.id
             || session.channel_key_revision != revision
             || session.channel_key_writes_pending != 0
-            || !target.matches(session)
+            || session.generation != generation
         {
             return;
         }

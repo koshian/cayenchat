@@ -75,6 +75,11 @@ pub struct ServerSession {
     pub disconnected_at: Option<std::time::SystemTime>,
     pub watchdog_stage: u8,
     /// Invalidates the event pump and watchdog of a replaced connection.
+    ///
+    /// Every path that changes the destination (`active_config`'s host, port
+    /// or TLS) must also increase it: asynchronous channel-key reads, writes
+    /// and refreshes (`channel_keys`) compare only this number to tell
+    /// whether they still belong to the current connection.
     pub generation: u64,
     /// Invalidates asynchronous channel-key reads after a key or auto-join
     /// configuration changes within this connection.
