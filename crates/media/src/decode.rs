@@ -563,6 +563,31 @@ mod tests {
     }
 
     #[test]
+    fn oversized_declared_png_dimensions_are_rejected_before_decoding() {
+        // 4096 × 2800 RGBA declares about 44 MiB of raster, over a 16 MiB
+        // budget. The pixel data is cut off, so starting to decode it would
+        // fail as `Malformed`; `TooLarge` shows the header was judged first.
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 4096, 2800);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::High);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&vec![0; 4096 * 2800 * 4]).unwrap();
+        drop(writer);
+        bytes.truncate(bytes.len() / 2);
+
+        let limits = Limits {
+            max_decode_bytes: 16 * 1024 * 1024,
+            ..Limits::default()
+        };
+        assert_eq!(
+            thumbnail(&bytes, &limits, &CancelFlag::default()),
+            Err(LoadError::TooLarge)
+        );
+    }
+
+    #[test]
     fn gif_frame_intermediate_uses_budget_left_after_source_image() {
         let bytes = include_bytes!("testdata/partial-frame.gif");
 
