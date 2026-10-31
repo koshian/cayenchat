@@ -3318,7 +3318,14 @@ there is no network, bouncer or connection behind it.
   shortcuts and the drag digits all read it.
 - **Numbers.** Cmd+digit (D009) counts within the display parent of the
   selection: the group, or the server. Across networks inside a group.
-  Server numbers (Cmd+Ctrl+digit) do not count groups. With a server row
+  Server numbers (Cmd+Ctrl+digit) do not count groups. Next/previous server
+  (#867) is the exception: it cycles the headings in tree order, groups with
+  channels first, then the real servers. A real server selects its log; a
+  group selects its first channel (an empty group is skipped, a folded one is
+  not). The current place is the display parent of the selection, so a
+  channel shown in a group counts as that group, not as its network. The
+  "active" variants take a group only when it has an active channel and go to
+  the first such channel. With a server row
   selected only the channels still under that server count. Group headings
   are not selectable; Up/Down skip them.
 - **Collapse.** Clicking a heading folds or opens the group (saved). A folded
