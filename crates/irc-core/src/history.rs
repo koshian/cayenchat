@@ -1231,6 +1231,73 @@ mod tests {
         ));
     }
 
+    /// Starts a reply for `#a` (with `#b` queued behind it) and nests batches
+    /// until the tracking bound is exceeded; returns the innermost reference.
+    fn overflowing_reply(requests: &mut HistoryRequests, now: Instant) -> String {
+        requests.enqueue("#a");
+        requests.enqueue("#b");
+        sent(requests, now);
+        assert_eq!(
+            requests.observe(&parse(":srv BATCH +r chathistory #a")),
+            Observed::Consumed
+        );
+        let mut parent = "r".to_owned();
+        for depth in 0..=MAX_NESTED {
+            let reference = format!("n{depth}");
+            assert_eq!(
+                requests.observe(&parse(&format!(
+                    "@batch={parent} :srv BATCH +{reference} draft/multiline #a"
+                ))),
+                Observed::Consumed
+            );
+            parent = reference;
+        }
+        assert!(
+            requests
+                .outstanding
+                .as_ref()
+                .is_some_and(|outstanding| outstanding.nested_overflowed)
+        );
+        parent
+    }
+
+    #[test]
+    fn live_lines_without_batch_tags_are_not_swallowed_while_overflowing() {
+        let mut requests = HistoryRequests::default();
+        overflowing_reply(&mut requests, Instant::now());
+        assert_eq!(
+            requests.observe(&parse(":carol!u@h PRIVMSG #a :live")),
+            Observed::Unrelated
+        );
+        assert_eq!(
+            requests.observe(&parse(":srv BATCH +live netsplit a b")),
+            Observed::Unrelated
+        );
+    }
+
+    #[test]
+    fn the_root_close_ends_an_overflowing_reply_and_the_queue_continues() {
+        let mut requests = HistoryRequests::default();
+        let now = Instant::now();
+        overflowing_reply(&mut requests, now);
+        assert_eq!(
+            requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
+            Observed::Consumed
+        );
+        // The nested batches are never closed; the root close still ends it.
+        let Observed::Finished(Finished { messages, .. }) =
+            requests.observe(&parse(":srv BATCH -r"))
+        else {
+            panic!("overflowing reply did not finish");
+        };
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "root history");
+        assert_eq!(
+            sent(&mut requests, now).as_deref(),
+            Some("CHATHISTORY LATEST #b * 50")
+        );
+    }
+
     #[test]
     fn wrapped_history_reply_finishes_after_nested_batch_limit() {
         for depth in [MAX_NESTED, MAX_NESTED + 1] {
