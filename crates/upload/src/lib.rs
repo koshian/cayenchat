@@ -15,7 +15,7 @@
 
 use std::{fmt, sync::Arc};
 
-use cayenchat_media::policy::publishable_avatar_url;
+use cayenchat_media::policy::publishable_url;
 use cayenchat_model::attachment::Attachment;
 use cayenchat_storage::Secret;
 
@@ -97,11 +97,11 @@ pub trait ExternalUploader: Send + Sync {
 
 /// Accepts only an `https` URL without whitespace or control characters, as
 /// the link is inserted into IRC text. The reply is untrusted, so the URL
-/// must also pass the check used for published avatar links: it parses, has
-/// no userinfo or credential-like parameters, no non-default port, and a
-/// public host. That check expands the avatar `{size}` template before
-/// parsing, so braces are refused: the string checked is then the string
-/// inserted.
+/// must also pass the plain public-URL check: it parses, has no userinfo
+/// or credential-like parameters, no non-default port, and a public host.
+/// That check expands nothing, so the string checked is the string
+/// inserted. Braces stay refused, as before, so no template syntax reaches
+/// the chat.
 pub(crate) fn checked_url(url: &str) -> Option<String> {
     let valid = url.starts_with("https://")
         && url.len() > "https://".len()
@@ -109,7 +109,7 @@ pub(crate) fn checked_url(url: &str) -> Option<String> {
         && !url
             .chars()
             .any(|ch| ch.is_whitespace() || ch.is_control() || ch == '{' || ch == '}')
-        && publishable_avatar_url(url).is_ok();
+        && publishable_url(url).is_ok();
     valid.then(|| url.to_owned())
 }
 
