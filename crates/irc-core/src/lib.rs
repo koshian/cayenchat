@@ -1559,7 +1559,13 @@ impl Transcript {
     /// Puts the technical cause of a failed link in the diagnostics and
     /// returns the short reason for the user-facing events.
     async fn failure(&self, context: &str, error: &(dyn std::error::Error + 'static)) -> String {
-        link_failure(&self.events, self.started, context, error).await
+        diagnostic(
+            &self.events,
+            self.started,
+            format!("{context}: {}", error_chain(error)),
+        )
+        .await;
+        user_reason(error).into()
     }
 
     /// The line to record for `message`, if lines are recorded now.
@@ -1589,23 +1595,6 @@ impl Transcript {
                 .await;
         }
     }
-}
-
-/// Reports a failed link: the full error chain goes to the diagnostics only,
-/// and the returned reason is the short one shown to the user.
-async fn link_failure(
-    events: &EventSender,
-    started: Instant,
-    context: &str,
-    error: &(dyn std::error::Error + 'static),
-) -> String {
-    diagnostic(
-        events,
-        started,
-        format!("{context}: {}", error_chain(error)),
-    )
-    .await;
-    user_reason(error).into()
 }
 
 /// A short reason for a failed link that names no library, URL or error
@@ -1722,12 +1711,7 @@ impl Transcript {
     /// Puts the technical cause of a refused send in the diagnostics; the
     /// user sees [`stream_error_reason`] of it.
     async fn send_refused(&self, context: &str, error: &irc::error::Error) {
-        diagnostic(
-            &self.events,
-            self.started,
-            format!("{context}: {}", error_chain(error)),
-        )
-        .await;
+        self.failure(context, error).await;
     }
 }
 
@@ -2864,7 +2848,7 @@ async fn run_cancellable(
     let mut client = match result {
         Some(Ok(client)) => client,
         Some(Err(error)) => {
-            let reason = link_failure(&events, started, "Transport failed", &error).await;
+            let reason = transcript.failure("Transport failed", &error).await;
             let _ = events.send(Event::Disconnected(reason)).await;
             return;
         }
@@ -2894,7 +2878,9 @@ async fn run_cancellable(
     let mut stream = match client.stream() {
         Ok(stream) => stream,
         Err(error) => {
-            let reason = link_failure(&events, started, "Could not open IRC stream", &error).await;
+            let reason = transcript
+                .failure("Could not open IRC stream", &error)
+                .await;
             let _ = events.send(Event::Disconnected(reason)).await;
             return;
         }
@@ -2928,7 +2914,7 @@ async fn run_cancellable(
         let message = IrcMessage::from(command);
         let line = transcript.line(&message);
         if let Err(error) = client.send(message) {
-            let reason = link_failure(&events, started, "Registration send failed", &error).await;
+            let reason = transcript.failure("Registration send failed", &error).await;
             let _ = events.send(Event::Disconnected(reason)).await;
             return;
         }
