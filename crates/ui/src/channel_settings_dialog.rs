@@ -63,19 +63,12 @@ impl Choices {
 }
 
 /// The choices of a numeric character reference mode, with the label key of
-/// each. `inherit` adds the channel's "follow the server" choice.
-pub(crate) fn char_ref_choices(inherit: bool) -> Vec<(Option<CharRefMode>, &'static str)> {
-    let mut choices = Vec::new();
-    if inherit {
-        choices.push((None, "channel_settings_inherit"));
-    }
-    choices.extend([
-        (Some(CharRefMode::Auto), "char_refs_auto"),
-        (Some(CharRefMode::Iso2022Jp), "char_refs_iso2022jp"),
-        (Some(CharRefMode::Off), "char_refs_off"),
-    ]);
-    choices
-}
+/// each. The channel dialog puts its "follow the server" choice before them.
+pub(crate) const CHAR_REF_CHOICES: [(CharRefMode, &str); 3] = [
+    (CharRefMode::Auto, "char_refs_auto"),
+    (CharRefMode::Iso2022Jp, "char_refs_iso2022jp"),
+    (CharRefMode::Off, "char_refs_off"),
+];
 
 /// Whether a UTF8ONLY server accepts these encodings.
 pub(crate) fn channel_encodings_allowed(
@@ -467,7 +460,10 @@ impl Render for ChannelSettingsView {
             .on_click(cx.listener(|this, _, _, cx| this.toggle_enabled(cx)));
 
         let mut modes = div().flex().flex_wrap().gap_1();
-        for (index, (mode, key)) in char_ref_choices(true).into_iter().enumerate() {
+        let inherit = (None, "channel_settings_inherit");
+        let choices =
+            std::iter::once(inherit).chain(CHAR_REF_CHOICES.map(|(mode, key)| (Some(mode), key)));
+        for (index, (mode, key)) in choices.enumerate() {
             let selected = self.choices.char_refs == mode;
             modes = modes.child(
                 settings_theme::button(("channel-char-refs", index), selected, cx)

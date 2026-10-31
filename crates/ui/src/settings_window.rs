@@ -2,8 +2,8 @@
 //! The settings window and the form it edits.
 
 use crate::channel_settings_dialog::{
-    ChannelSettingsEvent, ChannelSettingsView, Choices, apply_auto_join, apply_charsets,
-    char_ref_choices,
+    CHAR_REF_CHOICES, ChannelSettingsEvent, ChannelSettingsView, Choices, apply_auto_join,
+    apply_charsets,
 };
 use crate::os_text::WindowOsText;
 use crate::{
@@ -3907,11 +3907,12 @@ impl SettingsWindow {
                             .flex_shrink_0()
                             .child(self.i18n.text("iso2022jp_char_refs")),
                     )
-                    .child(div().flex().flex_wrap().gap_1().children(
-                        char_ref_choices(false).into_iter().enumerate().filter_map(
-                            |(index, (mode, key))| {
-                                let mode = mode?;
-                                Some(
+                    .child(
+                        div().flex().flex_wrap().gap_1().children(
+                            CHAR_REF_CHOICES
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, (mode, key))| {
                                     settings_theme::button(
                                         ("char-refs-mode", index),
                                         profile.char_refs == mode,
@@ -3927,11 +3928,10 @@ impl SettingsWindow {
                                             }
                                             cx.notify();
                                         },
-                                    )),
-                                )
-                            },
+                                    ))
+                                }),
                         ),
-                    )),
+                    ),
             )
             .child(
                 div()
