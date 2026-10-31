@@ -2162,8 +2162,10 @@ mod tests {
             CredentialBackendKind::System,
         )));
         from.set(&key, &Secret::new("hunter2")).unwrap();
-        let report = credentials::migrate(&from, &to, &settings.connection_secret_keys()).unwrap();
-        assert_eq!(report.moved, 1);
+        let copied =
+            credentials::copy_secrets(&from, &to, &settings.connection_secret_keys()).unwrap();
+        copied.remove_originals(&from);
+        assert_eq!(copied.count(), 1);
         assert!(from.get(&key).unwrap().is_none());
         assert_eq!(to.get(&key).unwrap().unwrap().expose(), "hunter2");
     }

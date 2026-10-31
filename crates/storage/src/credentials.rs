@@ -921,9 +921,11 @@ mod tests {
         ];
         system.set(&keys[0], &Secret::new("pass")).unwrap();
         system.set(&keys[2], &Secret::new("token")).unwrap();
-        let report = migrate(&system, &local, &keys).unwrap();
-        assert_eq!(report.moved, 2);
-        assert!(!report.source_unavailable);
+        let copied = copy_secrets(&system, &local, &keys).unwrap();
+        // The switch is committed (settings saved) before the originals go.
+        copied.remove_originals(&system);
+        assert_eq!(copied.count(), 2);
+        assert!(!copied.source_unavailable);
         assert!(system.get(&keys[0]).unwrap().is_none());
         assert_eq!(local.get(&keys[0]).unwrap().unwrap().expose(), "pass");
         assert_eq!(local.get(&keys[2]).unwrap().unwrap().expose(), "token");
@@ -947,7 +949,8 @@ mod tests {
         assert!(system.get(&key).unwrap().is_some());
         // Committed: the original goes, the copy stays.
         let copied = copy_secrets(&system, &local, std::slice::from_ref(&key)).unwrap();
-        assert_eq!(copied.remove_originals(&system).moved, 1);
+        assert_eq!(copied.count(), 1);
+        copied.remove_originals(&system);
         assert!(system.get(&key).unwrap().is_none());
         assert!(local.get(&key).unwrap().is_some());
     }
@@ -1027,9 +1030,10 @@ mod tests {
             Err(CredentialError::Unavailable(_))
         ));
         let local = memory(CredentialBackendKind::LocalFile);
-        let report = migrate(&broken, &local, &[key]).unwrap();
-        assert!(report.source_unavailable);
-        assert_eq!(report.moved, 0);
+        let copied = copy_secrets(&broken, &local, &[key]).unwrap();
+        copied.remove_originals(&broken);
+        assert!(copied.source_unavailable);
+        assert_eq!(copied.count(), 0);
     }
 
     #[test]
