@@ -7,7 +7,7 @@ use cayenchat_model::NetworkId;
 use cayenchat_storage::TextEncoding;
 use gpui::{TestAppContext, VisualTestContext};
 
-fn open_chat<'a>(
+pub(super) fn open_chat<'a>(
     cx: &'a mut TestAppContext,
     channels: &str,
 ) -> (
@@ -41,7 +41,7 @@ fn open_chat<'a>(
     (chat, cx, file)
 }
 
-fn run(
+pub(super) fn run(
     chat: &gpui::Entity<ChatWindow>,
     cx: &mut VisualTestContext,
     line: &str,

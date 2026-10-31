@@ -6285,6 +6285,266 @@ mod escape_tests {
         drop(file);
     }
 
+    /// Registers the chat window's connection to `NetworkId(1)` with
+    /// `channels` joined and the first of them selected, so that `/charset`
+    /// can run.
+    fn register(
+        owner: gpui::WindowHandle<crate::ChatWindow>,
+        channels: &[&str],
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        owner
+            .update(cx, |chat, _, cx| {
+                let mut events = vec![cayenchat_irc_core::Event::Registered {
+                    nickname: "me".into(),
+                }];
+                events.extend(
+                    channels
+                        .iter()
+                        .map(|channel| cayenchat_irc_core::Event::Joined {
+                            channel: (*channel).to_owned(),
+                        }),
+                );
+                chat.handle_events(
+                    cayenchat_model::NetworkId(1),
+                    events,
+                    crate::Worker::Running,
+                    cx,
+                );
+                let first = chat.state.conversations()[0].id;
+                chat.state
+                    .dispatch(cayenchat_app::Command::SelectChannel(first));
+            })
+            .unwrap();
+    }
+
+    /// Runs `line` as the chat window's `/charset` command.
+    fn charset_command(
+        owner: gpui::WindowHandle<crate::ChatWindow>,
+        line: &str,
+        cx: &mut gpui::VisualTestContext,
+    ) {
+        owner
+            .update(cx, |chat, _, cx| {
+                let request = crate::charset_command::parse(line).unwrap().unwrap();
+                chat.run_charset(request, cx).unwrap();
+            })
+            .unwrap();
+    }
+
+    fn file_profile() -> cayenchat_storage::ServerProfile {
+        crate::settings_file::load()
+            .unwrap()
+            .unwrap()
+            .selected_profile()
+            .unwrap()
+            .clone()
+    }
+
+    #[gpui::test]
+    fn saving_from_the_settings_window_does_not_rewind_a_charset_command_change(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = crate::settings_with_channels("#a,#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        let owner = form.read_with(cx, |form, _| form.owner);
+        register(owner, &["#a", "#b"], cx);
+        // `/charset` changes #a while the settings window stays open.
+        charset_command(owner, "/charset Big5", cx);
+
+        open_channel(&form, "#a", cx);
+        form.read_with(cx, |form, cx| {
+            assert_eq!(dialog_choices(form, cx).decode, Some(TextEncoding::Big5));
+        });
+        // Only auto-join is switched.
+        form.update_in(cx, |form, window, cx| {
+            edit_choices(form, cx, |dialog| dialog.enabled = false);
+            form.save_channel_settings(window, cx);
+        });
+        let profile = file_profile();
+        assert_eq!(profile.channels, "-#a,#b");
+        assert_eq!(profile.channel_charsets.len(), 1);
+        assert_eq!(profile.channel_charsets[0].channel, "#a");
+        assert_eq!(profile.channel_charsets[0].decode, Some(TextEncoding::Big5));
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn a_failed_settings_window_channel_save_keeps_the_dialog_open_with_the_reason(
+        cx: &mut TestAppContext,
+    ) {
+        let settings = crate::settings_with_channels("#a");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        // A name that cannot hold settings fails the validation.
+        open_channel(&form, "no-prefix", cx);
+        form.update_in(cx, |form, window, cx| {
+            edit_choices(form, cx, |dialog| dialog.decode = Some(TextEncoding::Gbk));
+            form.save_channel_settings(window, cx);
+        });
+        form.read_with(cx, |form, cx| {
+            let view = dialog_view(form);
+            assert!(view.read(cx).error.is_some());
+            assert!(
+                form.settings
+                    .values
+                    .selected_profile()
+                    .unwrap()
+                    .channel_charsets
+                    .is_empty()
+            );
+        });
+        assert!(file_profile().channel_charsets.is_empty());
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn saving_channel_settings_sends_no_join_or_part(cx: &mut TestAppContext) {
+        use std::io::{BufRead, BufReader};
+        use std::time::{Duration, Instant};
+
+        let settings = crate::settings_with_channels("#a,-#b");
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, _app) = open(cx, settings);
+        let owner = form.read_with(cx, |form, _| form.owner);
+        register(owner, &["#a", "#b"], cx);
+
+        // A server that records every line it receives until the end of the
+        // connection.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut reader = BufReader::new(stream);
+            let mut lines = Vec::new();
+            let mut line = String::new();
+            while Instant::now() < deadline {
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => lines.push(std::mem::take(&mut line)),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+            let _ = lines_tx.send(lines);
+        });
+        let mut config =
+            cayenchat_irc_core::ConnectionConfig::tls("127.0.0.1".into(), "me".into(), Vec::new());
+        config.port = port;
+        config.use_tls = false;
+        let connection = cayenchat_irc_core::Connection::connect(config.clone()).unwrap();
+        owner
+            .update(cx, |chat, _, _| {
+                let session = chat
+                    .sessions
+                    .get_mut(&cayenchat_model::NetworkId(1))
+                    .unwrap();
+                session.active_config = Some(config);
+                session.irc = Some(connection);
+            })
+            .unwrap();
+
+        // The settings window's dialog turns auto-join on for #b ...
+        open_channel(&form, "#b", cx);
+        form.update_in(cx, |form, window, cx| {
+            edit_choices(form, cx, |dialog| {
+                dialog.enabled = true;
+                dialog.decode = Some(TextEncoding::Gbk);
+            });
+            form.save_channel_settings(window, cx);
+        });
+        // ... and the channel menu's dialog turns it off for #a.
+        owner
+            .update(cx, |chat, window, cx| {
+                chat.show_channel_settings(cayenchat_model::NetworkId(1), "#a", window, cx);
+                let view = chat.channel_settings.as_ref().unwrap().view().clone();
+                view.update(cx, |view, cx| {
+                    view.choices.enabled = false;
+                    view.save(cx);
+                });
+            })
+            .unwrap();
+        owner
+            .read_with(cx, |chat, _| assert!(chat.channel_settings.is_none()))
+            .unwrap();
+        assert_eq!(file_profile().channels, "-#a,#b");
+
+        // Closing the connection ends the recording.
+        owner
+            .update(cx, |chat, _, _| {
+                chat.sessions
+                    .get_mut(&cayenchat_model::NetworkId(1))
+                    .unwrap()
+                    .irc = None;
+            })
+            .unwrap();
+        let lines = lines_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        assert!(!lines.is_empty(), "the connection was recorded");
+        for line in &lines {
+            let command = line.split_whitespace().next().unwrap_or("");
+            assert!(
+                !command.eq_ignore_ascii_case("JOIN") && !command.eq_ignore_ascii_case("PART"),
+                "unexpected {line}"
+            );
+        }
+        drop(file);
+    }
+
+    #[gpui::test]
+    fn both_hosts_record_the_same_save(cx: &mut TestAppContext) {
+        let settings = crate::settings_with_channels("#a,-#b");
+        let choices = |dialog: &mut Choices| {
+            dialog.enabled = true;
+            dialog.decode = Some(TextEncoding::Gbk);
+            dialog.encode = Some(TextEncoding::Iso2022Jp);
+            dialog.char_refs = Some(CharRefMode::Iso2022Jp);
+        };
+
+        // Through the channel menu.
+        let file = crate::settings_file::TestFile::with(&settings);
+        let (form, cx, app) = open(cx, settings.clone());
+        let owner = form.read_with(cx, |form, _| form.owner);
+        owner
+            .update(cx, |chat, window, cx| {
+                chat.show_channel_settings(cayenchat_model::NetworkId(1), "#b", window, cx);
+                let view = chat.channel_settings.as_ref().unwrap().view().clone();
+                view.update(cx, |view, cx| {
+                    choices(&mut view.choices);
+                    view.save(cx);
+                });
+            })
+            .unwrap();
+        let from_menu = file_profile();
+        drop(file);
+
+        // Through the settings window, from the same starting file.
+        let file = crate::settings_file::TestFile::with(&settings);
+        let mut app = app;
+        let (form, cx, _app) = open(&mut app, settings);
+        open_channel(&form, "#b", cx);
+        form.update_in(cx, |form, window, cx| {
+            edit_choices(form, cx, choices);
+            form.save_channel_settings(window, cx);
+        });
+        let from_settings = file_profile();
+        drop(file);
+
+        assert_eq!(from_menu.channels, "#a,#b");
+        assert_eq!(from_menu.channels, from_settings.channels);
+        assert_eq!(from_menu.channel_charsets, from_settings.channel_charsets);
+        assert_eq!(from_menu.channel_charsets.len(), 1);
+    }
+
     #[test]
     fn utf8only_channel_settings_allow_only_utf8_overrides() {
         assert!(channel_encodings_allowed(true, None, None));
