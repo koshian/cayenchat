@@ -493,27 +493,24 @@ impl AppState {
     /// recording it as that network's chosen order.
     pub fn move_conversation(&mut self, id: ConversationId, to: MoveTo) -> Option<NetworkId> {
         let network = self.conversation(id)?.network;
+        // Built once: the moves below only read it before changing anything.
+        let tree = self.display_tree();
         if !self.groups.is_empty() {
             if let MoveTo::Place(other) = to
-                && self.display_parent(id)? != self.display_parent(other)?
+                && tree.parent_of(id)? != tree.parent_of(other)?
             {
-                return self.relocate(id, other).then_some(network);
+                return self.relocate(&tree, id, other).then_some(network);
             }
             if self.is_grouped(id) {
-                return self.move_in_group(id, to)?.then_some(network);
+                return self.move_in_group(&tree, id, to)?.then_some(network);
             }
         }
         let range = self.group_range(id)?;
         // Channels shown in a group are not in the server's part of the tree.
-        let shown: Vec<usize> = {
-            let tree = self.display_tree();
-            range
-                .clone()
-                .filter(|&i| {
-                    tree.parent_of(self.conversations[i].id) == Some(Parent::Server(network))
-                })
-                .collect()
-        };
+        let shown: Vec<usize> = range
+            .clone()
+            .filter(|&i| tree.parent_of(self.conversations[i].id) == Some(Parent::Server(network)))
+            .collect();
         let from_shown = shown.iter().position(|&i| self.conversations[i].id == id)?;
         let last = shown.len() - 1;
         let target = match to {
