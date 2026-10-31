@@ -3354,6 +3354,9 @@ there is no network, bouncer or connection behind it.
   `collapsed_servers` (profile IDs) in `channel-order.json`; an absent entry
   means open, files without the field read as before, and profiles that no
   longer exist are dropped at save.
+- **Bold headings.** Group and real server headings are bold only while a
+  conversation listed under them is unread, folded or not. A channel moved into
+  a group counts for the group, not for its origin server.
 - **Not done.** Reordering groups themselves, grouping private conversations,
   and group names in the settings window.
 

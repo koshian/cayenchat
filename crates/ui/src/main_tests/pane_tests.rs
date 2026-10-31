@@ -2402,7 +2402,7 @@ fn the_insertion_line_compares_positions_within_the_server() {
     // positions restart at every server.
     let mut rows = Vec::new();
     for server in 0..2u32 {
-        rows.push(TreeRow::Server(NetworkId(server)));
+        rows.push(TreeRow::Server(NetworkId(server), false));
         for position in 0..3 {
             rows.push(TreeRow::Channel(
                 ConversationId(server * 3 + position),

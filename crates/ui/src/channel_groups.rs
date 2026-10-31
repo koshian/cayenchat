@@ -508,7 +508,7 @@ impl ChatWindow {
             .px_2()
             .pt_2()
             .pb_1()
-            .font_weight(FontWeight::BOLD)
+            .when(unread, |d| d.font_weight(FontWeight::BOLD))
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover_strong))
             .when(target, |d| d.bg(theme.selected))
