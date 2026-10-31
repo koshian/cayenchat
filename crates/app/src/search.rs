@@ -783,6 +783,29 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_sort_before_messages_regardless_of_record_order() {
+        use DiagnosticsView::Overview;
+        let (mut state, _, _) = state_with_two_channels();
+        let one = state.networks()[0].id;
+        state.dispatch(crate::Command::SelectServer(one));
+        state.append_server_message(one, "needle early".into());
+        note(&mut state, one, Overview, "needle diagnostic");
+        state.append_server_message(one, "needle late".into());
+        let hits = scan(&state, Scope::Selected, Some(Overview), "needle");
+        let sources: Vec<_> = hits.iter().map(|hit| hit.source).collect();
+        assert_eq!(
+            sources,
+            [
+                Source::Diagnostics(one, Overview),
+                Source::Server(one),
+                Source::Server(one)
+            ]
+        );
+        // The search starts at the newest message.
+        assert_eq!(initial_hit(&hits, None), hits.last().copied());
+    }
+
+    #[test]
     fn a_diagnostic_hit_goes_stale_with_its_line_not_with_its_position() {
         use DiagnosticsView::Overview;
         let (mut state, _, _) = state_with_two_channels();
