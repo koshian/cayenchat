@@ -282,3 +282,83 @@ fn tab(cx: &mut gpui::VisualTestContext) {
         let _ = window.draw(cx);
     });
 }
+
+fn stored_decode(channel: &str) -> Option<TextEncoding> {
+    let file = crate::settings_file::load().unwrap().unwrap();
+    let same = |left: &str, right: &str| CaseMapping::default().same(left, right);
+    file.servers[0]
+        .channel_charset(channel, same)
+        .and_then(|entry| entry.decode)
+}
+
+#[gpui::test]
+fn saving_from_the_channel_menu_does_not_rewind_a_charset_command_change(cx: &mut TestAppContext) {
+    use super::charset_command_tests::{open_chat, run};
+    let (chat, cx, file) = open_chat(cx, "#a,#b");
+    // `/charset` changes the selected channel (#a) before the dialog opens.
+    run(&chat, cx, "/charset Big5").unwrap();
+    chat.update_in(cx, |chat, window, cx| {
+        chat.show_channel_settings(NetworkId(1), "#a", window, cx);
+    });
+    let view = chat.read_with(cx, |chat, _| {
+        chat.channel_settings.as_ref().unwrap().view().clone()
+    });
+    // The dialog opens on what `/charset` stored.
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.choices.decode, Some(TextEncoding::Big5));
+    });
+    // Another writer (the settings window's autosave) stores #b while the
+    // dialog is open, bypassing this window's copy.
+    let mut latest = crate::settings_file::load().unwrap().unwrap();
+    latest.servers[0]
+        .set_channel_charset("#b", Some(TextEncoding::Gbk), None, None, |l, r| {
+            CaseMapping::default().same(l, r)
+        })
+        .unwrap();
+    crate::settings_file::save(&latest).unwrap();
+
+    // Only auto-join is switched.
+    view.update(cx, |view, cx| {
+        view.choices.enabled = false;
+        view.save(cx);
+    });
+    chat.read_with(cx, |chat, _| assert!(chat.channel_settings.is_none()));
+    assert_eq!(stored_decode("#a"), Some(TextEncoding::Big5));
+    assert_eq!(stored_decode("#b"), Some(TextEncoding::Gbk));
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(on_file.servers[0].channels, "-#a,#b");
+    drop(file);
+}
+
+#[gpui::test]
+fn a_failed_channel_save_keeps_the_dialog_open_with_the_reason(cx: &mut TestAppContext) {
+    install_globals(cx);
+    let settings = crate::settings_with_channels("#a");
+    let file = crate::settings_file::TestFile::with(&settings);
+    let (chat, cx) = cx.add_window_view(|window, cx| {
+        ChatWindow::with_settings(settings.clone(), None, window, cx)
+    });
+    chat.update_in(cx, |chat, window, cx| {
+        chat.show_channel_settings(NetworkId(1), "#a", window, cx);
+    });
+    let view = chat.read_with(cx, |chat, _| {
+        chat.channel_settings.as_ref().unwrap().view().clone()
+    });
+    crate::settings_file::fail_saves(true);
+    view.update(cx, |view, cx| {
+        view.choices.enabled = false;
+        view.choices.decode = Some(TextEncoding::Gbk);
+        view.save(cx);
+    });
+    crate::settings_file::fail_saves(false);
+    chat.read_with(cx, |chat, _| {
+        assert!(chat.channel_settings.is_some());
+        assert_eq!(chat.saved.servers[0].channels, "#a");
+        assert!(chat.saved.servers[0].channel_charsets.is_empty());
+    });
+    assert!(view.read_with(cx, |view, _| view.error.is_some()));
+    let on_file = crate::settings_file::load().unwrap().unwrap();
+    assert_eq!(on_file.servers[0].channels, "#a");
+    assert!(on_file.servers[0].channel_charsets.is_empty());
+    drop(file);
+}
