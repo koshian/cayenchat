@@ -98,7 +98,10 @@ fn opening_the_menu_keeps_the_selection_and_copy_uses_it(cx: &mut TestAppContext
             Default::default(),
             cayenchat_app::Unread::Leave,
         );
-        let row = chat.state.selected_channel().unwrap().messages[0].sequence;
+        let row = (
+            cayenchat_app::LineKind::Message,
+            chat.state.selected_channel().unwrap().messages[0].sequence,
+        );
         let selection = LogSelection {
             source: cayenchat_app::Selection::Channel(channel),
             anchor: LogPosition { row, byte: 6 },
@@ -272,8 +275,14 @@ fn server_log_selection_is_copied_and_not_taken_for_a_channel(cx: &mut TestAppCo
             .append_server_message(NetworkId(1), "second line".into());
         let messages = chat.state.server_messages(NetworkId(1));
         let (first, second) = (
-            messages[messages.len() - 2].sequence,
-            messages[messages.len() - 1].sequence,
+            (
+                cayenchat_app::LineKind::Message,
+                messages[messages.len() - 2].sequence,
+            ),
+            (
+                cayenchat_app::LineKind::Message,
+                messages[messages.len() - 1].sequence,
+            ),
         );
         let source = cayenchat_app::Selection::Server(NetworkId(1));
         chat.log_selection = Some(LogSelection {

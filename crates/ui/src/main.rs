@@ -76,8 +76,8 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, DiagnosticsView, GroupId, Kind, MessageMeta, Missing,
-    MoveTo, NetworkConfig, Parent, Selection, Unread,
+    AppState, Command, ConnectionStatus, DiagnosticsView, GroupId, Kind, LineKey, LineKind,
+    MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -1241,11 +1241,10 @@ struct MemberPrompt {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct LogPosition {
-    /// The line's `sequence`, not its index: trimming, older history or a
-    /// new connection cannot move a selection onto other lines. Diagnostic
-    /// lines (below the messages' range, as on screen) and messages share
-    /// the one order.
-    row: u64,
+    /// The line's kind and `sequence`, not its index: trimming, older
+    /// history or a new connection cannot move a selection onto other lines.
+    /// Diagnostic lines come before messages, as on screen.
+    row: LineKey,
     byte: usize,
 }
 
@@ -1262,12 +1261,11 @@ struct LogSelection {
 }
 
 impl LogSelection {
-    /// Whether the line with `sequence` can be part of the range.
-    fn covers(self, sequence: u64) -> bool {
+    /// Whether the line `row` can be part of the range.
+    fn covers(self, row: LineKey) -> bool {
         let (start, end) = self.bounds();
-        (start.row..=end.row).contains(&sequence)
-            && !(cayenchat_app::is_diagnostic_sequence(sequence)
-                && sequence >= self.diagnostics_end)
+        (start.row..=end.row).contains(&row)
+            && !(row.0 == LineKind::Diagnostic && row.1 >= self.diagnostics_end)
     }
 
     fn bounds(self) -> (LogPosition, LogPosition) {
@@ -1278,7 +1276,7 @@ impl LogSelection {
         }
     }
 
-    fn range(self, row: u64, len: usize) -> Option<std::ops::Range<usize>> {
+    fn range(self, row: LineKey, len: usize) -> Option<std::ops::Range<usize>> {
         if !self.covers(row) {
             return None;
         }
@@ -3385,9 +3383,10 @@ impl ChatWindow {
         if network.is_some_and(|network| self.selected_network_id() != Some(network)) {
             return;
         }
-        if self.log_selection.is_some_and(|selection| {
-            cayenchat_app::is_diagnostic_sequence(selection.bounds().0.row)
-        }) {
+        if self
+            .log_selection
+            .is_some_and(|selection| selection.bounds().0.row.0 == LineKind::Diagnostic)
+        {
             self.log_selection = None;
         }
     }
@@ -4814,7 +4813,7 @@ impl ChatWindow {
     fn start_log_selection(
         &mut self,
         source: Selection,
-        row: u64,
+        row: LineKey,
         byte: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -4834,7 +4833,7 @@ impl ChatWindow {
     fn extend_log_selection(
         &mut self,
         source: Selection,
-        row: u64,
+        row: LineKey,
         byte: usize,
         cx: &mut Context<Self>,
     ) {
@@ -4863,7 +4862,7 @@ impl ChatWindow {
         if start == end {
             return;
         }
-        let in_range = |sequence: u64| selection.covers(sequence);
+        let in_range = |row: LineKey| selection.covers(row);
         // The connection diagnostics drawn above the messages come first,
         // as drawn: only the rows the layout shows now.
         let mut pieces: Vec<String> = Vec::new();
@@ -4873,10 +4872,11 @@ impl ChatWindow {
                 self.state
                     .diagnostics(network, self.diagnostics_view)
                     .range(shown)
-                    .filter(|line| in_range(line.sequence))
+                    .filter(|line| in_range((LineKind::Diagnostic, line.sequence)))
                     .map(|line| {
                         let text = &line.text;
-                        let range = selection.range(line.sequence, text.len());
+                        let range =
+                            selection.range((LineKind::Diagnostic, line.sequence), text.len());
                         text.get(range.unwrap_or(0..0))
                             .unwrap_or_default()
                             .to_owned()
@@ -4893,10 +4893,10 @@ impl ChatWindow {
                 self.state
                     .server_messages(network)
                     .iter()
-                    .filter(|message| in_range(message.sequence))
+                    .filter(|message| in_range((LineKind::Message, message.sequence)))
                     .map(|message| {
                         let range = selection
-                            .range(message.sequence, message.text.len())
+                            .range((LineKind::Message, message.sequence), message.text.len())
                             .unwrap_or(0..0);
                         let body = message.text.get(range).unwrap_or_default();
                         if several {
@@ -4920,10 +4920,10 @@ impl ChatWindow {
                 .messages
                 .iter()
                 .enumerate()
-                .filter(|(_, message)| in_range(message.sequence))
+                .filter(|(_, message)| in_range((LineKind::Message, message.sequence)))
                 .map(|(row, message)| {
                     let range = selection
-                        .range(message.sequence, message.text.len())
+                        .range((LineKind::Message, message.sequence), message.text.len())
                         .unwrap_or(0..0);
                     let whole =
                         range.start == 0 && range.end == message.text.len() && !range.is_empty();
@@ -9105,7 +9105,7 @@ impl ChatWindow {
                     };
                     let (found, current) = self.search_ranges(&message.text, message.sequence);
                     let source = Selection::Server(network);
-                    let row = message.sequence;
+                    let row = (LineKind::Message, message.sequence);
                     let selected = self
                         .log_selection
                         .filter(|selection| selection.source == source)
@@ -9199,7 +9199,7 @@ impl ChatWindow {
         let shown = diagnostic_text(text);
         let (found, current) = self.search_ranges(text, line.sequence);
         let source = self.state.selection();
-        let row = line.sequence;
+        let row = (LineKind::Diagnostic, line.sequence);
         let selected = self
             .log_selection
             .filter(|selection| selection.source == source)
@@ -9313,7 +9313,9 @@ impl ChatWindow {
         let selected_range = self
             .log_selection
             .filter(|selection| selection.source == Selection::Channel(selected_channel))
-            .and_then(|selection| selection.range(message.sequence, message.text.len()))
+            .and_then(|selection| {
+                selection.range((LineKind::Message, message.sequence), message.text.len())
+            })
             .map(|range| compact.shown_range(range));
         let highlights: Vec<_> = message
             .highlights
@@ -9566,7 +9568,7 @@ impl ChatWindow {
                         let byte = down_compact.original(byte);
                         this.start_log_selection(
                             Selection::Channel(selected_channel),
-                            sequence,
+                            (LineKind::Message, sequence),
                             byte,
                             window,
                             cx,
@@ -9579,7 +9581,7 @@ impl ChatWindow {
                     let byte = raw.saturating_sub(prefix_len).min(text_len);
                     this.extend_log_selection(
                         Selection::Channel(selected_channel),
-                        sequence,
+                        (LineKind::Message, sequence),
                         move_compact.original(byte),
                         cx,
                     );

@@ -206,7 +206,10 @@ fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
             .dispatch(cayenchat_app::Command::SelectChannel(channel));
         let id = chat.state.conversations()[0].id;
         let first = &chat.state.selected_channel().unwrap().messages[0];
-        let (row, end) = (first.sequence, first.text.len());
+        let (row, end) = (
+            (cayenchat_app::LineKind::Message, first.sequence),
+            first.text.len(),
+        );
         chat.log_selection = Some(crate::LogSelection {
             source: cayenchat_app::Selection::Channel(id),
             anchor: crate::LogPosition { row, byte: 0 },
@@ -265,7 +268,10 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
     });
     let copied = |from: usize, to: usize, cx: &mut gpui::VisualTestContext| {
         chat.update(cx, |chat, cx| {
-            let row = chat.state.selected_channel().unwrap().messages[0].sequence;
+            let row = (
+                cayenchat_app::LineKind::Message,
+                chat.state.selected_channel().unwrap().messages[0].sequence,
+            );
             chat.log_selection = Some(crate::LogSelection {
                 source: cayenchat_app::Selection::Channel(id),
                 anchor: crate::LogPosition { row, byte: from },
@@ -342,13 +348,13 @@ fn copying_several_lines_carries_the_time_and_sender_drawn_on_each(cx: &mut Test
                   cx: &mut gpui::VisualTestContext| {
         chat.update(cx, |chat, cx| {
             chat.appearance.reiwa_mode = reiwa;
-            let sequences: Vec<u64> = chat
+            let sequences: Vec<_> = chat
                 .state
                 .selected_channel()
                 .unwrap()
                 .messages
                 .iter()
-                .map(|m| m.sequence)
+                .map(|m| (cayenchat_app::LineKind::Message, m.sequence))
                 .collect();
             chat.log_selection = Some(crate::LogSelection {
                 source: cayenchat_app::Selection::Channel(id),

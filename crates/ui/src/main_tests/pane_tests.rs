@@ -1792,7 +1792,10 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
     });
     chat.update(cx, |chat, cx| {
         // The user has selected text in the line that is on screen.
-        let on_screen = chat.state.conversation(b).unwrap().messages[0].sequence;
+        let on_screen = (
+            cayenchat_app::LineKind::Message,
+            chat.state.conversation(b).unwrap().messages[0].sequence,
+        );
         chat.log_selection = Some(LogSelection {
             source: Selection::Channel(b),
             anchor: LogPosition {
@@ -1855,7 +1858,10 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         assert_eq!(recent.text, "recent");
         assert_eq!(
             (selection.anchor.row, selection.cursor.row),
-            (recent.sequence, recent.sequence),
+            (
+                (cayenchat_app::LineKind::Message, recent.sequence),
+                (cayenchat_app::LineKind::Message, recent.sequence)
+            ),
             "still on \"recent\""
         );
         chat.sync_log_lists();

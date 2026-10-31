@@ -83,12 +83,17 @@ const OLDER_PAGE_OVERLAP_WINDOW: usize = HISTORY_RESERVE;
 /// renumbering what is already shown.
 const SEQUENCE_ORIGIN: u64 = 1 << 62;
 
-/// Whether `sequence` names a connection diagnostic line and not a message.
-/// Diagnostics count up from 0 and messages around 2^62, so the halfway
-/// point separates them for any realistic number of lines.
-pub fn is_diagnostic_sequence(sequence: u64) -> bool {
-    sequence < SEQUENCE_ORIGIN / 2
+/// What a log line is. The diagnostics sort before the messages, as on
+/// screen; each kind has its own sequence counter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LineKind {
+    Diagnostic,
+    Message,
 }
+
+/// The order of a log line: its kind, then its sequence. A sequence alone
+/// names a line only within one kind.
+pub type LineKey = (LineKind, u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Selection {
