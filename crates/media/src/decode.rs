@@ -30,18 +30,11 @@ pub(crate) fn limited_decoder<'a>(
     // `image`'s PNG decoder always inflates iCCP and compressed text chunks
     // while it constructs the decoder. We do not use those values for display,
     // so remove them before handing PNG data to it. The input copy and source
-    // raster are charged up front: PNG's internal allocation limit cannot be
-    // changed once its decoder has been constructed.
+    // raster are charged afterwards by `reserve_source_image`, from the
+    // constructed decoder's `total_bytes`: constructing a decoder does not
+    // allocate raster-sized memory, so only the input copy is charged here.
     let metadata_copy_bytes = png_metadata_copy_bytes(bytes, format);
-    let raster_bytes = if format == ImageFormat::Png {
-        png_raster_bytes(bytes).unwrap_or(0)
-    } else {
-        0
-    };
-    let reserved_bytes = raster_bytes
-        .checked_add(metadata_copy_bytes)
-        .ok_or_else(insufficient_memory)?;
-    if reserved_bytes > limits.max_decode_bytes {
+    if metadata_copy_bytes > limits.max_decode_bytes {
         return Err(insufficient_memory());
     }
 
@@ -54,16 +47,7 @@ pub(crate) fn limited_decoder<'a>(
     let mut decoder_limits = image::Limits::default();
     decoder_limits.max_image_width = Some(limits.max_source_side);
     decoder_limits.max_image_height = Some(limits.max_source_side);
-    decoder_limits.max_alloc = Some(if format == ImageFormat::Png {
-        // Let the PNG decoder classify a malformed or unsupported header.
-        // Such inputs cannot supply a trustworthy raster estimate.
-        limits
-            .max_decode_bytes
-            .saturating_sub(raster_bytes)
-            .saturating_sub(metadata_copy_bytes)
-    } else {
-        limits.max_decode_bytes
-    });
+    decoder_limits.max_alloc = Some(limits.max_decode_bytes - metadata_copy_bytes);
     reader.limits(decoder_limits);
     reader
         .into_decoder()
@@ -165,58 +149,6 @@ fn finish_png_filter<'a>(bytes: &'a [u8], offset: usize, output: Option<Vec<u8>>
         filtered.extend_from_slice(&bytes[offset..]);
         Cow::Owned(filtered)
     })
-}
-
-/// Upper bound for the transformed PNG source raster decoded by `image`.
-/// `EXPAND` turns indexed and sub-byte samples into 8-bit channels.
-fn png_raster_bytes(bytes: &[u8]) -> Option<u64> {
-    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.get(12..16)? != b"IHDR" {
-        return None;
-    }
-    let width = u64::from(u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?));
-    let height = u64::from(u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?));
-    let bit_depth = *bytes.get(24)?;
-    let color_type = *bytes.get(25)?;
-    let has_transparency = png_has_chunk(bytes, b"tRNS");
-    let bytes_per_pixel = match (color_type, bit_depth, has_transparency) {
-        (0, 16, true) => 4,
-        (0, 16, false) => 2,
-        (0, _, true) => 2,
-        (0, _, false) => 1,
-        (2, 16, true) => 8,
-        (2, 16, false) => 6,
-        (2, _, true) => 4,
-        (2, _, false) => 3,
-        (3, _, _) => 4,
-        (4, 16, _) => 4,
-        (4, _, _) => 2,
-        (6, 16, _) => 8,
-        (6, _, _) => 4,
-        _ => return None,
-    };
-    width.checked_mul(height)?.checked_mul(bytes_per_pixel)
-}
-
-fn png_has_chunk(bytes: &[u8], wanted: &[u8; 4]) -> bool {
-    let mut offset = 8usize;
-    while let Some(header) = bytes.get(offset..offset.saturating_add(8)) {
-        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-        let Some(end) = offset
-            .checked_add(8)
-            .and_then(|n| n.checked_add(length))
-            .and_then(|n| n.checked_add(4))
-        else {
-            return false;
-        };
-        if end > bytes.len() {
-            return false;
-        }
-        if header[4..8] == wanted[..] {
-            return true;
-        }
-        offset = end;
-    }
-    false
 }
 
 /// Leaves room for the decoded source image before decoder-owned intermediate
@@ -345,9 +277,6 @@ pub fn thumbnail(
         || height > limits.max_source_side
         || u64::from(width) * u64::from(height) > limits.max_source_pixels
     {
-        return Err(LoadError::TooLarge);
-    }
-    if decoder.total_bytes() > limits.max_decode_bytes {
         return Err(LoadError::TooLarge);
     }
     reserve_source_image(&mut decoder, limits, reserved_copy_bytes).map_err(
