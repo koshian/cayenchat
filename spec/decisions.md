@@ -3330,7 +3330,12 @@ there is no network, bouncer or connection behind it.
   collapsed, members as server profile ID and channel). Same bounds and
   damage handling as the order (groups ≤ 64, members ≤ 2,000 each, repeated
   members dropped, unknown servers dropped at save). Files without groups
-  read as before.
+  read as before. The file's format and sizes are checked once, when it is
+  read: a group name is kept trimmed, and a name that is empty, over 64
+  characters or holds a control character drops the group (a name typed in
+  the tree that is over 64 characters is refused the same way, not shortened).
+  The running state only drops what the file cannot tell: repeated names and
+  channels of servers that no longer exist.
 - **Not done.** Reordering groups themselves, grouping private conversations,
   and group names in the settings window.
 

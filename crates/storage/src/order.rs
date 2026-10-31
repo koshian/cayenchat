@@ -96,8 +96,17 @@ impl ChannelOrders {
         }
         servers.retain(|_, names| !names.is_empty());
         self.servers = servers;
-        self.groups.retain(|group| {
-            !group.name.trim().is_empty() && group.name.chars().count() <= MAX_GROUP_NAME_CHARS
+        // A name is kept trimmed; one that is empty, too long or holds a
+        // control character is damage and the group is dropped, not shortened.
+        self.groups.retain_mut(|group| {
+            let name = group.name.trim();
+            let usable = !name.is_empty()
+                && name.chars().count() <= MAX_GROUP_NAME_CHARS
+                && !name.chars().any(char::is_control);
+            if usable && name.len() != group.name.len() {
+                group.name = name.to_owned();
+            }
+            usable
         });
         self.groups.truncate(MAX_GROUPS);
         let mut seen = std::collections::HashSet::new();
@@ -253,6 +262,15 @@ mod tests {
         // The long name is dropped, not shortened.
         assert_eq!(loaded.groups.len(), MAX_GROUPS);
         assert_eq!(loaded.groups[0].name, "g0");
+        // Names are kept trimmed, and one with a control character is dropped.
+        let orders = ChannelOrders {
+            groups: vec![group("  spaced ".into()), group("bell\u{7}".into())],
+            ..Default::default()
+        };
+        save_orders_to(&path, &orders).unwrap();
+        let loaded = load_orders_from(&path);
+        assert_eq!(loaded.groups.len(), 1);
+        assert_eq!(loaded.groups[0].name, "spaced");
     }
 
     #[test]

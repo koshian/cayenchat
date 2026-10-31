@@ -7,7 +7,7 @@
 //! operation, and the connection, the log and the unread state of a channel
 //! stay with its real server.
 
-use cayenchat_app::{GroupId, GroupMember, GroupSpec, Parent, groups::clean_group_name};
+use cayenchat_app::{GroupId, GroupMember, GroupSpec, Parent};
 use cayenchat_model::{ConversationId, NetworkId, display};
 use cayenchat_storage::order::{StoredGroup, StoredMember};
 use gpui::{prelude::*, *};
@@ -250,17 +250,15 @@ impl ChatWindow {
         }
         let text = edit.input.read(cx).text().to_owned();
         let done = match edit.target {
-            GroupEditTarget::New(conversation) => {
-                match clean_group_name(&text).and_then(|name| self.state.create_group(&name)) {
-                    Some(group) => {
-                        let network = self.state.conversation(conversation).map(|c| c.network);
-                        self.state.move_to_group(conversation, group, None);
-                        self.save_channel_layout(network, cx);
-                        true
-                    }
-                    None => false,
+            GroupEditTarget::New(conversation) => match self.state.create_group(&text) {
+                Some(group) => {
+                    let network = self.state.conversation(conversation).map(|c| c.network);
+                    self.state.move_to_group(conversation, group, None);
+                    self.save_channel_layout(network, cx);
+                    true
                 }
-            }
+                None => false,
+            },
             GroupEditTarget::Rename(group) => {
                 let renamed = self.state.rename_group(group, &text);
                 if renamed {
