@@ -46,7 +46,7 @@ fn selection_visible(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) -> b
             .tree_rows
             .iter()
             .position(|row| match *row {
-                crate::TreeRow::Server(id) => selection == Selection::Server(id),
+                crate::TreeRow::Server(id, _) => selection == Selection::Server(id),
                 crate::TreeRow::Channel(id, _) => selection == Selection::Channel(id),
                 crate::TreeRow::Group(..) | crate::TreeRow::NewGroup => false,
             })

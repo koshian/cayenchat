@@ -35,7 +35,7 @@ fn channel_rows(chat: &ChatWindow) -> Vec<String> {
     chat.tree_rows
         .iter()
         .map(|row| match *row {
-            TreeRow::Server(_) => "server".into(),
+            TreeRow::Server(..) => "server".into(),
             TreeRow::Group(..) => "group".into(),
             TreeRow::NewGroup => "new".into(),
             TreeRow::Channel(id, at) => {
@@ -176,4 +176,112 @@ fn storage_and_app_share_the_group_limits() {
         cayenchat_storage::order::MAX_GROUP_NAME_CHARS,
         cayenchat_app::groups::MAX_GROUP_NAME_CHARS
     );
+}
+
+#[gpui::test]
+fn a_server_folds_its_channels_and_the_state_survives_a_restart(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("channel-order.json");
+    let (one, two) = (cayenchat_model::NetworkId(1), cayenchat_model::NetworkId(2));
+    let group = chat.update_in(cx, |chat, _, cx| {
+        chat.order_file = Some(file.clone());
+        let group = chat.state.create_group("daily").unwrap();
+        let c = chat.state.channel_id(two, "#c").unwrap();
+        chat.state.move_to_group(c, group, None);
+        chat.state.dispatch(Command::SelectServer(one));
+        chat.toggle_server(one, cx);
+        group
+    });
+    cx.update(|window, _| window.refresh());
+    chat.read_with(cx, |chat, _| {
+        // Only the server's rows go; the group and the other server stay.
+        assert_eq!(
+            channel_rows(chat),
+            ["group", "#c@0", "server", "server", "#a@0"]
+        );
+        assert!(chat.server_collapsed(one) && !chat.server_collapsed(two));
+        assert!(!chat.state.group(group).unwrap().collapsed);
+    });
+    // The numbers, the selection and the channels themselves are unchanged.
+    chat.update_in(cx, |chat, _, _| {
+        chat.state.dispatch(Command::SelectChannelAt(1));
+        let b = chat.state.channel_id(one, "#b").unwrap();
+        assert_eq!(chat.state.selection(), Selection::Channel(b));
+    });
+    cx.update(|window, _| window.refresh());
+    chat.read_with(cx, |chat, _| {
+        // The selected channel stays visible in the folded server.
+        assert_eq!(
+            channel_rows(chat),
+            ["group", "#c@0", "server", "#b@1", "server", "#a@0"]
+        );
+    });
+    // A restart folds the same server; a profile that is gone is forgotten.
+    chat.update_in(cx, |chat, _, cx| {
+        let saved = cayenchat_storage::order::load_orders_from(&file);
+        assert_eq!(saved.collapsed_servers.len(), 1);
+        chat.channel_orders = Default::default();
+        assert!(!chat.server_collapsed(one));
+        chat.channel_orders = saved;
+        assert!(chat.server_collapsed(one) && !chat.server_collapsed(two));
+        chat.toggle_server(one, cx);
+        assert!(!chat.server_collapsed(one));
+    });
+    let saved = cayenchat_storage::order::load_orders_from(&file);
+    assert!(saved.collapsed_servers.is_empty());
+}
+
+fn server_unread_flags(chat: &ChatWindow) -> Vec<bool> {
+    chat.tree_rows
+        .iter()
+        .filter_map(|row| match *row {
+            TreeRow::Server(_, unread) => Some(unread),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn only_unread_headings_are_bold(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    let (one, two) = (cayenchat_model::NetworkId(1), cayenchat_model::NetworkId(2));
+    let (a, c, group) = chat.update_in(cx, |chat, _, _| {
+        let a = chat.state.channel_id(one, "#a").unwrap();
+        let c = chat.state.channel_id(two, "#c").unwrap();
+        chat.state.dispatch(Command::SelectServer(one));
+        (a, c, chat.state.create_group("daily").unwrap())
+    });
+    let refresh = |cx: &mut VisualTestContext| cx.update(|window, _| window.refresh());
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_unread_flags(chat), [false, false])
+    });
+    // Unread under a server makes only that heading bold, even folded.
+    chat.update_in(cx, |chat, _, cx| {
+        chat.state.mark_unread(a);
+        chat.toggle_server(one, cx);
+    });
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_unread_flags(chat), [true, false])
+    });
+    // Reading it puts the weight back.
+    chat.update_in(cx, |chat, _, _| {
+        chat.state.dispatch(Command::SelectChannelAt(0))
+    });
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_unread_flags(chat), [false, false])
+    });
+    // Unread in a group leaves the origin server alone; the group shows it.
+    chat.update_in(cx, |chat, _, _| {
+        chat.state.move_to_group(c, group, None);
+        chat.state.mark_unread(c);
+    });
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_unread_flags(chat), [false, false]);
+        assert!(chat.state.group_unread(&[c]).0);
+    });
 }

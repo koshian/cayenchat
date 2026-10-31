@@ -122,6 +122,26 @@ impl ChatWindow {
         }
     }
 
+    /// Whether the user folded the channels of `network` away (#866).
+    pub(crate) fn server_collapsed(&self, network: NetworkId) -> bool {
+        self.sessions.get(&network).is_some_and(|s| {
+            self.channel_orders
+                .collapsed_servers
+                .contains(&s.profile_id)
+        })
+    }
+
+    /// Folds or opens one server's channels. Only the tree changes.
+    pub(crate) fn toggle_server(&mut self, network: NetworkId, cx: &mut Context<Self>) {
+        let Some(profile_id) = self.sessions.get(&network).map(|s| s.profile_id.clone()) else {
+            return;
+        };
+        if !self.channel_orders.collapsed_servers.remove(&profile_id) {
+            self.channel_orders.collapsed_servers.insert(profile_id);
+        }
+        self.save_channel_layout(None, cx);
+    }
+
     /// The channel menu's "Move to group": an existing group.
     pub(crate) fn move_menu_channel_to_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
         let Some(menu) = self.channel_menu.take() else {
@@ -488,7 +508,7 @@ impl ChatWindow {
             .px_2()
             .pt_2()
             .pb_1()
-            .font_weight(FontWeight::BOLD)
+            .when(unread, |d| d.font_weight(FontWeight::BOLD))
             .cursor_pointer()
             .hover(|d| d.bg(theme.hover_strong))
             .when(target, |d| d.bg(theme.selected))
