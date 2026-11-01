@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use super::{ChatWindow, FindInLog, Worker, themed_bindings};
 use cayenchat_app::{
-    DiagnosticsView, Kind, Selection,
+    Kind, Selection,
     search::{Scope, Source},
 };
 use cayenchat_irc_core::Event;
@@ -501,24 +501,18 @@ fn the_toolbar_magnifier_toggles_the_bar(cx: &mut TestAppContext) {
     assert!(open(&chat, cx));
 }
 
-fn record(chat: &mut ChatWindow, view: DiagnosticsView, text: &str) {
-    chat.state.record_diagnostic(
-        NetworkId(1),
-        view,
-        std::time::SystemTime::UNIX_EPOCH,
-        None,
-        text.into(),
-    );
-}
-
-/// The server selected, the connection diagnostics on, and a line each of
-/// the two views.
+/// The server selected, the connection diagnostics on, and a stage note, a
+/// server notice and an IRC line in its log.
 fn with_diagnostics(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
     chat.update(cx, |chat, cx| {
         chat.debug_enabled = true;
-        record(chat, DiagnosticsView::Overview, "Sleep notice: idle");
-        record(chat, DiagnosticsView::Overview, "Handshake done");
-        record(chat, DiagnosticsView::Protocol, "← :s NOTICE * :Wake-up");
+        chat.state.set_diagnostics_enabled(true);
+        chat.state
+            .append_diagnostic_message(NetworkId(1), "[1.0s] Sleep notice: idle".into());
+        chat.state
+            .append_server_message(NetworkId(1), "Handshake done".into());
+        chat.state
+            .append_diagnostic_message(NetworkId(1), "← :s NOTICE * :Wake-up".into());
         chat.state
             .dispatch(cayenchat_app::Command::SelectServer(NetworkId(1)));
         cx.notify();
@@ -527,7 +521,7 @@ fn with_diagnostics(chat: &Entity<ChatWindow>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
-fn this_log_searches_the_diagnostics_view_shown_and_all_reaches_the_other(cx: &mut TestAppContext) {
+fn the_server_log_search_finds_the_diagnostic_lines(cx: &mut TestAppContext) {
     let (chat, cx) = open_chat(cx);
     with_diagnostics(&chat, cx);
     chat.update_in(cx, |chat, window, cx| {
@@ -542,232 +536,22 @@ fn this_log_searches_the_diagnostics_view_shown_and_all_reaches_the_other(cx: &m
     chat.read_with(cx, |chat, _| {
         let search = chat.search.as_ref().unwrap();
         assert_eq!(search.hits().len(), 1);
-        assert_eq!(
-            search.hits()[0].source,
-            Source::Diagnostics(NetworkId(1), DiagnosticsView::Overview)
-        );
-        assert!(search.revealed(), "the diagnostics line was painted");
+        assert_eq!(search.hits()[0].source, Source::Server(NetworkId(1)));
+        assert!(search.revealed(), "the diagnostic line was painted");
     });
-    // The IRC protocol view is not shown, so "this log" does not read it.
+    // A line added later makes the finished search stale, so it is read again.
     cx.simulate_input(" ");
     chat.update_in(cx, |chat, window, cx| chat.search_clear(window, cx));
     cx.simulate_input("wake-up");
     settle(cx);
-    assert_eq!(search_state(&chat, cx).0, 0);
-    // All logs: the hit is in the other view; going to it switches views.
-    chat.update_in(cx, |chat, window, cx| {
-        chat.search_set_scope(Scope::All, window, cx)
+    assert_eq!(search_state(&chat, cx).0, 1);
+    chat.update(cx, |chat, _| {
+        chat.state
+            .append_diagnostic_message(NetworkId(1), "→ PRIVMSG #a :wake-up".into())
     });
-    settle(cx);
     for _ in 0..4 {
         cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
+        settle(cx);
     }
-    chat.read_with(cx, |chat, _| {
-        assert_eq!(chat.search.as_ref().unwrap().hits().len(), 1);
-        assert_eq!(chat.diagnostics_view, DiagnosticsView::Protocol);
-        assert!(chat.search.as_ref().unwrap().revealed());
-    });
-}
-
-#[gpui::test]
-fn diagnostics_are_not_searched_while_they_are_off(cx: &mut TestAppContext) {
-    let (chat, cx) = open_chat(cx);
-    with_diagnostics(&chat, cx);
-    chat.update(cx, |chat, _| chat.debug_enabled = false);
-    chat.update_in(cx, |chat, window, cx| {
-        chat.open_search(&FindInLog, window, cx)
-    });
-    chat.update_in(cx, |chat, window, cx| {
-        chat.search_set_scope(Scope::All, window, cx)
-    });
-    cx.simulate_input("handshake");
-    settle(cx);
-    assert_eq!(search_state(&chat, cx).0, 0);
-}
-
-#[gpui::test]
-fn a_selection_copies_only_the_diagnostics_lines_it_covers(cx: &mut TestAppContext) {
-    let (chat, cx) = open_chat(cx);
-    with_diagnostics(&chat, cx);
-    chat.update(cx, |chat, cx| {
-        let source = chat.state.selection();
-        let rows: Vec<_> = chat
-            .state
-            .diagnostics(NetworkId(1), DiagnosticsView::Overview)
-            .iter()
-            .map(|line| {
-                (
-                    (cayenchat_app::LineKind::Diagnostic, line.sequence),
-                    line.text.clone(),
-                )
-            })
-            .collect();
-        // From the middle of the first line to the middle of the second.
-        let from = rows[0].1.find("Sleep").unwrap();
-        chat.log_selection = Some(crate::LogSelection {
-            source,
-            anchor: crate::LogPosition {
-                row: rows[0].0,
-                byte: from,
-            },
-            cursor: crate::LogPosition {
-                row: rows[1].0,
-                byte: rows[1].1.len() - 3,
-            },
-            diagnostics_end: chat.state.next_diagnostic_sequence(),
-        });
-        chat.copy_selected_log(cx);
-        let copied = cx.read_from_clipboard().and_then(|item| item.text());
-        assert_eq!(
-            copied.as_deref(),
-            Some(format!("Sleep notice: idle\n{}", &rows[1].1[..rows[1].1.len() - 3]).as_str())
-        );
-        // Another view, diagnostics turned off or lines of a new connection
-        // end the selection: nothing more is copied.
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string("kept".into()));
-        let selection = chat.log_selection;
-        chat.diagnostics_view = DiagnosticsView::Protocol;
-        chat.drop_diagnostics_selection(None);
-        assert!(chat.log_selection.is_none());
-        chat.diagnostics_view = DiagnosticsView::Overview;
-        chat.log_selection = selection;
-        chat.drop_diagnostics_selection(Some(NetworkId(2)));
-        assert!(chat.log_selection.is_some(), "another server's attempt");
-        chat.drop_diagnostics_selection(Some(NetworkId(1)));
-        assert!(chat.log_selection.is_none());
-        chat.copy_selected_log(cx);
-        assert_eq!(
-            cx.read_from_clipboard()
-                .and_then(|item| item.text())
-                .as_deref(),
-            Some("kept")
-        );
-    });
-}
-
-#[gpui::test]
-fn a_selection_runs_from_the_diagnostics_into_the_server_messages(cx: &mut TestAppContext) {
-    let (chat, cx) = open_chat(cx);
-    with_diagnostics(&chat, cx);
-    chat.update(cx, |chat, cx| {
-        chat.state
-            .append_server_message(NetworkId(1), "first line".into());
-        chat.state
-            .append_server_message(NetworkId(1), "second line".into());
-        let source = chat.state.selection();
-        let diagnostic = chat
-            .state
-            .diagnostics(NetworkId(1), DiagnosticsView::Overview)[1]
-            .clone();
-        let messages = chat.state.server_messages(NetworkId(1));
-        let second = (
-            cayenchat_app::LineKind::Message,
-            messages[messages.len() - 1].sequence,
-        );
-        let text = diagnostic.text.clone();
-        let from = text.find("Handshake").unwrap();
-        // The messages the server log already held lie between, whole.
-        let expected: Vec<_> = std::iter::once("Handshake done".to_owned())
-            .chain(
-                messages[..messages.len() - 1]
-                    .iter()
-                    .map(|message| format!("{} {}", message.time, message.text)),
-            )
-            .chain(std::iter::once(format!(
-                "{} second",
-                messages[messages.len() - 1].time
-            )))
-            .collect();
-        let expected = expected.join("\n");
-        assert!(expected.contains(" first line\n"));
-        // The last diagnostics line to the middle of the second message.
-        chat.log_selection = Some(crate::LogSelection {
-            source,
-            anchor: crate::LogPosition {
-                row: (cayenchat_app::LineKind::Diagnostic, diagnostic.sequence),
-                byte: from,
-            },
-            cursor: crate::LogPosition {
-                row: second,
-                byte: 6,
-            },
-            diagnostics_end: chat.state.next_diagnostic_sequence(),
-        });
-        chat.copy_selected_log(cx);
-        assert_eq!(
-            cx.read_from_clipboard()
-                .and_then(|item| item.text())
-                .as_deref(),
-            Some(expected.as_str())
-        );
-        // The same range from the other end copies the same.
-        let selection = chat.log_selection.as_mut().unwrap();
-        std::mem::swap(&mut selection.anchor, &mut selection.cursor);
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string("old".into()));
-        chat.copy_selected_log(cx);
-        assert_eq!(
-            cx.read_from_clipboard()
-                .and_then(|item| item.text())
-                .as_deref(),
-            Some(expected.as_str())
-        );
-    });
-}
-
-#[gpui::test]
-fn a_channel_selection_copies_only_the_diagnostics_line_shown(cx: &mut TestAppContext) {
-    let (chat, cx) = open_chat(cx);
-    chat.update(cx, |chat, cx| {
-        chat.debug_enabled = true;
-        record(chat, DiagnosticsView::Overview, "Sleep notice: idle");
-        record(chat, DiagnosticsView::Overview, "Handshake done");
-        let channel = chat.state.selected_channel().unwrap().id;
-        chat.state.append_conversation_message(
-            channel,
-            "bob",
-            "hello world",
-            cayenchat_app::Kind::Message,
-            Default::default(),
-            cayenchat_app::Unread::Leave,
-        );
-        // Registered: only the newest diagnostics line is drawn.
-        let shown = chat.main_layout().diagnostics;
-        assert_eq!(shown, 1..2);
-        let lines = chat
-            .state
-            .diagnostics(NetworkId(1), DiagnosticsView::Overview);
-        let hidden = (cayenchat_app::LineKind::Diagnostic, lines[0].sequence);
-        let row = (
-            cayenchat_app::LineKind::Message,
-            chat.state
-                .selected_channel()
-                .unwrap()
-                .messages
-                .last()
-                .unwrap()
-                .sequence,
-        );
-        chat.log_selection = Some(crate::LogSelection {
-            source: chat.state.selection(),
-            anchor: crate::LogPosition {
-                row: hidden,
-                byte: 0,
-            },
-            cursor: crate::LogPosition { row, byte: 5 },
-            diagnostics_end: chat.state.next_diagnostic_sequence(),
-        });
-        chat.copy_selected_log(cx);
-        let copied = cx.read_from_clipboard().and_then(|item| item.text());
-        let drawn = chat
-            .state
-            .diagnostics(NetworkId(1), DiagnosticsView::Overview)[1]
-            .text
-            .clone();
-        // The hidden line is not copied; the channel's earlier lines are.
-        let copied = copied.unwrap();
-        assert!(copied.starts_with(&format!("{drawn}\n")), "{copied}");
-        assert!(copied.ends_with(" bob: hello"), "{copied}");
-        assert!(!copied.contains("Sleep notice"), "{copied}");
-    });
+    assert_eq!(search_state(&chat, cx).0, 2);
 }

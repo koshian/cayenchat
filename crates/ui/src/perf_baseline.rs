@@ -32,7 +32,7 @@
 
 use std::time::{Duration, Instant};
 
-use cayenchat_app::{Command, DiagnosticsView};
+use cayenchat_app::Command;
 use cayenchat_irc_core::{Event, WireDirection};
 use cayenchat_model::NetworkId;
 use gpui::{Focusable, TestAppContext};
@@ -321,6 +321,8 @@ fn run_with(
         let mut chat = ChatWindow::with_settings(settings, None, window, cx);
         chat.previews.use_fetcher(fetcher.clone());
         chat.avatars.use_fetcher(fetcher.clone());
+        // The costly case: every wire line reaches the server log.
+        chat.state.set_diagnostics_enabled(true);
         chat
     });
 
@@ -386,11 +388,7 @@ fn run_with(
                 .sum::<usize>(),
             chat.sessions
                 .keys()
-                .map(|&network| {
-                    chat.state
-                        .diagnostics(network, DiagnosticsView::Overview)
-                        .len()
-                })
+                .map(|&network| chat.state.server_messages(network).len())
                 .sum::<usize>(),
         )
     });

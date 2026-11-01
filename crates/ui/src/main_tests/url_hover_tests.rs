@@ -214,7 +214,6 @@ fn selecting_decoded_text_copies_the_characters_shown(cx: &mut TestAppContext) {
             source: cayenchat_app::Selection::Channel(id),
             anchor: crate::LogPosition { row, byte: 0 },
             cursor: crate::LogPosition { row, byte: end },
-            diagnostics_end: u64::MAX,
         });
         chat.copy_selected_log(cx);
     });
@@ -276,7 +275,6 @@ fn copying_an_action_adds_the_prefix_only_when_it_is_selected_whole(cx: &mut Tes
                 source: cayenchat_app::Selection::Channel(id),
                 anchor: crate::LogPosition { row, byte: from },
                 cursor: crate::LogPosition { row, byte: to },
-                diagnostics_end: u64::MAX,
             });
             chat.copy_selected_log(cx);
         });
@@ -366,7 +364,6 @@ fn copying_several_lines_carries_the_time_and_sender_drawn_on_each(cx: &mut Test
                     row: sequences[to.0],
                     byte: to.1,
                 },
-                diagnostics_end: u64::MAX,
             });
             chat.copy_selected_log(cx);
         });

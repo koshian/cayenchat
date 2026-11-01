@@ -7,12 +7,12 @@ use crate::channel_settings_dialog::{
 };
 use crate::os_text::WindowOsText;
 use crate::{
-    ChatWindow, Connect, CopyDiagnostics, Disconnect, FocusNextField, FocusPreviousField,
-    OpenSettings, Reconnect, ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts,
-    autostart, avatar_editor, color_picker, decorations, diagnostics, focus_reveal,
-    forget_removed_profiles, i18n_error, input::TextInput, ircv3_settings, localization::Localizer,
-    notification_rules, saved_connection_secrets, scrollbar, secrets, settings_file,
-    settings_theme, shortcut_settings, theme,
+    ChatWindow, Connect, Disconnect, FocusNextField, FocusPreviousField, OpenSettings, Reconnect,
+    ShortcutPrefs, ToggleDebug, account_settings, apply_shortcuts, autostart, avatar_editor,
+    color_picker, decorations, diagnostics, focus_reveal, forget_removed_profiles, i18n_error,
+    input::TextInput, ircv3_settings, localization::Localizer, notification_rules,
+    saved_connection_secrets, scrollbar, secrets, settings_file, settings_theme, shortcut_settings,
+    theme,
 };
 use cayenchat_app::{attachments::AttachmentFlow, notifications};
 use cayenchat_irc_core::{ConnectionConfig, KeyError};
@@ -1496,6 +1496,13 @@ impl SettingsWindow {
             &mut self.saved.show_toolbar,
             file.show_toolbar,
         );
+        // The View menu switches it; this window never edits it, but its
+        // save writes the whole file back.
+        follow_file_flag(
+            &mut self.settings.values.connection_diagnostics,
+            &mut self.saved.connection_diagnostics,
+            file.connection_diagnostics,
+        );
         follow_file_flag(
             &mut self.settings.values.menu_bar_auto_hide,
             &mut self.saved.menu_bar_auto_hide,
@@ -2118,17 +2125,6 @@ impl SettingsWindow {
     fn toggle_debug_action(&mut self, _: &ToggleDebug, _: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |owner, window, cx| {
             owner.toggle_debug(&ToggleDebug, window, cx)
-        });
-    }
-
-    fn copy_diagnostics_action(
-        &mut self,
-        _: &CopyDiagnostics,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let _ = self.owner.update(cx, |owner, window, cx| {
-            owner.copy_diagnostics(&CopyDiagnostics, window, cx)
         });
     }
 
@@ -5257,7 +5253,6 @@ impl SettingsWindow {
                 |d| d.on_action(cx.listener(Self::reconnect_action)),
             )
             .on_action(cx.listener(Self::toggle_debug_action))
-            .on_action(cx.listener(Self::copy_diagnostics_action))
     }
 }
 

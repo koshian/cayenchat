@@ -76,8 +76,8 @@ mod whois;
 mod window_layout;
 
 use cayenchat_app::{
-    AppState, Command, ConnectionStatus, DiagnosticsView, GroupId, HeadingMarks, Kind, LineKey,
-    LineKind, MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
+    AppState, Command, ConnectionStatus, GroupId, HeadingMarks, Kind, LineKey, LineKind,
+    MessageMeta, Missing, MoveTo, NetworkConfig, Parent, Selection, Unread,
     attachments::AttachmentFlow,
     notifications::{self, BurstLimiter, IncomingMessage, NotificationRules, Trigger},
     own_avatar::OwnAvatar,
@@ -302,10 +302,8 @@ actions!(
         MinimizeWindow,
         ZoomWindow,
         ToggleDebug,
-        ToggleDiagnosticsView,
         ToggleToolbar,
         ToggleMenuBar,
-        CopyDiagnostics,
         CopyLogSelection,
         ScrollToLatest,
         FindInLog,
@@ -976,9 +974,9 @@ struct ChatWindow {
     /// Open WHOIS windows by network and lowercase nickname.
     whois_windows: HashMap<(NetworkId, String), WindowHandle<WhoisWindow>>,
     whois_replies: Vec<(NetworkId, WhoisInfo, bool)>,
+    /// Connection diagnostics are written to the server logs (saved as
+    /// `Settings::connection_diagnostics`).
     debug_enabled: bool,
-    /// Which connection log is drawn and copied.
-    diagnostics_view: DiagnosticsView,
     conversation_logs: conversation_log::ConversationLogs,
     menu_bar: menu_bar::MenuBar,
     /// The toolbar is on (View menu, saved in the settings), and its cached
@@ -1207,11 +1205,6 @@ fn member_prompt_title(i18n: &Localizer, kind: MemberPromptKind, nickname: &str)
     )
 }
 
-/// A connection diagnostics line as drawn; copying keeps the original.
-fn diagnostic_text(line: &str) -> String {
-    display::neutralize_bidi(line).into_owned()
-}
-
 /// Another nickname for a server that rejected `rejected` (432/433) during
 /// registration. Several servers can wait for one at the same time.
 struct NickPrompt {
@@ -1248,7 +1241,6 @@ struct MemberPrompt {
 struct LogPosition {
     /// The line's kind and `sequence`, not its index: trimming, older
     /// history or a new connection cannot move a selection onto other lines.
-    /// Diagnostic lines come before messages, as on screen.
     row: LineKey,
     byte: usize,
 }
@@ -1259,10 +1251,6 @@ struct LogSelection {
     source: Selection,
     anchor: LogPosition,
     cursor: LogPosition,
-    /// The next diagnostic sequence when the selection last started or
-    /// moved. Diagnostic lines recorded later lie outside it, however far
-    /// the range reaches: the user never saw them.
-    diagnostics_end: u64,
 }
 
 impl LogSelection {
@@ -1270,7 +1258,6 @@ impl LogSelection {
     fn covers(self, row: LineKey) -> bool {
         let (start, end) = self.bounds();
         (start.row..=end.row).contains(&row)
-            && !(row.0 == LineKind::Diagnostic && row.1 >= self.diagnostics_end)
     }
 
     fn bounds(self) -> (LogPosition, LogPosition) {
@@ -1456,7 +1443,8 @@ impl ChatWindow {
             .into_iter()
             .filter_map(|profile| network_of(&profile))
             .collect();
-        let state = AppState::with_networks(networks);
+        let mut state = AppState::with_networks(networks);
+        state.set_diagnostics_enabled(saved.connection_diagnostics);
         let mut inputs = HashMap::new();
         let placeholder = draft_placeholder(&i18n, saved.send_key);
         for key in std::iter::once(Selection::None)
@@ -1567,8 +1555,7 @@ impl ChatWindow {
             shown_title: String::new(),
             whois_windows: HashMap::new(),
             whois_replies: Vec::new(),
-            debug_enabled: false,
-            diagnostics_view: DiagnosticsView::default(),
+            debug_enabled: saved.connection_diagnostics,
             conversation_logs: conversation_log::ConversationLogs::new(
                 &saved.conversation_log,
                 log_notify,
@@ -2499,9 +2486,6 @@ impl ChatWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        // The attempt clears the diagnostics below; the lines a range named
-        // are gone, so it ends.
-        self.drop_diagnostics_selection(Some(network));
         let Some(session) = self.sessions.get_mut(&network) else {
             return Err(self.i18n.text("not_connected"));
         };
@@ -2523,7 +2507,6 @@ impl ChatWindow {
         session.sent_secrets =
             connect_auth::unsaved_secrets(self.saved.profile(&session.profile_id), &config);
         session.connection_starting(&config);
-        self.state.clear_diagnostics(network);
         session.pending_whois.clear();
         session.connection_started = Some(Instant::now());
         session.watchdog_stage = 0;
@@ -3380,23 +3363,6 @@ impl ChatWindow {
         let log = self.log_menu.take().is_some();
         let group = self.group_menu.take().is_some();
         server || member || channel || log || group
-    }
-
-    /// Drops a text selection that reaches into the connection diagnostics,
-    /// because the lines it names are no longer the ones drawn: another view,
-    /// diagnostics turned off, or a new connection attempt. Sequences are
-    /// shared by both views and later lines, so a range kept would cover
-    /// others. `network` limits this to the selection of that server.
-    fn drop_diagnostics_selection(&mut self, network: Option<NetworkId>) {
-        if network.is_some_and(|network| self.selected_network_id() != Some(network)) {
-            return;
-        }
-        if self
-            .log_selection
-            .is_some_and(|selection| selection.bounds().0.row.0 == LineKind::Diagnostic)
-        {
-            self.log_selection = None;
-        }
     }
 
     /// Whether `source` has a non-empty text selection in its log.
@@ -4640,12 +4606,13 @@ impl ChatWindow {
         cx.notify();
     }
 
-    fn toggle_debug(&mut self, _: &ToggleDebug, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.debug_enabled {
-            self.show_diagnostics(window, cx);
-            return;
-        }
-        self.set_debug(false, cx);
+    /// Turns the connection diagnostics (View menu) on or off and remembers
+    /// the switch in the settings file, starting from the file, which a
+    /// settings window may have updated.
+    fn toggle_debug(&mut self, _: &ToggleDebug, _: &mut Window, cx: &mut Context<Self>) {
+        let on = !self.debug_enabled;
+        self.save_view_setting(|settings| settings.connection_diagnostics = on, cx);
+        self.set_debug(on, cx);
         cx.notify();
     }
 
@@ -4681,6 +4648,7 @@ impl ChatWindow {
             self.report(Some(error), cx);
         }
         self.saved.show_toolbar = settings.show_toolbar;
+        self.saved.connection_diagnostics = settings.connection_diagnostics;
         self.saved.menu_bar_auto_hide = settings.menu_bar_auto_hide;
         self.saved.confirm_server_dblclick_disconnect = settings.confirm_server_dblclick_disconnect;
         self.saved.confirm_channel_dblclick_part = settings.confirm_channel_dblclick_part;
@@ -4701,20 +4669,17 @@ impl ChatWindow {
     fn refresh_menus(&self, cx: &mut Context<Self>) {
         cx.set_menus(app_menus(
             self.debug_enabled,
-            self.diagnostics_view,
             self.toolbar_shown,
             !self.menu_bar.always(),
             &self.i18n,
         ));
     }
 
-    /// Turns the debug transcript on or off. IRC lines are recorded after
-    /// registration only while it is on.
+    /// Turns the connection diagnostics on or off. IRC lines are written to
+    /// the server log after registration only while it is on.
     fn set_debug(&mut self, on: bool, cx: &mut Context<Self>) {
         self.debug_enabled = on;
-        if !on {
-            self.drop_diagnostics_selection(None);
-        }
+        self.state.set_diagnostics_enabled(on);
         self.refresh_menus(cx);
         for connection in self
             .sessions
@@ -4723,60 +4688,6 @@ impl ChatWindow {
         {
             connection.set_transcript(on);
         }
-    }
-
-    /// Switches between the overview and the IRC protocol log.
-    fn toggle_diagnostics_view(
-        &mut self,
-        _: &ToggleDiagnosticsView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diagnostics_view = match self.diagnostics_view {
-            DiagnosticsView::Overview => DiagnosticsView::Protocol,
-            DiagnosticsView::Protocol => DiagnosticsView::Overview,
-        };
-        self.drop_diagnostics_selection(None);
-        self.refresh_menus(cx);
-        if !self.debug_enabled {
-            self.show_diagnostics(window, cx);
-        }
-        self.sync_log_lists();
-        cx.notify();
-    }
-
-    /// Copies the selected server's log in the view being shown, with the
-    /// time each line was recorded.
-    fn copy_diagnostics(&mut self, _: &CopyDiagnostics, _: &mut Window, cx: &mut Context<Self>) {
-        let text = self.diagnostics_text();
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-    }
-
-    fn diagnostics_text(&self) -> String {
-        self.selected_network_id()
-            .map(|network| {
-                self.state
-                    .diagnostics(network, self.diagnostics_view)
-                    .iter()
-                    .map(|line| line.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default()
-    }
-
-    fn show_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_debug(true, cx);
-        if let Some(network) = self.selected_network_id() {
-            self.dispatch(Command::SelectServer(network), window, cx);
-        }
-        self.sync_log_lists();
-        self.main_lists[&self.state.selection()]
-            .state
-            .scroll_to(ListOffset {
-                item_ix: 0,
-                offset_in_item: px(0.),
-            });
     }
 
     /// The user scrolled conversation `id`'s main log so that row
@@ -4833,7 +4744,6 @@ impl ChatWindow {
             source,
             anchor: position,
             cursor: position,
-            diagnostics_end: self.state.next_diagnostic_sequence(),
         });
         self.log_dragging = true;
         window.focus(&self.log_focus);
@@ -4852,7 +4762,6 @@ impl ChatWindow {
             && selection.source == source
         {
             selection.cursor = LogPosition { row, byte };
-            selection.diagnostics_end = self.state.next_diagnostic_sequence();
             cx.notify();
         }
     }
@@ -4873,26 +4782,7 @@ impl ChatWindow {
             return;
         }
         let in_range = |row: LineKey| selection.covers(row);
-        // The connection diagnostics drawn above the messages come first,
-        // as drawn: only the rows the layout shows now.
         let mut pieces: Vec<String> = Vec::new();
-        if let Some(network) = self.selected_network_id() {
-            let shown = self.main_layout().diagnostics;
-            pieces.extend(
-                self.state
-                    .diagnostics(network, self.diagnostics_view)
-                    .range(shown)
-                    .filter(|line| in_range((LineKind::Diagnostic, line.sequence)))
-                    .map(|line| {
-                        let text = &line.text;
-                        let range =
-                            selection.range((LineKind::Diagnostic, line.sequence), text.len());
-                        text.get(range.unwrap_or(0..0))
-                            .unwrap_or_default()
-                            .to_owned()
-                    }),
-            );
-        }
         let Some(channel) = self.state.selected_channel() else {
             // A server's log shows its lines as they are.
             let Selection::Server(network) = selection.source else {
@@ -5173,18 +5063,6 @@ impl ChatWindow {
             }
             cx.notify();
         }
-    }
-
-    fn record_diagnostic(
-        &mut self,
-        network: NetworkId,
-        view: DiagnosticsView,
-        at: std::time::SystemTime,
-        elapsed: Duration,
-        text: String,
-    ) {
-        self.state
-            .record_diagnostic(network, view, at, Some(elapsed), text);
     }
 
     fn push_diagnostic(&mut self, network: NetworkId, line: String) {
@@ -5497,27 +5375,19 @@ impl ChatWindow {
         let replayed = matches!(event, Event::JoinedReplayed { .. });
         match event {
             Event::Diagnostic {
-                at,
-                elapsed,
-                message,
-            } => self.record_diagnostic(network, DiagnosticsView::Overview, at, elapsed, message),
+                elapsed, message, ..
+            } => self
+                .state
+                .append_diagnostic_message(network, session::stage_line(Some(elapsed), &message)),
             Event::Wire {
-                at,
-                elapsed,
-                direction,
-                line,
+                direction, line, ..
             } => {
                 let arrow = match direction {
                     WireDirection::Sent => "→",
                     WireDirection::Received => "←",
                 };
-                self.record_diagnostic(
-                    network,
-                    DiagnosticsView::Protocol,
-                    at,
-                    elapsed,
-                    format!("{arrow} {line}"),
-                );
+                self.state
+                    .append_diagnostic_message(network, format!("{arrow} {line}"));
             }
             Event::CaseMapping(mapping) => self.state.set_casemapping(network, mapping),
             Event::TransportConnected => {
@@ -8629,10 +8499,8 @@ impl ChatWindow {
                 d.on_action(cx.listener(Self::reconnect_action))
             })
             .on_action(cx.listener(Self::toggle_debug))
-            .on_action(cx.listener(Self::toggle_diagnostics_view))
             .on_action(cx.listener(Self::toggle_toolbar))
             .on_action(cx.listener(Self::toggle_menu_bar))
-            .on_action(cx.listener(Self::copy_diagnostics))
             .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
             // The menu bar greys out an action no window handles, so the chat
             // window handles About itself; `open_about` covers other windows.
@@ -8956,77 +8824,40 @@ struct ReiwaShapeKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MainRow {
     Status,
-    DiagnosticsHeading,
-    Diagnostic(usize),
     Message(usize),
 }
 
 /// Fixed rows shown above the selected log's messages.
 struct MainLayout {
     status: bool,
-    heading: bool,
-    diagnostics: std::ops::Range<usize>,
 }
 
 impl MainLayout {
     fn prefix(&self) -> usize {
-        usize::from(self.status) + usize::from(self.heading) + self.diagnostics.len()
+        usize::from(self.status)
     }
 
-    fn row(&self, mut index: usize) -> MainRow {
+    fn row(&self, index: usize) -> MainRow {
         if self.status {
             if index == 0 {
                 return MainRow::Status;
             }
-            index -= 1;
+            return MainRow::Message(index - 1);
         }
-        if self.heading {
-            if index == 0 {
-                return MainRow::DiagnosticsHeading;
-            }
-            index -= 1;
-        }
-        if index < self.diagnostics.len() {
-            return MainRow::Diagnostic(self.diagnostics.start + index);
-        }
-        MainRow::Message(index - self.diagnostics.len())
+        MainRow::Message(index)
     }
 }
 
 impl ChatWindow {
     fn main_layout(&self) -> MainLayout {
-        let count = self.selected_network_id().map_or(0, |network| {
-            self.state.diagnostics(network, self.diagnostics_view).len()
-        });
         let registration_incomplete = self
             .selected_network_id()
             .and_then(|network| self.state.status(network))
             != Some(&ConnectionStatus::Registered);
-        if self.state.selected_channel().is_some() {
-            if registration_incomplete && count > 0 {
-                MainLayout {
-                    status: true,
-                    heading: true,
-                    diagnostics: 0..count,
-                }
-            } else {
-                MainLayout {
-                    status: registration_incomplete,
-                    heading: false,
-                    diagnostics: if self.debug_enabled && count > 0 {
-                        count - 1..count
-                    } else {
-                        0..0
-                    },
-                }
-            }
-        } else {
-            let diagnostics = (self.debug_enabled || registration_incomplete) && count > 0;
-            MainLayout {
-                status: true,
-                heading: diagnostics,
-                diagnostics: if diagnostics { 0..count } else { 0..0 },
-            }
+        MainLayout {
+            // A server's log always shows the connection status; a channel's
+            // only while its connection is not up.
+            status: self.state.selected_channel().is_none() || registration_incomplete,
         }
     }
 
@@ -9125,13 +8956,6 @@ impl ChatWindow {
                     .child(text)
                     .into_any_element()
             }
-            MainRow::DiagnosticsHeading => div()
-                .w_full()
-                .py_1()
-                .font_weight(FontWeight::BOLD)
-                .child(self.i18n.text("diagnostics_heading"))
-                .into_any_element(),
-            MainRow::Diagnostic(index) => self.render_diagnostic_row(index, &style, cx),
             MainRow::Message(index) => match self.state.selected_channel() {
                 Some(channel) => self.render_channel_message(channel.id, index, &style, cx),
                 None => {
@@ -9171,9 +8995,13 @@ impl ChatWindow {
                         })
                         .flatten();
                     let down_layout = layout.clone();
+                    // A connection diagnostic line is drawn muted, apart
+                    // from the server's own notices.
+                    let diagnostic = message.sender == cayenchat_app::DIAGNOSTIC_SENDER;
                     let text = div()
                         .flex_1()
                         .min_w_0()
+                        .when(diagnostic, |d| d.text_color(style.theme.text_secondary))
                         .cursor(CursorStyle::IBeam)
                         .child(styled)
                         .on_mouse_down(
@@ -9215,87 +9043,6 @@ impl ChatWindow {
                 }
             },
         }
-    }
-
-    /// A connection diagnostics line, selectable and searchable like a
-    /// message. The text is the line as `copy_diagnostics` copies it; only
-    /// bidirectional controls are neutralized, byte for byte.
-    fn render_diagnostic_row(
-        &self,
-        index: usize,
-        style: &LogStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let Some(network) = self.selected_network_id() else {
-            return div().into_any_element();
-        };
-        let view = self.diagnostics_view;
-        let Some(line) = self.state.diagnostics(network, view).get(index) else {
-            return div().into_any_element();
-        };
-        let text = &line.text;
-        let shown = diagnostic_text(text);
-        let (found, current) = self.search_ranges(text, line.sequence);
-        let source = self.state.selection();
-        let row = (LineKind::Diagnostic, line.sequence);
-        let selected = self
-            .log_selection
-            .filter(|selection| selection.source == source)
-            .and_then(|selection| selection.range(row, text.len()));
-        let text_len = text.len();
-        let styled = styled_log_text(
-            "",
-            &shown,
-            &[],
-            &[],
-            &[],
-            &found,
-            current,
-            selected,
-            &style.theme,
-        );
-        let layout = styled.layout().clone();
-        let probe = (!found.is_empty())
-            .then(|| {
-                self.search_probe_canvas(
-                    line.sequence,
-                    layout.clone(),
-                    found.first().map(|range| range.start),
-                )
-            })
-            .flatten();
-        let down_layout = layout.clone();
-        div()
-            .w_full()
-            .text_color(style.theme.text_secondary)
-            .cursor(CursorStyle::IBeam)
-            .child(styled)
-            .children(probe)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    let byte = down_layout
-                        .index_for_position(event.position)
-                        .unwrap_or_else(|index| index)
-                        .min(text_len);
-                    this.start_log_selection(source, row, byte, window, cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                let byte = layout
-                    .index_for_position(event.position)
-                    .unwrap_or_else(|index| index)
-                    .min(text_len);
-                this.extend_log_selection(source, row, byte, cx);
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    this.open_log_menu(event.position, None, window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .into_any_element()
     }
 
     fn render_channel_message(
@@ -10176,7 +9923,6 @@ fn menu_access_keys(i18n: &Localizer) -> menu_bar::AccessKeys {
 
 fn app_menus(
     debug_enabled: bool,
-    diagnostics_view: DiagnosticsView,
     toolbar_shown: bool,
     menu_bar_hidden: bool,
     i18n: &Localizer,
@@ -10240,14 +9986,6 @@ fn app_menus(
             },
             ToggleDebug,
         ),
-        MenuItem::action(
-            i18n.text(match diagnostics_view {
-                DiagnosticsView::Overview => "menu_diagnostics_show_protocol",
-                DiagnosticsView::Protocol => "menu_diagnostics_show_overview",
-            }),
-            ToggleDiagnosticsView,
-        ),
-        MenuItem::action(i18n.text("menu_copy_diagnostics"), CopyDiagnostics),
     ]);
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut menus = vec![
@@ -10495,7 +10233,6 @@ fn fixed_bindings(channel_modifier: ChannelNumberModifier) -> Vec<KeyBinding> {
         KeyBinding::new("escape", CloseSearch, Some("LogSearch")),
         KeyBinding::new("shift-enter", SearchPrevious, Some("LogSearch")),
         KeyBinding::new("secondary-shift-d", ToggleDebug, None),
-        KeyBinding::new("secondary-shift-l", CopyDiagnostics, None),
         KeyBinding::new("secondary-c", CopyLogSelection, Some("MainLog")),
         KeyBinding::new("secondary-q", Quit, None),
     ];
@@ -10621,8 +10358,7 @@ fn main() {
             desktop::watch(cx);
             apply_shortcuts(ShortcutPrefs::from(&saved), cx);
             cx.set_menus(app_menus(
-                false,
-                DiagnosticsView::default(),
+                saved.connection_diagnostics,
                 saved.show_toolbar,
                 saved.menu_bar_auto_hide,
                 &Localizer::new(Language::System),
@@ -10790,8 +10526,7 @@ fn main() {
                     chat.restore_channel_groups();
                     chat.apply_layout(&layout);
                     cx.set_menus(app_menus(
-                        false,
-                        DiagnosticsView::default(),
+                        chat.debug_enabled,
                         chat.toolbar_shown,
                         !chat.menu_bar.always(),
                         &chat.i18n,

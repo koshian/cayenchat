@@ -310,7 +310,7 @@ mod tests {
                 .size_full()
                 .key_context("Probe")
                 .track_focus(&self.focus)
-                .on_action(cx.listener(|this, _: &crate::CopyDiagnostics, _, _| {
+                .on_action(cx.listener(|this, _: &crate::ToggleDebug, _, _| {
                     this.shortcut_fired += 1;
                 }))
                 .child("recorder")
@@ -326,7 +326,7 @@ mod tests {
         cx.update(|cx| {
             cx.bind_keys([KeyBinding::new(
                 "ctrl-alt-pageup",
-                crate::CopyDiagnostics,
+                crate::ToggleDebug,
                 Some("Probe"),
             )]);
         });

@@ -12,7 +12,7 @@ use std::{borrow::Cow, ops::Range};
 
 use cayenchat_model::{ConversationId, Message, NetworkId};
 
-use crate::{AppState, DiagnosticsView, LineKey, LineKind, Selection};
+use crate::{AppState, LineKey, LineKind, Selection};
 
 /// The most hits one scan keeps. Past it the scan stops and says so.
 pub const MAX_HITS: usize = 10_000;
@@ -23,10 +23,6 @@ pub enum Source {
     Conversation(ConversationId),
     /// A server's own log.
     Server(NetworkId),
-    /// A server's connection diagnostics in one view, searched as drawn
-    /// (`DiagnosticLine::text`). Their sequences come from their own counter,
-    /// so a hit's order is its [`LineKey`], not the sequence alone.
-    Diagnostics(NetworkId, DiagnosticsView),
 }
 
 /// One matching line.
@@ -37,13 +33,9 @@ pub struct Hit {
 }
 
 impl Hit {
-    /// Where the hit sorts: the diagnostics before the messages.
+    /// Where the hit sorts.
     pub fn key(self) -> LineKey {
-        let kind = match self.source {
-            Source::Diagnostics(..) => LineKind::Diagnostic,
-            _ => LineKind::Message,
-        };
-        (kind, self.sequence)
+        (LineKind::Message, self.sequence)
     }
 }
 
@@ -147,27 +139,19 @@ impl Query {
     }
 }
 
-/// The retained messages of `source`; none when it is gone, and none for
-/// diagnostics, which are not messages.
+/// The retained messages of `source`; none when it is gone.
 pub fn messages(state: &AppState, source: Source) -> &[Message] {
     match source {
         Source::Conversation(id) => state
             .conversation(id)
             .map_or(&[][..], |conversation| &conversation.messages),
         Source::Server(network) => state.server_messages(network),
-        Source::Diagnostics(..) => &[],
     }
 }
 
 /// Whether the log still holds the line `hit` names.
 pub fn hit_exists(state: &AppState, hit: Hit) -> bool {
-    match hit.source {
-        Source::Diagnostics(network, view) => state
-            .diagnostics(network, view)
-            .binary_search_by_key(&hit.sequence, |line| line.sequence)
-            .is_ok(),
-        _ => hit_message(state, hit).is_some(),
-    }
+    hit_message(state, hit).is_some()
 }
 
 /// The text of the line `hit` names, while the log still holds it.
@@ -179,60 +163,16 @@ pub fn hit_message(state: &AppState, hit: Hit) -> Option<&Message> {
     Some(&messages[index])
 }
 
-/// The diagnostics a search of `scope` reads. `diagnostics` is the view the
-/// selected server shows, or `None` while the connection diagnostics are off
-/// (nothing is drawn, so nothing is searched). The selected scope reads the
-/// selected server's diagnostics in that view; the whole scope reads every
-/// server's, in both views.
-fn diagnostic_sources(
-    state: &AppState,
-    scope: Scope,
-    diagnostics: Option<DiagnosticsView>,
-) -> impl Iterator<Item = Source> + '_ {
-    let views: &[DiagnosticsView] = match (diagnostics, scope) {
-        (None, _) => &[],
-        (Some(_), Scope::All) => &[DiagnosticsView::Overview, DiagnosticsView::Protocol],
-        (Some(DiagnosticsView::Overview), Scope::Selected) => &[DiagnosticsView::Overview],
-        (Some(DiagnosticsView::Protocol), Scope::Selected) => &[DiagnosticsView::Protocol],
-    };
-    let selection = state.selection();
-    state
-        .networks()
-        .iter()
-        .filter(move |network| scope == Scope::All || selection == Selection::Server(network.id))
-        .flat_map(move |network| {
-            views
-                .iter()
-                .map(move |&view| Source::Diagnostics(network.id, view))
-        })
-}
-
 /// What a search of a scope looked at: see [`revision`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Revision {
     messages: (u64, u64, usize),
-    /// Newest diagnostic sequence and the number of diagnostic lines.
-    diagnostics: (u64, usize),
 }
 
 /// A cheap value that changes whenever a log `scope` covers gained or lost
 /// lines, to tell a finished search that it is out of date. Lines in other
-/// logs do not change it for [`Scope::Selected`]. `diagnostics` is as for
-/// [`Scan::new`]; the diagnostic lines are only counted when searched, so
-/// they never make a search of the messages stale.
-pub fn revision(state: &AppState, scope: Scope, diagnostics: Option<DiagnosticsView>) -> Revision {
-    // Sequences only grow, so a line recorded after a clear or a trim moves
-    // the newest one even when the count comes back to the same value.
-    let mut diagnostic_lines = (0, 0);
-    for source in diagnostic_sources(state, scope, diagnostics) {
-        if let Source::Diagnostics(network, view) = source {
-            let lines = state.diagnostics(network, view);
-            diagnostic_lines.0 = diagnostic_lines
-                .0
-                .max(lines.back().map_or(0, |line| line.sequence));
-            diagnostic_lines.1 += lines.len();
-        }
-    }
+/// logs do not change it for [`Scope::Selected`].
+pub fn revision(state: &AppState, scope: Scope) -> Revision {
     let messages = if scope == Scope::Selected {
         let source = match state.selection() {
             Selection::Channel(id) => Some(Source::Conversation(id)),
@@ -258,10 +198,7 @@ pub fn revision(state: &AppState, scope: Scope, diagnostics: Option<DiagnosticsV
             .sum();
         (0, state.latest_sequence(), conversations + servers)
     };
-    Revision {
-        messages,
-        diagnostics: diagnostic_lines,
-    }
+    Revision { messages }
 }
 
 /// What reading `text` costs against a step's budget: one unit, plus one
@@ -283,15 +220,8 @@ pub struct Scan {
 }
 
 impl Scan {
-    /// `diagnostics`: the view of the connection diagnostics the window
-    /// shows, or `None` while they are off, in which case they are not read.
-    pub fn new(
-        state: &AppState,
-        scope: Scope,
-        diagnostics: Option<DiagnosticsView>,
-        query: Query,
-    ) -> Self {
-        let mut sources = match scope {
+    pub fn new(state: &AppState, scope: Scope, query: Query) -> Self {
+        let sources = match scope {
             Scope::Selected => match state.selection() {
                 Selection::Channel(id) => vec![Source::Conversation(id)],
                 Selection::Server(network) => vec![Source::Server(network)],
@@ -309,7 +239,6 @@ impl Scan {
                 )
                 .collect(),
         };
-        sources.extend(diagnostic_sources(state, scope, diagnostics));
         Self {
             query,
             sources,
@@ -367,32 +296,15 @@ impl Scan {
         let before = self.hits.len();
         while self.cursor < self.sources.len() && budget > 0 {
             let source = self.sources[self.cursor];
-            let finished_source = match source {
-                Source::Diagnostics(network, view) => {
-                    let lines = state.diagnostics(network, view);
-                    let start = lines.partition_point(|line| line.sequence < self.next_sequence);
-                    self.read(
-                        source,
-                        lines
-                            .iter()
-                            .skip(start)
-                            .map(|line| (line.sequence, Cow::Borrowed(line.text.as_str()))),
-                        &mut budget,
-                    )
-                }
-                _ => {
-                    let messages = messages(state, source);
-                    let start =
-                        messages.partition_point(|message| message.sequence < self.next_sequence);
-                    self.read(
-                        source,
-                        messages[start..]
-                            .iter()
-                            .map(|message| (message.sequence, Cow::Borrowed(&*message.text))),
-                        &mut budget,
-                    )
-                }
-            };
+            let messages = messages(state, source);
+            let start = messages.partition_point(|message| message.sequence < self.next_sequence);
+            let finished_source = self.read(
+                source,
+                messages[start..]
+                    .iter()
+                    .map(|message| (message.sequence, Cow::Borrowed(&*message.text))),
+                &mut budget,
+            );
             if finished_source {
                 self.cursor += 1;
                 self.next_sequence = 0;
@@ -530,7 +442,7 @@ mod tests {
         for _ in 0..4 {
             state.append_conversation_activity(a, format!("{} needle", "x".repeat(640)));
         }
-        let mut scan = Scan::new(&state, Scope::All, None, Query::new("needle").unwrap());
+        let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
         // Each line costs 11 units, so a budget of 15 reads two per step.
         assert!(!scan.step(&state, 15));
         assert_eq!(scan.hits().len(), 2);
@@ -580,7 +492,7 @@ mod tests {
     }
 
     fn run(state: &AppState, scope: Scope, term: &str, budget: usize) -> Vec<Hit> {
-        let mut scan = Scan::new(state, scope, None, Query::new(term).unwrap());
+        let mut scan = Scan::new(state, scope, Query::new(term).unwrap());
         while !scan.step(state, budget) {}
         scan.hits().to_vec()
     }
@@ -632,7 +544,7 @@ mod tests {
         for n in 0..10 {
             state.append_conversation_activity(a, format!("needle {n}"));
         }
-        let mut scan = Scan::new(&state, Scope::All, None, Query::new("needle").unwrap());
+        let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
         assert!(!scan.step(&state, 4));
         assert_eq!(scan.hits().len(), 4);
         // New lines land after the cursor; nothing is read twice.
@@ -643,7 +555,7 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), 11);
         // A log that disappeared mid-scan is skipped, not a panic.
-        let mut scan = Scan::new(&state, Scope::All, None, Query::new("needle").unwrap());
+        let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
         let (mut other, _, _) = state_with_two_channels();
         other.append_conversation_activity(a, "x".into());
         while !scan.step(&other, 3) {}
@@ -665,7 +577,7 @@ mod tests {
             }
         }
         let all = {
-            let mut scan = Scan::new(&state, Scope::All, None, Query::new("needle").unwrap());
+            let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
             scan.step(&state, 1_000_000);
             scan
         };
@@ -686,7 +598,7 @@ mod tests {
         let kept: Vec<u64> = all.hits().iter().map(|h| h.sequence).collect();
         assert_eq!(kept, every[every.len() - MAX_HITS..]);
         // Small slices give the same list.
-        let mut sliced = Scan::new(&state, Scope::All, None, Query::new("needle").unwrap());
+        let mut sliced = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
         while !sliced.step(&state, 777) {}
         assert!(sliced.is_truncated());
         assert_eq!(sliced.hits(), all.hits());
@@ -703,7 +615,7 @@ mod tests {
         for _ in 0..2_000 {
             state.append_conversation_activity(id, "needle".into());
         }
-        let mut scan = Scan::new(&state, Scope::All, None, Query::new("needle").unwrap());
+        let mut scan = Scan::new(&state, Scope::All, Query::new("needle").unwrap());
         while !scan.step(&state, 100) {}
         assert!(!scan.is_truncated());
         assert_eq!(scan.hits().len(), 2_000);
@@ -713,183 +625,86 @@ mod tests {
     fn revision_changes_with_added_lines() {
         let (mut state, a, _) = state_with_two_channels();
         state.dispatch(crate::Command::SelectChannel(a));
-        let all = revision(&state, Scope::All, None);
-        let selected = revision(&state, Scope::Selected, None);
+        let all = revision(&state, Scope::All);
+        let selected = revision(&state, Scope::Selected);
         state.append_conversation_activity(a, "x".into());
-        assert_ne!(revision(&state, Scope::All, None), all);
-        assert_ne!(revision(&state, Scope::Selected, None), selected);
+        assert_ne!(revision(&state, Scope::All), all);
+        assert_ne!(revision(&state, Scope::Selected), selected);
         // Another log's lines leave a search of the selected one alone.
         let (_, b) = (a, state.conversations()[1].id);
-        let selected = revision(&state, Scope::Selected, None);
+        let selected = revision(&state, Scope::Selected);
         state.append_conversation_activity(b, "y".into());
-        assert_eq!(revision(&state, Scope::Selected, None), selected);
+        assert_eq!(revision(&state, Scope::Selected), selected);
     }
 
-    fn note(state: &mut AppState, network: NetworkId, view: DiagnosticsView, text: &str) {
-        state.record_diagnostic(
-            network,
-            view,
-            std::time::SystemTime::UNIX_EPOCH,
-            None,
-            text.into(),
-        );
-    }
-
-    fn scan(
-        state: &AppState,
-        scope: Scope,
-        shown: Option<DiagnosticsView>,
-        term: &str,
-    ) -> Vec<Hit> {
-        let mut scan = Scan::new(state, scope, shown, Query::new(term).unwrap());
+    fn scan(state: &AppState, scope: Scope, term: &str) -> Vec<Hit> {
+        let mut scan = Scan::new(state, scope, Query::new(term).unwrap());
         while !scan.step(state, 7) {}
         scan.hits().to_vec()
     }
 
     #[test]
-    fn diagnostics_are_searched_by_scope_and_only_while_shown() {
-        use DiagnosticsView::{Overview, Protocol};
+    fn diagnostic_lines_are_searched_with_the_server_log() {
         let (mut state, _, _) = state_with_two_channels();
         let (one, two) = (state.networks()[0].id, state.networks()[1].id);
         state.append_server_message(one, "Sleep notice in the server log".into());
-        note(&mut state, one, Overview, "Sleep notice: idle");
-        note(&mut state, one, Protocol, "← :s NOTICE * :Sleep notice");
-        note(&mut state, two, Overview, "Sleep notice on two");
+        state.append_diagnostic_message(one, "[1.0s] Sleep notice: idle".into());
+        state.append_diagnostic_message(one, "← :s NOTICE * :Sleep notice".into());
+        state.append_diagnostic_message(two, "Sleep notice on two".into());
         state.dispatch(crate::Command::SelectServer(one));
 
-        // Off: no diagnostic is read.
-        let hits = scan(&state, Scope::All, None, "sleep notice");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].source, Source::Server(one));
-
-        // This log: the selected server's log and the view shown.
-        let hits = scan(&state, Scope::Selected, Some(Overview), "sleep notice");
-        let sources: Vec<_> = hits.iter().map(|hit| hit.source).collect();
-        assert_eq!(
-            sources,
-            [Source::Diagnostics(one, Overview), Source::Server(one)]
-        );
-        // The diagnostics sort before the messages, so a search starts at the
-        // newest message, not at a diagnostic line.
-        assert_eq!(
-            initial_hit(&hits, None).unwrap().source,
-            Source::Server(one)
-        );
-        let hits = scan(&state, Scope::Selected, Some(Protocol), "sleep notice");
-        assert_eq!(hits[0].source, Source::Diagnostics(one, Protocol));
-
-        // All logs: every server, both views, in log order.
-        let hits = scan(&state, Scope::All, Some(Overview), "sleep notice");
-        assert_eq!(hits.len(), 4);
+        // This log: the selected server's lines, in log order.
+        let hits = scan(&state, Scope::Selected, "sleep notice");
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|hit| hit.source == Source::Server(one)));
         assert!(
             hits.windows(2)
                 .all(|pair| pair[0].sequence < pair[1].sequence)
         );
+        // The search starts at the newest line.
+        assert_eq!(initial_hit(&hits, None), hits.last().copied());
+
+        // All logs: every server.
+        let hits = scan(&state, Scope::All, "sleep notice");
+        assert_eq!(hits.len(), 4);
         assert!(hits.iter().all(|hit| hit_exists(&state, *hit)));
 
-        // A channel's own search leaves the server's diagnostics out.
+        // A channel's own search leaves the server log out.
         let channel = state.conversations()[0].id;
         state.dispatch(crate::Command::SelectChannel(channel));
-        assert!(scan(&state, Scope::Selected, Some(Overview), "sleep").is_empty());
-    }
-
-    #[test]
-    fn diagnostics_sort_before_messages_regardless_of_record_order() {
-        use DiagnosticsView::Overview;
-        let (mut state, _, _) = state_with_two_channels();
-        let one = state.networks()[0].id;
-        state.dispatch(crate::Command::SelectServer(one));
-        state.append_server_message(one, "needle early".into());
-        note(&mut state, one, Overview, "needle diagnostic");
-        state.append_server_message(one, "needle late".into());
-        let hits = scan(&state, Scope::Selected, Some(Overview), "needle");
-        let sources: Vec<_> = hits.iter().map(|hit| hit.source).collect();
-        assert_eq!(
-            sources,
-            [
-                Source::Diagnostics(one, Overview),
-                Source::Server(one),
-                Source::Server(one)
-            ]
-        );
-        // The search starts at the newest message.
-        assert_eq!(initial_hit(&hits, None), hits.last().copied());
+        assert!(scan(&state, Scope::Selected, "sleep").is_empty());
     }
 
     #[test]
     fn a_diagnostic_hit_goes_stale_with_its_line_not_with_its_position() {
-        use DiagnosticsView::Overview;
         let (mut state, _, _) = state_with_two_channels();
         let one = state.networks()[0].id;
         state.dispatch(crate::Command::SelectServer(one));
-        note(&mut state, one, Overview, "needle");
-        let hit = scan(&state, Scope::Selected, Some(Overview), "needle")[0];
-        for n in 0..crate::DIAGNOSTIC_LIMIT {
-            note(&mut state, one, Overview, &format!("line {n}"));
+        state.append_diagnostic_message(one, "needle".into());
+        let hit = scan(&state, Scope::Selected, "needle")[0];
+        assert!(hit_exists(&state, hit));
+        for n in 0..crate::MAX_RETAINED {
+            state.append_diagnostic_message(one, format!("line {n}"));
         }
         // Trimmed away: the hit names nothing, and no other line.
         assert!(!hit_exists(&state, hit));
-        state.clear_diagnostics(one);
-        note(&mut state, one, Overview, "needle");
-        assert!(!hit_exists(&state, hit));
     }
 
     #[test]
-    fn revision_follows_the_diagnostics_only_while_they_are_searched() {
-        use DiagnosticsView::Overview;
-        let (mut state, _, _) = state_with_two_channels();
-        let one = state.networks()[0].id;
-        state.dispatch(crate::Command::SelectServer(one));
-        let off = revision(&state, Scope::Selected, None);
-        let on = revision(&state, Scope::Selected, Some(Overview));
-        note(&mut state, one, Overview, "x");
-        assert_eq!(revision(&state, Scope::Selected, None), off);
-        assert_ne!(revision(&state, Scope::Selected, Some(Overview)), on);
-        let all = revision(&state, Scope::All, Some(Overview));
-        let two = state.networks()[1].id;
-        note(&mut state, two, DiagnosticsView::Protocol, "y");
-        assert_ne!(revision(&state, Scope::All, Some(Overview)), all);
-    }
-
-    #[test]
-    fn revision_changes_when_diagnostics_are_cleared_and_rerecorded() {
-        use DiagnosticsView::Overview;
-        let (mut state, _, _) = state_with_two_channels();
-        let one = state.networks()[0].id;
-        state.dispatch(crate::Command::SelectServer(one));
-        for scope in [Scope::Selected, Scope::All] {
-            note(&mut state, one, Overview, "a");
-            note(&mut state, one, Overview, "b");
-            let before = revision(&state, scope, Some(Overview));
-            state.clear_diagnostics(one);
-            assert_ne!(revision(&state, scope, Some(Overview)), before);
-            note(&mut state, one, Overview, "a");
-            note(&mut state, one, Overview, "b");
-            assert_ne!(revision(&state, scope, Some(Overview)), before);
-            state.clear_diagnostics(one);
-        }
-    }
-
-    #[test]
-    fn revision_ignores_diagnostics_when_they_are_not_searched() {
-        use DiagnosticsView::{Overview, Protocol};
+    fn revision_follows_the_diagnostic_lines() {
         let (mut state, _, _) = state_with_two_channels();
         let one = state.networks()[0].id;
         let two = state.networks()[1].id;
         state.dispatch(crate::Command::SelectServer(one));
-        let selected = revision(&state, Scope::Selected, None);
-        let all = revision(&state, Scope::All, None);
-        for n in 0..3 {
-            note(&mut state, one, Overview, &format!("a{n}"));
-            note(&mut state, one, Protocol, &format!("b{n}"));
-            note(&mut state, two, Overview, &format!("c{n}"));
-        }
-        assert_eq!(revision(&state, Scope::Selected, None), selected);
-        assert_eq!(revision(&state, Scope::All, None), all);
-        // Clearing them changes nothing for a search that never read them.
-        state.clear_diagnostics(one);
-        assert_eq!(revision(&state, Scope::Selected, None), selected);
-        assert_eq!(revision(&state, Scope::All, None), all);
+        let selected = revision(&state, Scope::Selected);
+        let all = revision(&state, Scope::All);
+        state.append_diagnostic_message(one, "x".into());
+        assert_ne!(revision(&state, Scope::Selected), selected);
+        assert_ne!(revision(&state, Scope::All), all);
+        // Another server's lines leave a search of the selected one alone.
+        let selected = revision(&state, Scope::Selected);
+        state.append_diagnostic_message(two, "y".into());
+        assert_eq!(revision(&state, Scope::Selected), selected);
     }
 }
 
@@ -929,7 +744,7 @@ mod measurement {
         let repeated = format!("{}b", "a".repeat(512));
         for term in ["zzz", "Ordinary", "こんにちは", repeated.as_str()] {
             let start = std::time::Instant::now();
-            let mut scan = Scan::new(&state, Scope::All, None, Query::new(term).unwrap());
+            let mut scan = Scan::new(&state, Scope::All, Query::new(term).unwrap());
             let mut slices = 0;
             let mut longest = std::time::Duration::ZERO;
             loop {

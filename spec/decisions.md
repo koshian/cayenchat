@@ -203,7 +203,8 @@ directional, decoded IRC command/reply lines through core events. The chat windo
 keeps a bounded in-memory transcript and copies it from the native menu. Known
 credential commands are masked, while normal message bodies remain visible.
 The terminal disconnect reason is also part of the copied transcript.
-The View menu switches the log between an overview (stages and notes) and the
+(The separate transcript, its two views and its copy command are replaced by
+D080: the lines go to the server log.) The View menu switches the log between an overview (stages and notes) and the
 IRC protocol (the decoded lines with → / ←); each is kept per server, bounded
 to 1000 lines, and cleared when a new connection attempt starts. Every line
 shows the local date and time it was recorded (milliseconds, UTC offset) and
@@ -3407,7 +3408,7 @@ there is no network, bouncer or connection behind it.
 
 ## D077 — Connection diagnostics are kept in `app` (#790)
 
-**Status:** Accepted
+**Status:** Superseded by D080 (#878)
 
 2026-10-31. Refines the connection diagnostics above (#670).
 
@@ -3511,3 +3512,53 @@ at most `MAX_ATTENTION` entries).
   entries are history is read from the line in the log at that moment, so the
   list gains no second structure; the order (per conversation, oldest first)
   is unchanged.
+
+## D080 — Connection diagnostics go to the server log, and the switch is saved (#878)
+
+**Status:** Accepted
+
+2026-11-01. Replaces D077 (a separate diagnostics store with an overview and a
+protocol view) and the diagnostics parts of #670.
+
+A main purpose of the diagnostics is to give developers and users of IRC
+servers and bouncers (soju and others) material to tell interoperability
+problems apart. That material has to be one chronological log that is copied
+like any other log, and a reproduction that includes a restart must not lose
+the start of the session.
+
+- **One place.** A stage note (`Event::Diagnostic`, the UI's own notes) and an
+  IRC line (`Event::Wire`, with its → / ←) are appended to the server log of
+  their network (`AppState::append_diagnostic_message`), mixed with the
+  server's notices in the order they happened. `app::diagnostics`,
+  `DiagnosticsView`, `ToggleDiagnosticsView`, `CopyDiagnostics`, the
+  diagnostics rows and heading above the log, `LineKind::Diagnostic`,
+  `search::Source::Diagnostics` and the selection's snapshot of the diagnostic
+  counter are gone. Selecting, copying and searching are the server log's own.
+  A new connection attempt no longer clears them.
+- **Look.** A diagnostic line has the sender `DIAGNOSTIC_SENDER` and is drawn
+  in the secondary text color; its text is `[1.2s] note` for a stage (the time
+  since the attempt began, only on stage lines) or `→ line` / `← line`. The
+  log's time column stamps it; the date, milliseconds and offset of the old
+  stamp are not kept. Like every server line it marks nothing unread, has no
+  highlight, notifies no one and is not in the combined log or in a log file.
+- **When.** Lines are kept until the connection registers, and afterwards only
+  while the diagnostics are on (`AppState::set_diagnostics_enabled`). The
+  worker's cost rule is unchanged: with the switch off, an established
+  session formats and sends no IRC line (`Connection::set_transcript`); with
+  it on the cost of formatting and sending every line is accepted.
+- **Whole tags while asked for.** The worker keeps a tag section whole when the
+  UI asked for the transcript (`Transcript::requested`); before registration
+  and not asked, a section over 512 bytes is still shortened. Masking of
+  secrets does not depend on either. The protocol's tag limit bounds the line.
+- **Retention.** The server log's own limit (2,000 lines per server, the oldest
+  1,000 dropped past it). Wire lines may push out older notices of the server;
+  recent traffic matters more than old notices. The log is in memory only.
+- **Saved.** `Settings::connection_diagnostics` (default off, no version
+  change) holds the switch, set by View → "Write Connection Diagnostics to
+  Server Log" through `save_view_setting` and read at start. It is not
+  `Experimental::debug_logging`, which writes the toolkit's stderr to a file.
+  The settings window follows the file's value (`follow_file_flag`) so that
+  its save does not undo the menu's choice.
+- **Accepted.** With the switch off and a registered connection, a stage note
+  (a sleep note, a refused send) is not kept; turning the switch on later does
+  not show what happened before.

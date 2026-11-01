@@ -1806,7 +1806,6 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
                 row: on_screen,
                 byte: 3,
             },
-            diagnostics_end: u64::MAX,
         });
         let before = chat.notifier.shown.len();
         chat.handle_events(
@@ -3215,6 +3214,8 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
         ]
     };
     chat.update(cx, |chat, cx| {
+        // The wire lines of registered connections are kept only on request.
+        chat.state.set_diagnostics_enabled(true);
         assert_eq!(chat.state.networks().len(), 2);
         assert_eq!(chat.sessions[&custom_net].profile_id, custom);
         chat.handle_events(
@@ -3237,7 +3238,10 @@ fn events_stay_with_their_server_and_removed_servers_disappear(cx: &mut TestAppC
         assert_eq!(texts(chat, ircnet), ["ircnet"]);
         let wire = |network| {
             chat.state
-                .diagnostics(network, cayenchat_app::DiagnosticsView::Protocol)
+                .server_messages(network)
+                .iter()
+                .filter(|message| message.sender == cayenchat_app::DIAGNOSTIC_SENDER)
+                .collect::<Vec<_>>()
         };
         assert_eq!(wire(custom_net).len(), 1);
         assert_eq!(wire(ircnet).len(), 1);
