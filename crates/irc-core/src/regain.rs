@@ -91,8 +91,12 @@ pub enum OpRegainStatus {
 /// What the worker is to do next.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Step {
-    /// Send `PART` and `JOIN` for the channel.
+    /// Send `PART` for the channel. The `JOIN` follows as [`Step::Join`]
+    /// once our own PART (or KICK) is echoed, because a bouncer may drop a
+    /// JOIN of a channel it still counts us in (#892).
     Rejoin(String),
+    /// Our departure is confirmed: send `JOIN` for the channel.
+    Join(String),
     /// Send `MODE channel +flags` (if any) and `TOPIC channel :topic`.
     Restore {
         channel: String,
@@ -237,21 +241,26 @@ impl OpRegain {
 
     /// Our own PART, or a KICK of us. Outside an attempt (or a second time
     /// within it) the user or a moderator left: forget the channel.
-    pub(crate) fn parted(&mut self, name: &str) {
+    /// The first one within an attempt confirms that we are out, which is
+    /// when the JOIN is sent (exactly once).
+    pub(crate) fn parted(&mut self, name: &str) -> Vec<Step> {
         let key = self.mapping.fold(name);
         let Some(channel) = self.channels.get_mut(&key) else {
-            return;
+            return Vec::new();
         };
+        let mut steps = Vec::new();
         match &mut channel.stage {
             Stage::Attempt { parted, joined, .. } if !*parted && !*joined => {
                 *parted = true;
                 channel.in_channel = false;
+                steps.push(Step::Join(channel.name.clone()));
             }
             _ => {
                 self.channels.remove(&key);
             }
         }
         self.touch();
+        steps
     }
 
     /// The user sent a PART for `name`: forget the channel at once, without
