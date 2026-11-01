@@ -148,6 +148,9 @@ fn cache_limits() -> CacheLimits {
         budget_bytes: 2 * 1024 * 1024,
         // Rows keep their height, so no row needs to hear back.
         max_waiters: 0,
+        // A transient failure shows the default avatar and is retried every
+        // `retry_after` while the row is drawn, however often it failed.
+        max_attempts: None,
         ..CacheLimits::default()
     }
 }
@@ -184,6 +187,10 @@ pub struct Avatars {
     /// Present only while avatars are shown.
     fetcher: Option<Arc<dyn Fetcher>>,
     released: RefCell<Vec<Released>>,
+    /// The one timer that redraws the avatar panes when a transient failure
+    /// becomes retryable, so visible rows retry without a redraw of their
+    /// own. At most one exists, and none while nothing waits to be retried.
+    retry_wake: Option<gpui::Task<()>>,
     /// Default avatars by look and pixel size; bounded by the 512
     /// combinations times the few sizes in use.
     defaults: RefCell<HashMap<(default_avatar::Params, u32), Arc<gpui::Image>>>,
@@ -201,6 +208,7 @@ impl Avatars {
             limits: Limits::avatar(PIXELS),
             fetcher: None,
             released: RefCell::new(Vec::new()),
+            retry_wake: None,
             defaults: RefCell::new(HashMap::new()),
             #[cfg(test)]
             fetcher_override: None,
@@ -252,6 +260,7 @@ impl Avatars {
         self.cache.get_mut().set_enabled(enabled);
         if !enabled {
             self.fetcher = None;
+            self.retry_wake = None;
             self.defaults.get_mut().clear();
             self.originals.get_mut().clear();
         } else if self.fetcher.is_none() {
@@ -349,6 +358,17 @@ impl Avatars {
         self.fetcher_override = Some(fetcher);
     }
 
+    /// Shortens the retry interval (tests); drops the records.
+    #[cfg(test)]
+    pub fn use_retry_after(&mut self, retry_after: std::time::Duration) {
+        let enabled = self.cache.get_mut().enabled();
+        *self.cache.get_mut() = PreviewCache::new(CacheLimits {
+            retry_after,
+            ..cache_limits()
+        });
+        self.cache.get_mut().set_enabled(enabled);
+    }
+
     #[cfg(test)]
     pub fn cache(&self) -> std::cell::Ref<'_, PreviewCache<Arc<RenderImage>, (), Key>> {
         self.cache.borrow()
@@ -438,8 +458,33 @@ impl ChatWindow {
             self.refresh_whois_avatars(cx);
             cx.notify();
         }
+        self.schedule_avatar_retry(cx);
         self.pump_avatars(cx);
         self.pump_previews(cx);
+    }
+
+    /// Arms the single retry timer for the earliest transient failure still
+    /// waiting. When it fires, the panes are redrawn: rows on screen ask
+    /// again and the cache starts those loads; rows off screen do not ask,
+    /// so they cause no request. Failures already due arm nothing.
+    fn schedule_avatar_retry(&mut self, cx: &mut Context<Self>) {
+        if self.avatars.retry_wake.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        let Some(due) = self.avatars.cache.get_mut().next_retry(now) else {
+            return;
+        };
+        let delay = due.saturating_duration_since(now);
+        self.avatars.retry_wake = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |chat, cx| {
+                chat.avatars.retry_wake = None;
+                cx.notify();
+                chat.schedule_avatar_retry(cx);
+            })
+            .ok();
+        }));
     }
 }
 
@@ -474,6 +519,8 @@ mod tests {
     #[derive(Default)]
     struct FakeFetcher {
         calls: Mutex<Vec<String>>,
+        /// URLs naming `flaky` fail with a network error while this is set.
+        down: std::sync::atomic::AtomicBool,
     }
 
     impl FakeFetcher {
@@ -499,6 +546,9 @@ mod tests {
             }
             if url.contains("missing") {
                 return Err(LoadError::Status(404));
+            }
+            if url.contains("flaky") && self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(LoadError::Network);
             }
             Ok(if url.contains("huge") {
                 png(600, 600)
@@ -1133,6 +1183,70 @@ mod tests {
         chat.read_with(cx, |chat, _| {
             assert_eq!(chat.avatars.defaults_made(), 0, "released")
         });
+    }
+
+    #[gpui::test]
+    fn transient_failures_show_the_default_and_retry_while_shown_without_a_limit(
+        cx: &mut TestAppContext,
+    ) {
+        use std::{sync::atomic::Ordering, time::Duration};
+        const FLAKY: &str = "https://avatars.example.com/flaky";
+        let fetcher = Arc::new(FakeFetcher::default());
+        fetcher.down.store(true, Ordering::SeqCst);
+        let (chat, cx) = open(cx, true, false, &fetcher);
+        chat.update(cx, |chat, _| {
+            chat.avatars.use_retry_after(Duration::from_millis(40));
+        });
+        events(
+            &chat,
+            cx,
+            vec![
+                avatar("bob", Some(FLAKY)),
+                avatar("dave", Some("https://avatars.example.com/missing")),
+                avatar("carol", Some("https://avatars.example.com/flaky2")),
+                say("bob", "hello"),
+                say("dave", "hello"),
+            ],
+        );
+        let count = |url: &str| fetcher.calls().iter().filter(|c| *c == url).count();
+        assert_eq!(count(FLAKY), 1);
+        chat.read_with(cx, |chat, _| {
+            assert!(matches!(chat.avatars.lookup(FLAKY, 32), super::Shown::None));
+        });
+        // Failures with no redraw or input in between: the timer alone
+        // brings the shown row back, with no attempt limit. (The test
+        // executor fires timers as soon as it is idle, so one round may
+        // retry more than once; only the direction is asserted.)
+        for _ in 0..5 {
+            let before = count(FLAKY);
+            std::thread::sleep(Duration::from_millis(60));
+            cx.executor().advance_clock(Duration::from_secs(1));
+            cx.run_until_parked();
+            assert!(count(FLAKY) > before, "the timer retried");
+        }
+        assert!(count(FLAKY) >= 6, "no attempt limit");
+        // Permanent errors are not retried, and an avatar that is not on
+        // screen (carol never spoke) is not fetched by the timer.
+        assert_eq!(count("https://avatars.example.com/missing"), 1);
+        assert_eq!(count("https://avatars.example.com/flaky2"), 0);
+        // Back online: the next retry shows the real image.
+        fetcher.down.store(false, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(60));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let fetched = count(FLAKY);
+        chat.read_with(cx, |chat, _| {
+            assert!(matches!(
+                chat.avatars.lookup(FLAKY, 32),
+                super::Shown::Image(_)
+            ));
+        });
+        // Nothing is left to retry, so no further requests follow.
+        std::thread::sleep(Duration::from_millis(60));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(count(FLAKY), fetched);
+        assert_eq!(count("https://avatars.example.com/missing"), 1);
     }
 
     #[gpui::test]
