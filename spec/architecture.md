@@ -1617,10 +1617,12 @@ irc-core cap: batch -> ACK -> draft/chathistory (+ server-time, message-tags on 
 irc-core history::HistoryRequests (worker; bounded queue, one request at a time)
         |   our JOIN -> CHATHISTORY LATEST <channel> * min(50, ISUPPORT CHATHISTORY)
         |   Event::HistoryRequested { channel }
-        |   reply batch consumed whole -> Event::ChannelHistory { channel, messages }
+        |   reply batch consumed -> Event::HistoryLine { channel, message } per line,
+        |   then Event::ChannelHistory { channel, incomplete } at its end
         v
 app::AppState::history_requested (reserve 256 sequences)
-app::AppState::insert_channel_history (splice at the reservation, dedupe)
+app::AppState::push_history_line (insert at the reservation, dedupe)
+app::AppState::finish_history_for (order the block by server time)
         v
 main log (same rows); not in the combined subwindow; no notification
 ```
@@ -1657,8 +1659,14 @@ classification, rosters, avatars, notifications or the server log. Only
 PRIVMSG and NOTICE addressed to the channel are kept (at most 100; the
 rest is counted in a diagnostic); other commands, which servers must not
 send without event-playback, are dropped rather than applied. Lines are
-reported together when the batch ends, so a batch cut off by a disconnect
-reports nothing. A reply after its timeout is swallowed (the last 8
+reported as they arrive (`Event::HistoryLine`), not when the batch ends:
+a slow bouncer shows what it has so far, and a batch that never closes
+still shows its lines. What is known only at the end (the end of history,
+lines possibly missing, a failure) is reported once, by
+`Event::ChannelHistory` / `Event::OlderChannelHistory`. A batch that ends
+by `FAIL`, a timeout or a disconnect keeps the lines already shown; a
+failure puts one line in the server log (the timeout's says how many lines
+stay). A reply after its timeout is swallowed (the last 8
 abandoned channels are remembered; a reply that had already started is
 swallowed up to its closing line) rather than shown as live or as
 another request's reply. Other `chathistory` batches (bouncer playback)
@@ -1670,11 +1678,32 @@ own JOIN as `HistServ` PRIVMSGs inside the reply when event-playback is not
 negotiated; they are shown as ordinary history lines.
 
 Merge: `Event::HistoryRequested` makes `AppState` reserve 256 sequences
-after the conversation's current lines. `Event::ChannelHistory` inserts
-its lines there as `Provenance::Requested`, in the server's order, before
+after the conversation's current lines. Each `Event::HistoryLine` inserts
+its line there at once as `Provenance::Requested`, in arrival order, before
 every line that arrived after the request, so unrelated live lines are
 never reordered and logs stay in ascending sequence order (`LogList`
-replaces only the inserted rows). Lines the duplicate filter recognizes
+replaces only the inserted rows).
+
+Principle (chathistory display): the flow is arrival order, history is
+shown as it arrives and tidied within the range that was set aside for
+it. Live lines (and the user's own messages) are never sorted: arrival is
+their truth, an untrusted `server-time` tag must not shape the log, and
+the sequence semantics that unread tracking and echo confirmation rely on
+do not change. When the reply ends (`Event::ChannelHistory`,
+`Event::OlderChannelHistory`, also after a failure), `AppState` puts the
+lines inside the block, and only those, in `server-time` order with a
+stable sort and hands the block's sequences out again in that order; no
+line outside the block moves, and the log as a whole is never re-sorted.
+Lines of equal time keep their arrival order; a line without a time counts
+as having the time of the line before it (so it keeps its place relative
+to it), and one at the start of the reply, with no time to inherit, stays
+before every timed line. The gap note of an incomplete reply goes first.
+Notified-line queue entries follow their lines. This applies to every
+requested reply (LATEST, BEFORE, reconnect recovery, direct messages found
+by TARGETS). Autonomous playback (`znc.in/playback`, `replay.rs`) has no
+reserved block and is not reordered. The raw wire order stays in the
+connection diagnostics, so a server that sends out of order can still be
+told apart. Lines the duplicate filter recognizes
 (a live line the reply repeats, bouncer playback) are skipped. Nothing is
 marked unread or highlighted and nothing notifies, but each line is
 searched for mentions and keywords by the same code as a live line
@@ -1709,10 +1738,11 @@ ChatWindow::load_older_history
 irc-core Connection::request_older_history(channel, request, MessageReference, limit)
         |   worker: history::HistoryRequests::enqueue_older (queue front)
         |   CHATHISTORY BEFORE <channel> msgid=<id> | timestamp=<time> <n>
-        |   reply batch -> Event::OlderChannelHistory { request, messages, status }
+        |   reply batch -> Event::HistoryLine { request, message } per line,
+        |   then Event::OlderChannelHistory { request, status } at its end
         v
-app::AppState::insert_older_history / older_history_failed
-        |   prepend with descending sequences, skip overlap, bound
+app::AppState::push_older_history_line / finish_older_history / older_history_failed
+        |   insert into a block below everything, skip overlap, bound, order at the end
         v
 LogList::sync keeps the top row (sequence + pixel offset) in place
 ```
@@ -1766,12 +1796,14 @@ generation). Lines already near the top of the log (a repeated page,
 recent history, playback) are skipped with a temporary duplicate filter
 seeded from the oldest 256 lines, and lines received recently with the
 conversation's own filter (checked, not recorded, so paging does not push
-out the keys live traffic needs). The rest is prepended in the server's
-order with sequences counted down below everything the log holds, with
-one `Vec::splice`; nothing already shown moves, is renumbered or
-re-sorted, and live lines arriving meanwhile stay at the bottom. When the
-log would exceed 2,000 lines the oldest lines of the page are dropped;
-paging resumes once live traffic trims the log.
+out the keys live traffic needs). The rest is inserted line by line as it
+arrives into a block of 256 sequences taken below everything the log holds
+when the page's first line arrives; at the end the block is ordered by
+server time (see the principle above). Nothing outside the page moves, is
+renumbered or re-sorted, and live lines arriving meanwhile stay at the
+bottom. When the log would hold 2,000 lines the page stops being added
+(lines arriving later are dropped); paging resumes once live traffic trims
+the log.
 
 Viewport: `LogList::sync` records the message row at the top of a scrolled
 list and its pixel offset within the row, and after splicing restores that
@@ -1795,10 +1827,10 @@ ui::ChatWindow::reconnect_config -> ConnectionConfig::resume_history
 irc-core history::HistoryRequests::with_resume
         |   our JOIN -> CHATHISTORY LATEST <channel> msgid=<id> | timestamp=<t-5 s> <n>
         |   Event::HistoryRequested { resumed: true }
-        |   reply -> Event::ChannelHistory { messages, incomplete }
+        |   reply -> Event::HistoryLine per line, Event::ChannelHistory { incomplete }
         v
 app::AppState::history_resumed (pending = the cut's slot)
-app::AppState::insert_resumed_history (dedupe; optional gap note first)
+app::AppState::push_history_line / finish_history_for (dedupe; optional gap note first)
 ```
 
 When a session that had history available (`Event::HistoryAvailable`)

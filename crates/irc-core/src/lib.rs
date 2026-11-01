@@ -1003,17 +1003,27 @@ pub enum Event {
         channel: String,
         resumed: bool,
     },
-    /// The complete reply to our history request for `channel`, in the
-    /// server's order (oldest first). Empty when the server had nothing, the
-    /// request failed or timed out, or the capability went away; a reply
-    /// that never ended reports nothing partial.
+    /// One line of the reply to our history request, as it arrives (the
+    /// server's order, which need not be chronological). `request` is the
+    /// older-page request it answers ([`Connection::request_older_history`]),
+    /// `None` for the latest lines asked for on join. At most
+    /// [`MAX_HISTORY_LINES`] follow one request, all before its end event.
+    HistoryLine {
+        channel: String,
+        request: Option<u64>,
+        message: HistoryMessage,
+    },
+    /// The end of the reply to our request for `channel`'s latest lines,
+    /// reported once after any [`Event::HistoryLine`]s of it. No lines
+    /// preceded it when the server had nothing, the request failed or timed
+    /// out, or the capability went away; lines that did arrive before a
+    /// failure stay valid.
     ///
     /// `incomplete`: a resumed request whose reply reached its limit, so
     /// lines between the reference and the oldest line returned may be
     /// missing.
     ChannelHistory {
         channel: String,
-        messages: Vec<HistoryMessage>,
         incomplete: bool,
     },
     /// Whether older channel history can be asked for on this connection
@@ -1021,13 +1031,12 @@ pub enum Event {
     /// `draft/chathistory` negotiated. Sent when that changes; a new
     /// connection starts without it.
     HistoryAvailable(bool),
-    /// The end of older-history request `request` for `channel`: its lines
-    /// in the server's order (oldest first), none when it ended otherwise.
-    /// Exactly one follows every accepted request on this connection.
+    /// The end of older-history request `request` for `channel`, after any
+    /// [`Event::HistoryLine`]s of it. Exactly one follows every accepted
+    /// request on this connection.
     OlderChannelHistory {
         channel: String,
         request: u64,
-        messages: Vec<HistoryMessage>,
         status: OlderHistoryStatus,
     },
     /// The server echoed our message `local_id` back. `text` is the final
@@ -4102,6 +4111,19 @@ impl Worker {
             match self.history.observe(message) {
                 history::Observed::Unrelated => {}
                 history::Observed::Consumed => return ControlFlow::Continue(true),
+                history::Observed::Message(streamed) => {
+                    let request = match streamed.page {
+                        history::Page::Before { request } => Some(request),
+                        _ => None,
+                    };
+                    self.emit(Event::HistoryLine {
+                        channel: streamed.channel,
+                        request,
+                        message: streamed.message,
+                    })
+                    .await?;
+                    return ControlFlow::Continue(true);
+                }
                 history::Observed::Finished(finished) => {
                     self.finish_history(finished).await?;
                     self.send_next_history().await?;
@@ -4690,13 +4712,11 @@ async fn history_finished(
     let event = match finished.page {
         history::Page::Latest | history::Page::Resume => Event::ChannelHistory {
             channel: finished.channel,
-            messages: finished.messages,
             incomplete: finished.incomplete,
         },
         history::Page::Before { request } => Event::OlderChannelHistory {
             channel: finished.channel,
             request,
-            messages: finished.messages,
             status,
         },
         // Its peers were queued when the reply ended; nothing to report.

@@ -1438,6 +1438,53 @@ fn repeated_message_ids_are_shown_and_notified_once(cx: &mut TestAppContext) {
     });
 }
 
+/// The events of a reply to a request for the latest lines: each line as it
+/// arrives, then the end.
+fn latest_reply(
+    channel: &str,
+    messages: Vec<cayenchat_irc_core::HistoryMessage>,
+    incomplete: bool,
+) -> Vec<cayenchat_irc_core::Event> {
+    use cayenchat_irc_core::Event;
+    let mut events: Vec<_> = messages
+        .into_iter()
+        .map(|message| Event::HistoryLine {
+            channel: channel.into(),
+            request: None,
+            message,
+        })
+        .collect();
+    events.push(Event::ChannelHistory {
+        channel: channel.into(),
+        incomplete,
+    });
+    events
+}
+
+/// The events of a reply to an older-page request.
+fn older_reply(
+    channel: &str,
+    request: u64,
+    messages: Vec<cayenchat_irc_core::HistoryMessage>,
+    status: cayenchat_irc_core::OlderHistoryStatus,
+) -> Vec<cayenchat_irc_core::Event> {
+    use cayenchat_irc_core::Event;
+    let mut events: Vec<_> = messages
+        .into_iter()
+        .map(|message| Event::HistoryLine {
+            channel: channel.into(),
+            request: Some(request),
+            message,
+        })
+        .collect();
+    events.push(Event::OlderChannelHistory {
+        channel: channel.into(),
+        request,
+        status,
+    });
+    events
+}
+
 #[gpui::test]
 fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppContext) {
     use cayenchat_irc_core::{Event, HistoryMessage};
@@ -1482,19 +1529,21 @@ fn requested_history_is_inserted_quietly_before_newer_lines(cx: &mut TestAppCont
                     account: None,
                     replayed: false,
                 },
-                Event::ChannelHistory {
-                    channel: "#b".into(),
-                    incomplete: false,
-                    messages: vec![
-                        old("alice: from yesterday", "old1"),
-                        HistoryMessage {
-                            notice: true,
-                            ..old("maintenance", "old2")
-                        },
-                        old("alice: live", "live1"),
-                    ],
-                },
-            ],
+            ]
+            .into_iter()
+            .chain(latest_reply(
+                "#b",
+                vec![
+                    old("alice: from yesterday", "old1"),
+                    HistoryMessage {
+                        notice: true,
+                        ..old("maintenance", "old2")
+                    },
+                    old("alice: live", "live1"),
+                ],
+                false,
+            ))
+            .collect(),
             Worker::Running,
             cx,
         );
@@ -1581,10 +1630,9 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
         let sequence = chat.state.last_message_sequence();
         chat.handle_events(
             NetworkId(1),
-            vec![Event::ChannelHistory {
-                channel: "#b".into(),
-                incomplete: false,
-                messages: vec![HistoryMessage {
+            latest_reply(
+                "#b",
+                vec![HistoryMessage {
                     sender: "bob".into(),
                     text: "from yesterday".into(),
                     notice: false,
@@ -1594,7 +1642,8 @@ fn history_inserted_later_reaches_the_combined_log(cx: &mut TestAppContext) {
                     msgid: Some("old1".into()),
                     account: None,
                 }],
-            }],
+                false,
+            ),
             Worker::Running,
             cx,
         );
@@ -1645,27 +1694,29 @@ fn discovered_direct_messages_open_quietly_and_overlap_is_dropped(cx: &mut TestA
                     channel: "carol".into(),
                     resumed: false,
                 },
-                Event::ChannelHistory {
-                    channel: "carol".into(),
-                    incomplete: false,
-                    messages: vec![
-                        line("carol", "call me", 1_790_550_000, "c1"),
-                        line("alice", "ok", 1_790_550_050, "c2"),
-                    ],
-                },
-                Event::HistoryRequested {
-                    channel: "BOB".into(),
-                    resumed: false,
-                },
-                Event::ChannelHistory {
-                    channel: "BOB".into(),
-                    incomplete: false,
-                    messages: vec![
-                        line("Bob", "missed", 1_790_550_000, "d1"),
-                        line("Bob", "live", 1_790_550_100, "d2"),
-                    ],
-                },
-            ],
+            ]
+            .into_iter()
+            .chain(latest_reply(
+                "carol",
+                vec![
+                    line("carol", "call me", 1_790_550_000, "c1"),
+                    line("alice", "ok", 1_790_550_050, "c2"),
+                ],
+                false,
+            ))
+            .chain([Event::HistoryRequested {
+                channel: "BOB".into(),
+                resumed: false,
+            }])
+            .chain(latest_reply(
+                "BOB",
+                vec![
+                    line("Bob", "missed", 1_790_550_000, "d1"),
+                    line("Bob", "live", 1_790_550_100, "d2"),
+                ],
+                false,
+            ))
+            .collect(),
             Worker::Running,
             cx,
         );
@@ -1756,12 +1807,14 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
                     channel: "#b".into(),
                     resumed: false,
                 },
-                Event::ChannelHistory {
-                    channel: "#b".into(),
-                    incomplete: false,
-                    messages: vec![line("recent", 1_790_550_000, "r1")],
-                },
-            ],
+            ]
+            .into_iter()
+            .chain(latest_reply(
+                "#b",
+                vec![line("recent", 1_790_550_000, "r1")],
+                false,
+            ))
+            .collect(),
             Worker::Running,
             cx,
         );
@@ -1822,16 +1875,18 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
                     account: None,
                     replayed: false,
                 },
-                Event::OlderChannelHistory {
-                    channel: "#b".into(),
-                    request,
-                    messages: vec![
-                        line("alice: older mention", 1_790_540_000, "o1"),
-                        line("recent", 1_790_550_000, "r1"),
-                    ],
-                    status: OlderHistoryStatus::Beginning,
-                },
-            ],
+            ]
+            .into_iter()
+            .chain(older_reply(
+                "#b",
+                request,
+                vec![
+                    line("alice: older mention", 1_790_540_000, "o1"),
+                    line("recent", 1_790_550_000, "r1"),
+                ],
+                OlderHistoryStatus::Beginning,
+            ))
+            .collect(),
             Worker::Running,
             cx,
         );
@@ -1874,12 +1929,12 @@ fn scrolling_to_the_top_loads_one_older_page_quietly(cx: &mut TestAppContext) {
         // A page answering an old request is ignored.
         chat.handle_events(
             NetworkId(1),
-            vec![Event::OlderChannelHistory {
-                channel: "#b".into(),
+            older_reply(
+                "#b",
                 request,
-                messages: vec![line("stale", 1_790_530_000, "s1")],
-                status: OlderHistoryStatus::More,
-            }],
+                vec![line("stale", 1_790_530_000, "s1")],
+                OlderHistoryStatus::More,
+            ),
             Worker::Running,
             cx,
         );
@@ -2133,21 +2188,25 @@ fn a_reconnect_recovers_missed_lines_where_the_log_was_cut_off(cx: &mut TestAppC
         let shown = chat.notifier.shown.len();
         chat.handle_events(
             NetworkId(1),
-            session(vec![
-                Event::HistoryRequested {
-                    channel: "#a".into(),
-                    resumed: true,
-                },
-                message("D", 1_790_560_000, "m4"),
-                Event::ChannelHistory {
-                    channel: "#a".into(),
-                    messages: vec![
+            session(
+                vec![
+                    Event::HistoryRequested {
+                        channel: "#a".into(),
+                        resumed: true,
+                    },
+                    message("D", 1_790_560_000, "m4"),
+                ]
+                .into_iter()
+                .chain(latest_reply(
+                    "#a",
+                    vec![
                         history("alice: while you were away", 1_790_555_000, "m3"),
                         history("D", 1_790_560_000, "m4"),
                     ],
-                    incomplete: true,
-                },
-            ]),
+                    true,
+                ))
+                .collect::<Vec<_>>(),
+            ),
             Worker::Running,
             cx,
         );
@@ -3881,19 +3940,21 @@ fn actions_are_kept_as_their_own_text_on_every_path(cx: &mut TestAppContext) {
                     msgid: None,
                     server_time: None,
                 },
-                Event::ChannelHistory {
-                    channel: "#a".into(),
-                    messages: vec![HistoryMessage {
-                        sender: "bob".into(),
-                        text: "\u{1}ACTION left\u{1}".into(),
-                        notice: false,
-                        server_time: None,
-                        msgid: None,
-                        account: None,
-                    }],
-                    incomplete: false,
-                },
-            ],
+            ]
+            .into_iter()
+            .chain(latest_reply(
+                "#a",
+                vec![HistoryMessage {
+                    sender: "bob".into(),
+                    text: "\u{1}ACTION left\u{1}".into(),
+                    notice: false,
+                    server_time: None,
+                    msgid: None,
+                    account: None,
+                }],
+                false,
+            ))
+            .collect(),
             Worker::Running,
             cx,
         );

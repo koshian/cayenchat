@@ -3541,11 +3541,12 @@ the start of the session.
   log's time column stamps it; the date, milliseconds and offset of the old
   stamp are not kept. Like every server line it marks nothing unread, has no
   highlight, notifies no one and is not in the combined log or in a log file.
-- **When.** Lines are kept until the connection registers, and afterwards only
-  while the diagnostics are on (`AppState::set_diagnostics_enabled`). The
-  worker's cost rule is unchanged: with the switch off, an established
-  session formats and sends no IRC line (`Connection::set_transcript`); with
-  it on the cost of formatting and sending every line is accepted.
+- **When.** A stage note is always kept. An IRC line is kept until the
+  connection registers, and afterwards only while the diagnostics are on;
+  that gate lives only in the worker (`Connection::set_transcript`). The UI
+  adds no second gate. With the switch off, an established session formats
+  and sends no IRC line; with it on the cost of formatting and sending every
+  line is accepted.
 - **Whole tags while asked for.** The worker keeps a tag section whole when the
   UI asked for the transcript (`Transcript::requested`); before registration
   and not asked, a section over 512 bytes is still shortened. Masking of
