@@ -5945,21 +5945,48 @@ impl ChatWindow {
             } => self.state.history_resumed(network, &channel),
             // Requested history is context, not news: no notification,
             // highlight or unread mark.
-            Event::ChannelHistory {
+            // Lines show as they arrive; the end of the reply puts them in
+            // server-time order within the room reserved for them.
+            Event::HistoryLine {
                 channel,
-                messages,
-                incomplete,
+                request,
+                message,
             } => {
-                let lines = self.history_lines(network, valid_channel(&channel), messages);
-                let gap = incomplete.then(|| HISTORY_GAP_NOTE.to_owned());
-                if valid_channel(&channel) {
-                    self.state
-                        .insert_resumed_history(network, &channel, lines, gap);
+                let is_channel = valid_channel(&channel);
+                let mut lines = self.history_lines(network, is_channel, vec![message]);
+                let Some(line) = lines.pop() else {
+                    return;
+                };
+                let id = if is_channel {
+                    self.state.channel_id(network, &channel)
                 } else {
                     let key = cayenchat_irc_core::text::nickname_key(&channel);
-                    if let Some(id) = self.state.private_id(network, &key) {
-                        self.state.insert_history_for(id, lines, gap);
+                    self.state.private_id(network, &key)
+                };
+                if let Some(id) = id {
+                    match request {
+                        Some(request) => {
+                            self.state.push_older_history_line(id, request, line);
+                        }
+                        None => {
+                            self.state.push_history_line(id, line);
+                        }
                     }
+                }
+            }
+            Event::ChannelHistory {
+                channel,
+                incomplete,
+            } => {
+                let gap = incomplete.then(|| HISTORY_GAP_NOTE.to_owned());
+                let id = if valid_channel(&channel) {
+                    self.state.channel_id(network, &channel)
+                } else {
+                    let key = cayenchat_irc_core::text::nickname_key(&channel);
+                    self.state.private_id(network, &key)
+                };
+                if let Some(id) = id {
+                    self.state.finish_history_for(id, gap);
                 }
             }
             Event::HistoryAvailable(available) => self.state.set_history_paging(network, available),
@@ -5968,17 +5995,15 @@ impl ChatWindow {
             Event::OlderChannelHistory {
                 channel,
                 request,
-                messages,
                 status,
             } => {
                 if let Some(id) = self.state.channel_id(network, &channel) {
                     if status == OlderHistoryStatus::Failed {
                         self.state.older_history_failed(id, request);
                     } else {
-                        self.state.insert_older_history(
+                        self.state.finish_older_history(
                             id,
                             request,
-                            self.history_lines(network, true, messages),
                             status == OlderHistoryStatus::Beginning,
                         );
                     }

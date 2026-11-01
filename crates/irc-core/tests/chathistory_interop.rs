@@ -84,11 +84,28 @@ impl Client {
             "older page",
             |event| matches!(event, Event::OlderChannelHistory { request: r, .. } if *r == request),
         ) {
-            Event::OlderChannelHistory {
-                messages, status, ..
-            } => (messages, status),
+            Event::OlderChannelHistory { status, .. } => {
+                (self.take_lines(channel, Some(request)), status)
+            }
             _ => unreachable!(),
         }
+    }
+
+    /// The streamed lines of a reply that has ended, in arrival order.
+    fn take_lines(&mut self, channel: &str, request: Option<u64>) -> Vec<HistoryMessage> {
+        let mut lines = Vec::new();
+        self.events.retain(|event| match event {
+            Event::HistoryLine {
+                channel: c,
+                request: r,
+                message,
+            } if c.eq_ignore_ascii_case(channel) && *r == request => {
+                lines.push(message.clone());
+                false
+            }
+            _ => true,
+        });
+        lines
     }
 
     fn history(&mut self, channel: &str) -> Vec<HistoryMessage> {
@@ -99,11 +116,9 @@ impl Client {
         match self.wait("history reply", |event| {
             matches!(event, Event::ChannelHistory { channel: c, .. } if c.eq_ignore_ascii_case(channel))
         }) {
-            Event::ChannelHistory {
-                messages,
-                incomplete,
-                ..
-            } => (messages, incomplete),
+            Event::ChannelHistory { incomplete, .. } => {
+                (self.take_lines(channel, None), incomplete)
+            }
             _ => unreachable!(),
         }
     }
