@@ -769,6 +769,16 @@ mod tests {
     }
 
     #[test]
+    fn group_unread_counts_a_mention_without_unread() {
+        let mut state = state();
+        let group = mixed(&mut state);
+        state.dispatch(crate::Command::SelectServer(NetworkId(3)));
+        state.mark_highlighted(NetworkId(1), "#a");
+        let children = state.display_tree().children(Parent::Group(group)).to_vec();
+        assert_eq!(state.group_unread(&children), (false, true));
+    }
+
+    #[test]
     fn damaged_group_data_is_repaired_without_losing_valid_groups() {
         let mut state = state();
         let member = |network, key: &str| GroupMember {
