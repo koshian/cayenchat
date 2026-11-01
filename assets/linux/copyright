@@ -3,7 +3,7 @@ Upstream-Name: CayenChat
 Source: https://github.com/koshian/cayenchat
 
 Files: usr/bin/cayenchat
-Copyright: CayenChat contributors
+Copyright: 2026 Sugano `Koshian' Yoshihisa(E)
 License: GPL-3.0-only AND MPL-2.0 AND Apache-2.0
  The binary combines the GPL-3.0-only front end (crates/ui), the MPL-2.0
  core crates (model, irc-core, storage, media, upload, app), GPUI and other
@@ -17,7 +17,7 @@ License: GPL-3.0-only AND MPL-2.0 AND Apache-2.0
 Files: usr/share/cayenchat/locales/*
  usr/share/applications/cayenchat.desktop
  usr/share/icons/hicolor/scalable/apps/cayenchat.svg
-Copyright: CayenChat contributors
+Copyright: 2026 Sugano `Koshian' Yoshihisa(E)
 License: GPL-3.0-only
  See LICENSE in this directory. On Debian systems the text is also in
  /usr/share/common-licenses/GPL-3.

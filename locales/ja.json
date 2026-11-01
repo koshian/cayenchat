@@ -387,7 +387,7 @@
   "about_build_test": "テストビルド",
   "about_license": "ライセンス",
   "about_license_value": "GPL-3.0-only（LICENSE を参照）",
-  "about_copyright": "Copyright CayenChat contributors",
+  "about_copyright": "Copyright (c) 2026 Sugano `Koshian' Yoshihisa(E)",
   "about_close": "閉じる",
   "startup_invalid": "自動接続の設定を確認してください: {error}",
   "port_invalid": "ポートは 1～65535 の数字で入力してください。",
