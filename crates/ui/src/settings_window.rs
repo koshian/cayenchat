@@ -3393,8 +3393,12 @@ impl SettingsWindow {
         let reiwa_mode = self.reiwa_mode_row("connection-reiwa-mode", cx);
         let current_host = self.settings.custom_host.read(cx).text().trim().to_owned();
         let current_port = self.settings.port.read(cx).text().trim().to_owned();
+        let saved_profile = selected_id.as_ref().and_then(|id| self.saved.profile(id));
         let selected_label = if no_server {
             self.i18n.text("no_servers")
+        } else if let Some(saved_profile) = saved_profile {
+            // A registered server reads the same as its entry in the list.
+            ircv3_settings::server_label(saved_profile, &self.i18n)
         } else if current_host.is_empty() {
             self.i18n.text("new_server")
         } else {
