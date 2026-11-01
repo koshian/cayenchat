@@ -805,7 +805,7 @@ impl ChatWindow {
             self.close_channel_settings_prompt(window, cx);
             return;
         }
-        let profile = match save_channel_choices(
+        if let Err(error) = save_channel_choices(
             &mut settings,
             &profile_id,
             &channel,
@@ -814,19 +814,14 @@ impl ChatWindow {
             utf8_only,
             &self.i18n,
         ) {
-            Ok(profile) => profile,
-            Err(error) => return fail(error, cx),
-        };
+            return fail(error, cx);
+        }
         if let Err(error) = settings_file::save(&settings) {
             return fail(error, cx);
         }
         let previous = self.saved.clone();
         self.apply_settings_change(&previous, settings, true, window, cx);
-        if let Some(handle) = self.settings_window {
-            let _ = handle.update(cx, |form, _, cx| {
-                form.follow_channel_save(&profile, &channel, mapping, choices.enabled, cx)
-            });
-        }
+        // An open settings window takes the file's values over itself.
         self.close_channel_settings_prompt(window, cx);
     }
 }
