@@ -711,6 +711,14 @@ impl WindowsWindowInner {
             })?;
             Some(0)
         } else {
+            let mut handled = false;
+            if lparam & GCS_RESULTSTR.0 > 0 {
+                let comp_result = parse_ime_composition_string(ctx, GCS_RESULTSTR)?;
+                self.with_input_handler(|input_handler| {
+                    input_handler.replace_text_in_range(None, &comp_result);
+                })?;
+                handled = true;
+            }
             if lparam & GCS_COMPSTR.0 > 0 {
                 let comp_string = parse_ime_composition_string(ctx, GCS_COMPSTR)?;
                 let caret_pos =
@@ -721,12 +729,9 @@ impl WindowsWindowInner {
                 self.with_input_handler(|input_handler| {
                     input_handler.replace_and_mark_text_in_range(None, &comp_string, caret_pos);
                 })?;
+                handled = true;
             }
-            if lparam & GCS_RESULTSTR.0 > 0 {
-                let comp_result = parse_ime_composition_string(ctx, GCS_RESULTSTR)?;
-                self.with_input_handler(|input_handler| {
-                    input_handler.replace_text_in_range(None, &comp_result);
-                })?;
+            if handled {
                 return Some(0);
             }
 
