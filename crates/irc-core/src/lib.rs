@@ -2969,7 +2969,8 @@ async fn run_cancellable(
         metadata: metadata::MetadataState::new(wire_utf8),
         metadata_enabled: false,
         casemapping: CaseMapping::default(),
-        history: history::HistoryRequests::with_resume(config.resume_history),
+        history: history::HistoryRequests::with_resume(config.resume_history)
+            .with_wire_encoding(&config.encoding),
         history_enabled: false,
         echoes: echo::Echoes::default(),
         next_local_id: 0,
