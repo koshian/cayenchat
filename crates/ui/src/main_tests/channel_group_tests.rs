@@ -232,14 +232,18 @@ fn a_server_folds_its_channels_and_the_state_survives_a_restart(cx: &mut TestApp
     assert!(saved.collapsed_servers.is_empty());
 }
 
-fn server_unread_flags(chat: &ChatWindow) -> Vec<bool> {
+fn server_marks(chat: &ChatWindow) -> Vec<(bool, bool)> {
     chat.tree_rows
         .iter()
         .filter_map(|row| match *row {
-            TreeRow::Server(_, unread) => Some(unread),
+            TreeRow::Server(_, marks) => Some((marks.unread, marks.highlighted)),
             _ => None,
         })
         .collect()
+}
+
+fn server_unread_flags(chat: &ChatWindow) -> Vec<bool> {
+    server_marks(chat).into_iter().map(|(u, _)| u).collect()
 }
 
 #[gpui::test]
@@ -282,6 +286,47 @@ fn only_unread_headings_are_bold(cx: &mut TestAppContext) {
     refresh(cx);
     chat.read_with(cx, |chat, _| {
         assert_eq!(server_unread_flags(chat), [false, false]);
-        assert!(chat.state.group_unread(&[c]).0);
+        assert!(chat.state.heading_marks(&[c]).unread);
+    });
+}
+
+#[gpui::test]
+fn a_folded_server_heading_shows_a_mention_under_it(cx: &mut TestAppContext) {
+    let (chat, cx) = open_chat(cx);
+    let (one, two) = (cayenchat_model::NetworkId(1), cayenchat_model::NetworkId(2));
+    let (c, group) = chat.update_in(cx, |chat, _, _| {
+        let c = chat.state.channel_id(two, "#c").unwrap();
+        chat.state.dispatch(Command::SelectServer(one));
+        (c, chat.state.create_group("daily").unwrap())
+    });
+    let refresh = |cx: &mut VisualTestContext| cx.update(|window, _| window.refresh());
+    // Unread alone is bold, not highlighted, even folded.
+    chat.update_in(cx, |chat, _, cx| {
+        chat.state.mark_unread(c);
+        chat.toggle_server(two, cx);
+    });
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_marks(chat), [(false, false), (true, false)])
+    });
+    // A mention highlights the folded heading.
+    chat.update_in(cx, |chat, _, _| chat.state.mark_highlighted(two, "#c"));
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_marks(chat), [(false, false), (true, true)])
+    });
+    // Moved into a group, the mention is counted on the group heading only.
+    chat.update_in(cx, |chat, _, _| {
+        chat.state.move_to_group(c, group, None);
+    });
+    refresh(cx);
+    chat.read_with(cx, |chat, _| {
+        assert_eq!(server_marks(chat), [(false, false), (false, false)]);
+        let group_marks = chat.tree_rows.iter().find_map(|row| match *row {
+            TreeRow::Group(_, marks) => Some(marks),
+            _ => None,
+        });
+        let marks = group_marks.unwrap();
+        assert!(marks.unread && marks.highlighted);
     });
 }
