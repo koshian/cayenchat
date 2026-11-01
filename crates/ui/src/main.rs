@@ -7173,16 +7173,18 @@ impl ChatWindow {
                     .sessions
                     .get(&server_id)
                     .is_some_and(|session| session.used() || session.starting);
-                let status_mark = match self.state.status(server_id) {
-                    // Servers not connected in this run show no mark.
-                    _ if !used => "",
-                    Some(ConnectionStatus::Registered) => " ●",
+                let status_icon = match self.state.status(server_id) {
+                    // Servers not connected in this run show no icon.
+                    _ if !used => None,
+                    Some(ConnectionStatus::Registered) => Some("link"),
                     Some(ConnectionStatus::Connecting | ConnectionStatus::TransportConnected) => {
-                        " …"
+                        Some("ellipsis")
                     }
-                    Some(ConnectionStatus::Disconnected(_)) => " ×",
-                    _ => "",
+                    Some(ConnectionStatus::Disconnected(_)) => Some("unlink"),
+                    _ => None,
                 };
+                let status_tip: Option<SharedString> =
+                    status_icon.map(|_| self.status_text(self.state.status(server_id)).into());
                 div()
                     .id(("server", server_id.0))
                     .px_2()
@@ -7200,6 +7202,7 @@ impl ChatWindow {
                     )
                     .when(marks.highlighted, |d| d.text_color(theme.panes.highlight))
                     .flex()
+                    .items_center()
                     .child(
                         // The arrow alone folds the server; a click on it
                         // does not reach the heading (select, double click).
@@ -7217,7 +7220,31 @@ impl ChatWindow {
                                 this.toggle_server(server_id, cx);
                             })),
                     )
-                    .child(format!("{}{}", self.network_label(network), status_mark))
+                    .when_some(status_icon.zip(status_tip), |d, (icon, tip)| {
+                        // State only: it takes no click of its own.
+                        d.child(
+                            div()
+                                .id(("server-status", server_id.0))
+                                .flex_shrink_0()
+                                .pr_1()
+                                .child(
+                                    svg()
+                                        .path(format!("icons/ui/{icon}.svg"))
+                                        .size(px(13.))
+                                        .text_color(theme.text),
+                                )
+                                .tooltip(move |_, cx| {
+                                    let tip = tip.clone();
+                                    cx.new(|_| tooltip::TextTooltip(tip)).into()
+                                }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.network_label(network)),
+                    )
                     .on_drag_move(cx.listener(
                         move |this, event: &DragMoveEvent<DraggedChannel>, _, cx| {
                             let dragged = event.drag(cx);

@@ -31,7 +31,9 @@ and record that here.
 | `circle-x.svg` | `circle-x` | 1.56.0 | Search bar: clear the keyword |
 | `x.svg` | `x` | 1.56.0 | Search bar: close |
 | `arrow-down-to-line.svg` | `arrow-down-to-line` | 1.56.0 | Main log: jump to the latest message |
-| `link.svg` | `link` | 1.56.0 | Log: marks a URL when "Show long URLs compactly" is on (the diagonal chain, not `link-2`) |
+| `link.svg` | `link` | 1.56.0 | Log: marks a URL when "Show long URLs compactly" is on (the diagonal chain, not `link-2`); channel pane: a connected server |
+| `ellipsis.svg` | `ellipsis` | 1.56.0 | Channel pane: a server that is connecting |
+| `unlink.svg` | `unlink` | 1.56.0 | Channel pane: a disconnected server |
 
 The files are unchanged from upstream (`stroke="currentColor"`); the toolbar
 draws them as a mask in the theme's text color, so they show in both light and
