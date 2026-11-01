@@ -1491,8 +1491,8 @@ through the production order (text row, confirmation, placeholder, image).
 
 - All four match master within the run-to-run noise (about 15 %).
 - Loads rise from 96 to 106 and evictions from 44 to 54 for the same
-  scripted scrolling: a row is drawn as text first, so the placeholder, and
-  with it the row height, is only known later and more rows pass the
-  viewport while loads are queued. Records stay at 52, ready bytes and queue
+  scripted scrolling (cause not investigated; probably rows drawn shorter as
+  text first let more rows pass the viewport while loads are queued). Records
+  stay at 52, ready bytes and queue
   bounds are unchanged.
 - Limits: no Windows/macOS run; the no-op text system.
