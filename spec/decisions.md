@@ -3362,6 +3362,14 @@ there is no network, bouncer or connection behind it.
   `collapsed_servers` (profile IDs) in `channel-order.json`; an absent entry
   means open, files without the field read as before, and profiles that no
   longer exist are dropped at save.
+- **Connection state icon (#895).** A real server heading shows its state as a
+  13px Lucide icon between the arrow and the name (arrow, icon, name), not as
+  text marks after the name: `link` registered, `ellipsis` connecting or
+  registering, `unlink` disconnected. A server not used in this run shows none.
+  The icon is display only (no click or drag of its own) and its hover text is
+  the status text of the status bar. The conditions that pick the state are
+  unchanged. The name is truncated to the row so a long name keeps the icon
+  visible.
 - **Bold headings.** Group and real server headings are bold only while a
   conversation listed under them is unread, folded or not. A channel moved into
   a group counts for the group, not for its origin server.
