@@ -164,7 +164,7 @@ fn is_kana(c: char) -> bool {
 /// Kana, kanji, CJK punctuation and full-width forms: the characters a
 /// wrapper may otherwise break between freely. Half-width Hangul
 /// (U+FFA0..) is not included.
-fn is_japanese(c: char) -> bool {
+pub fn is_japanese(c: char) -> bool {
     is_kana(c)
         || matches!(c,
             '\u{3000}'..='\u{303F}'

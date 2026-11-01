@@ -388,7 +388,7 @@ palette" adds the picked color (24 at most, no repeats). There the picker has
 no `#RRGGBB` field of its own (the row has one) and closes when the settings
 tab changes. A double click on a row's field selects its whole text
 (`TextInput::select_all_on_double_click`, set only on these fields); other
-inputs keep the plain click behavior. Each picker acts only
+inputs select the unit under the pointer (see Selection units). Each picker acts only
 on its own drags: GPUI delivers a
 drag's moves to every element that listens for that drag type, so the drag
 carries the picker's entity id.
@@ -671,6 +671,24 @@ positions through GPUI's text layout, and opens recognized HTTP(S) URLs on a
 double-click. With image previews on, a thumbnail of the message's first
 direct image link appears below its text (see Inline image previews). The
 lower combined log switches to a line's channel on double-click.
+
+### Selection units
+
+A double click in a text input, the channel log or a server log selects a
+phrase or word, a triple click the line (`select_unit.rs`; pure functions, one
+rule for all three, independent of the Auto Phrase setting). The character at
+the pointer decides: Japanese text gives its BudouX phrase
+(`cayenchat_model::phrase::boundaries`, inside the run of Japanese
+characters), letters and digits give the UAX #29 word, white space gives its
+run, and any other symbol gives the run of such symbols next to it; a line
+break ends every unit. A drag that follows a double or triple click widens
+the selection by whole units from the clicked one (the input keeps the unit in
+`drag_unit`, the log in `ChatWindow::log_unit`, reset by every new
+selection). In the log the unit is found in the drawn text and mapped back to
+original bytes like a click. A double click on a link there still opens the
+URL and selects nothing; the nickname prefix and the combined log keep their
+gestures. Fields with `select_all_on_double_click` and a click during IME
+composition keep their old behavior.
 
 Version 4 introduced several server profiles; settings versions 1–10 are
 rejected (D074). Since version 13 the list starts empty: the IRCnet hosts

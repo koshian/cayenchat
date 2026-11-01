@@ -5419,8 +5419,10 @@ mod server_settings_tests {
         assert!(color.read_with(cx, |f, _| f.selection().is_empty()));
         click(&color, 2, cx);
         assert_eq!(color.read_with(cx, |f, _| f.selection()), 0..7);
+        // Other fields select the unit under the pointer, not everything.
         click(&other, 2, cx);
-        assert!(other.read_with(cx, |f, _| f.selection().is_empty()));
+        let selected = other.read_with(cx, |f, _| f.selection());
+        assert!(!selected.is_empty() && selected != (0..7), "{selected:?}");
     }
 
     #[gpui::test]
