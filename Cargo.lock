@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "cayenchat-app"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "cayenchat-model",
  "chrono",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "cayenchat-irc-core"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "base64 0.22.1",
  "cayenchat-model",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "cayenchat-media"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "cayenchat-model",
  "image",
@@ -925,14 +925,14 @@ dependencies = [
 
 [[package]]
 name = "cayenchat-model"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "cayenchat-storage"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "cayenchat-model",
  "chrono",
@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "cayenchat-ui"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "ashpd 0.11.1",
  "block2",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "cayenchat-upload"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "cayenchat-media",
  "cayenchat-model",
