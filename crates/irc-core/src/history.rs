@@ -26,13 +26,18 @@
 //! commands. The reply is a `chathistory` batch whose single parameter is
 //! the channel; every line in it (and in batches nested inside it) is
 //! consumed here, never treated as live traffic, and its PRIVMSG/NOTICE
-//! lines are buffered (bounded) until the batch ends and then reported
-//! together. A batch that never ends reports nothing, `FAIL CHATHISTORY` or
-//! a timeout ends the request, and everything lives in the connection's
+//! lines are handed on as they arrive ([`Observed::Message`], at most
+//! [`MAX_HISTORY_LINES`] per reply), so a slow reply shows what it has.
+//! What is known only at the end (the beginning of history, lines possibly
+//! missing, a failure) is reported once in [`Finished`]. A batch that never
+//! ends, `FAIL CHATHISTORY` or a timeout ends the request as a failure and
+//! keeps the lines already handed on; everything lives in the connection's
 //! worker, so a reconnect starts empty and cannot receive an old
 //! connection's answer. Every older-page request ends in exactly one
 //! [`Finished`] (lines, the beginning of history, or a failure), so the
-//! application never waits for an answer that cannot come.
+//! application never waits for an answer that cannot come. The lines come
+//! in the server's order, which need not be chronological; the application
+//! orders them (see `spec/architecture.md`).
 //!
 //! Only negotiated `batch` makes a reply recognizable, so the capability is
 //! requested only after `batch` is acknowledged (see `cap`). The
@@ -157,7 +162,9 @@ pub(crate) struct HistoryTarget {
 pub(crate) struct Finished {
     pub channel: String,
     pub page: Page,
-    pub messages: Vec<HistoryMessage>,
+    /// How many lines of the reply were kept and streamed
+    /// ([`Observed::Message`]) before it ended.
+    pub lines: usize,
     /// How many entries a `TARGETS` reply had that were kept.
     pub targets: usize,
     /// The reply said nothing older remains (BEFORE only).
@@ -166,7 +173,8 @@ pub(crate) struct Finished {
     /// tag: lines between the reference and the oldest one returned may be
     /// missing.
     pub incomplete: bool,
-    /// The request failed or was given up; `messages` is empty.
+    /// The request failed or was given up. Lines streamed before that stay
+    /// shown.
     pub failed: bool,
     pub note: Option<String>,
 }
@@ -176,7 +184,7 @@ impl Finished {
         Self {
             channel,
             page,
-            messages: Vec::new(),
+            lines: 0,
             targets: 0,
             end: false,
             incomplete: false,
@@ -195,12 +203,21 @@ impl Finished {
     pub(crate) fn older_status(&self) -> OlderHistoryStatus {
         if self.failed {
             OlderHistoryStatus::Failed
-        } else if self.end || self.messages.is_empty() {
+        } else if self.end || self.lines == 0 {
             OlderHistoryStatus::Beginning
         } else {
             OlderHistoryStatus::More
         }
     }
+}
+
+/// A line of a reply that arrived while its request is still being
+/// answered.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Streamed {
+    pub channel: String,
+    pub page: Page,
+    pub message: HistoryMessage,
 }
 
 /// What [`HistoryRequests::observe`] did with an incoming line.
@@ -210,6 +227,9 @@ pub(crate) enum Observed {
     Unrelated,
     /// Part of a reply; nothing else may see it.
     Consumed,
+    /// A message line of a reply, to be shown at once; the request ends
+    /// later in [`Observed::Finished`].
+    Message(Streamed),
     /// A request ended: its lines (possibly none), or a failure.
     Finished(Finished),
 }
@@ -238,7 +258,8 @@ struct Outstanding {
     /// A reply nested past the tracking bound is consumed fail-closed until
     /// its root batch ends, so deeper lines cannot escape as live traffic.
     nested_overflowed: bool,
-    messages: Vec<HistoryMessage>,
+    /// Lines streamed so far (at most [`MAX_HISTORY_LINES`]).
+    kept: usize,
     targets: Vec<HistoryTarget>,
     dropped: usize,
 }
@@ -577,7 +598,7 @@ impl HistoryRequests {
             limit,
             nested: Vec::new(),
             nested_overflowed: false,
-            messages: Vec::new(),
+            kept: 0,
             targets: Vec::new(),
             dropped: 0,
         });
@@ -608,12 +629,22 @@ impl HistoryRequests {
             }
             self.abandoned.push_back(outstanding.channel.clone());
         }
-        let note = format!(
-            "History for {} was not answered within {} s.",
-            outstanding.channel,
-            RESPONSE_TIMEOUT.as_secs()
-        );
-        let finished = Finished::failed(outstanding.channel, outstanding.page, Some(note));
+        let kept = outstanding.kept;
+        let note = if kept > 0 {
+            format!(
+                "History for {} did not end within {} s; the {kept} lines received stay shown.",
+                outstanding.channel,
+                RESPONSE_TIMEOUT.as_secs()
+            )
+        } else {
+            format!(
+                "History for {} was not answered within {} s.",
+                outstanding.channel,
+                RESPONSE_TIMEOUT.as_secs()
+            )
+        };
+        let mut finished = Finished::failed(outstanding.channel, outstanding.page, Some(note));
+        finished.lines = kept;
         self.fall_back(&finished);
         Some(Observed::Finished(finished))
     }
@@ -701,11 +732,15 @@ impl HistoryRequests {
             // Without event-playback only PRIVMSG and NOTICE may appear;
             // anything else is dropped rather than applied as live state.
             if let Some(line) = history_line(message, &outstanding.channel, mapping) {
-                if outstanding.messages.len() < MAX_HISTORY_LINES {
-                    outstanding.messages.push(line);
-                } else {
-                    outstanding.dropped += 1;
+                if outstanding.kept < MAX_HISTORY_LINES {
+                    outstanding.kept += 1;
+                    return Observed::Message(Streamed {
+                        channel: outstanding.channel.clone(),
+                        page: outstanding.page.clone(),
+                        message: line,
+                    });
                 }
+                outstanding.dropped += 1;
             }
             return Observed::Consumed;
         }
@@ -775,11 +810,11 @@ impl HistoryRequests {
             }
             let incomplete = outstanding.page == Page::Resume
                 && !outstanding.end
-                && outstanding.messages.len() + outstanding.dropped >= outstanding.limit;
+                && outstanding.kept + outstanding.dropped >= outstanding.limit;
             return Observed::Finished(Finished {
                 channel: outstanding.channel,
                 page: outstanding.page,
-                messages: outstanding.messages,
+                lines: outstanding.kept,
                 targets: outstanding.targets.len(),
                 end: outstanding.end,
                 incomplete,
@@ -972,6 +1007,17 @@ mod tests {
             .collect()
     }
 
+    /// The lines of a reply that were streamed, in the order they arrived.
+    fn streamed(observed: &[Observed]) -> Vec<&HistoryMessage> {
+        observed
+            .iter()
+            .filter_map(|observed| match observed {
+                Observed::Message(streamed) => Some(&streamed.message),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn sent(requests: &mut HistoryRequests, now: Instant) -> Option<String> {
         requests
             .next_request(now)
@@ -1037,10 +1083,16 @@ mod tests {
                 ":srv BATCH -r1",
             ],
         );
-        assert!(finished[..5].iter().all(|o| *o == Observed::Consumed));
+        // The lines are handed on as they arrive, not at the end.
+        assert_eq!(finished[0], Observed::Consumed);
+        assert!(matches!(finished[1], Observed::Message(_)));
+        assert!(matches!(finished[2], Observed::Message(_)));
+        assert_eq!(finished[3], Observed::Consumed);
+        assert_eq!(finished[4], Observed::Consumed);
+        let messages = streamed(&finished);
         let Observed::Finished(Finished {
             channel,
-            messages,
+            lines,
             note,
             ..
         }) = &finished[5]
@@ -1049,6 +1101,7 @@ mod tests {
         };
         assert_eq!(channel, "#a");
         assert!(note.is_none());
+        assert_eq!(*lines, 2);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].msgid.as_deref(), Some("m1"));
         assert!(messages[0].server_time.is_some());
@@ -1072,9 +1125,15 @@ mod tests {
             &mut requests,
             &[":srv BATCH +e chathistory #empty", ":srv BATCH -e"],
         );
-        assert!(
-            matches!(&observed[1], Observed::Finished(Finished { messages, note: None, failed: false, .. }) if messages.is_empty())
-        );
+        assert!(matches!(
+            &observed[1],
+            Observed::Finished(Finished {
+                lines: 0,
+                note: None,
+                failed: false,
+                ..
+            })
+        ));
 
         sent(&mut requests, now);
         let observed = feed(
@@ -1131,7 +1190,19 @@ mod tests {
                 Observed::Unrelated,
                 Observed::Consumed,
                 Observed::Unrelated,
-                Observed::Consumed,
+                // The reply's own line is ours, whatever else is going on.
+                Observed::Message(Streamed {
+                    channel: "#a".into(),
+                    page: Page::Latest,
+                    message: HistoryMessage {
+                        sender: "bob".into(),
+                        text: "history".into(),
+                        notice: false,
+                        server_time: None,
+                        msgid: None,
+                        account: None,
+                    },
+                }),
                 Observed::Unrelated,
             ]
         );
@@ -1157,15 +1228,22 @@ mod tests {
                 ":srv BATCH -r",
             ],
         );
+        let texts: Vec<_> = streamed(&observed)
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect();
+        assert_eq!(texts, ["nested", "after"]);
         assert!(
-            observed[..7].iter().all(|o| *o == Observed::Consumed),
+            observed
+                .iter()
+                .filter(|o| **o == Observed::Consumed)
+                .count()
+                == 5,
             "{observed:?}"
         );
-        let Observed::Finished(Finished { messages, .. }) = &observed[7] else {
+        let Observed::Finished(Finished { lines: 2, .. }) = &observed[7] else {
             panic!("{observed:?}");
         };
-        let texts: Vec<_> = messages.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(texts, ["nested", "after"]);
     }
 
     #[test]
@@ -1212,14 +1290,13 @@ mod tests {
             requests.observe(&parse("@batch=deep :bob!u@h PRIVMSG #a :deeper history")),
             Observed::Consumed
         );
-        assert_eq!(
+        assert!(matches!(
             requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
-            Observed::Consumed
-        );
+            Observed::Message(Streamed { message, .. }) if message.text == "root history"
+        ));
         assert!(matches!(
             requests.observe(&parse(":srv BATCH -r")),
-            Observed::Finished(Finished { messages, .. })
-                if messages.iter().any(|message| message.text == "root history")
+            Observed::Finished(Finished { lines: 1, .. })
         ));
     }
 
@@ -1272,18 +1349,16 @@ mod tests {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
         overflowing_reply(&mut requests, now);
-        assert_eq!(
+        assert!(matches!(
             requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
-            Observed::Consumed
-        );
+            Observed::Message(Streamed { message, .. }) if message.text == "root history"
+        ));
         // The nested batches are never closed; the root close still ends it.
-        let Observed::Finished(Finished { messages, .. }) =
+        let Observed::Finished(Finished { lines: 1, .. }) =
             requests.observe(&parse(":srv BATCH -r"))
         else {
             panic!("overflowing reply did not finish");
         };
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].text, "root history");
         assert_eq!(
             sent(&mut requests, now).as_deref(),
             Some("CHATHISTORY LATEST #b * 50")
@@ -1314,10 +1389,10 @@ mod tests {
                 );
                 parent = reference;
             }
-            assert_eq!(
+            assert!(matches!(
                 requests.observe(&parse("@batch=r :bob!u@h PRIVMSG #a :root history")),
-                Observed::Consumed
-            );
+                Observed::Message(Streamed { message, .. }) if message.text == "root history"
+            ));
             for index in (0..depth).rev() {
                 let reference = format!("n{index}");
                 let parent = if index == 0 {
@@ -1330,13 +1405,11 @@ mod tests {
                     Observed::Consumed
                 );
             }
-            let Observed::Finished(Finished { messages, .. }) =
+            let Observed::Finished(Finished { lines: 1, .. }) =
                 requests.observe(&parse("@batch=outer :srv BATCH -r"))
             else {
                 panic!("wrapped reply at depth {depth} did not finish");
             };
-            assert_eq!(messages.len(), 1);
-            assert_eq!(messages[0].text, "root history");
             assert_eq!(
                 sent(&mut requests, now).as_deref(),
                 Some("CHATHISTORY LATEST #b * 50")
@@ -1345,33 +1418,43 @@ mod tests {
     }
 
     #[test]
-    fn replies_are_bounded_and_unended_batches_report_nothing() {
+    fn replies_are_bounded_and_unended_batches_keep_the_lines_shown() {
         let mut requests = HistoryRequests::default();
         let now = Instant::now();
         requests.enqueue("#a");
         sent(&mut requests, now);
         requests.observe(&parse(":srv BATCH +r chathistory #a"));
+        let mut shown = 0;
         for index in 0..MAX_HISTORY_LINES + 7 {
             let line = format!("@batch=r :bob!u@h PRIVMSG #a :{index}");
-            assert_eq!(requests.observe(&parse(&line)), Observed::Consumed);
+            match requests.observe(&parse(&line)) {
+                Observed::Message(_) => shown += 1,
+                other => assert_eq!(other, Observed::Consumed),
+            }
         }
-        let Observed::Finished(Finished { messages, note, .. }) =
+        assert_eq!(shown, MAX_HISTORY_LINES);
+        let Observed::Finished(Finished { lines, note, .. }) =
             requests.observe(&parse(":srv BATCH -r"))
         else {
             panic!();
         };
-        assert_eq!(messages.len(), MAX_HISTORY_LINES);
+        assert_eq!(lines, MAX_HISTORY_LINES);
         assert!(note.unwrap().contains("7 more lines"));
 
-        // A reply that never ends yields nothing until the timeout.
+        // A reply that never ends has shown its lines already; the timeout
+        // ends the request as a failure with a note, once.
         requests.enqueue("#b");
         sent(&mut requests, now);
         requests.observe(&parse(":srv BATCH +s chathistory #b"));
-        requests.observe(&parse("@batch=s :bob!u@h PRIVMSG #b :partial"));
+        assert!(matches!(
+            requests.observe(&parse("@batch=s :bob!u@h PRIVMSG #b :partial")),
+            Observed::Message(Streamed { message, .. }) if message.text == "partial"
+        ));
         assert!(requests.tick(now + RESPONSE_TIMEOUT / 2).is_none());
         let Some(Observed::Finished(Finished {
             channel,
-            messages,
+            lines: 1,
+            failed: true,
             note: Some(_),
             ..
         })) = requests.tick(now + RESPONSE_TIMEOUT)
@@ -1379,7 +1462,7 @@ mod tests {
             panic!();
         };
         assert_eq!(channel, "#b");
-        assert!(messages.is_empty(), "partial replies are not shown");
+        assert!(requests.tick(now + RESPONSE_TIMEOUT * 2).is_none());
         assert!(requests.next_deadline().is_none());
     }
 
@@ -1421,7 +1504,8 @@ mod tests {
                 "@batch=r :bob!u@h PRIVMSG #slow :before",
             ],
         );
-        assert!(before.iter().all(|o| *o == Observed::Consumed));
+        assert_eq!(before[0], Observed::Consumed);
+        assert!(matches!(before[1], Observed::Message(_)));
         assert!(requests.tick(now + RESPONSE_TIMEOUT).is_some());
         let after = feed(
             &mut requests,
@@ -1613,7 +1697,7 @@ mod tests {
         let page = finished(observed.into_iter().last().unwrap());
         assert_eq!(page.page, Page::Before { request: 1 });
         assert_eq!(page.older_status(), OlderHistoryStatus::More);
-        assert_eq!(page.messages.len(), 2);
+        assert_eq!(page.lines, 2);
 
         requests.enqueue_older("#a", 2, &anchor, 50).unwrap();
         sent(&mut requests, now);
@@ -1627,7 +1711,7 @@ mod tests {
         );
         let page = finished(observed.into_iter().last().unwrap());
         assert_eq!(page.older_status(), OlderHistoryStatus::Beginning);
-        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.lines, 1);
 
         requests.enqueue_older("#a", 3, &anchor, 50).unwrap();
         sent(&mut requests, now);
@@ -1677,7 +1761,7 @@ mod tests {
             [Page::Before { request: 3 }, Page::Before { request: 1 }],
             "the one being answered, then the queued one"
         );
-        assert!(ended.iter().all(|f| f.failed && f.messages.is_empty()));
+        assert!(ended.iter().all(|f| f.failed && f.lines == 0));
         assert!(requests.queue.is_empty() && requests.next_deadline().is_none());
     }
 
@@ -1769,7 +1853,7 @@ mod tests {
         assert!(reply.incomplete);
         assert!(!full(true, 3).incomplete, "the server says that was all");
         assert!(!full(false, 2).incomplete, "fewer than asked for");
-        assert!(full(false, 0).messages.is_empty());
+        assert!(full(false, 0).lines == 0);
 
         // A plain LATEST is never incomplete: its limit is the point.
         let mut requests = HistoryRequests::default();
@@ -1910,7 +1994,7 @@ mod tests {
             ],
         );
         assert_eq!(finished.targets, 5, "unparsable lines are skipped");
-        assert!(!finished.failed && finished.messages.is_empty());
+        assert!(!finished.failed && finished.lines == 0);
         // Newest first; the channel is not requested (a joined channel asks
         // on join); no case duplicates.
         assert_eq!(
@@ -1988,12 +2072,11 @@ mod tests {
                 ":srv BATCH -r",
             ],
         );
-        let page = finished(observed.into_iter().last().unwrap());
-        let lines: Vec<_> = page
-            .messages
+        let lines: Vec<_> = streamed(&observed)
             .iter()
             .map(|m| (m.sender.as_str(), m.text.as_str()))
             .collect();
         assert_eq!(lines, [("bob", "hi"), ("alice", "yo")]);
+        assert_eq!(finished(observed.into_iter().last().unwrap()).lines, 2);
     }
 }
