@@ -105,6 +105,9 @@ pub struct Confirmation<K = MediaRef> {
 pub struct Finished<R> {
     /// Whether the record changed (false for stale or unknown jobs).
     pub applied: bool,
+    /// Whether the waiting rows were drawn without the placeholder: the
+    /// cache reserves room only after confirmation and none came.
+    pub measured_as_text: bool,
     /// Rows that showed the record while it was pending.
     pub waiters: Vec<R>,
 }
@@ -347,9 +350,12 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
             self.stats.stale += 1;
             return Finished {
                 applied: false,
+                measured_as_text: false,
                 waiters: Vec::new(),
             };
         };
+        let measured_as_text = self.limits.pending_after_confirmation
+            && matches!(record.state, State::Loading(_, _, false));
         let waiters = std::mem::take(&mut record.waiters);
         match result {
             Ok((value, bytes)) => {
@@ -368,6 +374,7 @@ impl<T, R: PartialEq, K: Clone + Eq + std::hash::Hash> PreviewCache<T, R, K> {
         }
         Finished {
             applied: true,
+            measured_as_text,
             waiters,
         }
     }
@@ -607,6 +614,31 @@ mod tests {
         assert!(cache.confirm(&confirmation).is_empty());
         assert_eq!(cache.request(&link(1), 1, now), Lookup::None);
         assert_eq!(cache.confirm(&second.confirmation()), [1]);
+    }
+
+    #[test]
+    fn finishing_unconfirmed_reports_rows_measured_as_text() {
+        let now = Instant::now();
+        for (confirm, expected) in [(false, true), (true, false)] {
+            let mut cache = cache(confirming());
+            cache.request(&link(1), 1, now);
+            let job = cache.next_job().unwrap();
+            if confirm {
+                cache.confirm(&job.confirmation());
+            }
+            let finished = cache.finish(job, Ok(("image".into(), 10)), now);
+            assert!(finished.applied);
+            assert_eq!(finished.measured_as_text, expected);
+        }
+        // Without the confirmation rule the placeholder was always there.
+        let mut cache = cache(CacheLimits::default());
+        cache.request(&link(1), 1, now);
+        let job = cache.next_job().unwrap();
+        assert!(
+            !cache
+                .finish(job, Ok(("image".into(), 10)), now)
+                .measured_as_text
+        );
     }
 
     #[test]

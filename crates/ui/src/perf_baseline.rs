@@ -213,6 +213,18 @@ impl cayenchat_media::Fetcher for MemoryFetcher {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.png.clone())
     }
+
+    /// Confirms like a server answering 200 with an image type.
+    fn fetch_confirmed(
+        &self,
+        source: &cayenchat_media::MediaRef,
+        limits: &cayenchat_media::Limits,
+        cancel: &cayenchat_media::CancelFlag,
+        confirmed: &dyn Fn(),
+    ) -> Result<Vec<u8>, cayenchat_media::LoadError> {
+        confirmed();
+        self.fetch(source, limits, cancel)
+    }
 }
 
 fn memory_fetcher() -> std::sync::Arc<MemoryFetcher> {

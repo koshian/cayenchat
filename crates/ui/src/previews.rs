@@ -250,6 +250,20 @@ pub(crate) mod fixture {
             }
             std::fs::read(path).map_err(|_| LoadError::Status(404))
         }
+
+        /// Confirms once the file is found and within the limit, as a
+        /// server answering 200 with an image type would.
+        fn fetch_confirmed(
+            &self,
+            source: &MediaRef,
+            limits: &Limits,
+            cancel: &CancelFlag,
+            confirmed: &dyn Fn(),
+        ) -> Result<Vec<u8>, LoadError> {
+            let body = self.fetch(source, limits, cancel)?;
+            confirmed();
+            Ok(body)
+        }
     }
 }
 
@@ -334,7 +348,8 @@ impl ChatWindow {
             // Rows that showed the full-height placeholder change height.
             // Rows off screen keep a measured height in their list; replace
             // it so scrolling back does not jump.
-            if height != Some(BOX_HEIGHT as f32) {
+            // Rows never confirmed were measured as plain text.
+            if finished.measured_as_text || height != Some(BOX_HEIGHT as f32) {
                 for row in finished.waiters {
                     if let Some(list) = self.main_lists.get_mut(&row.selection) {
                         list.invalidate(row.sequence);
