@@ -1523,6 +1523,13 @@ pub struct Settings {
     /// also for files saved before it existed (added after version 15
     /// without a version change).
     pub show_toolbar: bool,
+    /// Write the IRC lines of every connection, after registration too, and
+    /// the connection stages to the server log (View → Connection
+    /// diagnostics). Only the switch is saved, never the log. Off by default,
+    /// also for files saved before it existed (added after version 15
+    /// without a version change). Not [`Experimental::debug_logging`], which
+    /// writes the toolkit's stderr to a file.
+    pub connection_diagnostics: bool,
     pub appearance: Appearance,
     /// Reopen the main window where it was left, with its pane sizes (see
     /// [`layout`]). On by default, also for files saved before it existed.
@@ -1598,6 +1605,7 @@ impl Default for Settings {
             channel_number_modifier: ChannelNumberModifier::Ctrl,
             menu_bar_auto_hide: false,
             show_toolbar: true,
+            connection_diagnostics: false,
             text_key_theme: TextKeyTheme::Auto,
             send_key: SendKey::Enter,
             notice_key: NoticeKey::Off,
@@ -4082,5 +4090,17 @@ mod tests {
         settings.show_toolbar = false;
         save_to(&path, &settings).unwrap();
         assert!(!load_from(&path).unwrap().unwrap().show_toolbar);
+    }
+
+    #[test]
+    fn connection_diagnostics_are_off_unless_saved_on() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"version":15,"selected_server":"","servers":[]}"#).unwrap();
+        let mut settings = load_from(&path).unwrap().unwrap();
+        assert!(!settings.connection_diagnostics, "absent reads as off");
+        settings.connection_diagnostics = true;
+        save_to(&path, &settings).unwrap();
+        assert!(load_from(&path).unwrap().unwrap().connection_diagnostics);
     }
 }
