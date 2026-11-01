@@ -21,7 +21,9 @@ use cayenchat_model::{
     Network, NetworkId, Provenance, TimeOfDay, Timestamp, display, names::CaseMapping,
 };
 pub use diagnostics::{DIAGNOSTIC_LIMIT, DiagnosticLine, DiagnosticsView};
-pub use groups::{ChannelGroup, DisplayTree, GroupId, GroupMember, GroupSpec, Parent};
+pub use groups::{
+    ChannelGroup, DisplayTree, GroupId, GroupMember, GroupSpec, HeadingMarks, Parent,
+};
 use timeline::DuplicateFilter;
 pub use timeline::{Kind, MessageMeta};
 
