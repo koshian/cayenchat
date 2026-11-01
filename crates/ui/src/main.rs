@@ -5073,7 +5073,7 @@ impl ChatWindow {
         };
         let selection = self.state.selection();
         let current = self.tree_rows.iter().position(|row| match *row {
-            TreeRow::Server(id) => selection == Selection::Server(id),
+            TreeRow::Server(id, _) => selection == Selection::Server(id),
             TreeRow::Channel(id, _) => selection == Selection::Channel(id),
             TreeRow::Group(..) | TreeRow::NewGroup => false,
         });
@@ -5083,10 +5083,10 @@ impl ChatWindow {
             (ListKey::Parent, Some(at)) => self.tree_rows[..at]
                 .iter()
                 .rposition(|row| !matches!(row, TreeRow::Channel(..)))
-                .filter(|&parent| matches!(self.tree_rows[parent], TreeRow::Server(_)))
+                .filter(|&parent| matches!(self.tree_rows[parent], TreeRow::Server(..)))
                 .filter(|_| matches!(self.tree_rows[at], TreeRow::Channel(..))),
             (ListKey::Child, Some(at)) => (at + 1 < self.tree_rows.len()
-                && matches!(self.tree_rows[at], TreeRow::Server(_))
+                && matches!(self.tree_rows[at], TreeRow::Server(..))
                 && matches!(self.tree_rows[at + 1], TreeRow::Channel(..)))
             .then_some(at + 1),
             (ListKey::Activate, at) => at,
@@ -5101,7 +5101,7 @@ impl ChatWindow {
         // Group headings are not selectable: the movement goes on to the
         // next row that is, in the direction of the key.
         let forward = matches!(key, ListKey::Next | ListKey::PageDown | ListKey::Last);
-        let selectable = |row: &TreeRow| matches!(row, TreeRow::Server(_) | TreeRow::Channel(..));
+        let selectable = |row: &TreeRow| matches!(row, TreeRow::Server(..) | TreeRow::Channel(..));
         let target = target.and_then(|at| match key {
             ListKey::Activate => Some(at),
             _ if forward => (at..self.tree_rows.len()).find(|&i| selectable(&self.tree_rows[i])),
@@ -5112,7 +5112,7 @@ impl ChatWindow {
             return;
         };
         let command = match row.1 {
-            TreeRow::Server(id) => Command::SelectServer(id),
+            TreeRow::Server(id, _) => Command::SelectServer(id),
             TreeRow::Channel(id, _) => Command::SelectChannel(id),
             TreeRow::Group(..) | TreeRow::NewGroup => return,
         };
@@ -7106,10 +7106,18 @@ impl ChatWindow {
         }
         for (index, (network, children)) in display.servers.iter().enumerate() {
             let base = (index as u64) << 32;
-            self.tree_rows.push(TreeRow::Server(*network));
+            // Only what is listed under the server counts; channels moved
+            // into a group show their unread on the group heading.
+            let unread = children.iter().any(|id| self.state.is_unread(*id));
+            self.tree_rows.push(TreeRow::Server(*network, unread));
             keys.push(base);
+            let collapsed = self.server_collapsed(*network);
             for (position, id) in children.iter().enumerate() {
                 self.tree_parents.insert(*id, Parent::Server(*network));
+                // A folded server still shows the selected channel.
+                if collapsed && selected != Selection::Channel(*id) {
+                    continue;
+                }
                 let private = privates.contains(id);
                 self.tree_rows.push(TreeRow::Channel(*id, position));
                 // Private conversations follow the network's channels; the
@@ -7146,7 +7154,7 @@ impl ChatWindow {
         } else if changed || self.tree_reveal_pending {
             self.tree_revealed = Some(selection);
             let at = self.tree_rows.iter().position(|row| match *row {
-                TreeRow::Server(id) => selection == Selection::Server(id),
+                TreeRow::Server(id, _) => selection == Selection::Server(id),
                 TreeRow::Channel(id, _) => selection == Selection::Channel(id),
                 TreeRow::Group(..) | TreeRow::NewGroup => false,
             });
@@ -7203,7 +7211,7 @@ impl ChatWindow {
         let theme = theme::current(cx);
         let selection = self.state.selection();
         match self.tree_rows.get(row).copied() {
-            Some(TreeRow::Server(server_id)) => {
+            Some(TreeRow::Server(server_id, unread)) => {
                 let Some(network) = self
                     .state
                     .networks()
@@ -7231,7 +7239,7 @@ impl ChatWindow {
                     .px_2()
                     .pt_2()
                     .pb_1()
-                    .font_weight(FontWeight::BOLD)
+                    .when(unread, |d| d.font_weight(FontWeight::BOLD))
                     .cursor_pointer()
                     .when(selection == Selection::Server(server_id), |d| {
                         d.bg(theme.selected)
@@ -7240,6 +7248,24 @@ impl ChatWindow {
                     .when(
                         self.drop_heading == Some(HeadingTarget::Server(server_id)),
                         |d| d.bg(theme.selected),
+                    )
+                    .flex()
+                    .child(
+                        // The arrow alone folds the server; a click on it
+                        // does not reach the heading (select, double click).
+                        div()
+                            .id(("server-fold", server_id.0))
+                            .pr_1()
+                            .child(if self.server_collapsed(server_id) {
+                                "▶"
+                            } else {
+                                "▼"
+                            })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_server(server_id, cx);
+                            })),
                     )
                     .child(format!("{}{}", self.network_label(network), status_mark))
                     .on_drag_move(cx.listener(
@@ -8752,7 +8778,9 @@ const NEW_GROUP_KEY: u64 = 1 << 40;
 /// A row of the channel tree.
 #[derive(Clone, Copy)]
 enum TreeRow {
-    Server(NetworkId),
+    /// With whether any conversation listed under it is unread, which
+    /// makes the heading bold.
+    Server(NetworkId, bool),
     /// The heading of a group (D075).
     /// With whether any of its channels is unread and whether any holds a
     /// mention, which a collapsed heading shows.

@@ -3318,7 +3318,14 @@ there is no network, bouncer or connection behind it.
   shortcuts and the drag digits all read it.
 - **Numbers.** Cmd+digit (D009) counts within the display parent of the
   selection: the group, or the server. Across networks inside a group.
-  Server numbers (Cmd+Ctrl+digit) do not count groups. With a server row
+  Server numbers (Cmd+Ctrl+digit) do not count groups. Next/previous server
+  (#867) is the exception: it cycles the headings in tree order, groups with
+  channels first, then the real servers. A real server selects its log; a
+  group selects its first channel (an empty group is skipped, a folded one is
+  not). The current place is the display parent of the selection, so a
+  channel shown in a group counts as that group, not as its network. The
+  "active" variants take a group only when it has an active channel and go to
+  the first such channel. With a server row
   selected only the channels still under that server count. Group headings
   are not selectable; Up/Down skip them.
 - **Collapse.** Clicking a heading folds or opens the group (saved). A folded
@@ -3345,6 +3352,18 @@ there is no network, bouncer or connection behind it.
   the tree that is over 64 characters is refused the same way, not shortened).
   The running state only drops what the file cannot tell: repeated names and
   channels of servers that no longer exist.
+- **Server folding (#866).** A real server heading also has a ▶/▼ arrow. Only
+  the arrow folds or opens the server's channels and private conversations;
+  the rest of the heading keeps its click (select the log) and double click
+  (connect/disconnect), and the arrow's click does not reach it. A folded
+  server still shows its selected channel. Nothing else changes: numbers,
+  unread state and membership follow the full list. The state is saved as
+  `collapsed_servers` (profile IDs) in `channel-order.json`; an absent entry
+  means open, files without the field read as before, and profiles that no
+  longer exist are dropped at save.
+- **Bold headings.** Group and real server headings are bold only while a
+  conversation listed under them is unread, folded or not. A channel moved into
+  a group counts for the group, not for its origin server.
 - **Not done.** Reordering groups themselves, grouping private conversations,
   and group names in the settings window.
 

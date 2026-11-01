@@ -14,7 +14,7 @@
 //! profile ID and lowercased name, never by a connection or conversation.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -41,6 +41,10 @@ pub struct ChannelOrders {
     pub version: u32,
     /// Server profile ID to the channels in tree order.
     pub servers: BTreeMap<String, Vec<String>>,
+    /// Profile IDs of the servers whose channels are folded away in the
+    /// tree. A server not listed is open (#866).
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub collapsed_servers: BTreeSet<String>,
     /// The channel groups in tree order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<StoredGroup>,
@@ -96,6 +100,11 @@ impl ChannelOrders {
         }
         servers.retain(|_, names| !names.is_empty());
         self.servers = servers;
+        self.collapsed_servers
+            .retain(|id| !id.is_empty() && id.len() <= MAX_NAME_BYTES);
+        while self.collapsed_servers.len() > MAX_SERVERS {
+            self.collapsed_servers.pop_last();
+        }
         // A name is kept trimmed; one that is empty, too long or holds a
         // control character is damage and the group is dropped, not shortened.
         self.groups.retain_mut(|group| {
@@ -125,6 +134,7 @@ impl ChannelOrders {
     /// Forgets servers that are no longer configured.
     pub fn retain_servers(&mut self, keep: impl Fn(&str) -> bool) {
         self.servers.retain(|id, _| keep(id));
+        self.collapsed_servers.retain(|id| keep(id));
         for group in &mut self.groups {
             group.members.retain(|member| keep(&member.server));
         }
@@ -199,6 +209,29 @@ mod tests {
         assert_eq!(load_orders_from(&path), ChannelOrders::default());
         fs::write(&path, br##"{"version":1,"servers":{"a":["#x","#x",""]}}"##).unwrap();
         assert_eq!(load_orders_from(&path).order("a"), ["#x"]);
+    }
+
+    #[test]
+    fn collapsed_servers_read_back_and_unknown_ones_are_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel-order.json");
+        let mut orders = ChannelOrders::default();
+        orders.set("a", vec!["#x".into()]);
+        orders.collapsed_servers.extend(["a".into(), "gone".into()]);
+        orders.collapsed_servers.insert(String::new());
+        save_orders_to(&path, &orders).unwrap();
+        let mut loaded = load_orders_from(&path);
+        // The empty ID is damage; the channel order is untouched.
+        assert_eq!(loaded.collapsed_servers.len(), 2);
+        assert_eq!(loaded.order("a"), ["#x"]);
+        loaded.retain_servers(|id| id == "a");
+        assert_eq!(loaded.collapsed_servers, BTreeSet::from(["a".to_owned()]));
+        // A file from before this field reads as every server open.
+        fs::write(&path, br##"{"version":1,"servers":{"a":["#x"]}}"##).unwrap();
+        assert!(load_orders_from(&path).collapsed_servers.is_empty());
+        // Nothing collapsed writes no field.
+        save_orders_to(&path, &ChannelOrders::default()).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("collapsed"));
     }
 
     #[test]

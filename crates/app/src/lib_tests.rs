@@ -2660,3 +2660,108 @@ fn first_join_history_goes_before_the_join_line() {
         ["A", "B", "alice has joined", "topic", "new"]
     );
 }
+
+/// Servers 1 and 2 with a group holding #random of 2 then #rust of 1, and an
+/// empty group before it, so the headings are: (empty), G, Libera, Friends.
+fn grouped_mock() -> (AppState, GroupId) {
+    let mut state = mock();
+    state.create_group("Empty").unwrap();
+    let group = state.create_group("G").unwrap();
+    assert!(state.move_to_group(ConversationId(4), group, None));
+    assert!(state.move_to_group(ConversationId(2), group, None));
+    (state, group)
+}
+
+#[test]
+fn server_cycle_without_groups_keeps_the_server_order() {
+    let mut state = mock();
+    state.dispatch(Command::SelectChannel(ConversationId(2)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+    state.dispatch(Command::PreviousServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+}
+
+#[test]
+fn server_cycle_visits_groups_in_tree_order_and_wraps() {
+    let (mut state, _) = grouped_mock();
+    state.dispatch(Command::SelectServer(NetworkId(1)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+    // Wraps to the group (the empty one is skipped): its first channel.
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(4)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+    state.dispatch(Command::PreviousServer);
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(4)));
+    state.dispatch(Command::PreviousServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+}
+
+#[test]
+fn server_cycle_counts_a_grouped_channel_as_its_group_not_its_network() {
+    let (mut state, _) = grouped_mock();
+    // #rust belongs to Libera (1) but is shown in the group: next is Libera.
+    state.dispatch(Command::SelectChannel(ConversationId(2)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+    state.dispatch(Command::SelectChannel(ConversationId(2)));
+    state.dispatch(Command::PreviousServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+    // A channel left under its server is that server's.
+    state.dispatch(Command::SelectChannel(ConversationId(1)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+}
+
+#[test]
+fn server_cycle_between_groups_picks_the_first_channel() {
+    let (mut state, _) = grouped_mock();
+    let second = state.create_group("H").unwrap();
+    assert!(state.move_to_group(ConversationId(3), second, None));
+    state.dispatch(Command::SelectChannel(ConversationId(2)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(3)));
+    state.dispatch(Command::PreviousServer);
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(4)));
+}
+
+#[test]
+fn server_cycle_enters_a_collapsed_group() {
+    let (mut state, group) = grouped_mock();
+    state.set_group_collapsed(group, true);
+    state.dispatch(Command::SelectServer(NetworkId(2)));
+    state.dispatch(Command::NextServer);
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(4)));
+}
+
+#[test]
+fn active_server_cycle_needs_an_active_channel_in_a_group() {
+    let (mut state, _) = grouped_mock();
+    state.dispatch(Command::SelectServer(NetworkId(2)));
+    state.active_channels = HashSet::from([ConversationId(2)]);
+    state.dispatch(Command::NextActiveServer);
+    assert_eq!(state.selection(), Selection::Channel(ConversationId(2)));
+    // No active channel in the group: it is passed over.
+    state.active_channels.clear();
+    state.dispatch(Command::SelectServer(NetworkId(2)));
+    state.dispatch(Command::NextActiveServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+    state.active_servers.remove(&NetworkId(1));
+    state.dispatch(Command::PreviousActiveServer);
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+}
+
+#[test]
+fn server_numbers_still_count_only_real_servers() {
+    let (mut state, _) = grouped_mock();
+    state.dispatch(Command::SelectServerAt(0));
+    assert_eq!(state.selection(), Selection::Server(NetworkId(1)));
+    state.dispatch(Command::SelectServerAt(1));
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+    state.dispatch(Command::SelectServerAt(2));
+    assert_eq!(state.selection(), Selection::Server(NetworkId(2)));
+}
