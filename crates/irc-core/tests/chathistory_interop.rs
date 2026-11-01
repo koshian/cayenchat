@@ -205,7 +205,9 @@ fn recent_channel_history_against_a_real_server() {
                 direction: WireDirection::Sent,
                 line,
                 ..
-            } if line.starts_with("CHATHISTORY") => Some(line.clone()),
+            } if line.starts_with("CHATHISTORY") && !line.starts_with("CHATHISTORY TARGETS") => {
+                Some(line.clone())
+            }
             _ => None,
         })
         .collect();
@@ -283,7 +285,9 @@ fn older_channel_history_pages_against_a_real_server() {
         texts, expected,
         "the page ends right before the recent lines"
     );
-    assert!(page.iter().all(|m| m.server_time < oldest.server_time));
+    // Lines sent within one millisecond share a server-time (no fakelag), so
+    // order is checked by the text comparison above, not strictly by time.
+    assert!(page.iter().all(|m| m.server_time <= oldest.server_time));
     assert!(page.len() <= HISTORY_LIMIT);
 
     // Before the page's own oldest line, by timestamp only: nothing is left.
@@ -393,7 +397,9 @@ fn reconnect_recovers_missed_lines_against_a_real_server() {
                 direction: WireDirection::Sent,
                 line,
                 ..
-            } if line.starts_with("CHATHISTORY") => Some(line.clone()),
+            } if line.starts_with("CHATHISTORY") && !line.starts_with("CHATHISTORY TARGETS") => {
+                Some(line.clone())
+            }
             _ => None,
         })
         .collect();
