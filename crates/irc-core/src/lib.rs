@@ -4383,7 +4383,7 @@ impl Worker {
                 Event::Joined { channel } | Event::JoinedReplayed { channel } => {
                     self.regain.joined(channel)
                 }
-                Event::Parted { channel } => self.regain.parted(channel),
+                Event::Parted { channel } => regain_steps.extend(self.regain.parted(channel)),
                 Event::Topic { channel, topic, .. } => self.regain.topic(channel, topic),
                 Event::Names { channel, users } => regain_steps.extend(self.regain.roster(
                     channel,
@@ -4463,11 +4463,12 @@ impl Worker {
                          we have no operator status."
                     ))
                     .await;
-                    self.send_commands(vec![
-                        IrcCommand::PART(channel.clone(), None),
-                        IrcCommand::JOIN(channel, None, None),
-                    ])
-                    .await?;
+                    self.send_commands(vec![IrcCommand::PART(channel, None)])
+                        .await?;
+                }
+                regain::Step::Join(channel) => {
+                    self.send_commands(vec![IrcCommand::JOIN(channel, None, None)])
+                        .await?;
                 }
                 regain::Step::Restore {
                     channel,

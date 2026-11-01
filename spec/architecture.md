@@ -1001,7 +1001,9 @@ joining again gets it back (`crates/irc-core/src/regain.rs`, D055, D056).
   `#` and `&` channels qualify; `+` (no operators) and `!` (safe channels)
   never do. Names are used as the server gave them, so IRCnet server-mask
   channels keep working.
-- Action: `PART` then `JOIN`, **once per channel and connection**, so that a
+- Action: `PART`, then `JOIN` once our own PART (or KICK) is echoed (a bouncer
+  may drop a JOIN of a channel it still counts us in, #892; no echo within
+  30 s means no JOIN), **once per channel and connection**, so that a
   network where rejoining gives no operator status (services-managed
   channels, IRCnet's channel delay) is not rejoined over and over. Whatever
   the result (operator again, no operator, JOIN refused, nothing within 30 s)

@@ -7167,10 +7167,13 @@ fn an_opless_channel_with_only_us_is_rejoined_once_and_restored() {
         thread::sleep(Duration::from_millis(400));
         socket.write_all(b":old!u@h PART #a\r\n").unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), "PART #a");
+        // The JOIN waits for the echo of our PART (#892).
+        thread::sleep(Duration::from_millis(300));
+        socket.write_all(b":me!u@h PART #a\r\n").unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), "JOIN #a");
         socket
             .write_all(
-                b":me!u@h PART #a\r\n:me!u@h JOIN #a\r\n\
+                b":me!u@h JOIN #a\r\n\
                   :server 331 me #a :No topic is set\r\n\
                   :server 353 me = #a :@me\r\n:server 366 me #a :End\r\n",
             )
