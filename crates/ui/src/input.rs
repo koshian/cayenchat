@@ -14,6 +14,7 @@ use gpui::{
 use unicode_segmentation::*;
 
 use crate::multiline::WrappedText;
+use crate::select_unit::{self, SelectUnit};
 
 actions!(
     text_input,
@@ -166,6 +167,9 @@ pub struct TextInput {
     /// How far the text is shifted left so the cursor stays visible.
     scroll_x: Pixels,
     is_selecting: bool,
+    /// Set by a double or triple click: a drag that follows widens the
+    /// selection by this unit, from the range that click selected.
+    drag_unit: Option<(SelectUnit, Range<usize>)>,
     undo: Vec<EditSnapshot>,
     redo: Vec<EditSnapshot>,
     completion: Option<NickCompletion>,
@@ -714,12 +718,42 @@ impl TextInput {
             return;
         }
         self.is_selecting = true;
+        self.drag_unit = None;
 
+        let offset = self.index_for_mouse_position(event.position);
         if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.select_to(offset, cx);
+        } else if let Some(unit) = select_unit::of_click(event.click_count)
+            && self.marked_range.is_none()
+        {
+            // A composition in progress keeps the plain click.
+            let range = select_unit::range(&self.content, offset, unit);
+            self.move_to(range.start, cx);
+            self.select_to(range.end, cx);
+            self.drag_unit = Some((unit, range));
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx)
+            self.move_to(offset, cx)
         }
+    }
+
+    /// Moves the selection's moving end to `offset`; after a double or
+    /// triple click by whole units, keeping the clicked one selected.
+    fn drag_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let Some((unit, anchor)) = self.drag_unit.clone() else {
+            self.select_to(offset, cx);
+            return;
+        };
+        let range = select_unit::range(&self.content, offset, unit);
+        self.completion = None;
+        self.goal_x = None;
+        if range.start < anchor.start {
+            self.selected_range = range.start..anchor.end;
+            self.selection_reversed = true;
+        } else {
+            self.selected_range = anchor.start..range.end;
+            self.selection_reversed = false;
+        }
+        cx.notify();
     }
 
     /// Opens the edit menu at the pointer. The field takes the focus, the
@@ -857,7 +891,7 @@ impl TextInput {
                     event.position.y - event.position.y.clamp(bounds.top(), bounds.bottom());
                 self.scroll_by(beyond, cx);
             }
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.drag_to(self.index_for_mouse_position(event.position), cx);
         }
     }
 
@@ -1689,7 +1723,7 @@ impl TextElement {
             if phase == DispatchPhase::Capture {
                 input.update(cx, |input, cx| {
                     if input.is_selecting {
-                        input.select_to(input.index_for_mouse_position(event.position), cx);
+                        input.drag_to(input.index_for_mouse_position(event.position), cx);
                     }
                     input.is_selecting = false;
                 });
@@ -1838,6 +1872,7 @@ impl TextInput {
             last_bounds: None,
             scroll_x: px(0.),
             is_selecting: false,
+            drag_unit: None,
             undo: Vec::new(),
             redo: Vec::new(),
             completion: None,
@@ -2829,5 +2864,162 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         let shortcut = gpui::Keystroke::parse("ctrl-,").unwrap();
         assert_eq!(settings.match_keystrokes(&[shortcut]), Some(false));
+    }
+
+    /// A press-and-drag gesture on a one-line field laid out at x = 100.
+    mod click_units {
+        use super::*;
+        use gpui::{Modifiers, MouseButton, VisualTestContext};
+
+        struct Host(Entity<TextInput>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().pl(px(100.)).w(px(400.)).child(self.0.clone())
+            }
+        }
+
+        const TEXT: &str = "alpha beta gamma";
+
+        fn open(
+            cx: &mut gpui::TestAppContext,
+            all: bool,
+        ) -> (Entity<TextInput>, &mut VisualTestContext) {
+            cx.update(|cx| {
+                cx.set_global(crate::theme::Theme::new(
+                    cayenchat_storage::ThemeMode::Light,
+                    gpui::WindowAppearance::Light,
+                    &cayenchat_storage::Appearance::default(),
+                ));
+            });
+            let input = cx.new(|cx| {
+                let mut input = TextInput::new(cx);
+                input.content = TEXT.into();
+                if all {
+                    input.select_all_on_double_click();
+                }
+                input
+            });
+            let (_host, cx) = cx.add_window_view(|_, _| Host(input.clone()));
+            cx.update(|window, _| window.refresh());
+            cx.run_until_parked();
+            (input, cx)
+        }
+
+        /// The point over the middle of the byte `index`'s character.
+        fn over(
+            input: &Entity<TextInput>,
+            cx: &mut VisualTestContext,
+            index: usize,
+        ) -> Point<Pixels> {
+            input.read_with(cx, |input, _| {
+                let bounds = input.last_bounds.unwrap();
+                let line = input.last_layout.as_ref().unwrap();
+                let next = input.next_boundary(index);
+                let x = (line.x_for_index(index) + line.x_for_index(next)) / 2.;
+                point(bounds.left() + x, bounds.center().y)
+            })
+        }
+
+        fn press(cx: &mut VisualTestContext, at: Point<Pixels>, click_count: usize) {
+            cx.simulate_event(gpui::MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::none(),
+                click_count,
+                first_mouse: false,
+            });
+        }
+
+        fn drag_and_release(cx: &mut VisualTestContext, to: Point<Pixels>) {
+            cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+            cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+        }
+
+        fn selection(
+            input: &Entity<TextInput>,
+            cx: &mut VisualTestContext,
+        ) -> (Range<usize>, bool) {
+            input.read_with(cx, |input, _| {
+                (input.selected_range.clone(), input.selection_reversed)
+            })
+        }
+
+        #[gpui::test]
+        fn a_double_click_selects_the_word(cx: &mut gpui::TestAppContext) {
+            let (input, cx) = open(cx, false);
+            let at = over(&input, cx, 7);
+            press(cx, at, 1);
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+            let caret = selection(&input, cx).0;
+            assert!(
+                caret.is_empty() && (7..=8).contains(&caret.start),
+                "{caret:?}"
+            );
+            press(cx, at, 2);
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+            assert_eq!(selection(&input, cx).0, 6..10);
+        }
+
+        #[gpui::test]
+        fn a_drag_after_a_double_click_widens_by_words(cx: &mut gpui::TestAppContext) {
+            let (input, cx) = open(cx, false);
+            let start = over(&input, cx, 7);
+            press(cx, start, 2);
+            // Into the middle of "gamma": the whole word joins the range.
+            let to = over(&input, cx, 13);
+            drag_and_release(cx, to);
+            assert_eq!(selection(&input, cx), (6..16, false));
+            // And back to the first word, keeping the clicked one.
+            press(cx, start, 2);
+            let to = over(&input, cx, 2);
+            drag_and_release(cx, to);
+            assert_eq!(selection(&input, cx), (0..10, true));
+        }
+
+        #[gpui::test]
+        fn a_plain_drag_still_selects_by_characters(cx: &mut gpui::TestAppContext) {
+            let (input, cx) = open(cx, false);
+            let start = over(&input, cx, 1);
+            press(cx, start, 1);
+            let to = over(&input, cx, 8);
+            drag_and_release(cx, to);
+            let (range, _) = selection(&input, cx);
+            assert!(
+                range.start <= 2 && (8..=9).contains(&range.end),
+                "{range:?}"
+            );
+        }
+
+        #[gpui::test]
+        fn a_triple_click_selects_the_whole_line(cx: &mut gpui::TestAppContext) {
+            let (input, cx) = open(cx, false);
+            let at = over(&input, cx, 7);
+            press(cx, at, 3);
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+            assert_eq!(selection(&input, cx).0, 0..TEXT.len());
+        }
+
+        #[gpui::test]
+        fn a_select_all_field_keeps_selecting_everything(cx: &mut gpui::TestAppContext) {
+            let (input, cx) = open(cx, true);
+            let at = over(&input, cx, 7);
+            press(cx, at, 2);
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+            assert_eq!(selection(&input, cx).0, 0..TEXT.len());
+        }
+
+        #[gpui::test]
+        fn a_click_during_composition_only_places_the_caret(cx: &mut gpui::TestAppContext) {
+            let (input, cx) = open(cx, false);
+            input.update(cx, |input, _| input.marked_range = Some(6..8));
+            let at = over(&input, cx, 7);
+            press(cx, at, 2);
+            cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+            let caret = selection(&input, cx).0;
+            assert!(
+                caret.is_empty() && (7..=8).contains(&caret.start),
+                "{caret:?}"
+            );
+        }
     }
 }

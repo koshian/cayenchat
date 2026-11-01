@@ -56,6 +56,7 @@ mod quit_dialog;
 mod reiwa_group;
 mod scrollbar;
 mod secrets;
+mod select_unit;
 mod session;
 mod settings_file;
 mod settings_reset;
@@ -1001,6 +1002,10 @@ struct ChatWindow {
     members_scroll: UniformListScrollHandle,
     log_selection: Option<LogSelection>,
     log_dragging: bool,
+    /// Set by a double or triple click and cleared by every new selection:
+    /// the drag that follows widens the selection by this unit from the
+    /// range that click selected (its two ends).
+    log_unit: Option<(select_unit::SelectUnit, LogPosition, LogPosition)>,
     /// The main log row whose URL the pointer is over; it shows a hand.
     url_hover: Option<(ConversationId, usize)>,
     /// The line a jump just chose and when, drawn emphasized while
@@ -1590,6 +1595,7 @@ impl ChatWindow {
             members_height: None,
             right_column_bounds: Rc::new(Cell::new(None)),
             log_dragging: false,
+            log_unit: None,
             url_hover: None,
             reveal_flash: None,
             attachments: AttachmentFlow::default(),
@@ -4743,23 +4749,73 @@ impl ChatWindow {
             anchor: position,
             cursor: position,
         });
+        self.log_unit = None;
         self.log_dragging = true;
         window.focus(&self.log_focus);
         cx.notify();
     }
 
+    /// A double or triple click: selects `range` of the line `row` (the
+    /// unit around the click) and remembers the unit for the drag.
+    fn start_log_unit_selection(
+        &mut self,
+        source: Selection,
+        row: LineKey,
+        range: std::ops::Range<usize>,
+        unit: select_unit::SelectUnit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start = LogPosition {
+            row,
+            byte: range.start,
+        };
+        let end = LogPosition {
+            row,
+            byte: range.end,
+        };
+        self.start_log_selection(source, row, range.start, window, cx);
+        if let Some(selection) = self.log_selection.as_mut() {
+            selection.cursor = end;
+            self.log_unit = Some((unit, start, end));
+        }
+    }
+
+    /// Moves the selection's moving end to `byte` of `row`. After a double or
+    /// triple click, `unit_range` gives the unit around that point (as an
+    /// original byte range) and the selection grows by whole units.
     fn extend_log_selection(
         &mut self,
         source: Selection,
         row: LineKey,
         byte: usize,
+        unit_range: impl FnOnce(select_unit::SelectUnit) -> std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) {
         if self.log_dragging
             && let Some(selection) = self.log_selection.as_mut()
             && selection.source == source
         {
-            selection.cursor = LogPosition { row, byte };
+            match self.log_unit {
+                Some((unit, first, last)) => {
+                    let range = unit_range(unit);
+                    let before = LogPosition {
+                        row,
+                        byte: range.start,
+                    };
+                    if before < first {
+                        selection.anchor = last;
+                        selection.cursor = before;
+                    } else {
+                        selection.anchor = first;
+                        selection.cursor = LogPosition {
+                            row,
+                            byte: range.end,
+                        };
+                    }
+                }
+                None => selection.cursor = LogPosition { row, byte },
+            }
             cx.notify();
         }
     }
@@ -9018,10 +9074,15 @@ impl ChatWindow {
                         })
                         .flatten();
                     let down_layout = layout.clone();
+                    let (down_text, move_text) = {
+                        let text: Rc<str> = Rc::from(message.text.as_str());
+                        (text.clone(), text)
+                    };
                     // A connection diagnostic line is drawn muted, apart
                     // from the server's own notices.
                     let diagnostic = message.sender == cayenchat_app::DIAGNOSTIC_SENDER;
                     let text = div()
+                        .debug_selector(move || format!("server-text-{index}"))
                         .flex_1()
                         .min_w_0()
                         .when(diagnostic, |d| d.text_color(style.theme.text_secondary))
@@ -9034,7 +9095,15 @@ impl ChatWindow {
                                     .index_for_position(event.position)
                                     .unwrap_or_else(|index| index)
                                     .min(text_len);
-                                this.start_log_selection(source, row, byte, window, cx);
+                                match select_unit::of_click(event.click_count) {
+                                    Some(unit) => {
+                                        let range = select_unit::range(&down_text, byte, unit);
+                                        this.start_log_unit_selection(
+                                            source, row, range, unit, window, cx,
+                                        );
+                                    }
+                                    None => this.start_log_selection(source, row, byte, window, cx),
+                                }
                             }),
                         )
                         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -9042,7 +9111,13 @@ impl ChatWindow {
                                 .index_for_position(event.position)
                                 .unwrap_or_else(|index| index)
                                 .min(text_len);
-                            this.extend_log_selection(source, row, byte, cx);
+                            this.extend_log_selection(
+                                source,
+                                row,
+                                byte,
+                                |unit| select_unit::range(&move_text, byte, unit),
+                                cx,
+                            );
                         }));
                     div()
                         .w_full()
@@ -9204,6 +9279,7 @@ impl ChatWindow {
         let move_layout = layout.clone();
         let click_layout = layout;
         let move_urls = urls.clone();
+        let down_urls = urls.clone();
         let (down_compact, move_compact) = (compact.clone(), compact.clone());
         let over_url = self.url_hover == Some((selected_channel, index));
         let text_len = compact.text().len();
@@ -9368,19 +9444,36 @@ impl ChatWindow {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        let byte = down_layout
+                        let source = Selection::Channel(selected_channel);
+                        let row = (LineKind::Message, sequence);
+                        let raw = down_layout
                             .index_for_position(event.position)
-                            .unwrap_or_else(|index| index)
-                            .saturating_sub(prefix_len)
-                            .min(text_len);
-                        let byte = down_compact.original(byte);
-                        this.start_log_selection(
-                            Selection::Channel(selected_channel),
-                            (LineKind::Message, sequence),
-                            byte,
-                            window,
-                            cx,
-                        );
+                            .unwrap_or_else(|index| index);
+                        let byte = raw.saturating_sub(prefix_len).min(text_len);
+                        // Units are found in the drawn text, then mapped back
+                        // like the click. The nickname prefix is not text of
+                        // the message, and a double click on a link opens it
+                        // instead (`on_click`).
+                        let unit = select_unit::of_click(event.click_count).filter(|unit| {
+                            raw >= prefix_len
+                                && (*unit != select_unit::SelectUnit::Word
+                                    || !down_urls.iter().any(|(range, _)| range.contains(&byte)))
+                        });
+                        match unit {
+                            Some(unit) => {
+                                let range = select_unit::range(down_compact.text(), byte, unit);
+                                let range = down_compact.original(range.start)
+                                    ..down_compact.original(range.end);
+                                this.start_log_unit_selection(source, row, range, unit, window, cx);
+                            }
+                            None => this.start_log_selection(
+                                source,
+                                row,
+                                down_compact.original(byte),
+                                window,
+                                cx,
+                            ),
+                        }
                     }),
                 )
                 .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -9391,6 +9484,10 @@ impl ChatWindow {
                         Selection::Channel(selected_channel),
                         (LineKind::Message, sequence),
                         move_compact.original(byte),
+                        |unit| {
+                            let range = select_unit::range(move_compact.text(), byte, unit);
+                            move_compact.original(range.start)..move_compact.original(range.end)
+                        },
                         cx,
                     );
                     // Over a URL (not while selecting) the pointer is a
@@ -10721,6 +10818,10 @@ mod participant_menu_tests;
 #[cfg(test)]
 #[path = "main_tests/url_hover_tests.rs"]
 mod url_hover_tests;
+
+#[cfg(test)]
+#[path = "main_tests/log_unit_tests.rs"]
+mod log_unit_tests;
 
 #[cfg(test)]
 #[path = "main_tests/pane_tests.rs"]
