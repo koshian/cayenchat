@@ -34,6 +34,21 @@ pub trait Fetcher: Send + Sync {
         limits: &Limits,
         cancel: &CancelFlag,
     ) -> Result<Vec<u8>, LoadError>;
+
+    /// Like [`Fetcher::fetch`], and calls `confirmed` once, before reading
+    /// the body, when the final response is known to be an image (status
+    /// 200 and an image type other than SVG). The default never calls it:
+    /// a fetcher without response headers (tests, local fixtures) has no
+    /// earlier moment than the finished load, which is shown as ready.
+    fn fetch_confirmed(
+        &self,
+        source: &MediaRef,
+        limits: &Limits,
+        cancel: &CancelFlag,
+        _confirmed: &dyn Fn(),
+    ) -> Result<Vec<u8>, LoadError> {
+        self.fetch(source, limits, cancel)
+    }
 }
 
 const ACCEPT: &str = "image/png,image/jpeg,image/gif,image/webp;q=0.9";
@@ -91,6 +106,7 @@ impl HttpFetcher {
         limits: &Limits,
         cancel: &CancelFlag,
         deadline: Instant,
+        confirmed: &dyn Fn(),
     ) -> Result<Step, LoadError> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -134,6 +150,8 @@ impl HttpFetcher {
         {
             return Err(LoadError::TooLarge);
         }
+        // From here the source is an image; later failures are fetch failures.
+        confirmed();
         let mut reader = body.into_with_config().limit(max as u64 + 1).reader();
         let mut bytes = Vec::new();
         let mut chunk = vec![0; READ_CHUNK];
@@ -174,6 +192,16 @@ impl Fetcher for HttpFetcher {
         limits: &Limits,
         cancel: &CancelFlag,
     ) -> Result<Vec<u8>, LoadError> {
+        self.fetch_confirmed(source, limits, cancel, &|| {})
+    }
+
+    fn fetch_confirmed(
+        &self,
+        source: &MediaRef,
+        limits: &Limits,
+        cancel: &CancelFlag,
+        confirmed: &dyn Fn(),
+    ) -> Result<Vec<u8>, LoadError> {
         let MediaRef::Link(link) = source;
         // `total_timeout` bounds the whole load, redirects included.
         let deadline = Instant::now() + limits.total_timeout;
@@ -184,7 +212,7 @@ impl Fetcher for HttpFetcher {
                 return Err(LoadError::Cancelled);
             }
             policy::check_request(&url, previous.as_ref(), self.rules)?;
-            match self.get(&url, limits, cancel, deadline)? {
+            match self.get(&url, limits, cancel, deadline, confirmed)? {
                 Step::Body(bytes) => return Ok(bytes),
                 Step::Redirect(next) => previous = Some(std::mem::replace(&mut url, next)),
             }
@@ -259,6 +287,22 @@ mod tests {
         )
     }
 
+    fn fetch_flagging(
+        server: &FixtureServer,
+        path: &str,
+        limits: &Limits,
+    ) -> (Result<Vec<u8>, LoadError>, usize) {
+        let source = MediaRef::Link(Url::parse(&server.url(path)).unwrap());
+        let confirmed = std::cell::Cell::new(0);
+        let result = HttpFetcher::for_local_fixture(limits).fetch_confirmed(
+            &source,
+            limits,
+            &CancelFlag::default(),
+            &|| confirmed.set(confirmed.get() + 1),
+        );
+        (result, confirmed.get())
+    }
+
     fn fetch(server: &FixtureServer, path: &str, limits: &Limits) -> Result<Vec<u8>, LoadError> {
         let source = MediaRef::Link(Url::parse(&server.url(path)).unwrap());
         HttpFetcher::for_local_fixture(limits).fetch(&source, limits, &CancelFlag::default())
@@ -326,6 +370,57 @@ mod tests {
         assert!(!missing.is_transient());
         let busy = fetch(&server, "/busy.png", &limits).unwrap_err();
         assert!(busy.is_transient());
+    }
+
+    #[test]
+    fn an_image_is_confirmed_only_by_a_final_200_with_an_image_type() {
+        let png = encode(ImageFormat::Png, 4, 4);
+        let server = fixture(&[
+            ("/a.png", Route::image("image/png", png.clone())),
+            ("/hop", Route::redirect("/a.png")),
+            ("/to-page", Route::redirect("/page")),
+            (
+                "/page",
+                Route::image("text/html", b"<html></html>".to_vec()),
+            ),
+            ("/vector", Route::image("image/svg+xml", b"<svg/>".to_vec())),
+            (
+                "/denied",
+                Route {
+                    status: 403,
+                    ..Route::image("image/png", png.clone())
+                },
+            ),
+            (
+                "/unauthorized",
+                Route {
+                    status: 401,
+                    ..Route::image("text/html", Vec::new())
+                },
+            ),
+        ]);
+        let limits = Limits::default();
+        // Confirmed once, before the body is returned; a redirect is not
+        // the final response.
+        assert_eq!(
+            fetch_flagging(&server, "/a.png", &limits),
+            (Ok(png.clone()), 1)
+        );
+        assert_eq!(fetch_flagging(&server, "/hop", &limits), (Ok(png), 1));
+        for (path, error) in [
+            ("/to-page", LoadError::NotImage),
+            ("/page", LoadError::NotImage),
+            ("/vector", LoadError::NotImage),
+            ("/denied", LoadError::Status(403)),
+            ("/unauthorized", LoadError::Status(401)),
+            ("/missing", LoadError::Status(404)),
+        ] {
+            assert_eq!(
+                fetch_flagging(&server, path, &limits),
+                (Err(error), 0),
+                "{path}"
+            );
+        }
     }
 
     #[test]

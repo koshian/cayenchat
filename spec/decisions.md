@@ -3564,3 +3564,21 @@ the start of the session.
   cause of a lost connection stays in the log. Only the per-line wire lines
   depend on the switch (the transcript gate in irc-core); the UI adds no
   second gate.
+
+## D081 — A preview reserves room only once the link is known to be an image (#890)
+
+- **Decision.** `Previews` builds its cache with `pending_after_confirmation`.
+  A queued load, or a load whose fetcher has not confirmed an image, looks up
+  as `Lookup::None`, so the row is a plain text link at its normal height while
+  the load goes on. `Fetcher::fetch_confirmed` calls back once, before reading
+  the body, when the final response (after redirects) is a 200 with an image
+  type other than SVG; the UI forwards that to `PreviewCache::confirm`, keyed
+  by the job, and then rows reserve the box (`Lookup::Pending`).
+- **Unchanged.** Fetch policy and limits, failure records and the retry rule
+  (transient failures only, after 300 seconds). A failure after confirmation
+  (body cut off, too large, undecodable) still removes the box; it is a failed
+  fetch, not a non-image. A declared length over the limit fails before
+  confirmation. Fetchers without response headers keep the default, never
+  confirm, and show the image when ready. Avatars keep the old behavior.
+- **Accepted.** Rows drawn as text are remeasured when confirmed, like the
+  existing remeasuring when a load ends.

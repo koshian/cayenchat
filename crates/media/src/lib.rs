@@ -169,7 +169,21 @@ pub fn load_thumbnail(
     limits: &Limits,
     cancel: &CancelFlag,
 ) -> Result<Thumbnail, LoadError> {
-    let bytes = fetcher.fetch(source, limits, cancel)?;
+    load_thumbnail_confirmed(source, fetcher, limits, cancel, &|| {})
+}
+
+/// [`load_thumbnail`] that calls `confirmed` once the fetcher knows the
+/// source is an image (see [`Fetcher::fetch_confirmed`]). It is called on
+/// the loading thread, at most once, and not at all for sources that turn
+/// out not to be images.
+pub fn load_thumbnail_confirmed(
+    source: &MediaRef,
+    fetcher: &dyn Fetcher,
+    limits: &Limits,
+    cancel: &CancelFlag,
+    confirmed: &dyn Fn(),
+) -> Result<Thumbnail, LoadError> {
+    let bytes = fetcher.fetch_confirmed(source, limits, cancel, confirmed)?;
     if cancel.is_cancelled() {
         return Err(LoadError::Cancelled);
     }
