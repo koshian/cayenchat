@@ -349,3 +349,55 @@ fn many_due_channels_are_rejoined_a_few_per_poll() {
     rejoined.dedup();
     assert_eq!(rejoined.len(), total);
 }
+
+/// An attempt fired, with only the PART sent so far (#892).
+fn attempting(start: Instant) -> OpRegain {
+    let mut regain = OpRegain::new(true);
+    arrive(&mut regain, &["Me_"], start);
+    regain.poll(start + STABLE, true, flags);
+    regain
+}
+
+#[test]
+fn the_join_waits_for_the_echo_of_our_part_and_is_sent_once() {
+    let start = Instant::now();
+    let mut regain = attempting(start);
+    // Nothing but the attempt's own deadline happens before the echo.
+    assert_eq!(
+        regain.next_deadline(),
+        Some(start + STABLE + ATTEMPT_TIMEOUT)
+    );
+    assert_eq!(regain.parted("#a"), [Step::Join("#a".into())]);
+    // A second echo is not ours to answer: it forgets the channel.
+    assert!(regain.parted("#a").is_empty());
+    assert_eq!(regain.next_deadline(), None);
+}
+
+#[test]
+fn being_kicked_during_an_attempt_also_sends_the_join() {
+    // A KICK of us reaches `parted` as well as our own PART does.
+    let start = Instant::now();
+    let mut regain = attempting(start);
+    assert_eq!(regain.parted("#A"), [Step::Join("#a".into())]);
+}
+
+#[test]
+fn without_the_echo_of_our_part_no_join_is_sent_and_the_attempt_fails() {
+    let start = Instant::now();
+    let mut regain = attempting(start);
+    let late = start + STABLE + ATTEMPT_TIMEOUT;
+    // `in_channel` is still set (no echo): same outcome as before.
+    assert_eq!(
+        regain.poll(late, true, flags),
+        [Step::Status("#a".into(), OpRegainStatus::NotRegained)]
+    );
+    assert!(regain.parted("#a").is_empty());
+}
+
+#[test]
+fn a_part_outside_an_attempt_sends_no_join() {
+    let start = Instant::now();
+    let mut regain = OpRegain::new(true);
+    arrive(&mut regain, &["Me_"], start);
+    assert!(regain.parted("#a").is_empty());
+}
